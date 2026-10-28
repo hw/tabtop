@@ -97,29 +97,56 @@ if [ -L "$TOTP_DIR" ] || [ "$(stat -c %u "$TOTP_DIR")" != "$(id -u "$VNC_USER")"
     exit 1
 fi
 run_as_user chmod 700 "$TOTP_DIR"
-# The secret: VNC_TOTP_SECRET, else the one saved in the home directory,
-# else the well-known example secret below. The default is public (it's in
+# The secret: VNC_TOTP_SECRET (Base32), else VNC_TOTP_PASSPHRASE, else the
+# one saved in the home directory, else the well-known example secret below.
+# A passphrase can be any string, for generators that can't produce Base32;
+# a VNC_TOTP_SECRET that isn't valid Base32 is used as one too. The key is
+# the first 20 bytes of the passphrase's SHA-256, a fixed size because
+# liboath refuses keys over 32 bytes; its Base32 form, printed at startup,
+# goes in the authenticator app. The default is public (it's in
 # documentation and tutorials everywhere), so anyone can generate codes for
 # it; it lets the container start without configuration, and every start
-# warns about it. It isn't saved, so setting VNC_TOTP_SECRET later replaces
-# it at once.
+# warns about it. It isn't saved, so a container created later with a
+# secret replaces it.
 DEFAULT_TOTP_SECRET=JBSWY3DPEHPK3PXP
 USING_DEFAULT_SECRET=0
-if [ -z "${VNC_TOTP_SECRET:-}" ] && run_as_user test -s "$TOTP_SECRET_FILE"; then
-    VNC_TOTP_SECRET="$(run_as_user cat "$TOTP_SECRET_FILE")"
-elif [ -z "${VNC_TOTP_SECRET:-}" ]; then
-    VNC_TOTP_SECRET="$DEFAULT_TOTP_SECRET"
+PASSPHRASE_FROM=""
+# base32_hex prints the hex key for a Base32 secret, or fails if it isn't
+# valid Base32. Spaces, '=' padding and lowercase are accepted, as apps
+# display secrets that way.
+base32_hex() {
+    local hex
+    hex="$(oathtool --totp -v -b "$(printf '%s' "$1" | tr -d ' =\n' | tr 'a-z' 'A-Z')" 2>/dev/null \
+        | sed -n 's/^Hex secret: //p')" && [ -n "$hex" ] && printf '%s' "$hex"
+}
+if [ -n "${VNC_TOTP_SECRET:-}" ] && [ -n "${VNC_TOTP_PASSPHRASE:-}" ]; then
+    echo "Set VNC_TOTP_SECRET or VNC_TOTP_PASSPHRASE, not both." >&2
+    exit 1
 fi
-# Accept secrets as apps display them: lowercase, grouped, or '='-padded.
-VNC_TOTP_SECRET="$(printf '%s' "$VNC_TOTP_SECRET" | tr -d ' =\n' | tr 'a-z' 'A-Z')"
+if [ -n "${VNC_TOTP_SECRET:-}" ]; then
+    if ! TOTP_HEX="$(base32_hex "$VNC_TOTP_SECRET")"; then
+        echo "VNC_TOTP_SECRET isn't valid Base32, so it's used as a passphrase"
+        echo "(as if it were VNC_TOTP_PASSPHRASE)."
+        VNC_TOTP_PASSPHRASE="$VNC_TOTP_SECRET"
+        PASSPHRASE_FROM=VNC_TOTP_SECRET
+    fi
+elif [ -n "${VNC_TOTP_PASSPHRASE:-}" ]; then
+    PASSPHRASE_FROM=VNC_TOTP_PASSPHRASE
+elif run_as_user test -s "$TOTP_SECRET_FILE"; then
+    if ! TOTP_HEX="$(base32_hex "$(run_as_user cat "$TOTP_SECRET_FILE")")"; then
+        echo "The TOTP secret in $TOTP_SECRET_FILE is not valid base32." >&2
+        exit 1
+    fi
+else
+    TOTP_HEX="$(base32_hex "$DEFAULT_TOTP_SECRET")"
+fi
+if [ -n "$PASSPHRASE_FROM" ]; then
+    TOTP_HEX="$(printf '%s' "$VNC_TOTP_PASSPHRASE" | sha256sum | cut -c1-40)"
+fi
+# The Base32 form, for authenticator apps and the default check.
+VNC_TOTP_SECRET="$(oathtool --totp -v "$TOTP_HEX" | sed -n 's/^Base32 secret: //p')"
 if [ "$VNC_TOTP_SECRET" = "$DEFAULT_TOTP_SECRET" ]; then
     USING_DEFAULT_SECRET=1
-fi
-
-if ! TOTP_HEX="$(oathtool --totp -v -b "$VNC_TOTP_SECRET" | sed -n 's/^Hex secret: //p')" \
-        || [ -z "$TOTP_HEX" ]; then
-    echo "TOTP secret is not valid base32." >&2
-    exit 1
 fi
 
 # Password is optional. When set, login is password immediately followed by
@@ -175,7 +202,17 @@ EOF
     echo "  URI: ${TOTP_URI}"
     qrencode -t ANSIUTF8 "$TOTP_URI"
 fi
-unset VNC_TOTP_SECRET VNC_PASSWORD TOTP_HEX TOTP_ENTRY TOTP_URI OATH_PIN
+if [ -n "$PASSPHRASE_FROM" ]; then
+    # The key isn't the passphrase itself, so it's shown for adding to an
+    # authenticator app.
+    TOTP_URI="otpauth://totp/TabTop:${VNC_USER}?secret=${VNC_TOTP_SECRET}&issuer=TabTop&digits=${VNC_TOTP_DIGITS}&period=30"
+    echo "Using ${PASSPHRASE_FROM} as a passphrase. Add this secret, derived"
+    echo "from it, to an authenticator app (${VNC_TOTP_DIGITS} digits, 30s):"
+    echo "  Secret: ${VNC_TOTP_SECRET}"
+    echo "  URI:    ${TOTP_URI}"
+    qrencode -t ANSIUTF8 "$TOTP_URI"
+fi
+unset VNC_TOTP_SECRET VNC_TOTP_PASSPHRASE VNC_PASSWORD TOTP_HEX TOTP_ENTRY TOTP_URI OATH_PIN
 
 if [ "${CHROMIUM_NO_SANDBOX:-1}" = 1 ]; then
     printf '%s\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type"' \

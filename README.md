@@ -27,7 +27,9 @@ docker run -d --name tabtop -p 6080:6080 \
 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tabtop | grep VNC_TOTP_SECRET
 ```
 
-Add that secret to an authenticator app. Without `VNC_TOTP_SECRET`, the
+Add that secret to an authenticator app as a time-based (TOTP) entry: SHA-1,
+30 seconds and 6 digits, which are most apps' defaults. Without
+`VNC_TOTP_SECRET`, the
 container uses a **well-known, public default secret** (see
 [Default TOTP secret](#default-totp-secret)), which is only safe on a machine
 nobody else can reach.
@@ -42,7 +44,8 @@ well, set `VNC_PASSWORD` (see below): then enter that password immediately
 followed by the code, with no separator.
 
 No persistent volume is required. To keep the same authenticator entry when
-the container is replaced, keep passing the same `VNC_TOTP_SECRET`. You can optionally
+the container is replaced, keep passing the same `VNC_TOTP_SECRET`. You can
+optionally
 mount storage at `/home/<VNC_USER>` to retain browser data, downloads and
 desktop settings as well.
 
@@ -59,16 +62,24 @@ first deployment:
 
 ```text
 VNC_USER=user
-VNC_TOTP_SECRET=<a fixed Base32 secret>
+VNC_TOTP_PASSPHRASE=<a fixed random string>
 ```
 
-Set `VNC_TOTP_SECRET`. The container starts without it, but then uses the
-public [default secret](#default-totp-secret), and anyone who finds the site
-can log in. Use a random 32-character value containing only `A`–`Z` and `2`–`7`,
-save it in the platform's secret configuration, and add the same secret to
-your authenticator app. Keep the value unchanged across redeployments. A
-general-purpose password generator may produce characters that are not valid
-Base32, so configure its alphabet or generate the secret separately.
+Set `VNC_TOTP_PASSPHRASE` (or `VNC_TOTP_SECRET`, but not both). The container
+starts without either, but then uses the public
+[default secret](#default-totp-secret), and anyone who finds the site can log
+in. Keep the value unchanged across redeployments.
+
+- **`VNC_TOTP_PASSPHRASE`** accepts any string, so the platform's own random
+  generator works, whatever characters and length it uses. Use at least 32
+  random characters. The authenticator app needs a secret derived from it,
+  which the container prints to the log at every start, with a QR code; see
+  [`VNC_TOTP_PASSPHRASE`](#vnc_totp_passphrase).
+- **`VNC_TOTP_SECRET`** is meant for Base32 (32 random characters from
+  `A`–`Z` and `2`–`7`), which goes in the authenticator app as it is. A value
+  that isn't valid Base32, as general-purpose generators usually produce
+  (with characters such as `0`, `1`, `8`, `9`, `-` or `_`), is used as a
+  passphrase instead, and the log says so.
 
 The platform should route its HTTPS address to container port `6080` and
 forward WebSocket connections. A volume mounted at `/home/<VNC_USER>` is
@@ -80,7 +91,8 @@ optional and only retains browser data, downloads and desktop preferences.
 |---|---|---|
 | `VNC_USER` | `user` | Desktop username. You enter it at the login prompt. |
 | `VNC_PASSWORD` | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. |
-| `VNC_TOTP_SECRET` | *(empty)* | Base32 TOTP secret. Always set it for a site others can reach. Empty: use the secret saved in the home directory, or else the public default `JBSWY3DPEHPK3PXP` (see [Default TOTP secret](#default-totp-secret)). |
+| `VNC_TOTP_SECRET` | *(empty)* | Base32 TOTP secret; a value that isn't valid Base32 is used as `VNC_TOTP_PASSPHRASE`. Always set this or `VNC_TOTP_PASSPHRASE` for a site others can reach. If neither is set: use the secret saved in the home directory, or else the public default `JBSWY3DPEHPK3PXP` (see [Default TOTP secret](#default-totp-secret)). |
+| `VNC_TOTP_PASSPHRASE` | *(empty)* | Any string, for random generators that can't produce Base32. The TOTP key is derived from it, and the secret for the authenticator app is printed at startup. |
 | `VNC_TOTP_DIGITS` | `6` | Code length: `6`, `7` or `8`. |
 | `VNC_GEOMETRY` | `1600x900` | Desktop size before the first browser connects. |
 | `VNC_DEPTH` | `24` | Colour depth in bits. |
@@ -96,8 +108,10 @@ optional and only retains browser data, downloads and desktop preferences.
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
-`WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `VNC_TOTP_SECRET` or `VNC_PASSWORD` has
-an invalid value. The error is printed to the log.
+`WEB_TTY`, `WEB_DOCTOR_ENDPOINT` or `VNC_PASSWORD` has an invalid value, if
+both `VNC_TOTP_SECRET` and `VNC_TOTP_PASSPHRASE` are set, or if a saved
+`~/.config/tabtop/totp-secret` isn't valid Base32. The error is printed to
+the log.
 
 ### `VNC_USER`
 
@@ -137,19 +151,56 @@ pam_oath), so anyone logged in to the desktop can read it.
 
 The TOTP secret is chosen in this order:
 
-1. `VNC_TOTP_SECRET`, if it's set. It isn't saved to the home directory or
-   printed to the log, since you already have it.
-2. A secret saved at `~/.config/tabtop/totp-secret`. TabTop no longer
+1. `VNC_TOTP_SECRET`, if it's set and not empty. It isn't saved to the home
+   directory or printed to the log, since you already have it (unless it's
+   the default secret below, which is always logged with a warning). If it
+   isn't valid Base32, it's used as a passphrase, exactly like
+   `VNC_TOTP_PASSPHRASE`, and the log says "VNC_TOTP_SECRET isn't valid
+   Base32, so it's used as a passphrase".
+2. [`VNC_TOTP_PASSPHRASE`](#vnc_totp_passphrase), if it's set and not empty.
+   Setting both variables is an error.
+3. A secret saved at `~/.config/tabtop/totp-secret`. TabTop no longer
    creates this file, but one written by an earlier version, or by you, is
    still used.
-3. The [default secret](#default-totp-secret), `JBSWY3DPEHPK3PXP`. It isn't
-   saved, so setting `VNC_TOTP_SECRET` later replaces it on the next start.
+4. The [default secret](#default-totp-secret), `JBSWY3DPEHPK3PXP`. It isn't
+   saved, so a container created later with a secret or passphrase uses that
+   instead.
 
 Spaces, `=` padding and lowercase are accepted, so you can paste a secret the
 way an authenticator app or password manager shows it.
 
-To change the secret, set a new `VNC_TOTP_SECRET` (and delete
-`~/.config/tabtop/totp-secret` if there is one) and restart the container.
+To change the secret, remove the container and create it again with the new
+`VNC_TOTP_SECRET` or `VNC_TOTP_PASSPHRASE` (`docker restart` keeps the old
+value, since a container's environment is fixed when it's created). Both
+variables take precedence over a saved `~/.config/tabtop/totp-secret`, so
+that file only matters while neither is set; delete it if you no longer want
+it used.
+
+#### `VNC_TOTP_PASSPHRASE`
+
+For platforms whose random generators can't produce Base32. The value can be
+any string of any length, used exactly as given (including spaces). Use at
+least 32 random characters. A `VNC_TOTP_SECRET` that isn't valid Base32 is
+treated the same way.
+
+The TOTP key is derived from the passphrase: the first 20 bytes of its
+SHA-256 hash, the standard key size (liboath refuses keys longer than 32
+bytes, so the passphrase itself can't be the key). An authenticator app needs
+that key in Base32, which is not the passphrase itself. Every start prints it
+to `docker logs`, with an `otpauth://` URI and a QR code to scan:
+
+```text
+Using VNC_TOTP_PASSPHRASE as a passphrase. Add this secret, derived
+from it, to an authenticator app (6 digits, 30s):
+  Secret: Y3OGUNOOZBIBXHYTVTLALZVXUMGVQGBT
+```
+
+You can also work it out yourself with `oathtool`:
+`oathtool --totp -v "$(printf %s "$VNC_TOTP_PASSPHRASE" | sha256sum | cut -c1-40)" | grep Base32`.
+
+Because it's printed, anyone who can read the container's log can generate
+codes, just as anyone who can read the variable can. Keep the log as private
+as the platform's secret configuration.
 
 #### Default TOTP secret
 
@@ -171,8 +222,9 @@ Every start with the default prints a warning and the default's QR code to
 `docker logs`.
 
 A secret passed in this variable can be read by anyone who can run
-`docker inspect` on the container. Anyone logged in to the desktop can also
-read the saved file in the home folder.
+`docker inspect` on the container. Anyone logged in to the desktop or the
+terminal can also read it: the key is stored in `~/.config/tabtop/users.oath`
+(for pam_oath), however it was provided.
 
 ### `VNC_TOTP_DIGITS`
 
@@ -182,9 +234,9 @@ desktop, `/downloads/` and `/tty/` together and across restarts: after logging
 in to one, wait for the next code to log in to another. Once a code is used,
 earlier ones are refused too.
 
-If you change the digit count, remove the entry from your authenticator app
-and add it again. Some apps ignore the digit count in the QR code and always
-show 6 digits, so use `6` unless your app supports more.
+If you change the digit count, change it in your authenticator app's entry
+too, or add the entry again. Some apps only support 6 digits, so use `6`
+unless your app supports more.
 
 ### `VNC_GEOMETRY` and `VNC_RESIZE`
 
