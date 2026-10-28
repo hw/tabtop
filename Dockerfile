@@ -101,6 +101,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
+# No wallpapers: they come with xfdesktop4-data, which xfdesktop4 needs, so
+# dpkg is told not to install their files. The background is plain black.
+RUN printf '%s\n' 'path-exclude=/usr/share/backgrounds/*' > /etc/dpkg/dpkg.cfg.d/no-wallpapers
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         tini \
@@ -112,8 +116,10 @@ RUN apt-get update \
         xfce4-settings \
         xfconf \
         xfce4-terminal \
+        thunar \
         dbus-x11 \
         chromium \
+        arc-theme \
         fonts-dejavu-core \
         fonts-noto-color-emoji \
         ca-certificates \
@@ -195,11 +201,32 @@ RUN printf '%s\n' \
 COPY skel/ /etc/skel/
 RUN chmod -R u=rwX,go=rX /etc/skel
 
-# XFCE defaults for new homes: one top panel (show desktop, window list,
-# workspace name, tray and clock; no bottom dock, applications menu or
-# log-out menu) and a single workspace called Main.
+# Shell prompt and terminal title without the hostname (a container ID):
+# "alice:~$". Fail the build if Debian's prompts no longer match.
+RUN sed -i 's/\\u@\\h/\\u/g' /etc/skel/.bashrc /etc/bash.bashrc \
+ && ! grep -q '\\h' /etc/skel/.bashrc /etc/bash.bashrc \
+ && grep -q 'PS1=.*\\u' /etc/skel/.bashrc
+
+# XFCE defaults for new homes: one top panel (show desktop, a Chromium
+# incognito launcher, window list, workspace name, tray and clock; no bottom
+# dock, applications menu or log-out menu), a single workspace called Main,
+# the Arc theme for applications and window borders, and a plain black
+# desktop without a Trash icon.
 COPY --chmod=644 config/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
-COPY --chmod=644 config/xfwm4.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+COPY --chmod=644 config/xfwm4.xml config/xsettings.xml config/xfce4-desktop.xml \
+    /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
+
+# Default applications: Chromium in incognito mode for web links (XFCE's
+# helper, the XDG MIME defaults and Debian's x-www-browser), xfce4-terminal
+# for terminals and Thunar for folders.
+COPY --chmod=755 config/chromium-incognito /usr/local/bin/
+COPY --chmod=644 config/chromium-incognito.desktop /usr/share/applications/
+COPY --chmod=644 config/xfce-helper-chromium-incognito.desktop \
+    /usr/share/xfce4/helpers/chromium-incognito.desktop
+COPY --chmod=644 config/helpers.rc /etc/xdg/xfce4/helpers.rc
+COPY --chmod=644 config/mimeapps.list /etc/xdg/mimeapps.list
+RUN update-alternatives --install /usr/bin/x-www-browser x-www-browser \
+        /usr/local/bin/chromium-incognito 100
 
 EXPOSE 6080
 

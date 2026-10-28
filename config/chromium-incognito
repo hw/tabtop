@@ -1,0 +1,4 @@
+#!/bin/sh
+# Chromium in an incognito window: the desktop's default browser and the
+# panel launcher's command.
+exec /usr/bin/chromium --incognito "$@"
