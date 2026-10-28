@@ -1,0 +1,18 @@
+[tools]
+# Keep in sync with the golang image in the Dockerfile's tabtopd build stage.
+go = "1.27.3"
+
+[tasks.test]
+description = "Run tabtopd's tests"
+dir = "{{config_root}}/tabtopd"
+run = "go test ./..."
+
+[tasks.vet]
+description = "Vet tabtopd"
+dir = "{{config_root}}/tabtopd"
+run = "go vet ./..."
+
+[tasks.build]
+description = "Build the tabtopd binary into tabtopd/tabtopd"
+dir = "{{config_root}}/tabtopd"
+run = "go build -o tabtopd ."
