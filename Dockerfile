@@ -145,11 +145,11 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 
 # VNC_USER: username asked for by the noVNC login prompt; the password is a
 # TOTP code. VNC_TOTP_SECRET (base32) sets the TOTP key; if unset, the key
-# saved in the home directory is used, or a new one is generated and its
-# enrolment QR code printed to the log. VNC_TOTP_DIGITS: code length, 6, 7
-# or 8. VNC_TOTP_SECRET and VNC_PASSWORD are left out of ENV below: they're
-# secrets, passed at run time only. A fixed VNC_TOTP_SECRET is required for a
-# managed deployment without persistent storage.
+# saved in the home directory is used, or else the PUBLIC example secret
+# JBSWY3DPEHPK3PXP, with a warning on every start. VNC_TOTP_DIGITS: code
+# length, 6, 7 or 8. VNC_TOTP_SECRET and VNC_PASSWORD are left out of ENV
+# below: they're secrets, passed at run time only. Set a fixed, random
+# VNC_TOTP_SECRET for any deployment others can reach.
 # VNC_RESIZE: default for how noVNC fits the desktop to the browser window:
 # remote (resize the desktop to match), scale (scale the image) or off
 # (scroll). Viewers can change it in noVNC's settings; their choice sticks.

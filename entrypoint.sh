@@ -97,23 +97,23 @@ if [ -L "$TOTP_DIR" ] || [ "$(stat -c %u "$TOTP_DIR")" != "$(id -u "$VNC_USER")"
     exit 1
 fi
 run_as_user chmod 700 "$TOTP_DIR"
-NEW_SECRET=0
+# The secret: VNC_TOTP_SECRET, else the one saved in the home directory,
+# else the well-known example secret below. The default is public (it's in
+# documentation and tutorials everywhere), so anyone can generate codes for
+# it; it lets the container start without configuration, and every start
+# warns about it. It isn't saved, so setting VNC_TOTP_SECRET later replaces
+# it at once.
+DEFAULT_TOTP_SECRET=JBSWY3DPEHPK3PXP
+USING_DEFAULT_SECRET=0
 if [ -z "${VNC_TOTP_SECRET:-}" ] && run_as_user test -s "$TOTP_SECRET_FILE"; then
     VNC_TOTP_SECRET="$(run_as_user cat "$TOTP_SECRET_FILE")"
 elif [ -z "${VNC_TOTP_SECRET:-}" ]; then
-    VNC_TOTP_SECRET="$(head -c 20 /dev/urandom | base32 | tr -d '=')"
-    printf '%s\n' "$VNC_TOTP_SECRET" | write_as_user "$TOTP_SECRET_FILE"
-    NEW_SECRET=1
+    VNC_TOTP_SECRET="$DEFAULT_TOTP_SECRET"
 fi
 # Accept secrets as apps display them: lowercase, grouped, or '='-padded.
 VNC_TOTP_SECRET="$(printf '%s' "$VNC_TOTP_SECRET" | tr -d ' =\n' | tr 'a-z' 'A-Z')"
-# Documentation and tutorials everywhere use this one ("Hello!" + 0xDEADBEEF),
-# so anyone could generate codes for it.
-if [ "$VNC_TOTP_SECRET" = JBSWY3DPEHPK3PXP ]; then
-    echo "The TOTP secret (VNC_TOTP_SECRET, or $TOTP_SECRET_FILE when unset) is a" >&2
-    echo "well-known example that anyone can generate codes for. Use a random one," >&2
-    echo "e.g.: head -c 20 /dev/urandom | base32" >&2
-    exit 1
+if [ "$VNC_TOTP_SECRET" = "$DEFAULT_TOTP_SECRET" ]; then
+    USING_DEFAULT_SECRET=1
 fi
 
 if ! TOTP_HEX="$(oathtool --totp -v -b "$VNC_TOTP_SECRET" | sed -n 's/^Hex secret: //p')" \
@@ -161,13 +161,19 @@ auth    required pam_oath.so usersfile=${TOTP_USERS_FILE} digits=${VNC_TOTP_DIGI
 account required pam_permit.so
 EOF
 
-if [ "$NEW_SECRET" = 1 ]; then
+if [ "$USING_DEFAULT_SECRET" = 1 ]; then
     TOTP_URI="otpauth://totp/TabTop:${VNC_USER}?secret=${VNC_TOTP_SECRET}&issuer=TabTop&digits=${VNC_TOTP_DIGITS}&period=30"
-    echo "Generated a TOTP secret for '${VNC_USER}'. Add it to an authenticator app:"
-    echo "  Secret: ${VNC_TOTP_SECRET} (${VNC_TOTP_DIGITS} digits, 30s)"
-    echo "  URI:    ${TOTP_URI}"
+    cat >&2 <<EOF
+************************************************************************
+WARNING: using the well-known default TOTP secret ${DEFAULT_TOTP_SECRET}.
+It is public, so ANYONE who can reach this site can generate login codes
+and get the desktop and a shell as '${VNC_USER}'. Set VNC_TOTP_SECRET to
+a random secret, e.g. from: head -c 20 /dev/urandom | base32
+************************************************************************
+EOF
+    echo "Default secret for '${VNC_USER}' (${VNC_TOTP_DIGITS} digits, 30s):"
+    echo "  URI: ${TOTP_URI}"
     qrencode -t ANSIUTF8 "$TOTP_URI"
-    echo "It is saved in ${TOTP_SECRET_FILE}; delete that file to rotate it."
 fi
 unset VNC_TOTP_SECRET VNC_PASSWORD TOTP_HEX TOTP_ENTRY TOTP_URI OATH_PIN
 

@@ -21,15 +21,20 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 ## Local quick start
 
 ```sh
-docker build -t tabtop .
 docker run -d --name tabtop -p 6080:6080 \
-  -e VNC_USER=alice tabtop
-docker logs tabtop    # scan the QR code with an authenticator app
+  -e VNC_USER=alice -e VNC_TOTP_SECRET="$(head -c 20 /dev/urandom | base32)" \
+  ghcr.io/hw/tabtop:latest
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tabtop | grep VNC_TOTP_SECRET
 ```
 
-GitHub Actions also publishes the image to `ghcr.io/hw/tabtop`. To use it
-instead of building, replace the last `tabtop` in the `docker run` command
-with `ghcr.io/hw/tabtop:latest`.
+Add that secret to an authenticator app. Without `VNC_TOTP_SECRET`, the
+container uses a **well-known, public default secret** (see
+[Default TOTP secret](#default-totp-secret)), which is only safe on a machine
+nobody else can reach.
+
+This runs the image GitHub Actions publishes to `ghcr.io/hw/tabtop`. To run
+your own build instead, build it with `docker build -t tabtop .` and replace
+`ghcr.io/hw/tabtop:latest` in the `docker run` command with `tabtop`.
 
 Open <http://localhost:6080/>, enter the username (`alice`) and the current
 code from your authenticator app as the password. To require a password as
@@ -37,7 +42,7 @@ well, set `VNC_PASSWORD` (see below): then enter that password immediately
 followed by the code, with no separator.
 
 No persistent volume is required. To keep the same authenticator entry when
-the container is replaced, pass a fixed `VNC_TOTP_SECRET`. You can optionally
+the container is replaced, keep passing the same `VNC_TOTP_SECRET`. You can optionally
 mount storage at `/home/<VNC_USER>` to retain browser data, downloads and
 desktop settings as well.
 
@@ -49,16 +54,17 @@ database, cache, service or persistent storage. The desktop, terminal,
 downloads and audio all use the same HTTP endpoint, including their WebSocket
 connections.
 
-For CaliberNode and other managed platforms, configure these environment
-variables before the first deployment:
+For managed platforms, configure these environment variables before the
+first deployment:
 
 ```text
 VNC_USER=user
 VNC_TOTP_SECRET=<a fixed Base32 secret>
 ```
 
-`VNC_TOTP_SECRET` is required for a managed deployment without persistent
-storage. Use a random 32-character value containing only `A`–`Z` and `2`–`7`,
+Set `VNC_TOTP_SECRET`. The container starts without it, but then uses the
+public [default secret](#default-totp-secret), and anyone who finds the site
+can log in. Use a random 32-character value containing only `A`–`Z` and `2`–`7`,
 save it in the platform's secret configuration, and add the same secret to
 your authenticator app. Keep the value unchanged across redeployments. A
 general-purpose password generator may produce characters that are not valid
@@ -74,7 +80,7 @@ optional and only retains browser data, downloads and desktop preferences.
 |---|---|---|
 | `VNC_USER` | `user` | Desktop username. You enter it at the login prompt. |
 | `VNC_PASSWORD` | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. |
-| `VNC_TOTP_SECRET` | *(empty)* | Base32 TOTP secret. Set a fixed value for managed deployments. Empty: use the secret saved in the home directory, or generate one and print its QR code to the log for local enrollment. |
+| `VNC_TOTP_SECRET` | *(empty)* | Base32 TOTP secret. Always set it for a site others can reach. Empty: use the secret saved in the home directory, or else the public default `JBSWY3DPEHPK3PXP` (see [Default TOTP secret](#default-totp-secret)). |
 | `VNC_TOTP_DIGITS` | `6` | Code length: `6`, `7` or `8`. |
 | `VNC_GEOMETRY` | `1600x900` | Desktop size before the first browser connects. |
 | `VNC_DEPTH` | `24` | Colour depth in bits. |
@@ -133,15 +139,36 @@ The TOTP secret is chosen in this order:
 
 1. `VNC_TOTP_SECRET`, if it's set. It isn't saved to the home directory or
    printed to the log, since you already have it.
-2. The secret saved at `~/.config/tabtop/totp-secret`.
-3. A newly generated secret. It's saved to that file, and its QR code, secret
-   and `otpauth://` URI are printed to `docker logs` once.
+2. A secret saved at `~/.config/tabtop/totp-secret`. TabTop no longer
+   creates this file, but one written by an earlier version, or by you, is
+   still used.
+3. The [default secret](#default-totp-secret), `JBSWY3DPEHPK3PXP`. It isn't
+   saved, so setting `VNC_TOTP_SECRET` later replaces it on the next start.
 
 Spaces, `=` padding and lowercase are accepted, so you can paste a secret the
 way an authenticator app or password manager shows it.
 
-To get a new secret, delete `~/.config/tabtop/totp-secret` and restart the
-container.
+To change the secret, set a new `VNC_TOTP_SECRET` (and delete
+`~/.config/tabtop/totp-secret` if there is one) and restart the container.
+
+#### Default TOTP secret
+
+When no secret is set or saved, TabTop uses `JBSWY3DPEHPK3PXP`. It's the
+Base32 encoding of `Hello!` followed by the bytes `DE AD BE EF`, and it's the
+example secret in documentation and tutorials everywhere. That's why it's
+the default: the container starts with no configuration at all, and the
+secret is easy to find for a quick local try-out.
+
+> **Warning:** because the default is public, **anyone who can reach the site
+> can generate valid codes** (for example with
+> `oathtool --totp -b JBSWY3DPEHPK3PXP`) and get the desktop, the terminal
+> and the files in `~/Downloads`. Only rely on it on a machine nobody else
+> can reach, and set your own `VNC_TOTP_SECRET` everywhere else. Setting
+> `VNC_PASSWORD` as well means a login also needs that password, but the
+> secret is still public.
+
+Every start with the default prints a warning and the default's QR code to
+`docker logs`.
 
 A secret passed in this variable can be read by anyone who can run
 `docker inspect` on the container. Anyone logged in to the desktop can also
