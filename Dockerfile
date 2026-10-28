@@ -120,6 +120,8 @@ RUN apt-get update \
         dbus-x11 \
         chromium \
         arc-theme \
+        numix-icon-theme \
+        librsvg2-common \
         fonts-dejavu-core \
         fonts-noto-color-emoji \
         ca-certificates \
@@ -210,8 +212,8 @@ RUN sed -i 's/\\u@\\h/\\u/g' /etc/skel/.bashrc /etc/bash.bashrc \
 # XFCE defaults for new homes: one top panel (show desktop, a Chromium
 # incognito launcher, window list, workspace name, tray and clock; no bottom
 # dock, applications menu or log-out menu), a single workspace called Main,
-# the Arc theme for applications and window borders, and a plain black
-# desktop without a Trash icon.
+# the Arc-Dark theme for applications and window borders, Numix icons, and a
+# plain black desktop without a Trash icon.
 COPY --chmod=644 config/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
 COPY --chmod=644 config/xfwm4.xml config/xsettings.xml config/xfce4-desktop.xml \
     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
