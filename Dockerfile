@@ -136,10 +136,11 @@ COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 
 # VNC_USER: username asked for by the noVNC login prompt; the password is a
-# TOTP code. VNC_TOTP_SECRET (base32) sets the TOTP key; if empty, the key
+# TOTP code. VNC_TOTP_SECRET (base32) sets the TOTP key; if unset, the key
 # saved in the home volume is used, or a new one is generated and its
 # enrolment QR code printed to the log. VNC_TOTP_DIGITS: code length, 6, 7
-# or 8.
+# or 8. VNC_TOTP_SECRET and VNC_PASSWORD are left out of ENV below: they're
+# secrets, passed at run time only.
 # VNC_RESIZE: default for how noVNC fits the desktop to the browser window:
 # remote (resize the desktop to match), scale (scale the image) or off
 # (scroll). Viewers can change it in noVNC's settings; their choice sticks.
@@ -161,7 +162,6 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # privileges a default container doesn't have. Set it to 0 if the container
 # runs with a seccomp profile that allows Chromium's user namespaces.
 ENV VNC_USER=user \
-    VNC_TOTP_SECRET= \
     VNC_TOTP_DIGITS=6 \
     VNC_GEOMETRY=1600x900 \
     VNC_DEPTH=24 \
