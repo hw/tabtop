@@ -7,19 +7,18 @@
 # desktop's sound, which Chromium plays into a PipeWire null sink.
 #
 # Build: docker build -t tabtop .
-# Run:   docker run -d -p 6080:6080 --shm-size=1g \
-#          -v tabtop-home:/home/alice -e VNC_USER=alice tabtop
+# Local: docker run -d -p 6080:6080 \
+#          -e VNC_USER=alice tabtop
 # Enrol: docker logs <container>   (scan the QR code with an authenticator app)
 # Open:  http://localhost:6080/   (log in with the current TOTP code)
 # Files: http://localhost:6080/downloads/   (download files from ~/Downloads)
 # Shell: http://localhost:6080/tty/   (terminal in the browser; same login)
 #
-# To use an existing authenticator entry instead of a generated key, pass
-# its base32 secret: -e VNC_TOTP_SECRET=JBSWY3DPEHPK3PXP (spaces, padding
-# and case are ignored).
+# On managed platforms, set VNC_TOTP_SECRET to a fixed random 32-character
+# Base32 value (A-Z and 2-7) and keep it unchanged across redeployments.
 #
-# The volume keeps the user's home (Chromium profile, XFCE settings) across
-# container re-creation; mount it at /home/$VNC_USER.
+# No persistent volume is required. Optionally mount /home/$VNC_USER to keep
+# browser data, downloads and desktop settings across container replacement.
 
 # noVNC comes from its GitHub release rather than Debian's package, to get
 # the upstream version. Bump NOVNC_VERSION and NOVNC_SHA256 together; the
@@ -133,14 +132,16 @@ RUN apt-get update \
 COPY --from=novnc /novnc /opt/novnc
 COPY --from=xterm /xterm /opt/xterm
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
 COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 
 # VNC_USER: username asked for by the noVNC login prompt; the password is a
 # TOTP code. VNC_TOTP_SECRET (base32) sets the TOTP key; if unset, the key
-# saved in the home volume is used, or a new one is generated and its
+# saved in the home directory is used, or a new one is generated and its
 # enrolment QR code printed to the log. VNC_TOTP_DIGITS: code length, 6, 7
 # or 8. VNC_TOTP_SECRET and VNC_PASSWORD are left out of ENV below: they're
-# secrets, passed at run time only.
+# secrets, passed at run time only. A fixed VNC_TOTP_SECRET is required for a
+# managed deployment without persistent storage.
 # VNC_RESIZE: default for how noVNC fits the desktop to the browser window:
 # remote (resize the desktop to match), scale (scale the image) or off
 # (scroll). Viewers can change it in noVNC's settings; their choice sticks.
@@ -158,9 +159,13 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
 # it off and doesn't start PipeWire. WEB_AUDIO_BITRATE: its Opus bitrate in
 # kbit/s, 32 to 256 (default 64); sent at a constant rate even in silence.
-# CHROMIUM_NO_SANDBOX=1 (default) disables Chromium's sandbox, which needs
-# privileges a default container doesn't have. Set it to 0 if the container
-# runs with a seccomp profile that allows Chromium's user namespaces.
+# WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
+# without a login; 0 (default) turns it off. <base>healthz always answers
+# health checks.
+# CHROMIUM_NO_SANDBOX=1 (default) disables Chromium's internal process
+# sandbox for compatibility with restricted container runtimes. Keep the
+# default on managed hosting; use 0 only where Chromium starts successfully
+# with its sandbox enabled.
 ENV VNC_USER=user \
     VNC_TOTP_DIGITS=6 \
     VNC_GEOMETRY=1600x900 \
@@ -172,6 +177,7 @@ ENV VNC_USER=user \
     WEB_AUDIO=1 \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \
+    WEB_DOCTOR_ENDPOINT=0 \
     CHROMIUM_NO_SANDBOX=1
 
 # tmux settings for the browser terminal (users' ~/.tmux.conf still applies
@@ -183,16 +189,22 @@ RUN printf '%s\n' \
         > /etc/tmux.conf
 
 # Default dotfiles for new homes (skel/): a ~/.tmux.conf with its theme and
-# copy helper. The entrypoint copies them only into a new or fresh volume, so
-# an existing home keeps its own. The modes are set here so they don't depend
+# copy helper. The entrypoint copies them only into a new or fresh home, so an
+# existing home keeps its own. The modes are set here so they don't depend
 # on the umask of the checkout.
 COPY skel/ /etc/skel/
 RUN chmod -R u=rwX,go=rX /etc/skel
 
+# XFCE defaults for new homes: one top panel (show desktop, window list,
+# workspace name, tray and clock; no bottom dock, applications menu or
+# log-out menu) and a single workspace called Main.
+COPY --chmod=644 config/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
+COPY --chmod=644 config/xfwm4.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+
 EXPOSE 6080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD bash -c 'exec 3<>"/dev/tcp/127.0.0.1/${WEB_PORT}"' || exit 1
+    CMD ["/usr/local/bin/healthcheck"]
 
 # tini runs as PID 1 to reap the desktop session's orphaned processes and
 # forward signals to the entrypoint.

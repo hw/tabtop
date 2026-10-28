@@ -15,13 +15,15 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 | `/downloads/` | A file list of `~/Downloads`, with its own login |
 | `/tty/` | A terminal (xterm.js and tmux), sharing the `/downloads/` login |
 | `/audio/ws`, `/audio/stream.ogg` | The desktop's sound, for browsers logged in to the desktop |
+| `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
+| `/doctor` | A troubleshooting report, only with `WEB_DOCTOR_ENDPOINT=1` |
 
-## Quick start
+## Local quick start
 
 ```sh
 docker build -t tabtop .
-docker run -d --name tabtop -p 6080:6080 --shm-size=1g \
-  -v tabtop-home:/home/alice -e VNC_USER=alice tabtop
+docker run -d --name tabtop -p 6080:6080 \
+  -e VNC_USER=alice tabtop
 docker logs tabtop    # scan the QR code with an authenticator app
 ```
 
@@ -34,9 +36,37 @@ code from your authenticator app as the password. To require a password as
 well, set `VNC_PASSWORD` (see below): then enter that password immediately
 followed by the code, with no separator.
 
-Mount the volume at `/home/<VNC_USER>`. It holds the TOTP secret, an optional
-password file, the Chromium profile and the XFCE settings. Without a volume,
-removing the container loses the secret, so you'd have to scan a new QR code.
+No persistent volume is required. To keep the same authenticator entry when
+the container is replaced, pass a fixed `VNC_TOTP_SECRET`. You can optionally
+mount storage at `/home/<VNC_USER>` to retain browser data, downloads and
+desktop settings as well.
+
+## Managed deployment
+
+TabTop is a standalone Linux/amd64 web application. It exposes one HTTP port,
+`6080`, and runs with standard container settings. It needs no external
+database, cache, service or persistent storage. The desktop, terminal,
+downloads and audio all use the same HTTP endpoint, including their WebSocket
+connections.
+
+For CaliberNode and other managed platforms, configure these environment
+variables before the first deployment:
+
+```text
+VNC_USER=user
+VNC_TOTP_SECRET=<a fixed Base32 secret>
+```
+
+`VNC_TOTP_SECRET` is required for a managed deployment without persistent
+storage. Use a random 32-character value containing only `A`–`Z` and `2`–`7`,
+save it in the platform's secret configuration, and add the same secret to
+your authenticator app. Keep the value unchanged across redeployments. A
+general-purpose password generator may produce characters that are not valid
+Base32, so configure its alphabet or generate the secret separately.
+
+The platform should route its HTTPS address to container port `6080` and
+forward WebSocket connections. A volume mounted at `/home/<VNC_USER>` is
+optional and only retains browser data, downloads and desktop preferences.
 
 ## Environment variables
 
@@ -44,7 +74,7 @@ removing the container loses the secret, so you'd have to scan a new QR code.
 |---|---|---|
 | `VNC_USER` | `user` | Desktop username. You enter it at the login prompt. |
 | `VNC_PASSWORD` | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. |
-| `VNC_TOTP_SECRET` | *(empty)* | Base32 TOTP secret. Empty: use the secret saved in the home volume, or generate one and print its QR code to the log. |
+| `VNC_TOTP_SECRET` | *(empty)* | Base32 TOTP secret. Set a fixed value for managed deployments. Empty: use the secret saved in the home directory, or generate one and print its QR code to the log for local enrollment. |
 | `VNC_TOTP_DIGITS` | `6` | Code length: `6`, `7` or `8`. |
 | `VNC_GEOMETRY` | `1600x900` | Desktop size before the first browser connects. |
 | `VNC_DEPTH` | `24` | Colour depth in bits. |
@@ -55,12 +85,13 @@ removing the container loses the secret, so you'd have to scan a new QR code.
 | `WEB_AUDIO` | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
+| `WEB_DOCTOR_ENDPOINT` | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](#health-checks). |
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
-`WEB_TTY`, `VNC_TOTP_SECRET` or `VNC_PASSWORD` has an invalid value. The
-error is printed to the log.
+`WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `VNC_TOTP_SECRET` or `VNC_PASSWORD` has
+an invalid value. The error is printed to the log.
 
 ### `VNC_USER`
 
@@ -78,16 +109,18 @@ are the code; everything before them is the password.
 
 The password is chosen in this order:
 
-1. `VNC_PASSWORD`, if the variable is set. It isn't saved to the volume or
-   printed to the log. An empty value means TOTP-only for this run.
-2. The password saved in the home volume at `~/.config/tabtop/password`.
+1. `VNC_PASSWORD`, if the variable is set. It isn't saved to the home
+   directory or printed to the log. An empty value means TOTP-only for this
+   run.
+2. The password saved at `~/.config/tabtop/password`.
 3. No password: TOTP-only (backward compatible).
 
 A password must not contain whitespace (pam_oath's users file is
 whitespace-separated). Unlike the TOTP secret, a password is never
 auto-generated: set the variable or create the file yourself. An
-env-supplied password is not written to the volume; to persist one without
-re-passing the env, put it in `~/.config/tabtop/password`.
+env-supplied password is not written to disk; to reuse one without re-passing
+the environment variable, put it in `~/.config/tabtop/password` and preserve
+the home directory.
 
 A password passed in this variable can be read by anyone who can run
 `docker inspect` on the container. The password is also stored in plaintext
@@ -98,17 +131,17 @@ pam_oath), so anyone logged in to the desktop can read it.
 
 The TOTP secret is chosen in this order:
 
-1. `VNC_TOTP_SECRET`, if it's set. It isn't saved to the volume or printed to
-   the log, since you already have it.
-2. The secret saved in the home volume at `~/.config/tabtop/totp-secret`.
+1. `VNC_TOTP_SECRET`, if it's set. It isn't saved to the home directory or
+   printed to the log, since you already have it.
+2. The secret saved at `~/.config/tabtop/totp-secret`.
 3. A newly generated secret. It's saved to that file, and its QR code, secret
    and `otpauth://` URI are printed to `docker logs` once.
 
 Spaces, `=` padding and lowercase are accepted, so you can paste a secret the
 way an authenticator app or password manager shows it.
 
-To get a new secret, delete `~/.config/tabtop/totp-secret` in the volume
-and restart the container.
+To get a new secret, delete `~/.config/tabtop/totp-secret` and restart the
+container.
 
 A secret passed in this variable can be read by anyone who can run
 `docker inspect` on the container. Anyone logged in to the desktop can also
@@ -211,7 +244,12 @@ find each visitor's IP.
   trusted proxies are skipped, and the first other address is the visitor.
   Anything further left is ignored, since the visitor could have written it.
 - **Docker networks:** a proxy container's IP can change when it's
-  recreated. Trust the network's CIDR range, or give the proxy a fixed IP.
+  recreated, so give it a fixed IP and trust only that. Don't trust the
+  whole network range: it includes the network's gateway, which is where
+  visitors through a published port (`-p`) appear to come from. The proxy
+  writes that address into `X-Forwarded-For`, so trusting it lets every
+  visitor choose their own IP. `/doctor` (see [Health checks](#health-checks))
+  shows which addresses were trusted for a request.
 
 The proxy has to:
 
@@ -276,9 +314,10 @@ returns 404.
 
 ### `CHROMIUM_NO_SANDBOX`
 
-Chromium's sandbox needs privileges that a default container doesn't have,
-so it's off by default. Set this to `0` only if the container runs with a
-seccomp profile that allows Chromium's user namespaces.
+Chromium's internal process sandbox is disabled by default for compatibility
+with restricted container runtimes. Keep the default on managed hosting. Set
+this to `0` only in an environment where Chromium starts successfully with
+its sandbox enabled.
 
 ## Downloads
 
@@ -326,10 +365,10 @@ the desktop.
   12-hour session ending, closes open terminals within a few seconds. The
   tmux session keeps running.
 - **Settings:** `/etc/tmux.conf` turns on the mouse and 24-bit colour. A
-  `~/.tmux.conf` in the home volume is read after it. A new volume starts
+  `~/.tmux.conf` in the home directory is read after it. A new home starts
   with the one in `skel/`, along with the theme files it loads from
   `~/.config/tmux/` and `~/.local/bin/ssh-yank.sh`. Edit or delete them in
-  the volume; an existing volume never gets them.
+  the home directory; an existing home never gets them.
 
 ## Audio
 
@@ -380,6 +419,38 @@ harmless.
   [Audio](#audio). Like everything else, it's unencrypted
   without a TLS proxy.
 
+## Health checks
+
+`/healthz` (under `WEB_BASE_PATH`, like every path) answers `200 ok` while
+Xvnc is listening and the login file can be read, and `503` otherwise. It
+needs no login and reveals nothing else, so load balancers and uptime
+monitors can call it. The image's Docker `HEALTHCHECK` uses it, so
+`docker ps` shows `unhealthy` when it fails, and the reason is in the log.
+It doesn't connect to Xvnc, which would log every check.
+
+`/doctor` is for troubleshooting and is off unless
+`WEB_DOCTOR_ENDPOINT=1`. It returns a JSON report:
+
+- **checks:** each part's state: Xvnc (connecting and reading its
+  greeting), the login file, noVNC, `~/Downloads`, audio (the PipeWire sink)
+  and the terminal (tmux and xterm.js).
+- **clock:** the server's time. Codes are only accepted within 30 seconds
+  of it, so a wrong clock explains logins that always fail.
+- **proxy:** how your request arrived, for setting up a reverse proxy. It
+  shows the address the connection came from and whether it's trusted, the
+  `Host`, `X-Forwarded-For` and `X-Forwarded-Proto` headers as received
+  (even from an untrusted address, where they're otherwise ignored), the
+  `WEB_TRUSTED_PROXIES` list, each address checked to find the client IP,
+  and whether cookies would be marked `Secure`. A **diagnosis** explains the
+  result in words and what to change, such as the `WEB_TRUSTED_PROXIES`
+  value that would trust the connection's address.
+- **state:** counts of web sessions, open terminals, locked-out IPs and
+  audio listeners.
+
+It needs no login, so it works when logins don't. It leaves out the
+username, password and TOTP key, but it does show internal paths, addresses
+and activity, so turn it off again when you're done.
+
 ## Build arguments
 
 | Argument | Default | Description |
@@ -425,13 +496,6 @@ mise install     # once, or after the Go version changes
 mise run test
 mise run vet
 mise run build   # writes tabtopd/tabtopd
-```
-
-Without the headers, run the tests in the build image instead:
-
-```sh
-docker run --rm -v "$PWD/tabtopd":/src -w /src golang:1.27.3-trixie \
-  sh -c 'apt-get update -qq && apt-get install -y -qq libopus-dev liboath-dev >/dev/null && go test ./...'
 ```
 
 ### Continuous integration

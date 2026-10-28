@@ -11,6 +11,7 @@ WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
 WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_TTY="${WEB_TTY:-1}"
+WEB_DOCTOR_ENDPOINT="${WEB_DOCTOR_ENDPOINT:-0}"
 DISPLAY_NUM=1
 VNC_PORT=$((5900 + DISPLAY_NUM))
 
@@ -36,6 +37,10 @@ case "$WEB_TTY" in
     0|1) ;;
     *) echo "WEB_TTY must be 0 or 1 (got '${WEB_TTY}')." >&2; exit 1 ;;
 esac
+case "$WEB_DOCTOR_ENDPOINT" in
+    0|1) ;;
+    *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
+esac
 # Same rule as tabtopd's: segments of unreserved URL characters, spelled out
 # because ranges like a-z can match other letters, depending on the locale.
 SEG='[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-]+'
@@ -53,17 +58,18 @@ fi
 
 USER_HOME="$(getent passwd "$VNC_USER" | cut -d: -f6)"
 
-# A freshly mounted volume is root-owned and empty (useradd doesn't populate
-# an existing directory); a reused one may come from a different UID. Only
-# then fix ownership and copy in the skeleton files, so a large home isn't
-# re-chowned on every start. chown -R doesn't follow symlinks, and the copy
-# runs as the user, so symlinks left in a reused volume can't redirect root.
+# An optionally mounted home may be root-owned and empty (useradd doesn't
+# populate an existing directory), or may come from a different UID. Only then
+# fix ownership and copy in the skeleton files, so a large home isn't re-chowned
+# on every start. chown -R doesn't follow symlinks, and the copy runs as the
+# user, so symlinks left in a reused home can't redirect root.
 if [ "$(stat -c %u "$USER_HOME")" != "$(id -u "$VNC_USER")" ]; then
     chown -R "$VNC_USER:" "$USER_HOME"
     runuser -u "$VNC_USER" -- cp -r --update=none /etc/skel/. "$USER_HOME/"
 fi
 
-# Seed the default panel layout so XFCE doesn't show the first-run dialog.
+# Seed the default panel layout (the image's, without XFCE's bottom dock) so
+# XFCE doesn't show the first-run dialog. A home that has one keeps it.
 PANEL_CFG="$USER_HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
 if [ ! -f "$PANEL_CFG" ] && [ -f /etc/xdg/xfce4/panel/default.xml ]; then
     runuser -u "$VNC_USER" -- mkdir -p "$(dirname "$PANEL_CFG")"
@@ -101,6 +107,14 @@ elif [ -z "${VNC_TOTP_SECRET:-}" ]; then
 fi
 # Accept secrets as apps display them: lowercase, grouped, or '='-padded.
 VNC_TOTP_SECRET="$(printf '%s' "$VNC_TOTP_SECRET" | tr -d ' =\n' | tr 'a-z' 'A-Z')"
+# Documentation and tutorials everywhere use this one ("Hello!" + 0xDEADBEEF),
+# so anyone could generate codes for it.
+if [ "$VNC_TOTP_SECRET" = JBSWY3DPEHPK3PXP ]; then
+    echo "The TOTP secret (VNC_TOTP_SECRET, or $TOTP_SECRET_FILE when unset) is a" >&2
+    echo "well-known example that anyone can generate codes for. Use a random one," >&2
+    echo "e.g.: head -c 20 /dev/urandom | base32" >&2
+    exit 1
+fi
 
 if ! TOTP_HEX="$(oathtool --totp -v -b "$VNC_TOTP_SECRET" | sed -n 's/^Hex secret: //p')" \
         || [ -z "$TOTP_HEX" ]; then
@@ -157,7 +171,6 @@ if [ "$NEW_SECRET" = 1 ]; then
 fi
 unset VNC_TOTP_SECRET VNC_PASSWORD TOTP_HEX TOTP_ENTRY TOTP_URI OATH_PIN
 
-# --disable-dev-shm-usage is deliberately not set: run with --shm-size instead.
 if [ "${CHROMIUM_NO_SANDBOX:-1}" = 1 ]; then
     printf '%s\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type"' \
         > /etc/chromium.d/docker-flags
@@ -264,6 +277,10 @@ XTERM_DIR=""
 if [ "$WEB_TTY" = 1 ]; then
     XTERM_DIR=/opt/xterm
 fi
+DOCTOR=false
+if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
+    DOCTOR=true
+fi
 as_user /usr/local/bin/tabtopd \
     -listen ":${WEB_PORT}" \
     -base-path "$WEB_BASE_PATH" \
@@ -275,6 +292,7 @@ as_user /usr/local/bin/tabtopd \
     -audio-sink "$AUDIO_SINK" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -xterm-dir "$XTERM_DIR" \
+    -doctor="$DOCTOR" \
     &
 TABTOPD_PID=$!
 

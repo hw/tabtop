@@ -81,6 +81,7 @@ type server struct {
 	trustedProxies []netip.Prefix
 	audio          *audioHub // nil when audio is off
 	xtermDir       string    // xterm.js files; empty when the terminal is off
+	doctorOn       bool      // serve the doctor report
 
 	mu       sync.Mutex
 	sessions map[string]time.Time   // token -> expiry
@@ -106,6 +107,7 @@ func main() {
 		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed")
 	flag.StringVar(&g.xtermDir, "xterm-dir", "", "xterm.js files for the terminal at "+ttyPrefix+"; empty turns it off")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
+	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
 	audioKbps := flag.Int("audio-bitrate", 64, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
 	flag.Parse()
 	log.SetFlags(0)
@@ -122,6 +124,9 @@ func main() {
 	}
 	if len(g.trustedProxies) > 0 {
 		log.Printf("believing X-Forwarded-For from %v", g.trustedProxies)
+	}
+	if g.doctorOn {
+		log.Printf("serving the troubleshooting report at %s, without a login", g.abs("/doctor"))
 	}
 	if *audioSink != "" {
 		if *audioKbps < minAudioBitrate || *audioKbps > maxAudioBitrate {
@@ -161,6 +166,8 @@ func (g *server) handler() http.Handler {
 	mux.HandleFunc("/tabtop/audio.js", g.audioScript)
 	mux.HandleFunc("/audio/ws", g.audioWS)
 	mux.HandleFunc("/audio/stream.ogg", g.audioOgg)
+	mux.HandleFunc("/healthz", g.healthz)
+	mux.HandleFunc("/doctor", g.doctor)
 	return g.stripBase(mux)
 }
 
@@ -726,30 +733,51 @@ func (g *server) newSession() string {
 // X-Forwarded-For is read, so a client can't pick its own address to dodge
 // the limit.
 func (g *server) clientIP(r *http.Request) string {
+	client, _ := g.traceClientIP(r)
+	return client
+}
+
+// hop is one address clientIP looked at, for the doctor report.
+type hop struct {
+	Addr    string `json:"addr"`
+	From    string `json:"from"` // "connection" or "X-Forwarded-For"
+	Trusted bool   `json:"trusted"`
+	Note    string `json:"note,omitempty"`
+}
+
+// traceClientIP is clientIP, also returning the addresses it looked at:
+// the connection's peer first, then X-Forwarded-For entries right to left.
+func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 	peer, err := netip.ParseAddr(host)
 	if err != nil || !g.trusted(peer) {
-		return host
+		return host, []hop{{Addr: host, From: "connection"}}
 	}
-	var hops []string
+	trace := []hop{{Addr: peer.Unmap().String(), From: "connection", Trusted: true}}
+	var entries []string
 	for _, v := range r.Header.Values("X-Forwarded-For") {
-		hops = append(hops, strings.Split(v, ",")...)
+		entries = append(entries, strings.Split(v, ",")...)
 	}
 	client := peer
-	for _, hop := range slices.Backward(hops) {
-		addr, err := parseHop(strings.TrimSpace(hop))
+	for _, entry := range slices.Backward(entries) {
+		entry = strings.TrimSpace(entry)
+		addr, err := parseHop(entry)
 		if err != nil {
-			break // garbage from the client's side; stay with the last hop we trust
+			// Garbage from the client's side; stay with the last hop we trust.
+			trace = append(trace, hop{Addr: entry, From: "X-Forwarded-For", Note: "not an IP address; stopped here"})
+			break
 		}
 		client = addr
-		if !g.trusted(addr) {
+		trusted := g.trusted(addr)
+		trace = append(trace, hop{Addr: addr.String(), From: "X-Forwarded-For", Trusted: trusted})
+		if !trusted {
 			break
 		}
 	}
-	return client.String()
+	return client.String(), trace
 }
 
 // secure reports whether the browser reached the site over HTTPS: to

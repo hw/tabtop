@@ -70,6 +70,8 @@ type audioHub struct {
 	// start begins recording, calling deliver with each Opus packet, and
 	// returns a function that stops it and the stream's pre-skip.
 	start func(deliver func([]byte)) (stop func(), preSkip int, err error)
+	sink  string
+	kbps  int
 	grace time.Duration
 	idle  time.Duration
 
@@ -92,11 +94,46 @@ type audioListener struct {
 func newAudioHub(sink string, kbps int) *audioHub {
 	return &audioHub{
 		start:     func(deliver func([]byte)) (func(), int, error) { return recordSink(sink, kbps*1000, deliver) },
+		sink:      sink,
+		kbps:      kbps,
 		grace:     audioGrace,
 		idle:      audioIdle,
 		desktops:  map[string]map[string]int{},
 		listeners: map[*audioListener]struct{}{},
 	}
+}
+
+// checkSink connects to the audio server and looks up the sink, for the
+// doctor report.
+func (h *audioHub) checkSink() error {
+	client, err := pulse.NewClient(pulse.ClientApplicationName("tabtopd"), pulse.ClientTimeout(2*time.Second))
+	if err != nil {
+		return fmt.Errorf("connecting to the audio server: %w", err)
+	}
+	defer client.Close()
+	if _, err := client.SinkByID(h.sink); err != nil {
+		return fmt.Errorf("finding audio sink %q: %w", h.sink, err)
+	}
+	return nil
+}
+
+func (h *audioHub) describe() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	state := "idle"
+	if h.stop != nil {
+		state = "recording"
+	}
+	return fmt.Sprintf("sink %s at %d kbit/s, %s", h.sink, h.kbps, state)
+}
+
+func (h *audioHub) listenerCount() int {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.listeners)
 }
 
 // token returns r's audio cookie, or "" when audio is off or it has none.
