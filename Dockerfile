@@ -135,7 +135,15 @@ RUN apt-get update \
         wireplumber \
         pulseaudio-utils \
         tmux \
- && rm -rf /var/lib/apt/lists/*
+        openssh-client \
+        mosh \
+        less \
+        curl \
+        wget \
+        vim-tiny \
+        && update-alternatives --install /usr/bin/vi vi /usr/bin/vim.tiny 60 \
+        && update-alternatives --set vi /usr/bin/vim.tiny \
+        && rm -rf /var/lib/apt/lists/*
 
 COPY --from=novnc /novnc /opt/novnc
 COPY --from=xterm /xterm /opt/xterm
