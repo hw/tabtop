@@ -21,19 +21,8 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 ## Local quick start
 
 ```sh
-docker run -d --name tabtop -p 6080:6080 \
-  -e VNC_USER=alice -e VNC_TOTP_SECRET="$(head -c 20 /dev/urandom | base32)" \
-  ghcr.io/hw/tabtop:latest
-docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tabtop | grep VNC_TOTP_SECRET
+docker run -d --name tabtop -p 6080:6080 ghcr.io/hw/tabtop:latest
 ```
-
-Add that secret to an authenticator app as a time-based (TOTP) entry: SHA-1,
-30 seconds and 6 digits, which are most apps' defaults. Without
-`VNC_TOTP_SECRET`, the
-container uses a **well-known, public default secret** (see
-[Default TOTP secret](#default-totp-secret)), which is only safe on a machine
-nobody else can reach.
-
 This runs the image GitHub Actions publishes to `ghcr.io/hw/tabtop`. To run
 your own build instead, build it with `docker build -t tabtop .` and replace
 `ghcr.io/hw/tabtop:latest` in the `docker run` command with `tabtop`.
@@ -45,9 +34,26 @@ followed by the code, with no separator.
 
 No persistent volume is required. To keep the same authenticator entry when
 the container is replaced, keep passing the same `VNC_TOTP_SECRET`. You can
-optionally
-mount storage at `/home/<VNC_USER>` to retain browser data, downloads and
-desktop settings as well.
+optionally mount storage at `/home/<VNC_USER>` to retain browser data, 
+downloads and desktop settings as well.
+
+## Secured local access 
+
+Set the user and TOTP via environment variable:
+
+```sh
+docker run -d --name tabtop -p 6080:6080 \
+  -e VNC_USER=alice -e VNC_TOTP_SECRET="$(head -c 20 /dev/urandom | base32)" \
+  ghcr.io/hw/tabtop:latest
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tabtop | grep VNC_TOTP_SECRET
+```
+
+Add that secret to an authenticator app as a time-based (TOTP) entry: 
+SHA-1, 30 seconds and 6 digits, which are most apps' defaults. Without
+`VNC_TOTP_SECRET`, the container uses a **well-known, public default secret** 
+(see [Default TOTP secret](#default-totp-secret)), which is only safe on a 
+machine nobody else can reach.
+
 
 ## Managed deployment
 
