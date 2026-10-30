@@ -113,6 +113,10 @@ func TestCredentialsOK(t *testing.T) {
 func TestLoginLimitParallel(t *testing.T) {
 	g := newUsersFile(t, "-")
 	g.sessions, g.failures, g.pending = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}
+	// Enough slots that only the per-IP limit turns logins away.
+	old := loginWork
+	loginWork = make(chan struct{}, 100)
+	t.Cleanup(func() { loginWork = old })
 	statuses := make(chan int, 50)
 	var wg sync.WaitGroup
 	for range cap(statuses) {
@@ -138,6 +142,32 @@ func TestLoginLimitParallel(t *testing.T) {
 	}
 }
 
+// fillLoginWork takes every slot for checking logins until the test ends.
+func fillLoginWork(t *testing.T) {
+	for range maxLoginWork {
+		loginWork <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for range maxLoginWork {
+			<-loginWork
+		}
+	})
+}
+
+// TestLoginBusy checks that a login finding every slot taken is turned
+// away, without counting as a failure.
+func TestLoginBusy(t *testing.T) {
+	g := newUsersFile(t, "-")
+	g.sessions, g.failures, g.pending = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}
+	fillLoginWork(t)
+	if _, status, _ := g.authenticate("192.0.2.1", code(0)); status != http.StatusServiceUnavailable {
+		t.Fatalf("status %d with every slot taken", status)
+	}
+	if len(g.failures) != 0 || len(g.pending) != 0 {
+		t.Fatalf("a busy login left failures %v, pending %v", g.failures, g.pending)
+	}
+}
+
 // TestFailuresSwept checks that IPs whose failures have expired are
 // forgotten without being looked up again.
 func TestFailuresSwept(t *testing.T) {
@@ -157,6 +187,41 @@ func TestFailuresSwept(t *testing.T) {
 	g.endLogin("192.0.2.2", true)
 	if len(g.failures) != 3 {
 		t.Fatalf("swept again within the window: %d IPs tracked", len(g.failures))
+	}
+}
+
+func TestListDirTruncated(t *testing.T) {
+	dir := t.TempDir()
+	list := func() ([]entry, bool) {
+		t.Helper()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		f, err := root.Open(".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		entries, truncated, err := listDir(root, ".", f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries, truncated
+	}
+	if entries, truncated := list(); len(entries) != 0 || truncated {
+		t.Fatalf("empty folder: %d entries, truncated %v", len(entries), truncated)
+	}
+	for i := range maxListing {
+		os.WriteFile(filepath.Join(dir, fmt.Sprint(i)), nil, 0o644)
+	}
+	if entries, truncated := list(); len(entries) != maxListing || truncated {
+		t.Fatalf("%d files: %d entries, truncated %v", maxListing, len(entries), truncated)
+	}
+	os.WriteFile(filepath.Join(dir, "one more"), nil, 0o644)
+	if entries, truncated := list(); len(entries) != maxListing || !truncated {
+		t.Fatalf("%d files: %d entries, truncated %v", maxListing+1, len(entries), truncated)
 	}
 }
 

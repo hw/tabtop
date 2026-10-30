@@ -90,6 +90,8 @@ async function show() {
         el("div", { className: "bar" }, el("h1", { textContent: "Downloads" + title }), logout),
         el("table", {}, el("tr", {}, el("th", { textContent: "Name" }), el("th", { className: "num", textContent: "Size" }),
             el("th", { className: "num", textContent: "Modified" })), ...rows),
+        ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
+            `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { style: "opacity: .7; font-size: 13px", textContent: "End-to-end encrypted." }));
 }
 
@@ -130,21 +132,9 @@ async function fetchFile(path, link) {
     link.textContent = failed ? `${label} (${failed})` : label;
 }
 
-// nextData returns the tunnel's next data message, or null once it's
-// closed.
-async function nextData(t) {
-    for (let m; (m = await t.next());) {
-        if (m.data) {
-            return m.data;
-        }
-    }
-    return null;
-}
-
 // How long the download may go without asking for more before it's given
 // up, as when the browser stops the service worker or the download is
-// paused: the tunnel doesn't stop sending meanwhile, so what arrives is
-// held in memory.
+// paused, rather than leave it waiting with the tunnel open.
 const STREAM_IDLE = 30000;
 
 // streamFile hands the file to the service worker, one chunk each time the
@@ -183,7 +173,7 @@ function streamFile(t, name, size, progress, sw) {
                 finish("cancelled");
             } else if (m.pull) {
                 clearTimeout(idle);
-                const data = await nextData(t);
+                const data = await t.nextChunk();
                 if (done) {
                     return;
                 }
@@ -214,7 +204,7 @@ function streamFile(t, name, size, progress, sw) {
 async function saveFile(t, name, size, progress) {
     const chunks = [];
     let got = 0;
-    for (let data; (data = await nextData(t));) {
+    for (let data; (data = await t.nextChunk());) {
         chunks.push(new Blob([data]));
         got += data.byteLength;
         progress(got);

@@ -78,11 +78,14 @@ type audioHub struct {
 
 	mu        sync.Mutex
 	desktops  map[string]map[string]int // audio cookie -> client IP -> logged-in desktop connections
+	graceGen  map[audioDesktop]uint64   // changes with each link and unlink, so older grace timers do nothing
 	listeners map[*audioListener]struct{}
 	stop      func() // stops recording; nil when not recording
 	preSkip   int
 	idleTimer *time.Timer
 }
+
+type audioDesktop struct{ token, ip string }
 
 type audioListener struct {
 	token   string
@@ -100,6 +103,7 @@ func newAudioHub(sink string, kbps int) *audioHub {
 		grace:     audioGrace,
 		idle:      audioIdle,
 		desktops:  map[string]map[string]int{},
+		graceGen:  map[audioDesktop]uint64{},
 		listeners: map[*audioListener]struct{}{},
 	}
 }
@@ -157,7 +161,7 @@ func (h *audioHub) setCookie(w http.ResponseWriter, r *http.Request, path string
 		return
 	}
 	b := make([]byte, 32)
-	rand.Read(b)
+	rand.Read(b) // can't fail (see newToken)
 	http.SetCookie(w, &http.Cookie{Name: audioCookie, Value: base64.RawURLEncoding.EncodeToString(b),
 		Path: path, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode})
 }
@@ -173,11 +177,12 @@ func (h *audioHub) link(token, ip string) {
 		h.desktops[token] = map[string]int{}
 	}
 	h.desktops[token][ip]++
+	h.graceGen[audioDesktop{token, ip}]++
 }
 
 // unlink records that a linked desktop connection closed. If no other one
-// from the same IP is open after the grace period, the listeners for token
-// from that IP are stopped.
+// from the same IP is open after the grace period, counted from the last
+// one to close, the listeners for token from that IP are stopped.
 func (h *audioHub) unlink(token, ip string) {
 	if h == nil || token == "" {
 		return
@@ -187,12 +192,16 @@ func (h *audioHub) unlink(token, ip string) {
 	if h.desktops[token][ip]--; h.desktops[token][ip] > 0 {
 		return
 	}
+	d := audioDesktop{token, ip}
+	h.graceGen[d]++
+	gen := h.graceGen[d]
 	time.AfterFunc(h.grace, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.desktops[token][ip] > 0 {
-			return
+		if h.graceGen[d] != gen {
+			return // linked again since, and maybe unlinked again too
 		}
+		delete(h.graceGen, d)
 		delete(h.desktops[token], ip)
 		if len(h.desktops[token]) == 0 {
 			delete(h.desktops, token)

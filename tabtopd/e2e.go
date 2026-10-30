@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -31,6 +32,10 @@ import (
 const (
 	// Size of the data messages a file is sent in.
 	fileChunk = 256 << 10
+	// How many of a file's chunks may be sent before the page acknowledges
+	// them, and how long the server waits for an acknowledgement.
+	fileWindow = 32
+	fileStall  = 2 * time.Minute
 	// The downloads page loads its script and talks to the tunnel. It
 	// registers download-sw.js and opens its downloads in a hidden frame;
 	// blob: is for saving files held in memory where there's no service
@@ -169,7 +174,7 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	c.SetReadLimit(maxClientMessage + tunnelOverhead)
+	c.SetReadLimit(tunnelHelloLimit)
 	ip := g.clientIP(r)
 
 	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
@@ -218,6 +223,7 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	switch req.Type {
 	case "vnc":
+		t.c.SetReadLimit(maxClientMessage + tunnelOverhead)
 		if reply(nil) {
 			g.bridgeDesktop(t, session, ip)
 		}
@@ -237,6 +243,7 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 			return
 		}
 		defer g.closeTTY(session)
+		t.c.SetReadLimit(maxClientMessage + tunnelOverhead)
 		if reply(nil) {
 			g.serveTTY(t, session, ip)
 		}
@@ -349,16 +356,16 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 			fail("Not a folder.")
 			return
 		}
-		entries, err := listDir(root, name, f)
+		entries, truncated, err := listDir(root, name, f)
 		if err != nil {
 			fail("Not found.")
 			return
 		}
-		out := []fileEntry{}
+		out := make([]fileEntry, 0, len(entries))
 		for _, e := range entries {
 			out = append(out, fileEntry{Name: strings.TrimSuffix(e.Name, "/"), Dir: e.dir, Size: e.Size, Modified: e.Modified})
 		}
-		reply(map[string]any{"entries": out})
+		reply(map[string]any{"entries": out, "truncated": truncated, "max": maxListing})
 		t.Close(websocket.StatusNormalClosure, "")
 		return
 	}
@@ -370,11 +377,48 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 	if !reply(map[string]any{"name": st.Name(), "size": st.Size()}) {
 		return
 	}
-	ctx := t.CloseRead(context.Background()) // ends the copy if the page goes
+	// The page acknowledges each chunk once it has used it, with an empty
+	// data message, and at most fileWindow chunks are unacknowledged, so a
+	// slow or paused download holds the file back here instead of piling up
+	// in the page.
+	credits := make(chan struct{}, fileWindow)
+	for range fileWindow {
+		credits <- struct{}{}
+	}
+	var sent atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		defer cancel() // ends the copy if the page goes
+		for acked := int64(0); ; acked++ {
+			typ, p, err := t.Read(ctx)
+			if err != nil {
+				t.CloseNow()
+				return
+			}
+			if typ != websocket.MessageBinary || len(p) != 0 || acked >= sent.Load() {
+				t.Close(websocket.StatusPolicyViolation, "bad acknowledgement")
+				return
+			}
+			credits <- struct{}{} // never blocks: one was taken for each chunk sent
+		}
+	}()
+	stall := time.NewTimer(fileStall)
+	defer stall.Stop()
 	buf := make([]byte, fileChunk)
 	for {
+		select {
+		case <-credits:
+			stall.Reset(fileStall)
+		case <-ctx.Done():
+			return
+		case <-stall.C:
+			t.Close(websocket.StatusPolicyViolation, "the download stalled")
+			return
+		}
 		n, err := f.Read(buf)
 		if n > 0 {
+			sent.Add(1)
 			if t.Write(ctx, websocket.MessageBinary, buf[:n]) != nil {
 				return
 			}
@@ -395,7 +439,7 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 func (g *server) newE2ESession() (string, []byte) {
 	id := g.newSession()
 	secret := make([]byte, 32)
-	rand.Read(secret)
+	rand.Read(secret) // can't fail (see newToken)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.secrets[id] = secret
@@ -421,8 +465,11 @@ func writeJSON(c msgConn, v any) error {
 	return c.Write(ctx, websocket.MessageText, b)
 }
 
+// Session tokens are 32 random bytes, and sessionIDLen characters long.
+var sessionIDLen = base64.RawURLEncoding.EncodedLen(32)
+
 func newToken() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	rand.Read(b) // can't fail: since Go 1.24, it crashes the program instead
 	return base64.RawURLEncoding.EncodeToString(b)
 }

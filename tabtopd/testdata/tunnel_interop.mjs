@@ -34,8 +34,8 @@ list.close();
 
 const file = await Tunnel.open({ type: "file", path: "f.bin" }, session, url);
 const chunks = [];
-for (let m; (m = await file.next());) {
-    chunks.push(new Uint8Array(m.data));
+for (let data; (data = await file.nextChunk());) {
+    chunks.push(new Uint8Array(data));
 }
 const sum = new Uint8Array(await crypto.subtle.digest("SHA-256", await new Blob(chunks).arrayBuffer()));
 

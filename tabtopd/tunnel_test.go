@@ -388,6 +388,18 @@ func TestTunnelLoginLimit(t *testing.T) {
 	}
 }
 
+func TestTunnelLoginBusy(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	fillLoginWork(t)
+	if _, status := loginAt(t, ctx, wsURL(srv.URL), code(0)); status != websocket.StatusTryAgainLater {
+		t.Fatalf("login with every slot taken: status %d", status)
+	}
+	if n := failureCount(g); n != 0 {
+		t.Fatalf("a busy login counted %d failures", n)
+	}
+}
+
 func TestTunnelSessions(t *testing.T) {
 	g, srv := newE2EServer(t)
 	ctx := testCtx(t)
@@ -396,8 +408,18 @@ func TestTunnelSessions(t *testing.T) {
 	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), testSession{"nope", s.secret}); status != closeLogin {
 		t.Errorf("unknown session: status %d", status)
 	}
+	// A handshake bigger than any real one is refused unread.
+	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), testSession{strings.Repeat("x", 1000), s.secret}); status != websocket.StatusMessageTooBig {
+		t.Errorf("1000-byte session id: status %d", status)
+	}
+	// So is a request bigger than any real one.
+	tc := openSession(t, ctx, srv.URL, s)
+	tc.write(ctx, msgText, []byte(`{"type":"list","path":"`+strings.Repeat("x", 70<<10)+`"}`))
+	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
+		t.Errorf("70 KiB request: %v", err)
+	}
 	// The right id with the wrong secret: the server can't read the request.
-	tc := openSession(t, ctx, srv.URL, testSession{s.id, make([]byte, 32)})
+	tc = openSession(t, ctx, srv.URL, testSession{s.id, make([]byte, 32)})
 	tc.write(ctx, msgText, []byte(`{"type":"list"}`))
 	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
 		t.Errorf("wrong secret: %v", err)
@@ -528,7 +550,7 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 func TestTunnelFiles(t *testing.T) {
 	g, srv := newE2EServer(t)
 	ctx := testCtx(t)
-	big := make([]byte, 2*fileChunk+123)
+	big := make([]byte, (fileWindow+2)*fileChunk+123)
 	rand.Read(big)
 	os.MkdirAll(filepath.Join(g.downloadsDir, "sub"), 0o755)
 	os.WriteFile(filepath.Join(g.downloadsDir, "sub", "big.bin"), big, 0o644)
@@ -555,16 +577,49 @@ func TestTunnelFiles(t *testing.T) {
 	if reply["name"] != "big.bin" || reply["size"] != float64(len(big)) {
 		t.Fatalf("file: %v", reply)
 	}
+	// The server sends fileWindow chunks, then waits for them to be
+	// acknowledged.
+	type msg struct {
+		kind byte
+		p    []byte
+		err  error
+	}
+	msgs := make(chan msg, 100)
+	go func() {
+		for {
+			kind, p, err := tc.read(ctx)
+			msgs <- msg{kind, p, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	var got []byte
+	for range fileWindow {
+		m := <-msgs
+		if m.err != nil || m.kind != msgData {
+			t.Fatalf("file data: kind %d: %v", m.kind, m.err)
+		}
+		got = append(got, m.p...)
+	}
+	select {
+	case m := <-msgs:
+		t.Fatalf("sent more than %d chunks before any were acknowledged: %d bytes, %v", fileWindow, len(m.p), m.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	for range fileWindow {
+		tc.write(ctx, msgData, nil)
+	}
 	for {
-		kind, p, err := tc.read(ctx)
-		if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+		m := <-msgs
+		if websocket.CloseStatus(m.err) == websocket.StatusNormalClosure {
 			break
 		}
-		if err != nil || kind != msgData {
-			t.Fatalf("file data: kind %d: %v", kind, err)
+		if m.err != nil || m.kind != msgData {
+			t.Fatalf("file data: kind %d: %v", m.kind, m.err)
 		}
-		got = append(got, p...)
+		got = append(got, m.p...)
+		tc.write(ctx, msgData, nil)
 	}
 	if !bytes.Equal(got, big) {
 		t.Fatalf("file: got %d bytes, want %d, or different contents", len(got), len(big))
@@ -658,6 +713,21 @@ func TestTunnelDesktopAndAudio(t *testing.T) {
 	if _, p, err := desktop.read(ctx); err != nil || string(p) != "ping" {
 		t.Fatalf("echo %q: %v", p, err)
 	}
+	// The desktop takes messages bigger than a request, as for a pasted
+	// clipboard.
+	big := bytes.Repeat([]byte("clipboard"), 200<<10/9)
+	desktop.write(ctx, msgData, big)
+	var echo []byte
+	for len(echo) < len(big) {
+		_, p, err := desktop.read(ctx)
+		if err != nil {
+			t.Fatalf("echo of %d bytes, after %d: %v", len(big), len(echo), err)
+		}
+		echo = append(echo, p...)
+	}
+	if !bytes.Equal(echo, big) {
+		t.Fatal("big message echoed wrong")
+	}
 	audio := openSession(t, ctx, srv.URL, s)
 	if reply := audio.request(t, ctx, tunnelRequest{Type: "audio"}); reply["ok"] != true {
 		t.Fatalf("audio: %v", reply)
@@ -741,7 +811,7 @@ func TestTunnelInteropWithJS(t *testing.T) {
 	// A long PIN, so the length prefixes in CPace take more than one byte.
 	pin := strings.Repeat("p4ss", 50)
 	g, srv := newE2EServerPin(t, pin)
-	data := make([]byte, fileChunk+77)
+	data := make([]byte, (fileWindow+1)*fileChunk+77) // more than one window, so it needs acknowledgements
 	rand.Read(data)
 	os.WriteFile(filepath.Join(g.downloadsDir, "f.bin"), data, 0o644)
 	vectors, _ := json.Marshal(elligator2Vectors)

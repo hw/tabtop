@@ -13,14 +13,14 @@ package main
 // A login tunnel turns the credential (PIN + TOTP code) into a session,
 // with CPace (cpace.go), so the credential never crosses the wire:
 //
-//	browser: 2, 1, sid (16), Ya (32)       Ya = X25519(a, generator(credential, sid))
-//	server:  2, Yb1, Yb2, Yb3 (32 each)    one per code the browser may hold
+//	browser: 3, 1, sid (16), Ya (32)       Ya = X25519(a, generator(credential, sid))
+//	server:  3, Yb1, Yb2, Yb3 (32 each)    one per code the browser may hold
 //	browser: tag1, tag2, tag3 (32 each)    key confirmation for each
-//	server:  2, server tag (32)            for the one that matched, then
+//	server:  3, server tag (32)            for the one that matched, then
 //	         {"ok":true,"session":id,"secret":...} encrypted with its keys
 //
 // The keys for candidate i are HKDF-SHA256 of its CPace ISK, info
-// "tabtop login v2 keys", 128 bytes: from the browser, from the server,
+// "tabtop login v3 keys", 128 bytes: from the browser, from the server,
 // browser tag, server tag. The browser confirms first, so a wrong guess
 // learns nothing before it counts as a failed login. A wrong credential
 // ends the tunnel with closeLoginFailed.
@@ -28,11 +28,11 @@ package main
 // A session tunnel carries everything else; the session's random secret,
 // which the login tunnel delivered, authenticates both sides:
 //
-//	browser: 2, 2, ephemeral X25519 key (32), session id
-//	server:  2, ephemeral X25519 key (32)
+//	browser: 3, 2, ephemeral X25519 key (32), session id
+//	server:  3, ephemeral X25519 key (32)
 //
 // and both compute HKDF-SHA256(secret X25519(ephemerals) || session
-// secret, salt SHA-256("tabtop tunnel v2" || browser key || server key ||
+// secret, salt SHA-256("tabtop tunnel v3" || browser key || server key ||
 // session id), info "tabtop session keys", 64 bytes): from the browser,
 // then from the server. The fresh X25519 keys mean a leaked session secret
 // doesn't decrypt tunnels recorded earlier. An unknown or expired session
@@ -47,6 +47,10 @@ package main
 // tunnel. A session tunnel's first message from the browser is a JSON
 // request (tunnelRequest) and the server's first is the reply:
 // {"ok":true,...}, or {"error":...} followed by the end of the tunnel.
+//
+// A file request's data comes with flow control: the browser sends an
+// empty data message for each chunk it has used, and the server sends at
+// most fileWindow chunks ahead of those.
 
 import (
 	"context"
@@ -69,14 +73,20 @@ import (
 )
 
 const (
-	tunnelVersion  = 2
+	tunnelVersion  = 3
 	helloLogin     = 1
 	helloSession   = 2
-	tunnelLabel    = "tabtop tunnel v2"
+	tunnelLabel    = "tabtop tunnel v3"
 	tunnelTimeout  = 30 * time.Second // for each handshake step and the request
 	tunnelOverhead = 1 + chacha20poly1305.Overhead
-	msgData        = 0
-	msgText        = 1
+	// Read limits: the handshakes' messages are small, the largest being
+	// the login tags (32 bytes per candidate code); then a session tunnel's
+	// request. Only the desktop and the terminal take more after that, up to
+	// maxClientMessage (a pasted clipboard).
+	tunnelHelloLimit   = 256
+	tunnelRequestLimit = 64<<10 + tunnelOverhead
+	msgData            = 0
+	msgText            = 1
 
 	// Close codes the page acts on; the reason is shown to the user.
 	closeLogin        websocket.StatusCode = 4001 // no such session: log in
@@ -119,7 +129,7 @@ func newTunnel(c *websocket.Conn, fromClient, fromServer []byte) (*tunnel, error
 // loginKeys derives a CPace candidate's keys: from the browser, from the
 // server, the browser's tag and the server's tag, 32 bytes each.
 func loginKeys(sid, k, ya, yb []byte) []byte {
-	keys, err := hkdf.Key(sha256.New, cpaceISK(sid, k, ya, yb), nil, "tabtop login v2 keys", 128)
+	keys, err := hkdf.Key(sha256.New, cpaceISK(sid, k, ya, yb), nil, "tabtop login v3 keys", 128)
 	if err != nil {
 		panic(err) // only for lengths HKDF can't produce
 	}
@@ -164,8 +174,22 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	}
 	defer settle(false)
 
+	// The CPace work takes one of the slots for checking logins, twice:
+	// now, and once the tags arrive, but not while waiting for them.
+	busy := func() bool {
+		if startLoginWork() {
+			return false
+		}
+		log.Printf("web login from %s refused: %s", ip, loginBusy)
+		c.Close(websocket.StatusTryAgainLater, loginBusyMsg)
+		return true
+	}
+	if busy() {
+		return
+	}
 	e, err := readOathEntry(g.usersFile)
 	if err != nil {
+		endLoginWork()
 		log.Printf("reading the TOTP users file: %v", err)
 		c.Close(websocket.StatusInternalError, "Logins can't be checked.")
 		return
@@ -179,6 +203,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	for _, prs := range e.candidates(time.Now()) {
 		y, yb, err := cpaceShare(cpaceGenerator(prs, sid))
 		if err != nil {
+			endLoginWork()
 			log.Printf("login exchange: %v", err)
 			c.Close(websocket.StatusInternalError, "Logins can't be checked.")
 			return
@@ -187,6 +212,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 		cands = append(cands, candidate{prs, yb, k})
 		reply = append(reply, yb...)
 	}
+	endLoginWork()
 	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
 	defer cancel()
 	if c.Write(ctx, websocket.MessageBinary, reply) != nil {
@@ -200,6 +226,9 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 		settle(true)
 		c.Close(websocket.StatusPolicyViolation, "bad message")
 		return
+	}
+	if busy() {
+		return // not checked, so not a failure
 	}
 	match, keys := -1, []byte(nil)
 	for i, cand := range cands {
@@ -220,6 +249,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 			log.Printf("checking TOTP code: %v", err)
 		}
 	}
+	endLoginWork()
 	if match < 0 || err != nil {
 		settle(true)
 		log.Printf("web login from %s failed", ip)
@@ -249,7 +279,7 @@ func (g *server) sessionTunnel(c *websocket.Conn, hello []byte) (*tunnel, string
 	}
 	clientEph, id := hello[:32], string(hello[32:])
 	secret, ok := g.sessionSecret(id)
-	if !ok {
+	if len(id) != sessionIDLen || !ok {
 		c.Close(closeLogin, "Log in first.")
 		return nil, ""
 	}
@@ -276,6 +306,7 @@ func (g *server) sessionTunnel(c *websocket.Conn, hello []byte) (*tunnel, string
 		c.Close(websocket.StatusInternalError, "")
 		return nil, ""
 	}
+	c.SetReadLimit(tunnelRequestLimit)
 	return t, id
 }
 

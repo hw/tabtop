@@ -6,12 +6,12 @@
 // The page sends { id, name, size, port } for each file, then opens
 // stream/<id>/<name> (in this worker's scope) in a hidden frame. The
 // worker answers that request with a stream that asks the page for each
-// decrypted chunk in turn over the port, so a slow disk slows the page
-// rather than piling chunks up here. The response has a Content-Length, and
-// a transfer that ends early is reported as an error, so the browser marks
-// the download failed instead of keeping a truncated file. The browser
-// itself writes to a temporary file (.crdownload, .part) and renames it
-// once the response is complete.
+// decrypted chunk in turn over the port, so a slow disk slows the page,
+// and through it the server, rather than piling chunks up here or there.
+// The response has a Content-Length, and a transfer that ends early is
+// reported as an error, so the browser marks the download failed instead
+// of keeping a truncated file. The browser itself writes to a temporary
+// file (.crdownload, .part) and renames it once the response is complete.
 
 const STALL = 60000;  // ms without a chunk before giving up
 const pending = new Map();  // id -> { name, size, port }

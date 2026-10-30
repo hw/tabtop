@@ -57,7 +57,11 @@ const (
 	sessionTTL      = 12 * time.Hour
 	maxFailures     = 5 // failed logins per client IP per failureWindow, desktop and downloads together
 	failureWindow   = 5 * time.Minute
-	maxFormBytes    = 4096
+	// Logins checked at once, from every address together.
+	maxLoginWork = 4
+	maxFormBytes = 4096
+	// Most entries a Downloads folder's listing shows.
+	maxListing = 10000
 	// Most proxy hops -trust-nproxies may trust.
 	maxTrustNProxies = 10
 	// Largest message accepted from a noVNC client; clipboard pastes are the
@@ -559,7 +563,7 @@ type entry struct {
 }
 
 func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, dir string, f *os.File) {
-	entries, err := listDir(root, dir, f)
+	entries, truncated, err := listDir(root, dir, f)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -570,17 +574,22 @@ func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, 
 	}
 	renderPage(w, http.StatusOK, listingTmpl, map[string]any{
 		"Title": title, "Action": g.abs(escapePath(r.URL.Path)), "Entries": entries, "Root": dir == ".",
+		"Truncated": truncated, "Max": maxListing,
 	})
 }
 
 // listDir lists the directory f, which is dir in root: directories first,
-// then by name.
-func listDir(root *os.Root, dir string, f *os.File) ([]entry, error) {
-	des, err := f.ReadDir(-1)
-	if err != nil {
-		return nil, err
+// then by name. It lists at most maxListing entries, as the directory
+// happens to order them, and reports whether there were more.
+func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated bool, err error) {
+	des, err := f.ReadDir(maxListing + 1)
+	if err != nil && err != io.EOF {
+		return nil, false, err
 	}
-	var entries []entry
+	if len(des) > maxListing {
+		des, truncated = des[:maxListing], true
+	}
+	entries = make([]entry, 0, len(des))
 	for _, de := range des {
 		// Stat through the root: this follows symlinks that stay inside and
 		// fails for ones leading outside, which are left out.
@@ -611,7 +620,7 @@ func listDir(root *os.Root, dir string, f *os.File) ([]entry, error) {
 		}
 		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})
-	return entries, nil
+	return entries, truncated, nil
 }
 
 func (g *server) login(w http.ResponseWriter, r *http.Request) {
@@ -650,7 +659,13 @@ func (g *server) authenticate(ip, cred string) (token string, status int, msg st
 		log.Printf("web login from %s refused: too many failed logins", ip)
 		return "", http.StatusTooManyRequests, "Too many failed attempts. Try again in a few minutes."
 	}
+	if !startLoginWork() {
+		g.endLogin(ip, false)
+		log.Printf("web login from %s refused: %s", ip, loginBusy)
+		return "", http.StatusServiceUnavailable, loginBusyMsg
+	}
 	ok := g.credentialsOK(cred)
+	endLoginWork()
 	g.endLogin(ip, !ok)
 	if !ok {
 		log.Printf("web login from %s failed", ip)
@@ -737,6 +752,31 @@ func (g *server) lockedOutLocked(ip string) bool {
 	}
 	return len(recent)+g.pending[ip] >= maxFailures
 }
+
+// loginWork has a slot for each login being checked. Checking takes CPU
+// (CPace) and liboath's lock on the users file, so without a bound a flood
+// of logins from many addresses, each within its own limit, would queue
+// without end. One that finds no slot is turned away: while a flood lasts,
+// logins may be refused, but nothing stays locked afterwards.
+var loginWork = make(chan struct{}, maxLoginWork)
+
+const (
+	loginBusy    = "too many logins being checked at once"
+	loginBusyMsg = "The server is busy checking other logins. Try again in a moment."
+)
+
+// startLoginWork takes a slot for checking a login, or reports that there's
+// none free; endLoginWork gives it back.
+func startLoginWork() bool {
+	select {
+	case loginWork <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func endLoginWork() { <-loginWork }
 
 // beginLogin reserves one of ip's login attempts until endLogin gives its
 // result, or reports that it has none left.
@@ -1015,4 +1055,5 @@ var listingTmpl = template.Must(template.New("listing").Parse(pageHead + `
 {{range .Entries}}<tr><td class="name"><a href="{{.Href}}">{{.Name}}</a></td>
 <td class="num">{{.Size}}</td><td class="num">{{.Modified}}</td></tr>
 {{else}}<tr><td colspan="3">No files yet.</td></tr>{{end}}
-</table>`))
+</table>
+{{if .Truncated}}<p class="error">This folder has more than {{.Max}} entries, so only {{.Max}} of them are shown, chosen in no particular order.</p>{{end}}`))

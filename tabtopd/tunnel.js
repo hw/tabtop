@@ -16,10 +16,10 @@
 
 import { chacha20poly1305 } from "./noble/ciphers/chacha.js";
 
-const VERSION = 2;
+const VERSION = 3;
 const HELLO_LOGIN = 1;
 const HELLO_SESSION = 2;
-const LABEL = "tabtop tunnel v2";
+const LABEL = "tabtop tunnel v3";
 const DSI = "CPace255";
 const CI = "tabtop login";
 const DATA = 0;
@@ -146,7 +146,7 @@ export async function cpaceGenerator(c, prs, sid) {
 
 async function loginKeys(c, sid, k, ya, yb) {
     const isk = await c.sha512(concat(lv(encoder.encode(DSI + "_ISK"), sid, k), lv(ya, [], yb, [])));
-    return c.hkdf(isk, new Uint8Array(), "tabtop login v2 keys", 128);
+    return c.hkdf(isk, new Uint8Array(), "tabtop login v3 keys", 128);
 }
 
 // The handshakes' primitives, from WebCrypto or noble. Each backend has
@@ -429,6 +429,20 @@ export class Tunnel {
             return Promise.resolve(null);
         }
         return new Promise((resolve) => this._waiters.push(resolve));
+    }
+
+    // nextChunk returns a file request's next chunk of data, or null once
+    // it's closed. Each is acknowledged as it's taken, with an empty data
+    // message: the server only sends a few chunks ahead of those, so a
+    // slow or paused download doesn't pile up in memory here.
+    async nextChunk() {
+        for (let m; (m = await this.next());) {
+            if (m.data) {
+                this.sendData(new Uint8Array());
+                return m.data;
+            }
+        }
+        return null;
     }
 
     _send(kind, body) {

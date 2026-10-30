@@ -483,7 +483,8 @@ JavaScript and the gateway:
   decrypts HTTPS.
 - **Downloads:** over HTTPS or on `localhost`, a file streams into an
   ordinary browser download as it's decrypted, through a service worker the
-  downloads page registers, so it needs no more memory than a few chunks.
+  downloads page registers, so it needs no more memory than a few chunks:
+  the gateway only sends a few MiB ahead of what the download has taken.
   The browser writes it to a temporary file (`.crdownload`, `.part`) and
   renames it once it's complete; one that's cut off is marked failed, and
   no partial file is kept under the real name. Keep the downloads page open
@@ -528,6 +529,8 @@ downloaded at `http://<host>:6080/downloads/`:
   pages, so an HTML file in `~/Downloads` can't run on the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
   be downloaded.
+- **Big folders:** a folder lists at most 10,000 entries. With more, the
+  page says so and shows 10,000 of them, in no particular order.
 - **With [`WEB_E2E=1`](#web_e2e):** the page lists and fetches files through
   the encrypted tunnel, and one login covers the files page, the terminal
   and the desktop. Interrupted downloads can't be resumed.
@@ -611,7 +614,12 @@ harmless.
   the above too. [`WEB_E2E=1`](#web_e2e) encrypts it again between the page
   and the gateway, against a proxy that only reads traffic.
 - **Login limit:** failed logins are limited per visitor IP, as described
-  under `WEB_TRUSTED_PROXIES`. Xvnc's own blacklist is turned off, because
+  under `WEB_TRUSTED_PROXIES`. The gateway also checks at most 4 logins at
+  once, from all IPs together, and turns away any more with "The server is
+  busy" (noVNC's desktop logins without `WEB_E2E`, which Xvnc checks,
+  don't count). A flood of
+  logins from many IPs can therefore keep refusing logins for as long as
+  it lasts, but locks nothing afterwards. Xvnc's own blacklist is turned off, because
   every connection reaches Xvnc from the gateway.
 - **Desktop access:** anyone logged in to the desktop has full access as
   `VNC_USER`, including the TOTP secret and (when configured) the plaintext

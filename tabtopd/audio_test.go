@@ -155,6 +155,39 @@ func TestAudioHubLifecycle(t *testing.T) {
 	}
 }
 
+// TestAudioHubGraceFromLastUnlink checks that the grace period runs from
+// the last disconnect: a reconnect and another disconnect, both within the
+// first one's grace period, start it again.
+func TestAudioHubGraceFromLastUnlink(t *testing.T) {
+	h, _ := newTestHub()
+	h.grace = 300 * time.Millisecond
+	h.link("a", "ip1")
+	l, _, err := h.join("a", "ip1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := func() bool {
+		select {
+		case <-l.gone:
+			return true
+		default:
+			return false
+		}
+	}
+	h.unlink("a", "ip1")
+	time.Sleep(200 * time.Millisecond)
+	h.link("a", "ip1")
+	h.unlink("a", "ip1")
+	time.Sleep(200 * time.Millisecond) // past the first grace period, within the second
+	if gone() {
+		t.Fatal("listener stopped by the first disconnect's grace period")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if !gone() {
+		t.Fatal("listener still running a grace period after the last disconnect")
+	}
+}
+
 func TestAudioHubIdleStop(t *testing.T) {
 	h, f := newTestHub()
 	h.link("a", "ip1")
