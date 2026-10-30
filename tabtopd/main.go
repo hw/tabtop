@@ -72,6 +72,8 @@ const (
 	vncLoginTimeout = 60 * time.Second
 
 	csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
+	// The listing also runs upload.js, which uploads files dropped on it.
+	listingCSP = csp + "; script-src 'self'; connect-src 'self'"
 )
 
 type server struct {
@@ -504,9 +506,12 @@ func (g *server) downloads(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		g.login(w, r)
 		return
+	case http.MethodPut:
+		g.putUpload(w, r)
+		return
 	case http.MethodGet, http.MethodHead:
 	default:
-		h.Set("Allow", "GET, HEAD, POST")
+		h.Set("Allow", "GET, HEAD, POST, PUT")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -572,9 +577,10 @@ func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, 
 	if dir != "." {
 		title = "/" + dir + "/"
 	}
+	w.Header().Set("Content-Security-Policy", listingCSP)
 	renderPage(w, http.StatusOK, listingTmpl, map[string]any{
 		"Title": title, "Action": g.abs(escapePath(r.URL.Path)), "Entries": entries, "Root": dir == ".",
-		"Truncated": truncated, "Max": maxListing,
+		"Truncated": truncated, "Max": maxListing, "Script": g.abs("/tabtop/upload.js"),
 	})
 }
 
@@ -591,6 +597,9 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 	}
 	entries = make([]entry, 0, len(des))
 	for _, de := range des {
+		if strings.HasPrefix(de.Name(), uploadTempPrefix) {
+			continue // an upload in progress
+		}
 		// Stat through the root: this follows symlinks that stay inside and
 		// fails for ones leading outside, which are left out.
 		st, err := root.Stat(path.Join(dir, de.Name()))
@@ -1014,7 +1023,9 @@ func humanSize(n int64) string {
 
 func renderPage(w http.ResponseWriter, status int, t *template.Template, data map[string]any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", csp)
+	if w.Header().Get("Content-Security-Policy") == "" {
+		w.Header().Set("Content-Security-Policy", csp)
+	}
 	w.WriteHeader(status)
 	if err := t.Execute(w, data); err != nil {
 		log.Printf("rendering page: %v", err)
@@ -1035,6 +1046,9 @@ td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: t
 td.name { word-break: break-all; }
 .bar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .error { color: #c5221f; }
+.hint { opacity: .7; font-size: 13px; }
+body.dropping { outline: 3px dashed #8ab4f8; outline-offset: .75rem; }
+#uploads p { margin: .25rem 0; word-break: break-all; }
 input[name=password] { font: inherit; font-size: 1.25rem; width: 16em; }
 </style>`
 
@@ -1056,4 +1070,6 @@ var listingTmpl = template.Must(template.New("listing").Parse(pageHead + `
 <td class="num">{{.Size}}</td><td class="num">{{.Modified}}</td></tr>
 {{else}}<tr><td colspan="3">No files yet.</td></tr>{{end}}
 </table>
-{{if .Truncated}}<p class="error">This folder has more than {{.Max}} entries, so only {{.Max}} of them are shown, chosen in no particular order.</p>{{end}}`))
+{{if .Truncated}}<p class="error">This folder has more than {{.Max}} entries, so only {{.Max}} of them are shown, chosen in no particular order.</p>{{end}}
+<p class="hint">Drop files on this page to upload them to this folder.</p>
+<script type="module" src="{{.Script}}"></script>`))

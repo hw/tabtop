@@ -4,9 +4,11 @@
 // workers (HTTPS or localhost), a fetched file streams into an ordinary
 // download through download-sw.js, so it goes to disk as it arrives;
 // elsewhere it's collected first and then saved (see saveFile). Either way
-// it's never shown as a page on this site.
+// it's never shown as a page on this site. Files dropped on the page are
+// uploaded into the folder shown (see drop.js and uploadFile).
 
 import * as e2e from "./e2e.js";
+import { dropUploads } from "./drop.js";
 
 const page = document.body;
 
@@ -92,7 +94,7 @@ async function show() {
             el("th", { className: "num", textContent: "Modified" })), ...rows),
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
-        el("p", { style: "opacity: .7; font-size: 13px", textContent: "End-to-end encrypted." }));
+        el("p", { className: "hint", textContent: "Drop files on this page to upload them to this folder. End-to-end encrypted." }));
 }
 
 // downloadWorker resolves to the active download service worker, or null
@@ -221,9 +223,49 @@ async function saveFile(t, name, size, progress) {
     return "";
 }
 
+// Uploads are sent in chunks the size of the server's, at most
+// UPLOAD_WINDOW of them ahead of those it has acknowledged writing, so a
+// slow server or disk doesn't pile the file up in the browser.
+const UPLOAD_CHUNK = 256 * 1024;
+const UPLOAD_WINDOW = 16;
+
+// uploadFile uploads a dropped file into the folder shown, and returns the
+// name it was saved as.
+async function uploadFile(file, progress) {
+    const t = await call({ type: "upload", path: currentDir(), name: file.name, size: file.size });
+    try {
+        const chunks = Math.ceil(file.size / UPLOAD_CHUNK);
+        let sent = 0;
+        let acked = 0;
+        for (;;) {
+            while (sent < chunks && sent - acked < UPLOAD_WINDOW) {
+                const start = sent * UPLOAD_CHUNK;
+                t.sendData(new Uint8Array(await file.slice(start, start + UPLOAD_CHUNK).arrayBuffer()));
+                sent++;
+            }
+            const m = await t.next();
+            if (!m) {
+                throw new Error(t.closeReason || "connection lost");
+            }
+            if (m.text !== undefined) {
+                const res = JSON.parse(m.text);
+                if (res.name && acked === chunks) {
+                    return res.name;
+                }
+                throw new Error(res.error || "the server's reply is malformed");
+            }
+            acked++;
+            progress(Math.min(acked * UPLOAD_CHUNK, file.size));
+        }
+    } finally {
+        t.close();
+    }
+}
+
 if (!e2e.enabled) {
     page.replaceChildren(el("p", { textContent: "End-to-end encryption is off." }));
 } else {
     window.addEventListener("hashchange", show);
     show();
+    dropUploads(uploadFile, show);
 }

@@ -50,7 +50,9 @@ package main
 //
 // A file request's data comes with flow control: the browser sends an
 // empty data message for each chunk it has used, and the server sends at
-// most fileWindow chunks ahead of those.
+// most fileWindow chunks ahead of those. An upload request's goes the
+// other way: the server acknowledges each chunk once it's written, then
+// sends {"name":...} once it has the whole file (see tunnelUpload).
 
 import (
 	"context"

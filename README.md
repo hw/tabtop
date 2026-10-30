@@ -4,7 +4,7 @@ An XFCE desktop with Chromium that you use from a web browser. noVNC shows the
 desktop, and you log in with a TOTP code from an authenticator app (optionally
 preceded by a password). The desktop's sound plays in the browser. The same
 site also offers a terminal, and files in the desktop user's `~/Downloads` can
-be downloaded from it.
+be downloaded from it, or uploaded to it by dropping them on the page.
 
 Everything is served on one port by `tabtopd` (in `tabtopd/`):
 
@@ -12,7 +12,7 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 |---|---|
 | `/` | The noVNC client, which connects to the desktop |
 | `/websockify` | The WebSocket that carries the desktop session |
-| `/downloads/` | A file list of `~/Downloads`, with its own login |
+| `/downloads/` | A file list of `~/Downloads`, with its own login; files dropped on it are uploaded |
 | `/tty/` | A terminal (ghostty-web and tmux), sharing the `/downloads/` login |
 | `/audio/ws`, `/audio/stream.ogg` | The desktop's sound, for browsers logged in to the desktop |
 | `/tunnel` | With `WEB_E2E=1`, the encrypted connection that carries all of the above instead |
@@ -523,16 +523,21 @@ downloaded at `http://<host>:6080/downloads/`:
   logged in for 12 hours. The login also covers the [terminal](#terminal),
   and logging out of either logs out of both. Logging in to the desktop
   doesn't log you in to the files page.
-- **Download only:** files can't be uploaded, changed or deleted from the web.
-  Interrupted downloads can be resumed.
+- **Uploads:** drop files on the page to upload them into the folder it
+  shows. An upload never replaces a file: one whose name is taken is saved
+  as `name (1).ext`, `name (2).ext` and so on. Each file is written to a
+  hidden temporary file (`.tabtop-upload-….part`) first and only appears
+  once it's complete; one that's cut off is deleted. Folders can't be
+  dropped, only files, and files can't be changed or deleted from the web.
+  Interrupted downloads can be resumed; interrupted uploads start again.
 - **Attachments only:** files are always sent as downloads, never shown as
   pages, so an HTML file in `~/Downloads` can't run on the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
-  be downloaded.
+  be downloaded or uploaded into.
 - **Big folders:** a folder lists at most 10,000 entries. With more, the
   page says so and shows 10,000 of them, in no particular order.
-- **With [`WEB_E2E=1`](#web_e2e):** the page lists and fetches files through
-  the encrypted tunnel, and one login covers the files page, the terminal
+- **With [`WEB_E2E=1`](#web_e2e):** the page lists, fetches and uploads
+  files through the encrypted tunnel, and one login covers the files page, the terminal
   and the desktop. Interrupted downloads can't be resumed.
 
 Restarting the container logs everyone out of the files page and the
