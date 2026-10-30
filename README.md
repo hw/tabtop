@@ -481,9 +481,18 @@ JavaScript and the gateway:
   scripts as well as read them, so the encryption only holds against
   someone who watches without interfering, as it does behind a proxy that
   decrypts HTTPS.
-- **Downloads:** files are fetched into the browser's memory and then saved,
-  so very large files need as much free memory as they're big. Interrupted
-  downloads start again from the beginning.
+- **Downloads:** over HTTPS or on `localhost`, a file streams into an
+  ordinary browser download as it's decrypted, through a service worker the
+  downloads page registers, so it needs no more memory than a few chunks.
+  The browser writes it to a temporary file (`.crdownload`, `.part`) and
+  renames it once it's complete; one that's cut off is marked failed, and
+  no partial file is kept under the real name. Keep the downloads page open
+  until it's done, since that page does the decrypting. Pausing a download
+  for more than 30 s fails it. Over plain HTTP, browsers don't allow service
+  workers, so the whole file is fetched first and then saved: Chrome keeps
+  it in temporary files as it arrives, but other browsers may need as much
+  free memory as the file is big. Either way,
+  interrupted downloads start again from the beginning.
 
 This protects against a proxy that **reads** traffic. A proxy that
 **changes** traffic but leaves the page's scripts alone gets one guess at the

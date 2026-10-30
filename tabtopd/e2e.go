@@ -31,13 +31,17 @@ import (
 const (
 	// Size of the data messages a file is sent in.
 	fileChunk = 256 << 10
-	// The downloads page loads its script and talks to the tunnel; blob:
-	// is for saving the files it fetched.
+	// The downloads page loads its script and talks to the tunnel. It
+	// registers download-sw.js and opens its downloads in a hidden frame;
+	// blob: is for saving files held in memory where there's no service
+	// worker.
 	filesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; " +
-		"img-src 'self' data: blob:; form-action 'none'; frame-ancestors 'none'"
+		"img-src 'self' data: blob:; worker-src 'self'; frame-src 'self'; form-action 'none'; frame-ancestors 'none'"
+	// The download service worker fetches nothing itself.
+	downloadSWCSP = "default-src 'none'"
 )
 
-//go:embed tunnel.js novnc.js files.js
+//go:embed tunnel.js novnc.js files.js download-sw.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -99,6 +103,9 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
 	case name == "novnc.js" || name == "files.js":
+		http.ServeFileFS(w, r, e2eFiles, name)
+	case name == "download-sw.js":
+		h.Set("Content-Security-Policy", downloadSWCSP)
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case g.nobleDir != "" && strings.HasPrefix(name, g.noblePath()+"/") &&
 		slices.Contains(nobleFiles, strings.TrimPrefix(name, g.noblePath()+"/")):

@@ -454,6 +454,8 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 		{"GET", "/downloads/", http.StatusOK},
 		{"GET", "/downloads/a%20b/c", http.StatusSeeOther},
 		{"GET", "/tabtop/e2e.js", http.StatusOK},
+		{"GET", "/tabtop/download-sw.js", http.StatusOK},
+		{"GET", "/tabtop/stream/x/f.bin", http.StatusNotFound},
 		{"GET", "/tabtop/tunnel.js", http.StatusOK},
 		{"GET", "/tabtop/files.js", http.StatusOK},
 		{"GET", "/tabtop/novnc.js", http.StatusOK},
@@ -499,8 +501,16 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 				t.Errorf("e2e.js: %q", body)
 			}
 		case "GET /downloads/":
-			if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "connect-src 'self'") {
-				t.Errorf("downloads CSP %q", resp.Header.Get("Content-Security-Policy"))
+			csp := resp.Header.Get("Content-Security-Policy")
+			for _, want := range []string{"connect-src 'self'", "worker-src 'self'", "frame-src 'self'"} {
+				if !strings.Contains(csp, want) {
+					t.Errorf("downloads CSP %q lacks %s", csp, want)
+				}
+			}
+		case "GET /tabtop/download-sw.js":
+			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") ||
+				resp.Header.Get("Content-Security-Policy") != downloadSWCSP {
+				t.Errorf("download-sw.js served as %q, CSP %q", ct, resp.Header.Get("Content-Security-Policy"))
 			}
 		}
 	}
