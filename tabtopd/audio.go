@@ -18,7 +18,8 @@ package main
 // connection closes. Requiring the IP too means a cookie planted by someone
 // else (say, a sibling subdomain) only works from the victim's own address.
 // Audio requests never take a TOTP code, so they're no way around the login
-// limit.
+// limit. With -e2e there are no cookies: the audio tunnel's session must
+// have the desktop open (see e2e.go).
 
 import (
 	"context"
@@ -336,18 +337,9 @@ func recordSink(sink string, bitrate int, deliver func([]byte)) (func(), int, er
 	return stop, preSkip, nil
 }
 
-func (g *server) audioScript(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	if g.audio == nil {
-		io.WriteString(w, "// Desktop audio is turned off (WEB_AUDIO=0).\n")
-		return
-	}
-	w.Write(audioJS)
-}
-
 func (g *server) joinAudio(w http.ResponseWriter, r *http.Request, kind string) (*audioListener, int, bool) {
-	if g.audio == nil {
+	// With -e2e, audio only goes through the tunnel.
+	if g.audio == nil || g.e2e {
 		http.NotFound(w, r)
 		return nil, 0, false
 	}
@@ -384,6 +376,12 @@ func (g *server) audioWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
+	streamAudio(c, l)
+}
+
+// streamAudio sends l's packets over c, a WebSocket or the tunnel: a JSON
+// description of the stream, then one Opus packet per binary message.
+func streamAudio(c msgConn, l *audioListener) {
 	ctx := c.CloseRead(context.Background()) // nothing is read; ends when the client goes
 	send := func(typ websocket.MessageType, p []byte) error {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

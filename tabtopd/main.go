@@ -6,9 +6,11 @@
 // (audio.go) and offers a browser terminal at /tty/ (tty.go), which shares
 // the downloads login. With -base-path, all of it is served under that URL
 // path instead of /, for a reverse proxy that puts the site in a
-// subdirectory. Credentials are a TOTP code, or a password followed
-// immediately by the code when a pam_oath PIN is set. A TOTP code is
-// single-use, so it can't serve as an HTTP Basic password (the browser
+// subdirectory. With -e2e, all of it goes through an encrypted tunnel
+// instead (tunnel.go, e2e.go), for networks whose proxies decrypt TLS.
+//
+// Credentials are a TOTP code, or a password followed immediately by the
+// code when a pam_oath PIN is set. A TOTP code is single-use, so it can't serve as an HTTP Basic password (the browser
 // resends it with every request): one successful login buys a session
 // cookie instead.
 //
@@ -25,8 +27,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -80,11 +80,16 @@ type server struct {
 	// Proxies whose X-Forwarded-For entries are believed; see clientIP.
 	trustedProxies []netip.Prefix
 	audio          *audioHub // nil when audio is off
-	xtermDir       string    // xterm.js files; empty when the terminal is off
+	termDir        string    // ghostty-web files; empty when the terminal is off
 	doctorOn       bool      // serve the doctor report
+	// With e2e, everything goes through the encrypted tunnel (tunnel.go)
+	// and the unencrypted WebSockets and logins are refused.
+	e2e      bool
+	nobleDir string // @noble/ciphers files for tunnel.js
 
 	mu       sync.Mutex
 	sessions map[string]time.Time   // token -> expiry
+	secrets  map[string][]byte      // tunnel session token -> its secret
 	ttys     map[string]int         // session token -> open terminals
 	failures map[string][]time.Time // client IP -> recent failed logins
 	pending  map[string]int         // client IP -> VNC logins awaiting their result
@@ -95,19 +100,22 @@ func main() {
 	basePath := flag.String("base-path", "/", "URL path the site is served under, e.g. /tabtop/")
 	g := &server{
 		sessions: map[string]time.Time{},
+		secrets:  map[string][]byte{},
 		ttys:     map[string]int{},
 		failures: map[string][]time.Time{},
 		pending:  map[string]int{},
 	}
 	flag.StringVar(&g.novncDir, "novnc-dir", "/opt/novnc", "noVNC client files")
-	flag.StringVar(&g.vncAddr, "vnc-addr", "127.0.0.1:5901", "Xvnc's RFB address")
+	flag.StringVar(&g.vncAddr, "vnc-addr", "127.0.0.1:5901", "Xvnc's RFB address: host:port, or unix:path for a socket")
 	flag.StringVar(&g.usersFile, "users-file", "", "pam_oath users file holding the TOTP key")
 	flag.StringVar(&g.downloadsDir, "downloads-dir", "", "directory served at "+downloadsPrefix)
 	trusted := flag.String("trusted-proxies", "",
 		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed")
-	flag.StringVar(&g.xtermDir, "xterm-dir", "", "xterm.js files for the terminal at "+ttyPrefix+"; empty turns it off")
+	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
+	flag.BoolVar(&g.e2e, "e2e", false, "encrypt everything end to end through the tunnel, refusing the unencrypted WebSockets and logins")
+	flag.StringVar(&g.nobleDir, "noble-dir", "", "@noble/ciphers files the tunnel's JavaScript needs")
 	audioKbps := flag.Int("audio-bitrate", 64, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
 	flag.Parse()
 	log.SetFlags(0)
@@ -127,6 +135,12 @@ func main() {
 	}
 	if g.doctorOn {
 		log.Printf("serving the troubleshooting report at %s, without a login", g.abs("/doctor"))
+	}
+	if g.e2e {
+		if g.nobleDir == "" {
+			log.Fatal("-e2e needs -noble-dir")
+		}
+		log.Printf("end-to-end encryption on: logins with CPace, tunnels with ChaCha20-Poly1305")
 	}
 	if *audioSink != "" {
 		if *audioKbps < minAudioBitrate || *audioKbps > maxAudioBitrate {
@@ -150,7 +164,7 @@ func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	static := http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/vnc.html" {
+		if r.URL.Path == "/vnc.html" && !g.e2e {
 			g.audio.setCookie(w, r, g.base, g.secure(r))
 		}
 		static.ServeHTTP(w, r)
@@ -163,7 +177,8 @@ func (g *server) handler() http.Handler {
 	for _, p := range []string{downloadsPrefix, ttyPrefix} {
 		mux.Handle(strings.TrimSuffix(p, "/"), http.RedirectHandler(g.abs(p), http.StatusMovedPermanently))
 	}
-	mux.HandleFunc("/tabtop/audio.js", g.audioScript)
+	mux.HandleFunc("/tabtop/", g.scripts)
+	mux.HandleFunc("/tunnel", g.tunnelWS)
 	mux.HandleFunc("/audio/ws", g.audioWS)
 	mux.HandleFunc("/audio/stream.ogg", g.audioOgg)
 	mux.HandleFunc("/healthz", g.healthz)
@@ -249,6 +264,10 @@ func (f noListingFS) Open(name string) (fs.File, error) {
 // rejects cross-origin requests, so another site can't open a session in a
 // visitor's browser.
 func (g *server) websockify(w http.ResponseWriter, r *http.Request) {
+	if g.e2e {
+		http.Error(w, "only the encrypted tunnel is served", http.StatusNotFound)
+		return
+	}
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"binary"}})
 	if err != nil {
 		return // Accept has already sent the error response.
@@ -258,10 +277,15 @@ func (g *server) websockify(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ws := websocket.NetConn(ctx, c, websocket.MessageBinary)
 	defer ws.Close()
+	g.bridgeVNC(ws, g.clientIP(r), g.audio.token(r), nil)
+}
 
-	ip := g.clientIP(r)
-	audioToken := g.audio.token(r)
-	if !g.beginVNCLogin(ip) {
+// bridgeVNC connects a client's RFB stream, from noVNC's WebSocket or the
+// tunnel, to Xvnc, counting its login against ip's limit. Once it's logged
+// in, audioToken may fetch audio from ip, and loggedIn (if not nil) is
+// called.
+func (g *server) bridgeVNC(ws net.Conn, ip, audioToken string, loggedIn func()) {
+	if !g.beginLogin(ip) {
 		log.Printf("VNC connection from %s refused: too many failed logins", ip)
 		refuseRFB(ws, "Too many failed login attempts. Try again in a few minutes.")
 		return
@@ -269,13 +293,13 @@ func (g *server) websockify(w http.ResponseWriter, r *http.Request) {
 	var once sync.Once
 	settle := func(result string) {
 		once.Do(func() {
-			g.endVNCLogin(ip, result == "failed")
+			g.endLogin(ip, result == "failed")
 			log.Printf("VNC login from %s %s", ip, result)
 		})
 	}
 	defer settle("abandoned")
 
-	vnc, err := net.DialTimeout("tcp", g.vncAddr, 5*time.Second)
+	vnc, err := g.dialVNC()
 	if err != nil {
 		log.Printf("cannot reach VNC server: %v", err)
 		return
@@ -297,6 +321,9 @@ func (g *server) websockify(w http.ResponseWriter, r *http.Request) {
 			settle("succeeded")
 			g.audio.link(audioToken, ip)
 			audioLinked = true
+			if loggedIn != nil {
+				loggedIn()
+			}
 		} else {
 			settle("failed")
 		}
@@ -446,6 +473,10 @@ func (g *server) downloads(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 
+	if g.e2e {
+		g.filesPage(w, r)
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		g.login(w, r)
@@ -509,10 +540,26 @@ type entry struct {
 }
 
 func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, dir string, f *os.File) {
-	des, err := f.ReadDir(-1)
+	entries, err := listDir(root, dir, f)
 	if err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	title := "/"
+	if dir != "." {
+		title = "/" + dir + "/"
+	}
+	renderPage(w, http.StatusOK, listingTmpl, map[string]any{
+		"Title": title, "Action": g.abs(escapePath(r.URL.Path)), "Entries": entries, "Root": dir == ".",
+	})
+}
+
+// listDir lists the directory f, which is dir in root: directories first,
+// then by name.
+func listDir(root *os.Root, dir string, f *os.File) ([]entry, error) {
+	des, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, err
 	}
 	var entries []entry
 	for _, de := range des {
@@ -545,13 +592,7 @@ func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, 
 		}
 		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})
-	title := "/"
-	if dir != "." {
-		title = "/" + dir + "/"
-	}
-	renderPage(w, http.StatusOK, listingTmpl, map[string]any{
-		"Title": title, "Action": g.abs(escapePath(r.URL.Path)), "Entries": entries, "Root": dir == ".",
-	})
+	return entries, nil
 }
 
 func (g *server) login(w http.ResponseWriter, r *http.Request) {
@@ -565,31 +606,53 @@ func (g *server) login(w http.ResponseWriter, r *http.Request) {
 
 	if r.PostForm.Has("logout") {
 		if c, err := r.Cookie(cookieName); err == nil {
-			g.mu.Lock()
-			delete(g.sessions, c.Value)
-			g.mu.Unlock()
+			g.endSession(c.Value)
 		}
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Path: g.base, MaxAge: -1,
 			HttpOnly: true, Secure: g.secure(r), SameSite: http.SameSiteStrictMode})
 		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
-	if g.lockedOut(ip) {
-		log.Printf("web login from %s refused: too many failed logins", ip)
-		g.loginPage(w, r.URL.Path, "Too many failed attempts. Try again in a few minutes.",
-			http.StatusTooManyRequests)
+	token, status, msg := g.authenticate(ip, strings.TrimSpace(r.PostForm.Get("password")))
+	if token == "" {
+		g.loginPage(w, r.URL.Path, msg, status)
 		return
 	}
-	if !g.credentialsOK(strings.TrimSpace(r.PostForm.Get("password"))) {
-		g.recordFailure(ip)
-		log.Printf("web login from %s failed", ip)
-		g.loginPage(w, r.URL.Path, "Those credentials are wrong, expired or already used.", http.StatusUnauthorized)
-		return
-	}
-	log.Printf("web login from %s succeeded", ip)
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: g.newSession(), Path: g.base,
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: g.base,
 		MaxAge: int(sessionTTL.Seconds()), HttpOnly: true, Secure: g.secure(r), SameSite: http.SameSiteStrictMode})
 	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// authenticate checks a web login from ip against its limit and the users
+// file. It returns a new session token, or "" with an HTTP status and a
+// message for the user.
+func (g *server) authenticate(ip, cred string) (token string, status int, msg string) {
+	if g.lockedOut(ip) {
+		log.Printf("web login from %s refused: too many failed logins", ip)
+		return "", http.StatusTooManyRequests, "Too many failed attempts. Try again in a few minutes."
+	}
+	if !g.credentialsOK(cred) {
+		g.recordFailure(ip)
+		log.Printf("web login from %s failed", ip)
+		return "", http.StatusUnauthorized, "Those credentials are wrong, expired or already used."
+	}
+	log.Printf("web login from %s succeeded", ip)
+	return g.newSession(), http.StatusOK, ""
+}
+
+func (g *server) endSession(token string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.sessions, token)
+	delete(g.secrets, token)
+}
+
+// dialVNC connects to Xvnc, over TCP or (with "unix:") its socket.
+func (g *server) dialVNC() (net.Conn, error) {
+	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok {
+		return net.DialTimeout("unix", path, 5*time.Second)
+	}
+	return net.DialTimeout("tcp", g.vncAddr, 5*time.Second)
 }
 
 // loginPage is the login form for the downloads and the terminal, which
@@ -647,7 +710,7 @@ func (g *server) lockedOut(ip string) bool {
 	return g.lockedOutLocked(ip)
 }
 
-// lockedOutLocked counts VNC logins still awaiting their result as failures,
+// lockedOutLocked counts logins still awaiting their result as failures,
 // so opening many connections at once can't buy extra guesses. g.mu must be
 // held.
 func (g *server) lockedOutLocked(ip string) bool {
@@ -667,9 +730,9 @@ func (g *server) recordFailure(ip string) {
 	g.failures[ip] = append(g.failures[ip], time.Now())
 }
 
-// beginVNCLogin reserves one of ip's login attempts, or reports that it has
-// none left.
-func (g *server) beginVNCLogin(ip string) bool {
+// beginLogin reserves one of ip's login attempts, for a login whose result
+// comes later (VNC, or a tunnel login), or reports that it has none left.
+func (g *server) beginLogin(ip string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.lockedOutLocked(ip) {
@@ -679,7 +742,7 @@ func (g *server) beginVNCLogin(ip string) bool {
 	return true
 }
 
-func (g *server) endVNCLogin(ip string, failed bool) {
+func (g *server) endLogin(ip string, failed bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.pending[ip]--; g.pending[ip] <= 0 {
@@ -710,15 +773,14 @@ func (g *server) sessionValid(token string) bool {
 }
 
 func (g *server) newSession() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	token := base64.RawURLEncoding.EncodeToString(b)
+	token := newToken()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
 	for t, expiry := range g.sessions {
 		if !now.Before(expiry) {
 			delete(g.sessions, t)
+			delete(g.secrets, t)
 		}
 	}
 	g.sessions[token] = now.Add(sessionTTL)

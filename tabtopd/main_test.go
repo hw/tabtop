@@ -2,12 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha1"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,20 +32,6 @@ func TestHOTP(t *testing.T) {
 			t.Errorf("totp(t=%d) = %s, want %s", tc.unix, got, tc.want)
 		}
 	}
-}
-
-// hotp computes an RFC 4226 one-time password; TOTP feeds it the time step.
-func hotp(key []byte, counter int64, digits int) string {
-	mac := hmac.New(sha1.New, key)
-	binary.Write(mac, binary.BigEndian, counter)
-	sum := mac.Sum(nil)
-	offset := sum[len(sum)-1] & 0x0F
-	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7FFFFFFF
-	mod := uint32(1)
-	for range digits {
-		mod *= 10
-	}
-	return fmt.Sprintf("%0*d", digits, value%mod)
 }
 
 func TestParseUsersOath(t *testing.T) {
@@ -239,7 +221,7 @@ func TestServeUnderBasePath(t *testing.T) {
 	key := []byte("12345678901234567890")
 	users := filepath.Join(t.TempDir(), "users.oath")
 	os.WriteFile(users, []byte("HOTP/T30/6\talice\t-\t"+hex.EncodeToString(key)+"\n"), 0o600)
-	g := &server{base: "/tabtop/", novncDir: novnc, downloadsDir: downloads, usersFile: users, xtermDir: t.TempDir(),
+	g := &server{base: "/tabtop/", novncDir: novnc, downloadsDir: downloads, usersFile: users, termDir: t.TempDir(),
 		audio: newAudioHub("test", 64), sessions: map[string]time.Time{}, ttys: map[string]int{},
 		failures: map[string][]time.Time{}, pending: map[string]int{}}
 	srv := httptest.NewServer(g.handler())

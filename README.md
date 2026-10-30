@@ -13,8 +13,9 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 | `/` | The noVNC client, which connects to the desktop |
 | `/websockify` | The WebSocket that carries the desktop session |
 | `/downloads/` | A file list of `~/Downloads`, with its own login |
-| `/tty/` | A terminal (xterm.js and tmux), sharing the `/downloads/` login |
+| `/tty/` | A terminal (ghostty-web and tmux), sharing the `/downloads/` login |
 | `/audio/ws`, `/audio/stream.ogg` | The desktop's sound, for browsers logged in to the desktop |
+| `/tunnel` | With `WEB_E2E=1`, the encrypted connection that carries all of the above instead |
 | `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
 | `/doctor` | A troubleshooting report, only with `WEB_DOCTOR_ENDPOINT=1` |
 
@@ -94,7 +95,7 @@ optional and only retains browser data, downloads and desktop preferences.
 
 | Variable | Default | Description |
 |---|---|---|
-| `VNC_USER` | `user` | Desktop username. You enter it at the login prompt. |
+| `VNC_USER` | `user` | Desktop username. You enter it at noVNC's login prompt (with `WEB_E2E=1`, there's no username to enter). |
 | `VNC_PASSWORD` | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. |
 | `VNC_TOTP_SECRET` | `JBSWY3DPEHPK3PXP` (public; see [Default TOTP secret](#default-totp-secret)) | TOTP secret: Base32 is used as it is; any other string has a secret derived from it, printed at startup. Always set it for a site others can reach: the default is a well-known example secret, used with a warning in the log. When it's unset, a secret saved in the home directory takes precedence over the default. |
 | `VNC_TOTP_DIGITS` | `6` | Code length: `6`, `7` or `8`. |
@@ -108,13 +109,14 @@ optional and only retains browser data, downloads and desktop preferences.
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
 | `WEB_DOCTOR_ENDPOINT` | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](#health-checks). |
+| `WEB_E2E` | `0` | `1` encrypts the desktop, logins, terminal, downloads and audio between the page and the gateway, for networks whose proxies decrypt HTTPS. See [`WEB_E2E`](#web_e2e). |
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
-`WEB_TTY`, `WEB_DOCTOR_ENDPOINT` or `VNC_PASSWORD` has an invalid value, or
-if a saved `~/.config/tabtop/totp-secret` isn't valid Base32. The error is printed to
-the log.
+`WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `WEB_E2E` or `VNC_PASSWORD` has an
+invalid value, or if a saved `~/.config/tabtop/totp-secret` isn't valid
+Base32. The error is printed to the log.
 
 ### `VNC_USER`
 
@@ -391,6 +393,66 @@ immediate at any rate.
 With `1`, `/tty/` is a terminal; see [Terminal](#terminal). With `0`, it
 returns 404.
 
+### `WEB_E2E`
+
+For networks where a proxy decrypts HTTPS on the way, such as a corporate
+TLS-inspection proxy, or a platform whose load balancer terminates TLS and
+logs traffic. Such a proxy normally sees everything: TOTP codes and
+passwords, the desktop's screen and keystrokes, terminal sessions, files,
+and session cookies it could replay.
+
+With `1`, everything goes through an encrypted tunnel between the page's
+JavaScript and the gateway:
+
+- **What's encrypted:** the login, the desktop (screen, keyboard and
+  clipboard), terminal sessions, file listings and downloads, and audio. The
+  gateway refuses the unencrypted WebSockets and login forms (`/websockify`,
+  `/tty/ws`, `/audio/*`, and logins posted to `/downloads/` and `/tty/`).
+- **One login:** the desktop, terminal and files page share one login form,
+  shown by whichever you open first, and one 12-hour session. noVNC no
+  longer asks for credentials: Xvnc stops listening on TCP and listens only
+  on a Unix socket in the desktop user's runtime directory, which only that
+  user can open, and asks for no login of its own. Logging out, or the
+  session ending after 12 hours, closes the desktop as well as the terminal.
+- **The login never crosses the wire:** the password and TOTP code are used
+  in [CPace](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/), a
+  password-authenticated key exchange on X25519. Both sides prove they know
+  the same code without sending it, so a recording of the login doesn't help
+  anyone guess it later, even with TOTP-only logins. The gateway tries the
+  codes for the previous, current and next 30 seconds, as for any other
+  login. Codes are still single-use, and failed logins count against the
+  same limit.
+- **Sessions:** a successful login gives the page a random session secret,
+  kept in the browser's local storage. Every later connection combines a
+  fresh X25519 exchange with that secret, so only that browser can open
+  connections for the session. The fresh keys mean a secret that leaks later
+  doesn't decrypt connections recorded earlier. There are no cookies, and
+  nothing on the wire can be replayed.
+- **Encryption:** every message is encrypted with ChaCha20-Poly1305. A
+  message that's changed, dropped, reordered or replayed ends the
+  connection. Browsers don't have ChaCha20-Poly1305 built in, so the page
+  uses [@noble/ciphers](https://github.com/paulmillr/noble-ciphers), an
+  audited JavaScript library, served from the image (`/opt/noble`). In
+  Chromium it decrypts well over 100 MB/s, far more than the desktop needs.
+- **Requirements:** the page must be served over HTTPS, or from
+  `localhost`, since browsers only offer X25519 to secure pages: Chrome 133,
+  Firefox 130 or Safari 17, or later. Audio needs HTTPS too; there's no
+  plain-HTTP fallback.
+- **Downloads:** files are fetched into the browser's memory and then saved,
+  so very large files need as much free memory as they're big. Interrupted
+  downloads start again from the beginning.
+
+This protects against a proxy that **reads** traffic. A proxy that
+**changes** traffic but leaves the page's scripts alone gets one guess at the
+code per login attempt, which the login limit counts. One that replaces the
+scripts can do anything, such as send your keystrokes elsewhere: the
+JavaScript comes through the same proxy. What a proxy can still see is which
+pages and scripts you load, when you connect, and how much data flows,
+including the timing of terminal keystrokes.
+
+The desktop's own Chromium isn't affected: it browses from the container,
+not through your browser.
+
 ### `CHROMIUM_NO_SANDBOX`
 
 Chromium's internal process sandbox is disabled by default for compatibility
@@ -414,6 +476,9 @@ downloaded at `http://<host>:6080/downloads/`:
   pages, so an HTML file in `~/Downloads` can't run on the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
   be downloaded.
+- **With [`WEB_E2E=1`](#web_e2e):** the page lists and fetches files through
+  the encrypted tunnel, and one login covers the files page, the terminal
+  and the desktop. Interrupted downloads can't be resumed.
 
 Restarting the container logs everyone out of the files page and the
 terminal, and clears the failed-login counts.
@@ -422,17 +487,23 @@ terminal, and clears the failed-login counts.
 
 `http://<host>:6080/tty/` is a shell as `VNC_USER` in the browser. It uses
 the same login and session as the [files page](#downloads), and doesn't need
-the desktop.
+the desktop. The page draws it with
+[ghostty-web](https://github.com/coder/ghostty-web), Ghostty's terminal
+emulator compiled to WebAssembly.
 
 - **tmux:** the shell runs inside a tmux session called `web`. Closing the
   tab leaves it running, and the next tab picks it up where it was. Every tab
   shows the same session. Typing `exit` in the last window ends it, and the
   next tab starts a fresh one.
 - **Mouse:** the wheel scrolls tmux's history. Dragging selects text in tmux;
-  hold Shift to select with the browser instead.
+  hold Shift to select with the page instead. ghostty-web doesn't send the
+  mouse to programs itself, so the page does (clicks, drags and the wheel,
+  in the encodings tmux asks for).
 - **Clipboard:** text copied in tmux, or sent with an OSC 52 escape
   sequence (as `~/.local/bin/ssh-yank.sh` does), goes to your browser's
-  clipboard. Browsers only allow this over HTTPS or on `localhost`.
+  clipboard, up to 1 MB at a time. ghostty-web doesn't handle OSC 52, so the
+  page picks it out of the output itself. Browsers only allow this over HTTPS
+  or on `localhost`.
   Programs can't read your clipboard: requests for its contents get nothing
   back.
 - **Font:** the terminal uses DejaVu Sans Mono if your computer has it,
@@ -468,6 +539,8 @@ turns sound back on after a reconnect.
   and stops a few seconds after its desktop connection closes. There's no
   separate login. Opening noVNC sets a random cookie, and the desktop login
   made with it unlocks the sound, for requests from the same IP address.
+  With [`WEB_E2E=1`](#web_e2e) there's no cookie: sound goes to the
+  session that has the desktop open, and needs HTTPS.
 - **Bandwidth:** 64 kbit/s per listener by default, even during silence;
   see [`WEB_AUDIO_BITRATE`](#web_audio_bitrate).
 - **Output only:** the desktop has no microphone.
@@ -482,6 +555,9 @@ harmless.
   session all travel unencrypted. If the site is reachable beyond a trusted
   network, put a reverse proxy with TLS in front, and set
   `WEB_TRUSTED_PROXIES`.
+- **Proxies that decrypt HTTPS:** a proxy that terminates TLS sees all of
+  the above too. [`WEB_E2E=1`](#web_e2e) encrypts it again between the page
+  and the gateway, against a proxy that only reads traffic.
 - **Login limit:** failed logins are limited per visitor IP, as described
   under `WEB_TRUSTED_PROXIES`. Xvnc's own blacklist is turned off, because
   every connection reaches Xvnc from the gateway.
@@ -511,8 +587,9 @@ It doesn't connect to Xvnc, which would log every check.
 `WEB_DOCTOR_ENDPOINT=1`. It returns a JSON report:
 
 - **checks:** each part's state: Xvnc (connecting and reading its
-  greeting), the login file, noVNC, `~/Downloads`, audio (the PipeWire sink)
-  and the terminal (tmux and xterm.js).
+  greeting), the login file, noVNC, `~/Downloads`, audio (the PipeWire sink),
+  the terminal (tmux and ghostty-web) and end-to-end encryption (whether the
+  JavaScript library it needs is in place, with `WEB_E2E=1`).
 - **clock:** the server's time. Codes are only accepted within 30 seconds
   of it, so a wrong clock explains logins that always fail.
 - **proxy:** how your request arrived, for setting up a reverse proxy. It
@@ -536,19 +613,18 @@ and activity, so turn it off again when you're done.
 |---|---|---|
 | `NOVNC_VERSION` | `1.7.0` | noVNC release, downloaded from GitHub. |
 | `NOVNC_SHA256` | *(checksum of 1.7.0)* | SHA-256 of `https://github.com/novnc/noVNC/archive/refs/tags/v<version>.tar.gz`. A mismatch fails the build. |
-| `XTERM_VERSION` | `6.0.0` | xterm.js release, downloaded from npm (`@xterm/xterm`). |
-| `XTERM_SHA256` | *(checksum of 6.0.0)* | SHA-256 of `https://registry.npmjs.org/@xterm/xterm/-/xterm-<version>.tgz`. |
-| `XTERM_FIT_VERSION` | `0.11.0` | xterm.js fit add-on (`@xterm/addon-fit`), which sizes the terminal to the window. |
-| `XTERM_FIT_SHA256` | *(checksum of 0.11.0)* | SHA-256 of `https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-<version>.tgz`. |
-| `XTERM_CLIPBOARD_VERSION` | `0.2.0` | xterm.js clipboard add-on (`@xterm/addon-clipboard`), which handles OSC 52. |
-| `XTERM_CLIPBOARD_SHA256` | *(checksum of 0.2.0)* | SHA-256 of `https://registry.npmjs.org/@xterm/addon-clipboard/-/addon-clipboard-<version>.tgz`. |
+| `GHOSTTY_WEB_VERSION` | `0.4.0` | ghostty-web release for the terminal, downloaded from npm (`ghostty-web`). |
+| `GHOSTTY_WEB_SHA256` | *(checksum of 0.4.0)* | SHA-256 of `https://registry.npmjs.org/ghostty-web/-/ghostty-web-<version>.tgz`. |
 | `POWERLINE_VERSION` | `2.8.4` | Powerline release that `PowerlineSymbols.otf` and its license are taken from. |
 | `POWERLINE_FONT_SHA256` | *(checksum for 2.8.4)* | SHA-256 of `https://raw.githubusercontent.com/powerline/powerline/<version>/font/PowerlineSymbols.otf`. |
 | `POWERLINE_LICENSE_SHA256` | *(checksum for 2.8.4)* | SHA-256 of the `LICENSE` file at the same version. |
+| `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses with `WEB_E2E=1`. |
+| `NOBLE_CIPHERS_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/ciphers/-/ciphers-<version>.tgz`. |
 
-The build adds one line to noVNC's `vnc.html`: a `<script>` tag that loads
-the audio button. If a new noVNC release changes `vnc.html` so the line can't
-be added, the build fails.
+The build adds two `<script>` tags to noVNC's `vnc.html`, for the audio
+button and the encrypted tunnel, and changes one line of `app/ui.js` so the
+tunnel can supply noVNC's connection. If a new noVNC release changes either
+file so the edits can't be made, the build fails.
 
 Change each version together with its checksum:
 
@@ -556,7 +632,7 @@ Change each version together with its checksum:
 curl -sL https://github.com/novnc/noVNC/archive/refs/tags/v1.7.0.tar.gz | sha256sum
 docker build --build-arg NOVNC_VERSION=1.7.0 --build-arg NOVNC_SHA256=<sum> -t tabtop .
 
-curl -sL https://registry.npmjs.org/@xterm/xterm/-/xterm-6.0.0.tgz | sha256sum
+curl -sL https://registry.npmjs.org/ghostty-web/-/ghostty-web-0.4.0.tgz | sha256sum
 ```
 
 ## Development
@@ -575,6 +651,17 @@ mise install     # once, or after the Go version changes
 mise run test
 mise run vet
 mise run build   # writes tabtopd/tabtopd
+```
+
+`TestTunnelInteropWithJS` runs the page's `tunnel.js` in Node against the
+gateway, to check that the two sides of the encrypted tunnel agree. It needs
+Node 22 or later and `TABTOP_NOBLE_DIR` set to the `package/` directory of
+the extracted `@noble/ciphers` tarball; without them it's skipped, as it is
+in CI:
+
+```sh
+mkdir -p /tmp/noble && curl -sL https://registry.npmjs.org/@noble/ciphers/-/ciphers-2.4.0.tgz | tar -xz -C /tmp/noble
+TABTOP_NOBLE_DIR=/tmp/noble/package mise run test
 ```
 
 ### Continuous integration

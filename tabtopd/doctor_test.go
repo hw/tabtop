@@ -100,7 +100,7 @@ func TestDoctor(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &report); err != nil {
 		t.Fatalf("not JSON: %v\n%s", err, body)
 	}
-	for _, name := range []string{"vnc", "login", "novnc", "downloads", "audio", "terminal"} {
+	for _, name := range []string{"vnc", "login", "novnc", "downloads", "audio", "terminal", "e2e"} {
 		if c, ok := report.Checks[name]; !ok || !c.OK {
 			t.Errorf("check %s: %+v", name, c)
 		}

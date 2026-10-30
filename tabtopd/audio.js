@@ -5,7 +5,11 @@
 // from audio/ws itself and schedules them back to back through a small
 // adaptive buffer, for a delay of roughly 100-200 ms. On plain HTTP it falls
 // back to an <audio> element playing audio/stream.ogg, which the browser
-// buffers for about 2 s.
+// buffers for about 2 s. With WEB_E2E=1, the packets come through the
+// encrypted tunnel instead, with the desktop's session; that needs HTTPS
+// too.
+
+import * as e2e from "./e2e.js";
 
 const PREF_KEY = "tabtop_audio";
 const lowLatency = window.isSecureContext && "AudioDecoder" in window;
@@ -61,9 +65,13 @@ class StreamPlayer {
             }
             await this.ctx.resume();
         }
-        const url = new URL("audio/ws", location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        this.ws = new WebSocket(url);
+        if (e2e.enabled) {
+            this.ws = new e2e.TunnelSocket({ type: "audio" });
+        } else {
+            const url = new URL("audio/ws", location.href);
+            url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+            this.ws = new WebSocket(url);
+        }
         this.ws.binaryType = "arraybuffer";
         await new Promise((resolve, reject) => {
             this.ws.onopen = resolve;
@@ -231,6 +239,12 @@ async function start() {
         return;
     }
     setState("connecting", "Connecting audio… (click to stop)");
+    if (e2e.enabled && !lowLatency) {
+        // The tunnel needs HTTPS; the <audio> element can't use it.
+        stopPlayer();
+        setState("error", "Audio needs HTTPS (end-to-end encryption is on)");
+        return;
+    }
     const p = new (lowLatency ? StreamPlayer : ElementPlayer)(() => {
         if (player === p) {
             retry("Audio disconnected");

@@ -1,9 +1,10 @@
 package main
 
-// The browser terminal at /tty/: xterm.js in the page, a PTY running tmux
-// on the server. It uses the downloads login and session. Every tab attaches
-// to the same tmux session ("web"), so shells keep running when a tab is
-// closed and the next tab picks them up.
+// The browser terminal at /tty/: ghostty-web (Ghostty's terminal emulator,
+// compiled to WebAssembly) in the page, a PTY running tmux on the server. It
+// uses the downloads login and session. Every tab attaches to the same tmux
+// session ("web"), so shells keep running when a tab is closed and the next
+// tab picks them up.
 
 import (
 	"context"
@@ -22,16 +23,24 @@ import (
 
 const (
 	ttyPrefix = "/tty/"
+	// An empty module ghostty-web imports, only to read its WebAssembly from
+	// disk outside a browser; served so the import doesn't fail.
+	ghosttyStub = "__vite-browser-external-2447137e.js"
+	// Largest message from the page: a paste.
+	maxTTYMessage = 1 << 20
 	// Terminals open at once per session, so one login can't start
 	// processes without limit.
 	maxTTYs = 5
-	// How often an open terminal checks that its session is still valid, so
-	// logging out or the session expiring closes it soon after.
-	ttySessionCheck = 5 * time.Second
-	// xterm.js styles its rows and cursor with inline styles.
-	ttyCSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-		"form-action 'self'; frame-ancestors 'none'"
+	// ghostty-web carries its WebAssembly as a data: URL, which it fetches
+	// and compiles, and styles its elements inline.
+	ttyCSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' data:; " +
+		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'"
 )
+
+// How often an open terminal or desktop tunnel checks that its session is
+// still valid, so logging out or the session expiring closes it soon after.
+// A variable so tests can shorten it.
+var ttySessionCheck = 5 * time.Second
 
 //go:embed tty.html tty.js
 var ttyFiles embed.FS
@@ -40,7 +49,7 @@ var ttyFiles embed.FS
 var ttyCommand = func() *exec.Cmd { return exec.Command("tmux", "new-session", "-A", "-s", "web") }
 
 func (g *server) tty(w http.ResponseWriter, r *http.Request) {
-	if g.xtermDir == "" {
+	if g.termDir == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -50,6 +59,10 @@ func (g *server) tty(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 
 	name := strings.TrimPrefix(r.URL.Path, ttyPrefix)
+	if g.e2e {
+		g.ttyE2E(w, r, name)
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		if name != "" {
@@ -73,20 +86,39 @@ func (g *server) tty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if name == "ws" {
+		g.ttyWS(w, r)
+		return
+	}
+	g.ttyFile(w, r, name)
+}
+
+// ttyE2E serves the terminal with -e2e: the page and its scripts need no
+// session, since they hold nothing private, and log in through the tunnel;
+// the terminal itself only runs through the tunnel.
+func (g *server) ttyE2E(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	g.ttyFile(w, r, name)
+}
+
+// ttyFile serves the terminal page and its files.
+func (g *server) ttyFile(w http.ResponseWriter, r *http.Request, name string) {
 	switch name {
 	case "":
-		h.Set("Content-Security-Policy", ttyCSP)
+		w.Header().Set("Content-Security-Policy", ttyCSP)
 		http.ServeFileFS(w, r, ttyFiles, "tty.html")
 	case "tty.js":
 		http.ServeFileFS(w, r, ttyFiles, "tty.js")
-	case "xterm.mjs", "xterm.css", "addon-fit.mjs", "addon-clipboard.mjs":
-		http.ServeFileFS(w, r, os.DirFS(g.xtermDir), name)
+	case "ghostty-web.js", ghosttyStub:
+		http.ServeFileFS(w, r, os.DirFS(g.termDir), name)
 	case "PowerlineSymbols.otf":
 		// Not in Go's or Debian's MIME tables; nosniff needs the right type.
-		h.Set("Content-Type", "font/otf")
-		http.ServeFileFS(w, r, os.DirFS(g.xtermDir), name)
-	case "ws":
-		g.ttyWS(w, r)
+		w.Header().Set("Content-Type", "font/otf")
+		http.ServeFileFS(w, r, os.DirFS(g.termDir), name)
 	default:
 		http.NotFound(w, r)
 	}
@@ -116,8 +148,13 @@ func (g *server) ttyWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	c.SetReadLimit(1 << 20)
+	c.SetReadLimit(maxTTYMessage)
+	g.serveTTY(c, token, ip)
+}
 
+// serveTTY runs a terminal over c, a WebSocket or the tunnel, until either
+// side ends it or token's session does.
+func (g *server) serveTTY(c msgConn, token, ip string) {
 	cmd := ttyCommand()
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	if home, err := os.UserHomeDir(); err == nil {

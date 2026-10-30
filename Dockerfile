@@ -41,45 +41,58 @@ RUN mkdir /novnc \
         "noVNC-${NOVNC_VERSION}/package.json" \
         "noVNC-${NOVNC_VERSION}/LICENSE.txt" \
  && chmod -R u=rwX,go=rX /novnc
-# The one change to noVNC: load the gateway's audio button. Fail the build if
-# a new noVNC release no longer matches.
+# The changes to noVNC: load the gateway's audio button, and let its
+# novnc.js supply the connection (the encrypted tunnel, with WEB_E2E=1)
+# instead of noVNC's own WebSocket. novnc.js goes before noVNC's scripts,
+# since module scripts run in order, so it's ready before noVNC connects.
+# Fail the build if a new noVNC release no longer matches.
 RUN sed -i 's|</head>|    <script type="module" src="tabtop/audio.js"></script>\n</head>|' /novnc/vnc.html \
- && grep -q 'src="tabtop/audio.js"' /novnc/vnc.html
+ && sed -i '0,/<script type="module"/s|<script type="module"|<script type="module" src="tabtop/novnc.js"></script>\n    &|' /novnc/vnc.html \
+ && sed -i 's|^\( *\)url\.href,$|\1window.tabtopChannel ? window.tabtopChannel() : url.href,|' /novnc/app/ui.js \
+ && grep -q 'src="tabtop/audio.js"' /novnc/vnc.html \
+ && grep -q 'src="tabtop/novnc.js"' /novnc/vnc.html \
+ && grep -q 'window.tabtopChannel() : url.href,' /novnc/app/ui.js
 
-# xterm.js for the browser terminal at /tty/, from npm. Bump each version
-# together with its checksum (of the .tgz the URL points at).
-FROM debian:trixie-slim AS xterm
-ARG XTERM_VERSION=6.0.0
-ARG XTERM_SHA256=908e66e04af6c8dc6b00dd3b54de088e2e81e5ed866284fd6c2fb3c2d1c7a3f6
-ARG XTERM_FIT_VERSION=0.11.0
-ARG XTERM_FIT_SHA256=26003b4517a132b64e4ff228fd88a5fda3fff5e606c76093f6dcff772e9ecec0
-ARG XTERM_CLIPBOARD_VERSION=0.2.0
-ARG XTERM_CLIPBOARD_SHA256=3c0556aa54c766fb415354ee179d16f44211708a133ba78c7234c1b7d606de7f
-ADD --checksum=sha256:${XTERM_SHA256} \
-    https://registry.npmjs.org/@xterm/xterm/-/xterm-${XTERM_VERSION}.tgz /xterm.tgz
-ADD --checksum=sha256:${XTERM_FIT_SHA256} \
-    https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-${XTERM_FIT_VERSION}.tgz /addon-fit.tgz
-ADD --checksum=sha256:${XTERM_CLIPBOARD_SHA256} \
-    https://registry.npmjs.org/@xterm/addon-clipboard/-/addon-clipboard-${XTERM_CLIPBOARD_VERSION}.tgz /addon-clipboard.tgz
+# ghostty-web for the browser terminal at /tty/, from npm: Ghostty's
+# terminal emulator compiled to WebAssembly, which its one module carries
+# inline. Bump the version together with its checksum (of the .tgz the URL
+# points at). The stub module it imports (only used outside browsers) must
+# keep its name; the build fails if a release changes it.
+FROM debian:trixie-slim AS terminal
+ARG GHOSTTY_WEB_VERSION=0.4.0
+ARG GHOSTTY_WEB_SHA256=90bf473b6c7f43ab5e52ee98d8295e04fb1c6b07b928e9795489df1e8cb8802e
+ADD --checksum=sha256:${GHOSTTY_WEB_SHA256} \
+    https://registry.npmjs.org/ghostty-web/-/ghostty-web-${GHOSTTY_WEB_VERSION}.tgz /ghostty-web.tgz
 # Powerline's symbol font (2 KB, U+E0A0-E0A2 and U+E0B0-E0B3) draws the
 # arrows in tmux status lines; the browser's own monospace font does the rest.
 ARG POWERLINE_VERSION=2.8.4
 ARG POWERLINE_FONT_SHA256=4a2496a009b1649878ce067a7ec2aed9f79656c90136971e1dba00766515f7a1
 ARG POWERLINE_LICENSE_SHA256=46d5355e4734468135d8e4a30d0916292cc4df2b3ec30aa68c866f82497933be
 ADD --checksum=sha256:${POWERLINE_FONT_SHA256} \
-    https://raw.githubusercontent.com/powerline/powerline/${POWERLINE_VERSION}/font/PowerlineSymbols.otf /xterm/PowerlineSymbols.otf
+    https://raw.githubusercontent.com/powerline/powerline/${POWERLINE_VERSION}/font/PowerlineSymbols.otf /terminal/PowerlineSymbols.otf
 ADD --checksum=sha256:${POWERLINE_LICENSE_SHA256} \
-    https://raw.githubusercontent.com/powerline/powerline/${POWERLINE_VERSION}/LICENSE /xterm/LICENSE.powerline
+    https://raw.githubusercontent.com/powerline/powerline/${POWERLINE_VERSION}/LICENSE /terminal/LICENSE.powerline
 RUN mkdir /src \
- && tar -xzf /xterm.tgz -C /src --no-same-owner --transform 's|^package|xterm|' \
- && tar -xzf /addon-fit.tgz -C /src --no-same-owner --transform 's|^package|fit|' \
- && tar -xzf /addon-clipboard.tgz -C /src --no-same-owner --transform 's|^package|clipboard|' \
- && cp /src/xterm/lib/xterm.mjs /src/xterm/css/xterm.css /src/fit/lib/addon-fit.mjs \
-       /src/clipboard/lib/addon-clipboard.mjs /xterm/ \
- && cp /src/xterm/LICENSE /xterm/LICENSE.xterm \
- && cp /src/fit/LICENSE /xterm/LICENSE.addon-fit \
- && cp /src/clipboard/LICENSE /xterm/LICENSE.addon-clipboard \
- && chmod -R u=rwX,go=rX /xterm
+ && tar -xzf /ghostty-web.tgz -C /src --no-same-owner \
+ && cp /src/package/dist/ghostty-web.js /src/package/dist/__vite-browser-external-2447137e.js /terminal/ \
+ && grep -q '__vite-browser-external-2447137e.js' /terminal/ghostty-web.js \
+ && cp /src/package/LICENSE /terminal/LICENSE.ghostty-web \
+ && chmod -R u=rwX,go=rX /terminal
+
+# @noble/ciphers, for the ChaCha20-Poly1305 that WEB_E2E=1's tunnel uses in
+# the browser (WebCrypto doesn't have it), from npm. Bump the version
+# together with its checksum (of the .tgz the URL points at). Only the
+# ChaCha20-Poly1305 files are kept.
+FROM debian:trixie-slim AS noble
+ARG NOBLE_CIPHERS_VERSION=2.4.0
+ARG NOBLE_CIPHERS_SHA256=4a398bcc280c8742d474f9162f6d3c153e52ab1078e8ab592b4720410fb3c3e9
+ADD --checksum=sha256:${NOBLE_CIPHERS_SHA256} \
+    https://registry.npmjs.org/@noble/ciphers/-/ciphers-${NOBLE_CIPHERS_VERSION}.tgz /ciphers.tgz
+RUN mkdir /src /noble \
+ && tar -xzf /ciphers.tgz -C /src --no-same-owner \
+ && cp /src/package/chacha.js /src/package/_arx.js /src/package/_poly1305.js /src/package/utils.js /noble/ \
+ && cp /src/package/LICENSE /noble/LICENSE.noble-ciphers \
+ && chmod -R u=rwX,go=rX /noble
 
 # The Go version matches mise.toml, which pins it for local development.
 # tabtopd encodes audio with libopus and checks logins with liboath, through
@@ -146,7 +159,8 @@ RUN apt-get update \
         && rm -rf /var/lib/apt/lists/*
 
 COPY --from=novnc /novnc /opt/novnc
-COPY --from=xterm /xterm /opt/xterm
+COPY --from=terminal /terminal /opt/terminal
+COPY --from=noble /noble /opt/noble
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
 COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
@@ -177,6 +191,14 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
 # it off and doesn't start PipeWire. WEB_AUDIO_BITRATE: its Opus bitrate in
 # kbit/s, 32 to 256 (default 64); sent at a constant rate even in silence.
+# WEB_E2E=1 encrypts everything between the page's JavaScript and the
+# gateway, for networks whose proxies decrypt and inspect HTTPS: the desktop,
+# logins, terminal, downloads and audio go through an encrypted tunnel
+# (ChaCha20-Poly1305, keyed by a CPace login with password + TOTP code), and
+# the unencrypted endpoints are refused. One gateway login covers the
+# desktop, terminal and downloads; Xvnc then listens on a Unix socket only.
+# It needs HTTPS (or localhost) and a browser with X25519 in WebCrypto. It
+# doesn't stop a proxy that rewrites pages. 0 (default) turns it off.
 # WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
 # without a login; 0 (default) turns it off. <base>healthz always answers
 # health checks.
@@ -196,6 +218,7 @@ ENV VNC_USER=user \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \
     WEB_DOCTOR_ENDPOINT=0 \
+    WEB_E2E=0 \
     CHROMIUM_NO_SANDBOX=1
 
 # tmux settings for the browser terminal (users' ~/.tmux.conf still applies

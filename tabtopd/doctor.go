@@ -47,9 +47,12 @@ func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "ok\n")
 }
 
-// vncListening reports whether something listens on Xvnc's TCP port, from
-// the kernel's socket tables.
+// vncListening reports whether something listens on Xvnc's TCP port or
+// socket, from the kernel's socket tables.
 func (g *server) vncListening() error {
+	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok {
+		return unixListening(path)
+	}
 	_, portStr, err := net.SplitHostPort(g.vncAddr)
 	if err != nil {
 		return err
@@ -78,6 +81,25 @@ func (g *server) vncListening() error {
 	return fmt.Errorf("nothing listens on Xvnc's port %d", port)
 }
 
+// unixListening looks for a listening socket at path in /proc/net/unix:
+// "Num RefCount Protocol Flags Type St Inode Path", where flags 00010000
+// mark a listening socket.
+func unixListening(path string) error {
+	f, err := os.Open("/proc/net/unix")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) == 8 && fields[7] == path && fields[3] == "00010000" {
+			return nil
+		}
+	}
+	return fmt.Errorf("nothing listens on Xvnc's socket %s", path)
+}
+
 func (g *server) usersFileOK() error {
 	data, err := os.ReadFile(g.usersFile)
 	if err != nil {
@@ -91,7 +113,7 @@ func (g *server) usersFileOK() error {
 
 // probeVNC connects to Xvnc and reads its greeting, the protocol version.
 func (g *server) probeVNC() (string, error) {
-	conn, err := net.DialTimeout("tcp", g.vncAddr, vncProbeTimeout)
+	conn, err := g.dialVNC()
 	if err != nil {
 		return "", err
 	}
@@ -163,14 +185,26 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		checks["audio"] = newCheck(g.audio.describe(), g.audio.checkSink())
 	}
 
-	if g.xtermDir == "" {
+	if g.termDir == "" {
 		checks["terminal"] = check{OK: true, Detail: "off"}
 	} else {
 		tmux, err := exec.LookPath("tmux")
 		if err == nil {
-			_, err = os.Stat(filepath.Join(g.xtermDir, "xterm.mjs"))
+			_, err = os.Stat(filepath.Join(g.termDir, "ghostty-web.js"))
 		}
-		checks["terminal"] = newCheck(fmt.Sprintf("tmux %s, xterm.js in %s", tmux, g.xtermDir), err)
+		checks["terminal"] = newCheck(fmt.Sprintf("tmux %s, ghostty-web in %s", tmux, g.termDir), err)
+	}
+
+	if !g.e2e {
+		checks["e2e"] = check{OK: true, Detail: "off"}
+	} else {
+		var err error
+		for _, name := range nobleFiles {
+			if _, err = os.Stat(filepath.Join(g.nobleDir, name)); err != nil {
+				break
+			}
+		}
+		checks["e2e"] = newCheck("CPace logins, ChaCha20-Poly1305 tunnels; @noble/ciphers in "+g.nobleDir, err)
 	}
 
 	g.mu.Lock()

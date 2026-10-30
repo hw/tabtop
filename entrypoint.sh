@@ -12,6 +12,7 @@ WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_TTY="${WEB_TTY:-1}"
 WEB_DOCTOR_ENDPOINT="${WEB_DOCTOR_ENDPOINT:-0}"
+WEB_E2E="${WEB_E2E:-0}"
 DISPLAY_NUM=1
 VNC_PORT=$((5900 + DISPLAY_NUM))
 
@@ -40,6 +41,10 @@ esac
 case "$WEB_DOCTOR_ENDPOINT" in
     0|1) ;;
     *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
+esac
+case "$WEB_E2E" in
+    0|1) ;;
+    *) echo "WEB_E2E must be 0 or 1 (got '${WEB_E2E}')." >&2; exit 1 ;;
 esac
 # Same rule as tabtopd's: segments of unreserved URL characters, spelled out
 # because ranges like a-z can match other letters, depending on the locale.
@@ -230,14 +235,22 @@ as_user() {
 # Xvnc runs as the desktop user and only listens on localhost. Its blacklist
 # is off: every connection arrives from the gateway, so it would lock all
 # users out together. The gateway limits failed logins per client IP instead.
+# With WEB_E2E=1, the gateway checks the login itself (in its encrypted
+# tunnel), so Xvnc asks for none, and it listens only on a socket in the
+# user's runtime directory that nobody else can open (Xvnc's default mode
+# is 0600), not on TCP.
+VNC_SOCKET="$RUNTIME_DIR/vnc.sock"
+if [ "$WEB_E2E" = 1 ]; then
+    VNC_LISTEN=(-rfbunixpath "$VNC_SOCKET" -rfbport -1 -SecurityTypes None)
+    VNC_ADDR="unix:$VNC_SOCKET"
+else
+    VNC_LISTEN=(-localhost -rfbport "$VNC_PORT" -SecurityTypes Plain -PlainUsers "$VNC_USER" -PAMService tabtop)
+    VNC_ADDR="127.0.0.1:${VNC_PORT}"
+fi
 as_user Xvnc ":${DISPLAY_NUM}" \
     -geometry "$VNC_GEOMETRY" \
     -depth "$VNC_DEPTH" \
-    -localhost \
-    -rfbport "$VNC_PORT" \
-    -SecurityTypes Plain \
-    -PlainUsers "$VNC_USER" \
-    -PAMService tabtop \
+    "${VNC_LISTEN[@]}" \
     -AlwaysShared \
     -AcceptSetDesktopSize \
     -UseBlacklist=0 \
@@ -304,26 +317,35 @@ printf '%s\n' '<!doctype html><meta http-equiv="refresh" content="0; url=vnc.htm
 # /tty/ behind a login. It runs as the desktop user, to read the downloads and the pam_oath
 # users file.
 runuser -u "$VNC_USER" -- mkdir -p "$USER_HOME/Downloads"
-XTERM_DIR=""
+TERM_DIR=""
 if [ "$WEB_TTY" = 1 ]; then
-    XTERM_DIR=/opt/xterm
+    TERM_DIR=/opt/terminal
 fi
 DOCTOR=false
 if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
     DOCTOR=true
 fi
+# With WEB_E2E=1, the pages talk to the gateway only through its encrypted
+# tunnel, logging in with CPace and encrypting with ChaCha20-Poly1305 from
+# @noble/ciphers (in /opt/noble).
+E2E=false
+if [ "$WEB_E2E" = 1 ]; then
+    E2E=true
+fi
 as_user /usr/local/bin/tabtopd \
     -listen ":${WEB_PORT}" \
     -base-path "$WEB_BASE_PATH" \
     -novnc-dir /opt/novnc \
-    -vnc-addr "127.0.0.1:${VNC_PORT}" \
+    -vnc-addr "$VNC_ADDR" \
+    -noble-dir /opt/noble \
     -users-file "$TOTP_USERS_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -audio-sink "$AUDIO_SINK" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
-    -xterm-dir "$XTERM_DIR" \
+    -term-dir "$TERM_DIR" \
     -doctor="$DOCTOR" \
+    -e2e="$E2E" \
     &
 TABTOPD_PID=$!
 

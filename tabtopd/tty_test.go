@@ -17,11 +17,11 @@ import (
 func newTTYTestServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"xterm.mjs", "addon-clipboard.mjs", "PowerlineSymbols.otf"} {
+	for _, name := range []string{"ghostty-web.js", ghosttyStub, "PowerlineSymbols.otf"} {
 		os.WriteFile(filepath.Join(dir, name), []byte("export {}"), 0o644)
 	}
 	g := &server{base: "/", sessions: map[string]time.Time{}, failures: map[string][]time.Time{},
-		pending: map[string]int{}, ttys: map[string]int{}, xtermDir: dir}
+		pending: map[string]int{}, ttys: map[string]int{}, termDir: dir}
 	srv := httptest.NewServer(http.HandlerFunc(g.tty))
 	t.Cleanup(srv.Close)
 	return g, srv
@@ -43,7 +43,7 @@ func get(t *testing.T, url, token string) *http.Response {
 
 func TestTTYNeedsSession(t *testing.T) {
 	_, srv := newTTYTestServer(t)
-	for _, p := range []string{"/tty/", "/tty/ws", "/tty/xterm.mjs"} {
+	for _, p := range []string{"/tty/", "/tty/ws", "/tty/ghostty-web.js"} {
 		if resp := get(t, srv.URL+p, "bogus"); resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("%s without a session: status %d, want 401", p, resp.StatusCode)
 		}
@@ -52,7 +52,7 @@ func TestTTYNeedsSession(t *testing.T) {
 
 func TestTTYOff(t *testing.T) {
 	g, srv := newTTYTestServer(t)
-	g.xtermDir = ""
+	g.termDir = ""
 	if resp := get(t, srv.URL+"/tty/", g.newSession()); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status %d, want 404", resp.StatusCode)
 	}
@@ -62,11 +62,14 @@ func TestTTYPage(t *testing.T) {
 	g, srv := newTTYTestServer(t)
 	token := g.newSession()
 	resp := get(t, srv.URL+"/tty/", token)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'self'") {
-		t.Errorf("page: status %d, CSP %q", resp.StatusCode, resp.Header.Get("Content-Security-Policy"))
+	// ghostty-web fetches and compiles its WebAssembly from a data: URL.
+	csp := resp.Header.Get("Content-Security-Policy")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(csp, "default-src 'self'") ||
+		!strings.Contains(csp, "'wasm-unsafe-eval'") || !strings.Contains(csp, "connect-src 'self' data:") {
+		t.Errorf("page: status %d, CSP %q", resp.StatusCode, csp)
 	}
-	for p, want := range map[string]int{"/tty/tty.js": 200, "/tty/xterm.mjs": 200, "/tty/addon-clipboard.mjs": 200,
-		"/tty/PowerlineSymbols.otf": 200, "/tty/../main.go": 404, "/tty/other": 404} {
+	for p, want := range map[string]int{"/tty/tty.js": 200, "/tty/ghostty-web.js": 200, "/tty/" + ghosttyStub: 200,
+		"/tty/PowerlineSymbols.otf": 200, "/tty/xterm.mjs": 404, "/tty/../main.go": 404, "/tty/other": 404} {
 		if resp := get(t, srv.URL+p, token); resp.StatusCode != want {
 			t.Errorf("%s: status %d, want %d", p, resp.StatusCode, want)
 		}
