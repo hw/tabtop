@@ -2,7 +2,8 @@
 // noble/: checks the Elligator2 map, then logs in, lists Downloads and
 // fetches a file through tabtopd's tunnel with the page's own tunnel.js,
 // using the crypto backend named by the last argument ("noble" forces it;
-// otherwise tunnel.js picks, as in a browser).
+// otherwise tunnel.js picks, as in a browser). Logging in and opening a
+// tunnel at a URL that refuses the WebSocket must fail rather than hang.
 // Exits 3 if this Node can't run it.
 
 if (typeof WebSocket === "undefined") {
@@ -11,10 +12,21 @@ if (typeof WebSocket === "undefined") {
 }
 
 const { Tunnel, login, elligator2, cryptoBackend } = await import(new URL("./tunnel.js", import.meta.url));
-const [url, credential, vectors, backend] = process.argv.slice(2);
+const [url, credential, vectors, backend, refusing] = process.argv.slice(2);
 const crypto_ = await cryptoBackend({ useNoble: backend === "noble" });
 
 const ell = JSON.parse(vectors).map((v) => elligator2(BigInt("0x" + v.in)).toString(16));
+
+const refused = [];
+for (const attempt of [() => login(credential, refusing), () => Tunnel.open({ type: "list", path: "" }, { id: "x", secret: "" }, refusing)]) {
+    let timer;
+    const err = await Promise.race([
+        attempt().then(() => "succeeded", (e) => e),
+        new Promise((resolve) => (timer = setTimeout(resolve, 5000, "hung"))),
+    ]);
+    clearTimeout(timer);
+    refused.push(err?.constructor?.name === "TunnelError" ? "TunnelError" : String(err));
+}
 
 const session = await login(credential, url);
 const list = await Tunnel.open({ type: "list", path: "" }, session, url);
@@ -29,6 +41,7 @@ const sum = new Uint8Array(await crypto.subtle.digest("SHA-256", await new Blob(
 
 console.log(JSON.stringify({
     backend: crypto_.name,
+    refused,
     elligator: ell,
     session: session.id,
     entries: list.reply.entries,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -103,6 +105,58 @@ func TestCredentialsOK(t *testing.T) {
 	}
 	if !g.credentialsOK("s3cret" + code(0)) {
 		t.Fatal("password+TOTP: valid credentials rejected")
+	}
+}
+
+// TestLoginLimitParallel sends many wrong codes at once: only maxFailures
+// of them may be checked, however they interleave.
+func TestLoginLimitParallel(t *testing.T) {
+	g := newUsersFile(t, "-")
+	g.sessions, g.failures, g.pending = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}
+	statuses := make(chan int, 50)
+	var wg sync.WaitGroup
+	for range cap(statuses) {
+		wg.Go(func() {
+			_, status, _ := g.authenticate("192.0.2.1", "000000")
+			statuses <- status
+		})
+	}
+	wg.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for s := range statuses {
+		counts[s]++
+	}
+	if counts[http.StatusUnauthorized] != maxFailures || counts[http.StatusTooManyRequests] != cap(statuses)-maxFailures {
+		t.Fatalf("statuses %v, want %d checked and the rest refused", counts, maxFailures)
+	}
+	if _, status, _ := g.authenticate("192.0.2.1", code(0)); status != http.StatusTooManyRequests {
+		t.Fatalf("a right code once locked out: status %d", status)
+	}
+	if _, status, _ := g.authenticate("192.0.2.2", code(0)); status != http.StatusOK {
+		t.Fatalf("another IP's right code: status %d", status)
+	}
+}
+
+// TestFailuresSwept checks that IPs whose failures have expired are
+// forgotten without being looked up again.
+func TestFailuresSwept(t *testing.T) {
+	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	old := time.Now().Add(-failureWindow)
+	for i := range 100 {
+		g.failures[fmt.Sprint("2001:db8::", i)] = []time.Time{old}
+	}
+	g.failures["192.0.2.1"] = []time.Time{time.Now()}
+	g.beginLogin("192.0.2.2")
+	g.endLogin("192.0.2.2", true)
+	if len(g.failures) != 2 {
+		t.Fatalf("%d IPs tracked after a sweep, want 2", len(g.failures))
+	}
+	g.failures["2001:db8::1"] = []time.Time{old}
+	g.beginLogin("192.0.2.2")
+	g.endLogin("192.0.2.2", true)
+	if len(g.failures) != 3 {
+		t.Fatalf("swept again within the window: %d IPs tracked", len(g.failures))
 	}
 }
 

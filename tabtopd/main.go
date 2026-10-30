@@ -101,7 +101,9 @@ type server struct {
 	secrets  map[string][]byte      // tunnel session token -> its secret
 	ttys     map[string]int         // session token -> open terminals
 	failures map[string][]time.Time // client IP -> recent failed logins
-	pending  map[string]int         // client IP -> VNC logins awaiting their result
+	pending  map[string]int         // client IP -> logins awaiting their result
+
+	failuresSwept time.Time // when failures last lost its expired IPs
 }
 
 func main() {
@@ -644,12 +646,13 @@ func (g *server) login(w http.ResponseWriter, r *http.Request) {
 // file. It returns a new session token, or "" with an HTTP status and a
 // message for the user.
 func (g *server) authenticate(ip, cred string) (token string, status int, msg string) {
-	if g.lockedOut(ip) {
+	if !g.beginLogin(ip) {
 		log.Printf("web login from %s refused: too many failed logins", ip)
 		return "", http.StatusTooManyRequests, "Too many failed attempts. Try again in a few minutes."
 	}
-	if !g.credentialsOK(cred) {
-		g.recordFailure(ip)
+	ok := g.credentialsOK(cred)
+	g.endLogin(ip, !ok)
+	if !ok {
 		log.Printf("web login from %s failed", ip)
 		return "", http.StatusUnauthorized, "Those credentials are wrong, expired or already used."
 	}
@@ -721,12 +724,6 @@ func parseUsersOath(data string) (user string, digits int, ok bool) {
 	return fields[1], digits, true
 }
 
-func (g *server) lockedOut(ip string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.lockedOutLocked(ip)
-}
-
 // lockedOutLocked counts logins still awaiting their result as failures,
 // so opening many connections at once can't buy extra guesses. g.mu must be
 // held.
@@ -741,14 +738,8 @@ func (g *server) lockedOutLocked(ip string) bool {
 	return len(recent)+g.pending[ip] >= maxFailures
 }
 
-func (g *server) recordFailure(ip string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.failures[ip] = append(g.failures[ip], time.Now())
-}
-
-// beginLogin reserves one of ip's login attempts, for a login whose result
-// comes later (VNC, or a tunnel login), or reports that it has none left.
+// beginLogin reserves one of ip's login attempts until endLogin gives its
+// result, or reports that it has none left.
 func (g *server) beginLogin(ip string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -767,6 +758,23 @@ func (g *server) endLogin(ip string, failed bool) {
 	}
 	if failed {
 		g.failures[ip] = append(g.failures[ip], time.Now())
+		g.sweepFailuresLocked()
+	}
+}
+
+// sweepFailuresLocked forgets the failures of every IP that has none left
+// in the window, at most once a window, so addresses that fail once and
+// never come back don't pile up. g.mu must be held.
+func (g *server) sweepFailuresLocked() {
+	now := time.Now()
+	if now.Sub(g.failuresSwept) < failureWindow {
+		return
+	}
+	g.failuresSwept = now
+	for ip, times := range g.failures {
+		if len(times) == 0 || now.Sub(times[len(times)-1]) >= failureWindow {
+			delete(g.failures, ip)
+		}
 	}
 }
 

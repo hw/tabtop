@@ -25,6 +25,7 @@ const CI = "tabtop login";
 const DATA = 0;
 const TEXT = 1;
 const CLOSE_LOGIN = 4001;  // no such session: log in
+const CONNECT_TIMEOUT = 20000;  // ms for the WebSocket to open
 const SESSION_KEY = "tabtop_session";
 
 const encoder = new TextEncoder();
@@ -232,9 +233,22 @@ class Socket {
         this.queue = [];
         this.waiters = [];
         this.closeEvent = null;
-        this.opened = new Promise((resolve) => (this.ws.onopen = resolve));
+        // opened fails if the socket closes, or takes too long, before it
+        // opens: refused, unreachable, or blocked on the way.
+        let fail;
+        this.opened = new Promise((resolve, reject) => {
+            this.ws.onopen = resolve;
+            fail = reject;
+        });
+        this.opened.catch(() => {});
+        const timer = setTimeout(() => {
+            fail(new TunnelError("Can't reach the server."));
+            this.ws.close();
+        }, CONNECT_TIMEOUT);
+        this.opened.then(() => clearTimeout(timer), () => clearTimeout(timer));
         this.ws.onmessage = (e) => this._push(new Uint8Array(e.data));
         this.ws.onclose = (e) => {
+            fail(new TunnelError(e.reason || "Can't reach the server."));
             this.closeEvent = e;
             while (this.waiters.length) {
                 this.waiters.shift()(null);

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -744,13 +745,17 @@ func TestTunnelInteropWithJS(t *testing.T) {
 	rand.Read(data)
 	os.WriteFile(filepath.Join(g.downloadsDir, "f.bin"), data, 0o644)
 	vectors, _ := json.Marshal(elligator2Vectors)
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusForbidden)
+	}))
+	defer refusing.Close()
 
 	// Once with each of tunnel.js's crypto backends, each logging in with
 	// its own code, since codes are single-use.
 	for i, backend := range []string{"webcrypto", "noble"} {
 		t.Run(backend, func(t *testing.T) {
 			cmd := exec.Command(node, filepath.Join(dir, "interop.mjs"),
-				wsURL(srv.URL), pin+code(int64(i)), string(vectors), backend)
+				wsURL(srv.URL), pin+code(int64(i)), string(vectors), backend, wsURL(refusing.URL))
 			cmd.Stderr = os.Stderr
 			out, err := cmd.Output()
 			var exit *exec.ExitError
@@ -762,6 +767,7 @@ func TestTunnelInteropWithJS(t *testing.T) {
 			}
 			var res struct {
 				Backend   string
+				Refused   []string
 				Elligator []string
 				Session   string
 				Entries   []fileEntry
@@ -775,6 +781,9 @@ func TestTunnelInteropWithJS(t *testing.T) {
 					t.Skipf("this node's WebCrypto lacks X25519 (used %s)", res.Backend)
 				}
 				t.Fatalf("ran with %s", res.Backend)
+			}
+			if !slices.Equal(res.Refused, []string{"TunnelError", "TunnelError"}) {
+				t.Errorf("logging in and opening a tunnel where WebSockets are refused: %v", res.Refused)
 			}
 			for i, v := range elligator2Vectors {
 				if i >= len(res.Elligator) || res.Elligator[i] != strings.TrimLeft(v.Out, "0") {
