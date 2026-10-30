@@ -6,8 +6,8 @@
 // adaptive buffer, for a delay of roughly 100-200 ms. On plain HTTP it falls
 // back to an <audio> element playing audio/stream.ogg, which the browser
 // buffers for about 2 s. With WEB_E2E=1, the packets come through the
-// encrypted tunnel instead, with the desktop's session; that needs HTTPS
-// too.
+// encrypted tunnel instead, with the desktop's session, which only the
+// WebCodecs player can use, so audio needs HTTPS then.
 
 import * as e2e from "./e2e.js";
 
@@ -240,7 +240,8 @@ async function start() {
     }
     setState("connecting", "Connecting audio… (click to stop)");
     if (e2e.enabled && !lowLatency) {
-        // The tunnel needs HTTPS; the <audio> element can't use it.
+        // Only the WebCodecs player can use the tunnel; the <audio> element
+        // can't.
         stopPlayer();
         setState("error", "Audio needs HTTPS (end-to-end encryption is on)");
         return;

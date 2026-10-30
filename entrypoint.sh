@@ -332,7 +332,7 @@ if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
 fi
 # With WEB_E2E=1, the pages talk to the gateway only through its encrypted
 # tunnel, logging in with CPace and encrypting with ChaCha20-Poly1305 from
-# @noble/ciphers (in /opt/noble).
+# the noble libraries (in /opt/noble).
 E2E=false
 if [ "$WEB_E2E" = 1 ]; then
     E2E=true

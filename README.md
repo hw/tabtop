@@ -466,10 +466,21 @@ JavaScript and the gateway:
   uses [@noble/ciphers](https://github.com/paulmillr/noble-ciphers), an
   audited JavaScript library, served from the image (`/opt/noble`). In
   Chromium it decrypts well over 100 MB/s, far more than the desktop needs.
-- **Requirements:** the page must be served over HTTPS, or from
-  `localhost`, since browsers only offer X25519 to secure pages: Chrome 133,
-  Firefox 130 or Safari 17, or later. Audio needs HTTPS too; there's no
-  plain-HTTP fallback.
+  The handshakes' X25519, SHA-2 and HKDF come from the browser's own
+  WebCrypto where it offers them, which is over HTTPS or on `localhost` in
+  Chrome 133, Firefox 130, Safari 17 or later. Elsewhere the page loads
+  [@noble/curves](https://github.com/paulmillr/noble-curves) and
+  [@noble/hashes](https://github.com/paulmillr/noble-hashes) for them
+  instead, which adds a few milliseconds to each login and connection.
+  Browsers keep the noble files cached, under a path that changes when the
+  image's copies do.
+- **Requirements:** any current browser, over HTTPS or plain HTTP. Audio is
+  the exception: it decodes with WebCodecs, which browsers only offer over
+  HTTPS or on `localhost`, so with `WEB_E2E=1` there's no audio over plain
+  HTTP. Over plain HTTP, though, anyone on the way can change the page's
+  scripts as well as read them, so the encryption only holds against
+  someone who watches without interfering, as it does behind a proxy that
+  decrypts HTTPS.
 - **Downloads:** files are fetched into the browser's memory and then saved,
   so very large files need as much free memory as they're big. Interrupted
   downloads start again from the beginning.
@@ -653,6 +664,10 @@ and activity, so turn it off again when you're done.
 | `POWERLINE_LICENSE_SHA256` | *(checksum for 2.8.4)* | SHA-256 of the `LICENSE` file at the same version. |
 | `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses with `WEB_E2E=1`. |
 | `NOBLE_CIPHERS_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/ciphers/-/ciphers-<version>.tgz`. |
+| `NOBLE_CURVES_VERSION` | `2.4.0` | `@noble/curves` release from npm, whose X25519 the page uses with `WEB_E2E=1`. |
+| `NOBLE_CURVES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/curves/-/curves-<version>.tgz`. |
+| `NOBLE_HASHES_VERSION` | `2.4.0` | `@noble/hashes` release from npm, whose SHA-2 and HKDF the page uses with `WEB_E2E=1`. Must be the version `@noble/curves` depends on. |
+| `NOBLE_HASHES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/hashes/-/hashes-<version>.tgz`. |
 
 The build adds two `<script>` tags to noVNC's `vnc.html`, for the audio
 button and the encrypted tunnel, and changes one line of `app/ui.js` so the
@@ -688,13 +703,14 @@ mise run build   # writes tabtopd/tabtopd
 
 `TestTunnelInteropWithJS` runs the page's `tunnel.js` in Node against the
 gateway, to check that the two sides of the encrypted tunnel agree. It needs
-Node 22 or later and `TABTOP_NOBLE_DIR` set to the `package/` directory of
-the extracted `@noble/ciphers` tarball; without them it's skipped, as it is
-in CI:
+Node 22 or later and `TABTOP_NOBLE_DIR` set to a copy of the image's
+`/opt/noble`, which the Dockerfile's `noble` stage builds; without them it's
+skipped, as it is in CI:
 
 ```sh
-mkdir -p /tmp/noble && curl -sL https://registry.npmjs.org/@noble/ciphers/-/ciphers-2.4.0.tgz | tar -xz -C /tmp/noble
-TABTOP_NOBLE_DIR=/tmp/noble/package mise run test
+docker build --target noble -t tabtop-noble .
+mkdir -p /tmp/noble && docker run --rm tabtop-noble tar -c -C /noble . | tar -x -C /tmp/noble
+TABTOP_NOBLE_DIR=/tmp/noble mise run test
 ```
 
 ### Continuous integration

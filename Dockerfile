@@ -79,19 +79,41 @@ RUN mkdir /src \
  && cp /src/package/LICENSE /terminal/LICENSE.ghostty-web \
  && chmod -R u=rwX,go=rX /terminal
 
-# @noble/ciphers, for the ChaCha20-Poly1305 that WEB_E2E=1's tunnel uses in
-# the browser (WebCrypto doesn't have it), from npm. Bump the version
-# together with its checksum (of the .tgz the URL points at). Only the
-# ChaCha20-Poly1305 files are kept.
+# The noble libraries, for the cryptography WEB_E2E=1's tunnel does in the
+# browser: ChaCha20-Poly1305 from @noble/ciphers, which browsers don't have,
+# and X25519 from @noble/curves and SHA-2 and HKDF from @noble/hashes, for
+# pages without WebCrypto (such as plain-HTTP ones). From npm; bump each version together with its
+# checksum (of the .tgz the URL points at), and @noble/curves together with
+# the @noble/hashes version it depends on. Only the files tunnel.js needs are
+# kept (tabtopd's nobleFiles lists the same ones), and @noble/curves' imports
+# of @noble/hashes are made relative, since browsers can't resolve package
+# names.
 FROM debian:trixie-slim AS noble
 ARG NOBLE_CIPHERS_VERSION=2.4.0
 ARG NOBLE_CIPHERS_SHA256=4a398bcc280c8742d474f9162f6d3c153e52ab1078e8ab592b4720410fb3c3e9
+ARG NOBLE_CURVES_VERSION=2.4.0
+ARG NOBLE_CURVES_SHA256=55279c71b0201d6c0e58d0206d15825359e02a3932f326ba7b7909ac2d334aa9
+ARG NOBLE_HASHES_VERSION=2.4.0
+ARG NOBLE_HASHES_SHA256=e1946149b780017b2564fcc092cb01c04e1d7f20627d0296c17da8868f4436dc
 ADD --checksum=sha256:${NOBLE_CIPHERS_SHA256} \
     https://registry.npmjs.org/@noble/ciphers/-/ciphers-${NOBLE_CIPHERS_VERSION}.tgz /ciphers.tgz
-RUN mkdir /src /noble \
- && tar -xzf /ciphers.tgz -C /src --no-same-owner \
- && cp /src/package/chacha.js /src/package/_arx.js /src/package/_poly1305.js /src/package/utils.js /noble/ \
- && cp /src/package/LICENSE /noble/LICENSE.noble-ciphers \
+ADD --checksum=sha256:${NOBLE_CURVES_SHA256} \
+    https://registry.npmjs.org/@noble/curves/-/curves-${NOBLE_CURVES_VERSION}.tgz /curves.tgz
+ADD --checksum=sha256:${NOBLE_HASHES_SHA256} \
+    https://registry.npmjs.org/@noble/hashes/-/hashes-${NOBLE_HASHES_VERSION}.tgz /hashes.tgz
+RUN set -e; mkdir /noble; for p in ciphers curves hashes; do \
+      mkdir -p /src/$p; tar -xzf /$p.tgz -C /src/$p --strip-components=1 --no-same-owner; \
+      cp /src/$p/LICENSE /noble/LICENSE.noble-$p; \
+    done \
+ && cd /src \
+ && cp --parents ciphers/chacha.js ciphers/_arx.js ciphers/_poly1305.js ciphers/utils.js \
+      curves/ed25519.js curves/utils.js curves/abstract/curve.js curves/abstract/edwards.js \
+      curves/abstract/fft.js curves/abstract/frost.js curves/abstract/hash-to-curve.js \
+      curves/abstract/modular.js curves/abstract/montgomery.js curves/abstract/oprf.js \
+      hashes/sha2.js hashes/_md.js hashes/_u64.js hashes/hkdf.js hashes/hmac.js hashes/utils.js /noble/ \
+ && sed -i "s#from '@noble/hashes/#from '../hashes/#" /noble/curves/*.js \
+ && sed -i "s#from '@noble/hashes/#from '../../hashes/#" /noble/curves/abstract/*.js \
+ && ! grep -rnE "^[^*]*from ['\"]@noble/" /noble \
  && chmod -R u=rwX,go=rX /noble
 
 # The Go version matches mise.toml, which pins it for local development.
@@ -203,8 +225,9 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # (ChaCha20-Poly1305, keyed by a CPace login with password + TOTP code), and
 # the unencrypted endpoints are refused. One gateway login covers the
 # desktop, terminal and downloads; Xvnc then listens on a Unix socket only.
-# It needs HTTPS (or localhost) and a browser with X25519 in WebCrypto. It
-# doesn't stop a proxy that rewrites pages. 0 (default) turns it off.
+# It works over plain HTTP too, except for audio, which needs HTTPS (or
+# localhost). It doesn't stop a proxy that rewrites pages. 0 (default) turns
+# it off.
 # WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
 # without a login; 0 (default) turns it off. <base>healthz always answers
 # health checks.

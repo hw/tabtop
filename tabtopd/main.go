@@ -90,7 +90,11 @@ type server struct {
 	// With e2e, everything goes through the encrypted tunnel (tunnel.go)
 	// and the unencrypted WebSockets and logins are refused.
 	e2e      bool
-	nobleDir string // @noble/ciphers files for tunnel.js
+	nobleDir string // noble library files for tunnel.js
+	nobleTag struct {
+		once sync.Once
+		tag  string
+	}
 
 	mu       sync.Mutex
 	sessions map[string]time.Time   // token -> expiry
@@ -122,7 +126,7 @@ func main() {
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
 	flag.BoolVar(&g.e2e, "e2e", false, "encrypt everything end to end through the tunnel, refusing the unencrypted WebSockets and logins")
-	flag.StringVar(&g.nobleDir, "noble-dir", "", "@noble/ciphers files the tunnel's JavaScript needs")
+	flag.StringVar(&g.nobleDir, "noble-dir", "", "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
 	audioKbps := flag.Int("audio-bitrate", 64, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
 	flag.Parse()
 	log.SetFlags(0)

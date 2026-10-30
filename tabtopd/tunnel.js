@@ -4,11 +4,17 @@
 // sees only ciphertext. Logging in runs CPace with the password + TOTP
 // code, which never crosses the wire; the session it yields keys every
 // later tunnel. Messages are encrypted with ChaCha20-Poly1305 from
-// @noble/ciphers, since browsers don't have it built in. The rest uses
-// WebCrypto, whose X25519 (Chrome 133+, Firefox 130+, Safari 17+) browsers
-// only offer over HTTPS or on localhost.
+// @noble/ciphers, since browsers don't have it built in. The handshakes'
+// X25519, SHA-2 and HKDF come from WebCrypto where the browser offers it
+// (over HTTPS or on localhost, in Chrome 133+, Firefox 130+ or Safari
+// 17+), and otherwise from @noble/curves and @noble/hashes, loaded only
+// then (see cryptoBackend). Both give the same bytes.
+//
+// tabtopd serves this file with "./noble/" changed to the versioned path
+// it serves the noble files under (see e2e.go), so browsers can cache them
+// for good; as written, it runs from a directory with noble/ beside it.
 
-import { chacha20poly1305 } from "./noble/chacha.js";
+import { chacha20poly1305 } from "./noble/ciphers/chacha.js";
 
 const VERSION = 2;
 const HELLO_LOGIN = 1;
@@ -21,7 +27,6 @@ const TEXT = 1;
 const CLOSE_LOGIN = 4001;  // no such session: log in
 const SESSION_KEY = "tabtop_session";
 
-const subtle = globalThis.crypto?.subtle;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -129,31 +134,84 @@ function bigToLE(x) {
     return out;
 }
 
-export async function cpaceGenerator(prs, sid) {
+export async function cpaceGenerator(c, prs, sid) {
     const p = encoder.encode(prs);
     const dsi = encoder.encode(DSI);
     const zpad = new Uint8Array(Math.max(0, 128 - lv(p).length - lv(dsi).length - 1));
-    const h = new Uint8Array(await subtle.digest("SHA-512", lv(dsi, p, zpad, encoder.encode(CI), sid)));
-    const le = h.slice(0, 32);
+    const le = (await c.sha512(lv(dsi, p, zpad, encoder.encode(CI), sid))).slice(0, 32);
     le[31] &= 0x7f;
     return bigToLE(elligator2(leToBig(le) % P));
 }
 
-// x25519 is X25519(private key, u); WebCrypto refuses an all-zero result.
-async function x25519(priv, u) {
-    const pub = await subtle.importKey("raw", u, { name: "X25519" }, false, []);
-    return new Uint8Array(await subtle.deriveBits({ name: "X25519", public: pub }, priv, 256));
+async function loginKeys(c, sid, k, ya, yb) {
+    const isk = await c.sha512(concat(lv(encoder.encode(DSI + "_ISK"), sid, k), lv(ya, [], yb, [])));
+    return c.hkdf(isk, new Uint8Array(), "tabtop login v2 keys", 128);
 }
 
-async function hkdf(ikm, salt, info, bits) {
-    const key = await subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
-    return new Uint8Array(await subtle.deriveBits(
-        { name: "HKDF", hash: "SHA-256", salt, info: encoder.encode(info) }, key, bits));
+// The handshakes' primitives, from WebCrypto or noble. Each backend has
+// keygen() -> { secret, pub }; scalarMult(secret, u), which is X25519 and
+// throws on an all-zero result; sha256 and sha512; and hkdf(ikm, salt,
+// info, bytes) with SHA-256. All return promises of Uint8Arrays.
+
+const webCrypto = (subtle) => ({
+    name: "webcrypto",
+    async keygen() {
+        const pair = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+        return { secret: pair.privateKey, pub: new Uint8Array(await subtle.exportKey("raw", pair.publicKey)) };
+    },
+    async scalarMult(secret, u) {
+        const pub = await subtle.importKey("raw", u, { name: "X25519" }, false, []);
+        return new Uint8Array(await subtle.deriveBits({ name: "X25519", public: pub }, secret, 256));
+    },
+    sha256: async (b) => new Uint8Array(await subtle.digest("SHA-256", b)),
+    sha512: async (b) => new Uint8Array(await subtle.digest("SHA-512", b)),
+    async hkdf(ikm, salt, info, bytes) {
+        const key = await subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+        return new Uint8Array(await subtle.deriveBits(
+            { name: "HKDF", hash: "SHA-256", salt, info: encoder.encode(info) }, key, bytes * 8));
+    },
+});
+
+async function nobleCrypto() {
+    const [{ x25519 }, { hkdf }, { sha256, sha512 }] = await Promise.all([
+        import("./noble/curves/ed25519.js"),
+        import("./noble/hashes/hkdf.js"),
+        import("./noble/hashes/sha2.js"),
+    ]);
+    return {
+        name: "noble",
+        async keygen() {
+            const { secretKey, publicKey } = x25519.keygen();
+            return { secret: secretKey, pub: publicKey };
+        },
+        scalarMult: async (secret, u) => x25519.scalarMult(secret, u),
+        sha256: async (b) => sha256(b),
+        sha512: async (b) => sha512(b),
+        hkdf: async (ikm, salt, info, bytes) => hkdf(sha256, ikm, salt, encoder.encode(info), bytes),
+    };
 }
 
-async function loginKeys(sid, k, ya, yb) {
-    const isk = await subtle.digest("SHA-512", concat(lv(encoder.encode(DSI + "_ISK"), sid, k), lv(ya, [], yb, [])));
-    return hkdf(isk, new Uint8Array(), "tabtop login v2 keys", 1024);
+let backend = null;
+
+// cryptoBackend picks the backend once per page: WebCrypto if it can make
+// an X25519 key, noble otherwise. useNoble (for tests) forces noble.
+export function cryptoBackend({ useNoble = false } = {}) {
+    if (useNoble) {
+        backend = nobleCrypto();
+    }
+    backend ??= (async () => {
+        const subtle = globalThis.crypto?.subtle;
+        if (subtle) {
+            try {
+                await subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+                return webCrypto(subtle);
+            } catch {
+                // No X25519 in this browser's WebCrypto.
+            }
+        }
+        return nobleCrypto();
+    })();
+    return backend;
 }
 
 // The connection -----------------------------------------------------
@@ -162,12 +220,6 @@ export class TunnelError extends Error {
     constructor(message, login = false) {
         super(message);
         this.login = login;  // the session is missing or over: log in again
-    }
-}
-
-function checkSupport() {
-    if (!subtle || ("isSecureContext" in globalThis && !globalThis.isSecureContext)) {
-        throw new TunnelError("The encrypted connection needs HTTPS (or localhost).");
     }
 }
 
@@ -219,15 +271,10 @@ class Socket {
 
 // login runs CPace with the credential and returns the new session.
 export async function login(credential, url = tunnelURL()) {
-    checkSupport();
-    let pair;
-    try {
-        pair = await subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
-    } catch {
-        throw new TunnelError("This browser can't make the encrypted connection (it lacks X25519).");
-    }
+    const c = await cryptoBackend();
+    const { secret: y } = await c.keygen();
     const sid = crypto.getRandomValues(new Uint8Array(16));
-    const ya = await x25519(pair.privateKey, await cpaceGenerator(credential, sid));
+    const ya = await c.scalarMult(y, await cpaceGenerator(c, credential, sid));
     const s = new Socket(url);
     try {
         await s.send(concat([VERSION, HELLO_LOGIN], sid, ya));
@@ -240,11 +287,11 @@ export async function login(credential, url = tunnelURL()) {
             const yb = reply.slice(i, i + 32);
             let k;
             try {
-                k = await x25519(pair.privateKey, yb);
+                k = await c.scalarMult(y, yb);
             } catch {
                 k = crypto.getRandomValues(new Uint8Array(32));  // can't match
             }
-            keys.push(await loginKeys(sid, k, ya, yb));
+            keys.push(await loginKeys(c, sid, k, ya, yb));
         }
         await s.send(concat(...keys.map((k) => k.slice(64, 96))));
         const confirm = await s.next();
@@ -266,7 +313,6 @@ export async function login(credential, url = tunnelURL()) {
 // { data } (an ArrayBuffer), or null once it's closed.
 export class Tunnel {
     static async open(request, sess = storedSession(), url = tunnelURL()) {
-        checkSupport();
         if (!sess) {
             throw new TunnelError("Log in first.", true);
         }
@@ -298,13 +344,8 @@ export class Tunnel {
     }
 
     async _connect(url, sess) {
-        let pair;
-        try {
-            pair = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
-        } catch {
-            throw new TunnelError("This browser can't make the encrypted connection (it lacks X25519).");
-        }
-        const pub = new Uint8Array(await subtle.exportKey("raw", pair.publicKey));
+        const c = await cryptoBackend();
+        const { secret: eph, pub } = await c.keygen();
         const id = encoder.encode(sess.id);
         const s = new Socket(url);
         await s.send(concat([VERSION, HELLO_SESSION], pub, id));
@@ -314,10 +355,16 @@ export class Tunnel {
             throw new TunnelError("The server's handshake is malformed.");
         }
         const serverEph = hello.slice(1);
-        const ee = await x25519(pair.privateKey, serverEph);
+        let ee;
+        try {
+            ee = await c.scalarMult(eph, serverEph);
+        } catch {
+            s.ws.close();
+            throw new TunnelError("The server's handshake is malformed.");
+        }
         const secret = Uint8Array.from(atob(sess.secret), (c) => c.charCodeAt(0));
-        const salt = new Uint8Array(await subtle.digest("SHA-256", concat(encoder.encode(LABEL), pub, serverEph, id)));
-        const k = await hkdf(concat(ee, secret), salt, "tabtop session keys", 512);
+        const salt = await c.sha256(concat(encoder.encode(LABEL), pub, serverEph, id));
+        const k = await c.hkdf(concat(ee, secret), salt, "tabtop session keys", 64);
         this._sendKey = k.slice(0, 32);
         this._recvKey = k.slice(32);
         this._ws = s.ws;

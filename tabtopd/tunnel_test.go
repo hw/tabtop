@@ -276,6 +276,7 @@ func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	os.WriteFile(filepath.Join(term, "ghostty-web.js"), []byte("export {}"), 0o644)
 	noble := t.TempDir()
 	for _, name := range nobleFiles {
+		os.MkdirAll(filepath.Dir(filepath.Join(noble, name)), 0o755)
 		os.WriteFile(filepath.Join(noble, name), []byte("export {}"), 0o644)
 	}
 	g.base, g.novncDir, g.downloadsDir, g.termDir, g.nobleDir, g.e2e = "/", novnc, t.TempDir(), term, noble, true
@@ -435,7 +436,8 @@ func TestTunnelSessions(t *testing.T) {
 // With -e2e, nothing is served unencrypted except the pages and scripts;
 // without it, there's no tunnel.
 func TestE2ERefusesPlainEndpoints(t *testing.T) {
-	_, srv := newE2EServer(t)
+	g, srv := newE2EServer(t)
+	noble := "/tabtop/" + g.noblePath()
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for _, tc := range []struct {
 		method, path string
@@ -455,8 +457,12 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 		{"GET", "/tabtop/tunnel.js", http.StatusOK},
 		{"GET", "/tabtop/files.js", http.StatusOK},
 		{"GET", "/tabtop/novnc.js", http.StatusOK},
-		{"GET", "/tabtop/noble/chacha.js", http.StatusOK},
-		{"GET", "/tabtop/noble/aes.js", http.StatusNotFound},
+		{"GET", noble + "/ciphers/chacha.js", http.StatusOK},
+		{"GET", noble + "/curves/abstract/montgomery.js", http.StatusOK},
+		{"GET", noble + "/ciphers/aes.js", http.StatusNotFound},
+		{"GET", noble + "/curves/nist.js", http.StatusNotFound},
+		{"GET", "/tabtop/noble/ciphers/chacha.js", http.StatusNotFound},
+		{"GET", "/tabtop/noble-000000000000/ciphers/chacha.js", http.StatusNotFound},
 		{"GET", "/tabtop/nope.js", http.StatusNotFound},
 	} {
 		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader("password=123456"))
@@ -473,7 +479,17 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 		if len(resp.Cookies()) > 0 {
 			t.Errorf("%s %s set a cookie", tc.method, tc.path)
 		}
+		cache := resp.Header.Get("Cache-Control")
 		switch tc.method + " " + tc.path {
+		case "GET " + noble + "/ciphers/chacha.js":
+			if cache != nobleCache {
+				t.Errorf("noble file cached as %q", cache)
+			}
+		case "GET /tabtop/tunnel.js":
+			if cache != "no-cache" || strings.Contains(string(body), `"./noble/`) ||
+				!strings.Contains(string(body), `"./`+g.noblePath()+`/ciphers/chacha.js"`) {
+				t.Errorf("tunnel.js (cached as %q) doesn't import from %s", cache, noble)
+			}
 		case "GET /downloads/a%20b/c":
 			if loc := resp.Header.Get("Location"); loc != "/downloads/#/a%20b/c" {
 				t.Errorf("redirect to %q", loc)
@@ -680,10 +696,12 @@ func TestTunnelUnderBasePath(t *testing.T) {
 	}
 }
 
-// The page's tunnel.js against tabtopd, in Node: the Elligator2 map
-// against RFC 9380, then a login, a listing and a file, which needs the
-// handshakes, key derivations and framing to agree byte for byte. Needs
-// Node 22 or later and @noble/ciphers' files in $TABTOP_NOBLE_DIR.
+// The page's tunnel.js against tabtopd, in Node, with each of its crypto
+// backends: the Elligator2 map against RFC 9380, then a login, a listing
+// and a file, which needs the handshakes, key derivations and framing to
+// agree byte for byte. Needs
+// Node 22 or later, and $TABTOP_NOBLE_DIR laid out as the image's
+// /opt/noble (see the README).
 func TestTunnelInteropWithJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -693,14 +711,14 @@ func TestTunnelInteropWithJS(t *testing.T) {
 	if nobleDir == "" {
 		t.Skip("TABTOP_NOBLE_DIR not set")
 	}
-	// tunnel.js imports ./noble/chacha.js, as it's served.
+	// tunnel.js imports ./noble/..., as it's served.
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "noble"), 0o755)
 	copyFile := func(from, to string) {
 		data, err := os.ReadFile(from)
 		if err != nil {
 			t.Fatal(err)
 		}
+		os.MkdirAll(filepath.Dir(to), 0o755)
 		os.WriteFile(to, data, 0o644)
 	}
 	copyFile("tunnel.js", filepath.Join(dir, "tunnel.js"))
@@ -717,38 +735,52 @@ func TestTunnelInteropWithJS(t *testing.T) {
 	os.WriteFile(filepath.Join(g.downloadsDir, "f.bin"), data, 0o644)
 	vectors, _ := json.Marshal(elligator2Vectors)
 
-	cmd := exec.Command(node, filepath.Join(dir, "interop.mjs"), wsURL(srv.URL), pin+code(0), string(vectors))
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 3 {
-		t.Skipf("node can't run tunnel.js: %s", out)
-	}
-	if err != nil {
-		t.Fatalf("node: %v\n%s", err, out)
-	}
-	var res struct {
-		Elligator []string
-		Session   string
-		Entries   []fileEntry
-		FileSHA   string
-	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		t.Fatalf("node output %q: %v", out, err)
-	}
-	for i, v := range elligator2Vectors {
-		if i >= len(res.Elligator) || res.Elligator[i] != strings.TrimLeft(v.Out, "0") {
-			t.Errorf("JS elligator2(%s) = %v, want %s", v.In, res.Elligator, v.Out)
-		}
-	}
-	if _, ok := g.sessionSecret(res.Session); !ok {
-		t.Errorf("session %q isn't valid", res.Session)
-	}
-	if len(res.Entries) != 1 || res.Entries[0].Name != "f.bin" {
-		t.Errorf("entries %+v", res.Entries)
-	}
-	sum := sha256.Sum256(data)
-	if res.FileSHA != hex.EncodeToString(sum[:]) {
-		t.Errorf("file came through as %s", res.FileSHA)
+	// Once with each of tunnel.js's crypto backends, each logging in with
+	// its own code, since codes are single-use.
+	for i, backend := range []string{"webcrypto", "noble"} {
+		t.Run(backend, func(t *testing.T) {
+			cmd := exec.Command(node, filepath.Join(dir, "interop.mjs"),
+				wsURL(srv.URL), pin+code(int64(i)), string(vectors), backend)
+			cmd.Stderr = os.Stderr
+			out, err := cmd.Output()
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 3 {
+				t.Skipf("node can't run tunnel.js: %s", out)
+			}
+			if err != nil {
+				t.Fatalf("node: %v\n%s", err, out)
+			}
+			var res struct {
+				Backend   string
+				Elligator []string
+				Session   string
+				Entries   []fileEntry
+				FileSHA   string
+			}
+			if err := json.Unmarshal(out, &res); err != nil {
+				t.Fatalf("node output %q: %v", out, err)
+			}
+			if res.Backend != backend {
+				if backend == "webcrypto" {
+					t.Skipf("this node's WebCrypto lacks X25519 (used %s)", res.Backend)
+				}
+				t.Fatalf("ran with %s", res.Backend)
+			}
+			for i, v := range elligator2Vectors {
+				if i >= len(res.Elligator) || res.Elligator[i] != strings.TrimLeft(v.Out, "0") {
+					t.Errorf("JS elligator2(%s) = %v, want %s", v.In, res.Elligator, v.Out)
+				}
+			}
+			if _, ok := g.sessionSecret(res.Session); !ok {
+				t.Errorf("session %q isn't valid", res.Session)
+			}
+			if len(res.Entries) != 1 || res.Entries[0].Name != "f.bin" {
+				t.Errorf("entries %+v", res.Entries)
+			}
+			sum := sha256.Sum256(data)
+			if res.FileSHA != hex.EncodeToString(sum[:]) {
+				t.Errorf("file came through as %s", res.FileSHA)
+			}
+		})
 	}
 }

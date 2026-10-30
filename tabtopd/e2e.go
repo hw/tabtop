@@ -1,15 +1,18 @@
 package main
 
-// What -e2e serves: the scripts under /tabtop/ (with noble's
-// ChaCha20-Poly1305, which browsers don't have built in), the downloads
+// What -e2e serves: the scripts under /tabtop/ (with the noble libraries'
+// cryptography, which works on plain-HTTP pages as well), the downloads
 // page (a script that lists and fetches files through the tunnel), and
 // /tunnel (see tunnel.go), which logs in or answers a session's request.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -17,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -36,8 +40,38 @@ const (
 //go:embed tunnel.js novnc.js files.js
 var e2eFiles embed.FS
 
-// The files of @noble/ciphers that tunnel.js imports, from -noble-dir.
-var nobleFiles = []string{"chacha.js", "_arx.js", "_poly1305.js", "utils.js"}
+// The files of the noble libraries that tunnel.js imports, directly or
+// through each other, from -noble-dir: @noble/ciphers for
+// ChaCha20-Poly1305, and @noble/curves for X25519 and @noble/hashes for
+// SHA-2 and HKDF where the browser's WebCrypto can't do them. The
+// Dockerfile's noble stage copies the same list.
+var nobleFiles = []string{
+	"ciphers/chacha.js", "ciphers/_arx.js", "ciphers/_poly1305.js", "ciphers/utils.js",
+	"curves/ed25519.js", "curves/utils.js", "curves/abstract/curve.js", "curves/abstract/edwards.js",
+	"curves/abstract/fft.js", "curves/abstract/frost.js", "curves/abstract/hash-to-curve.js",
+	"curves/abstract/modular.js", "curves/abstract/montgomery.js", "curves/abstract/oprf.js",
+	"hashes/sha2.js", "hashes/_md.js", "hashes/_u64.js", "hashes/hkdf.js", "hashes/hmac.js", "hashes/utils.js",
+}
+
+// nobleCache is how long browsers may keep the noble files: for good,
+// since their path changes with their contents.
+const nobleCache = "public, max-age=31536000, immutable"
+
+// noblePath is where the noble files are served, under /tabtop/: noble-
+// and a hash of their contents, so a new image's files get a new path.
+// tunnel.js is served with its "./noble/" imports pointing there.
+func (g *server) noblePath() string {
+	g.nobleTag.once.Do(func() {
+		h := sha256.New()
+		for _, name := range nobleFiles {
+			data, _ := os.ReadFile(filepath.Join(g.nobleDir, name)) // a missing file is the doctor's to report
+			h.Write([]byte(name))
+			h.Write(sha256Sum(data))
+		}
+		g.nobleTag.tag = "noble-" + hex.EncodeToString(h.Sum(nil))[:12]
+	})
+	return g.nobleTag.tag
+}
 
 // scripts serves the page scripts under /tabtop/. e2e.js tells the others
 // whether to use the tunnel: it re-exports tunnel.js with -e2e, and is
@@ -61,11 +95,15 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		} else {
 			io.WriteString(w, "// End-to-end encryption is off (WEB_E2E=0).\nexport const enabled = false;\n")
 		}
-	case name == "tunnel.js" || name == "novnc.js" || name == "files.js":
+	case name == "tunnel.js":
+		js, _ := e2eFiles.ReadFile(name)
+		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
+	case name == "novnc.js" || name == "files.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
-	case strings.HasPrefix(name, "noble/") && g.nobleDir != "" &&
-		slices.Contains(nobleFiles, strings.TrimPrefix(name, "noble/")):
-		http.ServeFileFS(w, r, os.DirFS(g.nobleDir), strings.TrimPrefix(name, "noble/"))
+	case g.nobleDir != "" && strings.HasPrefix(name, g.noblePath()+"/") &&
+		slices.Contains(nobleFiles, strings.TrimPrefix(name, g.noblePath()+"/")):
+		h.Set("Cache-Control", nobleCache)
+		http.ServeFileFS(w, r, os.DirFS(g.nobleDir), strings.TrimPrefix(name, g.noblePath()+"/"))
 	default:
 		h.Del("Content-Type")
 		http.NotFound(w, r)

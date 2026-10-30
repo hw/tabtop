@@ -204,7 +204,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		checks["e2e"] = newCheck("CPace logins, ChaCha20-Poly1305 tunnels; @noble/ciphers in "+g.nobleDir, err)
+		checks["e2e"] = newCheck("CPace logins, ChaCha20-Poly1305 tunnels; noble libraries in "+g.nobleDir, err)
 	}
 
 	g.mu.Lock()
