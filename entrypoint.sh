@@ -8,6 +8,7 @@ VNC_RESIZE="${VNC_RESIZE:-remote}"
 WEB_PORT="${WEB_PORT:-6080}"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
+WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
 WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_TTY="${WEB_TTY:-1}"
@@ -38,6 +39,10 @@ case "$WEB_TTY" in
     0|1) ;;
     *) echo "WEB_TTY must be 0 or 1 (got '${WEB_TTY}')." >&2; exit 1 ;;
 esac
+if ! [[ "$WEB_TRUST_NPROXIES" =~ ^[0-9]{1,2}$ ]] || [ "$WEB_TRUST_NPROXIES" -gt 10 ]; then
+    echo "WEB_TRUST_NPROXIES must be 0 to 10 (got '${WEB_TRUST_NPROXIES}')." >&2
+    exit 1
+fi
 case "$WEB_DOCTOR_ENDPOINT" in
     0|1) ;;
     *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
@@ -341,6 +346,7 @@ as_user /usr/local/bin/tabtopd \
     -users-file "$TOTP_USERS_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
+    -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
     -audio-sink "$AUDIO_SINK" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \

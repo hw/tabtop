@@ -58,6 +58,8 @@ const (
 	maxFailures     = 5 // failed logins per client IP per failureWindow, desktop and downloads together
 	failureWindow   = 5 * time.Minute
 	maxFormBytes    = 4096
+	// Most proxy hops -trust-nproxies may trust.
+	maxTrustNProxies = 10
 	// Largest message accepted from a noVNC client; clipboard pastes are the
 	// only big ones.
 	maxClientMessage = 16 << 20
@@ -79,9 +81,12 @@ type server struct {
 	downloadsDir string
 	// Proxies whose X-Forwarded-For entries are believed; see clientIP.
 	trustedProxies []netip.Prefix
-	audio          *audioHub // nil when audio is off
-	termDir        string    // ghostty-web files; empty when the terminal is off
-	doctorOn       bool      // serve the doctor report
+	// How many proxy hops nearest the container are trusted whatever their
+	// address, counting the one that connects; see clientIP.
+	trustNProxies int
+	audio         *audioHub // nil when audio is off
+	termDir       string    // ghostty-web files; empty when the terminal is off
+	doctorOn      bool      // serve the doctor report
 	// With e2e, everything goes through the encrypted tunnel (tunnel.go)
 	// and the unencrypted WebSockets and logins are refused.
 	e2e      bool
@@ -109,6 +114,8 @@ func main() {
 	flag.StringVar(&g.vncAddr, "vnc-addr", "127.0.0.1:5901", "Xvnc's RFB address: host:port, or unix:path for a socket")
 	flag.StringVar(&g.usersFile, "users-file", "", "pam_oath users file holding the TOTP key")
 	flag.StringVar(&g.downloadsDir, "downloads-dir", "", "directory served at "+downloadsPrefix)
+	flag.IntVar(&g.trustNProxies, "trust-nproxies", 0,
+		"how many proxies in front are trusted whatever their address, counting the one that connects")
 	trusted := flag.String("trusted-proxies", "",
 		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed")
 	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
@@ -130,8 +137,14 @@ func main() {
 	if g.trustedProxies, err = parsePrefixes(*trusted); err != nil {
 		log.Fatalf("-trusted-proxies: %v", err)
 	}
+	if g.trustNProxies < 0 || g.trustNProxies > maxTrustNProxies {
+		log.Fatalf("-trust-nproxies must be 0 to %d", maxTrustNProxies)
+	}
 	if len(g.trustedProxies) > 0 {
 		log.Printf("believing X-Forwarded-For from %v", g.trustedProxies)
+	}
+	if g.trustNProxies > 0 {
+		log.Printf("believing X-Forwarded-For from the %d nearest proxies, whatever their address", g.trustNProxies)
 	}
 	if g.doctorOn {
 		log.Printf("serving the troubleshooting report at %s, without a login", g.abs("/doctor"))
@@ -794,6 +807,12 @@ func (g *server) newSession() string {
 // supplied by the client and could be forged, so it's ignored. Nobody else's
 // X-Forwarded-For is read, so a client can't pick its own address to dodge
 // the limit.
+//
+// A hop is a trusted proxy if its address is in -trusted-proxies, or if it's
+// one of the -trust-nproxies hops nearest the container, counting the
+// connection's peer as the first: for proxies whose addresses change, such as
+// a platform's load balancer. With more than there really are, the walk
+// reaches entries the client wrote, so the count must be exact.
 func (g *server) clientIP(r *http.Request) string {
 	client, _ := g.traceClientIP(r)
 	return client
@@ -804,7 +823,21 @@ type hop struct {
 	Addr    string `json:"addr"`
 	From    string `json:"from"` // "connection" or "X-Forwarded-For"
 	Trusted bool   `json:"trusted"`
+	By      string `json:"by,omitempty"` // why it's trusted: "WEB_TRUSTED_PROXIES" or "WEB_TRUST_NPROXIES"
 	Note    string `json:"note,omitempty"`
+}
+
+// trustedBy says why the hop at position i (0 for the connection's peer,
+// then X-Forwarded-For entries from the right) is a trusted proxy, or "" if
+// it isn't one.
+func (g *server) trustedBy(addr netip.Addr, i int) string {
+	switch {
+	case g.trusted(addr):
+		return "WEB_TRUSTED_PROXIES"
+	case i < g.trustNProxies:
+		return "WEB_TRUST_NPROXIES"
+	}
+	return ""
 }
 
 // traceClientIP is clientIP, also returning the addresses it looked at:
@@ -815,16 +848,21 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 		host = r.RemoteAddr
 	}
 	peer, err := netip.ParseAddr(host)
-	if err != nil || !g.trusted(peer) {
+	if err != nil {
 		return host, []hop{{Addr: host, From: "connection"}}
 	}
-	trace := []hop{{Addr: peer.Unmap().String(), From: "connection", Trusted: true}}
+	peer = peer.Unmap()
+	by := g.trustedBy(peer, 0)
+	if by == "" {
+		return host, []hop{{Addr: host, From: "connection"}}
+	}
+	trace := []hop{{Addr: peer.String(), From: "connection", Trusted: true, By: by}}
 	var entries []string
 	for _, v := range r.Header.Values("X-Forwarded-For") {
 		entries = append(entries, strings.Split(v, ",")...)
 	}
 	client := peer
-	for _, entry := range slices.Backward(entries) {
+	for i, entry := range slices.Backward(entries) {
 		entry = strings.TrimSpace(entry)
 		addr, err := parseHop(entry)
 		if err != nil {
@@ -833,9 +871,11 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 			break
 		}
 		client = addr
-		trusted := g.trusted(addr)
-		trace = append(trace, hop{Addr: addr.String(), From: "X-Forwarded-For", Trusted: trusted})
-		if !trusted {
+		// slices.Backward counts i down from the rightmost entry, which is
+		// hop 1.
+		by := g.trustedBy(addr, len(entries)-i)
+		trace = append(trace, hop{Addr: addr.String(), From: "X-Forwarded-For", Trusted: by != "", By: by})
+		if by == "" {
 			break
 		}
 	}
@@ -855,7 +895,7 @@ func (g *server) secure(r *http.Request) bool {
 		return false
 	}
 	peer, err := netip.ParseAddr(host)
-	if err != nil || !g.trusted(peer) {
+	if err != nil || g.trustedBy(peer.Unmap(), 0) == "" {
 		return false
 	}
 	// A chain of proxies may list one scheme per hop; the first is the

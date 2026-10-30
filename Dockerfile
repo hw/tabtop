@@ -186,6 +186,12 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # Their X-Forwarded-Proto: https marks the login and audio cookies Secure.
 # Empty (default): no proxy is trusted. The proxy must also pass the Host
 # header through unchanged, or noVNC's WebSocket is refused as cross-origin.
+# WEB_TRUST_NPROXIES: how many proxies in front of the container are trusted
+# whatever their address (0 to 10), counting the one that connects, for
+# proxies whose addresses change, such as a platform's load balancer. Trusted
+# in addition to WEB_TRUSTED_PROXIES. Set it to exactly the number of proxies
+# every visitor passes through; one too many lets visitors pick their own IP.
+# 0 (default): trust by address only.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
 # /downloads/; 0 turns it off.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
@@ -214,6 +220,7 @@ ENV VNC_USER=user \
     WEB_PORT=6080 \
     WEB_BASE_PATH=/ \
     WEB_TRUSTED_PROXIES= \
+    WEB_TRUST_NPROXIES=0 \
     WEB_AUDIO=1 \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \

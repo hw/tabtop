@@ -280,10 +280,12 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 			peer.Addr, client))
 	case !peer.Trusted:
 		diagnosis = append(diagnosis, fmt.Sprintf("The connection comes from %s, which isn't in "+
-			"WEB_TRUSTED_PROXIES, so its X-Forwarded-For is ignored and failed logins count against %s. "+
-			"If %s is your reverse proxy, trust it: WEB_TRUSTED_PROXIES=%s. On a Docker network, "+
-			"give the proxy a fixed address rather than trusting the network's range, which includes "+
-			"its gateway, where visitors through a published port appear to come from.",
+			"WEB_TRUSTED_PROXIES (and WEB_TRUST_NPROXIES is 0), so its X-Forwarded-For is ignored and "+
+			"failed logins count against %s. If %s is your reverse proxy, trust it: "+
+			"WEB_TRUSTED_PROXIES=%s. On a Docker network, give the proxy a fixed address rather than "+
+			"trusting the network's range, which includes its gateway, where visitors through a "+
+			"published port appear to come from. If the proxy's address changes (a platform's load "+
+			"balancer) and every visitor comes through it, use WEB_TRUST_NPROXIES=1 instead.",
 			peer.Addr, client, peer.Addr, suggest))
 	case len(xff) == 0:
 		diagnosis = append(diagnosis, fmt.Sprintf("%s is a trusted proxy but sent no X-Forwarded-For, so "+
@@ -291,6 +293,11 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 	case last.Note != "":
 		diagnosis = append(diagnosis, fmt.Sprintf("X-Forwarded-For contains %q, which isn't an IP address; "+
 			"the client is taken as %s, the last trusted address before it.", last.Addr, client))
+	case last.Trusted && last.By == "WEB_TRUST_NPROXIES":
+		diagnosis = append(diagnosis, fmt.Sprintf("WEB_TRUST_NPROXIES=%d trusts more hops than this request "+
+			"came through, so the client is taken as the leftmost X-Forwarded-For entry, %s, which the "+
+			"visitor could have written. Set WEB_TRUST_NPROXIES to the number of proxies in front.",
+			g.trustNProxies, client))
 	case last.Trusted:
 		diagnosis = append(diagnosis, fmt.Sprintf("Every address in X-Forwarded-For is trusted, so the "+
 			"client is taken as the leftmost, %s. If that's a proxy too, the visitor's address is missing.", client))
@@ -298,8 +305,17 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 		diagnosis = append(diagnosis, fmt.Sprintf("The client is %s: reading X-Forwarded-For from the "+
 			"right, the first address that isn't a trusted proxy.", client))
 	}
+	if peer.By == "WEB_TRUST_NPROXIES" {
+		diagnosis = append(diagnosis, fmt.Sprintf("The connection from %s is trusted by count "+
+			"(WEB_TRUST_NPROXIES=%d), whatever its address. That's only safe if nobody can reach the "+
+			"container except through that proxy.", peer.Addr, g.trustNProxies))
+	}
 	for _, h := range trace[1:] {
-		if h.Trusted {
+		if h.Trusted && h.By == "WEB_TRUST_NPROXIES" {
+			diagnosis = append(diagnosis, fmt.Sprintf("X-Forwarded-For entry %s is trusted by count "+
+				"(WEB_TRUST_NPROXIES=%d): it should be one of your proxies. If it's the visitor, the "+
+				"count is too high and visitors can choose their own IP.", h.Addr, g.trustNProxies))
+		} else if h.Trusted {
 			diagnosis = append(diagnosis, fmt.Sprintf("X-Forwarded-For entry %s is trusted, so the address "+
 				"left of it is believed. That's right if %s is another proxy of yours; if it's a Docker "+
 				"network's gateway or any address visitors arrive from, visitors can choose their own IP.",
@@ -331,6 +347,7 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 		"x_forwarded_for":    xff,
 		"x_forwarded_proto":  proto,
 		"trusted_proxies":    trusted,
+		"trust_nproxies":     g.trustNProxies,
 		"client_ip":          client,
 		"secure_cookies":     g.secure(r),
 		"trace":              trace,

@@ -198,6 +198,62 @@ func TestClientIP(t *testing.T) {
 	}
 }
 
+// TestClientIPTrustNProxies trusts hops by position: the connection's peer
+// is the first, then X-Forwarded-For entries from the right.
+func TestClientIPTrustNProxies(t *testing.T) {
+	trusted, _ := parsePrefixes("10.0.0.1")
+	for _, tc := range []struct {
+		name string
+		n    int
+		peer string
+		xff  []string
+		want string
+	}{
+		{"0: by address only", 0, "198.51.100.7:5000", []string{"203.0.113.9"}, "198.51.100.7"},
+		{"1: the connecting proxy", 1, "198.51.100.7:5000", []string{"1.2.3.4, 203.0.113.9"}, "203.0.113.9"},
+		{"1: no header", 1, "198.51.100.7:5000", nil, "198.51.100.7"},
+		{"2: a CDN in front of the load balancer", 2, "198.51.100.7:5000", []string{"1.2.3.4, 203.0.113.9, 192.0.2.50"}, "203.0.113.9"},
+		{"2: forged entries further left ignored", 2, "198.51.100.7:5000", []string{"6.6.6.6, 203.0.113.9, 192.0.2.50"}, "203.0.113.9"},
+		{"1, plus a listed proxy beyond the count", 1, "198.51.100.7:5000", []string{"203.0.113.9, 10.0.0.1"}, "203.0.113.9"},
+		{"listed peer still trusted with a count", 1, "10.0.0.1:5000", []string{"203.0.113.9"}, "203.0.113.9"},
+		{"count larger than the chain: leftmost entry", 3, "198.51.100.7:5000", []string{"203.0.113.9"}, "203.0.113.9"},
+		{"IPv4-mapped peer counts too", 1, "[::ffff:198.51.100.7]:5000", []string{"203.0.113.9"}, "203.0.113.9"},
+	} {
+		g := &server{trustedProxies: trusted, trustNProxies: tc.n}
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = tc.peer
+		for _, v := range tc.xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		if got := g.clientIP(r); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+
+	// The trace says why each hop is trusted.
+	g := &server{trustedProxies: trusted, trustNProxies: 1}
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "198.51.100.7:5000"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.1")
+	_, trace := g.traceClientIP(r)
+	var by []string
+	for _, h := range trace {
+		by = append(by, h.Addr+"="+h.By)
+	}
+	if got := strings.Join(by, " "); got != "198.51.100.7=WEB_TRUST_NPROXIES 10.0.0.1=WEB_TRUSTED_PROXIES 203.0.113.9=" {
+		t.Errorf("trace: %s", got)
+	}
+
+	// X-Forwarded-Proto from a proxy trusted by count is believed too.
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if !g.secure(r) {
+		t.Error("X-Forwarded-Proto from a counted proxy ignored")
+	}
+	if (&server{trustedProxies: trusted}).secure(r) {
+		t.Error("X-Forwarded-Proto believed without a count")
+	}
+}
+
 func TestParseBasePath(t *testing.T) {
 	for in, want := range map[string]string{
 		"": "/", "/": "/", "tabtop": "/tabtop/", "/tabtop": "/tabtop/", "/tabtop/": "/tabtop/",

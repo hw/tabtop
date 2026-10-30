@@ -105,6 +105,7 @@ optional and only retains browser data, downloads and desktop preferences.
 | `WEB_PORT` | `6080` | Port the gateway listens on inside the container. |
 | `WEB_BASE_PATH` | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
 | `WEB_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. |
+| `WEB_TRUST_NPROXIES` | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [`WEB_TRUST_NPROXIES`](#web_trust_nproxies). |
 | `WEB_AUDIO` | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
@@ -113,9 +114,9 @@ optional and only retains browser data, downloads and desktop preferences.
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
-`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
-`WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `WEB_E2E` or `VNC_PASSWORD` has an
-invalid value, or if a saved `~/.config/tabtop/totp-secret` isn't valid
+`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`, `WEB_AUDIO`,
+`WEB_AUDIO_BITRATE`, `WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `WEB_E2E` or
+`VNC_PASSWORD` has an invalid value, or if a saved `~/.config/tabtop/totp-secret` isn't valid
 Base32. The error is printed to the log.
 
 ### `VNC_USER`
@@ -340,9 +341,9 @@ The proxy has to:
 - Allow long idle times, or idle desktop sessions get cut off.
 - Send `X-Forwarded-Proto`. When it says `https`, the login and audio
   cookies are marked `Secure`, so the browser never sends them over plain
-  HTTP. Like `X-Forwarded-For`, it's only believed from the addresses in
-  this variable: without them, cookies aren't marked `Secure` even behind an
-  HTTPS proxy.
+  HTTP. Like `X-Forwarded-For`, it's only believed from a trusted proxy (by
+  this variable or [`WEB_TRUST_NPROXIES`](#web_trust_nproxies)): without one,
+  cookies aren't marked `Secure` even behind an HTTPS proxy.
 
 For example, with nginx:
 
@@ -363,6 +364,37 @@ server {
     }
 }
 ```
+
+### `WEB_TRUST_NPROXIES`
+
+Some proxies don't have an address you can list, such as a hosting
+platform's load balancer, whose IPs change. `WEB_TRUST_NPROXIES` trusts the
+nearest proxies by how many there are instead: set it to the number of
+proxies every visitor passes through on the way to the container, counting
+the one that connects to it.
+
+```sh
+-e WEB_TRUST_NPROXIES=1    # a load balancer
+-e WEB_TRUST_NPROXIES=2    # a CDN in front of a load balancer
+```
+
+- **How it reads the header:** with `1`, the connecting address is trusted
+  and the visitor is the rightmost `X-Forwarded-For` entry. With `2`, that
+  entry is trusted too (the CDN, as the load balancer saw it), and the
+  visitor is the one before it. Entries further left are ignored, as always.
+- **Together with `WEB_TRUSTED_PROXIES`:** a hop is trusted if it's within
+  the count or its address is listed. Listed proxies beyond the count are
+  still skipped, wherever they appear.
+- **Exactly the right number:** one too many, and the gateway takes an
+  address the visitor wrote themselves, so they can pick their own IP and
+  dodge the login limit. One too few, and every visitor appears to come from
+  your outermost proxy, so one person's failed logins lock everyone out.
+- **Only behind the proxy:** if visitors can also reach the container
+  directly, a count of 1 or more trusts them as a proxy too. Use it only when
+  the proxy is the only way in.
+
+`/doctor` (see [Health checks](#health-checks)) shows each hop, and whether
+it was trusted by address or by count.
 
 ### `WEB_AUDIO`
 
@@ -596,8 +628,9 @@ It doesn't connect to Xvnc, which would log every check.
   shows the address the connection came from and whether it's trusted, the
   `Host`, `X-Forwarded-For` and `X-Forwarded-Proto` headers as received
   (even from an untrusted address, where they're otherwise ignored), the
-  `WEB_TRUSTED_PROXIES` list, each address checked to find the client IP,
-  and whether cookies would be marked `Secure`. A **diagnosis** explains the
+  `WEB_TRUSTED_PROXIES` list and `WEB_TRUST_NPROXIES` count, each address
+  checked to find the client IP (and whether it was trusted by address or by
+  count), and whether cookies would be marked `Secure`. A **diagnosis** explains the
   result in words and what to change, such as the `WEB_TRUSTED_PROXIES`
   value that would trust the connection's address.
 - **state:** counts of web sessions, open terminals, locked-out IPs and
