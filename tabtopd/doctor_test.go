@@ -184,3 +184,37 @@ func TestDoctorProxy(t *testing.T) {
 		t.Errorf("garbage entry: %+v", p)
 	}
 }
+
+func TestDoctorCloudflare(t *testing.T) {
+	g := &server{}
+	diagnosis := func(peer string, header ...string) string {
+		r, _ := http.NewRequest("GET", "/doctor", nil)
+		r.RemoteAddr = peer
+		r.Header.Set("X-Forwarded-For", "203.0.113.9")
+		for i := 0; i < len(header); i += 2 {
+			r.Header.Set(header[i], header[i+1])
+		}
+		return strings.Join(g.proxyReport(r)["diagnosis"].([]string), " ")
+	}
+	// Straight from Cloudflare's edge: trust all of it, not one address.
+	if d := diagnosis("162.158.1.2:5000"); !strings.Contains(d, "WEB_TRUSTED_PROXIES=cloudflare.") {
+		t.Errorf("edge: %s", d)
+	}
+	// Through cloudflared: trust its address.
+	if d := diagnosis("172.18.0.5:5000", "Cf-Ray", "8a1b2c3d4e5f-SIN"); !strings.Contains(d, "cloudflared") ||
+		!strings.Contains(d, "WEB_TRUSTED_PROXIES=172.18.0.5)") {
+		t.Errorf("cloudflared: %s", d)
+	}
+	// With another proxy trusted already, still all of Cloudflare.
+	g.trustedProxies, _ = parsePrefixes("10.0.0.5")
+	if d := diagnosis("162.158.1.2:5000"); !strings.Contains(d, "WEB_TRUSTED_PROXIES=10.0.0.5/32,cloudflare.") {
+		t.Errorf("edge, another proxy trusted: %s", d)
+	}
+	g.trustedProxies, _ = parsePrefixes("cloudflare")
+	if d := diagnosis("162.158.1.2:5000"); !strings.Contains(d, "The client is 203.0.113.9: the address Cloudflare added") {
+		t.Errorf("trusted edge: %s", d)
+	}
+	if got := g.proxyReport(httptest.NewRequest("GET", "/doctor", nil))["trusted_proxies"]; len(got.([]string)) != 1 {
+		t.Errorf("trusted_proxies: %v", got)
+	}
+}

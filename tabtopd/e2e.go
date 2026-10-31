@@ -170,6 +170,13 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	c.SetReadLimit(tunnelHelloLimit)
 	ip := g.clientIP(r)
+	alive, stop := context.WithCancel(context.Background())
+	defer stop()
+	interval := g.pingInterval
+	if interval == 0 {
+		interval = pingInterval
+	}
+	go keepalive(alive, c, interval)
 
 	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
 	typ, hello, err := c.Read(ctx)

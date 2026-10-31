@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -768,6 +769,28 @@ func TestTunnelRefusesOtherSites(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Errorf("response %v, want 403", resp)
+	}
+}
+
+// TestTunnelPings checks that an idle tunnel is pinged, so proxies don't
+// close it.
+func TestTunnelPings(t *testing.T) {
+	g, srv := newE2EServer(t)
+	g.pingInterval = 20 * time.Millisecond
+	var pings atomic.Int32
+	c, _, err := websocket.Dial(testCtx(t), wsURL(srv.URL), &websocket.DialOptions{
+		OnPingReceived: func(context.Context, []byte) bool { pings.Add(1); return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	// Pings are only seen while reading; nothing else arrives.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	c.Read(ctx)
+	if n := pings.Load(); n < 3 {
+		t.Errorf("%d pings in 200ms at a 20ms interval", n)
 	}
 }
 

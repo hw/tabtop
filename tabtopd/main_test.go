@@ -247,6 +247,42 @@ func TestClientIP(t *testing.T) {
 	}
 }
 
+func TestClientIPCloudflare(t *testing.T) {
+	trusted, err := parsePrefixes("Cloudflare, 172.18.0.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(describePrefixes(trusted), " "); got != "cloudflare 172.18.0.5/32" {
+		t.Errorf("described as %q", got)
+	}
+	g := &server{trustedProxies: trusted}
+	for _, tc := range []struct {
+		name, peer string
+		xff        []string
+		want       string
+	}{
+		{"edge, IPv4", "162.158.1.2:5000", []string{"1.2.3.4, 203.0.113.9"}, "203.0.113.9"},
+		{"edge, IPv6", "[2a06:98c3::1]:5000", []string{"2001:db8::9"}, "2001:db8::9"},
+		{"cloudflared", "172.18.0.5:5000", []string{"203.0.113.9"}, "203.0.113.9"},
+		{"a Worker's request can't pick its IP", "162.158.1.2:5000", []string{"6.6.6.6, 2a06:98c0:3600::103"}, "2a06:98c0:3600::103"},
+		{"nginx behind Cloudflare", "172.18.0.5:5000", []string{"203.0.113.9, 162.158.1.2"}, "203.0.113.9"},
+		{"nginx behind Cloudflare, a Worker", "172.18.0.5:5000", []string{"6.6.6.6, 162.159.1.1, 162.158.1.2"}, "162.159.1.1"},
+		{"straight to the origin, header ignored", "198.51.100.7:5000", []string{"203.0.113.9"}, "198.51.100.7"},
+	} {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = tc.peer
+		for _, v := range tc.xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		if got := g.clientIP(r); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+	if got := describePrefixes(cloudflareRanges[1:]); len(got) != len(cloudflareRanges)-1 || got[0] == "cloudflare" {
+		t.Errorf("some of Cloudflare's ranges described as %v", got)
+	}
+}
+
 // TestClientIPTrustNProxies trusts hops by position: the connection's peer
 // is the first, then X-Forwarded-For entries from the right.
 func TestClientIPTrustNProxies(t *testing.T) {

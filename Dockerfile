@@ -205,6 +205,9 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # WEB_TRUSTED_PROXIES: comma-separated IPs or CIDR ranges of reverse proxies
 # in front of the container. Their X-Forwarded-For header is used to find the
 # visitor's IP, which failed logins are limited by; nobody else's is believed.
+# cloudflare stands for Cloudflare's published ranges, for a site behind
+# Cloudflare that it connects to directly; with a Cloudflare Tunnel, trust
+# cloudflared's address instead.
 # Empty (default): no proxy is trusted. The proxy must also pass the Host
 # header through unchanged, or the tunnel's WebSocket is refused as
 # cross-origin.

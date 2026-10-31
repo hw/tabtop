@@ -98,6 +98,29 @@ const (
 
 var errTunnelFrame = errors.New("tunnel: bad message")
 
+// pingInterval is how often an open tunnel is pinged, so proxies that close
+// idle WebSockets don't close an idle desktop or terminal: Cloudflare after
+// about 100 seconds, nginx after 60 by default.
+const pingInterval = 30 * time.Second
+
+// keepalive pings c every interval until ctx ends. A ping without a pong
+// isn't an error: the pong is only seen while something reads c, and the
+// ping has already done its job by being sent.
+func keepalive(ctx context.Context, c *websocket.Conn, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, interval)
+			c.Ping(pctx)
+			cancel()
+		}
+	}
+}
+
 func tunnelNonce(n uint64) []byte {
 	nonce := make([]byte, chacha20poly1305.NonceSize)
 	binary.BigEndian.PutUint64(nonce[4:], n)

@@ -104,7 +104,7 @@ optional and only retains browser data, downloads and desktop preferences.
 | `VNC_RESIZE` | `remote` | Default way noVNC fits the desktop to the browser window: `remote`, `scale` or `off`. |
 | `WEB_PORT` | `6080` | Port the gateway listens on inside the container. |
 | `WEB_BASE_PATH` | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
-| `WEB_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed. |
+| `WEB_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
 | `WEB_TRUST_NPROXIES` | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [`WEB_TRUST_NPROXIES`](#web_trust_nproxies). |
 | `WEB_AUDIO` | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
@@ -318,6 +318,7 @@ find each visitor's IP.
 ```sh
 -e WEB_TRUSTED_PROXIES=10.0.0.5
 -e WEB_TRUSTED_PROXIES=10.0.0.5,172.16.0.0/12
+-e WEB_TRUSTED_PROXIES=cloudflare
 ```
 
 - **Untrusted senders:** the header is ignored for everyone else, so visitors
@@ -338,7 +339,10 @@ The proxy has to:
 - Pass the `Host` header through unchanged. Otherwise the gateway refuses
   the tunnel's WebSocket as cross-origin.
 - Forward WebSocket upgrades.
-- Allow long idle times, or idle desktop sessions get cut off.
+- Allow long idle times, or idle desktop sessions get cut off. The
+  gateway pings every WebSocket every 30 seconds, which is enough for idle
+  limits of a minute or more, such as nginx's default 60 s
+  `proxy_read_timeout`.
 - Send `X-Forwarded-Proto`, so `/doctor` can tell whether visitors arrive
   over HTTPS. Like `X-Forwarded-For`, it's only believed from a trusted
   proxy (by this variable or
@@ -367,6 +371,38 @@ server {
     }
 }
 ```
+
+### Behind Cloudflare
+
+Cloudflare's edge connects from many addresses, which change between
+requests, so trusting the one you see in `/doctor` isn't enough.
+`cloudflare` in `WEB_TRUSTED_PROXIES` stands for all of Cloudflare's
+[published ranges](https://www.cloudflare.com/ips/) as of October 2026
+(update the image if they change):
+
+```sh
+-e WEB_TRUSTED_PROXIES=cloudflare               # Cloudflare connects to the container
+-e WEB_TRUSTED_PROXIES=cloudflare,172.18.0.5    # and another proxy of yours, too
+-e WEB_TRUSTED_PROXIES=172.18.0.5               # a Cloudflare Tunnel's cloudflared
+```
+
+- **Straight from Cloudflare:** the edge adds the visitor's IP to
+  `X-Forwarded-For`, which is believed only when the connection comes from
+  one of Cloudflare's addresses. The entry Cloudflare added is taken as the
+  visitor even when it's a Cloudflare address too (a request from someone's
+  Cloudflare Worker), so entries the visitor wrote further left are never
+  read. Anyone who reaches the container directly isn't trusted, so they
+  can't pick their own IP either. That's safer than `WEB_TRUST_NPROXIES=1`,
+  which would believe them.
+- **Cloudflare Tunnel:** cloudflared connects to the container, not the
+  edge, so trust cloudflared's address instead, and give it a fixed one on a
+  Docker network. `/doctor` notices this case from Cloudflare's `Cf-Ray`
+  header.
+- **Idle connections:** Cloudflare closes WebSockets that are idle for
+  about 100 seconds. The gateway pings every 30 seconds so that an idle
+  desktop or terminal stays open.
+- **Scripts:** turn off Rocket Loader and other features that rewrite
+  scripts (see above).
 
 ### `WEB_TRUST_NPROXIES`
 

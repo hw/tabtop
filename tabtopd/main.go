@@ -68,10 +68,11 @@ type server struct {
 	// How many proxy hops nearest the container are trusted whatever their
 	// address, counting the one that connects; see clientIP.
 	trustNProxies int
-	audio         *audioHub // nil when audio is off
-	termDir       string    // ghostty-web files; empty when the terminal is off
-	doctorOn      bool      // serve the doctor report
-	nobleDir      string    // noble library files for tunnel.js
+	audio         *audioHub     // nil when audio is off
+	termDir       string        // ghostty-web files; empty when the terminal is off
+	doctorOn      bool          // serve the doctor report
+	nobleDir      string        // noble library files for tunnel.js
+	pingInterval  time.Duration // for tests; 0 means the pingInterval constant
 	nobleTag      struct {
 		once sync.Once
 		tag  string
@@ -104,7 +105,7 @@ func main() {
 	flag.IntVar(&g.trustNProxies, "trust-nproxies", 0,
 		"how many proxies in front are trusted whatever their address, counting the one that connects")
 	trusted := flag.String("trusted-proxies", "",
-		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed")
+		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed; cloudflare stands for Cloudflare's published ranges")
 	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
@@ -127,7 +128,7 @@ func main() {
 		log.Fatalf("-trust-nproxies must be 0 to %d", maxTrustNProxies)
 	}
 	if len(g.trustedProxies) > 0 {
-		log.Printf("believing X-Forwarded-For from %v", g.trustedProxies)
+		log.Printf("believing X-Forwarded-For from %s", strings.Join(describePrefixes(g.trustedProxies), ", "))
 	}
 	if g.trustNProxies > 0 {
 		log.Printf("believing X-Forwarded-For from the %d nearest proxies, whatever their address", g.trustNProxies)
@@ -447,7 +448,8 @@ func (g *server) newSession() string {
 // one of the -trust-nproxies hops nearest the container, counting the
 // connection's peer as the first: for proxies whose addresses change, such as
 // a platform's load balancer. With more than there really are, the walk
-// reaches entries the client wrote, so the count must be exact.
+// reaches entries the client wrote, so the count must be exact. The entry
+// a trusted Cloudflare address added is the client, whatever its address.
 func (g *server) clientIP(r *http.Request) string {
 	client, _ := g.traceClientIP(r)
 	return client
@@ -497,6 +499,10 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 		entries = append(entries, strings.Split(v, ",")...)
 	}
 	client := peer
+	// Cloudflare is always the outermost proxy, so the entry it added is
+	// the visitor even if it's one of Cloudflare's own addresses (a
+	// Worker's request), whose entries further left are the visitor's own.
+	afterCloudflare := inCloudflare(peer)
 	for i, entry := range slices.Backward(entries) {
 		entry = strings.TrimSpace(entry)
 		addr, err := parseHop(entry)
@@ -506,6 +512,11 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 			break
 		}
 		client = addr
+		if afterCloudflare {
+			trace = append(trace, hop{Addr: addr.String(), From: "X-Forwarded-For",
+				Note: "added by Cloudflare, so the visitor whatever its address"})
+			break
+		}
 		// slices.Backward counts i down from the rightmost entry, which is
 		// hop 1.
 		by := g.trustedBy(addr, len(entries)-i)
@@ -513,6 +524,7 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 		if by == "" {
 			break
 		}
+		afterCloudflare = inCloudflare(addr)
 	}
 	return client.String(), trace
 }
@@ -554,11 +566,55 @@ func parseHop(s string) (netip.Addr, error) {
 	return ap.Addr().Unmap(), err
 }
 
-// parsePrefixes parses a comma- or space-separated list of IPs and CIDR
-// ranges; a bare IP is a range of one.
+// cloudflareRanges are the addresses Cloudflare's edge connects from, as
+// published at https://www.cloudflare.com/ips-v4 and /ips-v6 (2026-10-31).
+// "cloudflare" in -trusted-proxies stands for all of them.
+var cloudflareRanges = mustParsePrefixes(`
+	173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22
+	141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20
+	197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13
+	104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+	2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32
+	2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32`)
+
+func mustParsePrefixes(s string) []netip.Prefix {
+	var prefixes []netip.Prefix
+	for _, f := range strings.Fields(s) {
+		prefixes = append(prefixes, netip.MustParsePrefix(f))
+	}
+	return prefixes
+}
+
+func inCloudflare(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return slices.ContainsFunc(cloudflareRanges, func(p netip.Prefix) bool { return p.Contains(addr) })
+}
+
+// describePrefixes lists prefixes for people to read, with Cloudflare's
+// ranges shown as "cloudflare".
+func describePrefixes(prefixes []netip.Prefix) []string {
+	out := []string{}
+	if !slices.ContainsFunc(cloudflareRanges, func(p netip.Prefix) bool { return !slices.Contains(prefixes, p) }) {
+		out = append(out, "cloudflare")
+		prefixes = slices.DeleteFunc(slices.Clone(prefixes), func(p netip.Prefix) bool {
+			return slices.Contains(cloudflareRanges, p)
+		})
+	}
+	for _, p := range prefixes {
+		out = append(out, p.String())
+	}
+	return out
+}
+
+// parsePrefixes parses a comma- or space-separated list of IPs, CIDR
+// ranges and "cloudflare"; a bare IP is a range of one.
 func parsePrefixes(s string) ([]netip.Prefix, error) {
 	var prefixes []netip.Prefix
 	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if strings.EqualFold(f, "cloudflare") {
+			prefixes = append(prefixes, cloudflareRanges...)
+			continue
+		}
 		if strings.Contains(f, "/") {
 			p, err := netip.ParsePrefix(f)
 			if err != nil {
