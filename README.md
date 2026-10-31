@@ -5,7 +5,7 @@ desktop, and you log in with a TOTP code from an authenticator app (optionally
 preceded by a password). The desktop's sound plays in the browser. The same
 site also offers a terminal, and a files page for the desktop user's
 `~/Downloads`, where files can be downloaded, uploaded (with a button or by
-dropping them on the page) and deleted. Logins and everything after them
+dropping them on the page, folders included) and deleted. Logins and everything after them
 travel through an [encrypted tunnel](#encryption) between the page and the
 gateway, so a proxy that decrypts HTTPS on the way can't read them.
 
@@ -14,7 +14,7 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 | Path | What it serves |
 |---|---|
 | `/` | The noVNC client, which connects to the desktop |
-| `/downloads/` | The files page for `~/Downloads`: download, upload and delete files |
+| `/downloads/` | The files page for `~/Downloads`: download, upload and delete files and folders |
 | `/tty/` | A terminal (ghostty-web and tmux) |
 | `/tunnel` | The [encrypted connection](#encryption) that carries the logins, the desktop, the terminal, files and sound for all of the above |
 | `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
@@ -608,12 +608,21 @@ downloaded at `http://<host>:6080/downloads/`:
   goes, without a warning. One that's cut off is deleted, and any left by a
   crash or a forced stop are deleted when the container next starts (it
   spends at most 10 seconds looking, before serving anything), so don't
-  share `~/Downloads` between two running containers. Folders can't
-  be uploaded, only files. Interrupted downloads and uploads start again from the beginning.
-- **Deleting:** each file has a **Delete** button, which asks first.
-  Deleting is permanent: there's no trash. Only files can be deleted, not
-  folders; deleting a symlink removes the link, not the file it leads to.
-  Files can't be renamed or changed from the web.
+  share `~/Downloads` between two running containers. Interrupted
+  downloads and uploads start again from the beginning.
+- **Folder uploads:** drop a folder on the page, or pick one with
+  **Upload a folder…** (in browsers that have it), to upload it with
+  everything in it. It never merges into a folder already there: one whose
+  name is taken is uploaded as `name (1)` and so on. Its files are uploaded
+  one at a time like any other, and the page shows how many made it and
+  lists any that failed. Empty folders inside a picked folder are left out,
+  since browsers don't pass them on; dropped ones are kept.
+- **Deleting:** each file and folder has a **Delete** button, which asks
+  first. Deleting a folder deletes everything in it. Deleting is
+  permanent: there's no trash. Deleting a symlink removes the link, not
+  the file or folder it leads to, and a folder is deleted without
+  following any symlinks in it. Files can't be renamed or changed from the
+  web.
 - **Attachments only:** files are always sent as downloads, never shown as
   pages, so an HTML file in `~/Downloads` can't run on the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
@@ -712,8 +721,8 @@ harmless.
   the desktop already gives. Set `WEB_TTY=0` if you don't want it. Only
   pages from the site itself can open the tunnel; the gateway refuses
   WebSocket requests from other sites.
-- **Files:** anyone logged in can delete files in `~/Downloads`, with no
-  way to undo it.
+- **Files:** anyone logged in can delete files and folders in
+  `~/Downloads`, with no way to undo it.
 
 ## Health checks
 
@@ -790,10 +799,11 @@ The gateway uses libopus (audio) and liboath (logins) through cgo, so
 building it needs a C compiler and their headers
 (`apt install gcc libopus-dev liboath-dev` on Debian).
 
-mise installs that Go version and runs the tasks defined in `mise.toml`:
+mise installs that Go version, and the Node version the browser check
+uses, and runs the tasks defined in `mise.toml`:
 
 ```sh
-mise install     # once, or after the Go version changes
+mise install     # once, or after the Go or Node version changes
 mise run test
 mise run vet
 mise run build   # writes tabtopd/tabtopd
@@ -811,18 +821,29 @@ mkdir -p /tmp/noble && docker run --rm tabtop-noble tar -c -C /noble . | tar -x 
 TABTOP_NOBLE_DIR=/tmp/noble mise run test
 ```
 
+`test/browser-check.sh <image>` checks an image end to end, the way a
+person uses it: it starts a container and headless Chrome, logs in, opens
+the desktop and its sound, lists, downloads, uploads and deletes files,
+uploads a folder both picked and dropped and deletes one, runs a command
+in the terminal, and logs out, then checks from inside the container what
+the pages left in `~/Downloads`. It prints `ok` or `not ok` for each step, and the
+container's log if one fails. It needs Docker, Node and Chrome or Chromium
+(set `CHROME` if it isn't found). `mise run browser-check` builds the image
+and runs it.
+
 ### Continuous integration
 
 `.github/workflows/build.yml` runs on pushes to `main`, on `v*` tags and on
 pull requests. It checks formatting, runs `mise run vet` and `mise run test`,
-then builds the image. If all of that passes, it pushes the image to
+then builds the image and runs `test/browser-check.sh` on it. If all of
+that passes, it pushes the image to
 `ghcr.io/<owner>/<repo>` with these tags:
 
 | Event | Tags |
 |---|---|
 | Push to `main` | `main`, `latest`, `sha-<commit>` |
 | Tag `v1.2.3` | `1.2.3`, `1.2`, `sha-<commit>` |
-| Pull request | none: the image is built but not pushed |
+| Pull request | none: the image is built and checked but not pushed |
 
 The first push creates the package as private. To let others pull it without
 logging in, make it public in the package's settings on GitHub.

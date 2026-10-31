@@ -41,13 +41,33 @@ func TestTunnelDelete(t *testing.T) {
 		exists(filepath.Join(dir, "link")) || !exists(filepath.Join(dir, "target")) {
 		t.Errorf("symlink: %v", reply)
 	}
-	for _, p := range []string{"sub dir/é.txt", "sub dir", "dirlink", "", "escape", "../outside", uploadTempPrefix + "1.part"} {
+	for _, p := range []string{"sub dir/é.txt", "", "/", ".", "sub dir/..", "escape", "../outside", uploadTempPrefix + "1.part"} {
 		if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "delete", Path: p}); reply["error"] == nil {
 			t.Errorf("delete %q: %v", p, reply)
 		}
 	}
 	for _, p := range []string{"sub dir", "dirlink", "escape", "target", uploadTempPrefix + "1.part", "../outside"} {
 		if !exists(filepath.Join(dir, p)) {
+			t.Errorf("%s is gone", p)
+		}
+	}
+
+	// A symlink to a folder goes, not the folder.
+	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "delete", Path: "dirlink"}); reply["ok"] != true ||
+		exists(filepath.Join(dir, "dirlink")) || !exists(filepath.Join(dir, "sub dir")) {
+		t.Errorf("symlink to a folder: %v", reply)
+	}
+	// A folder goes with everything in it, without following a symlink in
+	// it out.
+	os.MkdirAll(filepath.Join(dir, "sub dir", "deeper"), 0o755)
+	os.WriteFile(filepath.Join(dir, "sub dir", "deeper", "f"), []byte("x"), 0o644)
+	os.Symlink(filepath.Dir(dir), filepath.Join(dir, "sub dir", "up"))
+	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "delete", Path: "sub dir/"}); reply["ok"] != true ||
+		exists(filepath.Join(dir, "sub dir")) {
+		t.Errorf("folder: %v", reply)
+	}
+	for _, p := range []string{filepath.Join(dir, "target"), filepath.Join(filepath.Dir(dir), "outside")} {
+		if !exists(p) {
 			t.Errorf("%s is gone", p)
 		}
 	}

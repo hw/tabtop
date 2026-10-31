@@ -1,6 +1,8 @@
 [tools]
 # Keep in sync with the golang image in the Dockerfile's tabtopd build stage.
 go = "1.27.3"
+# For test/browser-check.sh and TestTunnelInteropWithJS, which need 22 or later.
+node = "26"
 
 [tasks.test]
 description = "Run tabtopd's tests"
@@ -16,3 +18,8 @@ run = "go vet ./..."
 description = "Build the tabtopd binary into tabtopd/tabtopd"
 dir = "{{config_root}}/tabtopd"
 run = "go build -o tabtopd ."
+
+[tasks.browser-check]
+description = "Build the image and check it end to end in headless Chrome"
+dir = "{{config_root}}"
+run = "docker build -t tabtop:check . && test/browser-check.sh tabtop:check"

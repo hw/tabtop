@@ -4,9 +4,10 @@
 // workers (HTTPS or localhost), a fetched file streams into an ordinary
 // download through download-sw.js, so it goes to disk as it arrives;
 // elsewhere it's collected first and then saved (see saveFile). Either way
-// it's never shown as a page on this site. Files dropped on the page are
-// uploaded into the folder shown, as are those picked with its button (see
-// drop.js and uploadFile), and each file has a button that deletes it.
+// it's never shown as a page on this site. Files and folders dropped on
+// the page are uploaded into the folder shown, as are those picked with its
+// buttons (see drop.js, uploadFile and makeFolder), and each file and
+// folder has a button that deletes it.
 // Below, it lists the live sessions and recent logins (see showSessions).
 
 import * as tunnel from "./tunnel.js";
@@ -102,12 +103,9 @@ async function show() {
                 fetchFile(path, link);
             });
         }
-        const act = el("td", { className: "act" });
-        if (!e.dir) {
-            const del = el("button", { className: "delete", textContent: "Delete" });
-            del.addEventListener("click", () => deleteFile(e.name, () => call({ type: "delete", path }).then((t) => t.close()), show));
-            act.append(del);
-        }
+        const del = el("button", { className: "delete", textContent: "Delete" });
+        del.addEventListener("click", () => deleteFile(e.name, e.dir, () => call({ type: "delete", path }).then((t) => t.close()), show));
+        const act = el("td", { className: "act" }, del);
         rows.push(el("tr", {}, el("td", { className: "name" }, link),
             el("td", { className: "num", textContent: e.size ?? "" }),
             el("td", { className: "num", textContent: e.modified }), act));
@@ -122,7 +120,7 @@ async function show() {
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(),
-            el("span", { className: "hint", textContent: "Or drop files on this page. They go into this folder, end-to-end encrypted." })),
+            el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         sessions);
 }
 
@@ -302,10 +300,10 @@ async function saveFile(t, name, size, progress) {
 const UPLOAD_CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 16;
 
-// uploadFile uploads a dropped or picked file into the folder shown, and returns the
-// name it was saved as, and any warning.
-async function uploadFile(file, progress) {
-    const t = await call({ type: "upload", path: currentDir(), name: file.name, size: file.size });
+// uploadFile uploads a dropped or picked file into the folder dir, and
+// returns the name it was saved as, and any warning.
+async function uploadFile(file, progress, dir) {
+    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size });
     try {
         const chunks = Math.ceil(file.size / UPLOAD_CHUNK);
         let sent = 0;
@@ -338,6 +336,14 @@ async function uploadFile(file, progress) {
 // uploadButton makes the page's upload button (see drop.js).
 let uploadButton;
 
-uploadButton = dropUploads(uploadFile, show);
+// makeFolder makes the folder name in dir for an upload, and returns the
+// name it got.
+async function makeFolder(dir, name) {
+    const t = await call({ type: "mkdir", path: dir, name });
+    t.close();
+    return t.reply.name;
+}
+
+uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir);
 window.addEventListener("hashchange", show);
 show();

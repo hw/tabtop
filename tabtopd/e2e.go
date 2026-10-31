@@ -125,9 +125,9 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 
 // tunnelRequest is a session tunnel's first message: what it's for.
 type tunnelRequest struct {
-	Type string `json:"type"` // vnc, logout, tty, list, file, upload, delete or audio
+	Type string `json:"type"` // vnc, logout, tty, list, file, upload, mkdir, delete or audio
 	Path string `json:"path,omitempty"`
-	Name string `json:"name,omitempty"` // upload: the file's name, in the folder at Path
+	Name string `json:"name,omitempty"` // upload, mkdir: the file's or folder's name, in the folder at Path
 	Size int64  `json:"size,omitempty"` // upload: its size
 }
 
@@ -261,6 +261,9 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	case "upload":
 		g.tunnelUpload(t, req, reply, fail)
+
+	case "mkdir":
+		g.tunnelMkdir(t, req, reply, fail)
 
 	case "delete":
 		g.tunnelDelete(t, req, ip, reply, fail)

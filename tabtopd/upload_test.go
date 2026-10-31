@@ -154,6 +154,40 @@ func TestRemoveStaleUploads(t *testing.T) {
 	}
 }
 
+func TestTunnelMkdir(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	os.Mkdir(filepath.Join(g.downloadsDir, "photos"), 0o755)
+	os.WriteFile(filepath.Join(g.downloadsDir, "photos", "a.jpg"), []byte("old"), 0o644)
+	s := login(t, ctx, srv.URL, code(0))
+	mkdir := func(req tunnelRequest) map[string]any {
+		req.Type = "mkdir"
+		return openSession(t, ctx, srv.URL, s).request(t, ctx, req)
+	}
+	// A folder that's there already isn't merged into.
+	if res := mkdir(tunnelRequest{Name: "photos"}); res["name"] != "photos (1)" {
+		t.Fatalf("photos: %v", res)
+	}
+	if res := mkdir(tunnelRequest{Path: "photos (1)", Name: "2024.trip"}); res["name"] != "2024.trip" {
+		t.Fatalf("subfolder: %v", res)
+	}
+	if res := mkdir(tunnelRequest{Path: "photos (1)", Name: "2024.trip"}); res["name"] != "2024.trip (1)" {
+		t.Fatalf("subfolder again: %v", res)
+	}
+	if st, err := os.Stat(filepath.Join(g.downloadsDir, "photos (1)", "2024.trip (1)")); err != nil || !st.IsDir() {
+		t.Fatalf("not created: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(g.downloadsDir, "photos")); len(entries) != 1 {
+		t.Errorf("the existing folder holds %d entries", len(entries))
+	}
+	for _, req := range []tunnelRequest{{Name: ".."}, {Name: "a/b"}, {Name: ""}, {Path: "../", Name: "x"},
+		{Path: "missing", Name: "x"}, {Path: "photos/a.jpg", Name: "x"}, {Name: uploadTempPrefix + "x"}} {
+		if res := mkdir(req); res["error"] == nil {
+			t.Errorf("mkdir %+v: %v", req, res)
+		}
+	}
+}
+
 // TestRemoveStaleUploadsSwapped checks that a queued folder replaced by a
 // symlink to one outside isn't followed.
 func TestRemoveStaleUploadsSwapped(t *testing.T) {

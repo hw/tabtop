@@ -220,6 +220,57 @@ func syncDir(root *os.Root, dir string) error {
 	return err
 }
 
+// makeFolder creates the folder name in dir, or the first free name like
+// it, as an upload does for a file, and returns the name it got: an
+// uploaded folder never merges into one already there.
+func makeFolder(root *os.Root, dir, name string) (string, error) {
+	if !validUploadName(name) {
+		return "", errUploadName
+	}
+	if st, err := root.Stat(dir); err != nil || !st.IsDir() {
+		return "", fs.ErrNotExist
+	}
+	for i := 0; i < 1000; i++ {
+		got := name
+		if i > 0 {
+			got = numberedName(name, "", i) // "photos.2024 (1)": a folder has no extension
+		}
+		err := root.Mkdir(path.Join(dir, got), 0o755)
+		if err == nil {
+			syncDir(root, dir) // only files are promised to be on disk
+			return got, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("too many folders with that name")
+}
+
+// tunnelMkdir answers a mkdir request, for a folder req.Name in req.Path,
+// with {"name":...}, the name it got.
+func (g *server) tunnelMkdir(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
+	root, err := os.OpenRoot(g.downloadsDir)
+	if err != nil {
+		fail(uploadError(fs.ErrNotExist))
+		return
+	}
+	defer root.Close()
+	dir := strings.Trim(req.Path, "/")
+	if dir == "" {
+		dir = "."
+	}
+	name, err := makeFolder(root, dir, req.Name)
+	if err != nil {
+		log.Printf("folder %q: %v", path.Join(dir, req.Name), err)
+		fail(uploadError(err))
+		return
+	}
+	log.Printf("folder %s created through the tunnel", path.Join(dir, name))
+	reply(map[string]any{"name": name})
+	t.Close(websocket.StatusNormalClosure, "")
+}
+
 // uploadError is what to tell the user about err.
 func uploadError(err error) string {
 	switch {
