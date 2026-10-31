@@ -207,8 +207,8 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	now := time.Now()
 	sessions, ttys, lockedOut := 0, 0, 0
-	for _, expiry := range g.sessions {
-		if now.Before(expiry) {
+	for _, s := range g.sessions {
+		if g.liveLocked(s, now) {
 			sessions++
 		}
 	}

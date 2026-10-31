@@ -193,6 +193,12 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 		g.loginTunnel(c, ip, hello[2:])
 	case helloSession:
 		if t, session := g.sessionTunnel(c, hello[2:]); t != nil {
+			detach, ok := g.attach(session, ip, t)
+			if !ok {
+				t.Close(closeLogin, "Log in first.")
+				return
+			}
+			defer detach()
 			g.serveRequest(t, session, ip)
 		}
 	default:
@@ -230,8 +236,18 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 		}
 
 	case "logout":
-		g.endSession(session)
+		g.endSession(session, "Logged out.", t)
 		reply(nil)
+		t.Close(websocket.StatusNormalClosure, "")
+
+	case "logout-all":
+		log.Printf("all sessions logged out from %s", ip)
+		g.endAllSessions("Logged out everywhere.", t)
+		reply(nil)
+		t.Close(websocket.StatusNormalClosure, "")
+
+	case "sessions":
+		reply(g.sessionsReport(session, t))
 		t.Close(websocket.StatusNormalClosure, "")
 
 	case "tty":
@@ -303,24 +319,6 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 	defer g.audio.unlink(session, ip)
 
 	conn := &tunnelConn{t: t}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		tick := time.NewTicker(ttySessionCheck)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				if !g.sessionValid(session) {
-					t.Close(websocket.StatusPolicyViolation, "logged out")
-					vnc.Close()
-					return
-				}
-			}
-		}
-	}()
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(vnc, conn); done <- struct{}{} }()
 	go func() { io.Copy(conn, vnc); done <- struct{}{} }()
@@ -440,27 +438,6 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 		}
 	}
 	t.Close(websocket.StatusNormalClosure, "")
-}
-
-// newE2ESession starts a session for a tunnel login: its id, and the
-// secret its tunnels' keys come from.
-func (g *server) newE2ESession() (string, []byte) {
-	id := g.newSession()
-	secret := make([]byte, 32)
-	rand.Read(secret) // can't fail (see newToken)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.secrets[id] = secret
-	return id, secret
-}
-
-// sessionSecret returns a live session's secret.
-func (g *server) sessionSecret(id string) ([]byte, bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	expiry, ok := g.sessions[id]
-	secret := g.secrets[id]
-	return secret, ok && secret != nil && time.Now().Before(expiry)
 }
 
 func writeJSON(c msgConn, v any) error {

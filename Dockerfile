@@ -217,6 +217,10 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # in addition to WEB_TRUSTED_PROXIES. Set it to exactly the number of proxies
 # every visitor passes through; one too many lets visitors pick their own IP.
 # 0 (default): trust by address only.
+# WEB_SESSION_MAX: how long a login lasts at most, in hours and minutes,
+# such as 12h (default) or 90m. Open tunnels close when it ends.
+# WEB_SESSION_IDLE: how long a login lasts with no desktop, terminal or
+# other tunnel open, such as 1h (default) or 30m; 0 for no limit.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
 # the desktop and /downloads/; 0 turns it off.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
@@ -238,6 +242,8 @@ ENV VNC_USER=user \
     WEB_BASE_PATH=/ \
     WEB_TRUSTED_PROXIES= \
     WEB_TRUST_NPROXIES=0 \
+    WEB_SESSION_MAX=12h \
+    WEB_SESSION_IDLE=1h \
     WEB_AUDIO=1 \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \

@@ -283,7 +283,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	}
 	settle(false)
 	log.Printf("login from %s succeeded", ip)
-	id, secret := g.newE2ESession()
+	id, secret, history := g.newSession(ip)
 	if c.Write(ctx, websocket.MessageBinary, append([]byte{tunnelVersion}, keys[96:]...)) != nil {
 		return
 	}
@@ -291,7 +291,8 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	if err != nil {
 		return
 	}
-	writeJSON(t, map[string]any{"ok": true, "session": id, "secret": base64.StdEncoding.EncodeToString(secret)})
+	writeJSON(t, map[string]any{"ok": true, "session": id, "secret": base64.StdEncoding.EncodeToString(secret),
+		"ip": ip, "logins": history})
 	t.Close(websocket.StatusNormalClosure, "")
 }
 

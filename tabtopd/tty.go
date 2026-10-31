@@ -37,11 +37,6 @@ const (
 		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'"
 )
 
-// How often an open terminal or desktop tunnel checks that its session is
-// still valid, so logging out or the session expiring closes it soon after.
-// A variable so tests can shorten it.
-var ttySessionCheck = 5 * time.Second
-
 //go:embed tty.html tty.js
 var ttyFiles embed.FS
 
@@ -127,21 +122,6 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 				// The program exited (or the PTY was closed).
 				c.Close(websocket.StatusNormalClosure, "terminal closed")
 				return
-			}
-		}
-	}()
-	go func() {
-		t := time.NewTicker(ttySessionCheck)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if !g.sessionValid(token) {
-					c.Close(websocket.StatusPolicyViolation, "logged out")
-					return
-				}
 			}
 		}
 	}()

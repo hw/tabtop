@@ -42,7 +42,7 @@ func newDoctorServer(t *testing.T, doctorOn bool) (*server, *httptest.Server) {
 	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
 	g.base, g.novncDir, g.downloadsDir, g.nobleDir, g.doctorOn = "/", novnc, t.TempDir(), fakeNoble(t), doctorOn
 	g.vncAddr = fakeXvnc(t)
-	g.sessions, g.failures, g.pending, g.ttys = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}, map[string]int{}
+	g.sessions, g.failures, g.pending, g.ttys = map[string]*session{}, map[string][]time.Time{}, map[string]int{}, map[string]int{}
 	srv := httptest.NewServer(g.handler())
 	t.Cleanup(srv.Close)
 	return g, srv
@@ -80,12 +80,13 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestDoctor(t *testing.T) {
-	_, srv := newDoctorServer(t, false)
-	if status, _ := fetch(t, srv.URL+"/doctor"); status != 404 {
+	_, off := newDoctorServer(t, false)
+	if status, _ := fetch(t, off.URL+"/doctor"); status != 404 {
 		t.Errorf("doctor off: %d, want 404", status)
 	}
 
-	_, srv = newDoctorServer(t, true)
+	g, srv := newDoctorServer(t, true)
+	g.newSession("198.51.100.77")
 	status, body := fetch(t, srv.URL+"/doctor")
 	if status != 200 {
 		t.Fatalf("doctor on: %d\n%s", status, body)
@@ -108,7 +109,12 @@ func TestDoctor(t *testing.T) {
 	if !report.Healthy || !strings.HasPrefix(report.Checks["vnc"].Detail, "RFB 003.008") || report.Clock.Unix == 0 {
 		t.Errorf("report: %s", body)
 	}
-	for _, secret := range []string{"alice", "s3cret", hex.EncodeToString(testKey)} {
+	if !strings.Contains(body, `"web_sessions": 1`) {
+		t.Errorf("session not counted: %s", body)
+	}
+	// It's served without a login, so it says nothing about sessions but
+	// how many.
+	for _, secret := range []string{"alice", "s3cret", hex.EncodeToString(testKey), "198.51.100.77"} {
 		if strings.Contains(body, secret) {
 			t.Errorf("report contains %q", secret)
 		}

@@ -223,7 +223,7 @@ function connect() {
     };
     ws.onclose = (e) => {
         ws = null;
-        if (e.reason === "logged out" || e.login) {
+        if (e.login) {
             forgetSession();
             location.reload();  // shows the login form
             return;

@@ -13,6 +13,8 @@ WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_TTY="${WEB_TTY:-1}"
 WEB_DOCTOR_ENDPOINT="${WEB_DOCTOR_ENDPOINT:-0}"
+WEB_SESSION_MAX="${WEB_SESSION_MAX:-12h}"
+WEB_SESSION_IDLE="${WEB_SESSION_IDLE:-1h}"
 WEB_E2E="${WEB_E2E:-}"
 DISPLAY_NUM=1
 
@@ -40,6 +42,16 @@ case "$WEB_TTY" in
 esac
 if ! [[ "$WEB_TRUST_NPROXIES" =~ ^[0-9]{1,2}$ ]] || [ "$WEB_TRUST_NPROXIES" -gt 10 ]; then
     echo "WEB_TRUST_NPROXIES must be 0 to 10 (got '${WEB_TRUST_NPROXIES}')." >&2
+    exit 1
+fi
+# Hours and minutes, as tabtopd takes them: 12h, 90m, 1h30m.
+DURATION='^([0-9]{1,4}h)?([0-9]{1,6}m)?$'
+if ! [[ "$WEB_SESSION_MAX" =~ $DURATION ]] || ! [[ "$WEB_SESSION_MAX" =~ [1-9] ]]; then
+    echo "WEB_SESSION_MAX must be hours and minutes, such as 12h or 90m (got '${WEB_SESSION_MAX}')." >&2
+    exit 1
+fi
+if [ "$WEB_SESSION_IDLE" != 0 ] && { ! [[ "$WEB_SESSION_IDLE" =~ $DURATION ]] || ! [[ "$WEB_SESSION_IDLE" =~ [1-9] ]]; }; then
+    echo "WEB_SESSION_IDLE must be hours and minutes, such as 1h or 30m, or 0 for no limit (got '${WEB_SESSION_IDLE}')." >&2
     exit 1
 fi
 case "$WEB_DOCTOR_ENDPOINT" in
@@ -331,6 +343,8 @@ as_user /usr/local/bin/tabtopd \
     -downloads-dir "$USER_HOME/Downloads" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
+    -session-max "$WEB_SESSION_MAX" \
+    -session-idle "$WEB_SESSION_IDLE" \
     -audio-sink "$AUDIO_SINK" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \

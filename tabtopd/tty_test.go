@@ -16,7 +16,7 @@ func newTTYTestServer(t *testing.T) (*server, *httptest.Server) {
 	for _, name := range []string{"ghostty-web.js", ghosttyStub, "PowerlineSymbols.otf"} {
 		os.WriteFile(filepath.Join(dir, name), []byte("export {}"), 0o644)
 	}
-	g := &server{base: "/", sessions: map[string]time.Time{}, failures: map[string][]time.Time{},
+	g := &server{base: "/", sessions: map[string]*session{}, failures: map[string][]time.Time{},
 		pending: map[string]int{}, ttys: map[string]int{}, termDir: dir}
 	srv := httptest.NewServer(http.HandlerFunc(g.tty))
 	t.Cleanup(srv.Close)

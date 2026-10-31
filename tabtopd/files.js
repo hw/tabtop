@@ -7,11 +7,15 @@
 // it's never shown as a page on this site. Files dropped on the page are
 // uploaded into the folder shown, as are those picked with its button (see
 // drop.js and uploadFile), and each file has a button that deletes it.
+// Below, it lists the live sessions and recent logins (see showSessions).
 
 import * as tunnel from "./tunnel.js";
 import { deleteFile, dropUploads } from "./drop.js";
 
-const page = document.body;
+// The page draws into its own element, so the login form and summary
+// (see tunnel.js), added to the body, outlive a redraw.
+const page = document.createElement("main");
+document.body.replaceChildren(page);
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -57,6 +61,8 @@ async function show() {
     const title = "/" + (dir ? dir + "/" : "");
     document.title = "Downloads " + title;
 
+    const sessions = el("div", { id: "sessions" });
+    showSessions(sessions);
     const logout = el("button", { textContent: "Log out" });
     logout.addEventListener("click", async () => {
         try {
@@ -102,7 +108,52 @@ async function show() {
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(),
-            el("span", { className: "hint", textContent: "Or drop files on this page. They go into this folder, end-to-end encrypted." })));
+            el("span", { className: "hint", textContent: "Or drop files on this page. They go into this folder, end-to-end encrypted." })),
+        sessions);
+}
+
+// showSessions lists the logins that are still live, where each has been
+// used from, and recent logins, with a button that ends every session.
+async function showSessions(box) {
+    let r;
+    try {
+        const t = await call({ type: "sessions" });
+        t.close();
+        r = t.reply;
+    } catch (err) {
+        box.replaceChildren(el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
+        return;
+    }
+    const when = (t) => new Date(t).toLocaleString();
+    const everywhere = el("button", { textContent: "Log out everywhere" });
+    everywhere.addEventListener("click", async () => {
+        try {
+            await tunnel.request({ type: "logout-all" });
+        } catch {
+            // Forgotten here either way.
+        }
+        tunnel.forgetSession();
+        show();
+    });
+    const rows = r.sessions.map((s) => {
+        const login = s.uses[0];
+        const others = s.uses.slice(1).map((u) => `${u.ip} (last ${when(u.last)})`).join(", ");
+        return el("tr", {}, el("td", { textContent: when(s.created) + (s.current ? " (this browser)" : "") }),
+            el("td", { className: "name" }, login.ip, ...(others ? [el("br"), el("span", { className: "error", textContent: "also " + others })] : [])),
+            el("td", { className: "num", textContent: s.open }));
+    });
+    const logins = r.logins.map((l) => el("tr", {}, el("td", { textContent: when(l.time) }),
+        el("td", { className: "name", textContent: l.ip }),
+        el("td", { className: l.ok ? "" : "error", textContent: l.ok ? "logged in" : "failed" })));
+    const idle = r.idle_minutes ? ` A login with nothing open ends after ${r.idle_minutes} minutes.` : "";
+    box.replaceChildren(
+        el("div", { className: "bar" }, el("h2", { textContent: "Sessions" }), everywhere),
+        el("table", {}, el("tr", {}, el("th", { textContent: "Logged in" }), el("th", { textContent: "Used from" }),
+            el("th", { className: "num", textContent: "Open" })), ...rows),
+        el("h2", { textContent: "Recent logins" }),
+        el("table", {}, ...(logins.length ? logins : [el("tr", {}, el("td", { textContent: "None since the server started." }))])),
+        el("p", { className: "hint", textContent: "A session used from an address it didn't log in from is marked in red. "
+            + "This page could hide that if it was changed on the way; the gateway also logs it (docker logs)." + idle }));
 }
 
 // downloadWorker resolves to the active download service worker, or null

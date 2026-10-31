@@ -40,7 +40,6 @@ import (
 
 const (
 	downloadsPrefix = "/downloads/"
-	sessionTTL      = 12 * time.Hour
 	maxFailures     = 5 // failed logins per client IP per failureWindow
 	failureWindow   = 5 * time.Minute
 	// Logins checked at once, from every address together.
@@ -73,14 +72,17 @@ type server struct {
 	doctorOn      bool          // serve the doctor report
 	nobleDir      string        // noble library files for tunnel.js
 	pingInterval  time.Duration // for tests; 0 means the pingInterval constant
-	nobleTag      struct {
+	// How long a session lasts at most, and without a tunnel open (0: no
+	// limit); see session.go.
+	sessionMax, sessionIdle time.Duration
+	nobleTag                struct {
 		once sync.Once
 		tag  string
 	}
 
 	mu       sync.Mutex
-	sessions map[string]time.Time   // session id -> expiry
-	secrets  map[string][]byte      // session id -> its secret
+	sessions map[string]*session    // session id -> session
+	logins   []loginEvent           // recent logins, oldest first
 	ttys     map[string]int         // session token -> open terminals
 	failures map[string][]time.Time // client IP -> recent failed logins
 	pending  map[string]int         // client IP -> logins awaiting their result
@@ -92,8 +94,7 @@ func main() {
 	listen := flag.String("listen", ":6080", "address to serve on")
 	basePath := flag.String("base-path", "/", "URL path the site is served under, e.g. /tabtop/")
 	g := &server{
-		sessions: map[string]time.Time{},
-		secrets:  map[string][]byte{},
+		sessions: map[string]*session{},
 		ttys:     map[string]int{},
 		failures: map[string][]time.Time{},
 		pending:  map[string]int{},
@@ -106,6 +107,9 @@ func main() {
 		"how many proxies in front are trusted whatever their address, counting the one that connects")
 	trusted := flag.String("trusted-proxies", "",
 		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed; cloudflare stands for Cloudflare's published ranges")
+	sessionMax := flag.String("session-max", defaultSessionMax.String(), "how long a login lasts at most, in whole minutes, e.g. 12h")
+	sessionIdle := flag.String("session-idle", defaultSessionIdle.String(),
+		"how long a login lasts with nothing open, in whole minutes, e.g. 1h; 0 for no limit")
 	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
@@ -123,6 +127,12 @@ func main() {
 	}
 	if g.trustedProxies, err = parsePrefixes(*trusted); err != nil {
 		log.Fatalf("-trusted-proxies: %v", err)
+	}
+	if g.sessionMax, err = parseSessionLimit(*sessionMax, false); err != nil {
+		log.Fatalf("-session-max: %v", err)
+	}
+	if g.sessionIdle, err = parseSessionLimit(*sessionIdle, true); err != nil {
+		log.Fatalf("-session-idle: %v", err)
 	}
 	if g.trustNProxies < 0 || g.trustNProxies > maxTrustNProxies {
 		log.Fatalf("-trust-nproxies must be 0 to %d", maxTrustNProxies)
@@ -305,13 +315,6 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 	return entries, truncated, nil
 }
 
-func (g *server) endSession(token string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.sessions, token)
-	delete(g.secrets, token)
-}
-
 // dialVNC connects to Xvnc, over TCP or (with "unix:") its socket.
 func (g *server) dialVNC() (net.Conn, error) {
 	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok {
@@ -393,6 +396,7 @@ func (g *server) endLogin(ip string, failed bool) {
 		delete(g.pending, ip)
 	}
 	if failed {
+		g.recordLoginLocked(ip, false)
 		g.failures[ip] = append(g.failures[ip], time.Now())
 		g.sweepFailuresLocked()
 	}
@@ -412,28 +416,6 @@ func (g *server) sweepFailuresLocked() {
 			delete(g.failures, ip)
 		}
 	}
-}
-
-func (g *server) sessionValid(token string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	expiry, ok := g.sessions[token]
-	return ok && time.Now().Before(expiry)
-}
-
-func (g *server) newSession() string {
-	token := newToken()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	now := time.Now()
-	for t, expiry := range g.sessions {
-		if !now.Before(expiry) {
-			delete(g.sessions, t)
-			delete(g.secrets, t)
-		}
-	}
-	g.sessions[token] = now.Add(sessionTTL)
-	return token
 }
 
 // clientIP is the address failed logins are counted against. It's the
@@ -659,6 +641,7 @@ body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 56rem
 @media (prefers-color-scheme: dark) { body { color: #e8e8ea; background: #1c1c1e; }
        a { color: #8ab4f8; } th, td { border-color: #3a3a3c !important; } }
 h1 { font-size: 1.25rem; font-weight: 600; word-break: break-all; }
+h2 { font-size: 1.05rem; font-weight: 600; margin-top: 2rem; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #ddd; }
 td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }

@@ -316,7 +316,7 @@ export async function login(credential, url = tunnelURL()) {
         const recv = chacha20poly1305(ks.slice(32, 64), nonce(0));
         const pt = recv.decrypt(await s.next());
         const res = JSON.parse(decoder.decode(pt.slice(1)));
-        return { id: res.session, secret: res.secret };
+        return { id: res.session, secret: res.secret, ip: res.ip, logins: res.logins || [] };
     } finally {
         s.ws.close();
     }
@@ -382,6 +382,7 @@ export class Tunnel {
         this._sendKey = k.slice(0, 32);
         this._recvKey = k.slice(32);
         this._ws = s.ws;
+        openSockets.add(s.ws);
         s.ws.onmessage = (e) => this._recv(e.data);
         s.ws.onclose = (e) => this._closed(e);
     }
@@ -412,6 +413,7 @@ export class Tunnel {
         if (this.closed) {
             return;
         }
+        openSockets.delete(this._ws);
         this.closed = true;
         this.closeReason = e.reason || "";
         this.closeLogin = e.code === CLOSE_LOGIN;
@@ -464,6 +466,21 @@ export class Tunnel {
         this._ws.close();
     }
 }
+
+// A page left for another can be kept, still running, for the back
+// button; its tunnels would keep its session open. So they're closed when
+// the page is hidden, and a page brought back reloads to reconnect.
+const openSockets = new Set();
+globalThis.addEventListener?.("pagehide", () => {
+    for (const ws of openSockets) {
+        ws.close();
+    }
+});
+globalThis.addEventListener?.("pageshow", (e) => {
+    if (e.persisted) {
+        location.reload();
+    }
+});
 
 // request opens a tunnel for a one-off request and returns the reply.
 export async function request(req) {
@@ -633,9 +650,10 @@ function loginForm(title) {
             button.disabled = true;
             error.textContent = "";
             try {
-                const s = await login(input.value.trim());
+                const { ip, logins, ...s } = await login(input.value.trim());
                 saveSession(s);
                 box.remove();
+                showLoginSummary(ip, logins);
                 resolve(s);
             } catch (err) {
                 error.textContent = err.message;
@@ -646,4 +664,46 @@ function loginForm(title) {
             }
         });
     });
+}
+
+// showLoginSummary shows the logins before this one, so one you didn't
+// make stands out: briefly, or until dismissed if there were failed
+// attempts or the last login came from another address. A page changed on
+// the way could hide it; the files page's list of sessions and the
+// gateway's log say the same.
+function showLoginSummary(ip, logins) {
+    const lastOK = logins.findIndex((l) => l.ok);
+    const failed = logins.slice(0, lastOK < 0 ? logins.length : lastOK);
+    const prev = logins[lastOK];
+    const warn = failed.length > 0 || (prev && prev.ip !== ip);
+    const when = (t) => new Date(t).toLocaleString();
+    const lines = [prev ? `Previous login: ${when(prev.time)} from ${prev.ip}.`
+        : "No earlier login since the server started."];
+    if (failed.length) {
+        const ips = [...new Set(failed.map((l) => l.ip))].join(", ");
+        lines.push(`${failed.length} failed ${failed.length === 1 ? "attempt" : "attempts"} since then, from ${ips}.`);
+    }
+    lines.push(`This login: from ${ip}.`);
+    const box = document.createElement("div");
+    box.id = "tabtop_login_summary";
+    box.setAttribute("role", "status");
+    Object.assign(box.style, {
+        position: "fixed", right: "1rem", bottom: "1rem", left: "1rem", marginLeft: "auto", maxWidth: "26rem",
+        zIndex: "1001", padding: ".75rem 1rem", borderRadius: "8px", font: "14px/1.5 system-ui, sans-serif",
+        color: "#e8e8ea", background: warn ? "#5c1d1a" : "#2c2c2e", boxShadow: "0 2px 12px rgba(0,0,0,.4)",
+    });
+    for (const line of lines) {
+        const p = document.createElement("p");
+        p.style.margin = "0 0 .25rem";
+        p.textContent = line;
+        box.append(p);
+    }
+    const close = document.createElement("button");
+    close.textContent = "OK";
+    close.addEventListener("click", () => box.remove());
+    box.append(close);
+    document.body.append(box);
+    if (!warn) {
+        setTimeout(() => box.remove(), 10000);
+    }
 }

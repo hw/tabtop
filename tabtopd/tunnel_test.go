@@ -126,6 +126,7 @@ func dialWS(t *testing.T, ctx context.Context, url string) *websocket.Conn {
 type testSession struct {
 	id     string
 	secret []byte
+	logins []loginEvent // the logins before this one, from the login's reply
 }
 
 func loginHello(sid, ya []byte) []byte {
@@ -175,10 +176,13 @@ func loginAt(t *testing.T, ctx context.Context, url, credential string) (testSes
 		if err != nil {
 			t.Fatal(err)
 		}
-		var res struct{ Session, Secret string }
+		var res struct {
+			Session, Secret string
+			Logins          []loginEvent
+		}
 		json.Unmarshal(pt[1:], &res)
 		secret, _ := base64.StdEncoding.DecodeString(res.Secret)
-		return testSession{res.Session, secret}, 0
+		return testSession{res.Session, secret, res.Logins}, 0
 	}
 	t.Fatal("no candidate matches the server's confirmation")
 	return testSession{}, 0
@@ -277,7 +281,7 @@ func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	term := t.TempDir()
 	os.WriteFile(filepath.Join(term, "ghostty-web.js"), []byte("export {}"), 0o644)
 	g.base, g.novncDir, g.downloadsDir, g.termDir, g.nobleDir = "/", novnc, t.TempDir(), term, fakeNoble(t)
-	g.sessions, g.secrets = map[string]time.Time{}, map[string][]byte{}
+	g.sessions = map[string]*session{}
 	g.failures, g.pending, g.ttys = map[string][]time.Time{}, map[string]int{}, map[string]int{}
 	srv := httptest.NewServer(g.handler())
 	t.Cleanup(srv.Close)
@@ -412,11 +416,11 @@ func TestTunnelSessions(t *testing.T) {
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
 
-	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), testSession{"nope", s.secret}); status != closeLogin {
+	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), testSession{id: "nope", secret: s.secret}); status != closeLogin {
 		t.Errorf("unknown session: status %d", status)
 	}
 	// A handshake bigger than any real one is refused unread.
-	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), testSession{strings.Repeat("x", 1000), s.secret}); status != websocket.StatusMessageTooBig {
+	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), testSession{id: strings.Repeat("x", 1000), secret: s.secret}); status != websocket.StatusMessageTooBig {
 		t.Errorf("1000-byte session id: status %d", status)
 	}
 	// So is a request bigger than any real one.
@@ -426,7 +430,7 @@ func TestTunnelSessions(t *testing.T) {
 		t.Errorf("70 KiB request: %v", err)
 	}
 	// The right id with the wrong secret: the server can't read the request.
-	tc = openSession(t, ctx, srv.URL, testSession{s.id, make([]byte, 32)})
+	tc = openSession(t, ctx, srv.URL, testSession{id: s.id, secret: make([]byte, 32)})
 	tc.write(ctx, msgText, []byte(`{"type":"list"}`))
 	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
 		t.Errorf("wrong secret: %v", err)
@@ -699,8 +703,6 @@ func TestTunnelDesktopAndAudio(t *testing.T) {
 	g.vncAddr = "unix:" + fakeXvncUnix(t)
 	hub, _ := newTestHub()
 	g.audio = hub
-	ttySessionCheck = 50 * time.Millisecond
-	t.Cleanup(func() { ttySessionCheck = 5 * time.Second })
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
 
@@ -744,11 +746,11 @@ func TestTunnelDesktopAndAudio(t *testing.T) {
 	if cfg := audio.readJSON(t, ctx); cfg["codec"] != "opus" {
 		t.Fatalf("audio config: %v", cfg)
 	}
-	// Logging out closes the desktop.
+	// Logging out closes the desktop, and the page logs in again.
 	openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "logout"})
 	for {
 		if _, _, err := desktop.read(ctx); err != nil {
-			if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+			if websocket.CloseStatus(err) != closeLogin {
 				t.Fatalf("desktop after logout: %v", err)
 			}
 			break

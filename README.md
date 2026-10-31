@@ -108,13 +108,16 @@ optional and only retains browser data, downloads and desktop preferences.
 | `WEB_TRUST_NPROXIES` | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [`WEB_TRUST_NPROXIES`](#web_trust_nproxies). |
 | `WEB_AUDIO` | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
+| `WEB_SESSION_MAX` | `12h` | How long a login lasts at most, in hours and minutes, such as `12h` or `90m`. See [Sessions](#sessions). |
+| `WEB_SESSION_IDLE` | `1h` | How long a login lasts with nothing open (no desktop, terminal or download), such as `1h` or `30m`. `0` for no limit. |
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
 | `WEB_DOCTOR_ENDPOINT` | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](#health-checks). |
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
-`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`, `WEB_AUDIO`,
-`WEB_AUDIO_BITRATE`, `WEB_TTY`, `WEB_DOCTOR_ENDPOINT` or `VNC_PASSWORD` has
+`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
+`WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
+`WEB_TTY`, `WEB_DOCTOR_ENDPOINT` or `VNC_PASSWORD` has
 an invalid value, or if a saved `~/.config/tabtop/totp-secret` isn't valid
 Base32. The error is printed to the log. `WEB_E2E` no longer exists, since
 the tunnel is always on: `WEB_E2E=1` is accepted, and any other value stops
@@ -477,8 +480,9 @@ proxy would otherwise see TOTP codes and passwords, the screen and
 keystrokes, terminal sessions, files and anything it could replay.
 
 - **One login:** the desktop, terminal and files page share one login form,
-  shown by whichever you open first, and one 12-hour session. Logging out,
-  or the session ending, closes the desktop and the terminal as well.
+  shown by whichever you open first, and one [session](#sessions). Logging
+  out, or the session ending, closes the desktop, the terminal and any
+  download at once.
 - **The login never crosses the wire:** the password and TOTP code are used
   in [CPace](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/), a
   password-authenticated key exchange on X25519. Both sides prove they know
@@ -528,6 +532,39 @@ including the timing of terminal keystrokes.
 The desktop's own Chromium isn't affected: it browses from the container,
 not through your browser.
 
+### Sessions
+
+How long a login lasts, and how to notice and end one you didn't make:
+
+- **Limits:** a login lasts 12 hours at most (`WEB_SESSION_MAX`), and ends
+  after an hour with nothing open (`WEB_SESSION_IDLE`). Anything still open
+  then closes at once. The idle limit only ends sessions nobody is using:
+  one that someone keeps a desktop or terminal open on lasts until the
+  maximum.
+- **After each login,** the page shows the previous login's time and IP
+  address, and any failed attempts since. It stays on screen until
+  dismissed when there were failed attempts or the previous login came from
+  another address.
+- **The files page** lists the live sessions: when each logged in, the
+  address it logged in from, any other address it has been used from
+  (marked in red), and how many connections it has open, not counting the
+  page's own request. A page closed or left closes its connections. Below
+  are the last 20 logins, failed ones included. **Log out everywhere** ends
+  every session, this one too, and closes everything they have open: an
+  open desktop shows Disconnected, and asks for a login when it reconnects.
+- **The gateway's log** (`docker logs`) records each login and each time a
+  session is used from an address it didn't log in from.
+
+A proxy that rewrites the page sits on your network path, so a session it
+reuses most likely comes from your address and isn't marked: only
+connections you didn't open give it away. All of this is drawn by the page,
+which such a proxy could change too. Check from a network you trust, or
+read `docker logs`. If you suspect a session was taken, log out everywhere
+from a trusted network and change `VNC_PASSWORD`: a changed page could have
+read the password, but never the TOTP secret. Sessions and the login
+history are kept in memory only, so restarting the container logs everyone
+out and starts the history empty.
+
 ## Downloads
 
 Files that Chromium saves on the desktop go to `~/Downloads`. They can be
@@ -536,8 +573,8 @@ downloaded at `http://<host>:6080/downloads/`:
 - **Login:** the page asks for the same credentials as the desktop (TOTP
   code, or password + code when `VNC_PASSWORD` is set), unless you're
   already logged in to the desktop or the [terminal](#terminal) in this
-  browser. One login covers all three for 12 hours, and logging out of any
-  of them logs out of all.
+  browser. One login covers all three (see [Sessions](#sessions)), and
+  logging out of any of them logs out of all.
 - **In the page only:** the page lists, fetches, uploads and deletes files
   through the [encrypted tunnel](#encryption), so it needs JavaScript, and
   files have no plain URLs to give to `curl` or `wget`.
@@ -603,8 +640,8 @@ emulator compiled to WebAssembly.
 - **Desktop programs:** `DISPLAY` points at the desktop, so a graphical
   program started from the terminal opens there.
 - **Limits:** up to 5 terminals at once per login. Logging out, or the
-  12-hour session ending, closes open terminals within a few seconds. The
-  tmux session keeps running.
+  [session](#sessions) ending, closes open terminals at once. The tmux
+  session keeps running.
 - **Settings:** `/etc/tmux.conf` turns on the mouse and 24-bit colour. A
   `~/.tmux.conf` in the home directory is read after it. A new home starts
   with the one in `skel/`, along with the theme files it loads from
