@@ -44,8 +44,15 @@ const (
 	failureWindow   = 5 * time.Minute
 	// Logins checked at once, from every address together.
 	maxLoginWork = 4
+	// Tunnels not yet logged in or tied to a session, from every address
+	// together and from one, so connections that never finish their
+	// handshake can't take everything.
+	maxHandshakes      = 256
+	maxHandshakesPerIP = 16
 	// Most entries a Downloads folder's listing shows.
 	maxListing = 10000
+	// Longest the search for unfinished uploads may hold up the start.
+	staleUploadScan = 10 * time.Second
 	// Most entries looked at for a listing, counting ones it leaves out.
 	maxListingScan = 100000
 	// Most proxy hops -trust-nproxies may trust.
@@ -77,10 +84,8 @@ type server struct {
 	// How long a session lasts at most, and without a tunnel open (0: no
 	// limit); see session.go.
 	sessionMax, sessionIdle time.Duration
-	nobleTag                struct {
-		once sync.Once
-		tag  string
-	}
+	noble, ttyFiles         assetSet
+	handshakes              handshakes
 
 	mu       sync.Mutex
 	sessions map[string]*session    // session id -> session
@@ -163,7 +168,18 @@ func main() {
 		MaxHeaderBytes:    64 << 10, // requests are small; tunnels carry the rest
 		IdleTimeout:       2 * time.Minute,
 	}
-	go removeStaleUploads(g.downloadsDir, time.Now())
+	// Before serving, so no upload is going yet, whatever the file
+	// system's timestamps.
+	removeStaleUploads(g.downloadsDir, time.Now(), staleUploadScan)
+	// Read the files browsers keep now, rather than on the first request.
+	if tag, _ := g.noble.load(g.nobleAssets()); tag == "" {
+		log.Printf("warning: can't read the noble files in %s; see /doctor", g.nobleDir)
+	}
+	if g.termDir != "" {
+		if tag, _ := g.ttyFiles.load(g.termAssets()); tag == "" {
+			log.Printf("warning: can't read the terminal's files in %s; see /doctor", g.termDir)
+		}
+	}
 	log.Printf("listening on %s under %s; %s serves %s", *listen, g.base, g.abs(downloadsPrefix), g.downloadsDir)
 	log.Fatal(srv.ListenAndServe())
 }

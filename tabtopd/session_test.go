@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -280,5 +281,89 @@ func TestTTYMessageLimit(t *testing.T) {
 	tty.write(ctx, msgText, resize(maxTTYMessage+1))
 	if code, reason := closedWith(t, tty); code != websocket.StatusMessageTooBig {
 		t.Errorf("over the limit: %d %q", code, reason)
+	}
+}
+
+// TestTTYStalledClient checks that a terminal whose client stops reading
+// is closed once a write has waited tunnelWriteTimeout.
+func TestTTYStalledClient(t *testing.T) {
+	g, srv := newE2EServer(t)
+	old := tunnelWriteTimeout
+	tunnelWriteTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { tunnelWriteTimeout = old })
+	oldCmd := ttyCommand
+	ttyCommand = func() *exec.Cmd { return exec.Command("yes") }
+	t.Cleanup(func() { ttyCommand = oldCmd })
+
+	openTTY(t, srv.URL, login(t, testCtx(t), srv.URL, code(0))) // and never read
+	start := time.Now()
+	for {
+		g.mu.Lock()
+		n := len(g.ttys)
+		g.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("the terminal is still open")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Logf("closed after %v", time.Since(start).Round(time.Millisecond))
+}
+
+// TestHandshakeLimit checks that tunnels that never send their hello are
+// limited per address, and that one that does stops counting.
+func TestHandshakeLimit(t *testing.T) {
+	_, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	for i := range maxHandshakesPerIP {
+		c, _, err := websocket.Dial(ctx, wsURL(srv.URL), nil)
+		if err != nil {
+			t.Fatalf("tunnel %d: %v", i+1, err)
+		}
+		defer c.CloseNow()
+	}
+	_, resp, err := websocket.Dial(ctx, wsURL(srv.URL), nil)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("one too many: %v", err)
+	}
+}
+
+func TestHandshakeCount(t *testing.T) {
+	g := &server{}
+	var done []func()
+	for range maxHandshakesPerIP {
+		f, ok := g.handshakes.start("192.0.2.1")
+		if !ok {
+			t.Fatal("refused")
+		}
+		done = append(done, f)
+	}
+	if _, ok := g.handshakes.start("192.0.2.1"); ok {
+		t.Fatal("one too many from an address")
+	}
+	if _, ok := g.handshakes.start("192.0.2.2"); !ok {
+		t.Fatal("another address refused")
+	}
+	done[0]()
+	done[0]() // twice is once
+	if _, ok := g.handshakes.start("192.0.2.1"); !ok {
+		t.Fatal("refused after one finished")
+	}
+	if _, ok := g.handshakes.start("192.0.2.1"); ok {
+		t.Fatal("a second call freed two")
+	}
+}
+
+func TestHandshakeTotal(t *testing.T) {
+	var h handshakes
+	for i := range maxHandshakes {
+		if _, ok := h.start(fmt.Sprint("ip", i)); !ok {
+			t.Fatalf("handshake %d refused", i+1)
+		}
+	}
+	if _, ok := h.start("another"); ok {
+		t.Fatal("one too many in all")
 	}
 }

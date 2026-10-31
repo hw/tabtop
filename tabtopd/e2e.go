@@ -9,10 +9,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"embed"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -20,8 +18,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -62,25 +58,11 @@ var nobleFiles = []string{
 	"hashes/sha2.js", "hashes/_md.js", "hashes/_u64.js", "hashes/hkdf.js", "hashes/hmac.js", "hashes/utils.js",
 }
 
-// nobleCache is how long browsers may keep the noble files: for good,
-// since their path changes with their contents.
-const nobleCache = "public, max-age=31536000, immutable, no-transform"
+// noblePath is where the noble files are served, under /tabtop/ (see
+// assetSet). tunnel.js is served with its "./noble/" imports pointing there.
+func (g *server) noblePath() string { return g.noble.path(g.nobleAssets()) }
 
-// noblePath is where the noble files are served, under /tabtop/: noble-
-// and a hash of their contents, so a new image's files get a new path.
-// tunnel.js is served with its "./noble/" imports pointing there.
-func (g *server) noblePath() string {
-	g.nobleTag.once.Do(func() {
-		h := sha256.New()
-		for _, name := range nobleFiles {
-			data, _ := os.ReadFile(filepath.Join(g.nobleDir, name)) // a missing file is the doctor's to report
-			h.Write([]byte(name))
-			h.Write(sha256Sum(data))
-		}
-		g.nobleTag.tag = "noble-" + hex.EncodeToString(h.Sum(nil))[:12]
-	})
-	return g.nobleTag.tag
-}
+func (g *server) nobleAssets() assets { return assets{"noble", g.nobleDir, nobleFiles} }
 
 // scripts serves the page scripts under /tabtop/.
 func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
@@ -104,10 +86,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case name == "download-sw.js":
 		h.Set("Content-Security-Policy", downloadSWCSP)
 		http.ServeFileFS(w, r, e2eFiles, name)
-	case strings.HasPrefix(name, g.noblePath()+"/") &&
-		slices.Contains(nobleFiles, strings.TrimPrefix(name, g.noblePath()+"/")):
-		h.Set("Cache-Control", nobleCache)
-		http.ServeFileFS(w, r, os.DirFS(g.nobleDir), strings.TrimPrefix(name, g.noblePath()+"/"))
+	case g.noble.serve(w, r, g.nobleAssets(), name):
 	default:
 		h.Del("Content-Type")
 		http.NotFound(w, r)
@@ -163,13 +142,19 @@ type fileEntry struct {
 // session's request. Accept rejects cross-origin requests, as for every
 // WebSocket here.
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
+	ip := g.clientIP(r)
+	handshaken, ok := g.handshakes.start(ip)
+	if !ok {
+		http.Error(w, "too many connections being set up", http.StatusServiceUnavailable)
+		return
+	}
+	defer handshaken()
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer c.CloseNow()
 	c.SetReadLimit(tunnelHelloLimit)
-	ip := g.clientIP(r)
 	alive, stop := context.WithCancel(context.Background())
 	defer stop()
 	interval := g.pingInterval
@@ -192,7 +177,9 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	case helloLogin:
 		g.loginTunnel(c, ip, hello[2:])
 	case helloSession:
-		if t, session := g.sessionTunnel(c, hello[2:]); t != nil {
+		t, session := g.sessionTunnel(c, hello[2:])
+		handshaken() // from here, the session's limit applies
+		if t != nil {
 			detach, err := g.attach(session, ip, t)
 			switch err {
 			case errSessionEnded:

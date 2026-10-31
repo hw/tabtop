@@ -3,8 +3,9 @@
 // supplies how to send or delete one file.
 
 // dropUploads makes the page take dropped files: each is passed in turn to
-// send(file, progress), which resolves to the name it was saved as and
-// calls progress(bytes) as it goes. Folders are skipped. Progress shows in
+// send(file, progress), which resolves to {name, warning}, the name it was
+// saved as and anything to say about it, and calls progress(bytes) as it
+// goes. Folders are skipped. Progress shows in
 // a list at the bottom of the page; done() is called, and awaited, once
 // all have been tried and any succeeded. It returns a function that makes
 // an upload button, which sends the files picked with it the same way.
@@ -45,8 +46,12 @@ export function dropUploads(send, done) {
                     `${file.name}: ${file.size ? Math.floor(got * 100 / file.size) : 100}%`);
                 progress(0);
                 try {
-                    const name = await send(file, progress);
+                    const { name, warning } = await send(file, progress);
                     row.textContent = name === file.name ? `${file.name}: uploaded` : `${file.name}: uploaded as ${name}`;
+                    if (warning) {
+                        row.textContent += ` (${warning})`;
+                        row.className = "error";
+                    }
                     saved++;
                 } catch (err) {
                     row.textContent = `${file.name}: failed: ${err.message}`;

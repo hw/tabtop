@@ -7,6 +7,7 @@ package main
 // picks them up.
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -63,20 +64,30 @@ func (g *server) tty(w http.ResponseWriter, r *http.Request) {
 	g.ttyFile(w, r, strings.TrimPrefix(r.URL.Path, ttyPrefix))
 }
 
-// ttyFile serves the terminal page and its files.
+// ttyAssets are the terminal page's files from -term-dir, which browsers
+// keep (see assetSet).
+var ttyAssets = []string{"ghostty-web.js", ghosttyStub, "PowerlineSymbols.otf"}
+
+// ttyPath is where ttyAssets are served, under /tty/.
+func (g *server) ttyPath() string { return g.ttyFiles.path(g.termAssets()) }
+
+func (g *server) termAssets() assets { return assets{"ghostty", g.termDir, ttyAssets} }
+
+// ttyFile serves the terminal page and its files. The page and tty.js are
+// small, and sent afresh each time with their references pointing at
+// ttyPath; the big files there are cached.
 func (g *server) ttyFile(w http.ResponseWriter, r *http.Request, name string) {
-	switch name {
-	case "":
+	switch {
+	case name == "":
 		w.Header().Set("Content-Security-Policy", ttyCSP)
-		http.ServeFileFS(w, r, ttyFiles, "tty.html")
-	case "tty.js":
-		http.ServeFileFS(w, r, ttyFiles, "tty.js")
-	case "ghostty-web.js", ghosttyStub:
-		http.ServeFileFS(w, r, os.DirFS(g.termDir), name)
-	case "PowerlineSymbols.otf":
-		// Not in Go's or Debian's MIME tables; nosniff needs the right type.
-		w.Header().Set("Content-Type", "font/otf")
-		http.ServeFileFS(w, r, os.DirFS(g.termDir), name)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		page, _ := ttyFiles.ReadFile("tty.html")
+		w.Write(bytes.ReplaceAll(page, []byte(`url("PowerlineSymbols.otf")`), []byte(`url("`+g.ttyPath()+`/PowerlineSymbols.otf")`)))
+	case name == "tty.js":
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		js, _ := ttyFiles.ReadFile("tty.js")
+		w.Write(bytes.ReplaceAll(js, []byte(`"./ghostty-web.js"`), []byte(`"./`+g.ttyPath()+`/ghostty-web.js"`)))
+	case g.ttyFiles.serve(w, r, g.termAssets(), name):
 	default:
 		http.NotFound(w, r)
 	}

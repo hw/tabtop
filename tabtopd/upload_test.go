@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -102,6 +104,22 @@ func TestTunnelUpload(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleUploadsBudget(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, uploadTempPrefix+"0123456789abcdef.part")
+	os.WriteFile(p, nil, 0o644)
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(p, old, old)
+	removeStaleUploads(dir, time.Now().Add(-time.Minute), time.Second) // already over
+	if _, err := os.Stat(p); err != nil {
+		t.Fatal("removed after the budget ran out")
+	}
+	removeStaleUploads(dir, time.Now(), time.Second)
+	if _, err := os.Stat(p); err == nil {
+		t.Error("not removed within the budget")
+	}
+}
+
 func TestRemoveStaleUploads(t *testing.T) {
 	dir := t.TempDir()
 	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
@@ -121,7 +139,7 @@ func TestRemoveStaleUploads(t *testing.T) {
 	current := filepath.Join(dir, uploadTempPrefix+"3123456789abcdef.part")
 	os.WriteFile(current, nil, 0o644)
 
-	removeStaleUploads(dir, time.Now().Add(-time.Minute))
+	removeStaleUploads(dir, time.Now().Add(-time.Minute), time.Hour)
 	for p, want := range map[string]bool{
 		filepath.Join(dir, uploadTempPrefix+"0123456789abcdef.part"):        false,
 		filepath.Join(dir, "sub", uploadTempPrefix+"1123456789abcdef.part"): false,
@@ -133,6 +151,29 @@ func TestRemoveStaleUploads(t *testing.T) {
 		if _, err := os.Stat(p); (err == nil) != want {
 			t.Errorf("%s: exists %v, want %v", p, err == nil, want)
 		}
+	}
+}
+
+// TestRemoveStaleUploadsSwapped checks that a queued folder replaced by a
+// symlink to one outside isn't followed.
+func TestRemoveStaleUploadsSwapped(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	p := filepath.Join(outside, uploadTempPrefix+"0123456789abcdef.part")
+	os.WriteFile(p, nil, 0o644)
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(p, old, old)
+	os.Symlink(outside, filepath.Join(dir, "sub")) // was a folder when it was queued
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	var stop atomic.Bool
+	if n := walkStaleUploads(root, []string{"sub"}, time.Now(), &stop); n != 0 {
+		t.Errorf("removed %d", n)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Error("removed a file outside")
 	}
 }
 
@@ -169,5 +210,27 @@ func TestUploadLongNameTaken(t *testing.T) {
 				t.Errorf("upload %d of %q: saved as %q", i, name[:10], got)
 			}
 		}
+	}
+}
+
+// TestRemoveStaleUploadsHung checks that the search returns after its
+// budget even while a read of the file system hangs: here, opening a FIFO
+// where a folder was expected.
+func TestRemoveStaleUploadsHung(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skip(err)
+	}
+	t.Cleanup(func() {
+		// Let the walker's open go, so it can finish.
+		if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close()
+		}
+	})
+	start := time.Now()
+	removeStaleUploads(fifo, start, 200*time.Millisecond)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("returned after %v", d)
 	}
 }

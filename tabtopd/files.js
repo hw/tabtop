@@ -303,7 +303,7 @@ const UPLOAD_CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 16;
 
 // uploadFile uploads a dropped or picked file into the folder shown, and returns the
-// name it was saved as.
+// name it was saved as, and any warning.
 async function uploadFile(file, progress) {
     const t = await call({ type: "upload", path: currentDir(), name: file.name, size: file.size });
     try {
@@ -323,7 +323,7 @@ async function uploadFile(file, progress) {
             if (m.text !== undefined) {
                 const res = JSON.parse(m.text);
                 if (res.name && acked === chunks) {
-                    return res.name;
+                    return { name: res.name, warning: res.warning };
                 }
                 throw new Error(res.error || "the server's reply is malformed");
             }

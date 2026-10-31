@@ -509,8 +509,10 @@ keystrokes, terminal sessions, files and anything it could replay.
   [@noble/curves](https://github.com/paulmillr/noble-curves) and
   [@noble/hashes](https://github.com/paulmillr/noble-hashes) for them
   instead, which adds a few milliseconds to each login and connection.
-  Browsers keep the noble files cached, under a path that changes when the
-  image's copies do.
+  Browsers keep the noble files and the terminal's ghostty-web cached,
+  under a path that changes when the image's copies do. The gateway sends
+  them gzipped, since `no-transform` (below) stops proxies from
+  compressing them.
 - **Unchanged in transit:** every page and script carries `Cache-Control:
   no-transform`, which tells proxies and CDNs not to rewrite it. Turn off
   any feature that rewrites scripts for this site, such as Cloudflare's
@@ -542,7 +544,9 @@ How long a login lasts, and how to notice and end one you didn't make:
   one that someone keeps a desktop or terminal open on lasts until the
   maximum. A login can have 64 connections open at once (a desktop tab
   uses two, a terminal or a download one); more are refused until some
-  close.
+  close. At most 16 connections from one address, and 256 in all, can be
+  waiting to log in or prove their session; more are refused. A
+  connection whose browser stops taking data for a minute is closed.
 - **After each login,** the page shows the previous login's time and IP
   address, and any failed attempts since. It stays on screen until
   dismissed when there were failed attempts or the previous login came from
@@ -596,11 +600,16 @@ downloaded at `http://<host>:6080/downloads/`:
   page, to upload them into the folder it shows. An upload never replaces
   a file: one whose name is taken is saved as `name (1).ext`,
   `name (2).ext` and so on, with `name` cut short if the name would get
-  too long. Each file is written to a hidden temporary
-  file (`.tabtop-upload-….part`) first and only appears once it's
-  complete; one that's cut off is deleted, and any left by a crash or a
-  forced stop are deleted when the container next starts. Folders can't be uploaded, only
-  files. Interrupted downloads and uploads start again from the beginning.
+  too long. Each file is written to a hidden temporary file
+  (`.tabtop-upload-….part`) first, and only appears once it's complete
+  and saved to disk. If the disk reports an error saving its folder
+  too, the page says so next to the file; on a file system that can't
+  save a folder on request at all, the file's own save is as far as it
+  goes, without a warning. One that's cut off is deleted, and any left by a
+  crash or a forced stop are deleted when the container next starts (it
+  spends at most 10 seconds looking, before serving anything), so don't
+  share `~/Downloads` between two running containers. Folders can't
+  be uploaded, only files. Interrupted downloads and uploads start again from the beginning.
 - **Deleting:** each file has a **Delete** button, which asks first.
   Deleting is permanent: there's no trash. Only files can be deleted, not
   folders; deleting a symlink removes the link, not the file it leads to.

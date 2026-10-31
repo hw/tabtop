@@ -363,6 +363,13 @@ func (t *tunnel) Write(ctx context.Context, typ websocket.MessageType, p []byte)
 	if typ == websocket.MessageText {
 		kind = msgText
 	}
+	if _, ok := ctx.Deadline(); !ok {
+		// A client that stops reading mustn't hold a writer for good: when
+		// the time is up, the WebSocket is closed.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, tunnelWriteTimeout)
+		defer cancel()
+	}
 	pt := make([]byte, 0, len(p)+tunnelOverhead)
 	pt = append(append(pt, kind), p...)
 	t.wmu.Lock()
@@ -371,6 +378,11 @@ func (t *tunnel) Write(ctx context.Context, typ websocket.MessageType, p []byte)
 	t.sendN++
 	return t.c.Write(ctx, websocket.MessageBinary, ct)
 }
+
+// tunnelWriteTimeout is the longest a message may take to send, waiting
+// for the client to take it, unless the caller gives a deadline; a
+// variable so tests can shorten it.
+var tunnelWriteTimeout = time.Minute
 
 // The close reason isn't encrypted; it's only ever a fixed message.
 func (t *tunnel) Close(code websocket.StatusCode, reason string) error {
@@ -417,7 +429,8 @@ type tunnelConn struct {
 
 func (c *tunnelConn) ctx(deadline time.Time) (context.Context, context.CancelFunc) {
 	if deadline.IsZero() {
-		return context.WithCancel(context.Background())
+		// Nothing to cancel; a write still gets tunnelWriteTimeout.
+		return context.Background(), func() {}
 	}
 	return context.WithDeadline(context.Background(), deadline)
 }

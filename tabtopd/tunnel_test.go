@@ -279,7 +279,9 @@ func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	novnc := t.TempDir()
 	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
 	term := t.TempDir()
-	os.WriteFile(filepath.Join(term, "ghostty-web.js"), []byte("export {}"), 0o644)
+	for _, name := range ttyAssets {
+		os.WriteFile(filepath.Join(term, name), []byte("export {}"), 0o644)
+	}
 	g.base, g.novncDir, g.downloadsDir, g.termDir, g.nobleDir = "/", novnc, t.TempDir(), term, fakeNoble(t)
 	g.sessions = map[string]*session{}
 	g.failures, g.pending, g.ttys = map[string][]time.Time{}, map[string]int{}, map[string]int{}
@@ -487,7 +489,7 @@ func TestEndpoints(t *testing.T) {
 		{"PUT", "/downloads/a.txt", http.StatusMethodNotAllowed},
 		{"DELETE", "/downloads/a.txt", http.StatusMethodNotAllowed},
 		{"GET", "/tty/", http.StatusOK},
-		{"GET", "/tty/ghostty-web.js", http.StatusOK},
+		{"GET", "/tty/" + g.ttyPath() + "/ghostty-web.js", http.StatusOK},
 		{"GET", "/downloads/", http.StatusOK},
 		{"GET", "/downloads/a%20b/c", http.StatusSeeOther},
 		{"GET", "/tabtop/e2e.js", http.StatusNotFound},
@@ -527,7 +529,7 @@ func TestEndpoints(t *testing.T) {
 		}
 		switch tc.method + " " + tc.path {
 		case "GET " + noble + "/ciphers/chacha.js":
-			if cache != nobleCache {
+			if cache != immutableCache {
 				t.Errorf("noble file cached as %q", cache)
 			}
 		case "GET /tabtop/tunnel.js":

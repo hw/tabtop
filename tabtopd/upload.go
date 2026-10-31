@@ -15,9 +15,9 @@ import (
 	"log"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -37,22 +37,73 @@ var uploadTempName = regexp.MustCompile(`^` + regexp.QuoteMeta(uploadTempPrefix)
 
 // removeStaleUploads removes the temporary files under dir of uploads cut
 // off by a crash or a forced stop, which no one else removes: those last
-// written before the gateway started, so none still going, even with the
-// gateway serving meanwhile. Symlinked folders aren't followed.
-func removeStaleUploads(dir string, started time.Time) {
-	n := 0
-	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() || !uploadTempName.MatchString(d.Name()) {
-			return nil
-		}
-		if info, err := d.Info(); err == nil && info.ModTime().Before(started) && os.Remove(p) == nil {
-			n++
-		}
-		return nil
-	})
-	if n > 0 {
-		log.Printf("removed %d unfinished uploads left from before a restart", n)
+// written before started. It runs before the gateway serves anything, so
+// none are still going; another gateway sharing dir isn't supported.
+// Symlinked folders aren't followed. It returns after budget at most, even
+// if a read of the file system hangs, so a huge or slow tree can't hold up
+// the start for long: the search stops there, removing nothing more, and
+// what it didn't get to waits for the next start.
+func removeStaleUploads(dir string, started time.Time, budget time.Duration) {
+	if time.Since(started) >= budget {
+		return
 	}
+	var stop atomic.Bool
+	removed := make(chan int, 1)
+	go func() {
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			removed <- 0
+			return
+		}
+		defer root.Close()
+		removed <- walkStaleUploads(root, []string{"."}, started, &stop)
+	}()
+	timer := time.NewTimer(budget - time.Since(started))
+	defer timer.Stop()
+	select {
+	case n := <-removed:
+		if n > 0 {
+			log.Printf("removed %d unfinished uploads left from before a restart", n)
+		}
+	case <-timer.C:
+		stop.Store(true)
+		log.Printf("stopped looking for unfinished uploads after %v; the rest are looked for at the next start", budget)
+	}
+}
+
+// walkStaleUploads does removeStaleUploads's search, until stop, reading
+// folders a batch at a time so it can stop part way through a big one,
+// starting with dirs. It goes through root, so a folder swapped for a
+// symlink while it's queued can't lead it out.
+func walkStaleUploads(root *os.Root, dirs []string, started time.Time, stop *atomic.Bool) int {
+	n := 0
+	for len(dirs) > 0 && !stop.Load() {
+		d := dirs[len(dirs)-1]
+		dirs = dirs[:len(dirs)-1]
+		f, err := root.Open(d)
+		if err != nil {
+			continue
+		}
+		for !stop.Load() {
+			des, err := f.ReadDir(256)
+			for _, de := range des {
+				p := path.Join(d, de.Name())
+				switch {
+				case de.IsDir(): // not a symlink to one: its type is the link's
+					dirs = append(dirs, p)
+				case de.Type().IsRegular() && uploadTempName.MatchString(de.Name()):
+					if info, err := de.Info(); err == nil && info.ModTime().Before(started) && !stop.Load() && root.Remove(p) == nil {
+						n++
+					}
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		f.Close()
+	}
+	return n
 }
 
 var errUploadName = errors.New("That name can't be used for a file.")
@@ -69,6 +120,7 @@ type upload struct {
 	root     *os.Root
 	dir, tmp string
 	f        *os.File
+	unsynced bool // saved, but its folder may not be on disk yet
 }
 
 // startUpload creates the temporary file for an upload into dir.
@@ -99,6 +151,12 @@ func (u *upload) abort() {
 // returns the name it got.
 func (u *upload) finish(name string) (string, error) {
 	defer u.root.Remove(u.tmp)
+	// On disk before the page is told it's saved, so a power cut can't
+	// lose it after.
+	if err := u.f.Sync(); err != nil {
+		u.f.Close()
+		return "", err
+	}
 	if err := u.f.Close(); err != nil {
 		return "", err
 	}
@@ -115,6 +173,15 @@ func (u *upload) finish(name string) (string, error) {
 		// Unlike a rename, a link fails rather than replace a file.
 		err := u.root.Link(u.tmp, path.Join(u.dir, got))
 		if err == nil {
+			// And the folder, so the name is. If that fails, the file is
+			// still saved, so the upload is too, with a warning; unless
+			// the file system can't sync a folder at all, where the file
+			// being synced is as far as it goes (and saying so on every
+			// upload would only be noise).
+			if err := syncDir(u.root, u.dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+				log.Printf("upload saved as %s, but syncing its folder failed: %v", path.Join(u.dir, got), err)
+				u.unsynced = true
+			}
 			return got, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
@@ -139,6 +206,18 @@ func numberedName(base, ext string, i int) string {
 		base = base[:len(base)-size]
 	}
 	return base + suffix + ext
+}
+
+func syncDir(root *os.Root, dir string) error {
+	d, err := root.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // uploadError is what to tell the user about err.
@@ -223,6 +302,10 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[strin
 		return
 	}
 	log.Printf("upload through the tunnel saved %s (%s)", path.Join(dir, name), humanSize(req.Size))
-	writeJSON(t, map[string]any{"name": name})
+	res := map[string]any{"name": name}
+	if u.unsynced {
+		res["warning"] = "saved, but the disk didn't confirm it; it could be lost if the power fails soon"
+	}
+	writeJSON(t, res)
 	t.Close(websocket.StatusNormalClosure, "")
 }
