@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
@@ -97,5 +99,75 @@ func TestTunnelUpload(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "big (1).bin,big.bin" {
 		t.Errorf("Downloads holds %v", names)
+	}
+}
+
+func TestRemoveStaleUploads(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
+	outside := t.TempDir()
+	os.Symlink(outside, filepath.Join(dir, "link"))
+	old := time.Now().Add(-time.Hour)
+	for _, p := range []string{
+		filepath.Join(dir, uploadTempPrefix+"0123456789abcdef.part"),
+		filepath.Join(dir, "sub", uploadTempPrefix+"1123456789abcdef.part"),
+		filepath.Join(dir, "keep.part"),
+		filepath.Join(dir, uploadTempPrefix+"mine.part"), // not a name an upload makes
+		filepath.Join(outside, uploadTempPrefix+"2123456789abcdef.part"),
+	} {
+		os.WriteFile(p, nil, 0o644)
+		os.Chtimes(p, old, old)
+	}
+	current := filepath.Join(dir, uploadTempPrefix+"3123456789abcdef.part")
+	os.WriteFile(current, nil, 0o644)
+
+	removeStaleUploads(dir, time.Now().Add(-time.Minute))
+	for p, want := range map[string]bool{
+		filepath.Join(dir, uploadTempPrefix+"0123456789abcdef.part"):        false,
+		filepath.Join(dir, "sub", uploadTempPrefix+"1123456789abcdef.part"): false,
+		filepath.Join(dir, "keep.part"):                                     true,
+		filepath.Join(dir, uploadTempPrefix+"mine.part"):                    true,
+		filepath.Join(outside, uploadTempPrefix+"2123456789abcdef.part"):    true, // behind a symlink
+		current: true, // still being written
+	} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s: exists %v, want %v", p, err == nil, want)
+		}
+	}
+}
+
+// TestUploadLongNameTaken checks that a name as long as a name can be still
+// gets a numbered name when it's taken.
+func TestUploadLongNameTaken(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, name := range []string{
+		strings.Repeat("a", 251) + ".txt",
+		strings.Repeat("ü", 125) + ".bin" + "x", // 255 bytes; "ü" is two
+		"a." + strings.Repeat("e", 253),         // all extension
+	} {
+		if len(name) != maxNameBytes || !validUploadName(name) {
+			t.Fatalf("test name %q: %d bytes", name, len(name))
+		}
+		for i := range 3 {
+			u, err := startUpload(root, ".")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !uploadTempName.MatchString(filepath.Base(u.tmp)) {
+				t.Fatalf("temporary file %q isn't one removeStaleUploads would remove", u.tmp)
+			}
+			got, err := u.finish(name)
+			if err != nil {
+				t.Fatalf("upload %d of %q: %v", i, name[:10], err)
+			}
+			if len(got) > maxNameBytes || !utf8.ValidString(got) || (i > 0) != strings.Contains(got, fmt.Sprintf(" (%d)", i)) {
+				t.Errorf("upload %d of %q: saved as %q", i, name[:10], got)
+			}
+		}
 	}
 }

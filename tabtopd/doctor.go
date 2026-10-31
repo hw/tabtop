@@ -177,8 +177,8 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	_, err = os.Stat(filepath.Join(g.novncDir, "vnc.html"))
 	checks["novnc"] = newCheck(g.novncDir, err)
 
-	entries, err := os.ReadDir(g.downloadsDir)
-	checks["downloads"] = newCheck(fmt.Sprintf("%s, %d entries", g.downloadsDir, len(entries)), err)
+	entries, err := countEntries(g.downloadsDir, maxListing)
+	checks["downloads"] = newCheck(fmt.Sprintf("%s, %s entries", g.downloadsDir, entries), err)
 
 	if g.audio == nil {
 		checks["audio"] = check{OK: true, Detail: "off"}
@@ -368,4 +368,28 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 		"trace":              trace,
 		"diagnosis":          diagnosis,
 	}
+}
+
+// countEntries counts dir's entries, stopping after limit: "12", or
+// "10000+".
+func countEntries(dir string, limit int) (string, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return "0", err
+	}
+	defer f.Close()
+	n := 0
+	for n <= limit {
+		names, err := f.Readdirnames(1000)
+		n += len(names)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return "0", err
+		}
+	}
+	if n > limit {
+		return fmt.Sprintf("%d+", limit), nil
+	}
+	return strconv.Itoa(n), nil
 }

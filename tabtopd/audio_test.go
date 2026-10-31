@@ -162,3 +162,90 @@ func TestAudioHubDropsWhenQueueFull(t *testing.T) {
 		t.Errorf("queued %d packets, want %d", len(l.packets), audioQueue)
 	}
 }
+
+// TestAudioHubSlowStart checks that a slow audio server holds up only the
+// listeners waiting for it, and that they share one recording.
+func TestAudioHubSlowStart(t *testing.T) {
+	h, f := newTestHub()
+	release := make(chan struct{})
+	h.start = func(deliver func([]byte)) (func(), error) {
+		<-release
+		return f.start(deliver)
+	}
+	h.link("s", "ip")
+	joined := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := h.join("s", "ip")
+			joined <- err
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		h.link("other", "ip")
+		h.describe()
+		h.listenerCount()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the hub is locked while recording starts")
+	}
+	close(release)
+	for range 2 {
+		if err := <-joined; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.starts != 1 || h.listenerCount() != 2 {
+		t.Errorf("%d starts, %d listeners", f.starts, h.listenerCount())
+	}
+}
+
+// TestAudioHubStartFails checks that a failed start fails every listener
+// waiting for it, and that it isn't tried again until h.retry has passed.
+func TestAudioHubStartFails(t *testing.T) {
+	h, _ := newTestHub()
+	h.retry = 100 * time.Millisecond
+	release := make(chan struct{})
+	var mu sync.Mutex
+	starts := 0
+	h.start = func(deliver func([]byte)) (func(), error) {
+		mu.Lock()
+		starts++
+		mu.Unlock()
+		<-release
+		return nil, errors.New("no audio server")
+	}
+	h.link("s", "ip")
+	joined := make(chan error, 3)
+	for range 3 {
+		go func() {
+			_, err := h.join("s", "ip")
+			joined <- err
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	for range 3 {
+		if err := <-joined; err == nil {
+			t.Fatal("joined without audio")
+		}
+	}
+	if _, err := h.join("s", "ip"); err == nil {
+		t.Fatal("joined without audio")
+	}
+	mu.Lock()
+	if starts != 1 {
+		t.Errorf("%d starts before the retry delay, want 1", starts)
+	}
+	mu.Unlock()
+	time.Sleep(h.retry)
+	h.join("s", "ip")
+	mu.Lock()
+	defer mu.Unlock()
+	if starts != 2 {
+		t.Errorf("%d starts after the retry delay, want 2", starts)
+	}
+}

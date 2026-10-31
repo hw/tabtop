@@ -540,7 +540,9 @@ How long a login lasts, and how to notice and end one you didn't make:
   after an hour with nothing open (`WEB_SESSION_IDLE`). Anything still open
   then closes at once. The idle limit only ends sessions nobody is using:
   one that someone keeps a desktop or terminal open on lasts until the
-  maximum.
+  maximum. A login can have 64 connections open at once (a desktop tab
+  uses two, a terminal or a download one); more are refused until some
+  close.
 - **After each login,** the page shows the previous login's time and IP
   address, and any failed attempts since. It stays on screen until
   dismissed when there were failed attempts or the previous login came from
@@ -593,9 +595,11 @@ downloaded at `http://<host>:6080/downloads/`:
 - **Uploads:** pick files with **Upload files…**, or drop them on the
   page, to upload them into the folder it shows. An upload never replaces
   a file: one whose name is taken is saved as `name (1).ext`,
-  `name (2).ext` and so on. Each file is written to a hidden temporary
+  `name (2).ext` and so on, with `name` cut short if the name would get
+  too long. Each file is written to a hidden temporary
   file (`.tabtop-upload-….part`) first and only appears once it's
-  complete; one that's cut off is deleted. Folders can't be uploaded, only
+  complete; one that's cut off is deleted, and any left by a crash or a
+  forced stop are deleted when the container next starts. Folders can't be uploaded, only
   files. Interrupted downloads and uploads start again from the beginning.
 - **Deleting:** each file has a **Delete** button, which asks first.
   Deleting is permanent: there's no trash. Only files can be deleted, not
@@ -639,7 +643,8 @@ emulator compiled to WebAssembly.
   served with the page for the arrows in tmux's status line.
 - **Desktop programs:** `DISPLAY` points at the desktop, so a graphical
   program started from the terminal opens there.
-- **Limits:** up to 5 terminals at once per login. Logging out, or the
+- **Limits:** up to 5 terminals at once per login. A paste is at most
+  1 MiB. Logging out, or the
   [session](#sessions) ending, closes open terminals at once. The tmux
   session keeps running.
 - **Settings:** `/etc/tmux.conf` turns on the mouse and 24-bit colour. A

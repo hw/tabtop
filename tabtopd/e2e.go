@@ -193,9 +193,13 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 		g.loginTunnel(c, ip, hello[2:])
 	case helloSession:
 		if t, session := g.sessionTunnel(c, hello[2:]); t != nil {
-			detach, ok := g.attach(session, ip, t)
-			if !ok {
-				t.Close(closeLogin, "Log in first.")
+			detach, err := g.attach(session, ip, t)
+			switch err {
+			case errSessionEnded:
+				t.Close(closeLogin, err.Error())
+				return
+			case errTooManyTunnels:
+				t.Close(websocket.StatusTryAgainLater, err.Error())
 				return
 			}
 			defer detach()
@@ -260,7 +264,7 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 			return
 		}
 		defer g.closeTTY(session)
-		t.c.SetReadLimit(maxClientMessage + tunnelOverhead)
+		t.c.SetReadLimit(maxTTYMessage + tunnelOverhead)
 		if reply(nil) {
 			g.serveTTY(t, session, ip)
 		}

@@ -40,6 +40,10 @@ const (
 	// How long recording continues after the last listener leaves, so a
 	// quick reconnect doesn't restart it.
 	audioIdle = 10 * time.Second
+	// How long after recording failed to start a listener gets the same
+	// error instead of trying again, so many tabs don't make one outage
+	// many waits.
+	audioRetry = 3 * time.Second
 )
 
 //go:embed audio.js
@@ -57,16 +61,29 @@ type audioHub struct {
 	kbps  int
 	grace time.Duration
 	idle  time.Duration
+	retry time.Duration
 
 	mu        sync.Mutex
 	desktops  map[string]map[string]int // session -> client IP -> open desktop tunnels
 	graceGen  map[audioDesktop]uint64   // changes with each link and unlink, so older grace timers do nothing
 	listeners map[*audioListener]struct{}
 	stop      func() // stops recording; nil when not recording
+	// While recording starts or stops, which talks to the audio server
+	// and so happens without h.mu held.
+	changing  *audioChange
+	failed    time.Time // when recording last failed to start
+	failErr   error     // why; nil once it starts
 	idleTimer *time.Timer
 }
 
 type audioDesktop struct{ token, ip string }
+
+// audioChange is recording starting or stopping: done is closed when it's
+// over, and err is then why a start failed.
+type audioChange struct {
+	done chan struct{}
+	err  error
+}
 
 type audioListener struct {
 	token   string
@@ -83,6 +100,7 @@ func newAudioHub(sink string, kbps int) *audioHub {
 		kbps:      kbps,
 		grace:     audioGrace,
 		idle:      audioIdle,
+		retry:     audioRetry,
 		desktops:  map[string]map[string]int{},
 		graceGen:  map[audioDesktop]uint64{},
 		listeners: map[*audioListener]struct{}{},
@@ -176,18 +194,45 @@ func (h *audioHub) unlink(token, ip string) {
 func (h *audioHub) join(token, ip string) (*audioListener, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if token == "" || h.desktops[token][ip] <= 0 {
-		return nil, errAudioDenied
-	}
-	if h.idleTimer != nil {
-		h.idleTimer.Stop()
-		h.idleTimer = nil
-	}
-	if h.stop == nil {
+	for {
+		if token == "" || h.desktops[token][ip] <= 0 {
+			// Gone while recording started, maybe: let it stop again.
+			h.idleCheckLocked()
+			return nil, errAudioDenied
+		}
+		if h.idleTimer != nil {
+			h.idleTimer.Stop()
+			h.idleTimer = nil
+		}
+		if h.stop != nil {
+			break
+		}
+		if c := h.changing; c != nil {
+			// Wait for the start or stop going on, then look again; a
+			// failed start fails every listener that waited for it.
+			h.mu.Unlock()
+			<-c.done
+			h.mu.Lock()
+			if c.err != nil {
+				return nil, c.err
+			}
+			continue
+		}
+		if h.failErr != nil && time.Since(h.failed) < h.retry {
+			return nil, h.failErr
+		}
+		c := &audioChange{done: make(chan struct{})}
+		h.changing = c
+		h.mu.Unlock()
 		stop, err := h.start(h.deliver)
+		h.mu.Lock()
+		h.changing, c.err = nil, err
+		close(c.done)
 		if err != nil {
+			h.failed, h.failErr = time.Now(), err
 			return nil, err
 		}
+		h.failErr = nil
 		h.stop = stop
 		log.Printf("audio recording started")
 	}
@@ -211,17 +256,25 @@ func (h *audioHub) idleCheckLocked() {
 	if len(h.listeners) > 0 || h.stop == nil || h.idleTimer != nil {
 		return
 	}
-	h.idleTimer = time.AfterFunc(h.idle, func() {
+	var timer *time.Timer
+	timer = time.AfterFunc(h.idle, func() {
 		h.mu.Lock()
-		defer h.mu.Unlock()
-		h.idleTimer = nil
-		if len(h.listeners) > 0 || h.stop == nil {
+		if h.idleTimer != timer || len(h.listeners) > 0 || h.stop == nil || h.changing != nil {
+			h.mu.Unlock()
 			return
 		}
-		h.stop()
-		h.stop = nil
+		h.idleTimer = nil
+		stop, c := h.stop, &audioChange{done: make(chan struct{})}
+		h.stop, h.changing = nil, c
+		h.mu.Unlock()
+		stop()
+		h.mu.Lock()
+		h.changing = nil
+		close(c.done)
+		h.mu.Unlock()
 		log.Printf("audio recording stopped: no listeners")
 	})
+	h.idleTimer = timer
 }
 
 func (h *audioHub) deliver(packet []byte) {

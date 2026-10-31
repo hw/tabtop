@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -222,5 +223,19 @@ func TestDoctorCloudflare(t *testing.T) {
 	}
 	if got := g.proxyReport(httptest.NewRequest("GET", "/doctor", nil))["trusted_proxies"]; len(got.([]string)) != 1 {
 		t.Errorf("trusted_proxies: %v", got)
+	}
+}
+
+func TestCountEntries(t *testing.T) {
+	dir := t.TempDir()
+	for want, n := range map[string]int{"0": 0, "3": 3, "5": 5, "5+": 7} {
+		os.RemoveAll(dir)
+		os.Mkdir(dir, 0o755)
+		for i := range n {
+			os.WriteFile(filepath.Join(dir, fmt.Sprint(i)), nil, 0o644)
+		}
+		if got, err := countEntries(dir, 5); got != want || err != nil {
+			t.Errorf("%d entries: %q, %v; want %q", n, got, err, want)
+		}
 	}
 }

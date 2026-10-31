@@ -47,17 +47,31 @@ async function call(req) {
     }
 }
 
+// Counts calls to show, so one whose listing arrives after a later one's
+// draws nothing: moving quickly between folders ends on the last.
+let shown = 0;
+
 async function show() {
-    const dir = currentDir();
-    let t;
+    const me = ++shown;
+    let dir, t;
     try {
+        try {
+            dir = currentDir();
+        } catch {
+            throw new Error("This folder's address is malformed.");  // "#/bad%"
+        }
         t = await call({ type: "list", path: dir });
     } catch (err) {
-        page.replaceChildren(el("h1", { textContent: "Downloads" }), el("p", { className: "error", textContent: err.message }),
-            el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
+        if (me === shown) {
+            page.replaceChildren(el("h1", { textContent: "Downloads" }), el("p", { className: "error", textContent: err.message }),
+                el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
+        }
         return;
     }
     t.close();
+    if (me !== shown) {
+        return;
+    }
     const title = "/" + (dir ? dir + "/" : "");
     document.title = "Downloads " + title;
 

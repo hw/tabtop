@@ -15,8 +15,11 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
@@ -26,12 +29,38 @@ import (
 // listings leave out.
 const uploadTempPrefix = ".tabtop-upload-"
 
+// The longest a file's name can be, in bytes, on Linux file systems.
+const maxNameBytes = 255
+
+// uploadTempName matches exactly the names startUpload makes.
+var uploadTempName = regexp.MustCompile(`^` + regexp.QuoteMeta(uploadTempPrefix) + `[0-9a-f]{16}\.part$`)
+
+// removeStaleUploads removes the temporary files under dir of uploads cut
+// off by a crash or a forced stop, which no one else removes: those last
+// written before the gateway started, so none still going, even with the
+// gateway serving meanwhile. Symlinked folders aren't followed.
+func removeStaleUploads(dir string, started time.Time) {
+	n := 0
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() || !uploadTempName.MatchString(d.Name()) {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.ModTime().Before(started) && os.Remove(p) == nil {
+			n++
+		}
+		return nil
+	})
+	if n > 0 {
+		log.Printf("removed %d unfinished uploads left from before a restart", n)
+	}
+}
+
 var errUploadName = errors.New("That name can't be used for a file.")
 
 // validUploadName reports whether name can be a file's name in a folder:
 // one path segment, not a temporary upload's.
 func validUploadName(name string) bool {
-	return name != "" && name != "." && name != ".." && len(name) <= 255 && utf8.ValidString(name) &&
+	return name != "" && name != "." && name != ".." && len(name) <= maxNameBytes && utf8.ValidString(name) &&
 		!strings.ContainsAny(name, "/\x00") && !strings.HasPrefix(name, uploadTempPrefix)
 }
 
@@ -81,7 +110,7 @@ func (u *upload) finish(name string) (string, error) {
 	for i := 0; i < 1000; i++ {
 		got := name
 		if i > 0 {
-			got = fmt.Sprintf("%s (%d)%s", base, i, ext)
+			got = numberedName(base, ext, i)
 		}
 		// Unlike a rename, a link fails rather than replace a file.
 		err := u.root.Link(u.tmp, path.Join(u.dir, got))
@@ -93,6 +122,23 @@ func (u *upload) finish(name string) (string, error) {
 		}
 	}
 	return "", errors.New("too many files with that name")
+}
+
+// numberedName is "base (i)ext", with base cut short (at a character's
+// end) if that would be longer than a name can be. If the extension leaves
+// no room, it's cut short as part of the name instead.
+func numberedName(base, ext string, i int) string {
+	suffix := fmt.Sprintf(" (%d)", i)
+	room := maxNameBytes - len(suffix) - len(ext)
+	if room < 1 {
+		base, ext = base+ext, ""
+		room = maxNameBytes - len(suffix)
+	}
+	for len(base) > room {
+		_, size := utf8.DecodeLastRuneInString(base)
+		base = base[:len(base)-size]
+	}
+	return base + suffix + ext
 }
 
 // uploadError is what to tell the user about err.

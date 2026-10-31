@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -155,9 +156,9 @@ func TestSessionUses(t *testing.T) {
 	g := &server{}
 	id, _, _ := g.newSession("198.51.100.1")
 	for _, ip := range []string{"198.51.100.1", "203.0.113.9"} {
-		detach, ok := g.attach(id, ip, &tunnel{})
-		if !ok {
-			t.Fatal("attach refused")
+		detach, err := g.attach(id, ip, &tunnel{})
+		if err != nil {
+			t.Fatal(err)
 		}
 		detach()
 	}
@@ -201,6 +202,26 @@ func TestParseSessionLimit(t *testing.T) {
 	}
 }
 
+func TestSessionTunnelLimit(t *testing.T) {
+	g := &server{}
+	id, _, _ := g.newSession("198.51.100.1")
+	detaches := []func(){}
+	for range maxSessionTunnels {
+		detach, err := g.attach(id, "198.51.100.1", &tunnel{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		detaches = append(detaches, detach)
+	}
+	if _, err := g.attach(id, "198.51.100.1", &tunnel{}); err != errTooManyTunnels {
+		t.Fatalf("one too many: %v", err)
+	}
+	detaches[0]()
+	if _, err := g.attach(id, "198.51.100.1", &tunnel{}); err != nil {
+		t.Fatalf("after one closed: %v", err)
+	}
+}
+
 // TestSessionBrowserCloses checks that a desktop the browser closes, or
 // just drops, stops counting as open, so the session can go idle.
 func TestSessionBrowserCloses(t *testing.T) {
@@ -233,5 +254,31 @@ func TestSessionBrowserCloses(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		t.Logf("%s: detached after %v", how, time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// TestTTYMessageLimit checks that terminal tunnels take messages up to
+// maxTTYMessage, not the desktop's larger limit.
+func TestTTYMessageLimit(t *testing.T) {
+	_, srv := newE2EServer(t)
+	waitingTTY(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	resize := func(size int) []byte {
+		m := []byte(`{"type":"resize","cols":80,"rows":24}`)
+		return append(m, bytes.Repeat([]byte(" "), size-len(m))...)
+	}
+
+	tty := openTTY(t, srv.URL, s)
+	tty.write(ctx, msgText, resize(maxTTYMessage))
+	tty.write(ctx, msgData, []byte("bye\n"))
+	if code, reason := closedWith(t, tty); code != websocket.StatusNormalClosure {
+		t.Errorf("at the limit: %d %q", code, reason)
+	}
+
+	tty = openTTY(t, srv.URL, s)
+	tty.write(ctx, msgText, resize(maxTTYMessage+1))
+	if code, reason := closedWith(t, tty); code != websocket.StatusMessageTooBig {
+		t.Errorf("over the limit: %d %q", code, reason)
 	}
 }

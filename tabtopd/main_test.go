@@ -198,6 +198,11 @@ func TestListDirTruncated(t *testing.T) {
 	if entries, truncated := list(); len(entries) != 0 || truncated {
 		t.Fatalf("empty folder: %d entries, truncated %v", len(entries), truncated)
 	}
+	// Entries left out don't count towards the limit.
+	for i := range maxListing {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s%d.part", uploadTempPrefix, i)), nil, 0o644)
+		os.Symlink("/nowhere", filepath.Join(dir, fmt.Sprint("broken", i)))
+	}
 	for i := range maxListing {
 		os.WriteFile(filepath.Join(dir, fmt.Sprint(i)), nil, 0o644)
 	}

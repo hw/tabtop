@@ -22,6 +22,10 @@ const (
 	defaultSessionIdle = time.Hour
 	maxSessionUses     = 8  // addresses remembered per session
 	maxLoginLog        = 20 // logins remembered, successful or not
+	// Tunnels open at once per session, so a page stuck reconnecting, or a
+	// client that means harm, can't open them without limit. A desktop tab
+	// uses two (picture and sound).
+	maxSessionTunnels = 64
 )
 
 type session struct {
@@ -119,15 +123,18 @@ func (g *server) sessionSecret(id string) ([]byte, bool) {
 }
 
 // attach counts t as one of a session's open tunnels, from ip, so ending
-// the session closes it. The returned function detaches it; it's false if
-// the session has ended.
-func (g *server) attach(id, ip string, t *tunnel) (func(), bool) {
+// the session closes it. The returned function detaches it. It fails with
+// errSessionEnded, or errTooManyTunnels.
+func (g *server) attach(id, ip string, t *tunnel) (func(), error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s, ok := g.sessions[id]
 	now := time.Now()
 	if !ok || !g.liveLocked(s, now) {
-		return nil, false
+		return nil, errSessionEnded
+	}
+	if len(s.open) >= maxSessionTunnels {
+		return nil, errTooManyTunnels
 	}
 	s.open[t] = true
 	if s.idle != nil {
@@ -155,8 +162,13 @@ func (g *server) attach(id, ip string, t *tunnel) (func(), bool) {
 			s.idleSince = time.Now()
 			g.armIdleLocked(id, s)
 		}
-	}, true
+	}, nil
 }
+
+var (
+	errSessionEnded   = errors.New("Log in first.")
+	errTooManyTunnels = errors.New("Too many connections open for this session.")
+)
 
 // endSession ends a session and closes its open tunnels with reason, which
 // the page shows, except for the one asking, which closes itself after its

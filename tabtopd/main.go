@@ -46,6 +46,8 @@ const (
 	maxLoginWork = 4
 	// Most entries a Downloads folder's listing shows.
 	maxListing = 10000
+	// Most entries looked at for a listing, counting ones it leaves out.
+	maxListingScan = 100000
 	// Most proxy hops -trust-nproxies may trust.
 	maxTrustNProxies = 10
 	// Largest message accepted from a noVNC client; clipboard pastes are the
@@ -157,9 +159,11 @@ func main() {
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           g.handler(),
-		ReadHeaderTimeout: 30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    64 << 10, // requests are small; tunnels carry the rest
 		IdleTimeout:       2 * time.Minute,
 	}
+	go removeStaleUploads(g.downloadsDir, time.Now())
 	log.Printf("listening on %s under %s; %s serves %s", *listen, g.base, g.abs(downloadsPrefix), g.downloadsDir)
 	log.Fatal(srv.ListenAndServe())
 }
@@ -269,39 +273,58 @@ func (f noListingFS) Open(name string) (fs.File, error) {
 type entry struct {
 	Name, Size, Modified string
 	dir                  bool
+	key                  string // Name in lower case, to sort by
 }
 
 // listDir lists the directory f, which is dir in root: directories first,
 // then by name. It lists at most maxListing entries, as the directory
-// happens to order them, and reports whether there were more.
+// happens to order them, and reports whether there were more. Entries left
+// out (temporary uploads, broken symlinks) don't count, but at most
+// maxListingScan are looked at, so a huge directory can't take forever.
 func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated bool, err error) {
-	des, err := f.ReadDir(maxListing + 1)
-	if err != nil && err != io.EOF {
-		return nil, false, err
-	}
-	if len(des) > maxListing {
-		des, truncated = des[:maxListing], true
-	}
-	entries = make([]entry, 0, len(des))
-	for _, de := range des {
-		if strings.HasPrefix(de.Name(), uploadTempPrefix) {
-			continue // an upload in progress
+	for scanned := 0; ; {
+		if scanned >= maxListingScan {
+			// Stopped looking: say so if there's anything more.
+			more, _ := f.ReadDir(1)
+			truncated = len(more) > 0
+			break
 		}
-		// Stat through the root: this follows symlinks that stay inside and
-		// fails for ones leading outside, which are left out.
-		st, err := root.Stat(path.Join(dir, de.Name()))
-		if err != nil {
-			continue
+		des, err := f.ReadDir(min(1000, maxListingScan-scanned))
+		if err != nil && err != io.EOF {
+			return nil, false, err
 		}
-		e := entry{
-			Name:     de.Name(),
-			Modified: st.ModTime().Format("2006-01-02 15:04"),
-			dir:      st.IsDir(),
+		if len(des) == 0 {
+			break
 		}
-		if !e.dir {
-			e.Size = humanSize(st.Size())
+		scanned += len(des)
+		for _, de := range des {
+			if strings.HasPrefix(de.Name(), uploadTempPrefix) {
+				continue // an upload in progress
+			}
+			// Stat through the root: this follows symlinks that stay inside
+			// and fails for ones leading outside, which are left out.
+			st, err := root.Stat(path.Join(dir, de.Name()))
+			if err != nil {
+				continue
+			}
+			if len(entries) == maxListing {
+				truncated = true
+				break
+			}
+			e := entry{
+				Name:     de.Name(),
+				key:      strings.ToLower(de.Name()),
+				Modified: st.ModTime().Format("2006-01-02 15:04"),
+				dir:      st.IsDir(),
+			}
+			if !e.dir {
+				e.Size = humanSize(st.Size())
+			}
+			entries = append(entries, e)
 		}
-		entries = append(entries, e)
+		if truncated {
+			break
+		}
 	}
 	slices.SortFunc(entries, func(a, b entry) int {
 		if a.dir != b.dir {
@@ -310,7 +333,7 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 			}
 			return 1
 		}
-		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+		return strings.Compare(a.key, b.key)
 	})
 	return entries, truncated, nil
 }
