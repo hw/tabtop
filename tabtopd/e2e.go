@@ -1,9 +1,9 @@
 package main
 
-// What -e2e serves: the scripts under /tabtop/ (with the noble libraries'
-// cryptography, which works on plain-HTTP pages as well), the downloads
-// page (a script that lists and fetches files through the tunnel), and
-// /tunnel (see tunnel.go), which logs in or answers a session's request.
+// The page scripts under /tabtop/ (with the noble libraries'
+// cryptography), the files page (a script that lists, fetches, uploads and
+// deletes files through the tunnel), and /tunnel (see tunnel.go), which
+// logs in or answers a session's request.
 
 import (
 	"bytes"
@@ -46,7 +46,7 @@ const (
 	downloadSWCSP = "default-src 'none'"
 )
 
-//go:embed tunnel.js novnc.js files.js download-sw.js drop.js upload.js
+//go:embed tunnel.js novnc.js files.js download-sw.js drop.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -64,7 +64,7 @@ var nobleFiles = []string{
 
 // nobleCache is how long browsers may keep the noble files: for good,
 // since their path changes with their contents.
-const nobleCache = "public, max-age=31536000, immutable"
+const nobleCache = "public, max-age=31536000, immutable, no-transform"
 
 // noblePath is where the noble files are served, under /tabtop/: noble-
 // and a hash of their contents, so a new image's files get a new path.
@@ -82,13 +82,11 @@ func (g *server) noblePath() string {
 	return g.nobleTag.tag
 }
 
-// scripts serves the page scripts under /tabtop/. e2e.js tells the others
-// whether to use the tunnel: it re-exports tunnel.js when the request is
-// to be served through the tunnel (useE2E), and is empty otherwise.
+// scripts serves the page scripts under /tabtop/.
 func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", "text/javascript; charset=utf-8")
-	h.Set("Cache-Control", "no-cache")
+	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("X-Content-Type-Options", "nosniff")
 	name := strings.TrimPrefix(r.URL.Path, "/tabtop/")
 	switch {
@@ -98,22 +96,15 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Write(audioJS)
-	case name == "e2e.js":
-		h.Set("Vary", "X-Forwarded-Proto")
-		if g.useE2E(r) {
-			io.WriteString(w, "export * from \"./tunnel.js\";\nexport const enabled = true;\n")
-		} else {
-			io.WriteString(w, "// End-to-end encryption is off.\nexport const enabled = false;\n")
-		}
 	case name == "tunnel.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "upload.js":
+	case name == "novnc.js" || name == "files.js" || name == "drop.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "download-sw.js":
 		h.Set("Content-Security-Policy", downloadSWCSP)
 		http.ServeFileFS(w, r, e2eFiles, name)
-	case g.nobleDir != "" && strings.HasPrefix(name, g.noblePath()+"/") &&
+	case strings.HasPrefix(name, g.noblePath()+"/") &&
 		slices.Contains(nobleFiles, strings.TrimPrefix(name, g.noblePath()+"/")):
 		h.Set("Cache-Control", nobleCache)
 		http.ServeFileFS(w, r, os.DirFS(g.nobleDir), strings.TrimPrefix(name, g.noblePath()+"/"))
@@ -128,10 +119,14 @@ var filesTmpl = template.Must(template.New("files").Parse(pageHead + `
 <p>Loading…</p>
 <script type="module" src="{{.Script}}"></script>`))
 
-// filesPage serves the downloads page with -e2e. It's the same for every
-// path: the script shows the directory named after the "#", so other
-// paths redirect there.
+// filesPage serves the files page. It's the same for every path: the
+// script shows the directory named after the "#", so other paths redirect
+// there.
 func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store, no-transform")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -168,10 +163,6 @@ type fileEntry struct {
 // session's request. Accept rejects cross-origin requests, as for every
 // WebSocket here.
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
-	if !g.useE2E(r) {
-		http.NotFound(w, r)
-		return
-	}
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -265,8 +256,8 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 			fail("Desktop audio is turned off.")
 			return
 		}
-		// Only while this session has the desktop open, as with the cookie.
-		l, _, err := g.audio.join(session, ip)
+		// Only while this session has the desktop open, from the same IP.
+		l, err := g.audio.join(session, ip)
 		switch {
 		case errors.Is(err, errAudioDenied):
 			fail("Connect to the desktop first.")
@@ -289,9 +280,9 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 }
 
 // bridgeDesktop connects a session tunnel to Xvnc. The session is the
-// login: with -e2e, Xvnc listens on a socket only the desktop user can
-// open and asks for none, so noVNC goes straight to the desktop. Logging
-// out, or the session ending, closes it.
+// login: Xvnc listens on a socket only the desktop user can open and asks
+// for none, so noVNC goes straight to the desktop. Logging out, or the
+// session ending, closes it.
 func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 	vnc, err := g.dialVNC()
 	if err != nil {
@@ -337,7 +328,8 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 // file request with the file's name and size, then its contents in data
 // messages.
 func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
-	// os.Root confines every lookup to the directory, as for /downloads/.
+	// os.Root confines every lookup to the directory: ".." and symlinks
+	// leading outside it fail, even if they change between checks.
 	root, err := os.OpenRoot(g.downloadsDir)
 	if err != nil {
 		fail("The downloads folder is missing.")

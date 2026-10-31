@@ -1,14 +1,14 @@
 // The encrypted tunnel's browser side, served by tabtopd (see tunnel.go for
-// the protocol). With WEB_E2E=1, the desktop, terminal, downloads and audio
-// all travel through it, so a proxy that terminates TLS and reads traffic
-// sees only ciphertext. Logging in runs CPace with the password + TOTP
-// code, which never crosses the wire; the session it yields keys every
-// later tunnel. Messages are encrypted with ChaCha20-Poly1305 from
-// @noble/ciphers, since browsers don't have it built in. The handshakes'
-// X25519, SHA-2 and HKDF come from WebCrypto where the browser offers it
-// (over HTTPS or on localhost, in Chrome 133+, Firefox 130+ or Safari
-// 17+), and otherwise from @noble/curves and @noble/hashes, loaded only
-// then (see cryptoBackend). Both give the same bytes.
+// the protocol). The desktop, terminal, files and audio all travel through
+// it, so a proxy that terminates TLS and reads traffic sees only
+// ciphertext. Logging in runs CPace with the password + TOTP code, which
+// never crosses the wire; the session it yields keys every later tunnel.
+// Messages are encrypted with ChaCha20-Poly1305 from @noble/ciphers, since
+// browsers don't have it built in. The handshakes' X25519, SHA-2 and HKDF
+// come from WebCrypto where the browser offers it (over HTTPS or on
+// localhost, in Chrome 133+, Firefox 130+ or Safari 17+), and otherwise
+// from @noble/curves and @noble/hashes, loaded only then (see
+// cryptoBackend). Both give the same bytes.
 //
 // tabtopd serves this file with "./noble/" changed to the versioned path
 // it serves the noble files under (see e2e.go), so browsers can cache them

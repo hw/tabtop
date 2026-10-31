@@ -1,7 +1,6 @@
-// Uploading files dropped on a downloads page, or picked with its upload
-// button, and deleting files, served by tabtopd. Used by upload.js (the
-// plain listing) and files.js (with WEB_E2E=1), which each supply how to
-// send or delete one file.
+// Uploading files dropped on the files page, or picked with its upload
+// button, and deleting files, served by tabtopd. Used by files.js, which
+// supplies how to send or delete one file.
 
 // dropUploads makes the page take dropped files: each is passed in turn to
 // send(file, progress), which resolves to the name it was saved as and

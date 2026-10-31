@@ -275,17 +275,23 @@ func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
 	term := t.TempDir()
 	os.WriteFile(filepath.Join(term, "ghostty-web.js"), []byte("export {}"), 0o644)
-	noble := t.TempDir()
-	for _, name := range nobleFiles {
-		os.MkdirAll(filepath.Dir(filepath.Join(noble, name)), 0o755)
-		os.WriteFile(filepath.Join(noble, name), []byte("export {}"), 0o644)
-	}
-	g.base, g.novncDir, g.downloadsDir, g.termDir, g.nobleDir, g.e2e = "/", novnc, t.TempDir(), term, noble, true
+	g.base, g.novncDir, g.downloadsDir, g.termDir, g.nobleDir = "/", novnc, t.TempDir(), term, fakeNoble(t)
 	g.sessions, g.secrets = map[string]time.Time{}, map[string][]byte{}
 	g.failures, g.pending, g.ttys = map[string][]time.Time{}, map[string]int{}, map[string]int{}
 	srv := httptest.NewServer(g.handler())
 	t.Cleanup(srv.Close)
 	return g, srv
+}
+
+// fakeNoble lays out empty noble library files.
+func fakeNoble(t *testing.T) string {
+	t.Helper()
+	noble := t.TempDir()
+	for _, name := range nobleFiles {
+		os.MkdirAll(filepath.Dir(filepath.Join(noble, name)), 0o755)
+		os.WriteFile(filepath.Join(noble, name), []byte("export {}"), 0o644)
+	}
+	return noble
 }
 
 func newE2EServer(t *testing.T) (*server, *httptest.Server) {
@@ -456,9 +462,9 @@ func TestTunnelSessions(t *testing.T) {
 	}
 }
 
-// With -e2e, nothing is served unencrypted except the pages and scripts;
-// without it, there's no tunnel.
-func TestE2ERefusesPlainEndpoints(t *testing.T) {
+// Nothing is served outside the tunnel except the pages and scripts, and
+// proxies are asked not to change any of it.
+func TestEndpoints(t *testing.T) {
 	g, srv := newE2EServer(t)
 	noble := "/tabtop/" + g.noblePath()
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -466,17 +472,21 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 		method, path string
 		want         int
 	}{
+		{"GET", "/vnc.html", http.StatusOK},
 		{"GET", "/websockify", http.StatusNotFound},
 		{"GET", "/audio/ws", http.StatusNotFound},
 		{"GET", "/audio/stream.ogg", http.StatusNotFound},
 		{"GET", "/tty/ws", http.StatusNotFound},
 		{"POST", "/tty/", http.StatusMethodNotAllowed},
 		{"POST", "/downloads/", http.StatusMethodNotAllowed},
+		{"PUT", "/downloads/a.txt", http.StatusMethodNotAllowed},
+		{"DELETE", "/downloads/a.txt", http.StatusMethodNotAllowed},
 		{"GET", "/tty/", http.StatusOK},
 		{"GET", "/tty/ghostty-web.js", http.StatusOK},
 		{"GET", "/downloads/", http.StatusOK},
 		{"GET", "/downloads/a%20b/c", http.StatusSeeOther},
-		{"GET", "/tabtop/e2e.js", http.StatusOK},
+		{"GET", "/tabtop/e2e.js", http.StatusNotFound},
+		{"GET", "/tabtop/upload.js", http.StatusNotFound},
 		{"GET", "/tabtop/download-sw.js", http.StatusOK},
 		{"GET", "/tabtop/stream/x/f.bin", http.StatusNotFound},
 		{"GET", "/tabtop/tunnel.js", http.StatusOK},
@@ -505,23 +515,24 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 			t.Errorf("%s %s set a cookie", tc.method, tc.path)
 		}
 		cache := resp.Header.Get("Cache-Control")
+		// Errors from the file server drop Cache-Control; there's nothing in
+		// them to change.
+		if resp.StatusCode < 400 && !strings.Contains(cache, "no-transform") {
+			t.Errorf("%s %s: Cache-Control %q lacks no-transform", tc.method, tc.path, cache)
+		}
 		switch tc.method + " " + tc.path {
 		case "GET " + noble + "/ciphers/chacha.js":
 			if cache != nobleCache {
 				t.Errorf("noble file cached as %q", cache)
 			}
 		case "GET /tabtop/tunnel.js":
-			if cache != "no-cache" || strings.Contains(string(body), `"./noble/`) ||
+			if cache != "no-cache, no-transform" || strings.Contains(string(body), `"./noble/`) ||
 				!strings.Contains(string(body), `"./`+g.noblePath()+`/ciphers/chacha.js"`) {
 				t.Errorf("tunnel.js (cached as %q) doesn't import from %s", cache, noble)
 			}
 		case "GET /downloads/a%20b/c":
 			if loc := resp.Header.Get("Location"); loc != "/downloads/#/a%20b/c" {
 				t.Errorf("redirect to %q", loc)
-			}
-		case "GET /tabtop/e2e.js":
-			if !strings.Contains(string(body), "enabled = true") {
-				t.Errorf("e2e.js: %q", body)
 			}
 		case "GET /downloads/":
 			csp := resp.Header.Get("Content-Security-Policy")
@@ -536,14 +547,6 @@ func TestE2ERefusesPlainEndpoints(t *testing.T) {
 				t.Errorf("download-sw.js served as %q, CSP %q", ct, resp.Header.Get("Content-Security-Policy"))
 			}
 		}
-	}
-
-	_, plain := newDoctorServer(t, false)
-	if code, _ := fetch(t, plain.URL+"/tunnel"); code != http.StatusNotFound {
-		t.Errorf("/tunnel without -e2e: %d", code)
-	}
-	if _, body := fetch(t, plain.URL+"/tabtop/e2e.js"); !strings.Contains(body, "enabled = false") {
-		t.Errorf("e2e.js without -e2e: %q", body)
 	}
 }
 
@@ -652,10 +655,15 @@ func TestTunnelTTY(t *testing.T) {
 	}
 	readUntil("ready")
 	tc.write(ctx, msgText, []byte(`{"type":"resize","cols":100,"rows":30}`))
+	tc.write(ctx, msgText, []byte(`{"type":"resize","cols":0,"rows":99999}`)) // ignored
 	tc.write(ctx, msgData, []byte("hello\r"))
 	readUntil("got hello")
 	if !strings.Contains(out.String(), "30 100") {
 		t.Errorf("terminal size not applied: %q", out.String())
+	}
+	// The program exiting ends the tunnel.
+	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+		t.Errorf("after exit: %v, want a normal close", err)
 	}
 }
 
@@ -747,6 +755,22 @@ func TestTunnelDesktopAndAudio(t *testing.T) {
 	}
 }
 
+// TestTunnelRefusesOtherSites checks that a page on another site can't open
+// a tunnel, which could spend the visitor's login attempts.
+func TestTunnelRefusesOtherSites(t *testing.T) {
+	_, srv := newE2EServer(t)
+	h := http.Header{}
+	h.Set("Origin", "https://evil.example")
+	c, resp, err := websocket.Dial(testCtx(t), wsURL(srv.URL), &websocket.DialOptions{HTTPHeader: h})
+	if err == nil {
+		c.CloseNow()
+		t.Fatal("a tunnel from another site was accepted")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Errorf("response %v, want 403", resp)
+	}
+}
+
 func TestTunnelUnderBasePath(t *testing.T) {
 	g, _ := newE2EServer(t)
 	g.base = "/x/"
@@ -754,8 +778,8 @@ func TestTunnelUnderBasePath(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx := testCtx(t)
 
-	if code, body := fetch(t, srv.URL+"/x/tabtop/e2e.js"); code != http.StatusOK || !strings.Contains(body, "enabled = true") {
-		t.Errorf("/x/tabtop/e2e.js: %d %q", code, body)
+	if code, body := fetch(t, srv.URL+"/x/tabtop/tunnel.js"); code != http.StatusOK || !strings.Contains(body, g.noblePath()) {
+		t.Errorf("/x/tabtop/tunnel.js: %d %q", code, body)
 	}
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := noRedirect.Get(srv.URL + "/x/downloads/a")

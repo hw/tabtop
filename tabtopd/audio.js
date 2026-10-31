@@ -1,18 +1,15 @@
 // Desktop audio for noVNC, served by tabtopd (see audio.go).
 //
-// Adds a speaker button to noVNC's control bar while connected. Where
-// WebCodecs is available (HTTPS or localhost), it decodes the Opus packets
-// from audio/ws itself and schedules them back to back through a small
-// adaptive buffer, for a delay of roughly 100-200 ms. On plain HTTP it falls
-// back to an <audio> element playing audio/stream.ogg, which the browser
-// buffers for about 2 s. With WEB_E2E=1, the packets come through the
-// encrypted tunnel instead, with the desktop's session, which only the
-// WebCodecs player can use, so audio needs HTTPS then.
+// Adds a speaker button to noVNC's control bar while connected. It fetches
+// the Opus packets through the encrypted tunnel, with the desktop's
+// session, decodes them with WebCodecs and schedules them back to back
+// through a small adaptive buffer, for a delay of roughly 100-200 ms.
+// WebCodecs needs HTTPS (or localhost).
 
-import * as e2e from "./e2e.js";
+import { TunnelSocket } from "./tunnel.js";
 
 const PREF_KEY = "tabtop_audio";
-const lowLatency = window.isSecureContext && "AudioDecoder" in window;
+const supported = window.isSecureContext && "AudioDecoder" in window;
 
 const icon = (extra) => "data:image/svg+xml," + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none" ' +
@@ -48,7 +45,8 @@ function notAllowed() {
     return e;
 }
 
-// StreamPlayer plays audio/ws through WebCodecs and AudioBufferSourceNodes.
+// StreamPlayer plays the audio tunnel through WebCodecs and
+// AudioBufferSourceNodes.
 class StreamPlayer {
     constructor(onEnd) {
         this.onEnd = onEnd;
@@ -65,13 +63,7 @@ class StreamPlayer {
             }
             await this.ctx.resume();
         }
-        if (e2e.enabled) {
-            this.ws = new e2e.TunnelSocket({ type: "audio" });
-        } else {
-            const url = new URL("audio/ws", location.href);
-            url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-            this.ws = new WebSocket(url);
-        }
+        this.ws = new TunnelSocket({ type: "audio" });
         this.ws.binaryType = "arraybuffer";
         await new Promise((resolve, reject) => {
             this.ws.onopen = resolve;
@@ -158,36 +150,6 @@ class StreamPlayer {
     }
 }
 
-// ElementPlayer plays audio/stream.ogg in an <audio> element, for pages
-// without WebCodecs. The browser decides how much to buffer (about 2 s in
-// Chromium). It fetches in bursts, so speeding up playback to catch up only
-// runs the buffer dry and makes it stall.
-class ElementPlayer {
-    constructor(onEnd) {
-        this.onEnd = onEnd;
-    }
-
-    async start() {
-        this.audio = new Audio();
-        this.audio.src = "audio/stream.ogg?" + Date.now();
-        await this.audio.play();
-        this.audio.onerror = this.audio.onended = () => this.onEnd();
-    }
-
-    delay() {
-        return null;
-    }
-
-    stop() {
-        if (this.audio) {
-            this.audio.onerror = this.audio.onended = null;
-            this.audio.pause();
-            this.audio.removeAttribute("src");
-            this.audio.load();
-        }
-    }
-}
-
 const button = document.createElement("input");
 button.type = "image";
 button.id = "tabtop_audio_button";
@@ -206,7 +168,7 @@ function setState(state, title) {
     button.classList.toggle("noVNC_selected", state === "on");
     clearInterval(titleTimer);
     titleTimer = null;
-    if (state === "on" && player?.delay() !== null) {
+    if (state === "on") {
         titleTimer = setInterval(() => {
             button.title = `Stop audio (about ${player.delay()} ms behind)`;
         }, 1000);
@@ -239,14 +201,12 @@ async function start() {
         return;
     }
     setState("connecting", "Connecting audio… (click to stop)");
-    if (e2e.enabled && !lowLatency) {
-        // Only the WebCodecs player can use the tunnel; the <audio> element
-        // can't.
+    if (!supported) {
         stopPlayer();
-        setState("error", "Audio needs HTTPS (end-to-end encryption is on)");
+        setState("error", window.isSecureContext ? "This browser can't play the audio (no WebCodecs)" : "Audio needs HTTPS");
         return;
     }
-    const p = new (lowLatency ? StreamPlayer : ElementPlayer)(() => {
+    const p = new StreamPlayer(() => {
         if (player === p) {
             retry("Audio disconnected");
         }

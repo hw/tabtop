@@ -42,8 +42,8 @@ RUN mkdir /novnc \
         "noVNC-${NOVNC_VERSION}/LICENSE.txt" \
  && chmod -R u=rwX,go=rX /novnc
 # The changes to noVNC: load the gateway's audio button, and let its
-# novnc.js supply the connection (the encrypted tunnel, when WEB_E2E is on)
-# instead of noVNC's own WebSocket. novnc.js goes before noVNC's scripts,
+# novnc.js supply the connection (the encrypted tunnel) instead of noVNC's
+# own WebSocket. novnc.js goes before noVNC's scripts,
 # since module scripts run in order, so it's ready before noVNC connects.
 # Fail the build if a new noVNC release no longer matches.
 RUN sed -i 's|</head>|    <script type="module" src="tabtop/audio.js"></script>\n</head>|' /novnc/vnc.html \
@@ -79,7 +79,7 @@ RUN mkdir /src \
  && cp /src/package/LICENSE /terminal/LICENSE.ghostty-web \
  && chmod -R u=rwX,go=rX /terminal
 
-# The noble libraries, for the cryptography the WEB_E2E tunnel does in the
+# The noble libraries, for the cryptography the encrypted tunnel does in the
 # browser: ChaCha20-Poly1305 from @noble/ciphers, which browsers don't have,
 # and X25519 from @noble/curves and SHA-2 and HKDF from @noble/hashes, for
 # pages without WebCrypto (such as plain-HTTP ones). From npm; bump each version together with its
@@ -187,8 +187,8 @@ COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
 COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 
-# VNC_USER: username asked for by the noVNC login prompt; the password is a
-# TOTP code. VNC_TOTP_SECRET sets the TOTP key: Base32 is used as it is, and
+# VNC_USER: the desktop's Linux user, and the account name shown in the
+# authenticator app. Logins take only a TOTP code (or password + code). VNC_TOTP_SECRET sets the TOTP key: Base32 is used as it is, and
 # any other string has a key derived from it, printed at startup for the
 # authenticator app. If it's unset, the key saved in the home directory is
 # used, or else the PUBLIC example secret JBSWY3DPEHPK3PXP, with a warning on
@@ -205,9 +205,9 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # WEB_TRUSTED_PROXIES: comma-separated IPs or CIDR ranges of reverse proxies
 # in front of the container. Their X-Forwarded-For header is used to find the
 # visitor's IP, which failed logins are limited by; nobody else's is believed.
-# Their X-Forwarded-Proto: https marks the login and audio cookies Secure.
 # Empty (default): no proxy is trusted. The proxy must also pass the Host
-# header through unchanged, or noVNC's WebSocket is refused as cross-origin.
+# header through unchanged, or the tunnel's WebSocket is refused as
+# cross-origin.
 # WEB_TRUST_NPROXIES: how many proxies in front of the container are trusted
 # whatever their address (0 to 10), counting the one that connects, for
 # proxies whose addresses change, such as a platform's load balancer. Trusted
@@ -215,20 +215,10 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # every visitor passes through; one too many lets visitors pick their own IP.
 # 0 (default): trust by address only.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
-# /downloads/; 0 turns it off.
+# the desktop and /downloads/; 0 turns it off.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
 # it off and doesn't start PipeWire. WEB_AUDIO_BITRATE: its Opus bitrate in
 # kbit/s, 32 to 256 (default 64); sent at a constant rate even in silence.
-# WEB_E2E=1 encrypts everything between the page's JavaScript and the
-# gateway, for networks whose proxies decrypt and inspect HTTPS: the desktop,
-# logins, terminal, downloads and audio go through an encrypted tunnel
-# (ChaCha20-Poly1305, keyed by a CPace login with password + TOTP code), and
-# the unencrypted endpoints are refused. One gateway login covers the
-# desktop, terminal and downloads. It works over plain HTTP too, except for
-# audio, which needs HTTPS (or localhost). It doesn't stop a proxy that
-# rewrites pages. 0 turns it off. Unset (default), it's on for visits over
-# plain HTTP and off for visits over HTTPS (as tabtopd sees them: directly,
-# or from a trusted proxy's X-Forwarded-Proto).
 # WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
 # without a login; 0 (default) turns it off. <base>healthz always answers
 # health checks.

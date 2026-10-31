@@ -1,7 +1,7 @@
-// The downloads page's service worker with WEB_E2E=1, served by tabtopd
-// (see e2e.go). It turns a file the page is fetching through the encrypted
-// tunnel into an ordinary browser download, written to disk as it arrives
-// instead of being held in memory first.
+// The files page's service worker, served by tabtopd (see e2e.go). It
+// turns a file the page is fetching through the encrypted tunnel into an
+// ordinary browser download, written to disk as it arrives instead of being
+// held in memory first.
 //
 // The page sends { id, name, size, port } for each file, then opens
 // stream/<id>/<name> (in this worker's scope) in a hidden frame. The

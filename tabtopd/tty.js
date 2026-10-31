@@ -1,10 +1,10 @@
 // Browser terminal, served by tabtopd (see tty.go), drawn by ghostty-web.
-// Terminal bytes travel as binary WebSocket messages; resizes go up as JSON
-// text messages. With WEB_E2E=1, the same messages go through the encrypted
-// tunnel instead, which shows its login form when there's no session.
+// Terminal bytes travel as data messages through the encrypted tunnel;
+// resizes go up as JSON text messages. The tunnel shows its login form when
+// there's no session.
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
-import * as e2e from "../tabtop/e2e.js";
+import { forgetSession, TunnelSocket } from "../tabtop/tunnel.js";
 
 // The most a program may copy at once, in base64 bytes.
 const maxCopy = 1 << 20;
@@ -213,13 +213,7 @@ function sendSize() {
 }
 
 function connect() {
-    if (e2e.enabled) {
-        ws = new e2e.TunnelSocket({ type: "tty" }, { title: "Terminal" });
-    } else {
-        const url = new URL("ws", location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        ws = new WebSocket(url);
-    }
+    ws = new TunnelSocket({ type: "tty" }, { title: "Terminal" });
     ws.binaryType = "arraybuffer";
     ws.onopen = sendSize;
     ws.onmessage = (e) => {
@@ -230,9 +224,7 @@ function connect() {
     ws.onclose = (e) => {
         ws = null;
         if (e.reason === "logged out" || e.login) {
-            if (e2e.enabled) {
-                e2e.forgetSession();
-            }
+            forgetSession();
             location.reload();  // shows the login form
             return;
         }

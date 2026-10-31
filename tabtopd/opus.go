@@ -6,7 +6,6 @@ package main
 // // opus_encoder_ctl is variadic, which cgo can't call.
 // static int set_bitrate(OpusEncoder *e, opus_int32 v) { return opus_encoder_ctl(e, OPUS_SET_BITRATE(v)); }
 // static int set_vbr(OpusEncoder *e, opus_int32 v) { return opus_encoder_ctl(e, OPUS_SET_VBR(v)); }
-// static int get_lookahead(OpusEncoder *e, opus_int32 *v) { return opus_encoder_ctl(e, OPUS_GET_LOOKAHEAD(v)); }
 import "C"
 
 import (
@@ -52,14 +51,6 @@ func (e *opusEncoder) encode(pcm []int16) ([]byte, error) {
 		return nil, opusError(n)
 	}
 	return bytes.Clone(e.out[:n]), nil
-}
-
-// lookahead is the encoder's delay in samples, which an Ogg Opus stream
-// declares as its pre-skip.
-func (e *opusEncoder) lookahead() int {
-	var v C.opus_int32
-	C.get_lookahead(e.enc, &v)
-	return int(v)
 }
 
 func (e *opusEncoder) close() { C.opus_encoder_destroy(e.enc) }

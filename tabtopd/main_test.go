@@ -4,10 +4,8 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,79 +62,82 @@ func newUsersFile(t *testing.T, pin string) *server {
 
 func code(offset int64) string { return hotp(testKey, time.Now().Unix()/30+offset, 6) }
 
-func TestCredentialsOK(t *testing.T) {
+// TestOathAuthenticate checks liboath's rules for the codes logins accept.
+func TestOathAuthenticate(t *testing.T) {
+	ok := func(g *server, pin, otp string) bool { return oathAuthenticate(g.usersFile, "alice", pin, otp) == nil }
 	g := newUsersFile(t, "-")
 	now := code(0)
-	if !g.credentialsOK(now) {
+	if !ok(g, "", now) {
 		t.Fatal("TOTP-only: valid code rejected")
 	}
-	if g.credentialsOK(now) {
+	if ok(g, "", now) {
 		t.Fatal("TOTP-only: reused code accepted")
 	}
-	if g.credentialsOK("s3cret" + code(1)) {
+	if ok(g, "s3cret", code(1)) {
 		t.Fatal("TOTP-only: accepted a password in front of the code")
 	}
 
 	// Once a later code is used, earlier ones in the window are refused.
 	g = newUsersFile(t, "-")
-	if !g.credentialsOK(code(1)) {
+	if !ok(g, "", code(1)) {
 		t.Fatal("next code rejected")
 	}
-	if g.credentialsOK(code(0)) {
+	if ok(g, "", code(0)) {
 		t.Fatal("accepted a code older than the last one used")
 	}
-	if g.credentialsOK(code(5)) {
+	if ok(g, "", code(5)) {
 		t.Fatal("accepted a code outside the window")
 	}
 
 	g = newUsersFile(t, "s3cret")
-	for _, cred := range []string{
-		"wrong" + code(0), // wrong password
-		code(0),           // code without password
-		"s3cret",          // no code
-		"s3cret000000",    // wrong code
-		"",
+	for _, c := range []struct{ pin, otp string }{
+		{"wrong", code(0)},   // wrong password
+		{"", code(0)},        // code without password
+		{"s3cret", ""},       // no code
+		{"s3cret", "000000"}, // wrong code
 	} {
-		if g.credentialsOK(cred) {
-			t.Errorf("password+TOTP: accepted %q", cred)
+		if ok(g, c.pin, c.otp) {
+			t.Errorf("password+TOTP: accepted %q + %q", c.pin, c.otp)
 		}
 	}
-	if !g.credentialsOK("s3cret" + code(0)) {
+	if !ok(g, "s3cret", code(0)) {
 		t.Fatal("password+TOTP: valid credentials rejected")
 	}
 }
 
-// TestLoginLimitParallel sends many wrong codes at once: only maxFailures
-// of them may be checked, however they interleave.
+// TestLoginLimitParallel starts many logins at once from one IP, all of
+// which fail: only maxFailures of them may be checked, however they
+// interleave.
 func TestLoginLimitParallel(t *testing.T) {
-	g := newUsersFile(t, "-")
-	g.sessions, g.failures, g.pending = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}
-	// Enough slots that only the per-IP limit turns logins away.
-	old := loginWork
-	loginWork = make(chan struct{}, 100)
-	t.Cleanup(func() { loginWork = old })
-	statuses := make(chan int, 50)
+	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	started := make(chan bool, 50)
 	var wg sync.WaitGroup
-	for range cap(statuses) {
+	for range cap(started) {
 		wg.Go(func() {
-			_, status, _ := g.authenticate("192.0.2.1", "000000")
-			statuses <- status
+			ok := g.beginLogin("192.0.2.1")
+			if ok {
+				time.Sleep(time.Millisecond)
+				g.endLogin("192.0.2.1", true)
+			}
+			started <- ok
 		})
 	}
 	wg.Wait()
-	close(statuses)
-	counts := map[int]int{}
-	for s := range statuses {
-		counts[s]++
+	close(started)
+	n := 0
+	for ok := range started {
+		if ok {
+			n++
+		}
 	}
-	if counts[http.StatusUnauthorized] != maxFailures || counts[http.StatusTooManyRequests] != cap(statuses)-maxFailures {
-		t.Fatalf("statuses %v, want %d checked and the rest refused", counts, maxFailures)
+	if n != maxFailures {
+		t.Fatalf("%d logins checked, want %d", n, maxFailures)
 	}
-	if _, status, _ := g.authenticate("192.0.2.1", code(0)); status != http.StatusTooManyRequests {
-		t.Fatalf("a right code once locked out: status %d", status)
+	if g.beginLogin("192.0.2.1") {
+		t.Fatal("a login once locked out")
 	}
-	if _, status, _ := g.authenticate("192.0.2.2", code(0)); status != http.StatusOK {
-		t.Fatalf("another IP's right code: status %d", status)
+	if !g.beginLogin("192.0.2.2") {
+		t.Fatal("another IP locked out")
 	}
 }
 
@@ -150,20 +151,6 @@ func fillLoginWork(t *testing.T) {
 			<-loginWork
 		}
 	})
-}
-
-// TestLoginBusy checks that a login finding every slot taken is turned
-// away, without counting as a failure.
-func TestLoginBusy(t *testing.T) {
-	g := newUsersFile(t, "-")
-	g.sessions, g.failures, g.pending = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}
-	fillLoginWork(t)
-	if _, status, _ := g.authenticate("192.0.2.1", code(0)); status != http.StatusServiceUnavailable {
-		t.Fatalf("status %d with every slot taken", status)
-	}
-	if len(g.failures) != 0 || len(g.pending) != 0 {
-		t.Fatalf("a busy login left failures %v, pending %v", g.failures, g.pending)
-	}
 }
 
 // TestFailuresSwept checks that IPs whose failures have expired are
@@ -333,90 +320,31 @@ func TestParseBasePath(t *testing.T) {
 }
 
 func TestServeUnderBasePath(t *testing.T) {
-	novnc, downloads := t.TempDir(), t.TempDir()
-	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
-	os.Mkdir(filepath.Join(downloads, "sub dir"), 0o755)
-	key := []byte("12345678901234567890")
-	users := filepath.Join(t.TempDir(), "users.oath")
-	os.WriteFile(users, []byte("HOTP/T30/6\talice\t-\t"+hex.EncodeToString(key)+"\n"), 0o600)
-	g := &server{base: "/tabtop/", novncDir: novnc, downloadsDir: downloads, usersFile: users, termDir: t.TempDir(),
-		audio: newAudioHub("test", 64), sessions: map[string]time.Time{}, ttys: map[string]int{},
-		failures: map[string][]time.Time{}, pending: map[string]int{}}
+	g, _ := newE2EServer(t)
+	g.base = "/tabtop/"
 	srv := httptest.NewServer(g.handler())
 	t.Cleanup(srv.Close)
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
-	do := func(method, p, cookie string, form url.Values) (*http.Response, string) {
+	do := func(p string) *http.Response {
 		t.Helper()
-		req, _ := http.NewRequest(method, srv.URL+p, strings.NewReader(form.Encode()))
-		if form != nil {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-		if cookie != "" {
-			req.Header.Set("Cookie", cookie)
-		}
-		resp, err := client.Do(req)
+		resp, err := client.Get(srv.URL + p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return resp, string(body)
+		resp.Body.Close()
+		return resp
 	}
-	cookie := func(resp *http.Response, name string) *http.Cookie {
-		t.Helper()
-		for _, c := range resp.Cookies() {
-			if c.Name == name {
-				return c
-			}
-		}
-		t.Fatalf("no %s cookie", name)
-		return nil
-	}
-
 	for p, want := range map[string]int{"/": 404, "/vnc.html": 404, "/tabtopx": 404, "/tabtopx/vnc.html": 404,
-		"/downloads/": 404, "/tabtop/vnc.html": 200, "/tabtop/downloads/": 401} {
-		if resp, _ := do("GET", p, "", nil); resp.StatusCode != want {
+		"/downloads/": 404, "/tabtop/vnc.html": 200, "/tabtop/downloads/": 200, "/tabtop/tty/": 200} {
+		if resp := do(p); resp.StatusCode != want {
 			t.Errorf("GET %s: status %d, want %d", p, resp.StatusCode, want)
 		}
 	}
 	for p, want := range map[string]string{"/tabtop": "/tabtop/", "/tabtop/downloads": "/tabtop/downloads/",
-		"/tabtop/tty": "/tabtop/tty/"} {
-		if resp, _ := do("GET", p, "", nil); resp.StatusCode != 301 || resp.Header.Get("Location") != want {
-			t.Errorf("GET %s: %d to %q, want 301 to %s", p, resp.StatusCode, resp.Header.Get("Location"), want)
+		"/tabtop/tty": "/tabtop/tty/", "/tabtop/downloads/sub%20dir/": "/tabtop/downloads/#/sub%20dir/"} {
+		if resp := do(p); resp.StatusCode/100 != 3 || resp.Header.Get("Location") != want {
+			t.Errorf("GET %s: %d to %q, want a redirect to %s", p, resp.StatusCode, resp.Header.Get("Location"), want)
 		}
-	}
-	resp, _ := do("GET", "/tabtop/vnc.html", "", nil)
-	if c := cookie(resp, audioCookie); c.Path != "/tabtop/" || c.Secure {
-		t.Errorf("audio cookie path %q secure %v, want /tabtop/ over plain HTTP", c.Path, c.Secure)
-	}
-	if _, body := do("GET", "/tabtop/downloads/", "", nil); !strings.Contains(body, `action="/tabtop/downloads/"`) {
-		t.Errorf("login form doesn't post to /tabtop/downloads/:\n%s", body)
-	}
-
-	code := hotp(key, time.Now().Unix()/30, 6)
-	resp, _ = do("POST", "/tabtop/downloads/", "", url.Values{"password": {code}})
-	if resp.StatusCode != 303 || resp.Header.Get("Location") != "/tabtop/downloads/" {
-		t.Fatalf("login: %d to %q, want 303 to /tabtop/downloads/", resp.StatusCode, resp.Header.Get("Location"))
-	}
-	session := cookie(resp, cookieName)
-	if session.Path != "/tabtop/" || session.Secure {
-		t.Errorf("session cookie path %q secure %v, want /tabtop/ over plain HTTP", session.Path, session.Secure)
-	}
-	sc := cookieName + "=" + session.Value
-
-	resp, body := do("GET", "/tabtop/downloads/", sc, nil)
-	if resp.StatusCode != 200 || !strings.Contains(body, `href="sub%20dir/"`) || !strings.Contains(body, `action="/tabtop/downloads/"`) {
-		t.Errorf("listing: %d\n%s", resp.StatusCode, body)
-	}
-	resp, _ = do("GET", "/tabtop/downloads/sub%20dir", sc, nil)
-	if resp.StatusCode != 301 || resp.Header.Get("Location") != "/tabtop/downloads/sub%20dir/" {
-		t.Errorf("directory redirect: %d to %q", resp.StatusCode, resp.Header.Get("Location"))
-	}
-	resp, _ = do("POST", "/tabtop/downloads/sub%20dir/", sc, url.Values{"logout": {"1"}})
-	if c := cookie(resp, cookieName); c.Path != "/tabtop/" || c.MaxAge >= 0 ||
-		resp.Header.Get("Location") != "/tabtop/downloads/sub%20dir/" {
-		t.Errorf("logout: cookie path %q max-age %d, to %q", c.Path, c.MaxAge, resp.Header.Get("Location"))
 	}
 }
 
@@ -445,46 +373,6 @@ func TestSecure(t *testing.T) {
 		}
 		if got := g.secure(r); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-// TestSecureCookies logs in and loads noVNC through a trusted proxy that
-// reports HTTPS; every cookie set must be Secure.
-func TestSecureCookies(t *testing.T) {
-	g := newUsersFile(t, "-")
-	novnc := t.TempDir()
-	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
-	g.base, g.novncDir, g.downloadsDir = "/", novnc, t.TempDir()
-	g.trustedProxies, _ = parsePrefixes("127.0.0.1, ::1")
-	g.audio = newAudioHub("test", 64)
-	g.sessions, g.failures, g.pending = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}
-	srv := httptest.NewServer(g.handler())
-	t.Cleanup(srv.Close)
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
-	for _, req := range []*http.Request{
-		httptest.NewRequest("GET", srv.URL+"/vnc.html", nil),
-		httptest.NewRequest("POST", srv.URL+"/downloads/", strings.NewReader("password="+code(0))),
-		httptest.NewRequest("POST", srv.URL+"/downloads/", strings.NewReader("logout=1")),
-	} {
-		req.RequestURI = ""
-		req.Header.Set("X-Forwarded-Proto", "https")
-		if req.Method == "POST" {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if len(resp.Cookies()) == 0 {
-			t.Errorf("%s %s: no cookie set", req.Method, req.URL.Path)
-		}
-		for _, c := range resp.Cookies() {
-			if !c.Secure {
-				t.Errorf("%s %s: cookie %s isn't Secure", req.Method, req.URL.Path, c.Name)
-			}
 		}
 	}
 }

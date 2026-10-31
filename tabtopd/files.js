@@ -1,6 +1,6 @@
-// The downloads page with WEB_E2E=1, served by tabtopd (see e2e.go). It
-// lists ~/Downloads and fetches files through the encrypted tunnel; the
-// folder shown is the path after "#". Where the browser allows service
+// The files page, served by tabtopd (see tunnel.go). It lists ~/Downloads
+// and fetches files through the encrypted tunnel; the folder shown is the
+// path after "#". Where the browser allows service
 // workers (HTTPS or localhost), a fetched file streams into an ordinary
 // download through download-sw.js, so it goes to disk as it arrives;
 // elsewhere it's collected first and then saved (see saveFile). Either way
@@ -8,7 +8,7 @@
 // uploaded into the folder shown, as are those picked with its button (see
 // drop.js and uploadFile), and each file has a button that deletes it.
 
-import * as e2e from "./e2e.js";
+import * as tunnel from "./tunnel.js";
 import { deleteFile, dropUploads } from "./drop.js";
 
 const page = document.body;
@@ -31,14 +31,14 @@ function dirHash(dir) {
 // call runs a request with the session, logging in again if it's over.
 async function call(req) {
     for (;;) {
-        const session = await e2e.session("Downloads");
+        const session = await tunnel.session("Downloads");
         try {
-            return await e2e.Tunnel.open(req, session);
+            return await tunnel.Tunnel.open(req, session);
         } catch (err) {
             if (!err.login) {
                 throw err;
             }
-            e2e.forgetSession();
+            tunnel.forgetSession();
         }
     }
 }
@@ -60,11 +60,11 @@ async function show() {
     const logout = el("button", { textContent: "Log out" });
     logout.addEventListener("click", async () => {
         try {
-            await e2e.request({ type: "logout" });
+            await tunnel.request({ type: "logout" });
         } catch {
             // Forgotten here either way.
         }
-        e2e.forgetSession();
+        tunnel.forgetSession();
         show();
     });
     const rows = [];
@@ -273,10 +273,6 @@ async function uploadFile(file, progress) {
 // uploadButton makes the page's upload button (see drop.js).
 let uploadButton;
 
-if (!e2e.enabled) {
-    page.replaceChildren(el("p", { textContent: "End-to-end encryption is off." }));
-} else {
-    uploadButton = dropUploads(uploadFile, show);
-    window.addEventListener("hashchange", show);
-    show();
-}
+uploadButton = dropUploads(uploadFile, show);
+window.addEventListener("hashchange", show);
+show();

@@ -40,7 +40,7 @@ func newDoctorServer(t *testing.T, doctorOn bool) (*server, *httptest.Server) {
 	g := newUsersFile(t, "s3cret")
 	novnc := t.TempDir()
 	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
-	g.base, g.novncDir, g.downloadsDir, g.doctorOn = "/", novnc, t.TempDir(), doctorOn
+	g.base, g.novncDir, g.downloadsDir, g.nobleDir, g.doctorOn = "/", novnc, t.TempDir(), fakeNoble(t), doctorOn
 	g.vncAddr = fakeXvnc(t)
 	g.sessions, g.failures, g.pending, g.ttys = map[string]time.Time{}, map[string][]time.Time{}, map[string]int{}, map[string]int{}
 	srv := httptest.NewServer(g.handler())
@@ -100,7 +100,7 @@ func TestDoctor(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &report); err != nil {
 		t.Fatalf("not JSON: %v\n%s", err, body)
 	}
-	for _, name := range []string{"vnc", "login", "novnc", "downloads", "audio", "terminal", "e2e"} {
+	for _, name := range []string{"vnc", "login", "novnc", "downloads", "audio", "terminal", "tunnel"} {
 		if c, ok := report.Checks[name]; !ok || !c.OK {
 			t.Errorf("check %s: %+v", name, c)
 		}
@@ -120,7 +120,7 @@ func TestDoctorProxy(t *testing.T) {
 	report := func(xff, proto string) (p struct {
 		ConnectionTrusted bool     `json:"connection_trusted"`
 		ClientIP          string   `json:"client_ip"`
-		SecureCookies     bool     `json:"secure_cookies"`
+		HTTPS             bool     `json:"https"`
 		XForwardedFor     []string `json:"x_forwarded_for"`
 		Trace             []hop    `json:"trace"`
 		Diagnosis         []string `json:"diagnosis"`
@@ -153,7 +153,7 @@ func TestDoctorProxy(t *testing.T) {
 
 	// Untrusted connection: its headers are shown, ignored, and explained.
 	p := report("203.0.113.9", "https")
-	if p.ConnectionTrusted || p.ClientIP != "127.0.0.1" || p.SecureCookies ||
+	if p.ConnectionTrusted || p.ClientIP != "127.0.0.1" || p.HTTPS ||
 		len(p.XForwardedFor) != 1 || p.XForwardedFor[0] != "203.0.113.9" ||
 		!has(p.Diagnosis, "isn't in WEB_TRUSTED_PROXIES") || !has(p.Diagnosis, "WEB_TRUSTED_PROXIES=127.0.0.1") ||
 		!has(p.Diagnosis, "X-Forwarded-Proto (https) is ignored") {
@@ -162,8 +162,8 @@ func TestDoctorProxy(t *testing.T) {
 
 	g.trustedProxies, _ = parsePrefixes("127.0.0.1, ::1")
 	p = report("1.2.3.4, 203.0.113.9", "https")
-	if !p.ConnectionTrusted || p.ClientIP != "203.0.113.9" || !p.SecureCookies || len(p.Trace) != 2 ||
-		p.Trace[1].Addr != "203.0.113.9" || p.Trace[1].Trusted || !has(p.Diagnosis, "cookies are Secure") {
+	if !p.ConnectionTrusted || p.ClientIP != "203.0.113.9" || !p.HTTPS || len(p.Trace) != 2 ||
+		p.Trace[1].Addr != "203.0.113.9" || p.Trace[1].Trusted || !has(p.Diagnosis, "The trusted proxy reports HTTPS") {
 		t.Errorf("trusted: %+v", p)
 	}
 	if has(p.Diagnosis, "is trusted, so the address") {

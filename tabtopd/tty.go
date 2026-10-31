@@ -1,10 +1,10 @@
 package main
 
 // The browser terminal at /tty/: ghostty-web (Ghostty's terminal emulator,
-// compiled to WebAssembly) in the page, a PTY running tmux on the server. It
-// uses the downloads login and session. Every tab attaches to the same tmux
-// session ("web"), so shells keep running when a tab is closed and the next
-// tab picks them up.
+// compiled to WebAssembly) in the page, a PTY running tmux on the server,
+// connected through the tunnel. Every tab attaches to the same tmux session
+// ("web"), so shells keep running when a tab is closed and the next tab
+// picks them up.
 
 import (
 	"context"
@@ -34,7 +34,7 @@ const (
 	// ghostty-web carries its WebAssembly as a data: URL, which it fetches
 	// and compiles, and styles its elements inline.
 	ttyCSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' data:; " +
-		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'"
+		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'"
 )
 
 // How often an open terminal or desktop tunnel checks that its session is
@@ -48,61 +48,24 @@ var ttyFiles embed.FS
 // ttyCommand starts the terminal's program; a variable so tests can swap it.
 var ttyCommand = func() *exec.Cmd { return exec.Command("tmux", "new-session", "-A", "-s", "web") }
 
+// tty serves the terminal page and its files. They need no session, since
+// they hold nothing private: the page logs in through the tunnel, and the
+// terminal only runs through it.
 func (g *server) tty(w http.ResponseWriter, r *http.Request) {
 	if g.termDir == "" {
 		http.NotFound(w, r)
 		return
 	}
-	h := w.Header()
-	h.Set("Cache-Control", "no-store")
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Referrer-Policy", "no-referrer")
-
-	name := strings.TrimPrefix(r.URL.Path, ttyPrefix)
-	if g.useE2E(r) {
-		g.ttyE2E(w, r, name)
-		return
-	}
-	switch r.Method {
-	case http.MethodPost:
-		if name != "" {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		g.login(w, r)
-		return
-	case http.MethodGet, http.MethodHead:
-	default:
-		h.Set("Allow", "GET, HEAD, POST")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !g.sessionOK(r) {
-		if name == "" {
-			g.loginPage(w, r.URL.Path, "", http.StatusUnauthorized)
-		} else {
-			http.Error(w, "log in first", http.StatusUnauthorized)
-		}
-		return
-	}
-
-	if name == "ws" {
-		g.ttyWS(w, r)
-		return
-	}
-	g.ttyFile(w, r, name)
-}
-
-// ttyE2E serves the terminal with -e2e: the page and its scripts need no
-// session, since they hold nothing private, and log in through the tunnel;
-// the terminal itself only runs through the tunnel.
-func (g *server) ttyE2E(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	g.ttyFile(w, r, name)
+	h := w.Header()
+	h.Set("Cache-Control", "no-store, no-transform")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+	g.ttyFile(w, r, strings.TrimPrefix(r.URL.Path, ttyPrefix))
 }
 
 // ttyFile serves the terminal page and its files.
@@ -132,28 +95,9 @@ type ttyMessage struct {
 	Rows int    `json:"rows"`
 }
 
-// ttyWS connects the WebSocket to a new PTY. Output goes out as binary
-// messages; input comes in as binary messages, and resizes as JSON text
-// messages. Accept rejects cross-origin requests, so another site can't
-// open a terminal with the visitor's session cookie.
-func (g *server) ttyWS(w http.ResponseWriter, r *http.Request) {
-	token, ip := sessionToken(r), g.clientIP(r)
-	if !g.openTTY(token) {
-		http.Error(w, "too many open terminals", http.StatusTooManyRequests)
-		return
-	}
-	defer g.closeTTY(token)
-	c, err := websocket.Accept(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer c.CloseNow()
-	c.SetReadLimit(maxTTYMessage)
-	g.serveTTY(c, token, ip)
-}
-
-// serveTTY runs a terminal over c, a WebSocket or the tunnel, until either
-// side ends it or token's session does.
+// serveTTY runs a terminal over the tunnel c until either side ends it or
+// token's session does. Input arrives as data messages, and resizes as JSON
+// text messages.
 func (g *server) serveTTY(c msgConn, token, ip string) {
 	cmd := ttyCommand()
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")

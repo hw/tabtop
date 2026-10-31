@@ -1,15 +1,12 @@
 package main
 
-// Deleting files in ~/Downloads from the files page: with a DELETE of the
-// file's URL, or with -e2e through the tunnel. Only files: folders, and
-// uploads in progress, are left alone.
+// Deleting files in ~/Downloads from the files page, through the tunnel.
+// Only files: folders, and uploads in progress, are left alone.
 
 import (
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
-	"net/http"
 	"os"
 	"path"
 	"strings"
@@ -53,41 +50,6 @@ func deleteError(err error) string {
 		return "The file can't be deleted."
 	}
 	return "The file couldn't be deleted."
-}
-
-// webDelete answers a DELETE of a file in /downloads/, which, like a PUT,
-// a page on another site can't send.
-func (g *server) webDelete(w http.ResponseWriter, r *http.Request) {
-	if !g.webChangeOK(w, r) {
-		return
-	}
-	name := strings.Trim(strings.TrimPrefix(r.URL.Path, downloadsPrefix), "/")
-	reply := func(status int, v map[string]any) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(v)
-	}
-	root, err := os.OpenRoot(g.downloadsDir)
-	if err != nil {
-		reply(http.StatusNotFound, map[string]any{"error": deleteError(fs.ErrNotExist)})
-		return
-	}
-	defer root.Close()
-	if name == "" {
-		err = errNotFile
-	} else {
-		err = deleteFile(root, name)
-	}
-	if err != nil {
-		status := uploadStatus(err)
-		if errors.Is(err, errNotFile) {
-			status = http.StatusConflict
-		}
-		reply(status, map[string]any{"error": deleteError(err)})
-		return
-	}
-	log.Printf("%s deleted %s", g.clientIP(r), name)
-	reply(http.StatusOK, map[string]any{})
 }
 
 // tunnelDelete answers a delete request for the file at req.Path.

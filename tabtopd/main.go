@@ -1,38 +1,30 @@
 // Command tabtopd is the container's only public web endpoint.
 //
-// It serves the noVNC client, bridges noVNC's WebSocket to Xvnc (the job
-// websockify used to do), and serves the desktop user's ~/Downloads at
-// /downloads/ behind a login. It also streams the desktop's audio
-// (audio.go) and offers a browser terminal at /tty/ (tty.go), which shares
-// the downloads login. With -base-path, all of it is served under that URL
-// path instead of /, for a reverse proxy that puts the site in a
-// subdirectory. With -e2e, all of it goes through an encrypted tunnel
-// instead (tunnel.go, e2e.go), for networks whose proxies decrypt TLS.
+// It serves the noVNC client, the files page for the desktop user's
+// ~/Downloads at /downloads/, and a browser terminal at /tty/ (tty.go),
+// and streams the desktop's audio (audio.go). Everything private goes
+// through one encrypted tunnel between the page's JavaScript and tabtopd
+// (tunnel.go, e2e.go), so a proxy that terminates TLS on the way sees
+// neither logins nor content. With -base-path, all of it is served under
+// that URL path instead of /, for a reverse proxy that puts the site in a
+// subdirectory.
 //
 // Credentials are a TOTP code, or a password followed immediately by the
-// code when a pam_oath PIN is set. A TOTP code is single-use, so it can't serve as an HTTP Basic password (the browser
-// resends it with every request): one successful login buys a session
-// cookie instead.
+// code when a pam_oath PIN is set, checked against a pam_oath users file
+// with liboath (see oath.go), which records used codes. One login buys a
+// 12-hour session for the desktop, the terminal and the files.
 //
-// Logins are checked against the same pam_oath users file as Xvnc's, with
-// the same library (liboath, see oath.go), so both accept the same
-// credentials and share one record of used codes.
-//
-// Failed logins are limited per client IP, across both the desktop and the
-// downloads page since they share the TOTP secret. Xvnc can't do this
-// itself: every connection reaches it from the gateway, so its own
-// blacklist (turned off in the entrypoint) would lock everyone out at once.
+// Failed logins are limited per client IP. Xvnc asks for no login of its
+// own: it listens only on a socket that only the desktop user (and so the
+// gateway) can open.
 package main
 
 import (
-	"encoding/binary"
 	"flag"
 	"fmt"
-	"html/template"
 	"io"
 	"io/fs"
 	"log"
-	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -48,13 +40,11 @@ import (
 
 const (
 	downloadsPrefix = "/downloads/"
-	cookieName      = "tabtop_session"
 	sessionTTL      = 12 * time.Hour
-	maxFailures     = 5 // failed logins per client IP per failureWindow, desktop and downloads together
+	maxFailures     = 5 // failed logins per client IP per failureWindow
 	failureWindow   = 5 * time.Minute
 	// Logins checked at once, from every address together.
 	maxLoginWork = 4
-	maxFormBytes = 4096
 	// Most entries a Downloads folder's listing shows.
 	maxListing = 10000
 	// Most proxy hops -trust-nproxies may trust.
@@ -62,14 +52,6 @@ const (
 	// Largest message accepted from a noVNC client; clipboard pastes are the
 	// only big ones.
 	maxClientMessage = 16 << 20
-	// How long a VNC client may take to log in before it's disconnected, so
-	// an idle handshake can't hold one of its IP's login attempts forever.
-	vncLoginTimeout = 60 * time.Second
-
-	csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
-	// The listing also runs upload.js, which uploads files dropped on it or
-	// picked with its button, and deletes files with their buttons.
-	listingCSP = csp + "; script-src 'self'; connect-src 'self'"
 )
 
 type server struct {
@@ -89,19 +71,15 @@ type server struct {
 	audio         *audioHub // nil when audio is off
 	termDir       string    // ghostty-web files; empty when the terminal is off
 	doctorOn      bool      // serve the doctor report
-	// With e2e, everything goes through the encrypted tunnel (tunnel.go)
-	// and the unencrypted WebSockets and logins are refused. With e2eAuto,
-	// that's so for requests made over plain HTTP; see useE2E.
-	e2e, e2eAuto bool
-	nobleDir     string // noble library files for tunnel.js
-	nobleTag     struct {
+	nobleDir      string    // noble library files for tunnel.js
+	nobleTag      struct {
 		once sync.Once
 		tag  string
 	}
 
 	mu       sync.Mutex
-	sessions map[string]time.Time   // token -> expiry
-	secrets  map[string][]byte      // tunnel session token -> its secret
+	sessions map[string]time.Time   // session id -> expiry
+	secrets  map[string][]byte      // session id -> its secret
 	ttys     map[string]int         // session token -> open terminals
 	failures map[string][]time.Time // client IP -> recent failed logins
 	pending  map[string]int         // client IP -> logins awaiting their result
@@ -130,15 +108,13 @@ func main() {
 	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
-	e2eMode := flag.String("e2e", "off", "on: encrypt everything end to end through the tunnel, refusing the unencrypted WebSockets "+
-		"and logins; auto: do so for requests made over plain HTTP; off: never")
 	flag.StringVar(&g.nobleDir, "noble-dir", "", "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
 	audioKbps := flag.Int("audio-bitrate", 64, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("tabtopd: ")
-	if g.usersFile == "" || g.downloadsDir == "" {
-		log.Fatal("-users-file and -downloads-dir are required")
+	if g.usersFile == "" || g.downloadsDir == "" || g.nobleDir == "" {
+		log.Fatal("-users-file, -downloads-dir and -noble-dir are required")
 	}
 	var err error
 	if g.base, err = parseBasePath(*basePath); err != nil {
@@ -158,25 +134,6 @@ func main() {
 	}
 	if g.doctorOn {
 		log.Printf("serving the troubleshooting report at %s, without a login", g.abs("/doctor"))
-	}
-	switch *e2eMode {
-	case "on":
-		g.e2e = true
-	case "auto":
-		g.e2eAuto = true
-	case "off":
-	default:
-		log.Fatalf("-e2e must be on, auto or off")
-	}
-	if g.e2e || g.e2eAuto {
-		if g.nobleDir == "" {
-			log.Fatal("-e2e needs -noble-dir")
-		}
-		when := "on"
-		if g.e2eAuto {
-			when = "on for plain HTTP, off for HTTPS"
-		}
-		log.Printf("end-to-end encryption %s: logins with CPace, tunnels with ChaCha20-Poly1305", when)
 	}
 	if *audioSink != "" {
 		if *audioKbps < minAudioBitrate || *audioKbps > maxAudioBitrate {
@@ -198,15 +155,8 @@ func main() {
 
 func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
-	static := http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/vnc.html" && !g.useE2E(r) {
-			g.audio.setCookie(w, r, g.base, g.secure(r))
-		}
-		static.ServeHTTP(w, r)
-	})
-	mux.HandleFunc("/websockify", g.websockify)
-	mux.HandleFunc(downloadsPrefix, g.downloads)
+	mux.Handle("/", http.FileServerFS(noListingFS{os.DirFS(g.novncDir)}))
+	mux.HandleFunc(downloadsPrefix, g.filesPage)
 	mux.HandleFunc(ttyPrefix, g.tty)
 	// The mux would add the trailing slash itself, but to the path without
 	// the base.
@@ -215,17 +165,26 @@ func (g *server) handler() http.Handler {
 	}
 	mux.HandleFunc("/tabtop/", g.scripts)
 	mux.HandleFunc("/tunnel", g.tunnelWS)
-	mux.HandleFunc("/audio/ws", g.audioWS)
-	mux.HandleFunc("/audio/stream.ogg", g.audioOgg)
 	mux.HandleFunc("/healthz", g.healthz)
 	mux.HandleFunc("/doctor", g.doctor)
-	return g.stripBase(mux)
+	return noTransform(g.stripBase(mux))
+}
+
+// noTransform asks proxies, and CDNs such as Cloudflare, to pass every
+// response on unchanged: one that rewrites or "optimizes" the page scripts
+// could break the tunnel, or weaken it without anyone noticing. Handlers
+// that set Cache-Control themselves include it too.
+func noTransform(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-transform")
+		h.ServeHTTP(w, r)
+	})
 }
 
 // stripBase serves h under g.base. The base without its trailing slash
 // redirects to it, and paths outside it are not found. Everything the
-// browser loads uses relative URLs, so only the server's redirects, form
-// actions and cookie paths need the base put back (abs).
+// browser loads uses relative URLs, so only the server's redirects need the
+// base put back (abs).
 func (g *server) stripBase(h http.Handler) http.Handler {
 	if g.base == "/" {
 		return h
@@ -259,7 +218,7 @@ func (g *server) abs(p string) string {
 
 // parseBasePath checks a -base-path value and gives it a leading and
 // trailing slash. Its segments are limited to unreserved URL characters, so
-// it can go into redirects, HTML and cookie paths as it is.
+// it can go into redirects and HTML as it is.
 func parseBasePath(s string) (string, error) {
 	trimmed := strings.Trim(s, "/")
 	if trimmed == "" {
@@ -296,116 +255,9 @@ func (f noListingFS) Open(name string) (fs.File, error) {
 	return file, nil
 }
 
-// refuseRFB speaks just enough RFB to turn a client away with a reason that
-// noVNC shows to the user, instead of a bare dropped connection.
-func refuseRFB(conn net.Conn, reason string) {
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.WriteString(conn, "RFB 003.008\n"); err != nil {
-		return
-	}
-	if _, err := io.ReadFull(conn, make([]byte, 12)); err != nil {
-		return
-	}
-	msg := []byte{0} // no security types: the reason follows
-	msg = binary.BigEndian.AppendUint32(msg, uint32(len(reason)))
-	conn.Write(append(msg, reason...))
-}
-
-func (g *server) downloads(w http.ResponseWriter, r *http.Request) {
-	h := w.Header()
-	h.Set("Cache-Control", "no-store")
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Referrer-Policy", "no-referrer")
-
-	if g.useE2E(r) {
-		g.filesPage(w, r)
-		return
-	}
-	switch r.Method {
-	case http.MethodPost:
-		g.login(w, r)
-		return
-	case http.MethodPut:
-		g.putUpload(w, r)
-		return
-	case http.MethodDelete:
-		g.webDelete(w, r)
-		return
-	case http.MethodGet, http.MethodHead:
-	default:
-		h.Set("Allow", "GET, HEAD, POST, PUT, DELETE")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !g.sessionOK(r) {
-		g.loginPage(w, r.URL.Path, "", http.StatusUnauthorized)
-		return
-	}
-
-	// os.Root confines every lookup to the directory: ".." and symlinks
-	// leading outside it fail, even if they change between checks.
-	root, err := os.OpenRoot(g.downloadsDir)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer root.Close()
-	name := strings.Trim(strings.TrimPrefix(r.URL.Path, downloadsPrefix), "/")
-	if name == "" {
-		name = "."
-	}
-	f, err := root.Open(name)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-
-	switch {
-	case st.IsDir():
-		if !strings.HasSuffix(r.URL.Path, "/") {
-			http.Redirect(w, r, g.abs(escapePath(r.URL.Path))+"/", http.StatusMovedPermanently)
-			return
-		}
-		g.listing(w, r, root, name, f)
-	case st.Mode().IsRegular():
-		// Always an attachment: an HTML file from Downloads must never render
-		// as a page on this origin, where it could script the noVNC session.
-		h.Set("Content-Type", "application/octet-stream")
-		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": st.Name()}))
-		http.ServeContent(w, r, st.Name(), st.ModTime(), f)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
 type entry struct {
-	Name, Href, Size, Modified string
-	dir                        bool
-}
-
-func (e entry) IsDir() bool { return e.dir }
-
-func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, dir string, f *os.File) {
-	entries, truncated, err := listDir(root, dir, f)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	title := "/"
-	if dir != "." {
-		title = "/" + dir + "/"
-	}
-	w.Header().Set("Content-Security-Policy", listingCSP)
-	renderPage(w, http.StatusOK, listingTmpl, map[string]any{
-		"Title": title, "Action": g.abs(escapePath(r.URL.Path)), "Entries": entries, "Root": dir == ".",
-		"Truncated": truncated, "Max": maxListing, "Script": g.abs("/tabtop/upload.js"),
-	})
+	Name, Size, Modified string
+	dir                  bool
 }
 
 // listDir lists the directory f, which is dir in root: directories first,
@@ -432,14 +284,10 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 		}
 		e := entry{
 			Name:     de.Name(),
-			Href:     url.PathEscape(de.Name()),
 			Modified: st.ModTime().Format("2006-01-02 15:04"),
 			dir:      st.IsDir(),
 		}
-		if e.dir {
-			e.Name += "/"
-			e.Href += "/"
-		} else {
+		if !e.dir {
 			e.Size = humanSize(st.Size())
 		}
 		entries = append(entries, e)
@@ -456,58 +304,6 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 	return entries, truncated, nil
 }
 
-func (g *server) login(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	back := g.abs(escapePath(r.URL.Path))
-	ip := g.clientIP(r)
-
-	if r.PostForm.Has("logout") {
-		if c, err := r.Cookie(cookieName); err == nil {
-			g.endSession(c.Value)
-		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Path: g.base, MaxAge: -1,
-			HttpOnly: true, Secure: g.secure(r), SameSite: http.SameSiteStrictMode})
-		http.Redirect(w, r, back, http.StatusSeeOther)
-		return
-	}
-	token, status, msg := g.authenticate(ip, strings.TrimSpace(r.PostForm.Get("password")))
-	if token == "" {
-		g.loginPage(w, r.URL.Path, msg, status)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: g.base,
-		MaxAge: int(sessionTTL.Seconds()), HttpOnly: true, Secure: g.secure(r), SameSite: http.SameSiteStrictMode})
-	http.Redirect(w, r, back, http.StatusSeeOther)
-}
-
-// authenticate checks a web login from ip against its limit and the users
-// file. It returns a new session token, or "" with an HTTP status and a
-// message for the user.
-func (g *server) authenticate(ip, cred string) (token string, status int, msg string) {
-	if !g.beginLogin(ip) {
-		log.Printf("web login from %s refused: too many failed logins", ip)
-		return "", http.StatusTooManyRequests, "Too many failed attempts. Try again in a few minutes."
-	}
-	if !startLoginWork() {
-		g.endLogin(ip, false)
-		log.Printf("web login from %s refused: %s", ip, loginBusy)
-		return "", http.StatusServiceUnavailable, loginBusyMsg
-	}
-	ok := g.credentialsOK(cred)
-	endLoginWork()
-	g.endLogin(ip, !ok)
-	if !ok {
-		log.Printf("web login from %s failed", ip)
-		return "", http.StatusUnauthorized, "Those credentials are wrong, expired or already used."
-	}
-	log.Printf("web login from %s succeeded", ip)
-	return g.newSession(), http.StatusOK, ""
-}
-
 func (g *server) endSession(token string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -521,45 +317,6 @@ func (g *server) dialVNC() (net.Conn, error) {
 		return net.DialTimeout("unix", path, 5*time.Second)
 	}
 	return net.DialTimeout("tcp", g.vncAddr, 5*time.Second)
-}
-
-// loginPage is the login form for the downloads and the terminal, which
-// share one session.
-func (g *server) loginPage(w http.ResponseWriter, p, errMsg string, status int) {
-	title := "Downloads"
-	if strings.HasPrefix(p, ttyPrefix) {
-		title = "Terminal"
-	}
-	renderPage(w, status, loginTmpl, map[string]any{"Title": title, "Action": g.abs(escapePath(p)), "Error": errMsg})
-}
-
-// credentialsOK reports whether cred matches the pam_oath users file: a TOTP
-// code alone when the PIN is "-", or password immediately followed by the
-// code when a PIN is set. It's split the way pam_oath splits it.
-func (g *server) credentialsOK(cred string) bool {
-	user, digits, ok := g.usersFileEntry()
-	if !ok || len(cred) < digits {
-		return false
-	}
-	err := oathAuthenticate(g.usersFile, user, cred[:len(cred)-digits], cred[len(cred)-digits:])
-	if e, ok := err.(oathError); err != nil && !(ok && e.rejected()) {
-		log.Printf("checking TOTP code: %v", err)
-	}
-	return err == nil
-}
-
-// usersFileEntry reads the user and code length from the users file.
-func (g *server) usersFileEntry() (user string, digits int, ok bool) {
-	data, err := os.ReadFile(g.usersFile)
-	if err != nil {
-		log.Printf("cannot read TOTP users file: %v", err)
-		return "", 0, false
-	}
-	user, digits, ok = parseUsersOath(string(data))
-	if !ok {
-		log.Printf("cannot parse TOTP users file %s", g.usersFile)
-	}
-	return user, digits, ok
 }
 
 // parseUsersOath reads the user and code length from the first line,
@@ -654,25 +411,6 @@ func (g *server) sweepFailuresLocked() {
 			delete(g.failures, ip)
 		}
 	}
-}
-
-// sessionOK reports whether r's cookie holds a session from a web login.
-// A tunnel's session never counts: its id is sent unencrypted in each
-// session tunnel's hello (see tunnel.go), so it mustn't work as a cookie.
-func (g *server) sessionOK(r *http.Request) bool {
-	token := sessionToken(r)
-	g.mu.Lock()
-	_, tunnel := g.secrets[token]
-	g.mu.Unlock()
-	return !tunnel && g.sessionValid(token)
-}
-
-func sessionToken(r *http.Request) string {
-	c, err := r.Cookie(cookieName)
-	if err != nil {
-		return ""
-	}
-	return c.Value
 }
 
 func (g *server) sessionValid(token string) bool {
@@ -781,14 +519,8 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 
 // secure reports whether the browser reached the site over HTTPS: to
 // tabtopd itself, or to a trusted proxy that says so in X-Forwarded-Proto
-// (anyone else's is ignored, as with X-Forwarded-For). Cookies set then are
-// Secure, so the browser never sends them over plain HTTP.
-// useE2E reports whether r is to be served through the tunnel only: always
-// with -e2e on, and with -e2e auto when it came over plain HTTP.
-func (g *server) useE2E(r *http.Request) bool {
-	return g.e2e || g.e2eAuto && !g.secure(r)
-}
-
+// (anyone else's is ignored, as with X-Forwarded-For), for the doctor
+// report.
 func (g *server) secure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -863,17 +595,6 @@ func humanSize(n int64) string {
 	return ""
 }
 
-func renderPage(w http.ResponseWriter, status int, t *template.Template, data map[string]any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if w.Header().Get("Content-Security-Policy") == "" {
-		w.Header().Set("Content-Security-Policy", csp)
-	}
-	w.WriteHeader(status)
-	if err := t.Execute(w, data); err != nil {
-		log.Printf("rendering page: %v", err)
-	}
-}
-
 const pageHead = `<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -895,28 +616,4 @@ p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
 td.act { width: 1%; text-align: right; }
 button.delete { font: inherit; font-size: 13px; }
-input[name=password] { font: inherit; font-size: 1.25rem; width: 16em; }
 </style>`
-
-var loginTmpl = template.Must(template.New("login").Parse(pageHead + `
-<title>{{.Title}} login</title><body>
-<h1>{{.Title}}</h1>{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-<form method="post" action="{{.Action}}">
-<p><label>Password + authenticator code<br>
-<input name="password" type="password" autocomplete="off" autofocus required></label></p>
-<p><button>Log in</button></p></form>`))
-
-var listingTmpl = template.Must(template.New("listing").Parse(pageHead + `
-<title>Downloads {{.Title}}</title><body>
-<div class="bar"><h1>Downloads{{.Title}}</h1>
-<form method="post" action="{{.Action}}"><button name="logout" value="1">Log out</button></form></div>
-<table><tr><th>Name</th><th class="num">Size</th><th class="num">Modified</th><th></th></tr>
-{{if not .Root}}<tr><td class="name"><a href="../">../</a></td><td></td><td></td><td></td></tr>{{end}}
-{{range .Entries}}<tr><td class="name"><a href="{{.Href}}">{{.Name}}</a></td>
-<td class="num">{{.Size}}</td><td class="num">{{.Modified}}</td>
-<td class="act">{{if not .IsDir}}<button class="delete" data-href="{{.Href}}" data-name="{{.Name}}">Delete</button>{{end}}</td></tr>
-{{else}}<tr><td colspan="4">No files yet.</td></tr>{{end}}
-</table>
-{{if .Truncated}}<p class="error">This folder has more than {{.Max}} entries, so only {{.Max}} of them are shown, chosen in no particular order.</p>{{end}}
-<p class="upload"><span class="hint">Or drop files on this page. They go into this folder.</span></p>
-<script type="module" src="{{.Script}}"></script>`))

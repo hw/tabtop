@@ -46,9 +46,12 @@ case "$WEB_DOCTOR_ENDPOINT" in
     0|1) ;;
     *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
 esac
+# WEB_E2E is gone: the encrypted tunnel is always on. 1 (what it always
+# means now) is accepted; 0 asked for unencrypted pages, which no longer
+# exist, so it stops the container rather than be silently ignored.
 case "$WEB_E2E" in
-    ''|0|1) ;;
-    *) echo "WEB_E2E must be 0, 1 or unset (got '${WEB_E2E}')." >&2; exit 1 ;;
+    ''|1) ;;
+    *) echo "WEB_E2E=${WEB_E2E} is no longer supported: everything always goes through the encrypted tunnel. Unset WEB_E2E." >&2; exit 1 ;;
 esac
 # Same rule as tabtopd's: segments of unreserved URL characters, spelled out
 # because ranges like a-z can match other letters, depending on the locale.
@@ -303,10 +306,12 @@ printf '{"resize": "%s"}\n' "$VNC_RESIZE" > /opt/novnc/defaults.json
 printf '%s\n' '<!doctype html><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1">' \
     > /opt/novnc/index.html
 
-# The gateway owns the web port: it serves the noVNC client, bridges its
-# WebSocket to Xvnc, and serves ~/Downloads at /downloads/ and a terminal at
-# /tty/ behind a login. It runs as the desktop user, to read the downloads and the pam_oath
-# users file.
+# The gateway owns the web port: it serves the noVNC client, the files page
+# for ~/Downloads at /downloads/ and a terminal at /tty/, and carries all of
+# them, and the audio, through its encrypted tunnel, logging in with CPace
+# and encrypting with ChaCha20-Poly1305 from the noble libraries (in
+# /opt/noble). It runs as the desktop user, to read the downloads and the
+# pam_oath users file.
 runuser -u "$VNC_USER" -- mkdir -p "$USER_HOME/Downloads"
 TERM_DIR=""
 if [ "$WEB_TTY" = 1 ]; then
@@ -316,15 +321,6 @@ DOCTOR=false
 if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
     DOCTOR=true
 fi
-# With WEB_E2E=1, the pages talk to the gateway only through its encrypted
-# tunnel, logging in with CPace and encrypting with ChaCha20-Poly1305 from
-# the noble libraries (in /opt/noble). Unset, they do so when the site is
-# reached over plain HTTP, and not over HTTPS.
-case "$WEB_E2E" in
-    1) E2E=on ;;
-    0) E2E=off ;;
-    *) E2E=auto ;;
-esac
 as_user /usr/local/bin/tabtopd \
     -listen ":${WEB_PORT}" \
     -base-path "$WEB_BASE_PATH" \
@@ -339,7 +335,6 @@ as_user /usr/local/bin/tabtopd \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \
     -doctor="$DOCTOR" \
-    -e2e="$E2E" \
     &
 TABTOPD_PID=$!
 

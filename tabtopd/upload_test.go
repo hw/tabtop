@@ -2,10 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,127 +23,17 @@ func TestValidUploadName(t *testing.T) {
 	}
 }
 
-func newUploadServer(t *testing.T) (*server, *httptest.Server, string) {
-	t.Helper()
-	g := &server{base: "/", downloadsDir: t.TempDir(), sessions: map[string]time.Time{}, secrets: map[string][]byte{},
-		failures: map[string][]time.Time{}, pending: map[string]int{}, ttys: map[string]int{}}
-	srv := httptest.NewServer(g.handler())
-	t.Cleanup(srv.Close)
-	return g, srv, cookieName + "=" + g.newSession()
-}
-
-func put(t *testing.T, url, cookie string, body []byte, header map[string]string) (int, map[string]any) {
-	t.Helper()
-	req, _ := http.NewRequest("PUT", url, bytes.NewReader(body))
-	if cookie != "" {
-		req.Header.Set("Cookie", cookie)
-	}
-	for k, v := range header {
-		req.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var res map[string]any
-	json.NewDecoder(resp.Body).Decode(&res)
-	return resp.StatusCode, res
-}
-
-func TestPutUpload(t *testing.T) {
-	g, srv, sc := newUploadServer(t)
-	os.Mkdir(filepath.Join(g.downloadsDir, "sub dir"), 0o755)
-	os.WriteFile(filepath.Join(filepath.Dir(g.downloadsDir), "outside"), nil, 0o644)
-	os.Symlink(filepath.Dir(g.downloadsDir), filepath.Join(g.downloadsDir, "escape"))
-	base := srv.URL + "/downloads/"
-
-	if status, _ := put(t, base+"a.txt", "", []byte("x"), nil); status != http.StatusUnauthorized {
-		t.Errorf("without a login: status %d", status)
-	}
-	if status, _ := put(t, base+"a.txt", sc, []byte("x"), map[string]string{"Sec-Fetch-Site": "cross-site"}); status != http.StatusForbidden {
-		t.Errorf("from another site: status %d", status)
-	}
-	if status, res := put(t, base+"sub%20dir/r%C3%A9sum%C3%A9.pdf", sc, []byte("one"), nil); status != http.StatusCreated || res["name"] != "résumé.pdf" {
-		t.Fatalf("upload: %d %v", status, res)
-	}
-	// A clash never replaces the file.
-	for i, want := range []string{"résumé (1).pdf", "résumé (2).pdf"} {
-		if status, res := put(t, base+"sub%20dir/r%C3%A9sum%C3%A9.pdf", sc, []byte{'2' + byte(i)}, nil); status != http.StatusCreated || res["name"] != want {
-			t.Fatalf("clash %d: %d %v, want %s", i, status, res, want)
-		}
-	}
-	if b, _ := os.ReadFile(filepath.Join(g.downloadsDir, "sub dir", "résumé.pdf")); string(b) != "one" {
-		t.Errorf("first upload now holds %q", b)
-	}
-	if status, res := put(t, base+".bashrc", sc, nil, nil); status != http.StatusCreated || res["name"] != ".bashrc" {
-		t.Fatalf("empty dotfile: %d %v", status, res)
-	}
-	if status, res := put(t, base+".bashrc", sc, nil, nil); res["name"] != ".bashrc (1)" {
-		t.Fatalf("dotfile clash: %d %v", status, res)
-	}
-	for _, p := range []string{"escape/x", "missing/x", "a.txt/x"} {
-		if status, res := put(t, base+p, sc, []byte("x"), nil); status != http.StatusNotFound {
-			t.Errorf("PUT %s: %d %v", p, status, res)
-		}
-	}
-	if status, _ := put(t, base+uploadTempPrefix+"x.part", sc, []byte("x"), nil); status != http.StatusBadRequest {
-		t.Errorf("temporary file's name: status %d", status)
-	}
-	if status, _ := put(t, base+"sub%20dir/", sc, []byte("x"), nil); status != http.StatusBadRequest {
-		t.Errorf("no name: status %d", status)
-	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(g.downloadsDir), "x")); err == nil {
-		t.Error("wrote outside Downloads")
-	}
-	// No temporary files are left behind.
-	filepath.Walk(g.downloadsDir, func(p string, info os.FileInfo, err error) error {
-		if strings.HasPrefix(filepath.Base(p), uploadTempPrefix) {
-			t.Errorf("left %s", p)
-		}
-		return nil
-	})
-}
-
-func TestPutUploadAborted(t *testing.T) {
-	g, srv, sc := newUploadServer(t)
-	// Fewer bytes than the Content-Length, then the connection closes.
-	pr, pw := io.Pipe()
-	req, _ := http.NewRequest("PUT", srv.URL+"/downloads/cut.bin", pr)
-	req.ContentLength = 1000
-	req.Header.Set("Cookie", sc)
-	go func() {
-		pw.Write([]byte("partial"))
-		pw.CloseWithError(io.ErrUnexpectedEOF)
-	}()
-	if resp, err := http.DefaultClient.Do(req); err == nil {
-		resp.Body.Close()
-	}
-	time.Sleep(100 * time.Millisecond)
-	entries, _ := os.ReadDir(g.downloadsDir)
-	if len(entries) != 0 {
-		t.Errorf("an aborted upload left %v", entries)
-	}
-}
-
-func TestListingHidesUploadsInProgress(t *testing.T) {
-	g, srv, sc := newUploadServer(t)
-	os.WriteFile(filepath.Join(g.downloadsDir, uploadTempPrefix+"abc.part"), []byte("x"), 0o644)
-	os.WriteFile(filepath.Join(g.downloadsDir, "done.txt"), []byte("x"), 0o644)
-	req, _ := http.NewRequest("GET", srv.URL+"/downloads/", nil)
-	req.Header.Set("Cookie", sc)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "done.txt") || strings.Contains(string(body), uploadTempPrefix) {
-		t.Errorf("listing:\n%s", body)
-	}
-	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") ||
-		!strings.Contains(string(body), `src="/tabtop/upload.js"`) || !strings.Contains(string(body), `<p class="upload">`) {
-		t.Errorf("listing doesn't load upload.js: CSP %q", csp)
+func TestListDirHidesUploadsInProgress(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, uploadTempPrefix+"1.part"), []byte("x"), 0o644)
+	root, _ := os.OpenRoot(dir)
+	defer root.Close()
+	f, _ := root.Open(".")
+	defer f.Close()
+	entries, _, err := listDir(root, ".", f)
+	if err != nil || len(entries) != 1 || entries[0].Name != "a.txt" {
+		t.Errorf("listed %v: %v", entries, err)
 	}
 }
 

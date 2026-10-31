@@ -1,17 +1,13 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 func newTTYTestServer(t *testing.T) (*server, *httptest.Server) {
@@ -27,13 +23,9 @@ func newTTYTestServer(t *testing.T) (*server, *httptest.Server) {
 	return g, srv
 }
 
-func get(t *testing.T, url, token string) *http.Response {
+func get(t *testing.T, url string) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest("GET", url, nil)
-	if token != "" {
-		req.AddCookie(&http.Cookie{Name: cookieName, Value: token})
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,27 +33,17 @@ func get(t *testing.T, url, token string) *http.Response {
 	return resp
 }
 
-func TestTTYNeedsSession(t *testing.T) {
-	_, srv := newTTYTestServer(t)
-	for _, p := range []string{"/tty/", "/tty/ws", "/tty/ghostty-web.js"} {
-		if resp := get(t, srv.URL+p, "bogus"); resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("%s without a session: status %d, want 401", p, resp.StatusCode)
-		}
-	}
-}
-
 func TestTTYOff(t *testing.T) {
 	g, srv := newTTYTestServer(t)
 	g.termDir = ""
-	if resp := get(t, srv.URL+"/tty/", g.newSession()); resp.StatusCode != http.StatusNotFound {
+	if resp := get(t, srv.URL+"/tty/"); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status %d, want 404", resp.StatusCode)
 	}
 }
 
 func TestTTYPage(t *testing.T) {
-	g, srv := newTTYTestServer(t)
-	token := g.newSession()
-	resp := get(t, srv.URL+"/tty/", token)
+	_, srv := newTTYTestServer(t)
+	resp := get(t, srv.URL+"/tty/")
 	// ghostty-web fetches and compiles its WebAssembly from a data: URL.
 	csp := resp.Header.Get("Content-Security-Policy")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(csp, "default-src 'self'") ||
@@ -69,58 +51,13 @@ func TestTTYPage(t *testing.T) {
 		t.Errorf("page: status %d, CSP %q", resp.StatusCode, csp)
 	}
 	for p, want := range map[string]int{"/tty/tty.js": 200, "/tty/ghostty-web.js": 200, "/tty/" + ghosttyStub: 200,
-		"/tty/PowerlineSymbols.otf": 200, "/tty/xterm.mjs": 404, "/tty/../main.go": 404, "/tty/other": 404} {
-		if resp := get(t, srv.URL+p, token); resp.StatusCode != want {
+		"/tty/PowerlineSymbols.otf": 200, "/tty/xterm.mjs": 404, "/tty/../main.go": 404, "/tty/other": 404, "/tty/ws": 404} {
+		if resp := get(t, srv.URL+p); resp.StatusCode != want {
 			t.Errorf("%s: status %d, want %d", p, resp.StatusCode, want)
 		}
 	}
-	if resp := get(t, srv.URL+"/tty/PowerlineSymbols.otf", token); resp.Header.Get("Content-Type") != "font/otf" {
+	if resp := get(t, srv.URL+"/tty/PowerlineSymbols.otf"); resp.Header.Get("Content-Type") != "font/otf" {
 		t.Errorf("font Content-Type %q, want font/otf", resp.Header.Get("Content-Type"))
-	}
-}
-
-// TestTTYSession runs a shell script in the PTY instead of tmux: it waits
-// for a line of input, then reports the terminal size.
-func TestTTYSession(t *testing.T) {
-	g, srv := newTTYTestServer(t)
-	old := ttyCommand
-	ttyCommand = func() *exec.Cmd {
-		return exec.Command("sh", "-c", "stty -echo; echo ready; read x; stty size; echo got $x")
-	}
-	t.Cleanup(func() { ttyCommand = old })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	h := http.Header{}
-	h.Set("Cookie", cookieName+"="+g.newSession())
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/tty/ws", &websocket.DialOptions{HTTPHeader: h})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.CloseNow()
-
-	var out strings.Builder
-	readUntil := func(want string) {
-		t.Helper()
-		for !strings.Contains(out.String(), want) {
-			_, data, err := c.Read(ctx)
-			if err != nil {
-				t.Fatalf("waiting for %q, got %q: %v", want, out.String(), err)
-			}
-			out.Write(data)
-		}
-	}
-	readUntil("ready")
-	c.Write(ctx, websocket.MessageText, []byte(`{"type":"resize","cols":100,"rows":30}`))
-	c.Write(ctx, websocket.MessageText, []byte(`{"type":"resize","cols":0,"rows":99999}`)) // ignored
-	c.Write(ctx, websocket.MessageBinary, []byte("hello\r"))
-	readUntil("got hello")
-	if !strings.Contains(out.String(), "30 100") {
-		t.Errorf("terminal size not applied: %q", out.String())
-	}
-	// The program exiting closes the WebSocket.
-	if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
-		t.Errorf("after exit: %v, want a normal close", err)
 	}
 }
 

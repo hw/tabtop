@@ -28,7 +28,7 @@ const vncProbeTimeout = 2 * time.Second
 // doesn't connect to Xvnc, which would log every check.
 func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
-	h.Set("Cache-Control", "no-store")
+	h.Set("Cache-Control", "no-store, no-transform")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -151,7 +151,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := w.Header()
-	h.Set("Cache-Control", "no-store")
+	h.Set("Cache-Control", "no-store, no-transform")
 	h.Set("X-Content-Type-Options", "nosniff")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.Set("Allow", "GET, HEAD")
@@ -195,26 +195,13 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		checks["terminal"] = newCheck(fmt.Sprintf("tmux %s, ghostty-web in %s", tmux, g.termDir), err)
 	}
 
-	if !g.e2e && !g.e2eAuto {
-		checks["e2e"] = check{OK: true, Detail: "off"}
-	} else {
-		var err error
-		for _, name := range nobleFiles {
-			if _, err = os.Stat(filepath.Join(g.nobleDir, name)); err != nil {
-				break
-			}
+	err = nil
+	for _, name := range nobleFiles {
+		if _, err = os.Stat(filepath.Join(g.nobleDir, name)); err != nil {
+			break
 		}
-		mode := "on"
-		if g.e2eAuto {
-			mode = "auto (on for plain HTTP, off for HTTPS)"
-		}
-		this := "this request: off"
-		if g.useE2E(r) {
-			this = "this request: on"
-		}
-		checks["e2e"] = newCheck(fmt.Sprintf("%s, %s; CPace logins, ChaCha20-Poly1305 tunnels; noble libraries in %s",
-			mode, this, g.nobleDir), err)
 	}
+	checks["tunnel"] = newCheck(fmt.Sprintf("CPace logins, ChaCha20-Poly1305 tunnels; noble libraries in %s", g.nobleDir), err)
 
 	g.mu.Lock()
 	now := time.Now()
@@ -263,8 +250,8 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	enc.Encode(report)
 }
 
-// proxyReport shows how this request's client IP and cookie security were
-// worked out, whoever sent it, with what to change when it looks wrong.
+// proxyReport shows how this request's client IP and scheme were worked
+// out, whoever sent it, with what to change when it looks wrong.
 func (g *server) proxyReport(r *http.Request) map[string]any {
 	client, trace := g.traceClientIP(r)
 	peer := trace[0]
@@ -331,22 +318,24 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 				h.Addr, h.Addr))
 		}
 	}
+	// The browser decides what needs HTTPS (audio, saving downloads
+	// straight to disk); this is only what the gateway can tell.
+	const needsHTTPS = " Audio, and saving large downloads straight to disk, need HTTPS (or localhost)."
 	switch {
 	case r.TLS != nil:
-		diagnosis = append(diagnosis, "HTTPS straight to tabtopd: cookies are Secure.")
+		diagnosis = append(diagnosis, "HTTPS straight to tabtopd.")
 	case !peer.Trusted && len(proto) > 0:
 		diagnosis = append(diagnosis, fmt.Sprintf("X-Forwarded-Proto (%s) is ignored from an untrusted "+
-			"connection: cookies aren't Secure.", strings.Join(proto, ", ")))
+			"connection, so the scheme the browser used is unknown.", strings.Join(proto, ", ")))
 	case !peer.Trusted:
-		diagnosis = append(diagnosis, "Plain HTTP and no trusted proxy: cookies aren't Secure.")
+		diagnosis = append(diagnosis, "Plain HTTP and no trusted proxy."+needsHTTPS)
 	case len(proto) == 0:
-		diagnosis = append(diagnosis, "The trusted proxy sent no X-Forwarded-Proto: cookies aren't Secure. "+
-			"Have the proxy set it.")
+		diagnosis = append(diagnosis, "The trusted proxy sent no X-Forwarded-Proto, so the scheme the "+
+			"browser used is unknown.")
 	case g.secure(r):
-		diagnosis = append(diagnosis, "The trusted proxy reports HTTPS: cookies are Secure.")
+		diagnosis = append(diagnosis, "The trusted proxy reports HTTPS.")
 	default:
-		diagnosis = append(diagnosis, fmt.Sprintf("The trusted proxy reports %s: cookies aren't Secure.",
-			strings.Join(proto, ", ")))
+		diagnosis = append(diagnosis, fmt.Sprintf("The trusted proxy reports %s.%s", strings.Join(proto, ", "), needsHTTPS))
 	}
 
 	return map[string]any{
@@ -358,7 +347,7 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 		"trusted_proxies":    trusted,
 		"trust_nproxies":     g.trustNProxies,
 		"client_ip":          client,
-		"secure_cookies":     g.secure(r),
+		"https":              g.secure(r),
 		"trace":              trace,
 		"diagnosis":          diagnosis,
 	}

@@ -1,6 +1,6 @@
 package main
 
-// The encrypted tunnel, used for everything with -e2e: a WebSocket at
+// The encrypted tunnel, which carries everything private: a WebSocket at
 // /tunnel whose messages are encrypted between the page's JavaScript
 // (tunnel.js) and tabtopd, so a proxy that terminates TLS in between, and
 // logs or inspects what passes through, sees neither logins nor content. It
@@ -157,11 +157,11 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 		return
 	}
 	sid, ya := hello[:cpaceSID], hello[cpaceSID:]
-	// The attempt is reserved now, like a VNC login, so parallel tunnels
-	// can't buy extra guesses. It only counts as a failure once the browser
-	// has committed to its tags.
+	// The attempt is reserved now, so parallel tunnels can't buy extra
+	// guesses. It only counts as a failure once the browser has committed
+	// to its tags.
 	if !g.beginLogin(ip) {
-		log.Printf("web login from %s refused: too many failed logins", ip)
+		log.Printf("login from %s refused: too many failed logins", ip)
 		c.Close(closeLoginRefused, "Too many failed attempts. Try again in a few minutes.")
 		return
 	}
@@ -182,7 +182,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 		if startLoginWork() {
 			return false
 		}
-		log.Printf("web login from %s refused: %s", ip, loginBusy)
+		log.Printf("login from %s refused: %s", ip, loginBusy)
 		c.Close(websocket.StatusTryAgainLater, loginBusyMsg)
 		return true
 	}
@@ -254,12 +254,12 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	endLoginWork()
 	if match < 0 || err != nil {
 		settle(true)
-		log.Printf("web login from %s failed", ip)
+		log.Printf("login from %s failed", ip)
 		c.Close(closeLoginFailed, "Those credentials are wrong, expired or already used.")
 		return
 	}
 	settle(false)
-	log.Printf("web login from %s succeeded", ip)
+	log.Printf("login from %s succeeded", ip)
 	id, secret := g.newE2ESession()
 	if c.Write(ctx, websocket.MessageBinary, append([]byte{tunnelVersion}, keys[96:]...)) != nil {
 		return
