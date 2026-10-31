@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -222,61 +220,6 @@ func TestListDirTruncated(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "one more"), nil, 0o644)
 	if entries, truncated := list(); len(entries) != maxListing || !truncated {
 		t.Fatalf("%d files: %d entries, truncated %v", maxListing+1, len(entries), truncated)
-	}
-}
-
-// serverHandshake is what Xvnc sends up to (not including) the security result.
-var serverHandshake = []byte("RFB 003.008\n\x01\x13\x00\x02\x00\x01\x00\x00\x01\x00")
-
-func TestParseSecurityResult(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   []byte
-		want rfbState
-	}{
-		{"partial", serverHandshake[:15], rfbNeedMore},
-		{"awaiting result", serverHandshake, rfbNeedMore},
-		{"ok", append(slices.Clone(serverHandshake), 0, 0, 0, 0), rfbOK},
-		{"failed", append(slices.Clone(serverHandshake), 0, 0, 0, 1), rfbFailed},
-		{"no security types", []byte("RFB 003.008\n\x00\x00\x00\x00\x04nope"), rfbNoLogin},
-		{"VeNCrypt version refused", []byte("RFB 003.008\n\x01\x13\x00\x02\xff"), rfbNoLogin},
-	} {
-		if got := parseSecurityResult(tc.in); got != tc.want {
-			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestWatcherSplitWrites(t *testing.T) {
-	var got []bool
-	w := &rfbWatcher{result: func(ok bool) { got = append(got, ok) }}
-	stream := append(slices.Clone(serverHandshake), 0, 0, 0, 1, 'x', 'y')
-	for _, b := range stream { // one byte at a time, as a slow network might deliver it
-		w.Write([]byte{b})
-	}
-	if !slices.Equal(got, []bool{false}) {
-		t.Errorf("results = %v, want one failure", got)
-	}
-}
-
-func TestCheckClientHandshake(t *testing.T) {
-	good := "RFB 003.008\n\x13\x00\x02\x00\x00\x01\x00"
-	var fwd bytes.Buffer
-	if err := checkClientHandshake(strings.NewReader(good+"creds"), &fwd); err != nil || fwd.String() != good {
-		t.Errorf("good handshake: err=%v forwarded=%q", err, fwd.String())
-	}
-	for name, in := range map[string]string{
-		"RFB 3.3":       "RFB 003.003\n",
-		"VNC auth type": "RFB 003.008\n\x02",
-		"TLS subtype":   "RFB 003.008\n\x13\x00\x02\x00\x00\x01\x03",
-	} {
-		fwd.Reset()
-		if err := checkClientHandshake(strings.NewReader(in), &fwd); err != errBadHandshake {
-			t.Errorf("%s: err = %v, want errBadHandshake", name, err)
-		}
-		if fwd.Len() >= len(in) { // only the steps before the bad one may reach the server
-			t.Errorf("%s: forwarded the bad step: %q", name, fwd.String())
-		}
 	}
 }
 

@@ -119,12 +119,7 @@ func uploadError(err error) string {
 // on another site can't send one: forms can't PUT, and the browser would
 // ask first (CORS), which is never allowed here.
 func (g *server) putUpload(w http.ResponseWriter, r *http.Request) {
-	if !g.sessionOK(r) {
-		http.Error(w, "Log in first.", http.StatusUnauthorized)
-		return
-	}
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
-		http.Error(w, "forbidden", http.StatusForbidden)
+	if !g.webChangeOK(w, r) {
 		return
 	}
 	if r.ContentLength < 0 {
@@ -174,6 +169,20 @@ func (g *server) putUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("upload from %s saved %s (%s)", g.clientIP(r), path.Join(dir, got), humanSize(n))
 	reply(http.StatusCreated, map[string]any{"name": got})
+}
+
+// webChangeOK reports whether r, which changes ~/Downloads, comes from a
+// logged-in page on this site, and answers it if not.
+func (g *server) webChangeOK(w http.ResponseWriter, r *http.Request) bool {
+	if !g.sessionOK(r) {
+		http.Error(w, "Log in first.", http.StatusUnauthorized)
+		return false
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func uploadStatus(err error) int {

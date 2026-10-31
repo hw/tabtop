@@ -348,7 +348,7 @@ func recordSink(sink string, bitrate int, deliver func([]byte)) (func(), int, er
 
 func (g *server) joinAudio(w http.ResponseWriter, r *http.Request, kind string) (*audioListener, int, bool) {
 	// With -e2e, audio only goes through the tunnel.
-	if g.audio == nil || g.e2e {
+	if g.audio == nil || g.useE2E(r) {
 		http.NotFound(w, r)
 		return nil, 0, false
 	}

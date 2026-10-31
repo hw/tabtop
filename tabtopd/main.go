@@ -25,10 +25,7 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/binary"
-	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -47,8 +44,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 const (
@@ -72,7 +67,8 @@ const (
 	vncLoginTimeout = 60 * time.Second
 
 	csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
-	// The listing also runs upload.js, which uploads files dropped on it.
+	// The listing also runs upload.js, which uploads files dropped on it or
+	// picked with its button, and deletes files with their buttons.
 	listingCSP = csp + "; script-src 'self'; connect-src 'self'"
 )
 
@@ -94,10 +90,11 @@ type server struct {
 	termDir       string    // ghostty-web files; empty when the terminal is off
 	doctorOn      bool      // serve the doctor report
 	// With e2e, everything goes through the encrypted tunnel (tunnel.go)
-	// and the unencrypted WebSockets and logins are refused.
-	e2e      bool
-	nobleDir string // noble library files for tunnel.js
-	nobleTag struct {
+	// and the unencrypted WebSockets and logins are refused. With e2eAuto,
+	// that's so for requests made over plain HTTP; see useE2E.
+	e2e, e2eAuto bool
+	nobleDir     string // noble library files for tunnel.js
+	nobleTag     struct {
 		once sync.Once
 		tag  string
 	}
@@ -133,7 +130,8 @@ func main() {
 	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
-	flag.BoolVar(&g.e2e, "e2e", false, "encrypt everything end to end through the tunnel, refusing the unencrypted WebSockets and logins")
+	e2eMode := flag.String("e2e", "off", "on: encrypt everything end to end through the tunnel, refusing the unencrypted WebSockets "+
+		"and logins; auto: do so for requests made over plain HTTP; off: never")
 	flag.StringVar(&g.nobleDir, "noble-dir", "", "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
 	audioKbps := flag.Int("audio-bitrate", 64, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
 	flag.Parse()
@@ -161,11 +159,24 @@ func main() {
 	if g.doctorOn {
 		log.Printf("serving the troubleshooting report at %s, without a login", g.abs("/doctor"))
 	}
-	if g.e2e {
+	switch *e2eMode {
+	case "on":
+		g.e2e = true
+	case "auto":
+		g.e2eAuto = true
+	case "off":
+	default:
+		log.Fatalf("-e2e must be on, auto or off")
+	}
+	if g.e2e || g.e2eAuto {
 		if g.nobleDir == "" {
 			log.Fatal("-e2e needs -noble-dir")
 		}
-		log.Printf("end-to-end encryption on: logins with CPace, tunnels with ChaCha20-Poly1305")
+		when := "on"
+		if g.e2eAuto {
+			when = "on for plain HTTP, off for HTTPS"
+		}
+		log.Printf("end-to-end encryption %s: logins with CPace, tunnels with ChaCha20-Poly1305", when)
 	}
 	if *audioSink != "" {
 		if *audioKbps < minAudioBitrate || *audioKbps > maxAudioBitrate {
@@ -189,7 +200,7 @@ func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	static := http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/vnc.html" && !g.e2e {
+		if r.URL.Path == "/vnc.html" && !g.useE2E(r) {
 			g.audio.setCookie(w, r, g.base, g.secure(r))
 		}
 		static.ServeHTTP(w, r)
@@ -285,198 +296,6 @@ func (f noListingFS) Open(name string) (fs.File, error) {
 	return file, nil
 }
 
-// websockify bridges a noVNC WebSocket to Xvnc's RFB port. Accept also
-// rejects cross-origin requests, so another site can't open a session in a
-// visitor's browser.
-func (g *server) websockify(w http.ResponseWriter, r *http.Request) {
-	if g.e2e {
-		http.Error(w, "only the encrypted tunnel is served", http.StatusNotFound)
-		return
-	}
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"binary"}})
-	if err != nil {
-		return // Accept has already sent the error response.
-	}
-	c.SetReadLimit(maxClientMessage)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ws := websocket.NetConn(ctx, c, websocket.MessageBinary)
-	defer ws.Close()
-	g.bridgeVNC(ws, g.clientIP(r), g.audio.token(r), nil)
-}
-
-// bridgeVNC connects a client's RFB stream, from noVNC's WebSocket or the
-// tunnel, to Xvnc, counting its login against ip's limit. Once it's logged
-// in, audioToken may fetch audio from ip, and loggedIn (if not nil) is
-// called.
-func (g *server) bridgeVNC(ws net.Conn, ip, audioToken string, loggedIn func()) {
-	if !g.beginLogin(ip) {
-		log.Printf("VNC connection from %s refused: too many failed logins", ip)
-		refuseRFB(ws, "Too many failed login attempts. Try again in a few minutes.")
-		return
-	}
-	var once sync.Once
-	settle := func(result string) {
-		once.Do(func() {
-			g.endLogin(ip, result == "failed")
-			log.Printf("VNC login from %s %s", ip, result)
-		})
-	}
-	defer settle("abandoned")
-
-	vnc, err := g.dialVNC()
-	if err != nil {
-		log.Printf("cannot reach VNC server: %v", err)
-		return
-	}
-	defer vnc.Close()
-	log.Printf("VNC connection from %s", ip)
-	timer := time.AfterFunc(vncLoginTimeout, func() {
-		settle("timed out")
-		ws.Close()
-		vnc.Close()
-	})
-	defer timer.Stop()
-
-	// Written by the server-to-client copy, read after both copies are done.
-	audioLinked := false
-	watch := &rfbWatcher{result: func(ok bool) {
-		timer.Stop()
-		if ok {
-			settle("succeeded")
-			g.audio.link(audioToken, ip)
-			audioLinked = true
-			if loggedIn != nil {
-				loggedIn()
-			}
-		} else {
-			settle("failed")
-		}
-	}}
-	done := make(chan struct{}, 2)
-	go func() {
-		if err := checkClientHandshake(ws, vnc); err != nil {
-			log.Printf("VNC connection from %s: %v", ip, err)
-		} else {
-			io.Copy(vnc, ws)
-		}
-		done <- struct{}{}
-	}()
-	go func() { io.Copy(ws, io.TeeReader(vnc, watch)); done <- struct{}{} }()
-	// Either side closing ends the session; closing both stops the other copy.
-	<-done
-	ws.Close()
-	vnc.Close()
-	<-done
-	if audioLinked {
-		g.audio.unlink(audioToken, ip)
-	}
-	log.Printf("VNC connection from %s closed", ip)
-}
-
-// The only login Xvnc offers here: RFB 3.8, security type VeNCrypt (19),
-// VeNCrypt version 0.2, subtype Plain (256). Holding the client to exactly
-// these choices is what lets rfbWatcher find the login result in the
-// server's replies without misreading them.
-var clientHandshake = [][]byte{[]byte("RFB 003.008\n"), {19}, {0, 2}, {0, 0, 1, 0}}
-
-var errBadHandshake = errors.New("unexpected RFB handshake from client")
-
-// checkClientHandshake forwards the client's handshake to the server, one
-// step at a time, and fails on anything other than clientHandshake.
-func checkClientHandshake(client io.Reader, server io.Writer) error {
-	for _, want := range clientHandshake {
-		got := make([]byte, len(want))
-		if _, err := io.ReadFull(client, got); err != nil {
-			return err
-		}
-		if !bytes.Equal(got, want) {
-			return errBadHandshake
-		}
-		if _, err := server.Write(got); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// rfbWatcher reads the server side of the handshake and reports whether the
-// login succeeded. Server bytes, given the client's choices above:
-//
-//	"RFB 003.008\n"                 version
-//	n, n×type                       security types (n = 0: refused, reason follows)
-//	major, minor                    VeNCrypt version
-//	ack                             0 = client's VeNCrypt version accepted
-//	k, k×U32                        VeNCrypt subtypes
-//	U32                             security result after the Plain login: 0 = OK
-type rfbWatcher struct {
-	buf    []byte
-	done   bool
-	result func(ok bool)
-}
-
-func (w *rfbWatcher) Write(p []byte) (int, error) {
-	if w.done {
-		return len(p), nil
-	}
-	w.buf = append(w.buf, p...)
-	switch parseSecurityResult(w.buf) {
-	case rfbNeedMore:
-		return len(p), nil
-	case rfbOK:
-		w.result(true)
-	case rfbFailed:
-		w.result(false)
-	}
-	// rfbNoLogin: the server refused before any password was checked; the
-	// connection ends and counts as abandoned, not as a failed guess.
-	w.done, w.buf = true, nil
-	return len(p), nil
-}
-
-type rfbState int
-
-const (
-	rfbNeedMore rfbState = iota
-	rfbOK
-	rfbFailed
-	rfbNoLogin
-)
-
-func parseSecurityResult(b []byte) rfbState {
-	i := 12 // version
-	if len(b) < i+1 {
-		return rfbNeedMore
-	}
-	n := int(b[i])
-	if n == 0 {
-		return rfbNoLogin
-	}
-	i += 1 + n + 2 // types, VeNCrypt version
-	if len(b) < i+1 {
-		return rfbNeedMore
-	}
-	if b[i] != 0 {
-		return rfbNoLogin
-	}
-	i++ // ack
-	if len(b) < i+1 {
-		return rfbNeedMore
-	}
-	k := int(b[i])
-	if k == 0 {
-		return rfbNoLogin
-	}
-	i += 1 + 4*k // subtypes
-	if len(b) < i+4 {
-		return rfbNeedMore
-	}
-	if binary.BigEndian.Uint32(b[i:i+4]) == 0 {
-		return rfbOK
-	}
-	return rfbFailed
-}
-
 // refuseRFB speaks just enough RFB to turn a client away with a reason that
 // noVNC shows to the user, instead of a bare dropped connection.
 func refuseRFB(conn net.Conn, reason string) {
@@ -498,7 +317,7 @@ func (g *server) downloads(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 
-	if g.e2e {
+	if g.useE2E(r) {
 		g.filesPage(w, r)
 		return
 	}
@@ -509,9 +328,12 @@ func (g *server) downloads(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		g.putUpload(w, r)
 		return
+	case http.MethodDelete:
+		g.webDelete(w, r)
+		return
 	case http.MethodGet, http.MethodHead:
 	default:
-		h.Set("Allow", "GET, HEAD, POST, PUT")
+		h.Set("Allow", "GET, HEAD, POST, PUT, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -566,6 +388,8 @@ type entry struct {
 	Name, Href, Size, Modified string
 	dir                        bool
 }
+
+func (e entry) IsDir() bool { return e.dir }
 
 func (g *server) listing(w http.ResponseWriter, r *http.Request, root *os.Root, dir string, f *os.File) {
 	entries, truncated, err := listDir(root, dir, f)
@@ -713,24 +537,29 @@ func (g *server) loginPage(w http.ResponseWriter, p, errMsg string, status int) 
 // code alone when the PIN is "-", or password immediately followed by the
 // code when a PIN is set. It's split the way pam_oath splits it.
 func (g *server) credentialsOK(cred string) bool {
-	data, err := os.ReadFile(g.usersFile)
-	if err != nil {
-		log.Printf("cannot read TOTP users file: %v", err)
+	user, digits, ok := g.usersFileEntry()
+	if !ok || len(cred) < digits {
 		return false
 	}
-	user, digits, ok := parseUsersOath(string(data))
-	if !ok {
-		log.Printf("cannot parse TOTP users file %s", g.usersFile)
-		return false
-	}
-	if len(cred) < digits {
-		return false
-	}
-	err = oathAuthenticate(g.usersFile, user, cred[:len(cred)-digits], cred[len(cred)-digits:])
+	err := oathAuthenticate(g.usersFile, user, cred[:len(cred)-digits], cred[len(cred)-digits:])
 	if e, ok := err.(oathError); err != nil && !(ok && e.rejected()) {
 		log.Printf("checking TOTP code: %v", err)
 	}
 	return err == nil
+}
+
+// usersFileEntry reads the user and code length from the users file.
+func (g *server) usersFileEntry() (user string, digits int, ok bool) {
+	data, err := os.ReadFile(g.usersFile)
+	if err != nil {
+		log.Printf("cannot read TOTP users file: %v", err)
+		return "", 0, false
+	}
+	user, digits, ok = parseUsersOath(string(data))
+	if !ok {
+		log.Printf("cannot parse TOTP users file %s", g.usersFile)
+	}
+	return user, digits, ok
 }
 
 // parseUsersOath reads the user and code length from the first line,
@@ -827,8 +656,15 @@ func (g *server) sweepFailuresLocked() {
 	}
 }
 
+// sessionOK reports whether r's cookie holds a session from a web login.
+// A tunnel's session never counts: its id is sent unencrypted in each
+// session tunnel's hello (see tunnel.go), so it mustn't work as a cookie.
 func (g *server) sessionOK(r *http.Request) bool {
-	return g.sessionValid(sessionToken(r))
+	token := sessionToken(r)
+	g.mu.Lock()
+	_, tunnel := g.secrets[token]
+	g.mu.Unlock()
+	return !tunnel && g.sessionValid(token)
 }
 
 func sessionToken(r *http.Request) string {
@@ -947,6 +783,12 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 // tabtopd itself, or to a trusted proxy that says so in X-Forwarded-Proto
 // (anyone else's is ignored, as with X-Forwarded-For). Cookies set then are
 // Secure, so the browser never sends them over plain HTTP.
+// useE2E reports whether r is to be served through the tunnel only: always
+// with -e2e on, and with -e2e auto when it came over plain HTTP.
+func (g *server) useE2E(r *http.Request) bool {
+	return g.e2e || g.e2eAuto && !g.secure(r)
+}
+
 func (g *server) secure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -1049,6 +891,10 @@ td.name { word-break: break-all; }
 .hint { opacity: .7; font-size: 13px; }
 body.dropping { outline: 3px dashed #8ab4f8; outline-offset: .75rem; }
 #uploads p { margin: .25rem 0; word-break: break-all; }
+p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+p.upload button { font: inherit; }
+td.act { width: 1%; text-align: right; }
+button.delete { font: inherit; font-size: 13px; }
 input[name=password] { font: inherit; font-size: 1.25rem; width: 16em; }
 </style>`
 
@@ -1064,12 +910,13 @@ var listingTmpl = template.Must(template.New("listing").Parse(pageHead + `
 <title>Downloads {{.Title}}</title><body>
 <div class="bar"><h1>Downloads{{.Title}}</h1>
 <form method="post" action="{{.Action}}"><button name="logout" value="1">Log out</button></form></div>
-<table><tr><th>Name</th><th class="num">Size</th><th class="num">Modified</th></tr>
-{{if not .Root}}<tr><td class="name"><a href="../">../</a></td><td></td><td></td></tr>{{end}}
+<table><tr><th>Name</th><th class="num">Size</th><th class="num">Modified</th><th></th></tr>
+{{if not .Root}}<tr><td class="name"><a href="../">../</a></td><td></td><td></td><td></td></tr>{{end}}
 {{range .Entries}}<tr><td class="name"><a href="{{.Href}}">{{.Name}}</a></td>
-<td class="num">{{.Size}}</td><td class="num">{{.Modified}}</td></tr>
-{{else}}<tr><td colspan="3">No files yet.</td></tr>{{end}}
+<td class="num">{{.Size}}</td><td class="num">{{.Modified}}</td>
+<td class="act">{{if not .IsDir}}<button class="delete" data-href="{{.Href}}" data-name="{{.Name}}">Delete</button>{{end}}</td></tr>
+{{else}}<tr><td colspan="4">No files yet.</td></tr>{{end}}
 </table>
 {{if .Truncated}}<p class="error">This folder has more than {{.Max}} entries, so only {{.Max}} of them are shown, chosen in no particular order.</p>{{end}}
-<p class="hint">Drop files on this page to upload them to this folder.</p>
+<p class="upload"><span class="hint">Or drop files on this page. They go into this folder.</span></p>
 <script type="module" src="{{.Script}}"></script>`))

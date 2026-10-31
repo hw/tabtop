@@ -5,10 +5,11 @@
 // download through download-sw.js, so it goes to disk as it arrives;
 // elsewhere it's collected first and then saved (see saveFile). Either way
 // it's never shown as a page on this site. Files dropped on the page are
-// uploaded into the folder shown (see drop.js and uploadFile).
+// uploaded into the folder shown, as are those picked with its button (see
+// drop.js and uploadFile), and each file has a button that deletes it.
 
 import * as e2e from "./e2e.js";
-import { dropUploads } from "./drop.js";
+import { deleteFile, dropUploads } from "./drop.js";
 
 const page = document.body;
 
@@ -70,7 +71,7 @@ async function show() {
     if (dir) {
         const up = dir.split("/").slice(0, -1).join("/");
         rows.push(el("tr", {}, el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
-            el("td"), el("td")));
+            el("td"), el("td"), el("td")));
     }
     for (const e of t.reply.entries) {
         const path = dir ? dir + "/" + e.name : e.name;
@@ -81,20 +82,27 @@ async function show() {
                 fetchFile(path, link);
             });
         }
+        const act = el("td", { className: "act" });
+        if (!e.dir) {
+            const del = el("button", { className: "delete", textContent: "Delete" });
+            del.addEventListener("click", () => deleteFile(e.name, () => call({ type: "delete", path }).then((t) => t.close()), show));
+            act.append(del);
+        }
         rows.push(el("tr", {}, el("td", { className: "name" }, link),
             el("td", { className: "num", textContent: e.size ?? "" }),
-            el("td", { className: "num", textContent: e.modified })));
+            el("td", { className: "num", textContent: e.modified }), act));
     }
     if (!t.reply.entries.length) {
-        rows.push(el("tr", {}, el("td", { colSpan: 3, textContent: "No files yet." })));
+        rows.push(el("tr", {}, el("td", { colSpan: 4, textContent: "No files yet." })));
     }
     page.replaceChildren(
         el("div", { className: "bar" }, el("h1", { textContent: "Downloads" + title }), logout),
         el("table", {}, el("tr", {}, el("th", { textContent: "Name" }), el("th", { className: "num", textContent: "Size" }),
-            el("th", { className: "num", textContent: "Modified" })), ...rows),
+            el("th", { className: "num", textContent: "Modified" }), el("th")), ...rows),
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
-        el("p", { className: "hint", textContent: "Drop files on this page to upload them to this folder. End-to-end encrypted." }));
+        el("p", { className: "upload" }, uploadButton(),
+            el("span", { className: "hint", textContent: "Or drop files on this page. They go into this folder, end-to-end encrypted." })));
 }
 
 // downloadWorker resolves to the active download service worker, or null
@@ -229,7 +237,7 @@ async function saveFile(t, name, size, progress) {
 const UPLOAD_CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 16;
 
-// uploadFile uploads a dropped file into the folder shown, and returns the
+// uploadFile uploads a dropped or picked file into the folder shown, and returns the
 // name it was saved as.
 async function uploadFile(file, progress) {
     const t = await call({ type: "upload", path: currentDir(), name: file.name, size: file.size });
@@ -262,10 +270,13 @@ async function uploadFile(file, progress) {
     }
 }
 
+// uploadButton makes the page's upload button (see drop.js).
+let uploadButton;
+
 if (!e2e.enabled) {
     page.replaceChildren(el("p", { textContent: "End-to-end encryption is off." }));
 } else {
+    uploadButton = dropUploads(uploadFile, show);
     window.addEventListener("hashchange", show);
     show();
-    dropUploads(uploadFile, show);
 }

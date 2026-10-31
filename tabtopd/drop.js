@@ -1,12 +1,14 @@
-// Uploading files dropped on a downloads page, served by tabtopd. Used by
-// upload.js (the plain listing) and files.js (with WEB_E2E=1), which each
-// supply how to send one file.
+// Uploading files dropped on a downloads page, or picked with its upload
+// button, and deleting files, served by tabtopd. Used by upload.js (the
+// plain listing) and files.js (with WEB_E2E=1), which each supply how to
+// send or delete one file.
 
 // dropUploads makes the page take dropped files: each is passed in turn to
 // send(file, progress), which resolves to the name it was saved as and
 // calls progress(bytes) as it goes. Folders are skipped. Progress shows in
 // a list at the bottom of the page; done() is called, and awaited, once
-// all have been tried and any succeeded.
+// all have been tried and any succeeded. It returns a function that makes
+// an upload button, which sends the files picked with it the same way.
 export function dropUploads(send, done) {
     let depth = 0;
     const isFiles = (e) => e.dataTransfer?.types.includes("Files");
@@ -28,32 +30,14 @@ export function dropUploads(send, done) {
             e.dataTransfer.dropEffect = "copy";
         }
     });
+    // upload sends files, and lists folders as skipped.
     let queue = Promise.resolve();
-    document.addEventListener("drop", (e) => {
-        if (!isFiles(e)) {
-            return;
-        }
-        e.preventDefault();
-        depth = 0;
-        document.body.classList.remove("dropping");
-        const files = [];
-        const folders = [];
-        for (const item of e.dataTransfer.items) {
-            const file = item.kind === "file" && item.getAsFile();
-            if (!file) {
-                continue;
-            }
-            if (item.webkitGetAsEntry?.()?.isDirectory) {
-                folders.push(file.name);
-            } else {
-                files.push(file);
-            }
-        }
+    const upload = (files, folders = []) => {
         const list = statusList();
         for (const name of folders) {
             line(list, name).textContent = `${name}: folders can't be uploaded`;
         }
-        // One upload at a time, after any still going from an earlier drop.
+        // One upload at a time, after any still going from earlier ones.
         queue = queue.then(async () => {
             let saved = 0;
             for (const file of files) {
@@ -81,7 +65,67 @@ export function dropUploads(send, done) {
                 document.body.append(list);  // done() may have redrawn the page
             }
         });
+    };
+    document.addEventListener("drop", (e) => {
+        if (!isFiles(e)) {
+            return;
+        }
+        e.preventDefault();
+        depth = 0;
+        document.body.classList.remove("dropping");
+        const files = [];
+        const folders = [];
+        for (const item of e.dataTransfer.items) {
+            const file = item.kind === "file" && item.getAsFile();
+            if (!file) {
+                continue;
+            }
+            if (item.webkitGetAsEntry?.()?.isDirectory) {
+                folders.push(file.name);
+            } else {
+                files.push(file);
+            }
+        }
+        upload(files, folders);
     });
+    return () => {
+        const input = Object.assign(document.createElement("input"), { type: "file", multiple: true, hidden: true });
+        input.addEventListener("change", () => {
+            upload([...input.files]);
+            input.value = "";
+        });
+        const button = Object.assign(document.createElement("button"), { type: "button", textContent: "Upload files…" });
+        button.addEventListener("click", () => input.click());
+        const span = document.createElement("span");
+        span.append(button, input);
+        return span;
+    };
+}
+
+// deleteFile asks before deleting the file name with remove(), which
+// resolves once it's gone, then calls and awaits done(). The outcome shows
+// in the same list as uploads.
+export async function deleteFile(name, remove, done) {
+    if (!confirm(`Delete ${name}? This can't be undone.`)) {
+        return;
+    }
+    const list = statusList();
+    const row = line(list, `${name}: deleting`);
+    try {
+        await remove();
+        row.textContent = `${name}: deleted`;
+    } catch (err) {
+        row.textContent = `${name}: not deleted: ${err.message}`;
+        row.className = "error";
+    }
+    try {
+        await done();
+    } catch {
+        // The list stays as it was.
+    }
+    if (!list.isConnected) {
+        document.body.append(list);
+    }
 }
 
 function statusList() {

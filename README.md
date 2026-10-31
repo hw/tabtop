@@ -3,8 +3,9 @@
 An XFCE desktop with Chromium that you use from a web browser. noVNC shows the
 desktop, and you log in with a TOTP code from an authenticator app (optionally
 preceded by a password). The desktop's sound plays in the browser. The same
-site also offers a terminal, and files in the desktop user's `~/Downloads` can
-be downloaded from it, or uploaded to it by dropping them on the page.
+site also offers a terminal, and a files page for the desktop user's
+`~/Downloads`, where files can be downloaded, uploaded (with a button or by
+dropping them on the page) and deleted.
 
 Everything is served on one port by `tabtopd` (in `tabtopd/`):
 
@@ -12,10 +13,10 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 |---|---|
 | `/` | The noVNC client, which connects to the desktop |
 | `/websockify` | The WebSocket that carries the desktop session |
-| `/downloads/` | A file list of `~/Downloads`, with its own login; files dropped on it are uploaded |
+| `/downloads/` | A file list of `~/Downloads`, with its own login; files can be uploaded to it and deleted |
 | `/tty/` | A terminal (ghostty-web and tmux), sharing the `/downloads/` login |
 | `/audio/ws`, `/audio/stream.ogg` | The desktop's sound, for browsers logged in to the desktop |
-| `/tunnel` | With `WEB_E2E=1`, the encrypted connection that carries all of the above instead |
+| `/tunnel` | When [`WEB_E2E`](#web_e2e) is on (by default, for visits over plain HTTP), the encrypted connection that carries all of the above instead |
 | `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
 | `/doctor` | A troubleshooting report, only with `WEB_DOCTOR_ENDPOINT=1` |
 
@@ -28,10 +29,12 @@ This runs the image GitHub Actions publishes to `ghcr.io/hw/tabtop`. To run
 your own build instead, build it with `docker build -t tabtop .` and replace
 `ghcr.io/hw/tabtop:latest` in the `docker run` command with `tabtop`.
 
-Open <http://localhost:6080/>, enter the username (`alice`) and the current
-code from your authenticator app as the password. To require a password as
-well, set `VNC_PASSWORD` (see below): then enter that password immediately
-followed by the code, with no separator.
+Open <http://localhost:6080/> and enter the current code from your
+authenticator app. Over plain HTTP, the page logs in through its encrypted
+tunnel (see [`WEB_E2E`](#web_e2e)); reached over HTTPS, noVNC asks for a
+username too: enter `alice`, and the code as the password. To require a
+password as well, set `VNC_PASSWORD` (see below): then enter that password
+immediately followed by the code, with no separator.
 
 No persistent volume is required. To keep the same authenticator entry when
 the container is replaced, keep passing the same `VNC_TOTP_SECRET`. You can
@@ -95,7 +98,7 @@ optional and only retains browser data, downloads and desktop preferences.
 
 | Variable | Default | Description |
 |---|---|---|
-| `VNC_USER` | `user` | Desktop username. You enter it at noVNC's login prompt (with `WEB_E2E=1`, there's no username to enter). |
+| `VNC_USER` | `user` | Desktop username. You enter it at noVNC's login prompt (when `WEB_E2E` is on, there's no username to enter). |
 | `VNC_PASSWORD` | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. |
 | `VNC_TOTP_SECRET` | `JBSWY3DPEHPK3PXP` (public; see [Default TOTP secret](#default-totp-secret)) | TOTP secret: Base32 is used as it is; any other string has a secret derived from it, printed at startup. Always set it for a site others can reach: the default is a well-known example secret, used with a warning in the log. When it's unset, a secret saved in the home directory takes precedence over the default. |
 | `VNC_TOTP_DIGITS` | `6` | Code length: `6`, `7` or `8`. |
@@ -110,7 +113,7 @@ optional and only retains browser data, downloads and desktop preferences.
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
 | `WEB_DOCTOR_ENDPOINT` | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](#health-checks). |
-| `WEB_E2E` | `0` | `1` encrypts the desktop, logins, terminal, downloads and audio between the page and the gateway, for networks whose proxies decrypt HTTPS. See [`WEB_E2E`](#web_e2e). |
+| `WEB_E2E` | *(unset)* | `1` encrypts the desktop, logins, terminal, downloads and audio between the page and the gateway, for networks whose proxies decrypt HTTPS. `0` never does. Unset, it's on for visits over plain HTTP and off over HTTPS. See [`WEB_E2E`](#web_e2e). |
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
@@ -434,18 +437,30 @@ passwords, the desktop's screen and keystrokes, terminal sessions, files,
 and session cookies it could replay.
 
 With `1`, everything goes through an encrypted tunnel between the page's
-JavaScript and the gateway:
+JavaScript and the gateway. With `0`, nothing does.
+
+Unset (the default), each visit is decided by how it reaches the gateway:
+over plain HTTP the tunnel is on, and over HTTPS it's off. HTTPS means a
+TLS connection to the gateway itself, or a request from a trusted proxy
+(see `WEB_TRUSTED_PROXIES`) whose `X-Forwarded-Proto` says `https`. A proxy
+that terminates TLS without being trusted looks like plain HTTP, so its
+visitors get the tunnel, which works over HTTPS too. Plain HTTP to
+`localhost` gets the tunnel as well. Sessions don't cross over: a tunnel's
+session doesn't work as a cookie for the unencrypted pages, so someone who
+reads a tunnel's session id on a plain-HTTP network can't use it over
+HTTPS. Set `1` when a proxy that decrypts HTTPS is on the way, since to the
+gateway those visits look like HTTPS.
+
+When the tunnel is on:
 
 - **What's encrypted:** the login, the desktop (screen, keyboard and
   clipboard), terminal sessions, file listings and downloads, and audio. The
   gateway refuses the unencrypted WebSockets and login forms (`/websockify`,
   `/tty/ws`, `/audio/*`, and logins posted to `/downloads/` and `/tty/`).
 - **One login:** the desktop, terminal and files page share one login form,
-  shown by whichever you open first, and one 12-hour session. noVNC no
-  longer asks for credentials: Xvnc stops listening on TCP and listens only
-  on a Unix socket in the desktop user's runtime directory, which only that
-  user can open, and asks for no login of its own. Logging out, or the
-  session ending after 12 hours, closes the desktop as well as the terminal.
+  shown by whichever you open first, and one 12-hour session. noVNC doesn't
+  ask for a username and code of its own. Logging out, or the session ending
+  after 12 hours, closes the desktop as well as the terminal.
 - **The login never crosses the wire:** the password and TOTP code are used
   in [CPace](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/), a
   password-authenticated key exchange on X25519. Both sides prove they know
@@ -476,8 +491,9 @@ JavaScript and the gateway:
   image's copies do.
 - **Requirements:** any current browser, over HTTPS or plain HTTP. Audio is
   the exception: it decodes with WebCodecs, which browsers only offer over
-  HTTPS or on `localhost`, so with `WEB_E2E=1` there's no audio over plain
-  HTTP. Over plain HTTP, though, anyone on the way can change the page's
+  HTTPS or on `localhost`, so with the tunnel on there's no audio over
+  plain HTTP. That includes the default for plain-HTTP visits other than to
+  `localhost`. Over plain HTTP, though, anyone on the way can change the page's
   scripts as well as read them, so the encryption only holds against
   someone who watches without interfering, as it does behind a proxy that
   decrypts HTTPS.
@@ -523,22 +539,28 @@ downloaded at `http://<host>:6080/downloads/`:
   logged in for 12 hours. The login also covers the [terminal](#terminal),
   and logging out of either logs out of both. Logging in to the desktop
   doesn't log you in to the files page.
-- **Uploads:** drop files on the page to upload them into the folder it
-  shows. An upload never replaces a file: one whose name is taken is saved
-  as `name (1).ext`, `name (2).ext` and so on. Each file is written to a
-  hidden temporary file (`.tabtop-upload-….part`) first and only appears
-  once it's complete; one that's cut off is deleted. Folders can't be
-  dropped, only files, and files can't be changed or deleted from the web.
-  Interrupted downloads can be resumed; interrupted uploads start again.
+- **Uploads:** pick files with **Upload files…**, or drop them on the
+  page, to upload them into the folder it shows. An upload never replaces
+  a file: one whose name is taken is saved as `name (1).ext`,
+  `name (2).ext` and so on. Each file is written to a hidden temporary
+  file (`.tabtop-upload-….part`) first and only appears once it's
+  complete; one that's cut off is deleted. Folders can't be uploaded, only
+  files. Interrupted downloads can be resumed; interrupted uploads start
+  again.
+- **Deleting:** each file has a **Delete** button, which asks first.
+  Deleting is permanent: there's no trash. Only files can be deleted, not
+  folders; deleting a symlink removes the link, not the file it leads to.
+  Files can't be renamed or changed from the web.
 - **Attachments only:** files are always sent as downloads, never shown as
   pages, so an HTML file in `~/Downloads` can't run on the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
-  be downloaded or uploaded into.
+  be downloaded, uploaded into or deleted.
 - **Big folders:** a folder lists at most 10,000 entries. With more, the
   page says so and shows 10,000 of them, in no particular order.
-- **With [`WEB_E2E=1`](#web_e2e):** the page lists, fetches and uploads
-  files through the encrypted tunnel, and one login covers the files page, the terminal
-  and the desktop. Interrupted downloads can't be resumed.
+- **With [`WEB_E2E`](#web_e2e) on:** the page lists, fetches, uploads and
+  deletes files through the encrypted tunnel, and one login covers the
+  files page, the terminal and the desktop. Interrupted downloads can't be
+  resumed.
 
 Restarting the container logs everyone out of the files page and the
 terminal, and clears the failed-login counts.
@@ -599,8 +621,8 @@ turns sound back on after a reconnect.
   and stops a few seconds after its desktop connection closes. There's no
   separate login. Opening noVNC sets a random cookie, and the desktop login
   made with it unlocks the sound, for requests from the same IP address.
-  With [`WEB_E2E=1`](#web_e2e) there's no cookie: sound goes to the
-  session that has the desktop open, and needs HTTPS.
+  With [`WEB_E2E`](#web_e2e) on there's no cookie: sound goes to the
+  session that has the desktop open, and needs HTTPS (or `localhost`).
 - **Bandwidth:** 64 kbit/s per listener by default, even during silence;
   see [`WEB_AUDIO_BITRATE`](#web_audio_bitrate).
 - **Output only:** the desktop has no microphone.
@@ -611,33 +633,36 @@ harmless.
 
 ## Security notes
 
-- **Plain HTTP:** credentials, the files-page cookie, files and the desktop
-  session all travel unencrypted. If the site is reachable beyond a trusted
-  network, put a reverse proxy with TLS in front, and set
+- **Plain HTTP:** by default, plain-HTTP visits go through the
+  [`WEB_E2E`](#web_e2e) tunnel, so someone who only watches the network
+  sees no credentials, files or desktop. Someone who can change traffic
+  can still replace the page's scripts and take everything. With
+  `WEB_E2E=0`, everything travels unencrypted. If the site is reachable
+  beyond a trusted network, put a reverse proxy with TLS in front, and set
   `WEB_TRUSTED_PROXIES`.
-- **Proxies that decrypt HTTPS:** a proxy that terminates TLS sees all of
-  the above too. [`WEB_E2E=1`](#web_e2e) encrypts it again between the page
-  and the gateway, against a proxy that only reads traffic.
+- **Proxies that decrypt HTTPS:** a proxy that terminates TLS sees
+  everything that isn't in the tunnel. [`WEB_E2E=1`](#web_e2e) encrypts it
+  again between the page and the gateway, against a proxy that only reads
+  traffic.
 - **Login limit:** failed logins are limited per visitor IP, as described
   under `WEB_TRUSTED_PROXIES`. The gateway also checks at most 4 logins at
   once, from all IPs together, and turns away any more with "The server is
-  busy" (noVNC's desktop logins without `WEB_E2E`, which Xvnc checks,
-  don't count). A flood of
-  logins from many IPs can therefore keep refusing logins for as long as
+  busy". A flood of logins from many IPs can therefore keep refusing logins for as long as
   it lasts, but locks nothing afterwards. Xvnc's own blacklist is turned off, because
   every connection reaches Xvnc from the gateway.
 - **Desktop access:** anyone logged in to the desktop has full access as
   `VNC_USER`, including the TOTP secret and (when configured) the plaintext
   password PIN in `~/.config/tabtop/`.
 - **Terminal:** the terminal is a full shell as `VNC_USER`, the same access
-  the desktop already gives. A shell over plain HTTP is exposed to anyone on
-  the network path, which is another reason for TLS. Set `WEB_TTY=0` if you
+  the desktop already gives. Over plain HTTP without the tunnel
+  (`WEB_E2E=0`), a shell is exposed to anyone on the network path, which is
+  another reason for TLS. Set `WEB_TTY=0` if you
   don't want it. Only pages from the site itself can open a terminal; the
   gateway refuses WebSocket requests from other sites.
 - **Audio:** sound only goes to a browser with a logged-in desktop
   connection, and only to that connection's IP address, as described under
   [Audio](#audio). Like everything else, it's unencrypted
-  without a TLS proxy.
+  without a TLS proxy or the tunnel.
 
 ## Health checks
 
@@ -654,7 +679,8 @@ It doesn't connect to Xvnc, which would log every check.
 - **checks:** each part's state: Xvnc (connecting and reading its
   greeting), the login file, noVNC, `~/Downloads`, audio (the PipeWire sink),
   the terminal (tmux and ghostty-web) and end-to-end encryption (whether the
-  JavaScript library it needs is in place, with `WEB_E2E=1`).
+  mode, whether this request got the tunnel, and whether the JavaScript
+  library it needs is in place).
 - **clock:** the server's time. Codes are only accepted within 30 seconds
   of it, so a wrong clock explains logins that always fail.
 - **proxy:** how your request arrived, for setting up a reverse proxy. It
@@ -684,11 +710,11 @@ and activity, so turn it off again when you're done.
 | `POWERLINE_VERSION` | `2.8.4` | Powerline release that `PowerlineSymbols.otf` and its license are taken from. |
 | `POWERLINE_FONT_SHA256` | *(checksum for 2.8.4)* | SHA-256 of `https://raw.githubusercontent.com/powerline/powerline/<version>/font/PowerlineSymbols.otf`. |
 | `POWERLINE_LICENSE_SHA256` | *(checksum for 2.8.4)* | SHA-256 of the `LICENSE` file at the same version. |
-| `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses with `WEB_E2E=1`. |
+| `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses when `WEB_E2E` is on. |
 | `NOBLE_CIPHERS_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/ciphers/-/ciphers-<version>.tgz`. |
-| `NOBLE_CURVES_VERSION` | `2.4.0` | `@noble/curves` release from npm, whose X25519 the page uses with `WEB_E2E=1`. |
+| `NOBLE_CURVES_VERSION` | `2.4.0` | `@noble/curves` release from npm, whose X25519 the page uses when `WEB_E2E` is on. |
 | `NOBLE_CURVES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/curves/-/curves-<version>.tgz`. |
-| `NOBLE_HASHES_VERSION` | `2.4.0` | `@noble/hashes` release from npm, whose SHA-2 and HKDF the page uses with `WEB_E2E=1`. Must be the version `@noble/curves` depends on. |
+| `NOBLE_HASHES_VERSION` | `2.4.0` | `@noble/hashes` release from npm, whose SHA-2 and HKDF the page uses when `WEB_E2E` is on. Must be the version `@noble/curves` depends on. |
 | `NOBLE_HASHES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/hashes/-/hashes-<version>.tgz`. |
 
 The build adds two `<script>` tags to noVNC's `vnc.html`, for the audio

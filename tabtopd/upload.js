@@ -1,8 +1,10 @@
-// Uploads for the downloads listing without WEB_E2E, served by tabtopd
-// (see upload.go): a file dropped on the page is PUT to the folder's URL
-// plus its name, then the listing is refreshed in place.
+// Uploads and deletions for the downloads listing without WEB_E2E, served
+// by tabtopd (see upload.go and delete.go): a file dropped on the page, or
+// picked with its button, is PUT to the folder's URL plus its name, a
+// file's delete button sends a DELETE of its URL, and then the listing is
+// refreshed in place.
 
-import { dropUploads } from "./drop.js";
+import { deleteFile, dropUploads } from "./drop.js";
 
 function put(file, progress) {
     return new Promise((resolve, reject) => {
@@ -33,4 +35,21 @@ async function refresh() {
     }
 }
 
-dropUploads(put, refresh);
+async function remove(href) {
+    const res = await fetch(location.pathname.replace(/\/?$/, "/") + href, { method: "DELETE" });
+    if (res.status === 401) {
+        throw new Error("logged out; reload the page");
+    }
+    if (!res.ok) {
+        throw new Error((await res.json().catch(() => null))?.error || `server error ${res.status}`);
+    }
+}
+
+document.querySelector("p.upload")?.prepend(dropUploads(put, refresh)());
+// The table is replaced on refresh, so its buttons are handled here.
+document.addEventListener("click", (e) => {
+    const button = e.target.closest("button.delete");
+    if (button) {
+        deleteFile(button.dataset.name, () => remove(button.dataset.href), refresh);
+    }
+});

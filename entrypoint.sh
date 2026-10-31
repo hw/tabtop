@@ -13,9 +13,8 @@ WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_TTY="${WEB_TTY:-1}"
 WEB_DOCTOR_ENDPOINT="${WEB_DOCTOR_ENDPOINT:-0}"
-WEB_E2E="${WEB_E2E:-0}"
+WEB_E2E="${WEB_E2E:-}"
 DISPLAY_NUM=1
-VNC_PORT=$((5900 + DISPLAY_NUM))
 
 VNC_TOTP_DIGITS="${VNC_TOTP_DIGITS:-6}"
 case "$VNC_TOTP_DIGITS" in
@@ -48,8 +47,8 @@ case "$WEB_DOCTOR_ENDPOINT" in
     *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
 esac
 case "$WEB_E2E" in
-    0|1) ;;
-    *) echo "WEB_E2E must be 0 or 1 (got '${WEB_E2E}')." >&2; exit 1 ;;
+    ''|0|1) ;;
+    *) echo "WEB_E2E must be 0, 1 or unset (got '${WEB_E2E}')." >&2; exit 1 ;;
 esac
 # Same rule as tabtopd's: segments of unreserved URL characters, spelled out
 # because ranges like a-z can match other letters, depending on the locale.
@@ -60,8 +59,9 @@ if ! [[ "$WEB_BASE_PATH" =~ ^/*(${SEG}(/${SEG})*)?/*$ ]] \
     exit 1
 fi
 
-# Create the desktop user. Its Unix password stays locked: the VNC login is
-# checked by pam_oath (TOTP, optionally with a password PIN) instead.
+# Create the desktop user. Its Unix password stays locked: the gateway checks
+# logins against a pam_oath users file (TOTP, optionally with a password PIN)
+# instead.
 if ! id "$VNC_USER" >/dev/null 2>&1; then
     useradd --create-home --shell /bin/bash "$VNC_USER"
 fi
@@ -86,11 +86,10 @@ if [ ! -f "$PANEL_CFG" ] && [ -f /etc/xdg/xfce4/panel/default.xml ]; then
     runuser -u "$VNC_USER" -- cp /etc/xdg/xfce4/panel/default.xml "$PANEL_CFG"
 fi
 
-# TigerVNC's "Plain" security type checks the username/password against PAM;
-# the "tabtop" PAM service accepts a TOTP code, or password+TOTP when a
-# password is configured (pam_oath PIN). Xvnc runs as the desktop user and
-# pam_oath rewrites its users file (to reject reused codes), so the files
-# live in a directory that user owns. The user can replace anything in it,
+# The gateway checks every login against pam_oath's users file: a TOTP code,
+# or password+TOTP when a password is configured (the pam_oath PIN). It runs
+# as the desktop user and rewrites the file (to reject reused codes), so the
+# files live in a directory that user owns. The user can replace anything in it,
 # with symlinks too, so every file operation there runs as that user: root
 # reading through a symlink would copy files the user can't read into
 # users.oath, which they can.
@@ -180,12 +179,6 @@ if ! printf '%s\n' "$TOTP_ENTRY" | run_as_user grep -qsFf - "$TOTP_USERS_FILE"; 
 fi
 run_as_user rm -f "$TOTP_USERS_FILE.lock"
 
-# window=1 also accepts the previous and next 30s code, for clock skew.
-cat > /etc/pam.d/tabtop <<EOF
-auth    required pam_oath.so usersfile=${TOTP_USERS_FILE} digits=${VNC_TOTP_DIGITS} window=1
-account required pam_permit.so
-EOF
-
 if [ "$USING_DEFAULT_SECRET" = 1 ]; then
     TOTP_URI="otpauth://totp/TabTop:${VNC_USER}?secret=${VNC_TOTP_SECRET}&issuer=TabTop&digits=${VNC_TOTP_DIGITS}&period=30"
     cat >&2 <<EOF
@@ -237,25 +230,18 @@ as_user() {
         "$@"
 }
 
-# Xvnc runs as the desktop user and only listens on localhost. Its blacklist
-# is off: every connection arrives from the gateway, so it would lock all
-# users out together. The gateway limits failed logins per client IP instead.
-# With WEB_E2E=1, the gateway checks the login itself (in its encrypted
-# tunnel), so Xvnc asks for none, and it listens only on a socket in the
-# user's runtime directory that nobody else can open (Xvnc's default mode
-# is 0600), not on TCP.
+# Xvnc runs as the desktop user. The gateway checks the desktop login itself
+# (in noVNC's RFB handshake, or in its encrypted tunnel), so Xvnc asks for
+# none, and it listens only on a socket in the user's runtime directory that
+# nobody else can open (Xvnc's default mode is 0600), not on TCP. Its
+# blacklist is off: every connection arrives from the gateway, which limits
+# failed logins per client IP instead.
 VNC_SOCKET="$RUNTIME_DIR/vnc.sock"
-if [ "$WEB_E2E" = 1 ]; then
-    VNC_LISTEN=(-rfbunixpath "$VNC_SOCKET" -rfbport -1 -SecurityTypes None)
-    VNC_ADDR="unix:$VNC_SOCKET"
-else
-    VNC_LISTEN=(-localhost -rfbport "$VNC_PORT" -SecurityTypes Plain -PlainUsers "$VNC_USER" -PAMService tabtop)
-    VNC_ADDR="127.0.0.1:${VNC_PORT}"
-fi
+VNC_ADDR="unix:$VNC_SOCKET"
 as_user Xvnc ":${DISPLAY_NUM}" \
     -geometry "$VNC_GEOMETRY" \
     -depth "$VNC_DEPTH" \
-    "${VNC_LISTEN[@]}" \
+    -rfbunixpath "$VNC_SOCKET" -rfbport -1 -SecurityTypes None \
     -AlwaysShared \
     -AcceptSetDesktopSize \
     -UseBlacklist=0 \
@@ -332,11 +318,13 @@ if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
 fi
 # With WEB_E2E=1, the pages talk to the gateway only through its encrypted
 # tunnel, logging in with CPace and encrypting with ChaCha20-Poly1305 from
-# the noble libraries (in /opt/noble).
-E2E=false
-if [ "$WEB_E2E" = 1 ]; then
-    E2E=true
-fi
+# the noble libraries (in /opt/noble). Unset, they do so when the site is
+# reached over plain HTTP, and not over HTTPS.
+case "$WEB_E2E" in
+    1) E2E=on ;;
+    0) E2E=off ;;
+    *) E2E=auto ;;
+esac
 as_user /usr/local/bin/tabtopd \
     -listen ":${WEB_PORT}" \
     -base-path "$WEB_BASE_PATH" \

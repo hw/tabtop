@@ -59,7 +59,7 @@ func (g *server) tty(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 
 	name := strings.TrimPrefix(r.URL.Path, ttyPrefix)
-	if g.e2e {
+	if g.useE2E(r) {
 		g.ttyE2E(w, r, name)
 		return
 	}

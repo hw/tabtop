@@ -83,8 +83,8 @@ func (g *server) noblePath() string {
 }
 
 // scripts serves the page scripts under /tabtop/. e2e.js tells the others
-// whether to use the tunnel: it re-exports tunnel.js with -e2e, and is
-// empty without.
+// whether to use the tunnel: it re-exports tunnel.js when the request is
+// to be served through the tunnel (useE2E), and is empty otherwise.
 func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", "text/javascript; charset=utf-8")
@@ -99,10 +99,11 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Write(audioJS)
 	case name == "e2e.js":
-		if g.e2e {
+		h.Set("Vary", "X-Forwarded-Proto")
+		if g.useE2E(r) {
 			io.WriteString(w, "export * from \"./tunnel.js\";\nexport const enabled = true;\n")
 		} else {
-			io.WriteString(w, "// End-to-end encryption is off (WEB_E2E=0).\nexport const enabled = false;\n")
+			io.WriteString(w, "// End-to-end encryption is off.\nexport const enabled = false;\n")
 		}
 	case name == "tunnel.js":
 		js, _ := e2eFiles.ReadFile(name)
@@ -150,7 +151,7 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 
 // tunnelRequest is a session tunnel's first message: what it's for.
 type tunnelRequest struct {
-	Type string `json:"type"` // vnc, logout, tty, list, file, upload or audio
+	Type string `json:"type"` // vnc, logout, tty, list, file, upload, delete or audio
 	Path string `json:"path,omitempty"`
 	Name string `json:"name,omitempty"` // upload: the file's name, in the folder at Path
 	Size int64  `json:"size,omitempty"` // upload: its size
@@ -167,7 +168,7 @@ type fileEntry struct {
 // session's request. Accept rejects cross-origin requests, as for every
 // WebSocket here.
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
-	if !g.e2e {
+	if !g.useE2E(r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -255,6 +256,9 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	case "upload":
 		g.tunnelUpload(t, req, reply, fail)
+
+	case "delete":
+		g.tunnelDelete(t, req, ip, reply, fail)
 
 	case "audio":
 		if g.audio == nil {

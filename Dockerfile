@@ -42,7 +42,7 @@ RUN mkdir /novnc \
         "noVNC-${NOVNC_VERSION}/LICENSE.txt" \
  && chmod -R u=rwX,go=rX /novnc
 # The changes to noVNC: load the gateway's audio button, and let its
-# novnc.js supply the connection (the encrypted tunnel, with WEB_E2E=1)
+# novnc.js supply the connection (the encrypted tunnel, when WEB_E2E is on)
 # instead of noVNC's own WebSocket. novnc.js goes before noVNC's scripts,
 # since module scripts run in order, so it's ready before noVNC connects.
 # Fail the build if a new noVNC release no longer matches.
@@ -79,7 +79,7 @@ RUN mkdir /src \
  && cp /src/package/LICENSE /terminal/LICENSE.ghostty-web \
  && chmod -R u=rwX,go=rX /terminal
 
-# The noble libraries, for the cryptography WEB_E2E=1's tunnel does in the
+# The noble libraries, for the cryptography the WEB_E2E tunnel does in the
 # browser: ChaCha20-Poly1305 from @noble/ciphers, which browsers don't have,
 # and X25519 from @noble/curves and SHA-2 and HKDF from @noble/hashes, for
 # pages without WebCrypto (such as plain-HTTP ones). From npm; bump each version together with its
@@ -224,10 +224,11 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # logins, terminal, downloads and audio go through an encrypted tunnel
 # (ChaCha20-Poly1305, keyed by a CPace login with password + TOTP code), and
 # the unencrypted endpoints are refused. One gateway login covers the
-# desktop, terminal and downloads; Xvnc then listens on a Unix socket only.
-# It works over plain HTTP too, except for audio, which needs HTTPS (or
-# localhost). It doesn't stop a proxy that rewrites pages. 0 (default) turns
-# it off.
+# desktop, terminal and downloads. It works over plain HTTP too, except for
+# audio, which needs HTTPS (or localhost). It doesn't stop a proxy that
+# rewrites pages. 0 turns it off. Unset (default), it's on for visits over
+# plain HTTP and off for visits over HTTPS (as tabtopd sees them: directly,
+# or from a trusted proxy's X-Forwarded-Proto).
 # WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
 # without a login; 0 (default) turns it off. <base>healthz always answers
 # health checks.
@@ -248,7 +249,6 @@ ENV VNC_USER=user \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \
     WEB_DOCTOR_ENDPOINT=0 \
-    WEB_E2E=0 \
     CHROMIUM_NO_SANDBOX=1
 
 # tmux settings for the browser terminal (users' ~/.tmux.conf still applies

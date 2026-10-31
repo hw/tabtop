@@ -195,7 +195,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		checks["terminal"] = newCheck(fmt.Sprintf("tmux %s, ghostty-web in %s", tmux, g.termDir), err)
 	}
 
-	if !g.e2e {
+	if !g.e2e && !g.e2eAuto {
 		checks["e2e"] = check{OK: true, Detail: "off"}
 	} else {
 		var err error
@@ -204,7 +204,16 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		checks["e2e"] = newCheck("CPace logins, ChaCha20-Poly1305 tunnels; noble libraries in "+g.nobleDir, err)
+		mode := "on"
+		if g.e2eAuto {
+			mode = "auto (on for plain HTTP, off for HTTPS)"
+		}
+		this := "this request: off"
+		if g.useE2E(r) {
+			this = "this request: on"
+		}
+		checks["e2e"] = newCheck(fmt.Sprintf("%s, %s; CPace logins, ChaCha20-Poly1305 tunnels; noble libraries in %s",
+			mode, this, g.nobleDir), err)
 	}
 
 	g.mu.Lock()

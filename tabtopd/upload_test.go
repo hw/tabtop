@@ -146,7 +146,7 @@ func TestListingHidesUploadsInProgress(t *testing.T) {
 		t.Errorf("listing:\n%s", body)
 	}
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") ||
-		!strings.Contains(string(body), `src="/tabtop/upload.js"`) {
+		!strings.Contains(string(body), `src="/tabtop/upload.js"`) || !strings.Contains(string(body), `<p class="upload">`) {
 		t.Errorf("listing doesn't load upload.js: CSP %q", csp)
 	}
 }

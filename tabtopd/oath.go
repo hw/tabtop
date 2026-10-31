@@ -10,8 +10,8 @@ import (
 	"unsafe"
 )
 
-// totpWindow matches window=1 in the entrypoint's pam_oath config: the
-// previous and next 30s codes are accepted too, for clock skew.
+// totpWindow accepts the previous and next 30s codes too, for clock skew,
+// like pam_oath's window=1.
 const totpWindow = 1
 
 var (
