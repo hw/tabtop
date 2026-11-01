@@ -692,6 +692,13 @@ body.dropping { outline: 3px dashed #8ab4f8; outline-offset: .75rem; }
 #uploads p { margin: .25rem 0; word-break: break-all; }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
-td.act { width: 1%; text-align: right; }
-button.delete { font: inherit; font-size: 13px; }
+th.sel, td.sel { width: 1%; padding-right: 0; }
+td.act { width: 1%; text-align: right; white-space: nowrap; }
+td.act button + button { margin-left: .25rem; }
+td.act button, .selection button, #uploads button { font: inherit; font-size: 13px; white-space: nowrap; }
+.selection { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem;
+             padding: .4rem .5rem; border-radius: 6px; background: rgba(138, 180, 248, .18); }
+.selection[hidden] { display: none; }
+@media (max-width: 40rem) { .mod { display: none; } td.act { white-space: normal; }
+       td.act button { display: block; margin: .15rem 0 0 auto !important; } }
 </style>`

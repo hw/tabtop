@@ -1,15 +1,17 @@
 // Checks a running TabTop end to end in headless Chrome, through the
 // pages a person uses: login, desktop, audio, the files page (list,
 // download, upload, delete, folder upload picked and dropped, folder
-// delete), the terminal, and logout.
+// delete, zips, new folder, rename, deleting several, cancelling an
+// upload), the terminal, and logout.
 // browser-check.sh starts the container and Chrome and runs it; it exits
 // non-zero, saying which step failed, if anything doesn't work.
 //
 // Usage: node browser-check.mjs <devtools port> <site url> <download dir> <work dir>
 // The site's TOTP secret must be the Base32 of "12345678901234567890", and
 // ~/Downloads must hold hello.txt with "hello from the desktop\n". The work
-// dir holds up.bin, and the folder up-folder: a.txt, sub/b.txt and
-// sub/deeper/c.txt, each holding its own name, and the empty folder empty.
+// dir holds up.bin, big.bin (big enough to cancel while it uploads), and
+// the folder up-folder: a.txt, sub/b.txt and sub/deeper/c.txt, each holding
+// its own name, and the empty folder empty.
 
 import { createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -88,6 +90,15 @@ async function open(path, ready, what) {
     await waitFor(ready, what);
 }
 const listed = `[...document.querySelectorAll("td.name a")].map((a) => a.textContent)`;
+const row = (name) => `[...document.querySelectorAll("tr")].find((tr) => tr.querySelector("td.name a")?.textContent === ${JSON.stringify(name)})`;
+async function waitForFile(p, what) {
+    for (const end = Date.now() + 30000; Date.now() < end; await sleep(200)) {
+        if (existsSync(p)) {
+            return;
+        }
+    }
+    throw new Error(`timed out waiting for ${what}`);
+}
 const status = `(document.getElementById("uploads")?.textContent || "")`;
 async function setFiles(selector, files) {
     const doc = await cdp("DOM.getDocument", {});
@@ -151,7 +162,8 @@ try {
         }
         const got = existsSync(p) ? readFileSync(p, "utf8") : "nothing";
         if (got !== "hello from the desktop\n") {
-            throw new Error(`downloaded ${JSON.stringify(got)}`);
+            const shown = await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent.startsWith("hello.txt"))?.textContent`);
+            throw new Error(`downloaded ${JSON.stringify(got)}; the page shows ${JSON.stringify(shown)}`);
         }
     });
 
@@ -191,6 +203,51 @@ try {
         await ev(`[...document.querySelectorAll("tr")].find((tr) => tr.querySelector("td.name a")?.textContent === "up-folder (1)/").querySelector("button.delete").click()`);
         await waitFor(`/up-folder \\(1\\)\\/: deleted/.test(${status})`, "the delete");
         await waitFor(`!${listed}.includes("up-folder (1)/")`, "up-folder (1)/ to go");
+    });
+
+    await step("files: download a folder as .zip", async () => {
+        await ev(`${row("up-folder/")}.querySelector("button.zip").click()`);
+        await waitFor(`/up-folder.zip: downloaded/.test(${status})`, "the zip");
+        await waitForFile(`${downloads}/up-folder.zip`, "up-folder.zip");
+    });
+
+    await step("files: download several as .zip", async () => {
+        for (const name of ["hello.txt", "up-folder/"]) {
+            await ev(`${row(name)}.querySelector("td.sel input").click()`);
+        }
+        await waitFor(`document.querySelector(".selection:not([hidden])")?.textContent.includes("2 selected")`, "the selection bar");
+        await ev(`document.querySelector(".selection button.zip").click()`);
+        await waitFor(`/Downloads.zip: downloaded/.test(${status})`, "the zip");
+        await waitForFile(`${downloads}/Downloads.zip`, "Downloads.zip");
+    });
+
+    await step("files: new folder and rename", async () => {
+        await ev(`window.prompt = () => "made-here"`);
+        await ev(`[...document.querySelectorAll("p.upload button")].find((b) => b.textContent === "New folder…").click()`);
+        await waitFor(`${listed}.includes("made-here/")`, "made-here/");
+        await ev(`window.prompt = () => "renamed.txt"`);
+        await ev(`${row("hello.txt")}.querySelector("button.rename").click()`);
+        await waitFor(`${listed}.includes("renamed.txt") && !${listed}.includes("hello.txt")`, "hello.txt renamed");
+    });
+
+    await step("files: delete several", async () => {
+        for (const name of ["made-here/", "renamed.txt"]) {
+            await ev(`${row(name)}.querySelector("td.sel input").click()`);
+        }
+        await ev(`document.querySelector(".selection button.delete").click()`);
+        await waitFor(`!${listed}.includes("made-here/") && !${listed}.includes("renamed.txt")`, "both to go");
+    });
+
+    await step("files: cancel an upload", async () => {
+        await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/big.bin`]);
+        // Part way, so the gateway has part of it to delete.
+        await waitFor(`/big.bin: [1-9]\\d*%/.test(${status})`, "the upload to get going");
+        await ev(`[...document.querySelectorAll("#uploads p")].find((p) => p.textContent.startsWith("big.bin")).querySelector("button.cancel").click()`);
+        await waitFor(`/big.bin: cancelled/.test(${status})`, "the cancel");
+        await open("downloads/", `!!document.querySelector("table")`, "the listing");
+        if ((await ev(listed)).includes("big.bin")) {
+            throw new Error("big.bin was saved");
+        }
     });
 
     await step("terminal", async () => {

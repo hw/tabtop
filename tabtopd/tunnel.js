@@ -433,15 +433,21 @@ export class Tunnel {
         return new Promise((resolve) => this._waiters.push(resolve));
     }
 
-    // nextChunk returns a file request's next chunk of data, or null once
-    // it's closed. Each is acknowledged as it's taken, with an empty data
-    // message: the server only sends a few chunks ahead of those, so a
-    // slow or paused download doesn't pile up in memory here.
+    // nextChunk returns a file or zip request's next chunk of data, or
+    // null once it's closed. Each is acknowledged as it's taken, with an
+    // empty data message: the server only sends a few chunks ahead of
+    // those, so a slow or paused download doesn't pile up in memory here.
+    // A zip ends with {"done":true,...}, kept in this.trailer.
     async nextChunk() {
         for (let m; (m = await this.next());) {
             if (m.data) {
                 this.sendData(new Uint8Array());
                 return m.data;
+            }
+            try {
+                this.trailer = JSON.parse(m.text);
+            } catch {
+                // Not one.
             }
         }
         return null;

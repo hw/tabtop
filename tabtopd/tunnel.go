@@ -83,10 +83,11 @@ const (
 	tunnelOverhead = 1 + chacha20poly1305.Overhead
 	// Read limits: the handshakes' messages are small, the largest being
 	// the login tags (32 bytes per candidate code); then a session tunnel's
-	// request. Only the desktop and the terminal take more after that, up to
+	// request, which is up to 1 MiB for a zip of many files picked by name.
+	// Only the desktop and the terminal take more after that, up to
 	// maxClientMessage (a pasted clipboard).
 	tunnelHelloLimit   = 256
-	tunnelRequestLimit = 64<<10 + tunnelOverhead
+	tunnelRequestLimit = 1<<20 + tunnelOverhead
 	msgData            = 0
 	msgText            = 1
 

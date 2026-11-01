@@ -1,9 +1,10 @@
 #!/bin/bash
 # Runs browser-check.mjs against a TabTop image: starts a container from it
 # and headless Chrome, checks the site through its pages, then checks what
-# the pages left in ~/Downloads from inside the container. Prints the
-# container's log if anything fails. Needs Docker, Node 22 or later, and
-# Chrome or Chromium (CHROME names it if it isn't found).
+# the pages left in ~/Downloads, and what the zips it downloaded hold.
+# Prints the container's log if anything fails. Needs Docker, Node 22 or
+# later, Python 3, and Chrome or Chromium (CHROME names it if it isn't
+# found).
 #
 # Usage: test/browser-check.sh <image>
 set -euo pipefail
@@ -44,6 +45,7 @@ echo "site: $site"
 in_container() { docker exec -u user "$name" sh -c "$1"; }
 in_container 'echo hello from the desktop > ~/Downloads/hello.txt'
 head -c 300000 /dev/urandom >"$work/up.bin"
+truncate -s 1G "$work/big.bin"
 mkdir -p "$work/up-folder/sub/deeper" "$work/up-folder/empty" "$work/downloads" "$work/chrome"
 for f in a.txt sub/b.txt sub/deeper/c.txt; do echo "$f" >"$work/up-folder/$f"; done
 
@@ -75,7 +77,20 @@ done
 # A dropped folder keeps its empty folders; browsers leave them out of a
 # picked one.
 in_container 'test -d ~/Downloads/"up-folder (2)/empty"' || { echo "not ok - the dropped folder's empty folder is missing"; exit 1; }
-for p in up.bin "up-folder (1)"; do
+for p in up.bin "up-folder (1)" hello.txt renamed.txt made-here big.bin; do
     in_container "test ! -e ~/Downloads/\"$p\"" || { echo "not ok - $p wasn't deleted"; exit 1; }
 done
 echo "ok - ~/Downloads holds what the pages left there"
+leftover=$(in_container 'find ~/Downloads -name ".tabtop-upload-*"')
+[[ -z "$leftover" ]] || { echo "not ok - the cancelled upload left $leftover"; exit 1; }
+
+# The zips, as downloaded.
+zipped() {
+    python3 -c 'import sys, zipfile; print(" ".join(sorted(zipfile.ZipFile(sys.argv[1]).namelist())))' "$work/downloads/$1"
+}
+folder='up-folder/ up-folder/a.txt up-folder/sub/ up-folder/sub/b.txt up-folder/sub/deeper/ up-folder/sub/deeper/c.txt'
+for z in "up-folder.zip:$folder" "Downloads.zip:hello.txt $folder"; do
+    got=$(zipped "${z%%:*}")
+    [[ "$got" == "${z#*:}" ]] || { echo "not ok - ${z%%:*} holds $got"; exit 1; }
+done
+echo "ok - the zips hold what they should"

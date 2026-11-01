@@ -4,14 +4,15 @@
 // workers (HTTPS or localhost), a fetched file streams into an ordinary
 // download through download-sw.js, so it goes to disk as it arrives;
 // elsewhere it's collected first and then saved (see saveFile). Either way
-// it's never shown as a page on this site. Files and folders dropped on
-// the page are uploaded into the folder shown, as are those picked with its
-// buttons (see drop.js, uploadFile and makeFolder), and each file and
-// folder has a button that deletes it.
+// it's never shown as a page on this site. A folder, or several files and
+// folders picked with their checkboxes, download as one zip (see fetchZip).
+// Files and folders dropped on the page are uploaded into the folder shown,
+// as are those picked with its buttons (see drop.js, uploadFile and
+// makeFolder), and each file and folder can be renamed and deleted.
 // Below, it lists the live sessions and recent logins (see showSessions).
 
 import * as tunnel from "./tunnel.js";
-import { deleteFile, dropUploads } from "./drop.js";
+import { deleteFiles, dropUploads, statusRow } from "./drop.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -27,6 +28,14 @@ function el(tag, props = {}, ...children) {
 function currentDir() {
     const p = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
     return p.replace(/^\/+|\/+$/g, "");
+}
+
+const join = (dir, name) => (dir ? `${dir}/${name}` : name);
+
+function button(className, textContent, onClick) {
+    const b = el("button", { type: "button", className, textContent });
+    b.addEventListener("click", onClick);
+    return b;
 }
 
 function dirHash(dir) {
@@ -88,14 +97,37 @@ async function show() {
         tunnel.forgetSession();
         show();
     });
+    // Checked entries, by name, and the bar that offers what to do with
+    // them, shown while there are any.
+    const selected = new Map();
+    const boxes = [];
+    const count = el("span");
+    const selection = el("div", { className: "selection", hidden: true }, count,
+        button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
+        button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show)));
+    const all = el("input", { type: "checkbox", title: "Select all" });
+    const updateSelection = () => {
+        selection.hidden = !selected.size;
+        count.textContent = `${selected.size} selected`;
+        all.checked = selected.size > 0 && selected.size === boxes.length;
+        all.indeterminate = selected.size > 0 && selected.size < boxes.length;
+    };
+    all.addEventListener("change", () => {
+        for (const [box, e] of boxes) {
+            box.checked = all.checked;
+            all.checked ? selected.set(e.name, e) : selected.delete(e.name);
+        }
+        updateSelection();
+    });
+
     const rows = [];
     if (dir) {
         const up = dir.split("/").slice(0, -1).join("/");
-        rows.push(el("tr", {}, el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
-            el("td"), el("td"), el("td")));
+        rows.push(el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
+            el("td"), el("td", { className: "mod" }), el("td")));
     }
     for (const e of t.reply.entries) {
-        const path = dir ? dir + "/" + e.name : e.name;
+        const path = join(dir, e.name);
         const link = el("a", { href: e.dir ? dirHash(path) : "#", textContent: e.name + (e.dir ? "/" : "") });
         if (!e.dir) {
             link.addEventListener("click", (ev) => {
@@ -103,25 +135,70 @@ async function show() {
                 fetchFile(path, link);
             });
         }
-        const del = el("button", { className: "delete", textContent: "Delete" });
-        del.addEventListener("click", () => deleteFile(e.name, e.dir, () => call({ type: "delete", path }).then((t) => t.close()), show));
-        const act = el("td", { className: "act" }, del);
-        rows.push(el("tr", {}, el("td", { className: "name" }, link),
+        const box = el("input", { type: "checkbox", title: `Select ${e.name}` });
+        box.addEventListener("change", () => {
+            box.checked ? selected.set(e.name, e) : selected.delete(e.name);
+            updateSelection();
+        });
+        boxes.push([box, e]);
+        const act = el("td", { className: "act" },
+            ...(e.dir ? [button("zip", "Download .zip", () => fetchZip(dir, [e.name]))] : []),
+            button("rename", "Rename", () => rename(dir, e)),
+            button("delete", "Delete", () => deleteFiles([deletion(dir, e)], show)));
+        rows.push(el("tr", {}, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
             el("td", { className: "num", textContent: e.size ?? "" }),
-            el("td", { className: "num", textContent: e.modified }), act));
+            el("td", { className: "num mod", textContent: e.modified }), act));
     }
     if (!t.reply.entries.length) {
-        rows.push(el("tr", {}, el("td", { colSpan: 4, textContent: "No files yet." })));
+        rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: "No files yet." })));
     }
+    const newFolder = button("", "New folder…", async () => {
+        const name = prompt("The new folder's name:");
+        if (!name) {
+            return;
+        }
+        const row = statusRow(`${name}/: making`);
+        try {
+            const got = await makeFolder(dir, name);
+            row.set(got === name ? `${name}/: made` : `${name}/: made as ${got}/, since the name is taken`);
+        } catch (err) {
+            row.set(`${name}/: not made: ${err.message}`, true);
+        }
+        await show();
+    });
     page.replaceChildren(
         el("div", { className: "bar" }, el("h1", { textContent: "Downloads" + title }), logout),
-        el("table", {}, el("tr", {}, el("th", { textContent: "Name" }), el("th", { className: "num", textContent: "Size" }),
-            el("th", { className: "num", textContent: "Modified" }), el("th")), ...rows),
+        selection,
+        el("table", {}, el("tr", {}, el("th", { className: "sel" }, all), el("th", { textContent: "Name" }),
+            el("th", { className: "num", textContent: "Size" }), el("th", { className: "num mod", textContent: "Modified" }), el("th")), ...rows),
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
-        el("p", { className: "upload" }, uploadButton(),
+        el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         sessions);
+}
+
+// deletion is how deleteFiles (see drop.js) deletes the entry e in dir.
+function deletion(dir, e) {
+    return { name: e.name, dir: e.dir, remove: () => call({ type: "delete", path: join(dir, e.name) }).then((t) => t.close()) };
+}
+
+// rename asks for a new name for the entry e in dir, and renames it.
+async function rename(dir, e) {
+    const slash = e.dir ? "/" : "";
+    const name = prompt(`Rename ${e.name}${slash} to:`, e.name);
+    if (!name || name === e.name) {
+        return;
+    }
+    const row = statusRow(`${e.name}${slash}: renaming`);
+    try {
+        const t = await call({ type: "rename", path: join(dir, e.name), name });
+        t.close();
+        row.set(`${e.name}${slash}: renamed to ${name}${slash}`);
+    } catch (err) {
+        row.set(`${e.name}${slash}: not renamed: ${err.message}`, true);
+    }
+    await show();
 }
 
 // showSessions lists the logins that are still live, where each has been
@@ -173,12 +250,22 @@ async function showSessions(box) {
 // in some private windows).
 let downloadWorker = null;
 
+// DOWNLOAD_SW_VERSION names the worker's version in its address. A
+// browser checks an unchanged address for a newer worker only now and
+// then, so it goes up whenever download-sw.js changes in a way the page
+// relies on, as it did when zips of unknown size came in (2).
+const DOWNLOAD_SW_VERSION = 2;
+
 function worker() {
     downloadWorker ??= (async () => {
         try {
-            const reg = await navigator.serviceWorker.register(new URL("./download-sw.js", import.meta.url),
+            const reg = await navigator.serviceWorker.register(new URL(`./download-sw.js?v=${DOWNLOAD_SW_VERSION}`, import.meta.url),
                 { scope: new URL("./stream/", import.meta.url).pathname });
-            for (const end = Date.now() + 5000; !reg.active && Date.now() < end;) {
+            // A browser that used the page before may still run an older
+            // worker, which a new version replaces: wait for it to take
+            // over, so downloads use it.
+            const end = Date.now() + 5000;
+            while ((!reg.active || reg.installing || reg.waiting) && Date.now() < end) {
                 await new Promise((r) => setTimeout(r, 50));
             }
             return reg.active;
@@ -203,6 +290,63 @@ async function fetchFile(path, link) {
     const progress = (got) => (link.textContent = `${label} (${size ? Math.floor(got * 100 / size) : 100}%)`);
     const failed = await (sw ? streamFile : saveFile)(t, name, size, progress, sw);
     link.textContent = failed ? `${label} (${failed})` : label;
+}
+
+// The biggest a zip request can be: the server takes requests up to 1 MiB.
+const MAX_REQUEST = 1000000;
+
+// fetchZip downloads names, in the folder dir, as one zip, which the server
+// makes as it sends it. How it goes shows in the status list, with a
+// Cancel button.
+async function fetchZip(dir, names) {
+    const label = names.length === 1 ? `${names[0]}/` : `${names.length} items`;
+    const row = statusRow(`${label}: zipping`, true);
+    try {
+        const req = { type: "zip", path: dir, names };
+        if (JSON.stringify(req).length > MAX_REQUEST) {
+            throw new Error("too many to download at once; pick fewer");
+        }
+        const sw = await worker();
+        const t = await call(req);
+        row.signal.addEventListener("abort", () => t.close());
+        if (row.signal.aborted) {
+            t.close();  // while it was opening
+        }
+        const { name } = t.reply;
+        let bytes = 0;
+        const progress = (got) => {
+            bytes = got;
+            row.set(`${name}: ${humanBytes(got)}`);
+        };
+        const failed = await (sw ? streamFile : saveFile)(t, name, null, progress, sw);
+        if (row.signal.aborted) {
+            row.set(`${name}: cancelled`);
+        } else if (failed) {
+            row.set(`${name}: ${failed}`, true);
+        } else if (t.trailer.skipped) {
+            row.set(`${name}: downloaded, ${humanBytes(bytes)}, without ${t.trailer.skipped} files or folders that couldn't be read`, true);
+        } else {
+            row.set(`${name}: downloaded, ${humanBytes(bytes)}`);
+        }
+    } catch (err) {
+        row.set(`${label}: not downloaded: ${err.message}`, true);
+    }
+    row.finish();
+}
+
+function humanBytes(n) {
+    const units = ["bytes", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    for (; n >= 1000 && i < units.length - 1; i++) {
+        n /= 1000;
+    }
+    return `${i ? n.toFixed(1) : n} ${units[i]}`;
+}
+
+// complete reports whether a download that's ended came whole: all size
+// bytes of a file, or a zip (size null) the server said it finished.
+function complete(t, got, size) {
+    return size === null ? t.trailer?.done === true : got === size;
 }
 
 // How long the download may go without asking for more before it's given
@@ -255,7 +399,7 @@ function streamFile(t, name, size, progress, sw) {
                     got += data.byteLength;
                     progress(got);
                     port1.postMessage({ data }, [data]);
-                } else if (got === size) {
+                } else if (complete(t, got, size)) {
                     port1.postMessage({ done: true });
                     finish("");
                 } else {
@@ -282,7 +426,7 @@ async function saveFile(t, name, size, progress) {
         got += data.byteLength;
         progress(got);
     }
-    if (got !== size) {
+    if (!complete(t, got, size)) {
         return `failed: ${t.closeReason || "connection lost"}`;
     }
     const url = URL.createObjectURL(new Blob(chunks, { type: "application/octet-stream" }));
@@ -301,10 +445,15 @@ const UPLOAD_CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 16;
 
 // uploadFile uploads a dropped or picked file into the folder dir, and
-// returns the name it was saved as, and any warning.
-async function uploadFile(file, progress, dir) {
+// returns the name it was saved as, and any warning. Aborting signal ends
+// it, and the server then deletes what it had of the file.
+async function uploadFile(file, progress, dir, signal) {
+    signal.throwIfAborted();
     const t = await call({ type: "upload", path: dir, name: file.name, size: file.size });
+    const abort = () => t.close();
+    signal.addEventListener("abort", abort);
     try {
+        signal.throwIfAborted();  // while it was opening
         const chunks = Math.ceil(file.size / UPLOAD_CHUNK);
         let sent = 0;
         let acked = 0;
@@ -329,6 +478,7 @@ async function uploadFile(file, progress, dir) {
             progress(Math.min(acked * UPLOAD_CHUNK, file.size));
         }
     } finally {
+        signal.removeEventListener("abort", abort);
         t.close();
     }
 }

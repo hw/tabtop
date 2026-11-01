@@ -10,7 +10,9 @@
 // and through it the server, rather than piling chunks up here or there.
 // The response has a Content-Length, and a transfer that ends early is
 // reported as an error, so the browser marks the download failed instead
-// of keeping a truncated file. The browser itself writes to a temporary
+// of keeping a truncated file. A zip's size isn't known (size is null), so
+// it has none, and the page says whether it ended whole: { done } if so,
+// { error } if not. The browser itself writes to a temporary
 // file (.crdownload, .part) and renames it once the response is complete.
 
 const STALL = 60000;  // ms without a chunk before giving up
@@ -77,11 +79,11 @@ function respond({ name, size, port }) {
             });
             if (chunk) {
                 got += chunk.byteLength;
-                if (got > size) {
+                if (size !== null && got > size) {
                     throw new Error("more than the file's size");
                 }
                 controller.enqueue(chunk);
-            } else if (got === size) {
+            } else if (size === null || got === size) {
                 controller.close();
             } else {
                 throw new Error("ended early");
@@ -93,15 +95,16 @@ function respond({ name, size, port }) {
             port.postMessage({ cancel: true });
         },
     }, { highWaterMark: 0 });
-    return new Response(body, {
-        headers: {
-            "Content-Type": "application/octet-stream",
-            "Content-Length": String(size),
-            "Content-Disposition": disposition(name),
-            "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "no-store",
-        },
-    });
+    const headers = {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": disposition(name),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    };
+    if (size !== null) {
+        headers["Content-Length"] = String(size);
+    }
+    return new Response(body, { headers });
 }
 
 // disposition names the file for the download: in full as UTF-8, with a

@@ -427,9 +427,9 @@ func TestTunnelSessions(t *testing.T) {
 	}
 	// So is a request bigger than any real one.
 	tc := openSession(t, ctx, srv.URL, s)
-	tc.write(ctx, msgText, []byte(`{"type":"list","path":"`+strings.Repeat("x", 70<<10)+`"}`))
+	tc.write(ctx, msgText, []byte(`{"type":"list","path":"`+strings.Repeat("x", 1100<<10)+`"}`))
 	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
-		t.Errorf("70 KiB request: %v", err)
+		t.Errorf("1.1 MiB request: %v", err)
 	}
 	// The right id with the wrong secret: the server can't read the request.
 	tc = openSession(t, ctx, srv.URL, testSession{id: s.id, secret: make([]byte, 32)})

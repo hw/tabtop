@@ -4,8 +4,9 @@ An XFCE desktop with Chromium that you use from a web browser. noVNC shows the
 desktop, and you log in with a TOTP code from an authenticator app (optionally
 preceded by a password). The desktop's sound plays in the browser. The same
 site also offers a terminal, and a files page for the desktop user's
-`~/Downloads`, where files can be downloaded, uploaded (with a button or by
-dropping them on the page, folders included) and deleted. Logins and everything after them
+`~/Downloads`, where files and folders can be downloaded (folders as
+zips), uploaded (with a button or by dropping them on the page), renamed
+and deleted. Logins and everything after them
 travel through an [encrypted tunnel](#encryption) between the page and the
 gateway, so a proxy that decrypts HTTPS on the way can't read them.
 
@@ -14,7 +15,7 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 | Path | What it serves |
 |---|---|
 | `/` | The noVNC client, which connects to the desktop |
-| `/downloads/` | The files page for `~/Downloads`: download, upload and delete files and folders |
+| `/downloads/` | The files page for `~/Downloads`: download (folders as zips), upload, rename and delete files and folders |
 | `/tty/` | A terminal (ghostty-web and tmux) |
 | `/tunnel` | The [encrypted connection](#encryption) that carries the logins, the desktop, the terminal, files and sound for all of the above |
 | `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
@@ -581,8 +582,8 @@ downloaded at `http://<host>:6080/downloads/`:
   already logged in to the desktop or the [terminal](#terminal) in this
   browser. One login covers all three (see [Sessions](#sessions)), and
   logging out of any of them logs out of all.
-- **In the page only:** the page lists, fetches, uploads and deletes files
-  through the [encrypted tunnel](#encryption), so it needs JavaScript, and
+- **In the page only:** the page lists, fetches, uploads, renames and
+  deletes files through the [encrypted tunnel](#encryption), so it needs JavaScript, and
   files have no plain URLs to give to `curl` or `wget`.
 - **Saving:** over HTTPS or on `localhost`, a file streams into an ordinary
   browser download as it's decrypted, through a service worker the page
@@ -596,6 +597,18 @@ downloaded at `http://<host>:6080/downloads/`:
   whole file is fetched first and then saved: Chrome keeps it in temporary
   files as it arrives, but other browsers may need as much free memory as
   the file is big.
+- **Zips:** a folder's **Download .zip** button downloads it with
+  everything in it as one zip. Tick several files and folders with the
+  checkboxes and **Download as .zip** downloads them together, named after
+  the folder they're in. The gateway makes the zip as it sends it, so it
+  needs no room on disk, but its size isn't known in advance: the download
+  shows how much has arrived, not a percentage. Files already compressed
+  (images, video, audio, archives) are stored as they are, and the rest
+  compressed quickly. Symlinks to files are followed, those to folders
+  aren't, and uploads still in progress are left out; the page says if
+  anything couldn't be read. A zip that's cut off is marked failed, like a
+  file. At most a few thousand items can be ticked for one zip (the request
+  is limited to 1 MiB); a folder's own zip has no such limit.
 - **Uploads:** pick files with **Upload files…**, or drop them on the
   page, to upload them into the folder it shows. An upload never replaces
   a file: one whose name is taken is saved as `name (1).ext`,
@@ -608,25 +621,34 @@ downloaded at `http://<host>:6080/downloads/`:
   goes, without a warning. One that's cut off is deleted, and any left by a
   crash or a forced stop are deleted when the container next starts (it
   spends at most 10 seconds looking, before serving anything), so don't
-  share `~/Downloads` between two running containers. Interrupted
-  downloads and uploads start again from the beginning.
+  share `~/Downloads` between two running containers. Each upload has a
+  **Cancel** button while it's waiting or going; a cancelled one is
+  deleted. Interrupted downloads and uploads start again from the
+  beginning.
 - **Folder uploads:** drop a folder on the page, or pick one with
   **Upload a folder…** (in browsers that have it), to upload it with
   everything in it. It never merges into a folder already there: one whose
   name is taken is uploaded as `name (1)` and so on. Its files are uploaded
   one at a time like any other, and the page shows how many made it and
   lists any that failed. Empty folders inside a picked folder are left out,
-  since browsers don't pass them on; dropped ones are kept.
+  since browsers don't pass them on; dropped ones are kept. Cancelling a
+  folder's upload stops it at once: the file being uploaded is deleted,
+  and those uploaded before it are kept.
+- **New folders and renaming:** **New folder…** makes a folder in the one
+  shown (as `name (1)` if the name is taken), and each file and folder has
+  a **Rename** button. A rename never replaces anything: if the new name is
+  taken, it fails and says so. Renaming a symlink renames the link.
 - **Deleting:** each file and folder has a **Delete** button, which asks
-  first. Deleting a folder deletes everything in it. Deleting is
-  permanent: there's no trash. Deleting a symlink removes the link, not
-  the file or folder it leads to, and a folder is deleted without
-  following any symlinks in it. Files can't be renamed or changed from the
-  web.
+  first, and **Delete** in the bar above the list deletes everything
+  ticked, after asking once. Deleting a folder deletes everything in it.
+  Deleting is permanent: there's no trash. Deleting a symlink removes the
+  link, not the file or folder it leads to, and a folder is deleted
+  without following any symlinks in it. Files can't be changed from the
+  web, only replaced by deleting and uploading again.
 - **Attachments only:** files are always sent as downloads, never shown as
   pages, so an HTML file in `~/Downloads` can't run on the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
-  be downloaded, uploaded into or deleted.
+  be downloaded, zipped, uploaded into, renamed or deleted.
 - **Big folders:** a folder lists at most 10,000 entries. With more, the
   page says so and shows 10,000 of them, in no particular order.
 
@@ -824,10 +846,12 @@ TABTOP_NOBLE_DIR=/tmp/noble mise run test
 `test/browser-check.sh <image>` checks an image end to end, the way a
 person uses it: it starts a container and headless Chrome, logs in, opens
 the desktop and its sound, lists, downloads, uploads and deletes files,
-uploads a folder both picked and dropped and deletes one, runs a command
-in the terminal, and logs out, then checks from inside the container what
-the pages left in `~/Downloads`. It prints `ok` or `not ok` for each step, and the
-container's log if one fails. It needs Docker, Node and Chrome or Chromium
+uploads a folder both picked and dropped and deletes one, downloads zips,
+makes a folder, renames a file, deletes several at once, cancels an
+upload, runs a command in the terminal, and logs out, then checks from
+inside the container what the pages left in `~/Downloads`, and what the
+zips hold. It prints `ok` or `not ok` for each step, and the container's
+log if one fails. It needs Docker, Node, Python 3 and Chrome or Chromium
 (set `CHROME` if it isn't found). `mise run browser-check` builds the image
 and runs it.
 

@@ -125,10 +125,11 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 
 // tunnelRequest is a session tunnel's first message: what it's for.
 type tunnelRequest struct {
-	Type string `json:"type"` // vnc, logout, tty, list, file, upload, mkdir, delete or audio
-	Path string `json:"path,omitempty"`
-	Name string `json:"name,omitempty"` // upload, mkdir: the file's or folder's name, in the folder at Path
-	Size int64  `json:"size,omitempty"` // upload: its size
+	Type  string   `json:"type"` // vnc, logout, tty, list, file, zip, upload, mkdir, rename, delete or audio
+	Path  string   `json:"path,omitempty"`
+	Name  string   `json:"name,omitempty"`  // upload, mkdir: the file's or folder's name, in the folder at Path; rename: the new name
+	Size  int64    `json:"size,omitempty"`  // upload: its size
+	Names []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path
 }
 
 type fileEntry struct {
@@ -265,6 +266,12 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 	case "mkdir":
 		g.tunnelMkdir(t, req, reply, fail)
 
+	case "zip":
+		g.tunnelZip(t, req, ip, reply, fail)
+
+	case "rename":
+		g.tunnelRename(t, req, ip, reply, fail)
+
 	case "delete":
 		g.tunnelDelete(t, req, ip, reply, fail)
 
@@ -326,6 +333,111 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 // tunnelFiles answers a list request with the directory's entries, and a
 // file request with the file's name and size, then its contents in data
 // messages.
+// chunkWriter sends what's written to it to the page in data messages of
+// fileChunk bytes. The page acknowledges each once it has used it, with an
+// empty data message, and at most fileWindow are unacknowledged, so a slow
+// or paused download holds the sender back here instead of piling up in
+// the page. Once the page goes, or leaves the writer waiting for room for
+// fileStall, writes fail.
+type chunkWriter struct {
+	t       *tunnel
+	ctx     context.Context
+	cancel  context.CancelFunc
+	credits chan struct{}
+	sent    atomic.Int64
+	stall   *time.Timer
+	buf     []byte
+}
+
+// errStalled is a chunkWriter's error once the page stops acknowledging.
+var errStalled = errors.New("the download stalled")
+
+func newChunkWriter(t *tunnel) *chunkWriter {
+	w := &chunkWriter{t: t, credits: make(chan struct{}, fileWindow), stall: time.NewTimer(fileStall),
+		buf: make([]byte, 0, fileChunk)}
+	w.stall.Stop() // runs only while waiting for room
+	for range fileWindow {
+		w.credits <- struct{}{}
+	}
+	w.ctx, w.cancel = context.WithCancel(context.Background())
+	go func() {
+		defer w.cancel() // ends the writes if the page goes
+		for acked := int64(0); ; acked++ {
+			typ, p, err := t.Read(w.ctx)
+			if err != nil {
+				t.CloseNow()
+				return
+			}
+			if typ != websocket.MessageBinary || len(p) != 0 || acked >= w.sent.Load() {
+				t.Close(websocket.StatusPolicyViolation, "bad acknowledgement")
+				return
+			}
+			w.credits <- struct{}{} // never blocks: one was taken for each chunk sent
+		}
+	}()
+	return w
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	n := 0
+	for len(p) > 0 {
+		k := min(len(p), fileChunk-len(w.buf))
+		w.buf = append(w.buf, p[:k]...)
+		p, n = p[k:], n+k
+		if len(w.buf) == fileChunk {
+			if err := w.flush(); err != nil {
+				return n, err
+			}
+		}
+	}
+	return n, nil
+}
+
+// flush sends what's buffered, once the page has room for it.
+func (w *chunkWriter) flush() error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+	// Only time spent waiting for the page counts: a zip can take long
+	// between chunks on its own, walking a big folder.
+	select {
+	case <-w.credits:
+	default:
+		w.stall.Reset(fileStall)
+		select {
+		case <-w.credits:
+		case <-w.ctx.Done():
+			return w.ctx.Err()
+		case <-w.stall.C:
+			return errStalled
+		}
+		w.stall.Stop()
+	}
+	w.sent.Add(1)
+	if err := w.t.Write(w.ctx, websocket.MessageBinary, w.buf); err != nil {
+		return err
+	}
+	w.buf = w.buf[:0]
+	return nil
+}
+
+// fail ends the tunnel after err from Write or from what was being sent.
+func (w *chunkWriter) fail(err error) {
+	switch {
+	case errors.Is(err, errStalled):
+		w.t.Close(websocket.StatusPolicyViolation, "the download stalled")
+	case w.ctx.Err() != nil: // the page went
+	default:
+		w.t.Close(websocket.StatusInternalError, "read error")
+	}
+}
+
+// stop ends the acknowledgement reader.
+func (w *chunkWriter) stop() {
+	w.cancel()
+	w.stall.Stop()
+}
+
 func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
 	// os.Root confines every lookup to the directory: ".." and symlinks
 	// leading outside it fail, even if they change between checks.
@@ -377,61 +489,15 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 	if !reply(map[string]any{"name": st.Name(), "size": st.Size()}) {
 		return
 	}
-	// The page acknowledges each chunk once it has used it, with an empty
-	// data message, and at most fileWindow chunks are unacknowledged, so a
-	// slow or paused download holds the file back here instead of piling up
-	// in the page.
-	credits := make(chan struct{}, fileWindow)
-	for range fileWindow {
-		credits <- struct{}{}
+	w := newChunkWriter(t)
+	defer w.stop()
+	if _, err := io.Copy(w, f); err != nil {
+		w.fail(err)
+		return
 	}
-	var sent atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		defer cancel() // ends the copy if the page goes
-		for acked := int64(0); ; acked++ {
-			typ, p, err := t.Read(ctx)
-			if err != nil {
-				t.CloseNow()
-				return
-			}
-			if typ != websocket.MessageBinary || len(p) != 0 || acked >= sent.Load() {
-				t.Close(websocket.StatusPolicyViolation, "bad acknowledgement")
-				return
-			}
-			credits <- struct{}{} // never blocks: one was taken for each chunk sent
-		}
-	}()
-	stall := time.NewTimer(fileStall)
-	defer stall.Stop()
-	buf := make([]byte, fileChunk)
-	for {
-		select {
-		case <-credits:
-			stall.Reset(fileStall)
-		case <-ctx.Done():
-			return
-		case <-stall.C:
-			t.Close(websocket.StatusPolicyViolation, "the download stalled")
-			return
-		}
-		n, err := f.Read(buf)
-		if n > 0 {
-			sent.Add(1)
-			if t.Write(ctx, websocket.MessageBinary, buf[:n]) != nil {
-				return
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Close(websocket.StatusInternalError, "read error")
-			return
-		}
+	if w.flush() == nil {
+		t.Close(websocket.StatusNormalClosure, "")
 	}
-	t.Close(websocket.StatusNormalClosure, "")
 }
 
 func writeJSON(c msgConn, v any) error {

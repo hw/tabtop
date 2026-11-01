@@ -1,17 +1,20 @@
 // Uploading files and folders dropped on the files page, or picked with
-// its upload buttons, and deleting them, served by tabtopd. Used by
+// its upload buttons, deleting them, and the list at the bottom of the page
+// that shows how those and other changes went, served by tabtopd. Used by
 // files.js, which supplies how to send or delete one file and make a
 // folder.
 
 // dropUploads makes the page take dropped files and folders, into the
 // folder here() gives when they're dropped. Each file is passed in turn to
-// send(file, progress, dir), which resolves to {name, warning}, the name it
-// was saved as in the folder dir and anything to say about it, and calls
-// progress(bytes) as it goes. A folder is made with mkdir(dir, name), which
-// resolves to the name it got, and then filled the same way. Progress shows
-// in a list at the bottom of the page; done() is called, and awaited, once
-// all have been tried and any succeeded. It returns a function that makes
-// the upload buttons, which send the files or folder picked the same way.
+// send(file, progress, dir, signal), which resolves to {name, warning},
+// the name it was saved as in the folder dir and anything to say about it,
+// calls progress(bytes) as it goes, and stops, rejecting, once signal is
+// aborted. A folder is made with mkdir(dir, name), which resolves to the
+// name it got, and then filled the same way. Progress shows in a list at
+// the bottom of the page, with a Cancel button for each file or folder
+// until it's done; done() is called, and awaited, once all have been tried
+// and any succeeded. It returns a function that makes the upload buttons,
+// which send the files or folder picked the same way.
 export function dropUploads(send, mkdir, done, here) {
     let depth = 0;
     const isFiles = (e) => e.dataTransfer?.types.includes("Files");
@@ -37,41 +40,19 @@ export function dropUploads(send, mkdir, done, here) {
     let queue = Promise.resolve();
     const upload = (files, folders = []) => {
         const dir = here();
-        const list = statusList();
-        const rows = files.map((file) => line(list, `${file.name}: waiting`));
-        const folderRows = folders.map(() => line(list, "Reading a folder…"));
+        const jobs = [
+            ...files.map((file) => ({ file, row: statusRow(`${file.name}: waiting`, true) })),
+            ...folders.map((folder) => ({ folder, row: statusRow("Reading a folder…", true) })),
+        ];
         // One upload at a time, after any still going from earlier ones.
         queue = queue.then(async () => {
             let saved = 0;
-            for (const [i, file] of files.entries()) {
-                const row = rows[i];
-                const progress = (got) => (row.textContent = `${file.name}: ${percent(got, file.size)}`);
-                progress(0);
-                try {
-                    const { name, warning } = await send(file, progress, dir);
-                    row.textContent = name === file.name ? `${file.name}: uploaded` : `${file.name}: uploaded as ${name}`;
-                    if (warning) {
-                        row.textContent += ` (${warning})`;
-                        row.className = "error";
-                    }
-                    saved++;
-                } catch (err) {
-                    row.textContent = `${file.name}: failed: ${err.message}`;
-                    row.className = "error";
-                }
-            }
-            for (const [i, folder] of folders.entries()) {
-                saved += await uploadFolder(folder, dir, folderRows[i], list, send, mkdir);
+            for (const { file, folder, row } of jobs) {
+                saved += await (file ? uploadOne(file, dir, row, send) : uploadFolder(folder, dir, row, send, mkdir));
+                row.finish();
             }
             if (saved) {
-                try {
-                    await done();
-                } catch {
-                    // The list stays as it was; the uploads are saved.
-                }
-            }
-            if (!list.isConnected) {
-                document.body.append(list);  // done() may have redrawn the page
+                await redraw(done);
             }
         });
     };
@@ -117,6 +98,32 @@ export function dropUploads(send, mkdir, done, here) {
         }
         return span;
     };
+}
+
+// uploadOne uploads file into dir, showing how it goes in row, and
+// returns 1 if it was saved, else 0.
+async function uploadOne(file, dir, row, send) {
+    if (row.signal.aborted) {
+        row.set(`${file.name}: cancelled`);
+        return 0;
+    }
+    const progress = (got) => row.set(`${file.name}: ${percent(got, file.size)}`);
+    progress(0);
+    try {
+        const { name, warning } = await send(file, progress, dir, row.signal);
+        row.set(name === file.name ? `${file.name}: uploaded` : `${file.name}: uploaded as ${name}`);
+        if (warning) {
+            row.set(`${row.text} (${warning})`, true);
+        }
+        return 1;
+    } catch (err) {
+        if (row.signal.aborted) {
+            row.set(`${file.name}: cancelled`);
+        } else {
+            row.set(`${file.name}: failed: ${err.message}`, true);
+        }
+        return 0;
+    }
 }
 
 // A folder to upload is {name, files, dirs}: its name, the Files in it,
@@ -170,16 +177,20 @@ const join = (dir, name) => (dir ? `${dir}/${name}` : name);
 const percent = (got, size) => `${size ? Math.floor(got * 100 / size) : 100}%`;
 
 // uploadFolder uploads folder, a promise of one, into dir: a new folder,
-// named after it unless that's taken, and everything in it. Its progress
-// shows in row, and files that fail in rows of their own in list. It
-// returns how many files were saved.
-async function uploadFolder(pending, dir, row, list, send, mkdir) {
+// named after it unless that's taken, and everything in it, until row's
+// Cancel button is pressed. Its progress shows in row, and files that fail
+// in rows of their own. It returns how many files were saved.
+async function uploadFolder(pending, dir, row, send, mkdir) {
     let folder;
     try {
         folder = await pending;
     } catch (err) {
-        row.textContent = `A folder couldn't be read: ${err.message}`;
-        row.className = "error";
+        row.set(`A folder couldn't be read: ${err.message}`, true);
+        return 0;
+    }
+    const { signal } = row;
+    if (signal.aborted) {
+        row.set(`${folder.name}/: cancelled`);
         return 0;
     }
     const total = countFiles(folder);
@@ -187,35 +198,41 @@ async function uploadFolder(pending, dir, row, list, send, mkdir) {
     try {
         got = await mkdir(dir, folder.name);
     } catch (err) {
-        row.textContent = `${folder.name}/: failed: ${err.message}`;
-        row.className = "error";
+        row.set(`${folder.name}/: failed: ${err.message}`, true);
         return 0;
     }
     let tried = 0;
     let saved = 0;
     const failed = (path, message) => {
-        line(list, `${path}: failed: ${message}`).className = "error";
-        row.className = "error";
+        statusRow(`${path}: failed: ${message}`).set(`${path}: failed: ${message}`, true);
+        row.set(row.text, true);
     };
     // fill uploads what's in f into the new folder at to, and shows it at
     // path, the folder's path as dropped.
     const fill = async (f, to, path) => {
         for (const file of f.files) {
-            const progress = (bytes) => (row.textContent =
-                `${folder.name}/: ${tried} of ${total} files, ${file.name} ${percent(bytes, file.size)}`);
+            if (signal.aborted) {
+                return;
+            }
+            const progress = (bytes) => row.set(`${folder.name}/: ${tried} of ${total} files, ${file.name} ${percent(bytes, file.size)}`);
             progress(0);
             try {
-                const { name, warning } = await send(file, progress, to);
+                const { name, warning } = await send(file, progress, to, signal);
                 saved++;
                 if (warning) {
                     failed(join(path, name), warning);
                 }
             } catch (err) {
-                failed(join(path, file.name), err.message);
+                if (!signal.aborted) {
+                    failed(join(path, file.name), err.message);
+                }
             }
             tried++;
         }
         for (const d of f.dirs) {
+            if (signal.aborted) {
+                return;
+            }
             let sub;
             try {
                 sub = await mkdir(to, d.name);
@@ -228,35 +245,45 @@ async function uploadFolder(pending, dir, row, list, send, mkdir) {
         }
     };
     await fill(folder, join(dir, got), folder.name);
-    row.textContent = `${folder.name}/: ${saved} of ${total} files uploaded` + (got === folder.name ? "" : `, as ${got}/`);
+    const as = got === folder.name ? "" : `, as ${got}/`;
+    row.set(signal.aborted ? `${folder.name}/: cancelled after ${saved} of ${total} files${as}`
+        : `${folder.name}/: ${saved} of ${total} files uploaded${as}`);
     return saved;
 }
 
-// deleteFile asks before deleting the file or folder (if dir) name with
-// remove(), which resolves once it's gone, then calls and awaits done().
-// The outcome shows in the same list as uploads.
-export async function deleteFile(name, dir, remove, done) {
-    if (!confirm(dir ? `Delete the folder ${name} and everything in it? This can't be undone.`
-        : `Delete ${name}? This can't be undone.`)) {
+// deleteFiles asks before deleting items, [{name, dir, remove}], each a
+// file or folder (if dir) and a function that deletes it, resolving once
+// it's gone; then calls and awaits done(). The outcome of each shows in the
+// status list.
+export async function deleteFiles(items, done) {
+    const [only] = items;
+    const question = items.length > 1 ? `Delete these ${items.length} items? Folders among them go with everything in them.`
+        : only.dir ? `Delete the folder ${only.name} and everything in it?` : `Delete ${only.name}?`;
+    if (!confirm(`${question} This can't be undone.`)) {
         return;
     }
-    if (dir) {
-        name += "/";
+    for (const { name, dir, remove } of items) {
+        const label = dir ? `${name}/` : name;
+        const row = statusRow(`${label}: deleting`);
+        try {
+            await remove();
+            row.set(`${label}: deleted`);
+        } catch (err) {
+            row.set(`${label}: not deleted: ${err.message}`, true);
+        }
     }
-    const list = statusList();
-    const row = line(list, `${name}: deleting`);
-    try {
-        await remove();
-        row.textContent = `${name}: deleted`;
-    } catch (err) {
-        row.textContent = `${name}: not deleted: ${err.message}`;
-        row.className = "error";
-    }
+    await redraw(done);
+}
+
+// redraw calls and awaits done(), which redraws the page, keeping the
+// status list.
+async function redraw(done) {
     try {
         await done();
     } catch {
         // The list stays as it was.
     }
+    const list = statusList();
     if (!list.isConnected) {
         document.body.append(list);
     }
@@ -273,9 +300,38 @@ function statusList() {
     return list;
 }
 
-function line(list, name) {
+// statusRow adds a line to the status list at the bottom of the page, and
+// returns it as {set(text, error), text, signal, finish()}. If cancellable,
+// it has a Cancel button, which aborts signal, until finish() is called.
+export function statusRow(text, cancellable = false) {
     const p = document.createElement("p");
-    p.textContent = name;
-    list.append(p);
-    return p;
+    const span = document.createElement("span");
+    span.textContent = text;
+    p.append(span);
+    const abort = new AbortController();
+    let button = null;
+    if (cancellable) {
+        button = Object.assign(document.createElement("button"), { type: "button", className: "cancel", textContent: "Cancel" });
+        button.addEventListener("click", () => {
+            abort.abort();
+            button.disabled = true;
+        });
+        p.append(" ", button);
+    }
+    statusList().append(p);
+    return {
+        set(t, error = false) {
+            span.textContent = t;
+            if (error) {
+                p.className = "error";
+            }
+        },
+        get text() {
+            return span.textContent;
+        },
+        signal: abort.signal,
+        finish() {
+            button?.remove();
+        },
+    };
 }
