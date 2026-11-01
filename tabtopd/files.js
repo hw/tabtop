@@ -8,11 +8,13 @@
 // folders picked with their checkboxes, download as one zip (see fetchZip).
 // Files and folders dropped on the page are uploaded into the folder shown,
 // as are those picked with its buttons (see drop.js, uploadFile and
-// makeFolder), and each file and folder can be renamed and deleted.
-// Below, it lists the live sessions and recent logins (see showSessions).
+// makeFolder), and each file and folder can be renamed and deleted from
+// its menu. The list sorts by any column (see sortEntries). Below, it
+// lists the live sessions and recent logins (see showSessions).
 
 import * as tunnel from "./tunnel.js";
-import { deleteFiles, dropUploads, statusRow } from "./drop.js";
+import { deleteFiles, dropUploads } from "./drop.js";
+import { askName, rowMenu, statusRow } from "./ui.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -82,8 +84,7 @@ async function show() {
     if (me !== shown) {
         return;
     }
-    const title = "/" + (dir ? dir + "/" : "");
-    document.title = "Downloads " + title;
+    document.title = "Downloads /" + (dir ? dir + "/" : "");
 
     const sessions = el("div", { id: "sessions" });
     showSessions(sessions);
@@ -99,62 +100,96 @@ async function show() {
     });
     // Checked entries, by name, and the bar that offers what to do with
     // them, shown while there are any.
+    const entries = t.reply.entries;
+    setTimeZone(t.reply.tz || undefined);
     const selected = new Map();
-    const boxes = [];
     const count = el("span");
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
-        button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show)));
+        button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show)),
+        button("", "Clear selection", () => {
+            selected.clear();
+            drawRows();
+        }));
     const all = el("input", { type: "checkbox", title: "Select all" });
     const updateSelection = () => {
         selection.hidden = !selected.size;
         count.textContent = `${selected.size} selected`;
-        all.checked = selected.size > 0 && selected.size === boxes.length;
-        all.indeterminate = selected.size > 0 && selected.size < boxes.length;
+        all.checked = selected.size > 0 && selected.size === entries.length;
+        all.indeterminate = selected.size > 0 && selected.size < entries.length;
     };
     all.addEventListener("change", () => {
-        for (const [box, e] of boxes) {
-            box.checked = all.checked;
+        for (const e of entries) {
             all.checked ? selected.set(e.name, e) : selected.delete(e.name);
         }
-        updateSelection();
+        drawRows();
     });
 
-    const rows = [];
-    if (dir) {
-        const up = dir.split("/").slice(0, -1).join("/");
-        rows.push(el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
-            el("td"), el("td", { className: "mod" }), el("td")));
-    }
-    for (const e of t.reply.entries) {
-        const path = join(dir, e.name);
-        const link = el("a", { href: e.dir ? dirHash(path) : "#", textContent: e.name + (e.dir ? "/" : "") });
-        if (!e.dir) {
-            link.addEventListener("click", (ev) => {
-                ev.preventDefault();
-                fetchFile(path, link);
-            });
+    // The column headers sort the list: clicking one sorts by it, and
+    // clicking it again turns the order round.
+    const head = el("tr");
+    const tbody = el("tbody");
+    const sortButton = (key, text) => {
+        const th = el("th", { className: key === "name" ? "" : key === "size" ? "num" : "num mod" },
+            button("sort", text, () => {
+                sort = { key, desc: sort.key === key ? !sort.desc : key !== "name" };
+                saveSort();
+                drawRows();
+            }));
+        th.dataset.key = key;
+        return th;
+    };
+    head.append(el("th", { className: "sel" }, all), sortButton("name", "Name"), sortButton("size", "Size"),
+        sortButton("time", "Modified"), el("th", { className: "act" }));
+
+    const drawRows = () => {
+        for (const th of head.querySelectorAll("th[data-key]")) {
+            const on = th.dataset.key === sort.key;
+            th.setAttribute("aria-sort", on ? (sort.desc ? "descending" : "ascending") : "none");
+            th.querySelector("button").dataset.arrow = on ? (sort.desc ? "▼" : "▲") : "";
         }
-        const box = el("input", { type: "checkbox", title: `Select ${e.name}` });
-        box.addEventListener("change", () => {
-            box.checked ? selected.set(e.name, e) : selected.delete(e.name);
-            updateSelection();
-        });
-        boxes.push([box, e]);
-        const act = el("td", { className: "act" },
-            ...(e.dir ? [button("zip", "Download .zip", () => fetchZip(dir, [e.name]))] : []),
-            button("rename", "Rename", () => rename(dir, e)),
-            button("delete", "Delete", () => deleteFiles([deletion(dir, e)], show)));
-        rows.push(el("tr", {}, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
-            el("td", { className: "num", textContent: e.size ?? "" }),
-            el("td", { className: "num mod", textContent: e.modified }), act));
-    }
-    if (!t.reply.entries.length) {
-        rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: "No files yet." })));
-    }
+        const rows = [];
+        if (dir) {
+            const up = dir.split("/").slice(0, -1).join("/");
+            rows.push(el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
+                el("td"), el("td", { className: "mod" }), el("td")));
+        }
+        for (const e of sortEntries(entries)) {
+            const path = join(dir, e.name);
+            const link = el("a", { href: e.dir ? dirHash(path) : "#", textContent: e.name + (e.dir ? "/" : "") });
+            if (!e.dir) {
+                link.addEventListener("click", (ev) => {
+                    ev.preventDefault();
+                    fetchFile(path);
+                });
+            }
+            const box = el("input", { type: "checkbox", title: `Select ${e.name}`, checked: selected.has(e.name) });
+            box.addEventListener("change", () => {
+                box.checked ? selected.set(e.name, e) : selected.delete(e.name);
+                updateSelection();
+            });
+            const menu = rowMenu(`Actions for ${e.name}`, [
+                ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
+                ["rename", "Rename…", () => rename(dir, e)],
+                ["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)],
+            ]);
+            rows.push(el("tr", {}, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
+                el("td", { className: "num", textContent: e.size ?? "", title: e.dir ? "" : `${(e.bytes ?? 0).toLocaleString()} bytes` }),
+                el("td", { className: "num mod", textContent: e.time ? friendlyTime(e.time) : e.modified,
+                    title: e.time ? exactTime(e.time) : "" }),
+                el("td", { className: "act" }, menu)));
+        }
+        if (!entries.length) {
+            rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: "No files yet." })));
+        }
+        tbody.replaceChildren(...rows);
+        updateSelection();
+    };
+    drawRows();
+
     const newFolder = button("", "New folder…", async () => {
-        const name = prompt("The new folder's name:");
-        if (!name) {
+        const name = await askName("The new folder's name:", "Make folder");
+        if (name === null) {
             return;
         }
         const row = statusRow(`${name}/: making`);
@@ -164,18 +199,137 @@ async function show() {
         } catch (err) {
             row.set(`${name}/: not made: ${err.message}`, true);
         }
+        row.finish();
         await show();
     });
     page.replaceChildren(
-        el("div", { className: "bar" }, el("h1", { textContent: "Downloads" + title }), logout),
+        el("div", { className: "bar" }, breadcrumbs(dir), logout),
         selection,
-        el("table", {}, el("tr", {}, el("th", { className: "sel" }, all), el("th", { textContent: "Name" }),
-            el("th", { className: "num", textContent: "Size" }), el("th", { className: "num mod", textContent: "Modified" }), el("th")), ...rows),
+        el("table", {}, el("thead", {}, head), tbody),
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         sessions);
+}
+
+// breadcrumbs is the page's heading for dir: Downloads and each folder
+// down to it, each but the last a link to it.
+function breadcrumbs(dir) {
+    const parts = dir ? dir.split("/") : [];
+    const h1 = el("h1", { className: "crumbs" });
+    const names = ["Downloads", ...parts];
+    names.forEach((name, i) => {
+        if (i) {
+            h1.append(el("span", { className: "sep", textContent: "/" }));
+        }
+        if (i === names.length - 1) {
+            h1.append(el("span", { textContent: name }));
+            h1.lastChild.setAttribute("aria-current", "page");
+        } else {
+            h1.append(el("a", { href: dirHash(parts.slice(0, i).join("/")), textContent: name }));
+        }
+    });
+    return h1;
+}
+
+// The list's order: by name, size or time, either way round. Folders come
+// first either way, and those with the same size or time by name. It's
+// kept for the next visit, where the browser allows.
+let sort = { key: "name", desc: false };
+try {
+    const saved = JSON.parse(localStorage.getItem("tabtop-files-sort"));
+    if (["name", "size", "time"].includes(saved?.key)) {
+        sort = { key: saved.key, desc: !!saved.desc };
+    }
+} catch {
+    // The default, then.
+}
+
+function saveSort() {
+    try {
+        localStorage.setItem("tabtop-files-sort", JSON.stringify(sort));
+    } catch {
+        // Only for this visit, then.
+    }
+}
+
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare;
+
+function sortEntries(entries) {
+    const dirSign = (e) => (e.dir ? 0 : 1);
+    const value = { name: () => 0, size: (e) => e.bytes ?? 0, time: (e) => e.time ?? 0 }[sort.key];
+    return [...entries].sort((a, b) => {
+        let c = value(a) - value(b);
+        if (sort.key === "name" || c === 0) {
+            c = byName(a.name, b.name);
+        }
+        return dirSign(a) - dirSign(b) || (sort.desc ? -c : c);
+    });
+}
+
+// The time zone the page shows times in: the server's TZ, from its
+// listings, UTC until then, or if this browser doesn't know the zone.
+let timeZone;
+
+// clocks are the formats for times in timeZone, made again when it
+// changes.
+let clocks = null;
+
+function setTimeZone(tz = "UTC") {
+    try {
+        new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+        tz = "UTC";  // a zone this browser doesn't know
+    }
+    if (clocks && tz === timeZone) {
+        return;
+    }
+    timeZone = tz;
+    const f = (options) => new Intl.DateTimeFormat(undefined, { timeZone, ...options });
+    clocks = {
+        relativeDay: new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }),
+        clock: f({ hour: "numeric", minute: "2-digit" }),
+        weekday: f({ weekday: "short" }),
+        dayMonth: f({ day: "numeric", month: "short" }),
+        withYear: f({ dateStyle: "medium" }),
+        exact: f({ weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit",
+            second: "2-digit", timeZoneName: "short" }),
+        short: f({ dateStyle: "short", timeStyle: "medium" }),
+        ymd: new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "numeric", day: "numeric" }),
+    };
+}
+setTimeZone();
+
+// dayNumber counts days to when's date in timeZone, to tell how many days
+// apart two times are there.
+function dayNumber(when) {
+    const part = Object.fromEntries(clocks.ymd.formatToParts(when).map((p) => [p.type, Number(p.value)]));
+    return Date.UTC(part.year, part.month - 1, part.day) / 86400000;
+}
+
+// friendlyTime is a time in Unix seconds as people say it, in the
+// browser's language and the page's time zone: today's and yesterday's
+// with the time, the rest of the past week's by the day and time, this
+// year's by the date, and older ones with the year. exactTime is the whole
+// of it, shown on hover.
+function friendlyTime(seconds) {
+    const when = new Date(seconds * 1000);
+    const now = new Date();
+    const days = dayNumber(now) - dayNumber(when);
+    if (days === 0 || days === 1) {
+        const name = clocks.relativeDay.format(-days, "day");  // "today", "yesterday"
+        return `${name[0].toUpperCase()}${name.slice(1)} ${clocks.clock.format(when)}`;
+    }
+    if (days > 1 && days < 7) {
+        return `${clocks.weekday.format(when)} ${clocks.clock.format(when)}`;
+    }
+    const year = (d) => clocks.ymd.formatToParts(d).find((p) => p.type === "year").value;
+    return year(when) === year(now) ? clocks.dayMonth.format(when) : clocks.withYear.format(when);
+}
+
+function exactTime(seconds) {
+    return clocks.exact.format(seconds * 1000);
 }
 
 // deletion is how deleteFiles (see drop.js) deletes the entry e in dir.
@@ -186,8 +340,8 @@ function deletion(dir, e) {
 // rename asks for a new name for the entry e in dir, and renames it.
 async function rename(dir, e) {
     const slash = e.dir ? "/" : "";
-    const name = prompt(`Rename ${e.name}${slash} to:`, e.name);
-    if (!name || name === e.name) {
+    const name = await askName(`Rename ${e.name}${slash} to:`, "Rename", e.name, !e.dir);
+    if (name === null || name === e.name) {
         return;
     }
     const row = statusRow(`${e.name}${slash}: renaming`);
@@ -198,6 +352,7 @@ async function rename(dir, e) {
     } catch (err) {
         row.set(`${e.name}${slash}: not renamed: ${err.message}`, true);
     }
+    row.finish();
     await show();
 }
 
@@ -213,7 +368,7 @@ async function showSessions(box) {
         box.replaceChildren(el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
         return;
     }
-    const when = (t) => new Date(t).toLocaleString();
+    const when = (t) => clocks.short.format(new Date(t));
     const everywhere = el("button", { textContent: "Log out everywhere" });
     everywhere.addEventListener("click", async () => {
         try {
@@ -276,20 +431,35 @@ function worker() {
     return downloadWorker;
 }
 
-async function fetchFile(path, link) {
-    const label = link.textContent;
-    const sw = await worker();
-    let t;
+// fetchFile downloads the file at path. How it goes shows in the
+// transfers panel, with a Cancel button.
+async function fetchFile(path) {
+    const label = path.split("/").pop();
+    const row = statusRow(`${label}: starting`, true);
     try {
-        t = await call({ type: "file", path });
+        const sw = await worker();
+        const t = await call({ type: "file", path });
+        row.signal.addEventListener("abort", () => t.close());
+        if (row.signal.aborted) {
+            t.close();  // while it was opening
+        }
+        const { name, size } = t.reply;
+        const progress = (got) => {
+            row.set(`${name}: ${size ? Math.floor(got * 100 / size) : 100}%`);
+            row.progress(size ? got / size : 1);
+        };
+        const failed = await (sw ? streamFile : saveFile)(t, name, size, progress, sw);
+        if (row.signal.aborted) {
+            row.set(`${name}: cancelled`);
+        } else if (failed) {
+            row.set(`${name}: ${failed}`, true);
+        } else {
+            row.set(`${name}: downloaded, ${humanBytes(size)}`);
+        }
     } catch (err) {
-        link.textContent = `${label} (${err.message})`;
-        return;
+        row.set(`${label}: not downloaded: ${err.message}`, true);
     }
-    const { name, size } = t.reply;
-    const progress = (got) => (link.textContent = `${label} (${size ? Math.floor(got * 100 / size) : 100}%)`);
-    const failed = await (sw ? streamFile : saveFile)(t, name, size, progress, sw);
-    link.textContent = failed ? `${label} (${failed})` : label;
+    row.finish();
 }
 
 // The biggest a zip request can be: the server takes requests up to 1 MiB.
@@ -317,6 +487,7 @@ async function fetchZip(dir, names) {
         const progress = (got) => {
             bytes = got;
             row.set(`${name}: ${humanBytes(got)}`);
+            row.progress(null);
         };
         const failed = await (sw ? streamFile : saveFile)(t, name, null, progress, sw);
         if (row.signal.aborted) {

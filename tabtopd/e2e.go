@@ -42,7 +42,7 @@ const (
 	downloadSWCSP = "default-src 'none'"
 )
 
-//go:embed tunnel.js novnc.js files.js download-sw.js drop.js
+//go:embed tunnel.js novnc.js files.js download-sw.js drop.js ui.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -81,7 +81,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case name == "tunnel.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "novnc.js" || name == "files.js" || name == "drop.js":
+	case name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "download-sw.js":
 		h.Set("Content-Security-Policy", downloadSWCSP)
@@ -136,7 +136,9 @@ type fileEntry struct {
 	Name     string `json:"name"`
 	Dir      bool   `json:"dir,omitempty"`
 	Size     string `json:"size,omitempty"`
+	Bytes    int64  `json:"bytes,omitempty"` // Size exactly
 	Modified string `json:"modified"`
+	Time     int64  `json:"time"` // Modified, in Unix seconds
 }
 
 // tunnelWS accepts a tunnel and runs its handshake: a login, or a
@@ -475,9 +477,10 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 		}
 		out := make([]fileEntry, 0, len(entries))
 		for _, e := range entries {
-			out = append(out, fileEntry{Name: strings.TrimSuffix(e.Name, "/"), Dir: e.dir, Size: e.Size, Modified: e.Modified})
+			out = append(out, fileEntry{Name: strings.TrimSuffix(e.Name, "/"), Dir: e.dir, Size: e.Size, Bytes: e.bytes,
+				Modified: e.Modified, Time: e.time})
 		}
-		reply(map[string]any{"entries": out, "truncated": truncated, "max": maxListing})
+		reply(map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone})
 		t.Close(websocket.StatusNormalClosure, "")
 		return
 	}

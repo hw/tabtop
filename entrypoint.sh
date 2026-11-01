@@ -58,6 +58,19 @@ case "$WEB_DOCTOR_ENDPOINT" in
     0|1) ;;
     *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
 esac
+# TZ: a time zone name, such as Europe/Berlin, for the desktop's clock and
+# everything else in the container, and the files page's times; UTC when
+# it's unset or empty. It becomes /etc/localtime too, for processes that
+# don't get TZ, such as docker exec.
+TZ="${TZ:-UTC}"
+TZ="${TZ#:}"  # ":Europe/Berlin" is the same zone
+if ! [[ "$TZ" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] || [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
+    echo "TZ must be a time zone name, such as Europe/Berlin or Asia/Singapore (got '${TZ}')." >&2
+    exit 1
+fi
+ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
+echo "$TZ" > /etc/timezone
+export TZ
 # WEB_E2E is gone: the encrypted tunnel is always on. 1 (what it always
 # means now) is accepted; 0 asked for unencrypted pages, which no longer
 # exist, so it stops the container rather than be silently ignored.
@@ -241,7 +254,7 @@ as_user() {
     exec runuser -u "$VNC_USER" -- env -i \
         HOME="$USER_HOME" USER="$VNC_USER" LOGNAME="$VNC_USER" SHELL=/bin/bash \
         PATH=/usr/local/bin:/usr/bin:/bin LANG="$LANG" DISPLAY=":${DISPLAY_NUM}" \
-        XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+        XDG_RUNTIME_DIR="$RUNTIME_DIR" TZ="$TZ" \
         "$@"
 }
 

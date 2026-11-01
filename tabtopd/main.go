@@ -80,6 +80,7 @@ type server struct {
 	termDir       string        // ghostty-web files; empty when the terminal is off
 	doctorOn      bool          // serve the doctor report
 	nobleDir      string        // noble library files for tunnel.js
+	timeZone      string        // TZ's zone name, for the files page's times; UTC if it has none
 	pingInterval  time.Duration // for tests; 0 means the pingInterval constant
 	// How long a session lasts at most, and without a tunnel open (0: no
 	// limit); see session.go.
@@ -128,6 +129,7 @@ func main() {
 	if g.usersFile == "" || g.downloadsDir == "" || g.nobleDir == "" {
 		log.Fatal("-users-file, -downloads-dir and -noble-dir are required")
 	}
+	g.timeZone = pageTimeZone(os.Getenv("TZ"))
 	var err error
 	if g.base, err = parseBasePath(*basePath); err != nil {
 		log.Fatalf("-base-path: %v", err)
@@ -290,6 +292,7 @@ type entry struct {
 	Name, Size, Modified string
 	dir                  bool
 	key                  string // Name in lower case, to sort by
+	bytes, time          int64  // the size, and when it was modified in Unix seconds, for the page to sort by
 }
 
 // listDir lists the directory f, which is dir in root: directories first,
@@ -332,9 +335,10 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 				key:      strings.ToLower(de.Name()),
 				Modified: st.ModTime().Format("2006-01-02 15:04"),
 				dir:      st.IsDir(),
+				time:     st.ModTime().Unix(),
 			}
 			if !e.dir {
-				e.Size = humanSize(st.Size())
+				e.Size, e.bytes = humanSize(st.Size()), st.Size()
 			}
 			entries = append(entries, e)
 		}
@@ -658,6 +662,20 @@ func escapePath(p string) string {
 	return (&url.URL{Path: p}).EscapedPath()
 }
 
+// pageTimeZone is the zone named by tz, a TZ value, for the files page to
+// show times in: UTC if it's unset, or isn't a name Go knows, as a POSIX
+// rule such as "CET-1CEST" isn't.
+func pageTimeZone(tz string) string {
+	name := strings.TrimPrefix(tz, ":")
+	if name == "" || name == "Local" {
+		return "UTC"
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return "UTC"
+	}
+	return name
+}
+
 func humanSize(n int64) string {
 	if n < 1024 {
 		return fmt.Sprintf("%d B", n)
@@ -675,30 +693,73 @@ func humanSize(n int64) string {
 const pageHead = `<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
+:root { --fg: #1d1d1f; --bg: #fff; --line: #ddd; --raised: #fff; --accent: #1a73e8; --hover: rgba(26, 115, 232, .12); }
+@media (prefers-color-scheme: dark) { :root { --fg: #e8e8ea; --bg: #1c1c1e; --line: #3a3a3c; --raised: #2c2c2e;
+       --accent: #8ab4f8; --hover: rgba(138, 180, 248, .18); } }
+a { color: var(--accent); }
 body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 56rem;
-       padding: 0 1rem; color: #1d1d1f; background: #fff; }
-@media (prefers-color-scheme: dark) { body { color: #e8e8ea; background: #1c1c1e; }
-       a { color: #8ab4f8; } th, td { border-color: #3a3a3c !important; } }
+       padding: 0 1rem; color: var(--fg); background: var(--bg); }
 h1 { font-size: 1.25rem; font-weight: 600; word-break: break-all; }
 h2 { font-size: 1.05rem; font-weight: 600; margin-top: 2rem; }
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #ddd; }
+th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
 td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 td.name { word-break: break-all; }
 .bar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .error { color: #c5221f; }
+@media (prefers-color-scheme: dark) { .error { color: #f28b82; } }
 .hint { opacity: .7; font-size: 13px; }
-body.dropping { outline: 3px dashed #8ab4f8; outline-offset: .75rem; }
-#uploads p { margin: .25rem 0; word-break: break-all; }
+body.dropping { outline: 3px dashed var(--accent); outline-offset: .75rem; }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
+h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4rem; word-break: normal; overflow-wrap: anywhere; }
+h1.crumbs a { text-decoration: none; } h1.crumbs a:hover { text-decoration: underline; }
+h1.crumbs .sep { opacity: .4; font-weight: 400; }
 th.sel, td.sel { width: 1%; padding-right: 0; }
-td.act { width: 1%; text-align: right; white-space: nowrap; }
-td.act button + button { margin-left: .25rem; }
-td.act button, .selection button, #uploads button { font: inherit; font-size: 13px; white-space: nowrap; }
+th button.sort { font: inherit; font-weight: 600; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+th button.sort::after { content: attr(data-arrow); margin-left: .3rem; font-size: .7em; }
+th.act, td.act { width: 1%; text-align: right; padding-top: 0; padding-bottom: 0; }
 .selection { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem;
-             padding: .4rem .5rem; border-radius: 6px; background: rgba(138, 180, 248, .18); }
+             padding: .4rem .5rem; border-radius: 6px; background: var(--hover); }
 .selection[hidden] { display: none; }
-@media (max-width: 40rem) { .mod { display: none; } td.act { white-space: normal; }
-       td.act button { display: block; margin: .15rem 0 0 auto !important; } }
+.selection button { font: inherit; font-size: 13px; }
+details.menu { position: relative; display: inline-block; }
+details.menu summary { list-style: none; cursor: pointer; user-select: none; padding: 0 .55rem; border-radius: 4px;
+       font-size: 18px; line-height: 1.6; }
+details.menu summary::-webkit-details-marker { display: none; }
+details.menu summary:hover, details.menu[open] summary { background: var(--hover); }
+details.menu .items { position: absolute; right: 0; top: 100%; z-index: 5; display: flex; flex-direction: column;
+       min-width: 11rem; padding: .25rem 0; background: var(--raised); border: 1px solid var(--line);
+       border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); }
+details.menu .items button { font: inherit; text-align: left; color: inherit; background: none; border: 0;
+       padding: .45rem 1rem; cursor: pointer; white-space: nowrap; }
+details.menu .items button:hover, details.menu .items button:focus-visible { background: var(--hover); outline: none; }
+details.menu .items button.delete { color: #c5221f; }
+@media (prefers-color-scheme: dark) { details.menu .items button.delete { color: #f28b82; } }
+#transfers { position: fixed; left: 1rem; bottom: 1rem; z-index: 10; width: min(26rem, calc(100vw - 2rem));
+       max-height: 45vh; display: flex; flex-direction: column; background: var(--raised);
+       border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .22); }
+#transfers[hidden] { display: none; }
+#transfers .head { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; }
+#transfers .summary { margin-right: auto; opacity: .7; font-size: 13px; }
+#transfers .head button { font: inherit; font-size: 13px; }
+#transfers progress.overall:not([hidden]) { display: block; width: 100%; height: 3px; }
+#uploads { overflow: auto; padding: 0 .75rem .5rem; font-size: 14px; }
+#transfers.folded #uploads, #transfers.folded progress.overall { display: none; }
+#uploads p { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .5rem; margin: .4rem 0; overflow-wrap: anywhere; }
+#uploads p span { flex: 1 1 12rem; }
+#uploads p progress { order: 3; flex: 1 1 100%; height: 6px; }
+#uploads button { font: inherit; font-size: 12px; }
+body.has-transfers { padding-bottom: 14rem; }
+dialog { width: min(26rem, calc(100vw - 2rem)); box-sizing: border-box; padding: 1.25rem; color: var(--fg);
+       background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
+dialog::backdrop { background: rgba(0, 0, 0, .4); }
+dialog p { margin: 0 0 .75rem; overflow-wrap: anywhere; }
+dialog input { font: inherit; width: 100%; box-sizing: border-box; padding: .4rem .5rem; }
+dialog .buttons { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+dialog button { font: inherit; padding: .3rem .9rem; }
+dialog button.primary { color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; }
+@media (prefers-color-scheme: dark) { dialog button.primary { color: #1c1c1e; } }
+@media (max-width: 40rem) { .mod { display: none; }
+       #transfers { left: .5rem; right: .5rem; bottom: .5rem; width: auto; } }
 </style>`

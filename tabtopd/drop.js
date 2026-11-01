@@ -1,8 +1,9 @@
 // Uploading files and folders dropped on the files page, or picked with
-// its upload buttons, deleting them, and the list at the bottom of the page
-// that shows how those and other changes went, served by tabtopd. Used by
+// its upload buttons, and deleting them, served by tabtopd. Used by
 // files.js, which supplies how to send or delete one file and make a
-// folder.
+// folder. How each goes shows in the transfers panel (see ui.js).
+
+import { askYes, statusRow } from "./ui.js";
 
 // dropUploads makes the page take dropped files and folders, into the
 // folder here() gives when they're dropped. Each file is passed in turn to
@@ -10,9 +11,9 @@
 // the name it was saved as in the folder dir and anything to say about it,
 // calls progress(bytes) as it goes, and stops, rejecting, once signal is
 // aborted. A folder is made with mkdir(dir, name), which resolves to the
-// name it got, and then filled the same way. Progress shows in a list at
-// the bottom of the page, with a Cancel button for each file or folder
-// until it's done; done() is called, and awaited, once all have been tried
+// name it got, and then filled the same way. Progress shows in the
+// transfers panel, with a Cancel button for each file or folder until
+// it's done; done() is called, and awaited, once all have been tried
 // and any succeeded. It returns a function that makes the upload buttons,
 // which send the files or folder picked the same way.
 export function dropUploads(send, mkdir, done, here) {
@@ -107,7 +108,10 @@ async function uploadOne(file, dir, row, send) {
         row.set(`${file.name}: cancelled`);
         return 0;
     }
-    const progress = (got) => row.set(`${file.name}: ${percent(got, file.size)}`);
+    const progress = (got) => {
+        row.set(`${file.name}: ${percent(got, file.size)}`);
+        row.progress(file.size ? got / file.size : 1);
+    };
     progress(0);
     try {
         const { name, warning } = await send(file, progress, dir, row.signal);
@@ -204,7 +208,9 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
     let tried = 0;
     let saved = 0;
     const failed = (path, message) => {
-        statusRow(`${path}: failed: ${message}`).set(`${path}: failed: ${message}`, true);
+        const r = statusRow("");
+        r.set(`${path}: failed: ${message}`, true);
+        r.finish();
         row.set(row.text, true);
     };
     // fill uploads what's in f into the new folder at to, and shows it at
@@ -214,7 +220,10 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
             if (signal.aborted) {
                 return;
             }
-            const progress = (bytes) => row.set(`${folder.name}/: ${tried} of ${total} files, ${file.name} ${percent(bytes, file.size)}`);
+            const progress = (bytes) => {
+                row.set(`${folder.name}/: ${tried} of ${total} files, ${file.name} ${percent(bytes, file.size)}`);
+                row.progress((tried + (file.size ? bytes / file.size : 1)) / total);
+            };
             progress(0);
             try {
                 const { name, warning } = await send(file, progress, to, signal);
@@ -259,7 +268,7 @@ export async function deleteFiles(items, done) {
     const [only] = items;
     const question = items.length > 1 ? `Delete these ${items.length} items? Folders among them go with everything in them.`
         : only.dir ? `Delete the folder ${only.name} and everything in it?` : `Delete ${only.name}?`;
-    if (!confirm(`${question} This can't be undone.`)) {
+    if (!(await askYes(`${question} This can't be undone.`, "Delete"))) {
         return;
     }
     for (const { name, dir, remove } of items) {
@@ -271,67 +280,16 @@ export async function deleteFiles(items, done) {
         } catch (err) {
             row.set(`${label}: not deleted: ${err.message}`, true);
         }
+        row.finish();
     }
     await redraw(done);
 }
 
-// redraw calls and awaits done(), which redraws the page, keeping the
-// status list.
+// redraw calls and awaits done(), which redraws the page.
 async function redraw(done) {
     try {
         await done();
     } catch {
-        // The list stays as it was.
+        // The page stays as it was.
     }
-    const list = statusList();
-    if (!list.isConnected) {
-        document.body.append(list);
-    }
-}
-
-function statusList() {
-    let list = document.getElementById("uploads");
-    if (!list) {
-        list = document.createElement("div");
-        list.id = "uploads";
-        list.setAttribute("role", "status");
-        document.body.append(list);
-    }
-    return list;
-}
-
-// statusRow adds a line to the status list at the bottom of the page, and
-// returns it as {set(text, error), text, signal, finish()}. If cancellable,
-// it has a Cancel button, which aborts signal, until finish() is called.
-export function statusRow(text, cancellable = false) {
-    const p = document.createElement("p");
-    const span = document.createElement("span");
-    span.textContent = text;
-    p.append(span);
-    const abort = new AbortController();
-    let button = null;
-    if (cancellable) {
-        button = Object.assign(document.createElement("button"), { type: "button", className: "cancel", textContent: "Cancel" });
-        button.addEventListener("click", () => {
-            abort.abort();
-            button.disabled = true;
-        });
-        p.append(" ", button);
-    }
-    statusList().append(p);
-    return {
-        set(t, error = false) {
-            span.textContent = t;
-            if (error) {
-                p.className = "error";
-            }
-        },
-        get text() {
-            return span.textContent;
-        },
-        signal: abort.signal,
-        finish() {
-            button?.remove();
-        },
-    };
 }

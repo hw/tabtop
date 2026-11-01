@@ -10,6 +10,14 @@ and deleted. Logins and everything after them
 travel through an [encrypted tunnel](#encryption) between the page and the
 gateway, so a proxy that decrypts HTTPS on the way can't read them.
 
+The desktop has one panel at the top: show desktop, launchers for
+Chromium (in incognito mode) and a terminal, the window list, the
+workspace, the tray and a clock in the time zone set by `TZ`. A home
+directory kept from an older image keeps its own panel, so it doesn't
+get the terminal launcher; delete
+`~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml` and restart
+to get the new one.
+
 Everything is served on one port by `tabtopd` (in `tabtopd/`):
 
 | Path | What it serves |
@@ -114,11 +122,12 @@ optional and only retains browser data, downloads and desktop preferences.
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
 | `WEB_DOCTOR_ENDPOINT` | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](#health-checks). |
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
+| `TZ` | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
 
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
-`WEB_TTY`, `WEB_DOCTOR_ENDPOINT` or `VNC_PASSWORD` has
+`WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `TZ` or `VNC_PASSWORD` has
 an invalid value, or if a saved `~/.config/tabtop/totp-secret` isn't valid
 Base32. The error is printed to the log. `WEB_E2E` no longer exists, since
 the tunnel is always on: `WEB_E2E=1` is accepted, and any other value stops
@@ -583,8 +592,20 @@ downloaded at `http://<host>:6080/downloads/`:
   browser. One login covers all three (see [Sessions](#sessions)), and
   logging out of any of them logs out of all.
 - **In the page only:** the page lists, fetches, uploads, renames and
-  deletes files through the [encrypted tunnel](#encryption), so it needs JavaScript, and
-  files have no plain URLs to give to `curl` or `wget`.
+  deletes files through the [encrypted tunnel](#encryption), so it needs
+  JavaScript, and files have no plain URLs to give to `curl` or `wget`.
+- **Finding your way:** the heading shows the folder's path, each folder
+  in it a link back up. Click **Name**, **Size** or **Modified** to sort
+  by it, and again to turn the order round; folders stay first, and the
+  order is remembered in this browser. Times are shown as "Today 9:34",
+  "Yesterday", a weekday or a date, in your browser's language and the
+  container's time zone (`TZ`, UTC by default); hovering over one, or over
+  a size, shows it exactly. Each row's
+  **⋯** menu downloads, renames or deletes it.
+- **Transfers:** downloads, uploads, zips and other changes show in a
+  panel in the bottom corner, each with a progress bar while it goes and
+  a **Cancel** button where it can be stopped, and a bar for how many are
+  done. **Clear** removes the finished ones; **▾** folds the panel away.
 - **Saving:** over HTTPS or on `localhost`, a file streams into an ordinary
   browser download as it's decrypted, through a service worker the page
   registers, so it needs no more memory than a few chunks: the gateway only
@@ -597,7 +618,7 @@ downloaded at `http://<host>:6080/downloads/`:
   whole file is fetched first and then saved: Chrome keeps it in temporary
   files as it arrives, but other browsers may need as much free memory as
   the file is big.
-- **Zips:** a folder's **Download .zip** button downloads it with
+- **Zips:** **Download as .zip** in a folder's menu downloads it with
   everything in it as one zip. Tick several files and folders with the
   checkboxes and **Download as .zip** downloads them together, named after
   the folder they're in. The gateway makes the zip as it sends it, so it
@@ -635,12 +656,13 @@ downloaded at `http://<host>:6080/downloads/`:
   folder's upload stops it at once: the file being uploaded is deleted,
   and those uploaded before it are kept.
 - **New folders and renaming:** **New folder…** makes a folder in the one
-  shown (as `name (1)` if the name is taken), and each file and folder has
-  a **Rename** button. A rename never replaces anything: if the new name is
-  taken, it fails and says so. Renaming a symlink renames the link.
-- **Deleting:** each file and folder has a **Delete** button, which asks
-  first, and **Delete** in the bar above the list deletes everything
-  ticked, after asking once. Deleting a folder deletes everything in it.
+  shown (as `name (1)` if the name is taken), and **Rename…** in a row's
+  menu renames it; for a file, only the part before the extension starts
+  selected. A rename never replaces anything: if the new name is taken, it
+  fails and says so. Renaming a symlink renames the link.
+- **Deleting:** **Delete…** in a row's menu deletes it, after asking, and
+  **Delete** in the bar above the list deletes everything ticked, after
+  asking once. Deleting a folder deletes everything in it.
   Deleting is permanent: there's no trash. Deleting a symlink removes the
   link, not the file or folder it leads to, and a folder is deleted
   without following any symlinks in it. Files can't be changed from the

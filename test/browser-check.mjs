@@ -48,7 +48,7 @@ ws.onmessage = (e) => {
         pending.get(m.id)(m);
         pending.delete(m.id);
     } else if (m.method === "Page.javascriptDialogOpening") {
-        // Leaving the desktop asks first; confirm() is replaced below.
+        // Leaving the desktop asks first.
         cdp("Page.handleJavaScriptDialog", { accept: true });
     } else if (m.method === "Runtime.exceptionThrown") {
         const d = m.params.exceptionDetails;
@@ -91,6 +91,15 @@ async function open(path, ready, what) {
 }
 const listed = `[...document.querySelectorAll("td.name a")].map((a) => a.textContent)`;
 const row = (name) => `[...document.querySelectorAll("tr")].find((tr) => tr.querySelector("td.name a")?.textContent === ${JSON.stringify(name)})`;
+// answer chooses the primary button of the page's dialog, after typing
+// text into it if given.
+async function answer(text) {
+    await waitFor(`!!document.querySelector("dialog[open]")`, "the dialog");
+    if (text !== undefined) {
+        await ev(`(() => { const i = document.querySelector("dialog[open] input"); i.value = ${JSON.stringify(text)}; i.dispatchEvent(new Event("input")); })()`);
+    }
+    await ev(`document.querySelector("dialog[open] button.primary").click()`);
+}
 async function waitForFile(p, what) {
     for (const end = Date.now() + 30000; Date.now() < end; await sleep(200)) {
         if (existsSync(p)) {
@@ -162,7 +171,7 @@ try {
         }
         const got = existsSync(p) ? readFileSync(p, "utf8") : "nothing";
         if (got !== "hello from the desktop\n") {
-            const shown = await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent.startsWith("hello.txt"))?.textContent`);
+            const shown = await ev(status);
             throw new Error(`downloaded ${JSON.stringify(got)}; the page shows ${JSON.stringify(shown)}`);
         }
     });
@@ -171,11 +180,26 @@ try {
         await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/up.bin`]);
         await waitFor(`/up.bin: uploaded/.test(${status})`, "the upload");
         await waitFor(`${listed}.includes("up.bin")`, "up.bin to be listed");
+        const when = await ev(`${row("up.bin")}.querySelector("td.mod").textContent`);
+        if (!when.startsWith("Today ")) {
+            throw new Error(`up.bin's time shows as ${JSON.stringify(when)}`);
+        }
+    });
+
+    await step("files: sort", async () => {
+        const files = `${listed}.filter((n) => !n.endsWith("/")).join()`;
+        const sortBy = (name) => ev(`[...document.querySelectorAll("th button.sort")].find((b) => b.textContent === ${JSON.stringify(name)}).click()`);
+        await sortBy("Size");
+        await waitFor(`${files} === "up.bin,hello.txt"`, "the biggest first");
+        await sortBy("Size");
+        await waitFor(`${files} === "hello.txt,up.bin"`, "the smallest first");
+        await sortBy("Name");
+        await waitFor(`${files} === "hello.txt,up.bin"`, "by name");
     });
 
     await step("files: delete", async () => {
-        await ev(`window.confirm = () => true`);
-        await ev(`[...document.querySelectorAll("tr")].find((tr) => tr.querySelector("td.name a")?.textContent === "up.bin").querySelector("button.delete").click()`);
+        await ev(`${row("up.bin")}.querySelector("button.delete").click()`);
+        await answer();
         await waitFor(`/up.bin: deleted/.test(${status})`, "the delete");
         await waitFor(`!${listed}.includes("up.bin")`, "up.bin to go");
     });
@@ -187,6 +211,13 @@ try {
         await waitFor(`/up-folder\\/: 3 of 3 files uploaded, as up-folder \\(1\\)\\//.test(${status})`, "the second, renamed");
         await open("downloads/#/up-folder%20(1)/sub/deeper/", `${listed}.includes("c.txt")`, "up-folder (1)/sub/deeper/c.txt");
         await open("downloads/#/up-folder/sub/", `${listed}.sort().join() === "../,b.txt,deeper/"`, "up-folder/sub/ to hold deeper/ and b.txt");
+        // The heading leads back up.
+        const crumbs = await ev(`[...document.querySelectorAll("h1.crumbs a")].map((a) => a.textContent).join()`);
+        if (crumbs !== "Downloads,up-folder") {
+            throw new Error(`the heading links to ${crumbs}`);
+        }
+        await ev(`[...document.querySelectorAll("h1.crumbs a")].find((a) => a.textContent === "up-folder").click()`);
+        await waitFor(`${listed}.includes("sub/") && ${listed}.includes("a.txt")`, "up-folder/, from the heading");
     });
 
     await step("files: folder dropped", async () => {
@@ -199,8 +230,8 @@ try {
     });
 
     await step("files: delete a folder", async () => {
-        await ev(`window.confirm = () => true`);
-        await ev(`[...document.querySelectorAll("tr")].find((tr) => tr.querySelector("td.name a")?.textContent === "up-folder (1)/").querySelector("button.delete").click()`);
+        await ev(`${row("up-folder (1)/")}.querySelector("button.delete").click()`);
+        await answer();
         await waitFor(`/up-folder \\(1\\)\\/: deleted/.test(${status})`, "the delete");
         await waitFor(`!${listed}.includes("up-folder (1)/")`, "up-folder (1)/ to go");
     });
@@ -222,11 +253,11 @@ try {
     });
 
     await step("files: new folder and rename", async () => {
-        await ev(`window.prompt = () => "made-here"`);
         await ev(`[...document.querySelectorAll("p.upload button")].find((b) => b.textContent === "New folder…").click()`);
+        await answer("made-here");
         await waitFor(`${listed}.includes("made-here/")`, "made-here/");
-        await ev(`window.prompt = () => "renamed.txt"`);
         await ev(`${row("hello.txt")}.querySelector("button.rename").click()`);
+        await answer("renamed.txt");
         await waitFor(`${listed}.includes("renamed.txt") && !${listed}.includes("hello.txt")`, "hello.txt renamed");
     });
 
@@ -235,6 +266,7 @@ try {
             await ev(`${row(name)}.querySelector("td.sel input").click()`);
         }
         await ev(`document.querySelector(".selection button.delete").click()`);
+        await answer();
         await waitFor(`!${listed}.includes("made-here/") && !${listed}.includes("renamed.txt")`, "both to go");
     });
 

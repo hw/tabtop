@@ -160,6 +160,7 @@ RUN apt-get update \
         fonts-dejavu-core \
         fonts-noto-color-emoji \
         ca-certificates \
+        tzdata \
         procps \
         libpam-oath \
         oathtool \
@@ -275,8 +276,8 @@ RUN sed -i 's/\\u@\\h/\\u/g' /etc/skel/.bashrc /etc/bash.bashrc \
  && ! grep -q '\\h' /etc/skel/.bashrc /etc/bash.bashrc \
  && grep -q 'PS1=.*\\u' /etc/skel/.bashrc
 
-# XFCE defaults for new homes: one top panel (show desktop, a Chromium
-# incognito launcher, window list, workspace name, tray and clock; no bottom
+# XFCE defaults for new homes: one top panel (show desktop, Chromium
+# incognito and terminal launchers, window list, workspace name, tray and clock; no bottom
 # dock, applications menu or log-out menu), a single workspace called Main,
 # the Arc-Dark theme for applications and window borders, Numix icons, and a
 # plain black desktop without a Trash icon.

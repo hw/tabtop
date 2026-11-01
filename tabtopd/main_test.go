@@ -417,3 +417,14 @@ func TestSecure(t *testing.T) {
 		}
 	}
 }
+
+func TestPageTimeZone(t *testing.T) {
+	for tz, want := range map[string]string{
+		"": "UTC", "Europe/Berlin": "Europe/Berlin", ":Asia/Singapore": "Asia/Singapore", "UTC": "UTC",
+		"Local": "UTC", "CET-1CEST": "UTC", "Nowhere/Atall": "UTC", "../../etc/passwd": "UTC",
+	} {
+		if got := pageTimeZone(tz); got != want {
+			t.Errorf("pageTimeZone(%q) = %q, want %q", tz, got, want)
+		}
+	}
+}
