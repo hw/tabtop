@@ -42,7 +42,7 @@ const (
 	downloadSWCSP = "default-src 'none'"
 )
 
-//go:embed tunnel.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js
+//go:embed tunnel.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -83,7 +83,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
 	case name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
-		name == "requests.js" || name == "preview.js" || name == "reconnect.js" || name == "download.js":
+		name == "requests.js" || name == "preview.js" || name == "reconnect.js" || name == "download.js" || name == "expiry.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "desktop.css":
 		h.Set("Content-Type", "text/css; charset=utf-8")
@@ -130,7 +130,7 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 
 // tunnelRequest is a session tunnel's first message: what it's for.
 type tunnelRequest struct {
-	Type  string   `json:"type"` // vnc, logout, tty, list, file, zip, upload, mkdir, rename, move, delete, watch or audio
+	Type  string   `json:"type"` // vnc, logout, tty, list, file, zip, upload, mkdir, rename, move, delete, watch, changes or audio
 	Path  string   `json:"path,omitempty"`
 	Name  string   `json:"name,omitempty"`  // upload, mkdir: the file's or folder's name, in the folder at Path; rename: the new name
 	Size  int64    `json:"size,omitempty"`  // upload: its size
@@ -288,6 +288,9 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	case "watch":
 		g.tunnelWatch(t, reply, fail)
+
+	case "changes":
+		g.tunnelChanges(t, req, reply, fail)
 
 	case "delete":
 		g.tunnelDelete(t, req, ip, reply, fail)

@@ -9,18 +9,22 @@
 // makeFolder), and each file and folder can be renamed, moved into another
 // folder (from its menu, or dragged onto the folder), and deleted. The
 // list sorts by any column (see sortEntries), and can be used from the
-// keyboard (see listKeys). Below, it lists the live sessions and recent
-// logins (see showSessions). If the server can't be reached, it says so
-// and tries again (see reconnect.js).
+// keyboard (see listKeys). While the page is in view, the list updates
+// itself as the folder changes (see watchChanges), keeping what's typed in
+// the filter box, ticked and focused. Opened again, the page goes back to
+// the folder it last showed, where it was scrolled to (see Places). Below,
+// it lists the live sessions and recent logins (see showSessions). If the
+// server can't be reached, it says so and tries again (see reconnect.js).
 
 import * as tunnel from "./tunnel.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askFolder, askName, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
-import { call, fileNames, makeFolder, uploadFile } from "./requests.js";
+import { call, fileNames, makeFolder, shellPath, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip } from "./download.js";
 import { preview, previewable } from "./preview.js";
 import { reconnect, reconnected } from "./reconnect.js";
+import { warnExpiry } from "./expiry.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -62,7 +66,9 @@ let shownDir = null;
 
 // show draws the folder named after the "#". It resolves to false if the
 // server couldn't be reached, having started trying again, else true.
-async function show() {
+// With refresh, it's the folder shown, listed again because it changed,
+// and the sessions below aren't.
+async function show({ refresh = false } = {}) {
     const me = ++shown;
     let dir, t;
     try {
@@ -82,9 +88,16 @@ async function show() {
                 shownDir = null;
                 page.replaceChildren(breadcrumbs(dir ?? ""), el("p", { className: "error", textContent: err.message }));
             }
-            reconnect("Can't reach the server.", show);
+            reconnect("Can't reach the server.", () => show());
             return false;
         }
+        if (restoring) {
+            // The folder last shown is gone: start at the top instead.
+            restoring = false;
+            history.replaceState(null, "", "#/");
+            return show();
+        }
+        stopChanges();
         shownDir = null;
         page.replaceChildren(el("h1", { textContent: "Downloads" }), el("p", { className: "error", textContent: err.message }),
             el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
@@ -94,17 +107,23 @@ async function show() {
     if (me !== shown) {
         return true;
     }
+    restoring = false;
+    // The same folder drawn again keeps what's typed, ticked and focused.
+    const kept = dir === shownDir ? keepState() : null;
+    const arrived = dir !== shownDir;
     shownDir = dir;
     reconnected();
     document.title = "Downloads /" + (dir ? dir + "/" : "");
 
-    const sessions = el("div", { id: "sessions" });
-    showSessions(sessions);
+    const sessions = (kept && document.getElementById("sessions")) || el("div", { id: "sessions" });
+    if (!refresh || !sessions.childElementCount) {
+        showSessions(sessions);
+    }
     // Checked entries, by name, and the bar that offers what to do with
     // them, shown while there are any.
     const entries = t.reply.entries;
     setTimeZone(t.reply.tz || undefined);
-    const selected = new Map();
+    const selected = new Map(entries.filter((e) => kept?.selected.has(e.name)).map((e) => [e.name, e]));
     const count = el("span");
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
@@ -118,7 +137,7 @@ async function show() {
     // "Select all" then picks those shown.
     let visible = entries;
     const filter = el("input", { type: "search", className: "filter", placeholder: "Filter this folder  ( / )", autocomplete: "off",
-        spellcheck: false });
+        spellcheck: false, value: entries.length ? kept?.filter ?? "" : "" });
     filter.setAttribute("aria-label", "Filter this folder");
     const matches = el("span", { className: "hint" });
     filter.addEventListener("input", () => drawRows());
@@ -260,12 +279,171 @@ async function show() {
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         sessions);
+    if (arrived) {
+        scrollTo(0, scrolls.get(dir) ?? 0);
+    }
+    if (kept?.filterFocus && filter.isConnected) {
+        filter.focus();
+        filter.setSelectionRange(...kept.filterFocus);
+    } else if (kept?.focused) {
+        [...tbody.rows].find((tr) => tr.dataset.name === kept.focused)?.querySelector(kept.focusedBox ? "td.sel input" : "td.name a")
+            ?.focus({ preventScroll: true });
+    }
     // Arriving in a folder from the keyboard, it goes on in the list.
     if (keyboardArrived) {
         keyboardArrived = false;
         tbody.querySelector("td.name a")?.focus();
     }
+    watchChanges(dir);
     return true;
+}
+
+// keepState is what the folder shown has typed in its filter box, ticked,
+// and focused, to keep when it's drawn again.
+function keepState() {
+    const active = document.activeElement;
+    const filter = page.querySelector("input.filter");
+    return {
+        filter: filter?.value ?? "",
+        filterFocus: active && active === filter ? [filter.selectionStart, filter.selectionEnd] : null,
+        selected: new Set([...page.querySelectorAll("tbody td.sel input:checked")].map((box) => box.closest("tr").dataset.name)),
+        focused: page.contains(active) ? active.closest("tbody tr")?.dataset.name : undefined,
+        focusedBox: !!active?.matches?.("td.sel input"),
+    };
+}
+
+// Live updates -----------------------------------------------------------
+
+// The changes request open for the folder shown, while the page is in
+// view: {dir, t}. Only while it's in view, so a tab left in the background
+// holds nothing open, and the session can end for being idle (see
+// session.go).
+let changes = null;
+let changesFailed = 0;  // how many in a row ended soon after they started
+
+// watchChanges keeps a changes request open for dir, which the server
+// answers each time something in it changes, and lists it again then. If
+// the request ends, as when the connection's lost or the folder's gone,
+// the folder is listed again, which says what happened, or reconnects, and
+// watches it again: soon at first, less often if it keeps ending.
+function watchChanges(dir) {
+    if (document.visibilityState !== "visible") {
+        stopChanges();
+        return;
+    }
+    if (changes?.dir === dir) {
+        return;
+    }
+    stopChanges();
+    const me = (changes = { dir, t: null });
+    (async () => {
+        const started = Date.now();
+        let t;
+        try {
+            t = await call({ type: "changes", path: dir });
+        } catch {
+            if (changes === me) {
+                changes = null;  // no updates for this folder this time
+            }
+            return;
+        }
+        me.t = t;
+        if (changes !== me) {
+            t.close();
+            return;
+        }
+        while (await t.next()) {
+            refreshSoon();
+        }
+        if (changes !== me) {
+            return;  // stopped
+        }
+        changes = null;
+        changesFailed = Date.now() - started < 10000 ? changesFailed + 1 : 0;
+        setTimeout(() => shownDir === dir && show({ refresh: true }), Math.min(500 * 2 ** changesFailed, 60000));
+    })();
+}
+
+function stopChanges() {
+    const c = changes;
+    changes = null;
+    c?.t?.close();
+}
+
+// refreshSoon lists the folder shown again, once nothing's in the way: a
+// row's menu open, or something being dragged.
+let refreshTimer = 0;
+let dragging = false;
+function refreshSoon() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+        if (dragging || document.body.classList.contains("dropping") || page.querySelector("details.menu[open]")) {
+            refreshSoon();
+        } else if (shownDir !== null) {
+            show({ refresh: true });
+        }
+    }, 300);
+}
+document.addEventListener("dragstart", () => (dragging = true));
+document.addEventListener("dragend", () => (dragging = false));
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") {
+        stopChanges();
+    } else if (shownDir !== null) {
+        show({ refresh: true });  // catches up, and watches again
+    }
+});
+
+// Places -----------------------------------------------------------------
+
+// How far down each folder shown in this visit was scrolled, to go back
+// there; and, kept for the next visit where the browser allows, the last
+// folder shown and how far down it was.
+const PLACE_KEY = "tabtop-files-place";
+const scrolls = new Map();
+
+// Set while showing the folder last shown, from the last visit.
+let restoring = false;
+
+let placeTimer = 0;
+addEventListener("scroll", () => {
+    if (shownDir === null) {
+        return;
+    }
+    scrolls.set(shownDir, scrollY);
+    clearTimeout(placeTimer);
+    placeTimer = setTimeout(savePlace, 300);
+}, { passive: true });
+
+function savePlace() {
+    if (shownDir === null) {
+        return;
+    }
+    try {
+        localStorage.setItem(PLACE_KEY, JSON.stringify({ dir: shownDir, y: Math.round(scrolls.get(shownDir) ?? 0) }));
+    } catch {
+        // Not kept, then.
+    }
+}
+
+// restorePlace goes to the folder last shown, if the page was opened
+// without one.
+function restorePlace() {
+    if (location.hash) {
+        return;
+    }
+    try {
+        const place = JSON.parse(localStorage.getItem(PLACE_KEY));
+        if (typeof place?.dir === "string" && place.dir) {
+            history.replaceState(null, "", dirHash(place.dir));
+            restoring = true;
+        }
+        if (typeof place?.dir === "string" && Number.isFinite(place.y)) {
+            scrolls.set(place.dir, place.y);
+        }
+    } catch {
+        // The top, then.
+    }
 }
 
 // breadcrumbs is the page's heading for dir: Downloads and each folder
@@ -473,10 +651,10 @@ async function moveNames(dir, names, to) {
     await show();
 }
 
-// copyPath copies the path of path, in ~/Downloads, as a shell takes it:
-// quoted if it needs to be.
+// copyPath copies the path of path, in ~/Downloads, as a shell takes it
+// (see shellPath).
 async function copyPath(path) {
-    const text = "~/Downloads/" + (/^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
+    const text = shellPath(path);
     const row = statusRow("");
     try {
         await copyText(text);
@@ -611,7 +789,7 @@ async function showSessions(box) {
 
 
 // uploadButton makes the page's upload button (see drop.js).
-const uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir, "", fileNames);
+const uploadButton = dropUploads(uploadFile, makeFolder, () => show(), currentDir, "", fileNames);
 document.addEventListener("keydown", listKeys);
 // "/" goes to the filter box, as in many sites' search, unless typing.
 document.addEventListener("keydown", (e) => {
@@ -623,5 +801,9 @@ document.addEventListener("keydown", (e) => {
         }
     }
 });
-window.addEventListener("hashchange", show);
+window.addEventListener("hashchange", () => show());
+// Saved on the way out too, as the last scroll may not have been.
+addEventListener("pagehide", savePlace);
+warnExpiry();
+restorePlace();
 show();

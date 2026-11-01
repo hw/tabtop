@@ -1,7 +1,8 @@
 // Uploading files and folders dropped on the files page, or picked with
 // its upload buttons, and deleting them, served by tabtopd. Used by
 // files.js, which supplies how to send or delete one file and make a
-// folder. How each goes shows in the transfers panel (see ui.js).
+// folder, and by the desktop and the terminal for files dropped on them.
+// How each goes shows in the transfers panel (see ui.js).
 
 import { askChoice, askYes, statusRow } from "./ui.js";
 
@@ -16,8 +17,9 @@ import { askChoice, askYes, statusRow } from "./ui.js";
 // keep both (the new ones get numbered names). A folder is made with mkdir(dir, name), which resolves to the
 // name it got, and then filled the same way. Progress shows in the
 // transfers panel, with a Cancel button for each file or folder until
-// it's done; done() is called, and awaited, once all have been tried
-// and any succeeded. While files are dragged over the page, it says where
+// it's done; done(names, dir) is called, and awaited, once all have been
+// tried and any succeeded, with the names of the files and folders saved
+// in the folder dir. While files are dragged over the page, it says where
 // they'd go, followed by note. It returns a function that makes the upload
 // buttons, which send the files or folder picked the same way.
 export function dropUploads(send, mkdir, done, here, note = "", existing = async () => new Set()) {
@@ -74,13 +76,16 @@ export function dropUploads(send, mkdir, done, here, note = "", existing = async
                 }
                 return;
             }
-            let saved = 0;
+            const saved = [];
             for (const { file, folder, row } of jobs) {
-                saved += await (file ? uploadOne(file, dir, row, send, replace.has(file.name)) : uploadFolder(folder, dir, row, send, mkdir));
+                const name = await (file ? uploadOne(file, dir, row, send, replace.has(file.name)) : uploadFolder(folder, dir, row, send, mkdir));
+                if (name) {
+                    saved.push(name);
+                }
                 row.finish();
             }
-            if (saved) {
-                await redraw(done);
+            if (saved.length) {
+                await redraw(() => done(saved, dir));
             }
         });
     };
@@ -178,12 +183,12 @@ async function askReplace(files, dir, existing) {
 }
 
 // uploadOne uploads file into dir, showing how it goes in row, and
-// returns 1 if it was saved, else 0. With replace, a file with its name
-// there is replaced.
+// returns the name it was saved as, or "" if it wasn't. With replace, a
+// file with its name there is replaced.
 async function uploadOne(file, dir, row, send, replace = false) {
     if (row.signal.aborted) {
         row.set(`${file.name}: cancelled`);
-        return 0;
+        return "";
     }
     const progress = (got) => {
         row.set(`${file.name}: ${percent(got, file.size)}`);
@@ -196,14 +201,14 @@ async function uploadOne(file, dir, row, send, replace = false) {
         if (warning) {
             row.set(`${row.text} (${warning})`, true);
         }
-        return 1;
+        return name;
     } catch (err) {
         if (row.signal.aborted) {
             row.set(`${file.name}: cancelled`);
         } else {
             row.set(`${file.name}: failed: ${err.message}`, true);
         }
-        return 0;
+        return "";
     }
 }
 
@@ -260,19 +265,20 @@ const percent = (got, size) => `${size ? Math.floor(got * 100 / size) : 100}%`;
 // uploadFolder uploads folder, a promise of one, into dir: a new folder,
 // named after it unless that's taken, and everything in it, until row's
 // Cancel button is pressed. Its progress shows in row, and files that fail
-// in rows of their own. It returns how many files were saved.
+// in rows of their own. It returns the name the new folder got, if any of
+// its files were saved, else "".
 async function uploadFolder(pending, dir, row, send, mkdir) {
     let folder;
     try {
         folder = await pending;
     } catch (err) {
         row.set(`A folder couldn't be read: ${err.message}`, true);
-        return 0;
+        return "";
     }
     const { signal } = row;
     if (signal.aborted) {
         row.set(`${folder.name}/: cancelled`);
-        return 0;
+        return "";
     }
     const total = countFiles(folder);
     let got;
@@ -280,7 +286,7 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
         got = await mkdir(dir, folder.name);
     } catch (err) {
         row.set(`${folder.name}/: failed: ${err.message}`, true);
-        return 0;
+        return "";
     }
     let tried = 0;
     let saved = 0;
@@ -334,7 +340,7 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
     const as = got === folder.name ? "" : `, as ${got}/`;
     row.set(signal.aborted ? `${folder.name}/: cancelled after ${saved} of ${total} files${as}`
         : `${folder.name}/: ${saved} of ${total} files uploaded${as}`);
-    return saved;
+    return saved ? got : "";
 }
 
 // deleteFiles asks before deleting items, [{name, dir, remove}], each a

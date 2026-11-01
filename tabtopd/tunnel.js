@@ -26,7 +26,7 @@ const DATA = 0;
 const TEXT = 1;
 const CLOSE_LOGIN = 4001;  // no such session: log in
 const CONNECT_TIMEOUT = 20000;  // ms for the WebSocket to open
-const SESSION_KEY = "tabtop_session";
+export const SESSION_KEY = "tabtop_session";  // its key in localStorage
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -318,7 +318,7 @@ export async function login(credential, url = tunnelURL()) {
         const recv = chacha20poly1305(ks.slice(32, 64), nonce(0));
         const pt = recv.decrypt(await s.next());
         const res = JSON.parse(decoder.decode(pt.slice(1)));
-        return { id: res.session, secret: res.secret, ip: res.ip, logins: res.logins || [] };
+        return { id: res.session, secret: res.secret, expires: res.expires, ip: res.ip, logins: res.logins || [] };
     } finally {
         s.ws.close();
     }
@@ -503,7 +503,8 @@ export async function request(req) {
 // ArrayBuffers. With a title, it shows the login form when there's no
 // session, and logs in again when the session is over. Its close event
 // has login if the session is over, and lost if the connection failed or
-// was lost without the server saying why, as when the network goes.
+// was lost without the server saying why, as when the network goes. Its
+// session is the one it used.
 export class TunnelSocket {
     static CONNECTING = 0;
     static OPEN = 1;
@@ -520,11 +521,12 @@ export class TunnelSocket {
     async _start(req, title) {
         for (;;) {
             try {
-                this._t = await Tunnel.open(req, title ? await session(title) : storedSession());
+                this.session = title ? await session(title) : storedSession();
+                this._t = await Tunnel.open(req, this.session);
                 break;
             } catch (e) {
                 if (e.login && title) {
-                    forgetSession();
+                    forgetSession(this.session);
                     continue;
                 }
                 this._finish(e.message, e.login, e.lost);
@@ -588,9 +590,14 @@ export function storedSession() {
     }
 }
 
-export function forgetSession() {
+// forgetSession forgets the stored session, or, given one that's over,
+// forgets it only if it's still the one stored: not a newer login, from
+// this page or another.
+export function forgetSession(over) {
     try {
-        localStorage.removeItem(SESSION_KEY);
+        if (!over || storedSession()?.id === over.id) {
+            localStorage.removeItem(SESSION_KEY);
+        }
     } catch {
         // Nothing stored.
     }
@@ -618,7 +625,15 @@ export async function session(title) {
     return pendingLogin;
 }
 
-function loginForm(title) {
+// renewSession shows the login form, with a Cancel button, to log in
+// again before the session runs out, and resolves to the new session, or
+// null if it's cancelled. The old session goes on until it's ended: what
+// it has open then reconnects with the new one.
+export function renewSession(title) {
+    return loginForm(title, true);
+}
+
+function loginForm(title, cancellable = false) {
     const box = document.createElement("div");
     Object.assign(box.style, {
         position: "fixed", inset: "0", zIndex: "1000", overflow: "auto", padding: "2rem 1rem",
@@ -655,6 +670,16 @@ function loginForm(title) {
     input.focus();
 
     return new Promise((resolve) => {
+        if (cancellable) {
+            const cancel = document.createElement("button");
+            Object.assign(cancel, { type: "button", textContent: "Cancel" });
+            cancel.style.marginLeft = ".5rem";
+            cancel.addEventListener("click", () => {
+                box.remove();
+                resolve(null);
+            });
+            p2.append(cancel);
+        }
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
             button.disabled = true;

@@ -22,7 +22,7 @@ export async function call(req) {
             if (!err.login) {
                 throw err;
             }
-            tunnel.forgetSession();
+            tunnel.forgetSession(session);
         }
     }
 }
@@ -71,6 +71,12 @@ export async function uploadFile(file, progress, dir, signal, replace = false) {
         signal.removeEventListener("abort", abort);
         t.close();
     }
+}
+
+// shellPath is the path of path, in ~/Downloads, as a shell takes it:
+// quoted if it needs to be.
+export function shellPath(path) {
+    return "~/Downloads/" + (/^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
 }
 
 // fileNames resolves to the names of the files in the folder dir (not

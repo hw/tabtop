@@ -39,6 +39,17 @@ retried: start them again. When the server ends something on purpose,
 nothing retries: a terminal whose shell exited waits for Enter, and an
 ended session asks for a login.
 
+Text copied on the desktop goes straight to your computer's clipboard, and
+text copied on your computer goes to the desktop's when you switch back to
+its tab, so **Ctrl+V** works both ways without noVNC's clipboard panel.
+Browsers only allow this over HTTPS or on `localhost`. Sending your
+clipboard to the desktop needs the browser to let the page read it: Chrome
+and Edge ask once, the first time you click on the desktop; Firefox and
+Safari would ask every time, so there, use noVNC's clipboard panel for
+that direction. Only what's copied is sent, not text that's merely
+selected. To stop it, block clipboard access for the site in the
+browser's site settings.
+
 Everything is served on one port by `tabtopd` (in `tabtopd/`):
 
 | Path | What it serves |
@@ -549,10 +560,10 @@ keystrokes, terminal sessions, files and anything it could replay.
   any feature that rewrites scripts for this site, such as Cloudflare's
   Rocket Loader.
 - **Requirements:** any current browser with JavaScript. Over plain HTTP
-  (other than to `localhost`) everything works except sound and copying
-  from the terminal to your clipboard, and large downloads are held in
-  memory before they're saved; see [Downloads](#downloads),
-  [Terminal](#terminal) and [Audio](#audio).
+  (other than to `localhost`) everything works except sound, copying from
+  the terminal to your clipboard and the desktop's clipboard sharing, and
+  large downloads are held in memory before they're saved; see
+  [Downloads](#downloads), [Terminal](#terminal) and [Audio](#audio).
 
 This protects against a proxy that **reads** traffic. A proxy that
 **changes** traffic but leaves the page's scripts alone gets one guess at the
@@ -572,12 +583,18 @@ How long a login lasts, and how to notice and end one you didn't make:
 - **Limits:** a login lasts 12 hours at most (`WEB_SESSION_MAX`), and ends
   after an hour with nothing open (`WEB_SESSION_IDLE`). Anything still open
   then closes at once. The idle limit only ends sessions nobody is using:
-  one that someone keeps a desktop or terminal open on lasts until the
-  maximum. A login can have 64 connections open at once (a desktop tab
-  uses two, a terminal or a download one); more are refused until some
-  close. At most 16 connections from one address, and 256 in all, can be
+  one that someone keeps a desktop or terminal open on, or a files page in
+  view, lasts until the maximum. A login can have 64 connections open at
+  once (a desktop tab uses three, a terminal, a files page in view or a
+  download one); more are refused until some close. At most 16 connections from one address, and 256 in all, can be
   waiting to log in or prove their session; more are refused. A
   connection whose browser stops taking data for a minute is closed.
+- **Before the end:** ten minutes before a login reaches its maximum, each
+  open page shows a banner saying when, with **Log in again**, so it
+  doesn't stop you in the middle of something. Logging in again ends the
+  old login at once: the desktop, terminal and files pages open in other
+  tabs reconnect with the new one by themselves, and the warning goes from
+  them too. **Later** puts the warning off until a minute before.
 - **After each login,** the page shows the previous login's time and IP
   address, and any failed attempts since. It stays on screen until
   dismissed when there were failed attempts or the previous login came from
@@ -627,7 +644,15 @@ downloaded at `http://<host>:6080/downloads/`:
   a size, shows it exactly. Each row's
   **⋯** menu previews, downloads, renames, moves or deletes it, or copies
   its path (as `~/Downloads/a/b.txt`, quoted if the shell needs it) to
-  paste into the terminal.
+  paste into the terminal. Opened again, the page goes back to the folder
+  it last showed, scrolled where it was, and going back to a folder seen
+  earlier in the visit scrolls to where you were in it.
+- **Up to date:** while the page is in view, the list updates itself as
+  the folder changes: a download finishing on the desktop, a file written
+  in the terminal, or a change from another tab shows within a second.
+  What's typed in the filter box, ticked and focused stays as it was. A
+  tab in the background holds nothing open and lists the folder again when
+  it's shown.
 - **The keyboard:** **↓** and **↑** move between rows (from anywhere on the
   page but a text box), **Enter** opens the one there, **Space** ticks it,
   **F2** renames it, **Delete** deletes it, and **Backspace** goes up a
@@ -686,8 +711,9 @@ downloaded at `http://<host>:6080/downloads/`:
   it, the page says which folder that is. Files pasted on the page (a
   copied screenshot, say) upload the same way; a pasted picture is named
   for when it was pasted, as `Pasted 2026-11-01 09.34.12.png`. Files and
-  folders dropped on the desktop's page are uploaded into
-  `~/Downloads` itself the same way, with a transfers panel there. If files
+  folders dropped on the desktop's page or the [terminal](#terminal) are
+  uploaded into `~/Downloads` itself the same way, with a transfers panel
+  there. If files
   have the names of files already in the folder, the page asks whether to
   replace those or keep both; keeping both, or a name taken while the
   upload goes, saves the new one as `name (1).ext`, `name (2).ext` and so
@@ -781,6 +807,11 @@ emulator compiled to WebAssembly.
   **Alt** (which apply to the next key typed, so **Ctrl** then **c** is
   Ctrl+C), the arrows, `|`, `~`, `/`, `-`, and **A−** and **A+** for the
   text size. It scrolls sideways if it doesn't fit.
+- **Dropped files:** files and folders dropped on the terminal are
+  uploaded into `~/Downloads`, as on the [files page](#downloads), and once
+  they're done, their paths (`~/Downloads/report.pdf`, quoted if the shell
+  needs it) are typed at the cursor, ready for a command such as `unzip`.
+  They're pasted as text is, so the shell doesn't run the line.
 - **Desktop programs:** `DISPLAY` points at the desktop, so a graphical
   program started from the terminal opens there.
 - **Limits:** up to 5 terminals at once per login. A paste is at most
@@ -949,10 +980,13 @@ the desktop and its sound, lists, downloads, previews, uploads and deletes
 files, uploads a folder both picked and dropped and deletes one, downloads
 zips, makes a folder, renames, moves and copies the path of a file,
 replaces one on upload, pastes one, uses the list from the keyboard,
-deletes several at once, cancels an upload, drops a file on the desktop
-and has the desktop announce one saved there, runs commands in the
-terminal (with its font size keys and touch keys), cuts the connection
-on each page to see it come back, and logs out, then checks from
+deletes several at once, cancels an upload, sees the list update itself
+and the page go back to the folder it last showed, drops a file on the
+desktop and has the desktop announce one saved there, passes text both
+ways between noVNC and the clipboard, runs commands in the terminal (with
+its font size keys and touch keys) and drops a file on it, cuts the
+connection on each page to see it come back, logs in again when warned
+the login is ending, and logs out, then checks from
 inside the container what the pages left in `~/Downloads`, and what the
 zips hold. It prints `ok` or `not ok` for each step, and the container's
 log if one fails. It needs Docker, Node, Python 3 and Chrome or Chromium

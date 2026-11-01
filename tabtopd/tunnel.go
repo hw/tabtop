@@ -17,7 +17,7 @@ package main
 //	server:  3, Yb1, Yb2, Yb3 (32 each)    one per code the browser may hold
 //	browser: tag1, tag2, tag3 (32 each)    key confirmation for each
 //	server:  3, server tag (32)            for the one that matched, then
-//	         {"ok":true,"session":id,"secret":...} encrypted with its keys
+//	         {"ok":true,"session":id,"secret":...,"expires":ms} encrypted with its keys
 //
 // The keys for candidate i are HKDF-SHA256 of its CPace ISK, info
 // "tabtop login v3 keys", 128 bytes: from the browser, from the server,
@@ -293,7 +293,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 		return
 	}
 	writeJSON(t, map[string]any{"ok": true, "session": id, "secret": base64.StdEncoding.EncodeToString(secret),
-		"ip": ip, "logins": history})
+		"ip": ip, "logins": history, "expires": g.sessionExpiry(id).UnixMilli()})
 	t.Close(websocket.StatusNormalClosure, "")
 }
 

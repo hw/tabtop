@@ -5,17 +5,23 @@
 // in this browser; on touch screens, a strip of keys phones' keyboards
 // lack (Esc, Tab, Ctrl, Alt, the arrows...) sits below the terminal. If the connection is lost, the page tries again by
 // itself (see reconnect.js), and tmux, which the server runs the shell
-// in, picks up where it was.
+// in, picks up where it was. Files and folders dropped on the page are
+// uploaded into ~/Downloads, as on the files page (see drop.js), and their
+// paths typed at the cursor.
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
-import { forgetSession, TunnelSocket } from "../tabtop/tunnel.js";
+import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
 import { nameTab, navBar } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
+import { warnExpiry } from "../tabtop/expiry.js";
+import { dropUploads } from "../tabtop/drop.js";
+import { fileNames, makeFolder, setLoginTitle, shellPath, uploadFile } from "../tabtop/requests.js";
 
 // Links to the desktop and the files page, and Log out, in a bar above
 // the terminal.
 nameTab("terminal");
 document.body.prepend(navBar("terminal"));
+warnExpiry();
 
 // The most a program may copy at once, in base64 bytes.
 const maxCopy = 1 << 20;
@@ -281,8 +287,10 @@ function connect() {
             const was = ws === s;
             ws = null;
             if (e.login) {
-                forgetSession();
-                location.reload();  // shows the login form
+                // Logged in again since, in this tab or another: the new
+                // login carries on. Otherwise, reloading shows the form.
+                forgetSession(s.session);
+                storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
             } else if (e.lost) {
                 if (was) {
                     term.write("\r\n\x1b[2m[Connection lost. Reconnecting…]\x1b[0m\r\n");
@@ -380,6 +388,21 @@ term.onResize(sendSize);
 term.onTitleChange((title) => {
     document.title = title || "Terminal";
 });
+
+// Dropped files ----------------------------------------------------------
+
+// The transfers panel and the overlay shown while files are dragged over
+// the page are styled as on the desktop.
+document.head.append(Object.assign(document.createElement("link"), { rel: "stylesheet", href: new URL("../tabtop/desktop.css", import.meta.url).href }));
+setLoginTitle("Terminal");
+// Once uploaded, their paths are pasted at the cursor, as text pasted is,
+// so a shell doesn't run the line.
+dropUploads(uploadFile, makeFolder, (names, dir) => {
+    if (ws) {
+        term.paste(names.map((n) => shellPath(dir ? `${dir}/${n}` : n)).join(" ") + " ");
+        term.focus();
+    }
+}, () => "", "(~/Downloads), then type their paths here", fileNames);
 
 if (!(await connect())) {
     reconnect("Can't reach the server.", connect);

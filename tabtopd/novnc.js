@@ -10,17 +10,22 @@
 // drop.js), showing how they go in a transfers panel styled by
 // desktop.css. While the desktop is connected, when a file is saved into
 // ~/Downloads, as when the desktop's browser finishes downloading one, a
-// notice offers to download it here (see watchDownloads).
+// notice offers to download it here (see watchDownloads), and text copied
+// on either side reaches the other's clipboard (see shareClipboard). Ten
+// minutes before the login runs out, a banner offers to log in again (see
+// expiry.js).
 
 import { TunnelSocket } from "./tunnel.js";
 import { logOut, nameTab, openPage, terminalOn } from "./nav.js";
 import { dropUploads } from "./drop.js";
 import { call, fileNames, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
 import { fetchFile, humanBytes } from "./download.js";
+import { warnExpiry } from "./expiry.js";
 
 window.tabtopChannel = () => new TunnelSocket({ type: "vnc" }, { title: "Desktop" });
 
 nameTab("desktop");
+warnExpiry();
 
 const icon = (body) => "data:image/svg+xml," + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none" ' +
@@ -74,7 +79,7 @@ function notice(name, bytes) {
             box.remove();
             fetchFile(name);
         }),
-        button("Files", "", () => openPage("files")),
+        button("Files", "", () => openPage("files", "#/")),  // where it is, not the folder last shown
         button("✕", "close", () => box.remove()));
     box.lastChild.title = box.lastChild.ariaLabel = "Dismiss";
     notices.prepend(box);
@@ -128,10 +133,90 @@ async function watchDownloads() {
     running = false;
 }
 
+// The clipboard -----------------------------------------------------------
+
+// shareClipboard links the desktop's clipboard to this computer's, which
+// browsers only allow on HTTPS or localhost. Text copied on the desktop is
+// put on this computer's clipboard as it arrives. Text copied here goes to
+// the desktop when the page is switched back to, where the browser lets
+// the page read the clipboard: Chrome and Edge ask once, the first time
+// the desktop is clicked; others, which would ask every time, are left to
+// noVNC's clipboard panel. Either way, the panel shows the desktop's.
+let shared = null;      // the RFB connection it's set up on
+let lastText = null;    // the text last passed either way, not passed back
+
+async function shareClipboard() {
+    if (!window.isSecureContext || !navigator.clipboard) {
+        return;
+    }
+    // noVNC's own module, already loaded by the page, and its connection.
+    const { default: UI } = await import("../app/ui.js");
+    const rfb = UI.rfb;
+    if (!rfb || rfb === shared) {
+        return;
+    }
+    shared = rfb;
+    rfb.addEventListener("clipboard", (e) => {
+        lastText = e.detail.text;
+        navigator.clipboard.writeText(e.detail.text).catch(() => {
+            // Not focused, or not allowed: the panel has it.
+        });
+    });
+}
+
+// readable resolves to whether the page may read the clipboard without
+// asking ("granted"), may ask ("prompt"), or neither.
+async function readable() {
+    try {
+        return (await navigator.permissions.query({ name: "clipboard-read" })).state;
+    } catch {
+        return "denied";  // a browser without the permission, as Firefox
+    }
+}
+
+// sendClipboard passes this computer's clipboard to the desktop, if it's
+// changed. With ask, it may ask for permission first.
+async function sendClipboard(ask = false) {
+    if (!wanted || !shared || !window.isSecureContext || !navigator.clipboard?.readText) {
+        return;
+    }
+    const state = await readable();
+    if (state !== "granted" && !(ask && state === "prompt")) {
+        return;
+    }
+    let text;
+    try {
+        text = await navigator.clipboard.readText();
+    } catch {
+        return;  // refused, or the page isn't focused
+    }
+    if (text && text !== lastText) {
+        lastText = text;
+        shared.clipboardPasteFrom(text);
+        const panel = document.getElementById("noVNC_clipboard_text");
+        if (panel) {
+            panel.value = text;
+        }
+    }
+}
+
+addEventListener("focus", () => sendClipboard());
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && sendClipboard());
+let asked = false;
+document.addEventListener("pointerdown", (e) => {
+    if (!asked && wanted && e.target.closest?.("#noVNC_container")) {
+        asked = true;
+        sendClipboard(true);
+    }
+}, true);
+
 new MutationObserver(() => {
     const connected = document.documentElement.classList.contains("noVNC_connected");
     if (connected !== wanted) {
         wanted = connected;
         connected ? watchDownloads() : watching?.close();
+        if (connected) {
+            shareClipboard().then(() => sendClipboard());
+        }
     }
 }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });

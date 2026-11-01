@@ -24,8 +24,9 @@ let downloadWorker = null;
 // DOWNLOAD_SW_VERSION names the worker's version in its address. A
 // browser checks an unchanged address for a newer worker only now and
 // then, so it goes up whenever download-sw.js changes in a way the page
-// relies on, as it did when zips of unknown size came in (2).
-const DOWNLOAD_SW_VERSION = 2;
+// relies on, as it did when zips of unknown size came in (2), and when it
+// started saying it's ready for a download (3).
+const DOWNLOAD_SW_VERSION = 3;
 
 function worker() {
     downloadWorker ??= (async () => {
@@ -165,7 +166,9 @@ function streamFile(t, name, size, progress, sw) {
         }
         port1.onmessage = async (e) => {
             const m = e.data;
-            if (m.started) {
+            if (m.ready) {
+                openFrame();
+            } else if (m.started) {
                 clearTimeout(idle);
                 idle = setTimeout(stalled, STREAM_IDLE);
                 progress(0);
@@ -191,9 +194,18 @@ function streamFile(t, name, size, progress, sw) {
                 }
             }
         };
+        // The frame opens once the worker says it's ready (see
+        // download-sw.js), or after a while anyway, for an older worker
+        // that doesn't say.
+        const openFrame = () => {
+            clearTimeout(fallback);
+            if (!frame.src && !done) {
+                frame.src = new URL(`./stream/${id}/${encodeURIComponent(name)}`, import.meta.url).href;
+                document.body.append(frame);
+            }
+        };
+        const fallback = setTimeout(openFrame, 2000);
         sw.postMessage({ type: "download", id, name, size, port: port2 }, [port2]);
-        frame.src = new URL(`./stream/${id}/${encodeURIComponent(name)}`, import.meta.url).href;
-        document.body.append(frame);
     });
 }
 

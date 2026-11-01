@@ -3,10 +3,13 @@ package main
 // Notices of files saved into ~/Downloads, for the desktop page: a file
 // the desktop's browser has finished downloading, or one a program has
 // written there, so it can be fetched from the page at once. Only files
-// directly in ~/Downloads count, not those in its folders.
+// directly in ~/Downloads count, not those in its folders. And notices of
+// any change in the folder the files page shows, so it can list it again.
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path"
@@ -26,6 +29,11 @@ const (
 	// How long after one notice of a file another isn't sent, and how long
 	// a name the gateway moved in itself stays quiet.
 	watchQuiet = 10 * time.Second
+	// A change in a folder the files page shows is told of once nothing
+	// more has changed for changesSettle, or changesMax after the first,
+	// so a steady stream of changes still shows.
+	changesSettle = 250 * time.Millisecond
+	changesMax    = time.Second
 )
 
 // Endings of the files browsers and others download into before renaming
@@ -74,26 +82,22 @@ func (g *server) wasPlaced(name string) bool {
 	return ok && time.Since(t) <= watchQuiet
 }
 
-// watchDownloads calls saved with the name and size of each file saved
-// into dir until stop is closed: written there and closed, or renamed
-// there from a partial download's name (or moved in from elsewhere). A
-// file renamed from another real name isn't new, and isn't told of. It
-// returns once stop is closed, or if dir can't be watched.
-func watchDownloads(dir string, stop <-chan struct{}, saved func(name string, size int64)) error {
+// watchDir calls each with every event inotify reports for dir, of
+// those in mask, from a goroutine of its own, until stop is closed, then
+// calls done. It returns at once, with an error if dir can't be watched.
+func watchDir(dir string, mask uint32, stop <-chan struct{}, each func(ev *unix.InotifyEvent, name string), done func()) error {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return err
 	}
 	f := os.NewFile(uintptr(fd), "inotify") // non-blocking, so Close ends a Read
-	defer f.Close()
-	if _, err := unix.InotifyAddWatch(fd, dir, unix.IN_CLOSE_WRITE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_ONLYDIR); err != nil {
+	if _, err := unix.InotifyAddWatch(fd, dir, mask|unix.IN_ONLYDIR); err != nil {
+		f.Close()
 		return err
 	}
-	names := make(chan string, 64)
 	go func() {
-		defer close(names)
+		defer done()
 		buf := make([]byte, 64<<10)
-		from := map[uint32]string{} // rename cookie -> the name it was renamed from
 		for {
 			n, err := f.Read(buf)
 			if err != nil {
@@ -103,27 +107,7 @@ func watchDownloads(dir string, stop <-chan struct{}, saved func(name string, si
 				ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[off]))
 				nameBytes := buf[off+unix.SizeofInotifyEvent : off+unix.SizeofInotifyEvent+int(ev.Len)]
 				off += unix.SizeofInotifyEvent + int(ev.Len)
-				name := strings.TrimRight(string(nameBytes), "\x00")
-				switch {
-				case ev.Mask&unix.IN_ISDIR != 0 || name == "" || partialName(name) && ev.Mask&unix.IN_MOVED_FROM == 0:
-					continue
-				case ev.Mask&unix.IN_MOVED_FROM != 0:
-					if len(from) > 256 {
-						clear(from) // pairs whose other half went elsewhere
-					}
-					from[ev.Cookie] = name
-					continue
-				case ev.Mask&unix.IN_MOVED_TO != 0:
-					old, paired := from[ev.Cookie]
-					delete(from, ev.Cookie)
-					if paired && (!partialName(old) || strings.HasPrefix(old, uploadTempPrefix)) {
-						continue // renamed, or an upload replacing a file
-					}
-				}
-				select {
-				case names <- name:
-				default: // the sender is behind: drop it, as noise
-				}
+				each(ev, strings.TrimRight(string(nameBytes), "\x00"))
 			}
 		}
 	}()
@@ -131,6 +115,42 @@ func watchDownloads(dir string, stop <-chan struct{}, saved func(name string, si
 		<-stop
 		f.Close()
 	}()
+	return nil
+}
+
+// watchDownloads calls saved with the name and size of each file saved
+// into dir until stop is closed: written there and closed, or renamed
+// there from a partial download's name (or moved in from elsewhere). A
+// file renamed from another real name isn't new, and isn't told of. It
+// returns once stop is closed, or if dir can't be watched.
+func watchDownloads(dir string, stop <-chan struct{}, saved func(name string, size int64)) error {
+	names := make(chan string, 64)
+	from := map[uint32]string{} // rename cookie -> the name it was renamed from
+	err := watchDir(dir, unix.IN_CLOSE_WRITE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO, stop, func(ev *unix.InotifyEvent, name string) {
+		switch {
+		case ev.Mask&unix.IN_ISDIR != 0 || name == "" || partialName(name) && ev.Mask&unix.IN_MOVED_FROM == 0:
+			return
+		case ev.Mask&unix.IN_MOVED_FROM != 0:
+			if len(from) > 256 {
+				clear(from) // pairs whose other half went elsewhere
+			}
+			from[ev.Cookie] = name
+			return
+		case ev.Mask&unix.IN_MOVED_TO != 0:
+			old, paired := from[ev.Cookie]
+			delete(from, ev.Cookie)
+			if paired && (!partialName(old) || strings.HasPrefix(old, uploadTempPrefix)) {
+				return // renamed, or an upload replacing a file
+			}
+		}
+		select {
+		case names <- name:
+		default: // the sender is behind: drop it, as noise
+		}
+	}, func() { close(names) })
+	if err != nil {
+		return err
+	}
 
 	pending := map[string]time.Time{} // name -> when it last changed
 	told := map[string]time.Time{}
@@ -203,4 +223,122 @@ func (g *server) tunnelWatch(t *tunnel, reply func(map[string]any) bool, fail fu
 		return
 	}
 	t.Close(websocket.StatusNormalClosure, "")
+}
+
+// watchChanges calls changed soon after anything in dir changes: an entry
+// made, deleted, renamed, written or touched (see changesSettle). Changes
+// to the gateway's own unfinished uploads, which aren't listed, don't
+// count. It calls started once it's watching. It returns nil once stop is
+// closed, errDirGone once dir is deleted or moved, or an error if it can't
+// be watched.
+func watchChanges(dir string, stop <-chan struct{}, started, changed func()) error {
+	events := make(chan bool, 1) // true once dir itself is gone
+	err := watchDir(dir, unix.IN_CREATE|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE|
+		unix.IN_ATTRIB|unix.IN_DELETE_SELF|unix.IN_MOVE_SELF, stop, func(ev *unix.InotifyEvent, name string) {
+		gone := ev.Mask&(unix.IN_DELETE_SELF|unix.IN_MOVE_SELF|unix.IN_IGNORED) != 0
+		if !gone && (name == "" || strings.HasPrefix(name, uploadTempPrefix)) {
+			return
+		}
+		if gone {
+			events <- true // the sender returns on it, so this can't block for long
+			return
+		}
+		select {
+		case events <- false:
+		default: // one's waiting already
+		}
+	}, func() { close(events) })
+	if err != nil {
+		return err
+	}
+	started()
+	var first time.Time // of the changes not yet told of
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
+	for {
+		select {
+		case gone, ok := <-events:
+			if !ok {
+				return nil
+			}
+			if gone {
+				changed()
+				go func() {
+					for range events { // until stop closes it
+					}
+				}()
+				return errDirGone
+			}
+			now := time.Now()
+			if first.IsZero() {
+				first = now
+			}
+			timer.Reset(min(changesSettle, first.Add(changesMax).Sub(now)))
+		case <-timer.C:
+			first = time.Time{}
+			changed()
+		}
+	}
+}
+
+var errDirGone = errors.New("the folder was deleted or moved")
+
+// tunnelChanges answers a changes request: it sends {"changed":true} soon
+// after anything in the folder at req.Path changes (see watchChanges),
+// while the page keeps the tunnel open. The page sends nothing. If the
+// folder is deleted or moved, it closes the tunnel, saying so.
+func (g *server) tunnelChanges(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
+	root, err := os.OpenRoot(g.downloadsDir)
+	if err != nil {
+		fail("The downloads folder is missing.")
+		return
+	}
+	defer root.Close()
+	name := strings.Trim(req.Path, "/")
+	if name == "" {
+		name = "."
+	}
+	f, err := root.Open(name) // confined to ~/Downloads, as for a list request
+	if err != nil {
+		fail("Not found.")
+		return
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.IsDir() {
+		fail("Not a folder.")
+		return
+	}
+	if !reply(nil) {
+		return
+	}
+	stop := make(chan struct{})
+	go func() {
+		// Reading ends when the page goes.
+		for {
+			if _, _, err := t.Read(context.Background()); err != nil {
+				close(stop)
+				return
+			}
+		}
+	}()
+	// inotify takes a path: the open folder's, through /proc, so it's the
+	// folder just opened inside ~/Downloads, even if a symlink is put in
+	// its way since. Once it's watched, it's closed: the watch keeps hold
+	// of the folder itself, and the folder open here would put off the
+	// notice that it's deleted until it was closed.
+	err = watchChanges(fmt.Sprintf("/proc/self/fd/%d", f.Fd()), stop, func() { f.Close() }, func() {
+		if writeJSON(t, map[string]any{"changed": true}) != nil {
+			t.Close(websocket.StatusNormalClosure, "")
+		}
+	})
+	switch {
+	case errors.Is(err, errDirGone):
+		t.Close(websocket.StatusNormalClosure, "The folder was deleted or moved.")
+	case err != nil:
+		log.Printf("watching %s: %v", name, err)
+		t.Close(websocket.StatusInternalError, "This folder can't be watched for changes.")
+	default:
+		t.Close(websocket.StatusNormalClosure, "")
+	}
 }

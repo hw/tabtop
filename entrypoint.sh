@@ -263,7 +263,9 @@ as_user() {
 # none, and it listens only on a socket in the user's runtime directory that
 # nobody else can open (Xvnc's default mode is 0600), not on TCP. Its
 # blacklist is off: every connection arrives from the gateway, which limits
-# failed logins per client IP instead.
+# failed logins per client IP instead. Only what's copied (CLIPBOARD) goes
+# to the browser, not text that's merely selected (PRIMARY), since the
+# desktop page puts it on the computer's own clipboard.
 VNC_SOCKET="$RUNTIME_DIR/vnc.sock"
 VNC_ADDR="unix:$VNC_SOCKET"
 as_user Xvnc ":${DISPLAY_NUM}" \
@@ -273,6 +275,7 @@ as_user Xvnc ":${DISPLAY_NUM}" \
     -AlwaysShared \
     -AcceptSetDesktopSize \
     -UseBlacklist=0 \
+    -SendPrimary=0 \
     &
 XVNC_PID=$!
 

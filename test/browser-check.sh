@@ -56,6 +56,7 @@ head -c 300000 /dev/urandom >"$work/up.bin"
 truncate -s 1G "$work/big.bin"
 mkdir -p "$work/up-folder/sub/deeper" "$work/up-folder/empty" "$work/downloads" "$work/chrome"
 for f in a.txt sub/b.txt sub/deeper/c.txt; do echo "$f" >"$work/up-folder/$f"; done
+echo dropped >"$work/drop me.txt"
 
 # --no-sandbox: CI runners don't allow Chrome's sandbox, and the browser
 # only visits this container.
@@ -70,7 +71,7 @@ for ((i = 0; ; i++)); do
 done
 port=$(head -n 1 "$work/chrome/DevToolsActivePort")
 
-timeout 300 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$work"
+timeout 420 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$work"
 
 # What the pages did, as the container sees it.
 holds() {
@@ -82,6 +83,8 @@ holds tty-check.txt tty-42
 holds b.txt sub/b.txt
 holds keys.txt keys-ok
 holds notice.txt saved
+holds dropped-copy.txt dropped
+holds renewed.txt renewed
 for d in up-folder "up-folder (2)"; do
     for f in a.txt sub/b.txt sub/deeper/c.txt; do holds "$d/$f" "$f"; done
 done

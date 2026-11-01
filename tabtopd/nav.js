@@ -25,10 +25,10 @@ export function nameTab(id) {
     window.name = tabName(id);
 }
 
-// openPage opens the page id in its tab.
-export function openPage(id) {
+// openPage opens the page id in its tab, at hash if given.
+export function openPage(id, hash = "") {
     const page = pages.find((p) => p.id === id);
-    window.open(page.href, tabName(id))?.focus();
+    window.open(page.href + hash, tabName(id))?.focus();
 }
 
 // terminalOn resolves to whether the site serves a terminal: it can be

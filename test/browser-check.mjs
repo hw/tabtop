@@ -53,7 +53,14 @@ ws.onmessage = (e) => {
         pending.delete(m.id);
     } else if (m.method === "Page.javascriptDialogOpening") {
         // Leaving the desktop asks first.
-        cdp("Page.handleJavaScriptDialog", { accept: true });
+        cdp("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});  // gone already
+    } else if (m.method === "Log.entryAdded" || m.method === "Runtime.consoleAPICalled") {
+        // With CHECK_LOG set, the pages' console and Chrome's own messages
+        // (as why it refused a download) go to stderr.
+        const e = m.params.entry ?? { level: m.params.type, text: m.params.args.map((a) => a.value ?? a.description).join(" ") };
+        if (process.env.CHECK_LOG) {
+            console.error(`[${e.level}] ${e.text}`);
+        }
     } else if (m.method === "Runtime.exceptionThrown") {
         const d = m.params.exceptionDetails;
         exceptions.push(`${d.exception?.description ?? d.text} (${d.url ?? "?"}:${d.lineNumber})`);
@@ -81,7 +88,9 @@ async function waitFor(expr, what, ms = 30000) {
             return;
         }
     }
-    throw new Error(`timed out waiting for ${what}`);
+    // What the transfers panel says, if there's one, often says why.
+    const panel = await ev(`document.getElementById("uploads")?.innerText.replaceAll("\\n", " | ") ?? ""`).catch(() => "");
+    throw new Error(`timed out waiting for ${what}${panel ? ` (transfers: ${panel})` : ""}`);
 }
 async function click(expr) {
     const r = await ev(`(() => { const b = (${expr}).getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2}; })()`);
@@ -108,6 +117,55 @@ async function type(text) {
 async function open(path, ready, what) {
     await cdp("Page.navigate", { url: base + path });
     await waitFor(ready, what);
+}
+// newTab opens url in another tab, with what a step needs to use it: its
+// own ev, waitFor, click and type, and close.
+async function newTab(url) {
+    const { targetId } = await cdp("Target.createTarget", { url });
+    const t = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((x) => x.id === targetId);
+    const tws = new WebSocket(t.webSocketDebuggerUrl);
+    await new Promise((resolve) => (tws.onopen = resolve));
+    let n = 0;
+    const waiting = new Map();
+    tws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        waiting.get(m.id)?.(m);
+        waiting.delete(m.id);
+    };
+    const send = (method, params = {}) => new Promise((resolve, reject) => {
+        const i = ++n;
+        waiting.set(i, (m) => (m.error ? reject(new Error(`${method}: ${m.error.message}`)) : resolve(m.result)));
+        tws.send(JSON.stringify({ id: i, method, params }));
+    });
+    const tev = async (expr) => (await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true })).result.value;
+    return {
+        ev: tev,
+        async waitFor(expr, what, ms = 30000) {
+            for (const end = Date.now() + ms; Date.now() < end; await sleep(200)) {
+                if (await tev(expr).catch(() => false)) {
+                    return;
+                }
+            }
+            throw new Error(`timed out waiting for ${what}`);
+        },
+        async click(expr) {
+            const r = await tev(`(() => { const b = (${expr}).getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2}; })()`);
+            for (const type of ["mousePressed", "mouseReleased"]) {
+                await send("Input.dispatchMouseEvent", { type, x: r.x, y: r.y, button: "left", clickCount: 1 });
+            }
+        },
+        async type(text) {
+            for (const ch of text) {
+                const enter = ch === "\r" ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 } : { key: ch };
+                await send("Input.dispatchKeyEvent", { type: "keyDown", ...enter, text: ch, unmodifiedText: ch });
+                await send("Input.dispatchKeyEvent", { type: "keyUp", ...enter });
+            }
+        },
+        async close() {
+            tws.close();
+            await cdp("Target.closeTarget", { targetId }).catch(() => {});
+        },
+    };
 }
 const listed = `[...document.querySelectorAll("td.name a")].map((a) => a.textContent)`;
 const row = (name) => `[...document.querySelectorAll("tr")].find((tr) => tr.querySelector("td.name a")?.textContent === ${JSON.stringify(name)})`;
@@ -167,6 +225,7 @@ async function step(name, fn) {
 
 try {
     await cdp("Runtime.enable");
+    await cdp("Log.enable");
     await cdp("Page.enable");
     await cdp("DOM.enable");
     await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
@@ -263,7 +322,7 @@ try {
             document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true })); })()`);
         await waitFor(`/Pasted [-\\d]+ [.\\d]+\\.png: uploaded/.test(${status})`, "the pasted picture");
         await waitFor(`${listed}.some((n) => n.startsWith("Pasted "))`, "it to be listed");
-        await open("downloads/", `!!document.querySelector("table")`, "the listing");
+        await open("downloads/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
     });
 
     await step("files: upload", async () => {
@@ -354,8 +413,37 @@ try {
         await waitFor(`${listed}.includes("b.txt") && !document.getElementById("tabtop_reconnect")`, "up-folder/sub/, once reconnected");
     });
 
+    await step("files: back where it was", async () => {
+        // Opened again without a folder, it shows the one last shown.
+        await open("downloads/", `location.hash === "#/up-folder/sub/" && ${listed}.includes("b.txt")`, "up-folder/sub/, as last shown");
+    });
+
+    await step("files: updates itself", async () => {
+        await open("downloads/#/", `${listed}.includes("hello.txt")`, "the listing");
+        await ev(`window.notReloaded = true`);
+        // What's typed in the filter box and ticked stays.
+        await ev(`(() => { const f = document.querySelector("input.filter"); f.value = "hel"; f.dispatchEvent(new Event("input")); })()`);
+        await ev(`${row("hello.txt")}.querySelector("td.sel input").click()`);
+        await ev(`import("/tabtop/tunnel.js").then((m) => new Promise((resolve) => {
+            const s = new m.TunnelSocket({ type: "tty" });
+            s.onopen = () => setTimeout(() => { s.send(new TextEncoder().encode("echo new > ~/Downloads/hello-live.txt\\r")); setTimeout(() => { s.close(); resolve(); }, 500); }, 1500);
+        }))`);
+        await waitFor(`${listed}.includes("hello-live.txt")`, "hello-live.txt to appear by itself", 10000);
+        const kept = await ev(`[window.notReloaded, document.querySelector("input.filter").value, ${row("hello.txt")}.querySelector("td.sel input").checked].join()`);
+        if (kept !== "true,hel,true") {
+            throw new Error(`after the update, reloaded, filter and tick are ${kept}`);
+        }
+        await ev(`${row("hello.txt")}.querySelector("td.sel input").click(); (() => { const f = document.querySelector("input.filter"); f.value = ""; f.dispatchEvent(new Event("input")); })()`);
+        // And deleted, it goes.
+        await ev(`import("/tabtop/tunnel.js").then((m) => new Promise((resolve) => {
+            const s = new m.TunnelSocket({ type: "tty" });
+            s.onopen = () => setTimeout(() => { s.send(new TextEncoder().encode("rm ~/Downloads/hello-live.txt\\r")); setTimeout(() => { s.close(); resolve(); }, 500); }, 1500);
+        }))`);
+        await waitFor(`!${listed}.includes("hello-live.txt")`, "hello-live.txt to go by itself", 10000);
+    });
+
     await step("files: folder dropped", async () => {
-        await open("downloads/", `!!document.querySelector("table")`, "the listing");
+        await open("downloads/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
         const data = { items: [], files: [`${work}/up-folder`], dragOperationsMask: 1 };
         for (const type of ["dragEnter", "dragOver"]) {
             await cdp("Input.dispatchDragEvent", { type, x: 300, y: 300, data });
@@ -415,7 +503,7 @@ try {
             fire(up, "dragover");
             fire(up, "drop"); })()`);
         await waitFor(`/renamed.txt: moved to Downloads$/.test(${status}) && !${listed}.includes("renamed.txt")`, "the move back");
-        await open("downloads/", `${listed}.includes("renamed.txt")`, "renamed.txt, back");
+        await open("downloads/#/", `${listed}.includes("renamed.txt")`, "renamed.txt, back");
     });
 
     await step("files: delete several", async () => {
@@ -434,7 +522,7 @@ try {
         await waitFor(`/^⇅ \\d+% · /.test(document.title)`, "its progress in the title");
         await ev(`[...document.querySelectorAll("#uploads p")].find((p) => p.textContent.startsWith("big.bin")).querySelector("button.cancel").click()`);
         await waitFor(`/big.bin: cancelled/.test(${status})`, "the cancel");
-        await open("downloads/", `!!document.querySelector("table")`, "the listing");
+        await open("downloads/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
         if ((await ev(listed)).includes("big.bin")) {
             throw new Error("big.bin was saved");
         }
@@ -468,6 +556,29 @@ try {
         await waitForFile(`${downloads}/notice.txt`, "notice.txt, downloaded from the notice");
     });
 
+    await step("desktop: clipboard", async () => {
+        const origin = new URL(base).origin;
+        await cdp("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+        await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+        // From the desktop: as noVNC passes on what Xvnc sends.
+        await ev(`import("/app/ui.js").then(({ default: UI }) => UI.rfb.dispatchEvent(new CustomEvent("clipboard", { detail: { text: "from the desktop" } })))`);
+        await waitFor(`navigator.clipboard.readText().then((t) => t === "from the desktop")`, "the desktop's text on this clipboard", 5000);
+        // To the desktop, on coming back to the tab.
+        await ev(`import("/app/ui.js").then(({ default: UI }) => {
+            window.pasted = [];
+            const real = UI.rfb.clipboardPasteFrom.bind(UI.rfb);
+            UI.rfb.clipboardPasteFrom = (t) => { window.pasted.push(t); real(t); };
+        })`);
+        await ev(`navigator.clipboard.writeText("from this computer").then(() => dispatchEvent(new Event("focus")))`);
+        await waitFor(`window.pasted.join() === "from this computer"`, "this computer's text sent to the desktop", 5000);
+        // Not sent again, nor back.
+        await ev(`dispatchEvent(new Event("focus"))`);
+        await sleep(500);
+        if (await ev(`window.pasted.length`) !== 1) {
+            throw new Error(`sent ${await ev(`JSON.stringify(window.pasted)`)}`);
+        }
+    });
+
     await step("terminal", async () => {
         await open("tty/", `!!document.querySelector("canvas")`, "the terminal");
         if (await ev(`!!document.querySelector("#tabtop_login")`)) {
@@ -497,7 +608,30 @@ try {
         await waitFor(`localStorage.getItem("tabtop-tty-font-size") === "15"`, "a bigger font");
         await press("0", 2);
         await waitFor(`localStorage.getItem("tabtop-tty-font-size") === null`, "the font back as it was");
-        await open("downloads/", `${listed}.includes("tty-check.txt")`, "tty-check.txt, written in the terminal");
+        await open("downloads/#/", `${listed}.includes("tty-check.txt")`, "tty-check.txt, written in the terminal");
+    });
+
+    await step("terminal: a file dropped", async () => {
+        await open("tty/", `!!document.querySelector("canvas")`, "the terminal");
+        await sleep(2000);
+        await click(`document.querySelector("canvas")`);
+        await type("cp ");
+        const data = { items: [], files: [`${work}/drop me.txt`], dragOperationsMask: 1 };
+        for (const type of ["dragEnter", "dragOver"]) {
+            await cdp("Input.dispatchDragEvent", { type, x: 600, y: 400, data });
+        }
+        const overlay = await ev(`getComputedStyle(document.getElementById("drop_overlay")).display + " " + document.getElementById("drop_overlay").textContent`);
+        if (!overlay.startsWith("flex Drop to upload into Downloads")) {
+            throw new Error(`while dragging, the overlay is ${JSON.stringify(overlay)}`);
+        }
+        await cdp("Input.dispatchDragEvent", { type: "drop", x: 600, y: 400, data });
+        await waitFor(`/drop me.txt: uploaded/.test(${status})`, "the upload");
+        await sleep(500);
+        // Its path, typed at the cursor: copied with it.
+        await type("~/Downloads/dropped-copy.txt");
+        await press("Enter");
+        await sleep(1000);
+        await open("downloads/#/", `${listed}.includes("dropped-copy.txt")`, "dropped-copy.txt, copied from the path typed");
     });
 
     await step("terminal: touch keys", async () => {
@@ -521,7 +655,53 @@ try {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
             await cdp("Emulation.setEmulatedMedia", { features: [] });
         }
-        await open("downloads/", `${listed}.includes("keys.txt")`, "keys.txt, written with Ctrl U from the touch keys");
+        await open("downloads/#/", `${listed}.includes("keys.txt")`, "keys.txt, written with Ctrl U from the touch keys");
+    });
+
+    await step("a warning before the login ends", async () => {
+        // A terminal open in another tab, to go on with the new login too.
+        const tty = await newTab(base + "tty/");
+        try {
+            await tty.waitFor(`!!document.querySelector("canvas")`, "the terminal in another tab");
+            await open("vnc.html?autoconnect=1", `document.documentElement.classList.contains("noVNC_connected")`, "the desktop");
+            const old = await ev(`localStorage.getItem("tabtop_session")`);
+            // As if it ends in 5 minutes.
+            await ev(`(() => { const s = JSON.parse(localStorage.getItem("tabtop_session")); s.expires = Date.now() + 5 * 60000 - 1000;
+                localStorage.setItem("tabtop_session", JSON.stringify(s)); document.dispatchEvent(new Event("visibilitychange")); })()`);
+            await waitFor(`/ends in 5 minutes/.test(document.getElementById("tabtop_expiry")?.textContent)`, "the warning on the desktop");
+            // The other tab warns too, in its bar.
+            await tty.waitFor(`/ends in 5 min/.test(document.querySelector(".tabtop-nav #tabtop_expiry")?.textContent)`, "the warning in the terminal");
+            await ev(`[...document.querySelectorAll("#tabtop_expiry button")].find((b) => b.textContent === "Log in again").click()`);
+            await waitFor(`!!document.querySelector("#tabtop_login input")`, "the login form");
+            const code = await totp();
+            await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
+            await waitFor(`!document.querySelector("#tabtop_login") && !document.getElementById("tabtop_expiry")`, "the warning to go");
+            await tty.waitFor(`!document.getElementById("tabtop_expiry")`, "the warning to go from the terminal");
+            const expires = await ev(`JSON.parse(localStorage.getItem("tabtop_session")).expires - Date.now()`);
+            if (expires < 11 * 3600000) {
+                throw new Error(`the new login ends in ${expires} ms`);
+            }
+            // The old login is over: the desktop and the terminal go on
+            // with the new one, without asking.
+            if (await ev(`import("/tabtop/tunnel.js").then((m) => m.Tunnel.open({ type: "sessions" }, ${old})).then(() => "still works", (e) => e.login ? "" : e.message)`)) {
+                throw new Error("the old login still works");
+            }
+            await sleep(3000);
+            await waitFor(`document.documentElement.classList.contains("noVNC_connected") && !document.querySelector("#tabtop_login")`, "the desktop, reconnected");
+            if (await tty.ev(`!!document.querySelector("#tabtop_login")`)) {
+                throw new Error("the terminal asked for a login when the old one ended");
+            }
+            const live = await ev(`import("/tabtop/tunnel.js").then((m) => m.request({ type: "sessions" })).then((r) => r.sessions.length)`);
+            if (live !== 1) {
+                throw new Error(`${live} sessions are live, not just the new one`);
+            }
+            await tty.click(`document.querySelector("canvas")`);
+            await tty.type("echo renewed > ~/Downloads/renewed.txt\r");
+            await sleep(1000);
+        } finally {
+            await tty.close();
+        }
+        await open("downloads/#/", `${listed}.includes("renewed.txt")`, "renewed.txt, written after the old login ended");
     });
 
     await step("logout", async () => {

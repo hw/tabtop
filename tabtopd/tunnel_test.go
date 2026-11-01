@@ -124,9 +124,10 @@ func dialWS(t *testing.T, ctx context.Context, url string) *websocket.Conn {
 }
 
 type testSession struct {
-	id     string
-	secret []byte
-	logins []loginEvent // the logins before this one, from the login's reply
+	id      string
+	secret  []byte
+	logins  []loginEvent // the logins before this one, from the login's reply
+	expires int64        // when it ends, in Unix ms, from the login's reply
 }
 
 func loginHello(sid, ya []byte) []byte {
@@ -179,10 +180,11 @@ func loginAt(t *testing.T, ctx context.Context, url, credential string) (testSes
 		var res struct {
 			Session, Secret string
 			Logins          []loginEvent
+			Expires         int64
 		}
 		json.Unmarshal(pt[1:], &res)
 		secret, _ := base64.StdEncoding.DecodeString(res.Secret)
-		return testSession{res.Session, secret, res.Logins}, 0
+		return testSession{res.Session, secret, res.Logins, res.Expires}, 0
 	}
 	t.Fatal("no candidate matches the server's confirmation")
 	return testSession{}, 0
@@ -503,6 +505,7 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/requests.js", http.StatusOK},
 		{"GET", "/tabtop/preview.js", http.StatusOK},
 		{"GET", "/tabtop/reconnect.js", http.StatusOK},
+		{"GET", "/tabtop/expiry.js", http.StatusOK},
 		{"GET", "/tabtop/download.js", http.StatusOK},
 		{"GET", "/tabtop/desktop.css", http.StatusOK},
 		{"GET", "/tabtop/novnc.js", http.StatusOK},

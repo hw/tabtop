@@ -3,8 +3,10 @@
 // ordinary browser download, written to disk as it arrives instead of being
 // held in memory first.
 //
-// The page sends { id, name, size, port } for each file, then opens
-// stream/<id>/<name> (in this worker's scope) in a hidden frame. The
+// The page sends { id, name, size, port } for each file, and once this
+// says { ready } on the port, opens stream/<id>/<name> (in this worker's
+// scope) in a hidden frame: not before, since a worker that's stopped
+// may get the frame's request first as it starts again. The
 // worker answers that request with a stream that asks the page for each
 // decrypted chunk in turn over the port, so a slow disk slows the page,
 // and through it the server, rather than piling chunks up here or there.
@@ -25,6 +27,7 @@ self.addEventListener("message", (e) => {
     const d = e.data;
     if (d?.type === "download" && d.port) {
         pending.set(d.id, { name: d.name, size: d.size, port: d.port });
+        d.port.postMessage({ ready: true });
         // Forget it if the page never opens it.
         setTimeout(() => pending.delete(d.id), STALL);
     }

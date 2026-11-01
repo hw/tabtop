@@ -90,6 +90,17 @@ func (g *server) newSession(ip string) (string, []byte, []loginEvent) {
 	return id, secret, history
 }
 
+// sessionExpiry returns when the session id ends at the latest, for the
+// pages to warn of it, or the zero time if there's no such session.
+func (g *server) sessionExpiry(id string) time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if s, ok := g.sessions[id]; ok {
+		return s.expiry
+	}
+	return time.Time{}
+}
+
 // armIdleLocked starts s's idle timer, if there's an idle limit. g.mu must
 // be held.
 func (g *server) armIdleLocked(id string, s *session) {

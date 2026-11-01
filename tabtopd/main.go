@@ -805,10 +805,10 @@ body.dropping #drop_overlay { display: flex; }
 `
 
 // desktopCSS is /tabtop/desktop.css, which novnc.js adds to noVNC's page
-// for files dropped on the desktop: the files page's colours, dark as
-// noVNC is, the transfers panel on the right, clear of noVNC's control
-// bar, and over its screen, and the browser's own buttons in it rather
-// than noVNC's.
+// for files dropped on the desktop, and tty.js to the terminal's: the
+// files page's colours, dark as noVNC is, the transfers panel on the
+// right, clear of noVNC's control bar, and over its screen, and the
+// browser's own buttons in it rather than noVNC's.
 const desktopCSS = `#drop_overlay, #transfers { --fg: #e8e8ea; --bg: #1c1c1e; --line: #3a3a3c; --raised: #2c2c2e; --accent: #8ab4f8;
        font: 14px/1.5 system-ui, sans-serif; color: var(--fg); text-align: left; }
 ` + transfersCSS + `#drop_overlay { z-index: 300; }
