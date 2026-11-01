@@ -178,7 +178,7 @@ RUN apt-get update \
         gzip \
         zip \
         unzip \
-        7zip \
+        unrar-free \
         vim-tiny \
         && update-alternatives --install /usr/bin/vi vi /usr/bin/vim.tiny 60 \
         && update-alternatives --set vi /usr/bin/vim.tiny \
