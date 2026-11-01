@@ -1,25 +1,24 @@
 // The files page, served by tabtopd (see tunnel.go). It lists ~/Downloads
 // and fetches files through the encrypted tunnel; the folder shown is the
-// path after "#". Where the browser allows service
-// workers (HTTPS or localhost), a fetched file streams into an ordinary
-// download through download-sw.js, so it goes to disk as it arrives;
-// elsewhere it's collected first and then saved (see saveFile). Either way
-// it's never shown as a page on this site. Pictures, video, sound and text
-// open in a preview instead, where they're small enough (see preview.js).
-// A folder, or several files and
-// folders picked with their checkboxes, download as one zip (see fetchZip).
-// Files and folders dropped on the page are uploaded into the folder shown,
+// path after "#". Files download (see download.js), never shown as a page
+// on this site; pictures, video, sound and text open in a preview instead,
+// where they're small enough (see preview.js). A folder, or several files
+// and folders picked with their checkboxes, download as one zip. Files and
+// folders dropped or pasted on the page are uploaded into the folder shown,
 // as are those picked with its buttons (see drop.js, uploadFile and
-// makeFolder), and each file and folder can be renamed and deleted from
-// its menu. The list sorts by any column (see sortEntries). Below, it
-// lists the live sessions and recent logins (see showSessions). If the
-// server can't be reached, it says so and tries again (see reconnect.js).
+// makeFolder), and each file and folder can be renamed, moved into another
+// folder (from its menu, or dragged onto the folder), and deleted. The
+// list sorts by any column (see sortEntries), and can be used from the
+// keyboard (see listKeys). Below, it lists the live sessions and recent
+// logins (see showSessions). If the server can't be reached, it says so
+// and tries again (see reconnect.js).
 
 import * as tunnel from "./tunnel.js";
 import { deleteFiles, dropUploads } from "./drop.js";
-import { askName, rowMenu, statusRow } from "./ui.js";
+import { askFolder, askName, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
-import { call, collect, complete, makeFolder, saveBlob, uploadFile } from "./requests.js";
+import { call, fileNames, makeFolder, uploadFile } from "./requests.js";
+import { fetchFile, fetchZip } from "./download.js";
 import { preview, previewable } from "./preview.js";
 import { reconnect, reconnected } from "./reconnect.js";
 
@@ -109,6 +108,7 @@ async function show() {
     const count = el("span");
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
+        button("move", "Move to…", () => askMove(dir, [...selected.keys()])),
         button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show)),
         button("", "Clear selection", () => {
             selected.clear();
@@ -160,11 +160,16 @@ async function show() {
             th.setAttribute("aria-sort", on ? (sort.desc ? "descending" : "ascending") : "none");
             th.querySelector("button").dataset.arrow = on ? (sort.desc ? "▼" : "▲") : "";
         }
+        // Focus in the list stays on the same row as it's redrawn.
+        const focused = document.activeElement?.closest?.("tbody tr")?.dataset.name;
         const rows = [];
         if (dir) {
             const up = dir.split("/").slice(0, -1).join("/");
-            rows.push(el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
-                el("td"), el("td", { className: "mod" }), el("td")));
+            const tr = el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
+                el("td"), el("td", { className: "mod" }), el("td"));
+            tr.dataset.name = "..";
+            moveTarget(tr, dir, up);
+            rows.push(tr);
         }
         const q = filter.value.trim().toLocaleLowerCase();
         visible = q ? entries.filter((e) => e.name.toLocaleLowerCase().includes(q)) : entries;
@@ -192,13 +197,27 @@ async function show() {
                 ...(canPreview ? [["preview", "Preview", () => open(e)]] : []),
                 ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
                 ["rename", "Rename…", () => rename(dir, e)],
+                ["move", "Move to…", () => askMove(dir, [e.name])],
+                ["copy", "Copy path", () => copyPath(path)],
                 ["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)],
             ]);
-            rows.push(el("tr", {}, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
+            const tr = el("tr", { draggable: true }, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
                 el("td", { className: "num", textContent: e.size ?? "", title: e.dir ? "" : `${(e.bytes ?? 0).toLocaleString()} bytes` }),
                 el("td", { className: "num mod", textContent: e.time ? friendlyTime(e.time) : e.modified,
                     title: e.time ? exactTime(e.time) : "" }),
-                el("td", { className: "act" }, menu)));
+                el("td", { className: "act" }, menu));
+            tr.dataset.name = e.name;
+            // Dragged onto a folder, a row moves there, with the rest
+            // ticked if it's one of them.
+            tr.addEventListener("dragstart", (ev) => {
+                const names = selected.has(e.name) ? [...selected.keys()] : [e.name];
+                ev.dataTransfer.setData(MOVE_TYPE, JSON.stringify({ dir, names }));
+                ev.dataTransfer.effectAllowed = "move";
+            });
+            if (e.dir) {
+                moveTarget(tr, dir, path);
+            }
+            rows.push(tr);
         }
         if (!entries.length) {
             rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: "No files yet." })));
@@ -207,6 +226,8 @@ async function show() {
         }
         tbody.replaceChildren(...rows);
         updateSelection();
+        const again = focused && [...tbody.rows].find((tr) => tr.dataset.name === focused);
+        again?.querySelector("td.name a")?.focus();
     };
     drawRows();
 
@@ -225,8 +246,12 @@ async function show() {
         row.finish();
         await show();
     });
+    const crumbs = breadcrumbs(dir);
+    for (const a of crumbs.querySelectorAll("a")) {
+        moveTarget(a, dir, a.dataset.dir);
+    }
     page.replaceChildren(
-        breadcrumbs(dir),
+        crumbs,
         ...(entries.length ? [el("div", { className: "find" }, filter, matches)] : []),
         selection,
         el("table", {}, el("thead", {}, head), tbody),
@@ -235,6 +260,11 @@ async function show() {
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         sessions);
+    // Arriving in a folder from the keyboard, it goes on in the list.
+    if (keyboardArrived) {
+        keyboardArrived = false;
+        tbody.querySelector("td.name a")?.focus();
+    }
     return true;
 }
 
@@ -253,6 +283,7 @@ function breadcrumbs(dir) {
             h1.lastChild.setAttribute("aria-current", "page");
         } else {
             h1.append(el("a", { href: dirHash(parts.slice(0, i).join("/")), textContent: name }));
+            h1.lastChild.dataset.dir = parts.slice(0, i).join("/");
         }
     });
     return h1;
@@ -381,6 +412,159 @@ async function rename(dir, e) {
     await show();
 }
 
+// Moving ---------------------------------------------------------------
+
+// What's dragged when a row is: {dir, names}, in this type, so dropping it
+// isn't taken for files dropped to upload.
+const MOVE_TYPE = "application/x-tabtop-move";
+
+// moveTarget makes target, a row or link for the folder to, take rows
+// dragged onto it from the folder dir, and move them there.
+function moveTarget(target, dir, to) {
+    const ours = (ev) => ev.dataTransfer?.types.includes(MOVE_TYPE);
+    target.addEventListener("dragover", (ev) => {
+        if (ours(ev)) {
+            ev.preventDefault();
+            ev.dataTransfer.dropEffect = "move";
+            target.classList.add("drop-target");
+        }
+    });
+    target.addEventListener("dragleave", () => target.classList.remove("drop-target"));
+    target.addEventListener("drop", (ev) => {
+        target.classList.remove("drop-target");
+        if (!ours(ev)) {
+            return;
+        }
+        ev.preventDefault();
+        const { names } = JSON.parse(ev.dataTransfer.getData(MOVE_TYPE));
+        // A folder dragged onto itself stays.
+        moveNames(dir, names.filter((n) => join(dir, n) !== to), to);
+    });
+}
+
+// askMove asks which folder to move names, in the folder dir, into, and
+// moves them there.
+async function askMove(dir, names) {
+    const what = names.length === 1 ? names[0] : `these ${names.length} items`;
+    const to = await askFolder(`Move ${what} into which folder? Give its path in Downloads, as photos/2026.`, "Move", dir);
+    if (to !== null && to !== dir) {
+        await moveNames(dir, names, to);
+    }
+}
+
+// moveNames moves names, in the folder dir, into the folder to, showing
+// how each goes in the transfers panel, then redraws the page.
+async function moveNames(dir, names, to) {
+    if (!names.length) {
+        return;
+    }
+    const where = ["Downloads", ...to.split("/").filter(Boolean)].join(" / ");
+    for (const name of names) {
+        const row = statusRow(`${name}: moving to ${where}`);
+        try {
+            const t = await call({ type: "move", path: join(dir, name), to });
+            t.close();
+            row.set(`${name}: moved to ${where}`);
+        } catch (err) {
+            row.set(`${name}: not moved: ${err.message}`, true);
+        }
+        row.finish();
+    }
+    await show();
+}
+
+// copyPath copies the path of path, in ~/Downloads, as a shell takes it:
+// quoted if it needs to be.
+async function copyPath(path) {
+    const text = "~/Downloads/" + (/^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
+    const row = statusRow("");
+    try {
+        await copyText(text);
+        row.set(`Copied ${text}`);
+    } catch {
+        row.set(`Couldn't copy ${text}`, true);
+    }
+    row.finish();
+}
+
+// copyText puts text on the clipboard: with the clipboard API where the
+// browser has it (over HTTPS or on localhost) and allows it, else the old
+// way.
+async function copyText(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return;
+    } catch {
+        // No clipboard API here, or not allowed.
+    }
+    const area = el("textarea", { value: text, readOnly: true });
+    Object.assign(area.style, { position: "fixed", opacity: "0" });
+    (document.querySelector("dialog[open]") ?? document.body).append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    if (!ok) {
+        throw new Error("not copied");
+    }
+}
+
+// The keyboard -----------------------------------------------------------
+
+// Set when a folder was opened from the keyboard, so the next one drawn
+// puts the focus in its list.
+let keyboardArrived = false;
+
+// listKeys lets the list be used from the keyboard, where the focus isn't
+// in a text box, a menu or a dialog: ↑ and ↓ move between rows, Enter opens
+// the one there (as clicking it), Space ticks it, F2 renames it, Delete
+// deletes it, and Backspace goes up a folder.
+function listKeys(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]") ||
+        e.target.closest?.("input:not([type=checkbox]), textarea, [contenteditable], details.menu")) {
+        return;
+    }
+    const rows = [...document.querySelectorAll("main tbody tr")].filter((tr) => tr.dataset.name);
+    const row = e.target.closest?.("main tbody tr");
+    const focus = (tr) => tr?.querySelector("td.name a")?.focus();
+    switch (e.key) {
+    case "ArrowDown":
+    case "ArrowUp": {
+        const i = rows.indexOf(row);
+        focus(i < 0 ? rows[0] : rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))]);
+        break;
+    }
+    case "Enter":
+        if (row && e.target.matches("a") && (row.dataset.name === ".." || e.target.textContent.endsWith("/"))) {
+            keyboardArrived = true;
+        }
+        return;  // the link does the rest
+    case " ":
+        if (!row || row.dataset.name === ".." || e.target.matches("input")) {
+            return;
+        }
+        row.querySelector("td.sel input")?.click();
+        break;
+    case "F2":
+        row?.querySelector("button.rename")?.click();
+        break;
+    case "Delete":
+        row?.querySelector("button.delete")?.click();
+        break;
+    case "Backspace": {
+        const up = document.querySelector('main tbody tr[data-name=".."] a');
+        if (!up) {
+            return;
+        }
+        keyboardArrived = true;
+        up.click();
+        break;
+    }
+    default:
+        return;
+    }
+    e.preventDefault();
+}
+
 // showSessions lists the logins that are still live, where each has been
 // used from, and recent logins, with a button that ends every session.
 async function showSessions(box) {
@@ -425,198 +609,10 @@ async function showSessions(box) {
             + "This page could hide that if it was changed on the way; the gateway also logs it (docker logs)." + idle }));
 }
 
-// downloadWorker resolves to the active download service worker, or null
-// where there's none: over plain HTTP, or where the browser refuses it (as
-// in some private windows).
-let downloadWorker = null;
-
-// DOWNLOAD_SW_VERSION names the worker's version in its address. A
-// browser checks an unchanged address for a newer worker only now and
-// then, so it goes up whenever download-sw.js changes in a way the page
-// relies on, as it did when zips of unknown size came in (2).
-const DOWNLOAD_SW_VERSION = 2;
-
-function worker() {
-    downloadWorker ??= (async () => {
-        try {
-            const reg = await navigator.serviceWorker.register(new URL(`./download-sw.js?v=${DOWNLOAD_SW_VERSION}`, import.meta.url),
-                { scope: new URL("./stream/", import.meta.url).pathname });
-            // A browser that used the page before may still run an older
-            // worker, which a new version replaces: wait for it to take
-            // over, so downloads use it.
-            const end = Date.now() + 5000;
-            while ((!reg.active || reg.installing || reg.waiting) && Date.now() < end) {
-                await new Promise((r) => setTimeout(r, 50));
-            }
-            return reg.active;
-        } catch {
-            return null;
-        }
-    })();
-    return downloadWorker;
-}
-
-// fetchFile downloads the file at path. How it goes shows in the
-// transfers panel, with a Cancel button.
-async function fetchFile(path) {
-    const label = path.split("/").pop();
-    const row = statusRow(`${label}: starting`, true);
-    try {
-        const sw = await worker();
-        const t = await call({ type: "file", path });
-        row.signal.addEventListener("abort", () => t.close());
-        if (row.signal.aborted) {
-            t.close();  // while it was opening
-        }
-        const { name, size } = t.reply;
-        const progress = (got) => {
-            row.set(`${name}: ${size ? Math.floor(got * 100 / size) : 100}%`);
-            row.progress(size ? got / size : 1);
-        };
-        const failed = await (sw ? streamFile : saveFile)(t, name, size, progress, sw);
-        if (row.signal.aborted) {
-            row.set(`${name}: cancelled`);
-        } else if (failed) {
-            row.set(`${name}: ${failed}`, true);
-        } else {
-            row.set(`${name}: downloaded, ${humanBytes(size)}`);
-        }
-    } catch (err) {
-        row.set(`${label}: not downloaded: ${err.message}`, true);
-    }
-    row.finish();
-}
-
-// The biggest a zip request can be: the server takes requests up to 1 MiB.
-const MAX_REQUEST = 1000000;
-
-// fetchZip downloads names, in the folder dir, as one zip, which the server
-// makes as it sends it. How it goes shows in the status list, with a
-// Cancel button.
-async function fetchZip(dir, names) {
-    const label = names.length === 1 ? `${names[0]}/` : `${names.length} items`;
-    const row = statusRow(`${label}: zipping`, true);
-    try {
-        const req = { type: "zip", path: dir, names };
-        if (JSON.stringify(req).length > MAX_REQUEST) {
-            throw new Error("too many to download at once; pick fewer");
-        }
-        const sw = await worker();
-        const t = await call(req);
-        row.signal.addEventListener("abort", () => t.close());
-        if (row.signal.aborted) {
-            t.close();  // while it was opening
-        }
-        const { name } = t.reply;
-        let bytes = 0;
-        const progress = (got) => {
-            bytes = got;
-            row.set(`${name}: ${humanBytes(got)}`);
-            row.progress(null);
-        };
-        const failed = await (sw ? streamFile : saveFile)(t, name, null, progress, sw);
-        if (row.signal.aborted) {
-            row.set(`${name}: cancelled`);
-        } else if (failed) {
-            row.set(`${name}: ${failed}`, true);
-        } else if (t.trailer.skipped) {
-            row.set(`${name}: downloaded, ${humanBytes(bytes)}, without ${t.trailer.skipped} files or folders that couldn't be read`, true);
-        } else {
-            row.set(`${name}: downloaded, ${humanBytes(bytes)}`);
-        }
-    } catch (err) {
-        row.set(`${label}: not downloaded: ${err.message}`, true);
-    }
-    row.finish();
-}
-
-function humanBytes(n) {
-    const units = ["bytes", "KB", "MB", "GB", "TB"];
-    let i = 0;
-    for (; n >= 1000 && i < units.length - 1; i++) {
-        n /= 1000;
-    }
-    return `${i ? n.toFixed(1) : n} ${units[i]}`;
-}
-
-// How long the download may go without asking for more before it's given
-// up, as when the browser stops the service worker or the download is
-// paused, rather than leave it waiting with the tunnel open.
-const STREAM_IDLE = 30000;
-
-// streamFile hands the file to the service worker, one chunk each time the
-// browser's download asks for more, and returns why it failed, or "". The
-// service worker's response has the file's size, so the browser fails the
-// download, rather than keeping it, if this ends early.
-function streamFile(t, name, size, progress, sw) {
-    return new Promise((resolve) => {
-        const { port1, port2 } = new MessageChannel();
-        const id = crypto.randomUUID();
-        const frame = el("iframe", { hidden: true });
-        let got = 0;
-        let done = false;
-        const ping = setInterval(() => sw.postMessage({ type: "ping" }), 10000);  // keeps it running
-        let idle = setTimeout(() => finish("the download didn't start"), 10000);
-        const stalled = () => {
-            port1.postMessage({ error: "stalled" });
-            finish("failed: the download stopped");
-        };
-        function finish(failed) {
-            done = true;
-            clearInterval(ping);
-            clearTimeout(idle);
-            port1.onmessage = null;
-            t.close();
-            setTimeout(() => frame.remove(), 1000);
-            resolve(failed);
-        }
-        port1.onmessage = async (e) => {
-            const m = e.data;
-            if (m.started) {
-                clearTimeout(idle);
-                idle = setTimeout(stalled, STREAM_IDLE);
-                progress(0);
-            } else if (m.cancel) {
-                finish("cancelled");
-            } else if (m.pull) {
-                clearTimeout(idle);
-                const data = await t.nextChunk();
-                if (done) {
-                    return;
-                }
-                idle = setTimeout(stalled, STREAM_IDLE);
-                if (data) {
-                    got += data.byteLength;
-                    progress(got);
-                    port1.postMessage({ data }, [data]);
-                } else if (complete(t, got, size)) {
-                    port1.postMessage({ done: true });
-                    finish("");
-                } else {
-                    port1.postMessage({ error: "ended early" });
-                    finish(`failed: ${t.closeReason || "connection lost"}`);
-                }
-            }
-        };
-        sw.postMessage({ type: "download", id, name, size, port: port2 }, [port2]);
-        frame.src = new URL(`./stream/${id}/${encodeURIComponent(name)}`, import.meta.url).href;
-        document.body.append(frame);
-    });
-}
-
-// saveFile collects the file (see collect), then saves it, and returns why
-// it failed, or "".
-async function saveFile(t, name, size, progress) {
-    try {
-        saveBlob(await collect(t, size, progress), name);
-        return "";
-    } catch (err) {
-        return `failed: ${err.message}`;
-    }
-}
 
 // uploadButton makes the page's upload button (see drop.js).
-const uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir);
+const uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir, "", fileNames);
+document.addEventListener("keydown", listKeys);
 // "/" goes to the filter box, as in many sites' search, unless typing.
 document.addEventListener("keydown", (e) => {
     if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest?.("input, textarea, [contenteditable], dialog")) {

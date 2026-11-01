@@ -1,8 +1,10 @@
 // Checks a running TabTop end to end in headless Chrome, through the
 // pages a person uses: login, desktop, audio, the files page (list,
-// download, preview, upload, delete, folder upload picked and dropped,
-// folder delete, zips, new folder, rename, deleting several, cancelling an
-// upload), a file dropped on the desktop, the terminal, reconnecting after
+// download, preview, upload, replacing on a name clash, pasting, the
+// keyboard, delete, folder upload picked and dropped, folder delete, zips,
+// new folder, rename, move, copying a path, deleting several, cancelling
+// an upload), a file dropped on the desktop and the notice of one saved
+// there, the terminal (its font size and touch keys), reconnecting after
 // the connection is lost on each page, and logout.
 // browser-check.sh starts the container and Chrome and runs it; it exits
 // non-zero, saying which step failed, if anything doesn't work.
@@ -85,6 +87,22 @@ async function click(expr) {
     const r = await ev(`(() => { const b = (${expr}).getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2}; })()`);
     for (const type of ["mousePressed", "mouseReleased"]) {
         await cdp("Input.dispatchMouseEvent", { type, x: r.x, y: r.y, button: "left", clickCount: 1 });
+    }
+}
+// press sends a key, as the keyboard does, to the focused element.
+const keyCodes = { ArrowDown: 40, ArrowUp: 38, Enter: 13, Backspace: 8, " ": 32, "=": 187, "0": 48 };
+async function press(key, modifiers = 0) {
+    const code = { " ": "Space", "=": "Equal", "0": "Digit0" }[key] ?? key;
+    const text = key === "Enter" ? "\r" : key.length === 1 && !modifiers ? key : undefined;
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: keyCodes[key], modifiers, ...(text ? { text } : {}) });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: keyCodes[key], modifiers });
+}
+// type types text a key at a time: the terminal reads key events, not
+// text input.
+async function type(text) {
+    for (const ch of text) {
+        await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch, unmodifiedText: ch });
+        await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
     }
 }
 async function open(path, ready, what) {
@@ -240,6 +258,11 @@ try {
         await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "tone.wav").click()`);
         await waitFor(`document.querySelector("dialog.preview audio")?.duration > 0.9`, "the sound to load", 15000);
         await ev(`document.querySelector("dialog.preview").close()`);
+        // A picture pasted here is uploaded, named for when.
+        await ev(`(() => { const dt = new DataTransfer(); dt.items.add(new File(["png"], "image.png", { type: "image/png" }));
+            document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true })); })()`);
+        await waitFor(`/Pasted [-\\d]+ [.\\d]+\\.png: uploaded/.test(${status})`, "the pasted picture");
+        await waitFor(`${listed}.some((n) => n.startsWith("Pasted "))`, "it to be listed");
         await open("downloads/", `!!document.querySelector("table")`, "the listing");
     });
 
@@ -250,6 +273,16 @@ try {
         const when = await ev(`${row("up.bin")}.querySelector("td.mod").textContent`);
         if (!when.startsWith("Today ")) {
             throw new Error(`up.bin's time shows as ${JSON.stringify(when)}`);
+        }
+    });
+
+    await step("files: upload over a file there, replacing it", async () => {
+        await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/up.bin`]);
+        await waitFor(`document.querySelector("dialog[open]")?.textContent.includes("already has a file named up.bin")`, "the question");
+        await answer();  // Replace
+        await waitFor(`(${status}).split("up.bin: uploaded").length === 3`, "the second upload");
+        if ((await ev(listed)).some((n) => n.startsWith("up (1)"))) {
+            throw new Error("it was kept as another file");
         }
     });
 
@@ -272,6 +305,23 @@ try {
         await waitFor(`${listed}.length === 0 && document.querySelector("tbody").textContent.includes("Nothing here has")`, "nothing");
         await typeFilter("");
         await waitFor(`${listed}.includes("up.bin") && ${listed}.includes("hello.txt")`, "everything again");
+    });
+
+    await step("files: the keyboard", async () => {
+        const focused = `document.activeElement.textContent`;
+        await ev(`document.activeElement.blur()`);
+        await press("ArrowDown");
+        await waitFor(`${focused} === "media/"`, "the first row");
+        await press("ArrowDown");
+        await waitFor(`${focused} === "hello.txt"`, "the second row");
+        await press(" ");
+        await waitFor(`document.querySelector(".selection:not([hidden])")?.textContent.startsWith("1 selected")`, "hello.txt ticked");
+        await press(" ");
+        await press("ArrowUp");
+        await press("Enter");
+        await waitFor(`location.hash === "#/media/" && ${focused} === "../"`, "media/, with the focus in its list");
+        await press("Backspace");
+        await waitFor(`location.hash === "#/" && ${listed}.includes("hello.txt")`, "back up");
     });
 
     await step("files: delete", async () => {
@@ -350,6 +400,24 @@ try {
         await waitFor(`${listed}.includes("renamed.txt") && !${listed}.includes("hello.txt")`, "hello.txt renamed");
     });
 
+    await step("files: move, and copy a path", async () => {
+        await ev(`${row("renamed.txt")}.querySelector("button.move").click()`);
+        await answer("made-here");
+        await waitFor(`/renamed.txt: moved to Downloads \\/ made-here/.test(${status}) && !${listed}.includes("renamed.txt")`, "the move");
+        await open("downloads/#/made-here/", `${listed}.includes("renamed.txt")`, "made-here/renamed.txt");
+        await ev(`${row("renamed.txt")}.querySelector("button.copy").click()`);
+        await waitFor(`${status}.includes("Copied ~/Downloads/made-here/renamed.txt")`, "the path copied");
+        // Dragged onto "../", back up.
+        await ev(`(() => { const dt = new DataTransfer();
+            const fire = (target, type) => target.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+            fire(${row("renamed.txt")}, "dragstart");
+            const up = ${row("../")};
+            fire(up, "dragover");
+            fire(up, "drop"); })()`);
+        await waitFor(`/renamed.txt: moved to Downloads$/.test(${status}) && !${listed}.includes("renamed.txt")`, "the move back");
+        await open("downloads/", `${listed}.includes("renamed.txt")`, "renamed.txt, back");
+    });
+
     await step("files: delete several", async () => {
         for (const name of ["made-here/", "renamed.txt"]) {
             await ev(`${row(name)}.querySelector("td.sel input").click()`);
@@ -363,6 +431,7 @@ try {
         await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/big.bin`]);
         // Part way, so the gateway has part of it to delete.
         await waitFor(`/big.bin: [1-9]\\d*%/.test(${status})`, "the upload to get going");
+        await waitFor(`/^⇅ \\d+% · /.test(document.title)`, "its progress in the title");
         await ev(`[...document.querySelectorAll("#uploads p")].find((p) => p.textContent.startsWith("big.bin")).querySelector("button.cancel").click()`);
         await waitFor(`/big.bin: cancelled/.test(${status})`, "the cancel");
         await open("downloads/", `!!document.querySelector("table")`, "the listing");
@@ -383,6 +452,20 @@ try {
         }
         await cdp("Input.dispatchDragEvent", { type: "drop", x: 600, y: 400, data });
         await waitFor(`/b.txt: uploaded/.test(${status})`, "the upload");
+        if (await ev(`!!document.querySelector("#tabtop_notices .notice")`)) {
+            throw new Error("the upload was told of as a new download");
+        }
+    });
+
+    await step("desktop: a notice of a file saved", async () => {
+        // Saved by a program on the desktop, here through a terminal.
+        await ev(`import("/tabtop/tunnel.js").then((m) => new Promise((resolve) => {
+            const s = new m.TunnelSocket({ type: "tty" });
+            s.onopen = () => setTimeout(() => { s.send(new TextEncoder().encode("echo saved > ~/Downloads/notice.txt\\r")); setTimeout(() => { s.close(); resolve(); }, 500); }, 1500);
+        }))`);
+        await waitFor(`document.querySelector("#tabtop_notices .notice")?.textContent.includes("notice.txt was saved in Downloads")`, "the notice");
+        await click(`document.querySelector("#tabtop_notices .notice button.primary")`);
+        await waitForFile(`${downloads}/notice.txt`, "notice.txt, downloaded from the notice");
     });
 
     await step("terminal", async () => {
@@ -409,7 +492,36 @@ try {
         await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
         await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
         await sleep(1000);
+        // Ctrl = makes the text bigger, kept for next time; Ctrl 0 puts it back.
+        await press("=", 2);
+        await waitFor(`localStorage.getItem("tabtop-tty-font-size") === "15"`, "a bigger font");
+        await press("0", 2);
+        await waitFor(`localStorage.getItem("tabtop-tty-font-size") === null`, "the font back as it was");
         await open("downloads/", `${listed}.includes("tty-check.txt")`, "tty-check.txt, written in the terminal");
+    });
+
+    await step("terminal: touch keys", async () => {
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+        await cdp("Emulation.setEmulatedMedia", { features: [{ name: "pointer", value: "coarse" }, { name: "any-pointer", value: "coarse" }] });
+        try {
+            await open("tty/", `!!document.getElementById("touch_keys")`, "the touch keys");
+            await sleep(2000);
+            await click(`document.querySelector("canvas")`);
+            // Ctrl, then U, clears what's typed so far.
+            await type("garbage");
+            await ev(`[...document.querySelectorAll("#touch_keys button")].find((b) => b.textContent === "Ctrl").click()`);
+            await type("u");
+            await type("echo keys-ok > ~/Downloads/keys.txt");
+            if (await ev(`[...document.querySelectorAll("#touch_keys button")].find((b) => b.textContent === "Ctrl").getAttribute("aria-pressed")`) !== "false") {
+                throw new Error("Ctrl stayed on after a key");
+            }
+            await press("Enter");
+            await sleep(1000);
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+            await cdp("Emulation.setEmulatedMedia", { features: [] });
+        }
+        await open("downloads/", `${listed}.includes("keys.txt")`, "keys.txt, written with Ctrl U from the touch keys");
     });
 
     await step("logout", async () => {

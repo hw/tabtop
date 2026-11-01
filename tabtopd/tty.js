@@ -1,7 +1,9 @@
 // Browser terminal, served by tabtopd (see tty.go), drawn by ghostty-web.
 // Terminal bytes travel as data messages through the encrypted tunnel;
 // resizes go up as JSON text messages. The tunnel shows its login form when
-// there's no session. If the connection is lost, the page tries again by
+// there's no session. Ctrl + and Ctrl − change the font size, which is kept
+// in this browser; on touch screens, a strip of keys phones' keyboards
+// lack (Esc, Tab, Ctrl, Alt, the arrows...) sits below the terminal. If the connection is lost, the page tries again by
 // itself (see reconnect.js), and tmux, which the server runs the shell
 // in, picks up where it was.
 
@@ -184,7 +186,19 @@ class MouseReporter {
     }
 }
 
-const fontSize = 14;
+// The font size: Ctrl + and Ctrl − change it, and Ctrl 0 goes back to
+// the default, instead of zooming the page; it's kept in this browser.
+const FONT_KEY = "tabtop-tty-font-size";
+const defaultFontSize = 14;
+let fontSize = defaultFontSize;
+try {
+    const saved = Number(localStorage.getItem(FONT_KEY));
+    if (saved >= 8 && saved <= 32) {
+        fontSize = saved;
+    }
+} catch {
+    // The default, then.
+}
 // Powerline Symbols only has the status-line arrows, so the browser draws
 // those with it and everything else with DejaVu or the default monospace.
 // Load it before the terminal measures its font and draws, so the arrows
@@ -205,6 +219,26 @@ term.open(document.getElementById("terminal"));
 fit.fit();
 fit.observeResize();
 term.focus();
+
+function setFontSize(n) {
+    fontSize = Math.min(Math.max(n, 8), 32);
+    term.options.fontSize = fontSize;
+    fit.fit();
+    try {
+        fontSize === defaultFontSize ? localStorage.removeItem(FONT_KEY) : localStorage.setItem(FONT_KEY, String(fontSize));
+    } catch {
+        // Only for this visit, then.
+    }
+}
+
+// Before ghostty-web sees the keys, and the browser zooms.
+document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && ["=", "+", "-", "0"].includes(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+        setFontSize(e.key === "0" ? defaultFontSize : fontSize + (e.key === "-" ? -1 : 1));
+    }
+}, true);
 const osc52 = new Osc52();
 new MouseReporter(term, (bytes) => send(bytes));
 
@@ -262,9 +296,81 @@ function connect() {
     });
 }
 
+// Touch keys -------------------------------------------------------------
+
+// Ctrl and Alt on the strip apply to the next key typed.
+const held = { ctrl: null, alt: null };  // their buttons, while on
+
+// modified applies the held Ctrl and Alt to data, a key typed, and lets
+// them go.
+function modified(data) {
+    if (held.ctrl && data.length === 1) {
+        const c = data.toUpperCase().charCodeAt(0);
+        if (c >= 0x40 && c <= 0x5f) {
+            data = String.fromCharCode(c & 0x1f);  // Ctrl+A is 1, Ctrl+[ is Esc...
+        } else if (data === " ") {
+            data = "\x00";
+        } else if (data === "?") {
+            data = "\x7f";
+        }
+    }
+    if (held.alt) {
+        data = "\x1b" + data;
+    }
+    for (const k of ["ctrl", "alt"]) {
+        held[k]?.setAttribute("aria-pressed", "false");
+        held[k] = null;
+    }
+    return data;
+}
+
+// touchKeys adds the strip of keys below the terminal.
+function touchKeys() {
+    // The arrows as the program asks for them: application cursor keys
+    // (DECCKM) or not.
+    const arrow = (c) => () => (term.getMode(1) ? "\x1bO" : "\x1b[") + c;
+    const keys = [
+        ["Esc", "\x1b"], ["Tab", "\t"], ["Ctrl", "ctrl"], ["Alt", "alt"],
+        ["←", arrow("D")], ["↑", arrow("A")], ["↓", arrow("B")], ["→", arrow("C")],
+        ["|", "|"], ["~", "~"], ["/", "/"], ["-", "-"],
+        ["A−", () => setFontSize(fontSize - 1)], ["A+", () => setFontSize(fontSize + 1)],
+    ];
+    const strip = document.createElement("div");
+    strip.id = "touch_keys";
+    for (const [label, key] of keys) {
+        const b = Object.assign(document.createElement("button"), { type: "button", textContent: label });
+        if (key === "ctrl" || key === "alt") {
+            b.setAttribute("aria-pressed", "false");
+        }
+        // Not taking the focus from the terminal, which would close the
+        // on-screen keyboard.
+        b.addEventListener("pointerdown", (e) => e.preventDefault());
+        b.addEventListener("click", () => {
+            term.focus();
+            if (key === "ctrl" || key === "alt") {
+                const on = held[key] !== b;
+                held[key] = on ? b : null;
+                b.setAttribute("aria-pressed", String(on));
+                return;
+            }
+            const data = typeof key === "function" ? key() : key;
+            if (typeof data === "string") {
+                send(encoder.encode(modified(data)));
+            }
+        });
+        strip.append(b);
+    }
+    document.body.append(strip);
+    document.body.classList.add("touch-keys");
+    fit.fit();
+}
+if (matchMedia("(pointer: coarse)").matches) {
+    touchKeys();
+}
+
 term.onData((data) => {
     if (ws) {
-        send(encoder.encode(data));
+        send(encoder.encode(modified(data)));
     } else if (data.includes("\r") && !connecting && !document.getElementById("tabtop_reconnect")) {
         // Reloading also shows the login form if the session has ended.
         location.reload();

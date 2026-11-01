@@ -3,21 +3,24 @@
 // files.js, which supplies how to send or delete one file and make a
 // folder. How each goes shows in the transfers panel (see ui.js).
 
-import { askYes, statusRow } from "./ui.js";
+import { askChoice, askYes, statusRow } from "./ui.js";
 
-// dropUploads makes the page take dropped files and folders, into the
-// folder here() gives when they're dropped. Each file is passed in turn to
-// send(file, progress, dir, signal), which resolves to {name, warning},
-// the name it was saved as in the folder dir and anything to say about it,
-// calls progress(bytes) as it goes, and stops, rejecting, once signal is
-// aborted. A folder is made with mkdir(dir, name), which resolves to the
+// dropUploads makes the page take dropped and pasted files and folders,
+// into the folder here() gives when they arrive. Each file is passed in
+// turn to send(file, progress, dir, signal, replace), which resolves to
+// {name, warning}, the name it was saved as in the folder dir and anything
+// to say about it, calls progress(bytes) as it goes, and stops, rejecting,
+// once signal is aborted. If any of the files have the names of ones
+// already in the folder, as existing(dir) resolves to a Set of its names,
+// the person is asked whether to replace those (replace is then true) or
+// keep both (the new ones get numbered names). A folder is made with mkdir(dir, name), which resolves to the
 // name it got, and then filled the same way. Progress shows in the
 // transfers panel, with a Cancel button for each file or folder until
 // it's done; done() is called, and awaited, once all have been tried
 // and any succeeded. While files are dragged over the page, it says where
 // they'd go, followed by note. It returns a function that makes the upload
 // buttons, which send the files or folder picked the same way.
-export function dropUploads(send, mkdir, done, here, note = "") {
+export function dropUploads(send, mkdir, done, here, note = "", existing = async () => new Set()) {
     let depth = 0;
     const isFiles = (e) => e.dataTransfer?.types.includes("Files");
     const where = document.createElement("p");
@@ -63,9 +66,17 @@ export function dropUploads(send, mkdir, done, here, note = "") {
         ];
         // One upload at a time, after any still going from earlier ones.
         queue = queue.then(async () => {
+            const replace = await askReplace(files, dir, existing);
+            if (replace === null) {
+                for (const { file, folder, row } of jobs) {
+                    row.set(file ? `${file.name}: cancelled` : "A folder's upload: cancelled");
+                    row.finish();
+                }
+                return;
+            }
             let saved = 0;
             for (const { file, folder, row } of jobs) {
-                saved += await (file ? uploadOne(file, dir, row, send) : uploadFolder(folder, dir, row, send, mkdir));
+                saved += await (file ? uploadOne(file, dir, row, send, replace.has(file.name)) : uploadFolder(folder, dir, row, send, mkdir));
                 row.finish();
             }
             if (saved) {
@@ -96,6 +107,15 @@ export function dropUploads(send, mkdir, done, here, note = "") {
         }
         upload(files, folders);
     });
+    // Files pasted, as a screenshot copied, unless into a text box.
+    document.addEventListener("paste", (e) => {
+        const files = [...(e.clipboardData?.files ?? [])];
+        if (!files.length || e.target.closest?.("input, textarea, [contenteditable]") || document.querySelector("dialog[open]")) {
+            return;
+        }
+        e.preventDefault();
+        upload(files.map(pastedName));
+    });
     const picker = (label, props, take) => {
         const input = Object.assign(document.createElement("input"), { type: "file", hidden: true, ...props });
         input.addEventListener("change", () => {
@@ -117,9 +137,50 @@ export function dropUploads(send, mkdir, done, here, note = "") {
     };
 }
 
+// pastedName names a pasted picture, which browsers call "image.png",
+// after when it was pasted, so pasting several doesn't make "image (1).png"
+// and so on. Other files keep their names.
+function pastedName(file) {
+    const generic = /^image\.(\w+)$/i.exec(file.name);
+    if (!generic) {
+        return file;
+    }
+    const d = new Date();
+    const two = (n) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}.${two(d.getMinutes())}.${two(d.getSeconds())}`;
+    return new File([file], `Pasted ${stamp}.${generic[1].toLowerCase()}`, { type: file.type, lastModified: file.lastModified });
+}
+
+// askReplace asks, if any of files have the names of ones already in dir,
+// whether to replace those, and resolves to the Set of names to replace
+// (empty to keep both), or null if the uploads are cancelled. If the
+// folder can't be read, it keeps both.
+async function askReplace(files, dir, existing) {
+    if (!files.length) {
+        return new Set();
+    }
+    let names;
+    try {
+        names = await existing(dir);
+    } catch {
+        return new Set();
+    }
+    const taken = files.filter((f) => names.has(f.name)).map((f) => f.name);
+    if (!taken.length) {
+        return new Set();
+    }
+    const where = ["Downloads", ...dir.split("/").filter(Boolean)].join(" / ");
+    const shown = taken.slice(0, 3).join(", ") + (taken.length > 3 ? ` and ${taken.length - 3} more` : "");
+    const message = taken.length === 1 ? `${where} already has a file named ${taken[0]}. Replace it, or keep both (the new one gets a number)?`
+        : `${where} already has files named ${shown}. Replace them, or keep both (the new ones get numbers)?`;
+    const choice = await askChoice(message, [["keep", "Keep both"], ["replace", taken.length === 1 ? "Replace" : "Replace them"]]);
+    return choice === null ? null : new Set(choice === "replace" ? taken : []);
+}
+
 // uploadOne uploads file into dir, showing how it goes in row, and
-// returns 1 if it was saved, else 0.
-async function uploadOne(file, dir, row, send) {
+// returns 1 if it was saved, else 0. With replace, a file with its name
+// there is replaced.
+async function uploadOne(file, dir, row, send, replace = false) {
     if (row.signal.aborted) {
         row.set(`${file.name}: cancelled`);
         return 0;
@@ -130,7 +191,7 @@ async function uploadOne(file, dir, row, send) {
     };
     progress(0);
     try {
-        const { name, warning } = await send(file, progress, dir, row.signal);
+        const { name, warning } = await send(file, progress, dir, row.signal, replace);
         row.set(name === file.name ? `${file.name}: uploaded` : `${file.name}: uploaded as ${name}`);
         if (warning) {
             row.set(`${row.text} (${warning})`, true);

@@ -34,9 +34,12 @@ function keepTrying(message, attempt) {
         const box = document.createElement("div");
         box.id = "tabtop_reconnect";
         box.setAttribute("role", "status");
+        // Just below the bar of links at the top, while it's in view, so
+        // the banner doesn't cover them; above the page, below the login
+        // form.
+        const bar = document.querySelector(".tabtop-nav")?.getBoundingClientRect().bottom ?? 0;
         Object.assign(box.style, {
-            // Above the page and its bar of links, below the login form.
-            position: "fixed", top: "2.25rem", left: "50%", transform: "translateX(-50%)", zIndex: "999",
+            position: "fixed", top: `${Math.max(bar, 0) + 8}px`, left: "50%", transform: "translateX(-50%)", zIndex: "999",
             maxWidth: "calc(100vw - 2rem)", boxSizing: "border-box", padding: ".5rem 1rem", borderRadius: "8px",
             font: "14px/1.5 system-ui, sans-serif", color: "#e8e8ea", background: "#5c1d1a",
             boxShadow: "0 2px 12px rgba(0,0,0,.4)",

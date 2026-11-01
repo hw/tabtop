@@ -80,6 +80,8 @@ holds() {
 }
 holds tty-check.txt tty-42
 holds b.txt sub/b.txt
+holds keys.txt keys-ok
+holds notice.txt saved
 for d in up-folder "up-folder (2)"; do
     for f in a.txt sub/b.txt sub/deeper/c.txt; do holds "$d/$f" "$f"; done
 done

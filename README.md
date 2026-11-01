@@ -5,8 +5,10 @@ desktop, and you log in with a TOTP code from an authenticator app (optionally
 preceded by a password). The desktop's sound plays in the browser. The same
 site also offers a terminal, and a files page for the desktop user's
 `~/Downloads`, where files and folders can be downloaded (folders as
-zips), previewed, uploaded (with a button or by dropping them on the
-page, or on the desktop), renamed and deleted. Logins and everything after them
+zips), previewed, uploaded (with a button, by dropping or pasting them on
+the page, or by dropping them on the desktop), renamed, moved and deleted. When a file
+is saved into `~/Downloads`, as when the desktop's Chromium finishes a
+download, the desktop page offers to download it at once. Logins and everything after them
 travel through an [encrypted tunnel](#encryption) between the page and the
 gateway, so a proxy that decrypts HTTPS on the way can't read them.
 
@@ -42,7 +44,7 @@ Everything is served on one port by `tabtopd` (in `tabtopd/`):
 | Path | What it serves |
 |---|---|
 | `/` | The noVNC client, which connects to the desktop |
-| `/downloads/` | The files page for `~/Downloads`: download (folders as zips), preview, upload, rename and delete files and folders |
+| `/downloads/` | The files page for `~/Downloads`: download (folders as zips), preview, upload, rename, move and delete files and folders |
 | `/tty/` | A terminal (ghostty-web and tmux) |
 | `/tunnel` | The [encrypted connection](#encryption) that carries the logins, the desktop, the terminal, files and sound for all of the above |
 | `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
@@ -623,7 +625,13 @@ downloaded at `http://<host>:6080/downloads/`:
   "Yesterday", a weekday or a date, in your browser's language and the
   container's time zone (`TZ`, UTC by default); hovering over one, or over
   a size, shows it exactly. Each row's
-  **⋯** menu previews, downloads, renames or deletes it.
+  **⋯** menu previews, downloads, renames, moves or deletes it, or copies
+  its path (as `~/Downloads/a/b.txt`, quoted if the shell needs it) to
+  paste into the terminal.
+- **The keyboard:** **↓** and **↑** move between rows (from anywhere on the
+  page but a text box), **Enter** opens the one there, **Space** ticks it,
+  **F2** renames it, **Delete** deletes it, and **Backspace** goes up a
+  folder.
 - **Previews:** clicking a picture, video, sound or text file shows it over
   the page instead of downloading it; **‹** and **›** (or the arrow keys)
   step through the others in the folder, as listed. Text covers common
@@ -639,6 +647,16 @@ downloaded at `http://<host>:6080/downloads/`:
   panel in the bottom corner, each with a progress bar while it goes and
   a **Cancel** button where it can be stopped, and a bar for how many are
   done. **Clear** removes the finished ones; **▾** folds the panel away.
+  While any are going, the tab's title starts with how far they've got
+  (`⇅ 45% · …`, or how many are going where sizes aren't known), so it
+  shows in a tab in the background too.
+- **From the desktop:** while the desktop is connected, when a file is
+  saved directly into `~/Downloads`, by the desktop's Chromium (once its
+  download is complete) or any other program, the desktop page shows a
+  notice with its name and size and a
+  **Download** button, which downloads it to your computer as the files
+  page does. Files uploaded, renamed or moved from the pages aren't
+  announced, nor are those saved into folders inside `~/Downloads`.
 - **Saving:** over HTTPS or on `localhost`, a file streams into an ordinary
   browser download as it's decrypted, through a service worker the page
   registers, so it needs no more memory than a few chunks: the gateway only
@@ -665,12 +683,16 @@ downloaded at `http://<host>:6080/downloads/`:
   is limited to 1 MiB); a folder's own zip has no such limit.
 - **Uploads:** pick files with **Upload files…**, or drop them on the
   page, to upload them into the folder it shows; while you drag them over
-  it, the page says which folder that is. Files and folders dropped on the
-  desktop's page are uploaded into `~/Downloads` itself the same way, with
-  a transfers panel there. An upload never replaces
-  a file: one whose name is taken is saved as `name (1).ext`,
-  `name (2).ext` and so on, with `name` cut short if the name would get
-  too long. Each file is written to a hidden temporary file
+  it, the page says which folder that is. Files pasted on the page (a
+  copied screenshot, say) upload the same way; a pasted picture is named
+  for when it was pasted, as `Pasted 2026-11-01 09.34.12.png`. Files and
+  folders dropped on the desktop's page are uploaded into
+  `~/Downloads` itself the same way, with a transfers panel there. If files
+  have the names of files already in the folder, the page asks whether to
+  replace those or keep both; keeping both, or a name taken while the
+  upload goes, saves the new one as `name (1).ext`, `name (2).ext` and so
+  on, with `name` cut short if the name would get too long. A folder is
+  never replaced. Each file is written to a hidden temporary file
   (`.tabtop-upload-….part`) first, and only appears once it's complete
   and saved to disk. If the disk reports an error saving its folder
   too, the page says so next to the file; on a file system that can't
@@ -696,6 +718,13 @@ downloaded at `http://<host>:6080/downloads/`:
   menu renames it; for a file, only the part before the extension starts
   selected. A rename never replaces anything: if the new name is taken, it
   fails and says so. Renaming a symlink renames the link.
+- **Moving:** drag a row onto a folder in the list, onto `../`, or onto a
+  folder in the heading, to move it there; dragging a ticked row moves all
+  those ticked. **Move to…** in a row's menu, or in the bar above the list
+  for those ticked, asks for the folder by its path in `~/Downloads`
+  (empty for `~/Downloads` itself). Like a rename, a move never replaces
+  anything: if the folder has something of the same name, that one isn't
+  moved, and the page says so. A folder can't be moved inside itself.
 - **Deleting:** **Delete…** in a row's menu deletes it, after asking, and
   **Delete** in the bar above the list deletes everything ticked, after
   asking once. Deleting a folder deletes everything in it.
@@ -743,7 +772,15 @@ emulator compiled to WebAssembly.
   back.
 - **Font:** the terminal uses DejaVu Sans Mono if your computer has it,
   otherwise your browser's monospace font. A small Powerline symbols font is
-  served with the page for the arrows in tmux's status line.
+  served with the page for the arrows in tmux's status line. **Ctrl +** and
+  **Ctrl −** make the text bigger and smaller (instead of zooming the page),
+  and **Ctrl 0** puts it back to 14 px; the size is remembered in this
+  browser.
+- **Touch screens:** on a phone or tablet, a strip below the terminal has
+  the keys its on-screen keyboard lacks: **Esc**, **Tab**, **Ctrl** and
+  **Alt** (which apply to the next key typed, so **Ctrl** then **c** is
+  Ctrl+C), the arrows, `|`, `~`, `/`, `-`, and **A−** and **A+** for the
+  text size. It scrolls sideways if it doesn't fit.
 - **Desktop programs:** `DISPLAY` points at the desktop, so a graphical
   program started from the terminal opens there.
 - **Limits:** up to 5 terminals at once per login. A paste is at most
@@ -910,9 +947,12 @@ TABTOP_NOBLE_DIR=/tmp/noble mise run test
 person uses it: it starts a container and headless Chrome, logs in, opens
 the desktop and its sound, lists, downloads, previews, uploads and deletes
 files, uploads a folder both picked and dropped and deletes one, downloads
-zips, makes a folder, renames a file, deletes several at once, cancels an
-upload, drops a file on the desktop, runs a command in the terminal, cuts
-the connection on each page to see it come back, and logs out, then checks from
+zips, makes a folder, renames, moves and copies the path of a file,
+replaces one on upload, pastes one, uses the list from the keyboard,
+deletes several at once, cancels an upload, drops a file on the desktop
+and has the desktop announce one saved there, runs commands in the
+terminal (with its font size keys and touch keys), cuts the connection
+on each page to see it come back, and logs out, then checks from
 inside the container what the pages left in `~/Downloads`, and what the
 zips hold. It prints `ok` or `not ok` for each step, and the container's
 log if one fails. It needs Docker, Node, Python 3 and Chrome or Chromium

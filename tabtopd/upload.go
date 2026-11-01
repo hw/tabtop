@@ -3,7 +3,9 @@ package main
 // Uploads into ~/Downloads from the files page, through the tunnel. A file
 // is written to a hidden temporary file in its folder first, then linked
 // under its name, which never replaces a file already there: a clash gets
-// " (1)", " (2)" and so on before the extension instead.
+// " (1)", " (2)" and so on before the extension instead. Only when the page
+// asks to replace (the person chose to) is it renamed over the file
+// instead.
 
 import (
 	"context"
@@ -106,7 +108,10 @@ func walkStaleUploads(root *os.Root, dirs []string, started time.Time, stop *ato
 	return n
 }
 
-var errUploadName = errors.New("That name can't be used for a file.")
+var (
+	errUploadName    = errors.New("That name can't be used for a file.")
+	errReplaceFolder = errors.New("A folder has that name, so it can't be replaced.")
+)
 
 // validUploadName reports whether name can be a file's name in a folder:
 // one path segment, not a temporary upload's.
@@ -148,8 +153,9 @@ func (u *upload) abort() {
 }
 
 // finish saves the upload as name, or as the first free name like it, and
-// returns the name it got.
-func (u *upload) finish(name string) (string, error) {
+// returns the name it got. With replace, it's saved as name even if a file
+// has that name, replacing it in one step, but never a folder.
+func (u *upload) finish(name string, replace bool) (string, error) {
 	defer u.root.Remove(u.tmp)
 	// On disk before the page is told it's saved, so a power cut can't
 	// lose it after.
@@ -165,6 +171,20 @@ func (u *upload) finish(name string) (string, error) {
 		ext = "" // ".bashrc" is all name
 	}
 	base := strings.TrimSuffix(name, ext)
+	if replace {
+		target := path.Join(u.dir, name)
+		if st, err := u.root.Lstat(target); err == nil && st.IsDir() {
+			return "", errReplaceFolder
+		}
+		if err := u.root.Rename(u.tmp, target); err != nil {
+			return "", err
+		}
+		if err := syncDir(u.root, u.dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+			log.Printf("upload saved as %s, but syncing its folder failed: %v", target, err)
+			u.unsynced = true
+		}
+		return name, nil
+	}
 	for i := 0; i < 1000; i++ {
 		got := name
 		if i > 0 {
@@ -274,7 +294,7 @@ func (g *server) tunnelMkdir(t *tunnel, req tunnelRequest, reply func(map[string
 // uploadError is what to tell the user about err.
 func uploadError(err error) string {
 	switch {
-	case errors.Is(err, errUploadName):
+	case errors.Is(err, errUploadName), errors.Is(err, errReplaceFolder):
 		return err.Error()
 	case errors.Is(err, fs.ErrNotExist):
 		return "The folder is missing."
@@ -291,7 +311,7 @@ func uploadError(err error) string {
 // empty data message once it's written, as the page does for downloads, so
 // at most fileWindow chunks are on their way. Once it has req.Size bytes,
 // it saves the file and sends {"name":...} with the name it got, or
-// {"error":...}.
+// {"error":...}. With req.Replace, a file of that name is replaced.
 func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
 	if !validUploadName(req.Name) || req.Size < 0 {
 		fail(errUploadName.Error())
@@ -345,14 +365,18 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[strin
 			return
 		}
 	}
-	name, err := u.finish(req.Name)
+	name, err := u.finish(req.Name, req.Replace)
 	saved = true
 	if err != nil {
 		log.Printf("upload of %q: %v", path.Join(dir, req.Name), err)
 		fail(uploadError(err))
 		return
 	}
-	log.Printf("upload through the tunnel saved %s (%s)", path.Join(dir, name), humanSize(req.Size))
+	replaced := ""
+	if req.Replace {
+		replaced = ", replacing any file of that name"
+	}
+	log.Printf("upload through the tunnel saved %s (%s%s)", path.Join(dir, name), humanSize(req.Size), replaced)
 	res := map[string]any{"name": name}
 	if u.unsynced {
 		res["warning"] = "saved, but the disk didn't confirm it; it could be lost if the power fails soon"

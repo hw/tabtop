@@ -34,11 +34,12 @@ const UPLOAD_CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 16;
 
 // uploadFile uploads a dropped or picked file into the folder dir, and
-// returns the name it was saved as, and any warning. Aborting signal ends
-// it, and the server then deletes what it had of the file.
-export async function uploadFile(file, progress, dir, signal) {
+// returns the name it was saved as, and any warning. With replace, a file
+// with its name there is replaced; otherwise it gets a free name. Aborting
+// signal ends it, and the server then deletes what it had of the file.
+export async function uploadFile(file, progress, dir, signal, replace = false) {
     signal.throwIfAborted();
-    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size });
+    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size, ...(replace ? { replace: true } : {}) });
     const abort = () => t.close();
     signal.addEventListener("abort", abort);
     try {
@@ -70,6 +71,14 @@ export async function uploadFile(file, progress, dir, signal) {
         signal.removeEventListener("abort", abort);
         t.close();
     }
+}
+
+// fileNames resolves to the names of the files in the folder dir (not
+// its folders, which an upload can't replace).
+export async function fileNames(dir) {
+    const t = await call({ type: "list", path: dir });
+    t.close();
+    return new Set(t.reply.entries.filter((e) => !e.dir).map((e) => e.name));
 }
 
 // makeFolder makes the folder name in dir for an upload, and returns the

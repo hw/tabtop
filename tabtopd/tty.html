@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>Terminal</title>
 <style>
 @font-face { font-family: "Powerline Symbols"; src: url("PowerlineSymbols.otf") format("opentype"); }
@@ -16,6 +16,12 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 .tabtop-nav button { margin-left: auto; font: inherit; color: inherit; background: none; border: 1px solid #3a3a3c;
     border-radius: 4px; padding: 1px 8px; cursor: pointer; }
 .tabtop-nav button:hover { color: #e8e8ea; }
+body.touch-keys #terminal { bottom: 48px; }
+#touch_keys { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; box-sizing: border-box; display: flex; gap: 4px;
+    padding: 4px; overflow-x: auto; background: #1c1c1e; border-top: 1px solid #2c2c2e; }
+#touch_keys button { flex: 0 0 auto; min-width: 42px; padding: 0 8px; font: 15px system-ui, sans-serif; color: #e8e8ea;
+    background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px; touch-action: manipulation; }
+#touch_keys button[aria-pressed=true] { color: #1c1c1e; background: #8ab4f8; border-color: #8ab4f8; }
 </style>
 <div id="terminal"></div>
 <script type="module" src="tty.js"></script>

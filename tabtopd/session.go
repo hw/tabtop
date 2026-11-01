@@ -25,7 +25,8 @@ const (
 	maxLoginLog        = 20 // logins remembered, successful or not
 	// Tunnels open at once per session, so a page stuck reconnecting, or a
 	// client that means harm, can't open them without limit. A desktop tab
-	// uses two (picture and sound).
+	// uses three while connected (picture, sound, and notices of new
+	// downloads).
 	maxSessionTunnels = 64
 )
 

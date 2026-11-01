@@ -96,6 +96,9 @@ type server struct {
 	pending  map[string]int         // client IP -> logins awaiting their result
 
 	failuresSwept time.Time // when failures last lost its expired IPs
+
+	placedMu sync.Mutex
+	placedAt map[string]time.Time // names the gateway moved into ~/Downloads itself, lately (see watch.go)
 }
 
 func main() {
@@ -724,6 +727,8 @@ h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4
 h1.crumbs a { text-decoration: none; } h1.crumbs a:hover { text-decoration: underline; }
 h1.crumbs .sep { opacity: .4; font-weight: 400; }
 th.sel, td.sel { width: 1%; padding-right: 0; }
+tbody tr:focus-within { background: var(--hover); }
+.drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--hover); }
 th button.sort { font: inherit; font-weight: 600; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 th button.sort::after { content: attr(data-arrow); margin-left: .3rem; font-size: .7em; }
 th.act, td.act { width: 1%; text-align: right; padding-top: 0; padding-bottom: 0; }
@@ -810,4 +815,13 @@ const desktopCSS = `#drop_overlay, #transfers { --fg: #e8e8ea; --bg: #1c1c1e; --
 #transfers { z-index: 200; }
 #transfers button { all: revert; font-size: 13px; }
 @media (min-width: 40.01rem) { #transfers { left: auto; right: 1rem; } }
+#tabtop_notices { position: fixed; top: 1rem; right: 1rem; z-index: 250; display: flex; flex-direction: column; gap: .5rem;
+       width: min(24rem, calc(100vw - 2rem)); font: 14px/1.5 system-ui, sans-serif; color: #e8e8ea; text-align: left; }
+#tabtop_notices .notice { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .5rem; padding: .6rem .75rem;
+       background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .35); }
+#tabtop_notices p { flex: 1 1 100%; margin: 0; overflow-wrap: anywhere; }
+#tabtop_notices button { all: revert; font-size: 13px; }
+#tabtop_notices button.primary { padding: .15rem .8rem; color: #1c1c1e; background: #8ab4f8; border: 1px solid #8ab4f8;
+       border-radius: 4px; }
+#tabtop_notices button.close { margin-left: auto; }
 `

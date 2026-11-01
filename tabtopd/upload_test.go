@@ -71,6 +71,29 @@ func TestTunnelUpload(t *testing.T) {
 		t.Errorf("the existing file now holds %d bytes", len(b))
 	}
 
+	// Replacing, as the person chose to.
+	tc = openSession(t, ctx, srv.URL, s)
+	if reply := tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "big.bin", Size: 3, Replace: true}); reply["ok"] != true {
+		t.Fatalf("upload: %v", reply)
+	}
+	tc.write(ctx, msgData, []byte("new"))
+	tc.read(ctx)
+	if res := tc.readJSON(t, ctx); res["name"] != "big.bin" {
+		t.Fatalf("replacing, saved as %v", res)
+	}
+	if b, _ := os.ReadFile(filepath.Join(g.downloadsDir, "big.bin")); string(b) != "new" {
+		t.Errorf("the replaced file holds %q", b)
+	}
+	os.Mkdir(filepath.Join(g.downloadsDir, "folder"), 0o755)
+	tc = openSession(t, ctx, srv.URL, s)
+	tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "folder", Size: 1, Replace: true})
+	tc.write(ctx, msgData, []byte("x"))
+	tc.read(ctx)
+	if res := tc.readJSON(t, ctx); res["error"] != errReplaceFolder.Error() {
+		t.Errorf("replacing a folder: %v", res)
+	}
+	os.Remove(filepath.Join(g.downloadsDir, "folder"))
+
 	// More than the size given ends the tunnel, and nothing is saved.
 	tc = openSession(t, ctx, srv.URL, s)
 	tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "short.bin", Size: 3})
@@ -236,7 +259,7 @@ func TestUploadLongNameTaken(t *testing.T) {
 			if !uploadTempName.MatchString(filepath.Base(u.tmp)) {
 				t.Fatalf("temporary file %q isn't one removeStaleUploads would remove", u.tmp)
 			}
-			got, err := u.finish(name)
+			got, err := u.finish(name, false)
 			if err != nil {
 				t.Fatalf("upload %d of %q: %v", i, name[:10], err)
 			}
