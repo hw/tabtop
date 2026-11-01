@@ -44,6 +44,14 @@ echo "site: $site"
 
 in_container() { docker exec -u user "$name" sh -c "$1"; }
 in_container 'echo hello from the desktop > ~/Downloads/hello.txt'
+# A second of a 440 Hz tone, to preview.
+python3 -c 'import math, struct, sys, wave
+w = wave.open(sys.argv[1], "wb")
+w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i * 2 * math.pi * 440 / 8000))) for i in range(8000)))' "$work/tone.wav"
+in_container 'mkdir ~/Downloads/media'
+docker cp -q "$work/tone.wav" "$name:/home/user/Downloads/media/tone.wav"
+docker exec "$name" chown user /home/user/Downloads/media/tone.wav
 head -c 300000 /dev/urandom >"$work/up.bin"
 truncate -s 1G "$work/big.bin"
 mkdir -p "$work/up-folder/sub/deeper" "$work/up-folder/empty" "$work/downloads" "$work/chrome"
@@ -71,6 +79,7 @@ holds() {
     [[ "$got" == "$2" ]] || { echo "not ok - ~/Downloads/$1 holds \"$got\", not \"$2\""; exit 1; }
 }
 holds tty-check.txt tty-42
+holds b.txt sub/b.txt
 for d in up-folder "up-folder (2)"; do
     for f in a.txt sub/b.txt sub/deeper/c.txt; do holds "$d/$f" "$f"; done
 done

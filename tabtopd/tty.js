@@ -1,11 +1,14 @@
 // Browser terminal, served by tabtopd (see tty.go), drawn by ghostty-web.
 // Terminal bytes travel as data messages through the encrypted tunnel;
 // resizes go up as JSON text messages. The tunnel shows its login form when
-// there's no session.
+// there's no session. If the connection is lost, the page tries again by
+// itself (see reconnect.js), and tmux, which the server runs the shell
+// in, picks up where it was.
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, TunnelSocket } from "../tabtop/tunnel.js";
 import { nameTab, navBar } from "../tabtop/nav.js";
+import { reconnect } from "../tabtop/reconnect.js";
 
 // Links to the desktop and the files page, and Log out, in a bar above
 // the terminal.
@@ -206,7 +209,8 @@ const osc52 = new Osc52();
 new MouseReporter(term, (bytes) => send(bytes));
 
 const encoder = new TextEncoder();
-let ws = null;
+let ws = null;          // the terminal's tunnel, while it's open
+let connecting = false;
 
 function send(data) {
     if (ws?.readyState === WebSocket.OPEN) {
@@ -218,30 +222,50 @@ function sendSize() {
     send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
 }
 
+// connect opens the terminal. It resolves to false if the server couldn't
+// be reached, so it's worth trying again, else true. Once it's open,
+// losing it starts trying again; the server closing it, as when the shell
+// exits, waits for Enter.
 function connect() {
-    ws = new TunnelSocket({ type: "tty" }, { title: "Terminal" });
-    ws.binaryType = "arraybuffer";
-    ws.onopen = sendSize;
-    ws.onmessage = (e) => {
-        const bytes = new Uint8Array(e.data);
-        osc52.scan(bytes);
-        term.write(bytes);
-    };
-    ws.onclose = (e) => {
-        ws = null;
-        if (e.login) {
-            forgetSession();
-            location.reload();  // shows the login form
-            return;
-        }
-        term.write(`\r\n\x1b[2m[${e.reason || "Disconnected"}. Press Enter to reconnect.]\x1b[0m\r\n`);
-    };
+    connecting = true;
+    return new Promise((resolve) => {
+        const s = new TunnelSocket({ type: "tty" }, { title: "Terminal" });
+        s.binaryType = "arraybuffer";
+        s.onopen = () => {
+            connecting = false;
+            ws = s;
+            sendSize();
+            resolve(true);
+        };
+        s.onmessage = (e) => {
+            const bytes = new Uint8Array(e.data);
+            osc52.scan(bytes);
+            term.write(bytes);
+        };
+        s.onclose = (e) => {
+            connecting = false;
+            const was = ws === s;
+            ws = null;
+            if (e.login) {
+                forgetSession();
+                location.reload();  // shows the login form
+            } else if (e.lost) {
+                if (was) {
+                    term.write("\r\n\x1b[2m[Connection lost. Reconnecting…]\x1b[0m\r\n");
+                    reconnect("The terminal lost its connection.", connect);
+                }
+            } else {
+                term.write(`\r\n\x1b[2m[${e.reason || "Disconnected"}. Press Enter to reconnect.]\x1b[0m\r\n`);
+            }
+            resolve(!e.lost);
+        };
+    });
 }
 
 term.onData((data) => {
     if (ws) {
         send(encoder.encode(data));
-    } else if (data.includes("\r")) {
+    } else if (data.includes("\r") && !connecting && !document.getElementById("tabtop_reconnect")) {
         // Reloading also shows the login form if the session has ended.
         location.reload();
     }
@@ -251,4 +275,6 @@ term.onTitleChange((title) => {
     document.title = title || "Terminal";
 });
 
-connect();
+if (!(await connect())) {
+    reconnect("Can't reach the server.", connect);
+}

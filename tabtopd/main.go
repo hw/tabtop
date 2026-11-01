@@ -709,13 +709,6 @@ td.name { overflow-wrap: anywhere; }
 .error { color: #c5221f; }
 @media (prefers-color-scheme: dark) { .error { color: #f28b82; } }
 .hint { opacity: .7; font-size: 13px; }
-#drop_overlay { display: none; position: fixed; inset: 0; z-index: 20; pointer-events: none; align-items: center;
-       justify-content: center; padding: 1rem; background: color-mix(in srgb, var(--bg) 80%, transparent);
-       border: 3px dashed var(--accent); }
-body.dropping #drop_overlay { display: flex; }
-#drop_overlay p { max-width: 36rem; margin: 0; padding: 1rem 1.5rem; font-size: 1.15rem; font-weight: 600; text-align: center;
-       overflow-wrap: anywhere; color: var(--fg); background: var(--raised); border-radius: 10px;
-       box-shadow: 0 8px 28px rgba(0, 0, 0, .25); }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
 h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4rem; word-break: normal; overflow-wrap: anywhere;
@@ -751,6 +744,44 @@ details.menu .items button { font: inherit; text-align: left; color: inherit; ba
 details.menu .items button:hover, details.menu .items button:focus-visible { background: var(--hover); outline: none; }
 details.menu .items button.delete { color: #c5221f; }
 @media (prefers-color-scheme: dark) { details.menu .items button.delete { color: #f28b82; } }
+body.has-transfers { padding-bottom: 14rem; }
+dialog { width: min(26rem, calc(100vw - 2rem)); box-sizing: border-box; padding: 1.25rem; color: var(--fg);
+       background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
+dialog::backdrop { background: rgba(0, 0, 0, .4); }
+dialog p { margin: 0 0 .75rem; overflow-wrap: anywhere; }
+dialog input { font: inherit; width: 100%; box-sizing: border-box; padding: .4rem .5rem; }
+dialog .buttons { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+dialog button { font: inherit; padding: .3rem .9rem; }
+dialog button.primary { color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; }
+@media (prefers-color-scheme: dark) { dialog button.primary { color: #1c1c1e; } }
+dialog.preview { width: min(72rem, calc(100vw - 2rem)); height: calc(100vh - 2rem); max-height: none; padding: 0; }
+dialog.preview[open] { display: flex; flex-direction: column; }
+dialog.preview .head { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
+dialog.preview .head strong { margin-right: auto; overflow-wrap: anywhere; }
+dialog.preview .head button { padding: .2rem .7rem; }
+dialog.preview .body { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; }
+dialog.preview .body > * { max-width: 100%; max-height: 100%; }
+dialog.preview .body > p { padding: 1rem; }
+dialog.preview .body img, dialog.preview .body video { width: 100%; height: 100%; object-fit: scale-down; }
+dialog.preview .body audio { width: min(30rem, 90%); }
+dialog.preview .body pre { align-self: stretch; flex: 1; margin: 0; padding: .75rem 1rem; max-height: none;
+       font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 40rem) { .mod { display: none; }
+       dialog.preview { width: 100vw; height: 100vh; max-width: none; border-radius: 0; }
+       dialog.preview .head { flex-wrap: wrap; } dialog.preview .head strong { flex-basis: 100%; }
+       dialog.preview .head .hint { margin-right: auto; white-space: nowrap; } }
+` + transfersCSS + `</style>`
+
+// transfersCSS styles the overlay shown while files are dragged over a
+// page (see drop.js) and the transfers panel (see ui.js), on the files
+// page and, in desktopCSS, the desktop.
+const transfersCSS = `#drop_overlay { display: none; position: fixed; inset: 0; z-index: 20; pointer-events: none; align-items: center;
+       justify-content: center; padding: 1rem; background: color-mix(in srgb, var(--bg) 80%, transparent);
+       border: 3px dashed var(--accent); }
+body.dropping #drop_overlay { display: flex; }
+#drop_overlay p { max-width: 36rem; margin: 0; padding: 1rem 1.5rem; font-size: 1.15rem; font-weight: 600; text-align: center;
+       overflow-wrap: anywhere; color: var(--fg); background: var(--raised); border-radius: 10px;
+       box-shadow: 0 8px 28px rgba(0, 0, 0, .25); }
 #transfers { position: fixed; left: 1rem; bottom: 1rem; z-index: 10; width: min(26rem, calc(100vw - 2rem));
        max-height: 45vh; display: flex; flex-direction: column; background: var(--raised);
        border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .22); }
@@ -765,16 +796,18 @@ details.menu .items button.delete { color: #c5221f; }
 #uploads p span { flex: 1 1 12rem; }
 #uploads p progress { order: 3; flex: 1 1 100%; height: 6px; }
 #uploads button { font: inherit; font-size: 12px; }
-body.has-transfers { padding-bottom: 14rem; }
-dialog { width: min(26rem, calc(100vw - 2rem)); box-sizing: border-box; padding: 1.25rem; color: var(--fg);
-       background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
-dialog::backdrop { background: rgba(0, 0, 0, .4); }
-dialog p { margin: 0 0 .75rem; overflow-wrap: anywhere; }
-dialog input { font: inherit; width: 100%; box-sizing: border-box; padding: .4rem .5rem; }
-dialog .buttons { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
-dialog button { font: inherit; padding: .3rem .9rem; }
-dialog button.primary { color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; }
-@media (prefers-color-scheme: dark) { dialog button.primary { color: #1c1c1e; } }
-@media (max-width: 40rem) { .mod { display: none; }
-       #transfers { left: .5rem; right: .5rem; bottom: .5rem; width: auto; } }
-</style>`
+@media (max-width: 40rem) { #transfers { left: .5rem; right: .5rem; bottom: .5rem; width: auto; } }
+`
+
+// desktopCSS is /tabtop/desktop.css, which novnc.js adds to noVNC's page
+// for files dropped on the desktop: the files page's colours, dark as
+// noVNC is, the transfers panel on the right, clear of noVNC's control
+// bar, and over its screen, and the browser's own buttons in it rather
+// than noVNC's.
+const desktopCSS = `#drop_overlay, #transfers { --fg: #e8e8ea; --bg: #1c1c1e; --line: #3a3a3c; --raised: #2c2c2e; --accent: #8ab4f8;
+       font: 14px/1.5 system-ui, sans-serif; color: var(--fg); text-align: left; }
+` + transfersCSS + `#drop_overlay { z-index: 300; }
+#transfers { z-index: 200; }
+#transfers button { all: revert; font-size: 13px; }
+@media (min-width: 40.01rem) { #transfers { left: auto; right: 1rem; } }
+`

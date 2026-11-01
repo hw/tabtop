@@ -14,12 +14,12 @@ import { askYes, statusRow } from "./ui.js";
 // name it got, and then filled the same way. Progress shows in the
 // transfers panel, with a Cancel button for each file or folder until
 // it's done; done() is called, and awaited, once all have been tried
-// and any succeeded. It returns a function that makes the upload buttons,
-// which send the files or folder picked the same way.
-export function dropUploads(send, mkdir, done, here) {
+// and any succeeded. While files are dragged over the page, it says where
+// they'd go, followed by note. It returns a function that makes the upload
+// buttons, which send the files or folder picked the same way.
+export function dropUploads(send, mkdir, done, here, note = "") {
     let depth = 0;
     const isFiles = (e) => e.dataTransfer?.types.includes("Files");
-    // While files are dragged over the page, it says where they'd go.
     const where = document.createElement("p");
     const overlay = document.createElement("div");
     overlay.id = "drop_overlay";
@@ -33,7 +33,7 @@ export function dropUploads(send, mkdir, done, here) {
                 } catch {
                     // A malformed address: the page says so, and uploads fail.
                 }
-                where.textContent = `Drop to upload into ${["Downloads", ...dir.split("/").filter(Boolean)].join(" / ")}`;
+                where.textContent = `Drop to upload into ${["Downloads", ...dir.split("/").filter(Boolean)].join(" / ")}${note ? ` ${note}` : ""}`;
                 if (!overlay.isConnected) {
                     document.body.append(overlay);
                 }

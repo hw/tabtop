@@ -326,8 +326,10 @@ as_user dbus-launch --exit-with-session startxfce4 &
 
 # noVNC's defaults.json replaces its built-in setting defaults. A value the
 # viewer picks in the settings panel is saved in their browser and wins over
-# it, so VNC_RESIZE only applies to browsers that haven't chosen one.
-printf '{"resize": "%s"}\n' "$VNC_RESIZE" > /opt/novnc/defaults.json
+# it, so VNC_RESIZE only applies to browsers that haven't chosen one. The
+# desktop reconnects by itself, every 2 seconds, when its connection is
+# lost (the files page and terminal do too: see reconnect.js).
+printf '{"resize": "%s", "reconnect": true, "reconnect_delay": 2000}\n' "$VNC_RESIZE" > /opt/novnc/defaults.json
 printf '%s\n' '<!doctype html><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1">' \
     > /opt/novnc/index.html
 

@@ -218,9 +218,10 @@ export function cryptoBackend({ useNoble = false } = {}) {
 // The connection -----------------------------------------------------
 
 export class TunnelError extends Error {
-    constructor(message, login = false) {
+    constructor(message, login = false, lost = false) {
         super(message);
         this.login = login;  // the session is missing or over: log in again
+        this.lost = lost;    // the server couldn't be reached, or went, without saying why: try again later
     }
 }
 
@@ -242,13 +243,13 @@ class Socket {
         });
         this.opened.catch(() => {});
         const timer = setTimeout(() => {
-            fail(new TunnelError("Can't reach the server."));
+            fail(new TunnelError("Can't reach the server.", false, true));
             this.ws.close();
         }, CONNECT_TIMEOUT);
         this.opened.then(() => clearTimeout(timer), () => clearTimeout(timer));
         this.ws.onmessage = (e) => this._push(new Uint8Array(e.data));
         this.ws.onclose = (e) => {
-            fail(new TunnelError(e.reason || "Can't reach the server."));
+            fail(new TunnelError(e.reason || "Can't reach the server.", false, !e.reason));
             this.closeEvent = e;
             while (this.waiters.length) {
                 this.waiters.shift()(null);
@@ -272,7 +273,8 @@ class Socket {
             : this.closeEvent ? null : await new Promise((resolve) => this.waiters.push(resolve));
         if (!m) {
             const e = this.closeEvent;
-            throw new TunnelError(e?.reason || "Can't reach the server.", e?.code === CLOSE_LOGIN);
+            const login = e?.code === CLOSE_LOGIN;
+            throw new TunnelError(e?.reason || "Can't reach the server.", login, !e?.reason && !login);
         }
         return m;
     }
@@ -335,7 +337,7 @@ export class Tunnel {
         t.sendText(JSON.stringify(request));
         const first = await t.next();
         if (!first || first.text === undefined) {
-            throw new TunnelError(t.closeReason || "The connection closed.", t.closeLogin);
+            throw new TunnelError(t.closeReason || "The connection closed.", t.closeLogin, !t.closeReason && !t.closeLogin);
         }
         const reply = JSON.parse(first.text);
         if (reply.error) {
@@ -499,7 +501,9 @@ export async function request(req) {
 // the terminal and the audio player: it's open once the server has
 // accepted the request, and delivers text as strings and data as
 // ArrayBuffers. With a title, it shows the login form when there's no
-// session, and logs in again when the session is over.
+// session, and logs in again when the session is over. Its close event
+// has login if the session is over, and lost if the connection failed or
+// was lost without the server saying why, as when the network goes.
 export class TunnelSocket {
     static CONNECTING = 0;
     static OPEN = 1;
@@ -523,7 +527,7 @@ export class TunnelSocket {
                     forgetSession();
                     continue;
                 }
-                this._finish(e.message, e.login);
+                this._finish(e.message, e.login, e.lost);
                 return;
             }
         }
@@ -537,10 +541,10 @@ export class TunnelSocket {
         for (let m; (m = await this._t.next());) {
             this.onmessage?.({ data: m.text ?? m.data });
         }
-        this._finish(this._t.closeReason, this._t.closeLogin);
+        this._finish(this._t.closeReason, this._t.closeLogin, !this._t.closeReason && !this._t.closeLogin);
     }
 
-    _finish(reason, login = false) {
+    _finish(reason, login = false, lost = false) {
         if (this._done) {
             return;
         }
@@ -550,7 +554,7 @@ export class TunnelSocket {
             // A WebSocket that fails to connect reports an error first.
             this.onerror?.(new Event("error"));
         }
-        this.onclose?.({ code: 1000, reason, login, wasClean: true });
+        this.onclose?.({ code: 1000, reason, login, lost, wasClean: true });
     }
 
     send(data) {

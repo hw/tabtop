@@ -5,8 +5,8 @@ desktop, and you log in with a TOTP code from an authenticator app (optionally
 preceded by a password). The desktop's sound plays in the browser. The same
 site also offers a terminal, and a files page for the desktop user's
 `~/Downloads`, where files and folders can be downloaded (folders as
-zips), uploaded (with a button or by dropping them on the page), renamed
-and deleted. Logins and everything after them
+zips), previewed, uploaded (with a button or by dropping them on the
+page, or on the desktop), renamed and deleted. Logins and everything after them
 travel through an [encrypted tunnel](#encryption) between the page and the
 gateway, so a proxy that decrypts HTTPS on the way can't read them.
 
@@ -25,12 +25,24 @@ goes back to the tab already showing that page where the browser allows
 (as for tabs opened from each other). Each also has **Log out**, which
 logs out of all three.
 
+If the connection to the server is lost, as when the network drops or the
+laptop sleeps, each page reconnects by itself. The desktop shows noVNC's
+**Reconnecting...** and tries every 2 seconds (switch it off with
+**Automatic reconnect** in noVNC's settings). The terminal and the files
+page show a banner counting down to the next try, sooner at first and then
+up to every 30 seconds, with **Try now**; they also try at once when the
+browser comes back online or the tab is shown again. The terminal picks up
+the same tmux session. Uploads and downloads that were cut off aren't
+retried: start them again. When the server ends something on purpose,
+nothing retries: a terminal whose shell exited waits for Enter, and an
+ended session asks for a login.
+
 Everything is served on one port by `tabtopd` (in `tabtopd/`):
 
 | Path | What it serves |
 |---|---|
 | `/` | The noVNC client, which connects to the desktop |
-| `/downloads/` | The files page for `~/Downloads`: download (folders as zips), upload, rename and delete files and folders |
+| `/downloads/` | The files page for `~/Downloads`: download (folders as zips), preview, upload, rename and delete files and folders |
 | `/tty/` | A terminal (ghostty-web and tmux) |
 | `/tunnel` | The [encrypted connection](#encryption) that carries the logins, the desktop, the terminal, files and sound for all of the above |
 | `/healthz` | `ok` while the desktop is up and logins can work, for health checks |
@@ -574,7 +586,8 @@ How long a login lasts, and how to notice and end one you didn't make:
   page's own request. A page closed or left closes its connections. Below
   are the last 20 logins, failed ones included. **Log out everywhere** ends
   every session, this one too, and closes everything they have open: an
-  open desktop shows Disconnected, and asks for a login when it reconnects.
+  open desktop or terminal asks for a login when it reconnects, which it
+  does by itself.
 - **The gateway's log** (`docker logs`) records each login and each time a
   session is used from an address it didn't log in from.
 
@@ -610,7 +623,18 @@ downloaded at `http://<host>:6080/downloads/`:
   "Yesterday", a weekday or a date, in your browser's language and the
   container's time zone (`TZ`, UTC by default); hovering over one, or over
   a size, shows it exactly. Each row's
-  **⋯** menu downloads, renames or deletes it.
+  **⋯** menu previews, downloads, renames or deletes it.
+- **Previews:** clicking a picture, video, sound or text file shows it over
+  the page instead of downloading it; **‹** and **›** (or the arrow keys)
+  step through the others in the folder, as listed. Text covers common
+  extensions (`.txt`, `.md`, `.log`, `.json`, `.csv`, source code and so
+  on) and names without one; a file that turns out not to be text says so.
+  The whole file is fetched first, so previews are for pictures up to
+  50 MB, video and sound up to 200 MB, and text up to 2 MB; bigger ones,
+  and every other kind, download when clicked. **Download** in the preview
+  saves the copy it already has. What a browser can play varies: MP4,
+  WebM, MP3 and the like play everywhere, others may not. PDFs download
+  rather than open (see **Attachments only**).
 - **Transfers:** downloads, uploads, zips and other changes show in a
   panel in the bottom corner, each with a progress bar while it goes and
   a **Cancel** button where it can be stopped, and a bar for how many are
@@ -641,7 +665,9 @@ downloaded at `http://<host>:6080/downloads/`:
   is limited to 1 MiB); a folder's own zip has no such limit.
 - **Uploads:** pick files with **Upload files…**, or drop them on the
   page, to upload them into the folder it shows; while you drag them over
-  it, the page says which folder that is. An upload never replaces
+  it, the page says which folder that is. Files and folders dropped on the
+  desktop's page are uploaded into `~/Downloads` itself the same way, with
+  a transfers panel there. An upload never replaces
   a file: one whose name is taken is saved as `name (1).ext`,
   `name (2).ext` and so on, with `name` cut short if the name would get
   too long. Each file is written to a hidden temporary file
@@ -678,7 +704,12 @@ downloaded at `http://<host>:6080/downloads/`:
   without following any symlinks in it. Files can't be changed from the
   web, only replaced by deleting and uploading again.
 - **Attachments only:** files are always sent as downloads, never shown as
-  pages, so an HTML file in `~/Downloads` can't run on the site.
+  pages, so an HTML file in `~/Downloads` can't run on the site. A preview
+  shows a file in an element that can't run anything in it: a picture
+  (SVGs too, whose scripts don't run there), a video or sound player, or
+  plain text, which is how web pages and SVGs' source are shown. That's
+  also why PDFs aren't previewed: the browser's PDF viewer would need a
+  frame of the site.
 - **Symlinks:** symlinks leading outside `~/Downloads` are hidden and can't
   be downloaded, zipped, uploaded into, renamed or deleted.
 - **Big folders:** a folder lists at most 10,000 entries. With more, the
@@ -877,10 +908,11 @@ TABTOP_NOBLE_DIR=/tmp/noble mise run test
 
 `test/browser-check.sh <image>` checks an image end to end, the way a
 person uses it: it starts a container and headless Chrome, logs in, opens
-the desktop and its sound, lists, downloads, uploads and deletes files,
-uploads a folder both picked and dropped and deletes one, downloads zips,
-makes a folder, renames a file, deletes several at once, cancels an
-upload, runs a command in the terminal, and logs out, then checks from
+the desktop and its sound, lists, downloads, previews, uploads and deletes
+files, uploads a folder both picked and dropped and deletes one, downloads
+zips, makes a folder, renames a file, deletes several at once, cancels an
+upload, drops a file on the desktop, runs a command in the terminal, cuts
+the connection on each page to see it come back, and logs out, then checks from
 inside the container what the pages left in `~/Downloads`, and what the
 zips hold. It prints `ok` or `not ok` for each step, and the container's
 log if one fails. It needs Docker, Node, Python 3 and Chrome or Chromium

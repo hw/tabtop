@@ -1,20 +1,22 @@
 // Checks a running TabTop end to end in headless Chrome, through the
 // pages a person uses: login, desktop, audio, the files page (list,
-// download, upload, delete, folder upload picked and dropped, folder
-// delete, zips, new folder, rename, deleting several, cancelling an
-// upload), the terminal, and logout.
+// download, preview, upload, delete, folder upload picked and dropped,
+// folder delete, zips, new folder, rename, deleting several, cancelling an
+// upload), a file dropped on the desktop, the terminal, reconnecting after
+// the connection is lost on each page, and logout.
 // browser-check.sh starts the container and Chrome and runs it; it exits
 // non-zero, saying which step failed, if anything doesn't work.
 //
 // Usage: node browser-check.mjs <devtools port> <site url> <download dir> <work dir>
 // The site's TOTP secret must be the Base32 of "12345678901234567890", and
-// ~/Downloads must hold hello.txt with "hello from the desktop\n". The work
+// ~/Downloads must hold hello.txt with "hello from the desktop\n", and
+// media/tone.wav, a second of sound. The work
 // dir holds up.bin, big.bin (big enough to cancel while it uploads), and
 // the folder up-folder: a.txt, sub/b.txt and sub/deeper/c.txt, each holding
 // its own name, and the empty folder empty.
 
 import { createHmac } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 
 const [port, base, downloads, work] = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -118,6 +120,21 @@ async function setFiles(selector, files) {
     await cdp("DOM.setFileInputFiles", { files, nodeId: input.nodeId });
 }
 
+// Each page's WebSockets are kept in window.sockets, so a step can close
+// them as a lost connection would; while window.offline is set, new ones
+// go nowhere, as if the server can't be reached.
+const socketHook = `(() => {
+    const Real = WebSocket;
+    window.sockets = [];
+    window.WebSocket = class extends Real {
+        constructor(url, ...rest) {
+            super(window.offline ? "ws://127.0.0.1:65535/" : url, ...rest);
+            window.sockets.push(this);
+        }
+    };
+})()`;
+const dropConnections = `window.sockets.filter((s) => s.readyState === 1).forEach((s) => s.close())`;
+
 let failed = false;
 async function step(name, fn) {
     try {
@@ -136,6 +153,7 @@ try {
     await cdp("DOM.enable");
     await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
     await cdp("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
+    await cdp("Page.addScriptToEvaluateOnNewDocument", { source: socketHook });
 
     await step("login and desktop", async () => {
         await open("vnc.html?autoconnect=1", `!!document.querySelector("#tabtop_login input")`, "the login form");
@@ -166,6 +184,15 @@ try {
         }
     });
 
+    await step("desktop: reconnects", async () => {
+        await ev(dropConnections);
+        await waitFor(`!document.documentElement.classList.contains("noVNC_connected")`, "the desktop to notice", 5000);
+        await waitFor(`document.documentElement.classList.contains("noVNC_connected")`, "the desktop to reconnect", 15000);
+        if (await ev(`!!document.querySelector("#tabtop_login")`)) {
+            throw new Error("asked for a login again");
+        }
+    });
+
     await step("files: list, without a second login", async () => {
         await open("downloads/", `!!document.querySelector("table")`, "the listing");
         const nav = await ev(`[...document.querySelectorAll(".tabtop-nav a, .tabtop-nav [aria-current]")].map((a) => a.textContent).join()`);
@@ -178,7 +205,7 @@ try {
     });
 
     await step("files: download", async () => {
-        await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "hello.txt").click()`);
+        await ev(`${row("hello.txt")}.querySelector("button.download").click()`);
         const p = `${downloads}/hello.txt`;
         for (const end = Date.now() + 20000; Date.now() < end && !existsSync(p);) {
             await sleep(200);
@@ -188,6 +215,32 @@ try {
             const shown = await ev(status);
             throw new Error(`downloaded ${JSON.stringify(got)}; the page shows ${JSON.stringify(shown)}`);
         }
+    });
+
+    await step("files: preview", async () => {
+        await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "hello.txt").click()`);
+        await waitFor(`document.querySelector("dialog.preview[open] pre")?.textContent === "hello from the desktop\\n"`, "hello.txt's text");
+        // Download saves the copy the preview holds, here over the one the
+        // last step downloaded. A real click: without one, Chrome holds back
+        // a second download.
+        const p = `${downloads}/hello.txt`;
+        rmSync(p);
+        await click(`[...document.querySelectorAll("dialog.preview button")].find((b) => b.textContent === "Download")`);
+        await waitForFile(p, "hello.txt, from the preview");
+        await sleep(500);
+        if (readFileSync(p, "utf8") !== "hello from the desktop\n") {
+            throw new Error(`the preview's download holds ${JSON.stringify(readFileSync(p, "utf8"))}`);
+        }
+        await ev(`document.querySelector("dialog.preview button.close").click()`);
+        await waitFor(`!document.querySelector("dialog.preview")`, "the preview to close");
+    });
+
+    await step("files: preview a sound", async () => {
+        await open("downloads/#/media/", `${listed}.includes("tone.wav")`, "media/tone.wav");
+        await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "tone.wav").click()`);
+        await waitFor(`document.querySelector("dialog.preview audio")?.duration > 0.9`, "the sound to load", 15000);
+        await ev(`document.querySelector("dialog.preview").close()`);
+        await open("downloads/", `!!document.querySelector("table")`, "the listing");
     });
 
     await step("files: upload", async () => {
@@ -242,6 +295,13 @@ try {
         }
         await ev(`[...document.querySelectorAll("h1.crumbs a")].find((a) => a.textContent === "up-folder").click()`);
         await waitFor(`${listed}.includes("sub/") && ${listed}.includes("a.txt")`, "up-folder/, from the heading");
+    });
+
+    await step("files: reconnects", async () => {
+        await ev(`window.offline = true; location.hash = "#/up-folder/sub/"`);
+        await waitFor(`document.getElementById("tabtop_reconnect")?.textContent.startsWith("Can't reach the server.")`, "the reconnect banner");
+        await ev(`window.offline = false; [...document.querySelectorAll("#tabtop_reconnect button")].find((b) => b.textContent === "Try now").click()`);
+        await waitFor(`${listed}.includes("b.txt") && !document.getElementById("tabtop_reconnect")`, "up-folder/sub/, once reconnected");
     });
 
     await step("files: folder dropped", async () => {
@@ -311,6 +371,20 @@ try {
         }
     });
 
+    await step("desktop: a file dropped", async () => {
+        await open("vnc.html?autoconnect=1", `document.documentElement.classList.contains("noVNC_connected")`, "the desktop");
+        const data = { items: [], files: [`${work}/up-folder/sub/b.txt`], dragOperationsMask: 1 };
+        for (const type of ["dragEnter", "dragOver"]) {
+            await cdp("Input.dispatchDragEvent", { type, x: 600, y: 400, data });
+        }
+        const overlay = await ev(`getComputedStyle(document.getElementById("drop_overlay")).display + " " + document.getElementById("drop_overlay").textContent`);
+        if (overlay !== "flex Drop to upload into Downloads (~/Downloads)") {
+            throw new Error(`while dragging, the overlay is ${JSON.stringify(overlay)}`);
+        }
+        await cdp("Input.dispatchDragEvent", { type: "drop", x: 600, y: 400, data });
+        await waitFor(`/b.txt: uploaded/.test(${status})`, "the upload");
+    });
+
     await step("terminal", async () => {
         await open("tty/", `!!document.querySelector("canvas")`, "the terminal");
         if (await ev(`!!document.querySelector("#tabtop_login")`)) {
@@ -321,6 +395,11 @@ try {
             throw new Error(`the bar above the terminal links to ${nav}`);
         }
         await sleep(2000);  // for the shell's prompt
+        // Lost, and back by itself: what's typed next goes to the shell.
+        await ev(dropConnections);
+        await waitFor(`!!document.getElementById("tabtop_reconnect")`, "the reconnect banner", 5000);
+        await waitFor(`!document.getElementById("tabtop_reconnect")`, "the terminal to reconnect", 15000);
+        await sleep(1000);
         await click(`document.querySelector("canvas")`);
         // A key at a time: the terminal reads key events, not text input.
         for (const ch of "echo tty-$((6*7)) > ~/Downloads/tty-check.txt") {

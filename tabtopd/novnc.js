@@ -5,10 +5,15 @@
 // Xvnc, which only the gateway can reach, asks for nothing more.
 //
 // It also adds buttons to noVNC's control bar that open the terminal and
-// the files page, and log out (see nav.js).
+// the files page, and log out (see nav.js), and uploads files and folders
+// dropped on the page into ~/Downloads, as the files page does (see
+// drop.js), showing how they go in a transfers panel styled by
+// desktop.css.
 
 import { TunnelSocket } from "./tunnel.js";
 import { logOut, nameTab, openPage, terminalOn } from "./nav.js";
+import { dropUploads } from "./drop.js";
+import { makeFolder, setLoginTitle, uploadFile } from "./requests.js";
 
 window.tabtopChannel = () => new TunnelSocket({ type: "vnc" }, { title: "Desktop" });
 
@@ -40,3 +45,7 @@ if (settings) {
 } else {
     console.warn("tabtop: noVNC's control bar wasn't found; no links to the terminal and files");
 }
+
+document.head.append(Object.assign(document.createElement("link"), { rel: "stylesheet", href: new URL("./desktop.css", import.meta.url).href }));
+setLoginTitle("Desktop");
+dropUploads(uploadFile, makeFolder, () => {}, () => "", "(~/Downloads)");

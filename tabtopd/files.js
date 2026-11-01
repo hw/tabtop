@@ -4,18 +4,24 @@
 // workers (HTTPS or localhost), a fetched file streams into an ordinary
 // download through download-sw.js, so it goes to disk as it arrives;
 // elsewhere it's collected first and then saved (see saveFile). Either way
-// it's never shown as a page on this site. A folder, or several files and
+// it's never shown as a page on this site. Pictures, video, sound and text
+// open in a preview instead, where they're small enough (see preview.js).
+// A folder, or several files and
 // folders picked with their checkboxes, download as one zip (see fetchZip).
 // Files and folders dropped on the page are uploaded into the folder shown,
 // as are those picked with its buttons (see drop.js, uploadFile and
 // makeFolder), and each file and folder can be renamed and deleted from
 // its menu. The list sorts by any column (see sortEntries). Below, it
-// lists the live sessions and recent logins (see showSessions).
+// lists the live sessions and recent logins (see showSessions). If the
+// server can't be reached, it says so and tries again (see reconnect.js).
 
 import * as tunnel from "./tunnel.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askName, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
+import { call, collect, complete, makeFolder, saveBlob, uploadFile } from "./requests.js";
+import { preview, previewable } from "./preview.js";
+import { reconnect, reconnected } from "./reconnect.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -48,25 +54,15 @@ function dirHash(dir) {
     return "#/" + dir.split("/").filter(Boolean).map(encodeURIComponent).join("/") + (dir ? "/" : "");
 }
 
-// call runs a request with the session, logging in again if it's over.
-async function call(req) {
-    for (;;) {
-        const session = await tunnel.session("Downloads");
-        try {
-            return await tunnel.Tunnel.open(req, session);
-        } catch (err) {
-            if (!err.login) {
-                throw err;
-            }
-            tunnel.forgetSession();
-        }
-    }
-}
-
 // Counts calls to show, so one whose listing arrives after a later one's
 // draws nothing: moving quickly between folders ends on the last.
 let shown = 0;
 
+// The folder the page shows, once one is.
+let shownDir = null;
+
+// show draws the folder named after the "#". It resolves to false if the
+// server couldn't be reached, having started trying again, else true.
 async function show() {
     const me = ++shown;
     let dir, t;
@@ -78,16 +74,29 @@ async function show() {
         }
         t = await call({ type: "list", path: dir });
     } catch (err) {
-        if (me === shown) {
-            page.replaceChildren(el("h1", { textContent: "Downloads" }), el("p", { className: "error", textContent: err.message }),
-                el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
+        if (me !== shown) {
+            return true;
         }
-        return;
+        if (err.lost) {
+            // The folder already shown stays, as it was last seen.
+            if (dir !== shownDir) {
+                shownDir = null;
+                page.replaceChildren(breadcrumbs(dir ?? ""), el("p", { className: "error", textContent: err.message }));
+            }
+            reconnect("Can't reach the server.", show);
+            return false;
+        }
+        shownDir = null;
+        page.replaceChildren(el("h1", { textContent: "Downloads" }), el("p", { className: "error", textContent: err.message }),
+            el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
+        return true;
     }
     t.close();
     if (me !== shown) {
-        return;
+        return true;
     }
+    shownDir = dir;
+    reconnected();
     document.title = "Downloads /" + (dir ? dir + "/" : "");
 
     const sessions = el("div", { id: "sessions" });
@@ -160,13 +169,18 @@ async function show() {
         const q = filter.value.trim().toLocaleLowerCase();
         visible = q ? entries.filter((e) => e.name.toLocaleLowerCase().includes(q)) : entries;
         matches.textContent = q ? `${visible.length} of ${entries.length} shown` : "";
-        for (const e of sortEntries(visible)) {
+        const sorted = sortEntries(visible);
+        // Previewing one steps through the rest shown that can be.
+        const previews = sorted.filter((e) => !e.dir && previewable(e.name, e.bytes ?? 0));
+        const open = (e) => preview(dir, previews, previews.indexOf(e), fetchFile);
+        for (const e of sorted) {
             const path = join(dir, e.name);
+            const canPreview = previews.includes(e);
             const link = el("a", { href: e.dir ? dirHash(path) : "#", textContent: e.name + (e.dir ? "/" : "") });
             if (!e.dir) {
                 link.addEventListener("click", (ev) => {
                     ev.preventDefault();
-                    fetchFile(path);
+                    canPreview ? open(e) : fetchFile(path);
                 });
             }
             const box = el("input", { type: "checkbox", title: `Select ${e.name}`, checked: selected.has(e.name) });
@@ -175,6 +189,7 @@ async function show() {
                 updateSelection();
             });
             const menu = rowMenu(`Actions for ${e.name}`, [
+                ...(canPreview ? [["preview", "Preview", () => open(e)]] : []),
                 ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
                 ["rename", "Rename…", () => rename(dir, e)],
                 ["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)],
@@ -220,6 +235,7 @@ async function show() {
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         sessions);
+    return true;
 }
 
 // breadcrumbs is the page's heading for dir: Downloads and each folder
@@ -523,12 +539,6 @@ function humanBytes(n) {
     return `${i ? n.toFixed(1) : n} ${units[i]}`;
 }
 
-// complete reports whether a download that's ended came whole: all size
-// bytes of a file, or a zip (size null) the server said it finished.
-function complete(t, got, size) {
-    return size === null ? t.trailer?.done === true : got === size;
-}
-
 // How long the download may go without asking for more before it's given
 // up, as when the browser stops the service worker or the download is
 // paused, rather than leave it waiting with the tunnel open.
@@ -594,87 +604,19 @@ function streamFile(t, name, size, progress, sw) {
     });
 }
 
-// saveFile collects the file, then saves it, and returns why it failed, or
-// "". Each chunk becomes a Blob as it arrives, which moves it out of the
-// page's memory into the browser's blob storage; Chrome keeps large ones in
-// temporary files on disk.
+// saveFile collects the file (see collect), then saves it, and returns why
+// it failed, or "".
 async function saveFile(t, name, size, progress) {
-    const chunks = [];
-    let got = 0;
-    for (let data; (data = await t.nextChunk());) {
-        chunks.push(new Blob([data]));
-        got += data.byteLength;
-        progress(got);
-    }
-    if (!complete(t, got, size)) {
-        return `failed: ${t.closeReason || "connection lost"}`;
-    }
-    const url = URL.createObjectURL(new Blob(chunks, { type: "application/octet-stream" }));
-    const a = el("a", { href: url, download: name });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-    return "";
-}
-
-// Uploads are sent in chunks the size of the server's, at most
-// UPLOAD_WINDOW of them ahead of those it has acknowledged writing, so a
-// slow server or disk doesn't pile the file up in the browser.
-const UPLOAD_CHUNK = 256 * 1024;
-const UPLOAD_WINDOW = 16;
-
-// uploadFile uploads a dropped or picked file into the folder dir, and
-// returns the name it was saved as, and any warning. Aborting signal ends
-// it, and the server then deletes what it had of the file.
-async function uploadFile(file, progress, dir, signal) {
-    signal.throwIfAborted();
-    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size });
-    const abort = () => t.close();
-    signal.addEventListener("abort", abort);
     try {
-        signal.throwIfAborted();  // while it was opening
-        const chunks = Math.ceil(file.size / UPLOAD_CHUNK);
-        let sent = 0;
-        let acked = 0;
-        for (;;) {
-            while (sent < chunks && sent - acked < UPLOAD_WINDOW) {
-                const start = sent * UPLOAD_CHUNK;
-                t.sendData(new Uint8Array(await file.slice(start, start + UPLOAD_CHUNK).arrayBuffer()));
-                sent++;
-            }
-            const m = await t.next();
-            if (!m) {
-                throw new Error(t.closeReason || "connection lost");
-            }
-            if (m.text !== undefined) {
-                const res = JSON.parse(m.text);
-                if (res.name && acked === chunks) {
-                    return { name: res.name, warning: res.warning };
-                }
-                throw new Error(res.error || "the server's reply is malformed");
-            }
-            acked++;
-            progress(Math.min(acked * UPLOAD_CHUNK, file.size));
-        }
-    } finally {
-        signal.removeEventListener("abort", abort);
-        t.close();
+        saveBlob(await collect(t, size, progress), name);
+        return "";
+    } catch (err) {
+        return `failed: ${err.message}`;
     }
 }
 
 // uploadButton makes the page's upload button (see drop.js).
-let uploadButton;
-
-// makeFolder makes the folder name in dir for an upload, and returns the
-// name it got.
-async function makeFolder(dir, name) {
-    const t = await call({ type: "mkdir", path: dir, name });
-    t.close();
-    return t.reply.name;
-}
-
-uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir);
+const uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir);
 // "/" goes to the filter box, as in many sites' search, unless typing.
 document.addEventListener("keydown", (e) => {
     if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest?.("input, textarea, [contenteditable], dialog")) {

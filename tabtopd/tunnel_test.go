@@ -500,6 +500,10 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/files.js", http.StatusOK},
 		{"GET", "/tabtop/ui.js", http.StatusOK},
 		{"GET", "/tabtop/nav.js", http.StatusOK},
+		{"GET", "/tabtop/requests.js", http.StatusOK},
+		{"GET", "/tabtop/preview.js", http.StatusOK},
+		{"GET", "/tabtop/reconnect.js", http.StatusOK},
+		{"GET", "/tabtop/desktop.css", http.StatusOK},
 		{"GET", "/tabtop/novnc.js", http.StatusOK},
 		{"GET", noble + "/ciphers/chacha.js", http.StatusOK},
 		{"GET", noble + "/curves/abstract/montgomery.js", http.StatusOK},
@@ -533,6 +537,10 @@ func TestEndpoints(t *testing.T) {
 		case "GET " + noble + "/ciphers/chacha.js":
 			if cache != immutableCache {
 				t.Errorf("noble file cached as %q", cache)
+			}
+		case "GET /tabtop/desktop.css":
+			if ct := resp.Header.Get("Content-Type"); ct != "text/css; charset=utf-8" || !strings.Contains(string(body), "#transfers") {
+				t.Errorf("desktop.css is served as %q with %d bytes", ct, len(body))
 			}
 		case "GET /tabtop/tunnel.js":
 			if cache != "no-cache, no-transform" || strings.Contains(string(body), `"./noble/`) ||
