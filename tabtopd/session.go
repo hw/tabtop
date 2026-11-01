@@ -10,6 +10,8 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"log"
 	"slices"
@@ -37,6 +39,7 @@ type session struct {
 	open      map[*tunnel]bool
 	idleSince time.Time    // when its last tunnel closed (or it was made)
 	uses      []sessionUse // where its tunnels came from: the login's first
+	browser   string       // what logged in, as browserName says
 	expire    *time.Timer
 	idle      *time.Timer // nil while a tunnel is open, or with no idle limit
 }
@@ -50,9 +53,10 @@ type sessionUse struct {
 
 // loginEvent is one login, for the history shown after logging in.
 type loginEvent struct {
-	Time time.Time `json:"time"`
-	IP   string    `json:"ip"`
-	OK   bool      `json:"ok"`
+	Time    time.Time `json:"time"`
+	IP      string    `json:"ip"`
+	Browser string    `json:"browser,omitempty"` // as browserName says
+	OK      bool      `json:"ok"`
 }
 
 // liveLocked reports whether s can still be used. g.mu must be held.
@@ -61,9 +65,10 @@ func (g *server) liveLocked(s *session, now time.Time) bool {
 		(len(s.open) > 0 || g.sessionIdle == 0 || now.Sub(s.idleSince) < g.sessionIdle)
 }
 
-// newSession starts a session for a login from ip: its id, its secret,
-// and the logins before it, newest first.
-func (g *server) newSession(ip string) (string, []byte, []loginEvent) {
+// newSession starts a session for a login from ip, by browser (see
+// browserName): its id, its secret, and the logins before it, newest
+// first.
+func (g *server) newSession(ip, browser string) (string, []byte, []loginEvent) {
 	id := newToken()
 	secret := make([]byte, 32)
 	rand.Read(secret) // can't fail (see newToken)
@@ -74,7 +79,7 @@ func (g *server) newSession(ip string) (string, []byte, []loginEvent) {
 	}
 	s := &session{
 		secret: secret, created: now, expiry: now.Add(max), open: map[*tunnel]bool{},
-		idleSince: now, uses: []sessionUse{{ip, now, now}},
+		idleSince: now, uses: []sessionUse{{ip, now, now}}, browser: browser,
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -86,7 +91,7 @@ func (g *server) newSession(ip string) (string, []byte, []loginEvent) {
 	g.armIdleLocked(id, s)
 	history := slices.Clone(g.logins)
 	slices.Reverse(history)
-	g.recordLoginLocked(ip, true)
+	g.recordLoginLocked(ip, browser, true)
 	return id, secret, history
 }
 
@@ -117,8 +122,8 @@ func (g *server) armIdleLocked(id string, s *session) {
 	})
 }
 
-func (g *server) recordLoginLocked(ip string, ok bool) {
-	g.logins = append(g.logins, loginEvent{time.Now(), ip, ok})
+func (g *server) recordLoginLocked(ip, browser string, ok bool) {
+	g.logins = append(g.logins, loginEvent{time.Now(), ip, browser, ok})
 	if len(g.logins) > maxLoginLog {
 		g.logins = slices.Delete(g.logins, 0, len(g.logins)-maxLoginLog)
 	}
@@ -196,6 +201,34 @@ func (g *server) endSession(id, reason string, asking *tunnel) {
 	if ok {
 		closeTunnels(s, reason, asking)
 	}
+}
+
+// sessionHandle names the session id in the files page's list, to end it
+// by: a hash of it, so the page never learns other sessions' ids.
+func sessionHandle(id string) string {
+	h := sha256.Sum256([]byte("tabtop session handle\x00" + id))
+	return base64.RawURLEncoding.EncodeToString(h[:12])
+}
+
+// endSessionByHandle ends the session named handle (see sessionHandle),
+// for another session, asking, from ip, and reports whether there was
+// one. A session doesn't end itself this way: logging out does that.
+func (g *server) endSessionByHandle(handle, asking, ip string) bool {
+	g.mu.Lock()
+	id := ""
+	for sid := range g.sessions {
+		if sessionHandle(sid) == handle && sid != asking {
+			id = sid
+			break
+		}
+	}
+	g.mu.Unlock()
+	if id == "" {
+		return false
+	}
+	log.Printf("a session was ended from another, at %s", ip)
+	g.endSession(id, "This session was ended from another.", nil)
+	return true
 }
 
 // endAllSessions ends every session, closing their tunnels but the one
@@ -286,10 +319,12 @@ func (g *server) liveSessions() int {
 
 // sessionInfo is a session as the files page lists it.
 type sessionInfo struct {
+	Handle  string       `json:"handle"` // names it to end it (see sessionHandle)
 	Created time.Time    `json:"created"`
 	Expires time.Time    `json:"expires"`
 	Open    int          `json:"open"`
 	Uses    []sessionUse `json:"uses"`
+	Browser string       `json:"browser,omitempty"` // what logged in, as browserName says
 	Current bool         `json:"current"`
 }
 
@@ -307,7 +342,7 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 			if s.open[asking] {
 				open--
 			}
-			list = append(list, sessionInfo{s.created, s.expiry, open, slices.Clone(s.uses), id == current})
+			list = append(list, sessionInfo{sessionHandle(id), s.created, s.expiry, open, slices.Clone(s.uses), s.browser, id == current})
 		}
 	}
 	slices.SortFunc(list, func(a, b sessionInfo) int { return a.Created.Compare(b.Created) })
@@ -338,3 +373,56 @@ func parseSessionLimit(s string, zeroOK bool) (time.Duration, error) {
 }
 
 var errBadLimit = errors.New("must be whole minutes, such as 90m or 12h")
+
+// browserName names the browser that sent the User-Agent ua, and what it
+// runs on, as "Chrome on macOS", so the sessions list can tell logins
+// apart; "" if it can't tell either. The browser says this itself, so it
+// tells logins apart but proves nothing.
+func browserName(ua string) string {
+	has := func(s ...string) bool {
+		return slices.ContainsFunc(s, func(s string) bool { return strings.Contains(ua, s) })
+	}
+	browser := ""
+	switch {
+	case has("Edg/", "EdgA/", "EdgiOS/"):
+		browser = "Edge"
+	case has("OPR/", "Opera"):
+		browser = "Opera"
+	case has("SamsungBrowser/"):
+		browser = "Samsung Internet"
+	case has("Firefox/", "FxiOS/"):
+		browser = "Firefox"
+	case has("Chromium/"):
+		browser = "Chromium"
+	case has("Chrome/", "CriOS/"):
+		browser = "Chrome"
+	case has("Safari/") && has("Version/"):
+		browser = "Safari"
+	}
+	system := ""
+	switch {
+	case has("iPhone"):
+		system = "iPhone"
+	case has("iPad"):
+		system = "iPad"
+	case has("Android"):
+		system = "Android"
+	case has("CrOS"):
+		system = "ChromeOS"
+	case has("Windows"):
+		system = "Windows"
+	case has("Macintosh", "Mac OS X"):
+		system = "macOS"
+	case has("Linux", "X11"):
+		system = "Linux"
+	}
+	switch {
+	case browser != "" && system != "":
+		return browser + " on " + system
+	case browser != "":
+		return browser
+	case system != "":
+		return "a browser on " + system
+	}
+	return ""
+}

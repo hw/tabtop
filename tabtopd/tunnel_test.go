@@ -677,6 +677,40 @@ func TestTunnelTTY(t *testing.T) {
 	readUntil("ready")
 	tc.write(ctx, msgText, []byte(`{"type":"resize","cols":100,"rows":30}`))
 	tc.write(ctx, msgText, []byte(`{"type":"resize","cols":0,"rows":99999}`)) // ignored
+	// Searching runs tmux's copy mode; bad text runs nothing.
+	searched := make(chan string, 8)
+	oldTmux := tmuxCommand
+	tmuxCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		searched <- strings.Join(args, " ")
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { tmuxCommand = oldTmux })
+	for _, m := range []string{
+		`{"type":"search","do":"find","text":"bad\u0007"}`,
+		`{"type":"search","do":"find","text":"` + strings.Repeat("x", maxSearch+1) + `"}`,
+		`{"type":"search","do":"rm -rf"}`,
+		`{"type":"search","do":"find","text":"it's; here"}`,
+		`{"type":"search","do":"find","text":"end;"}`,
+		`{"type":"search","do":"older"}`,
+		`{"type":"search","do":"stop"}`,
+	} {
+		tc.write(ctx, msgText, []byte(m))
+	}
+	for _, want := range []string{
+		"copy-mode -t web ; send-keys -t web -X history-bottom ; send-keys -t web -X search-backward-text it's; here",
+		"copy-mode -t web ; send-keys -t web -X history-bottom ; send-keys -t web -X search-backward-text end\\;",
+		"send-keys -t web -X search-again",
+		"send-keys -t web -X cancel",
+	} {
+		select {
+		case got := <-searched:
+			if got != want {
+				t.Errorf("tmux ran with %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("tmux didn't run for %q", want)
+		}
+	}
 	tc.write(ctx, msgData, []byte("hello\r"))
 	readUntil("got hello")
 	if !strings.Contains(out.String(), "30 100") {

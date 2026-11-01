@@ -6,22 +6,45 @@
 <style>
 @font-face { font-family: "Powerline Symbols"; src: url("PowerlineSymbols.otf") format("opentype"); }
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-#terminal { position: absolute; inset: 30px 4px 4px; }
-.tabtop-nav { position: absolute; top: 0; left: 0; right: 0; height: 26px; display: flex; align-items: center;
+#terminal { position: absolute; inset: 34px 4px 4px; }
+.tabtop-nav { position: absolute; top: 0; left: 0; right: 0; height: 30px; box-sizing: border-box; display: flex; align-items: center;
     gap: 1rem; padding: 0 .75rem; font: 13px system-ui, sans-serif; color: #a8a8ad; background: #1c1c1e;
     border-bottom: 1px solid #2c2c2e; }
 .tabtop-nav a { color: #8ab4f8; text-decoration: none; }
+.tabtop-nav a[target]::after { content: " ↗"; font-size: .8em; }
 .tabtop-nav a:hover { text-decoration: underline; }
 .tabtop-nav [aria-current] { color: #e8e8ea; font-weight: 600; }
 .tabtop-nav button { margin-left: auto; font: inherit; color: inherit; background: none; border: 1px solid #3a3a3c;
     border-radius: 4px; padding: 1px 8px; cursor: pointer; }
 .tabtop-nav button:hover { color: #e8e8ea; }
+.tabtop-nav button.search + button { margin-left: 0; }
+#tty_search { position: absolute; bottom: 40px; right: 8px; z-index: 5; display: flex; gap: 4px; padding: 4px;
+    background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
+#tty_search[hidden] { display: none; }
+#tty_search input { width: min(16rem, 50vw); font: 14px system-ui, sans-serif; color: #e8e8ea; background: #000;
+    border: 1px solid #3a3a3c; border-radius: 4px; padding: 2px 6px; }
+#tty_search button { font: 14px system-ui, sans-serif; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c;
+    border-radius: 4px; min-width: 28px; cursor: pointer; }
 body.touch-keys #terminal { bottom: 48px; }
+body.touch-keys #tty_search { bottom: 84px; }
 #touch_keys { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; box-sizing: border-box; display: flex; gap: 4px;
     padding: 4px; overflow-x: auto; background: #1c1c1e; border-top: 1px solid #2c2c2e; }
 #touch_keys button { flex: 0 0 auto; min-width: 42px; padding: 0 8px; font: 15px system-ui, sans-serif; color: #e8e8ea;
     background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px; touch-action: manipulation; }
 #touch_keys button[aria-pressed=true] { color: #1c1c1e; background: #8ab4f8; border-color: #8ab4f8; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+@media (max-width: 30rem) {
+    #terminal { top: 76px; }
+    .tabtop-nav { height: 72px; flex-wrap: wrap; align-content: center; gap: 4px 12px;
+        padding: max(4px, env(safe-area-inset-top)) 8px 4px; }
+    .tabtop-nav a, .tabtop-nav [aria-current] { line-height: 32px; }
+    .tabtop-nav button { min-height: 34px; padding: 4px 10px; }
+    #tty_search { left: 8px; right: 8px; }
+    #tty_search input { width: auto; min-width: 0; flex: 1; }
+}
+@media (pointer: coarse) {
+    .tabtop-nav button, #tty_search button { min-height: 40px; min-width: 40px; }
+}
 </style>
 <div id="terminal"></div>
 <script type="module" src="tty.js"></script>

@@ -87,7 +87,7 @@ func TestDoctor(t *testing.T) {
 	}
 
 	g, srv := newDoctorServer(t, true)
-	g.newSession("198.51.100.77")
+	g.newSession("198.51.100.77", "")
 	status, body := fetch(t, srv.URL+"/doctor")
 	if status != 200 {
 		t.Fatalf("doctor on: %d\n%s", status, body)

@@ -49,10 +49,11 @@ function worker() {
 }
 
 // fetchFile downloads the file at path. How it goes shows in the
-// transfers panel, with a Cancel button.
+// transfers panel, with a Cancel button, and Retry if it fails.
 export async function fetchFile(path) {
     const label = path.split("/").pop();
     const row = statusRow(`${label}: starting`, true);
+    let retry;
     try {
         const sw = await worker();
         const t = await call({ type: "file", path });
@@ -70,13 +71,15 @@ export async function fetchFile(path) {
             row.set(`${name}: cancelled`);
         } else if (failed) {
             row.set(`${name}: ${failed}`, true);
+            retry = () => fetchFile(path);
         } else {
             row.set(`${name}: downloaded, ${humanBytes(size)}`);
         }
     } catch (err) {
         row.set(`${label}: not downloaded: ${err.message}`, true);
+        retry = () => fetchFile(path);
     }
-    row.finish();
+    row.finish(retry);
 }
 
 // The biggest a zip request can be: the server takes requests up to 1 MiB.
@@ -84,10 +87,11 @@ const MAX_REQUEST = 1000000;
 
 // fetchZip downloads names, in the folder dir, as one zip, which the server
 // makes as it sends it. How it goes shows in the status list, with a
-// Cancel button.
+// Cancel button, and Retry if it fails.
 export async function fetchZip(dir, names) {
     const label = names.length === 1 ? `${names[0]}/` : `${names.length} items`;
     const row = statusRow(`${label}: zipping`, true);
+    let retry;
     try {
         const req = { type: "zip", path: dir, names };
         if (JSON.stringify(req).length > MAX_REQUEST) {
@@ -111,6 +115,7 @@ export async function fetchZip(dir, names) {
             row.set(`${name}: cancelled`);
         } else if (failed) {
             row.set(`${name}: ${failed}`, true);
+            retry = () => fetchZip(dir, names);
         } else if (t.trailer.skipped) {
             row.set(`${name}: downloaded, ${humanBytes(bytes)}, without ${t.trailer.skipped} files or folders that couldn't be read`, true);
         } else {
@@ -118,8 +123,9 @@ export async function fetchZip(dir, names) {
         }
     } catch (err) {
         row.set(`${label}: not downloaded: ${err.message}`, true);
+        retry = () => fetchZip(dir, names);
     }
-    row.finish();
+    row.finish(retry);
 }
 
 // humanBytes is a size as the listing shows it (see humanSize in main.go):

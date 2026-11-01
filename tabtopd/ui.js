@@ -13,9 +13,11 @@ function el(tag, props = {}, ...children) {
 // The transfers panel: a list of rows, each a change and how it's going,
 // under a heading that says how many are still going, with a bar for how
 // many of them are done, a button that clears the finished ones, and one
-// that folds the list away. It's shown while it has rows. While any are
-// going, the tab's title starts with how far they've got, so a tab in the
-// background shows it too.
+// that folds the list away. It's shown while it has rows. Rows that went
+// well go by themselves a minute after they finish; those that failed stay
+// until cleared, some with a Retry button. While any are going, the tab's
+// title starts with how far they've got, so a tab in the background shows
+// it too.
 let panel = null;
 
 // TITLE_MARK starts the title while transfers are going; what follows it,
@@ -49,13 +51,15 @@ function transfers() {
         return panel;
     }
     const list = el("div", { id: "uploads" });
-    list.setAttribute("role", "status");
+    const announcements = el("div", { className: "sr-status" });
+    announcements.setAttribute("role", "status");
+    announcements.setAttribute("aria-live", "polite");
     const summary = el("span", { className: "summary" });
     const overall = el("progress", { className: "overall", max: 1 });
     const clear = el("button", { type: "button", textContent: "Clear" });
-    const fold = el("button", { type: "button", className: "fold", title: "Fold away" });
+    const fold = el("button", { type: "button", className: "fold" });
     const box = el("section", { id: "transfers", hidden: true },
-        el("div", { className: "head" }, el("strong", { textContent: "Transfers" }), summary, clear, fold), overall, list);
+        el("div", { className: "head" }, el("strong", { textContent: "Transfers" }), summary, clear, fold), overall, list, announcements);
     box.setAttribute("aria-label", "Transfers");
     const update = () => {
         const rows = [...list.children];
@@ -66,7 +70,11 @@ function transfers() {
         overall.hidden = !going;
         overall.value = rows.length ? (rows.length - going) / rows.length : 0;
         clear.disabled = going === rows.length;
-        fold.textContent = box.classList.contains("folded") ? "▴" : "▾";
+        const folded = box.classList.contains("folded");
+        fold.textContent = folded ? "▴" : "▾";
+        fold.title = folded ? "Show transfers" : "Hide transfers";
+        fold.setAttribute("aria-label", fold.title);
+        fold.setAttribute("aria-expanded", String(!folded));
         showProgress(rows);
     };
     clear.addEventListener("click", () => {
@@ -86,18 +94,39 @@ function transfers() {
     // loses the progress till the next update: put it back.
     new MutationObserver(() => showProgress([...list.children])).observe(document.querySelector("title") ?? document.head,
         { childList: true, characterData: true, subtree: true });
-    panel = { list, update };
+    panel = { box, list, announcements, update };
     return panel;
 }
 
+// How long a row that went well stays once it's finished, in ms; not
+// while the pointer or the focus is in the panel, to read it.
+const FINISHED_STAYS = 60000;
+
+function tidyAway(p) {
+    const { box, update } = transfers();
+    setTimeout(() => {
+        if (!p.isConnected) {
+            return;
+        }
+        if (box.matches(":hover, :focus-within")) {
+            tidyAway(p);
+            return;
+        }
+        p.remove();
+        update();
+    }, FINISHED_STAYS);
+}
+
 // statusRow adds a row to the transfers panel, and returns it as
-// {set(text, error), progress(fraction), text, signal, finish()}: its text,
-// marked as an error if error; a bar, shown once progress is given a
+// {set(text, error), progress(fraction), text, signal, finish(retry)}: its
+// text, marked as an error if error; a bar, shown once progress is given a
 // fraction, or null for an amount not known; and, if cancellable, a
 // Cancel button that aborts signal. The row counts as going, and keeps
-// its button, until finish() is called.
+// its button, until finish() is called. A row that's then marked as an
+// error stays, with a Retry button if given retry, which removes the row
+// and calls it; one that isn't goes after a while.
 export function statusRow(text, cancellable = false) {
-    const { list, update } = transfers();
+    const { list, announcements, update } = transfers();
     const span = el("span", { textContent: text });
     const bar = el("progress", { max: 1, hidden: true });
     const p = el("p", { className: "going" }, span, bar);
@@ -132,10 +161,22 @@ export function statusRow(text, cancellable = false) {
             return span.textContent;
         },
         signal: abort.signal,
-        finish() {
+        finish(retry) {
             button?.remove();
             bar.hidden = true;
             p.classList.remove("going");
+            if (!p.classList.contains("error")) {
+                tidyAway(p);
+            } else if (retry) {
+                const again = el("button", { type: "button", className: "retry", textContent: "Retry" });
+                again.addEventListener("click", () => {
+                    p.remove();
+                    update();
+                    retry();
+                });
+                p.append(again);
+            }
+            announcements.textContent = span.textContent;
             update();
         },
     };

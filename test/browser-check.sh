@@ -54,6 +54,7 @@ docker cp -q "$work/tone.wav" "$name:/home/user/Downloads/media/tone.wav"
 docker exec "$name" chown user /home/user/Downloads/media/tone.wav
 head -c 300000 /dev/urandom >"$work/up.bin"
 truncate -s 1G "$work/big.bin"
+head -c 200M /dev/urandom >"$work/resume.bin"
 mkdir -p "$work/up-folder/sub/deeper" "$work/up-folder/empty" "$work/downloads" "$work/chrome"
 for f in a.txt sub/b.txt sub/deeper/c.txt; do echo "$f" >"$work/up-folder/$f"; done
 echo dropped >"$work/drop me.txt"
@@ -71,7 +72,7 @@ for ((i = 0; ; i++)); do
 done
 port=$(head -n 1 "$work/chrome/DevToolsActivePort")
 
-timeout 420 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$work"
+timeout 540 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$work" "$name"
 
 # What the pages did, as the container sees it.
 holds() {

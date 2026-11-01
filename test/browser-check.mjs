@@ -1,34 +1,48 @@
 // Checks a running TabTop end to end in headless Chrome, through the
-// pages a person uses: login, desktop, audio, the files page (list,
-// download, preview, upload, replacing on a name clash, pasting, the
-// keyboard, delete, folder upload picked and dropped, folder delete, zips,
-// new folder, rename, move, copying a path, deleting several, cancelling
-// an upload), a file dropped on the desktop and the notice of one saved
-// there, the terminal (its font size and touch keys), reconnecting after
-// the connection is lost on each page, and logout.
+// pages a person uses: login, desktop, audio, the files page (list, free
+// space, download, preview, upload, replacing on a name clash, pasting,
+// the keyboard, delete, updating itself, going back to the folder last
+// shown, folder upload picked and dropped, folder delete, zips, new
+// folder, rename, move, copying a path, deleting several, cancelling an
+// upload, retrying a failed download, ending another session, which is
+// named by its browser, refusing files that won't fit together, and
+// carrying on with an upload whose connection was lost), a file
+// dropped on the desktop and the notice of one saved there, the desktop's
+// clipboard, the terminal (its font size keys, touch keys, a file dropped
+// on it, and searching its history), reconnecting after the connection is
+// lost on each page, logging in again when warned the login is ending,
+// and logout.
 // browser-check.sh starts the container and Chrome and runs it; it exits
 // non-zero, saying which step failed, if anything doesn't work.
 //
-// Usage: node browser-check.mjs <devtools port> <site url> <download dir> <work dir>
+// Usage: node browser-check.mjs <devtools port> <site url> <download dir> <work dir> <container>
 // The site's TOTP secret must be the Base32 of "12345678901234567890", and
 // ~/Downloads must hold hello.txt with "hello from the desktop\n", and
 // media/tone.wav, a second of sound. The work
-// dir holds up.bin, big.bin (big enough to cancel while it uploads), and
-// the folder up-folder: a.txt, sub/b.txt and sub/deeper/c.txt, each holding
-// its own name, and the empty folder empty.
+// dir holds up.bin, big.bin (big enough to cancel while it uploads),
+// resume.bin (big enough to cut off while it uploads), and the folder
+// up-folder: a.txt, sub/b.txt and sub/deeper/c.txt, each holding its own
+// name, and the empty folder empty.
 
-import { createHmac } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
+import { existsSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 
-const [port, base, downloads, work] = process.argv.slice(2);
+const [port, base, downloads, work, container] = process.argv.slice(2);
+// inContainer runs a command in the container as its user, and returns
+// what it prints.
+const inContainer = (...args) => execFileSync("docker", ["exec", "-u", "user", container, ...args], { encoding: "utf8" }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // totp is the current code, waiting first if the current one is about to
-// expire, so it's still good when it arrives.
+// expire, so it's still good when it arrives, or if it was used already,
+// since a code logs in only once.
+let lastStep = -1;
 async function totp() {
-    while (30 - (Date.now() / 1000) % 30 < 3) {
+    while (30 - (Date.now() / 1000) % 30 < 3 || Math.floor(Date.now() / 30000) === lastStep) {
         await sleep(500);
     }
+    lastStep = Math.floor(Date.now() / 30000);
     const c = Buffer.alloc(8);
     c.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
     const h = createHmac("sha1", "12345678901234567890").update(c).digest();
@@ -279,6 +293,10 @@ try {
         if (!(await ev(listed)).includes("hello.txt")) {
             throw new Error(`hello.txt isn't listed: ${await ev(listed)}`);
         }
+        const space = await ev(`document.querySelector("p.space")?.textContent ?? ""`);
+        if (!/^[\d.]+ [KMGT]?B free of [\d.]+ [KMGT]?B/.test(space)) {
+            throw new Error(`the free space shows as ${JSON.stringify(space)}`);
+        }
     });
 
     await step("files: download", async () => {
@@ -506,6 +524,32 @@ try {
         await open("downloads/#/", `${listed}.includes("renamed.txt")`, "renamed.txt, back");
     });
 
+    await step("files: retry a failed download", async () => {
+        const failedRow = `[...document.querySelectorAll("#uploads p")].find((p) => p.textContent.startsWith("later.txt: not downloaded"))`;
+        await ev(`import("/tabtop/download.js").then((m) => { m.fetchFile("later.txt"); })`);
+        await waitFor(`!!${failedRow}?.querySelector("button.retry")`, "the failure, with Retry");
+        inContainer("sh", "-c", "echo later > ~/Downloads/later.txt");
+        await ev(`${failedRow}.querySelector("button.retry").click()`);
+        await waitFor(`/later.txt: downloaded/.test(${status}) && !${failedRow}`, "the download, retried");
+        await waitForFile(`${downloads}/later.txt`, "later.txt");
+    });
+
+    await step("files: end another session", async () => {
+        // Logged in somewhere else.
+        const code = await totp();
+        await ev(`import("/tabtop/tunnel.js").then((m) => m.login(${JSON.stringify(code)})).then(() => true)`);
+        await cdp("Page.reload");
+        await waitFor(`document.querySelectorAll("#sessions button.end").length === 1`, "the other session, with End…");
+        // HeadlessChrome on Linux, as its User-Agent says.
+        const named = await ev(`[...document.querySelectorAll("#sessions table:first-of-type tr")].filter((r) => r.textContent.includes("Chrome on Linux")).length`);
+        if (named !== 2) {
+            throw new Error(`${named} sessions are named Chrome on Linux, not 2`);
+        }
+        await ev(`document.querySelector("#sessions button.end").click()`);
+        await answer();
+        await waitFor(`/Ended the session/.test(${status}) && !document.querySelector("#sessions button.end")`, "the session to end");
+    });
+
     await step("files: delete several", async () => {
         for (const name of ["made-here/", "renamed.txt"]) {
             await ev(`${row(name)}.querySelector("td.sel input").click()`);
@@ -526,6 +570,45 @@ try {
         if ((await ev(listed)).includes("big.bin")) {
             throw new Error("big.bin was saved");
         }
+    });
+
+    await step("files: files that won't fit together", async () => {
+        // Two that fit one at a time, but not both; sparse, so they take
+        // no room here, and none is sent.
+        const free = Number(inContainer("df", "-B1", "--output=avail", "/home/user/Downloads").split("\n").pop());
+        for (const name of ["huge-1.bin", "huge-2.bin"]) {
+            writeFileSync(`${work}/${name}`, "");
+            truncateSync(`${work}/${name}`, Math.floor(free * 0.6));
+        }
+        await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/huge-1.bin`, `${work}/huge-2.bin`]);
+        const refused = `[...document.querySelectorAll("#uploads p")].filter((p) => /^huge-\\d\\.bin: not uploaded: there isn't room for all 2 files/.test(p.textContent) && p.querySelector("button.retry"))`;
+        await waitFor(`${refused}.length === 2`, "both refused, with Retry");
+        await ev(`${refused}.forEach((p) => p.remove())`);
+        rmSync(`${work}/huge-1.bin`);
+        rmSync(`${work}/huge-2.bin`);
+        if (inContainer("sh", "-c", "find ~/Downloads -name 'huge-*' -o -name '.tabtop-upload-*'")) {
+            throw new Error("something was sent");
+        }
+    });
+
+    await step("files: carry on with an upload cut off", async () => {
+        await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/resume.bin`]);
+        await waitFor(`/resume.bin: [1-9]\\d?%/.test(${status})`, "the upload to get going");
+        await ev(dropConnections);
+        const failedRow = `[...document.querySelectorAll("#uploads p")].find((p) => p.textContent.startsWith("resume.bin: failed"))`;
+        await waitFor(`!!${failedRow}?.querySelector("button.retry")`, "the failure, with Retry");
+        await ev(`${failedRow}.querySelector("button.retry").click()`);
+        await waitFor(`/resume.bin: uploaded/.test(${status})`, "the upload, carried on");
+        const log = execFileSync("sh", ["-c", 'docker logs "$1" 2>&1', "sh", container], { encoding: "utf8", maxBuffer: 64 << 20 });
+        const resumed = /upload of resume\.bin resumed at ([\d.]+ \w+)/.exec(log);
+        if (!resumed) {
+            throw new Error("it was sent again from the start");
+        }
+        const want = createHash("sha256").update(readFileSync(`${work}/resume.bin`)).digest("hex");
+        if (inContainer("sha256sum", "/home/user/Downloads/resume.bin").split(" ")[0] !== want) {
+            throw new Error("resume.bin was saved wrong");
+        }
+        return `carried on from ${resumed[1]}`;
     });
 
     await step("desktop: a file dropped", async () => {
@@ -632,6 +715,41 @@ try {
         await press("Enter");
         await sleep(1000);
         await open("downloads/#/", `${listed}.includes("dropped-copy.txt")`, "dropped-copy.txt, copied from the path typed");
+    });
+
+    await step("terminal: search", async () => {
+        await open("tty/", `!!document.querySelector("canvas")`, "the terminal");
+        await sleep(2000);
+        if (await ev(`window.open("javascript:alert(1)")`) !== null) {
+            throw new Error("a javascript: link would open");
+        }
+        await click(`document.querySelector("canvas")`);
+        await type("echo needle-$((40+2))");
+        await press("Enter");
+        await sleep(500);
+        // Ctrl+Shift+F, as from the keyboard.
+        for (const type of ["keyDown", "keyUp"]) {
+            await cdp("Input.dispatchKeyEvent", { type, key: "F", code: "KeyF", windowsVirtualKeyCode: 70, modifiers: 2 | 8 });
+        }
+        await waitFor(`document.activeElement?.matches("#tty_search input")`, "the search box");
+        await cdp("Input.insertText", { text: "needle-42" });
+        await press("Enter");
+        const mode = () => inContainer("tmux", "display", "-p", "-t", "web", "#{pane_in_mode} #{search_present} #{search_match}");
+        for (const end = Date.now() + 5000; mode() !== "1 1 needle-42"; await sleep(200)) {
+            if (Date.now() > end) {
+                throw new Error(`tmux's copy mode, search and match: ${mode()}`);
+            }
+        }
+        await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        for (const end = Date.now() + 5000; !mode().startsWith("0"); await sleep(200)) {
+            if (Date.now() > end) {
+                throw new Error("still in copy mode after Esc");
+            }
+        }
+        if (await ev(`!document.getElementById("tty_search").hidden`)) {
+            throw new Error("the search box stayed");
+        }
     });
 
     await step("terminal: touch keys", async () => {

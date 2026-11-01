@@ -15,8 +15,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
@@ -43,6 +46,10 @@ var ttyFiles embed.FS
 
 // ttyCommand starts the terminal's program; a variable so tests can swap it.
 var ttyCommand = func() *exec.Cmd { return exec.Command("tmux", "new-session", "-A", "-s", "web") }
+
+// tmuxCommand runs a command for the terminal's tmux session, as searching
+// does; a variable so tests can swap it.
+var tmuxCommand = func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, "tmux", args...) }
 
 // tty serves the terminal page and its files. They need no session, since
 // they hold nothing private: the page logs in through the tunnel, and the
@@ -96,9 +103,49 @@ func (g *server) ttyFile(w http.ResponseWriter, r *http.Request, name string) {
 // ttyMessage is a control message from the page; terminal input arrives as
 // binary messages instead.
 type ttyMessage struct {
-	Type string `json:"type"`
+	Type string `json:"type"` // resize or search
 	Cols int    `json:"cols"`
 	Rows int    `json:"rows"`
+	// search: find the newest Text, then older or newer matches, or stop
+	Do   string `json:"do"`
+	Text string `json:"text"`
+}
+
+// The longest text a search looks for, in bytes.
+const maxSearch = 256
+
+// searchTerminal searches tmux's history for the page, with its copy
+// mode, which marks the match and shows how many there are: "find" looks
+// for m.Text from the newest output back, "older" and "newer" go to the
+// next match either way, and "stop" leaves copy mode.
+func searchTerminal(m ttyMessage) {
+	t := []string{"-t", "web"}
+	var args []string
+	switch m.Do {
+	case "find":
+		if m.Text == "" || len(m.Text) > maxSearch || !utf8.ValidString(m.Text) || strings.ContainsFunc(m.Text, unicode.IsControl) {
+			return
+		}
+		// tmux takes an argument ending in ";" as the end of a command,
+		// unless the ";" has a backslash before it.
+		text := m.Text
+		if strings.HasSuffix(text, ";") {
+			text = strings.TrimSuffix(text, ";") + `\;`
+		}
+		args = slices.Concat([]string{"copy-mode"}, t, []string{";", "send-keys"}, t, []string{"-X", "history-bottom", ";", "send-keys"}, t,
+			[]string{"-X", "search-backward-text", text})
+	case "older":
+		args = slices.Concat([]string{"send-keys"}, t, []string{"-X", "search-again"})
+	case "newer":
+		args = slices.Concat([]string{"send-keys"}, t, []string{"-X", "search-reverse"})
+	case "stop":
+		args = slices.Concat([]string{"send-keys"}, t, []string{"-X", "cancel"})
+	default:
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	tmuxCommand(ctx, args...).Run() // one that finds nothing, or isn't in copy mode, fails quietly
 }
 
 // serveTTY runs a terminal over the tunnel c until either side ends it or
@@ -149,9 +196,14 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 			continue
 		}
 		var m ttyMessage
-		if json.Unmarshal(data, &m) == nil && m.Type == "resize" &&
-			m.Cols > 0 && m.Cols <= 1000 && m.Rows > 0 && m.Rows <= 1000 {
+		if json.Unmarshal(data, &m) != nil {
+			continue
+		}
+		switch {
+		case m.Type == "resize" && m.Cols > 0 && m.Cols <= 1000 && m.Rows > 0 && m.Rows <= 1000:
 			pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(m.Cols), Rows: uint16(m.Rows)})
+		case m.Type == "search":
+			searchTerminal(m)
 		}
 	}
 

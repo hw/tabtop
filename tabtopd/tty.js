@@ -7,7 +7,9 @@
 // itself (see reconnect.js), and tmux, which the server runs the shell
 // in, picks up where it was. Files and folders dropped on the page are
 // uploaded into ~/Downloads, as on the files page (see drop.js), and their
-// paths typed at the cursor.
+// paths typed at the cursor. Ctrl+click (⌘+click on a Mac) opens a web
+// address shown in the terminal, and Ctrl+Shift+F searches tmux's history
+// (see Search).
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
@@ -15,13 +17,19 @@ import { nameTab, navBar } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
-import { fileNames, makeFolder, setLoginTitle, shellPath, uploadFile } from "../tabtop/requests.js";
+import { folderInfo, makeFolder, setLoginTitle, shellPath, uploadFile } from "../tabtop/requests.js";
 
-// Links to the desktop and the files page, and Log out, in a bar above
-// the terminal.
+// Links to the desktop and the files page, a Search button, and Log out,
+// in a bar above the terminal.
 nameTab("terminal");
 document.body.prepend(navBar("terminal"));
 warnExpiry();
+
+// ghostty-web opens links in the terminal, on Ctrl+click, with
+// window.open: only web addresses, since a program can show a link (OSC 8)
+// to anything, as a javascript: one that would run on this site.
+const openWindow = window.open.bind(window);
+window.open = (url, ...rest) => (/^(https?|ftp):\/\//i.test(String(url)) ? openWindow(url, ...rest) : null);
 
 // The most a program may copy at once, in base64 bytes.
 const maxCopy = 1 << 20;
@@ -153,8 +161,10 @@ class MouseReporter {
         return this.term.getMode(n);
     }
 
+    // Shift leaves the mouse to the page to select text, and Ctrl or ⌘ to
+    // open links.
     active(e) {
-        return !e.shiftKey && this.term.hasMouseTracking();
+        return !e.shiftKey && !e.ctrlKey && !e.metaKey && this.term.hasMouseTracking();
     }
 
     stop(e) {
@@ -342,6 +352,7 @@ function touchKeys() {
         ["←", arrow("D")], ["↑", arrow("A")], ["↓", arrow("B")], ["→", arrow("C")],
         ["|", "|"], ["~", "~"], ["/", "/"], ["-", "-"],
         ["A−", () => setFontSize(fontSize - 1)], ["A+", () => setFontSize(fontSize + 1)],
+        ["Find", () => search.open()],
     ];
     const strip = document.createElement("div");
     strip.id = "touch_keys";
@@ -389,6 +400,81 @@ term.onTitleChange((title) => {
     document.title = title || "Terminal";
 });
 
+// Search -----------------------------------------------------------------
+
+// The history is tmux's, not the page's (tmux draws on the alternate
+// screen), so the server searches it with tmux's copy mode (see tty.go),
+// which marks the match on the screen and shows how many there are (at
+// the top right, so the bar that takes the text is at the bottom): Enter
+// (or ↑) finds it, then older matches, Shift+Enter (or ↓) newer ones, and
+// Esc (or ✕) closes the bar and leaves copy mode.
+const search = (() => {
+    const button = (text, label, onClick) => {
+        const b = Object.assign(document.createElement("button"), { type: "button", textContent: text, title: label });
+        b.setAttribute("aria-label", label);
+        b.addEventListener("click", onClick);
+        return b;
+    };
+    const input = Object.assign(document.createElement("input"), { type: "search", placeholder: "Search the history",
+        autocomplete: "off", spellcheck: false });
+    input.setAttribute("aria-label", "Search the terminal's history");
+    let found = null;  // the text last searched for, while in copy mode
+    const ask = (what) => send(JSON.stringify({ type: "search", do: what, text: input.value }));
+    const go = (older) => {
+        const text = input.value;
+        if (!text) {
+            return;
+        }
+        if (text !== found) {
+            found = text;
+            ask("find");
+        } else {
+            ask(older ? "older" : "newer");
+        }
+        input.focus();
+    };
+    const close = () => {
+        bar.hidden = true;
+        if (found !== null) {
+            found = null;
+            ask("stop");
+        }
+        term.focus();
+    };
+    const bar = document.createElement("div");
+    bar.id = "tty_search";
+    bar.hidden = true;
+    bar.append(input, button("↑", "Older (Enter)", () => go(true)), button("↓", "Newer (Shift+Enter)", () => go(false)),
+        button("✕", "Close (Esc)", close));
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            go(!e.shiftKey);
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            close();
+        }
+    });
+    document.body.append(bar);
+    const open = () => {
+        bar.hidden = false;
+        input.focus();
+        input.select();
+    };
+    const find = button("Search", "Search the history (Ctrl+Shift+F)", open);
+    find.className = "search";
+    document.querySelector(".tabtop-nav > button")?.before(find);
+    // Before ghostty-web sees it, as the font size keys.
+    document.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyF") {
+            e.preventDefault();
+            e.stopPropagation();
+            open();
+        }
+    }, true);
+    return { open };
+})();
+
 // Dropped files ----------------------------------------------------------
 
 // The transfers panel and the overlay shown while files are dragged over
@@ -402,7 +488,7 @@ dropUploads(uploadFile, makeFolder, (names, dir) => {
         term.paste(names.map((n) => shellPath(dir ? `${dir}/${n}` : n)).join(" ") + " ");
         term.focus();
     }
-}, () => "", "(~/Downloads), then type their paths here", fileNames);
+}, () => "", "(~/Downloads), then type their paths here", folderInfo);
 
 if (!(await connect())) {
     reconnect("Can't reach the server.", connect);

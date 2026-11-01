@@ -71,6 +71,15 @@ func TestTunnelUpload(t *testing.T) {
 		t.Errorf("the existing file now holds %d bytes", len(b))
 	}
 
+	// Too big for the disk: refused before anything's sent.
+	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "upload", Name: "huge.bin", Size: 1 << 62}); !strings.HasPrefix(fmt.Sprint(reply["error"]), "There isn't room for it") {
+		t.Errorf("a huge upload: %v", reply)
+	}
+	// The listing says how much room there is.
+	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "list"}); reply["free"] == nil || reply["total"].(float64) <= 0 {
+		t.Errorf("listing: free %v of %v", reply["free"], reply["total"])
+	}
+
 	// Replacing, as the person chose to.
 	tc = openSession(t, ctx, srv.URL, s)
 	if reply := tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "big.bin", Size: 3, Replace: true}); reply["ok"] != true {
@@ -101,12 +110,13 @@ func TestTunnelUpload(t *testing.T) {
 	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
 		t.Errorf("too much data: %v", err)
 	}
-	// So does leaving early.
+	// So does cancelling.
 	tc = openSession(t, ctx, srv.URL, s)
 	tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "left.bin", Size: 10})
 	tc.write(ctx, msgData, []byte("abc"))
 	tc.read(ctx)
-	tc.c.CloseNow()
+	tc.write(ctx, msgText, []byte(`{"cancel":true}`))
+	tc.c.Close(websocket.StatusNormalClosure, "")
 	for _, tc := range []tunnelRequest{
 		{Type: "upload", Name: "../x", Size: 1},
 		{Type: "upload", Name: "x", Path: "../", Size: 1},
@@ -124,6 +134,144 @@ func TestTunnelUpload(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "big (1).bin,big.bin" {
 		t.Errorf("Downloads holds %v", names)
+	}
+}
+
+// TestTunnelUploadResume checks that an upload whose connection is lost is
+// kept, and carries on from where it stopped when resumed.
+func TestTunnelUploadResume(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	partials := func() int {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return len(g.partials)
+	}
+	// start begins an upload of size bytes, sends first, and returns the
+	// tunnel and the reply.
+	start := func(size int64, resume, first string) (*tunnelClient, map[string]any) {
+		tc := openSession(t, ctx, srv.URL, s)
+		reply := tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "r.bin", Size: size, Resume: resume})
+		if reply["ok"] != true {
+			t.Fatalf("upload: %v", reply)
+		}
+		if first != "" {
+			tc.write(ctx, msgData, []byte(first))
+			if kind, _, err := tc.read(ctx); err != nil || kind != msgData {
+				t.Fatalf("acknowledgement: %v", err)
+			}
+		}
+		return tc, reply
+	}
+	tc, reply := start(10, "", "abc")
+	id := reply["id"].(string)
+	if reply["offset"] != 0.0 || id == "" {
+		t.Fatalf("first reply %v", reply)
+	}
+	tc.c.Close(websocket.StatusGoingAway, "") // lost, not cancelled
+	for deadline := time.Now().Add(5 * time.Second); partials() == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the upload cut off wasn't kept")
+		}
+	}
+
+	// Not for a file of another size: that starts again, and the one kept
+	// stays.
+	tc, reply = start(11, id, "")
+	if reply["offset"] != 0.0 || reply["id"] == id {
+		t.Errorf("resuming as another size: %v", reply)
+	}
+	tc.write(ctx, msgText, []byte(`{"cancel":true}`))
+
+	// Carried on, while it's still going: the server stops the first.
+	tc, reply = start(10, id, "def")
+	if reply["offset"] != 3.0 || reply["id"] != id {
+		t.Fatalf("resuming: %v", reply)
+	}
+	tc2, reply := start(10, id, "ghi")
+	if reply["offset"] != 6.0 || reply["id"] != id {
+		t.Fatalf("resuming one going on: %v", reply)
+	}
+	if _, _, err := tc.read(ctx); err == nil {
+		t.Error("the first tunnel is still open")
+	}
+	tc2.write(ctx, msgData, []byte("j"))
+	tc2.read(ctx)
+	if res := tc2.readJSON(t, ctx); res["name"] != "r.bin" {
+		t.Fatalf("saved as %v", res)
+	}
+	tc2.read(ctx) // the close
+	if b, _ := os.ReadFile(filepath.Join(g.downloadsDir, "r.bin")); string(b) != "abcdefghij" {
+		t.Errorf("saved %q", b)
+	}
+	if n := partials(); n != 0 {
+		t.Errorf("%d kept after saving", n)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if entries, _ := os.ReadDir(g.downloadsDir); len(entries) != 1 {
+		t.Errorf("Downloads holds %d entries", len(entries))
+	}
+	// Gone, as after a restart: it starts again.
+	if tc, reply := start(10, id, ""); reply["offset"] != 0.0 {
+		t.Errorf("resuming one gone: %v", reply)
+	} else {
+		tc.write(ctx, msgText, []byte(`{"cancel":true}`))
+	}
+}
+
+// TestKeepPartialLimit checks that only maxPartials uploads cut off are
+// kept, the oldest going first.
+func TestKeepPartialLimit(t *testing.T) {
+	g := &server{downloadsDir: t.TempDir()}
+	root, _ := os.OpenRoot(g.downloadsDir)
+	defer root.Close()
+	var first string
+	for i := range maxPartials + 1 {
+		u, err := startUpload(root, ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = u.id()
+		}
+		g.keepPartial(u, 1)
+	}
+	entries, _ := os.ReadDir(g.downloadsDir)
+	if len(g.partials) != maxPartials || len(entries) != maxPartials || g.partials[first] != nil {
+		t.Errorf("%d kept, %d files, the first kept: %v", len(g.partials), len(entries), g.partials[first] != nil)
+	}
+	if u, _ := g.claimPartial(root, first, ".", 1); u != nil {
+		t.Error("the oldest could be resumed")
+	}
+}
+
+// TestReclaimPartials checks that the room uploads kept to resume take is
+// counted as free, and given up to an upload that needs it.
+func TestReclaimPartials(t *testing.T) {
+	g := &server{downloadsDir: t.TempDir()}
+	root, _ := os.OpenRoot(g.downloadsDir)
+	defer root.Close()
+	u, err := startUpload(root, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := int64(4 << 20)
+	u.Write(make([]byte, held))
+	u.f.Sync()
+	g.keepPartial(u, 2*held)
+	free, _, _ := diskSpace(g.downloadsDir)
+	room, _, _ := g.uploadRoom()
+	if d := room - free; d < held/2 || d > 2*held {
+		t.Errorf("%d more counted as free, with %d kept", d, held)
+	}
+	// More than there is: everything kept goes, and it's still refused.
+	if free, ok := g.reclaimPartials(1 << 62); !ok || free >= 1<<62 {
+		t.Fatalf("free %d, %v", free, ok)
+	}
+	entries, _ := os.ReadDir(g.downloadsDir)
+	if len(g.partials) != 0 || len(entries) != 0 {
+		t.Errorf("%d still kept, %d files", len(g.partials), len(entries))
 	}
 }
 

@@ -5,7 +5,8 @@ package main
 // under its name, which never replaces a file already there: a clash gets
 // " (1)", " (2)" and so on before the extension instead. Only when the page
 // asks to replace (the person chose to) is it renamed over the file
-// instead.
+// instead. An upload cut off by the connection is kept a while, so the
+// page can carry on from where it stopped rather than send it all again.
 
 import (
 	"context"
@@ -128,6 +129,12 @@ type upload struct {
 	unsynced bool // saved, but its folder may not be on disk yet
 }
 
+// id names the upload to resume it (see keepPartial): its temporary
+// file's random part.
+func (u *upload) id() string {
+	return strings.TrimSuffix(strings.TrimPrefix(path.Base(u.tmp), uploadTempPrefix), ".part")
+}
+
 // startUpload creates the temporary file for an upload into dir.
 func startUpload(root *os.Root, dir string) (*upload, error) {
 	st, err := root.Stat(dir)
@@ -209,6 +216,154 @@ func (u *upload) finish(name string, replace bool) (string, error) {
 		}
 	}
 	return "", errors.New("too many files with that name")
+}
+
+const (
+	// How long an upload cut off is kept to resume.
+	partialKeep = time.Hour
+	// Uploads cut off kept at once; past that, the oldest goes.
+	maxPartials = 16
+)
+
+// partialUpload is an upload cut off, kept to resume: its temporary file,
+// in its folder dir, holding held bytes of a file size bytes long.
+type partialUpload struct {
+	dir, tmp   string
+	size, held int64
+	kept     time.Time
+	timer    *time.Timer
+}
+
+// keepPartial keeps u, an upload of a file size bytes long cut off by the
+// connection, for partialKeep, so the page can resume it by its id with
+// claimPartial; after that, or once maxPartials newer ones are kept, it's
+// deleted, or sooner if an upload needs the room (see reclaimPartials). A
+// restart deletes it too (see removeStaleUploads).
+func (g *server) keepPartial(u *upload, size int64) {
+	held := int64(0)
+	if st, err := u.f.Stat(); err == nil {
+		held = st.Size()
+	}
+	u.f.Close()
+	p := &partialUpload{dir: u.dir, tmp: u.tmp, size: size, held: held, kept: time.Now()}
+	id := u.id()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.partials == nil {
+		g.partials = map[string]*partialUpload{}
+	}
+	if len(g.partials) >= maxPartials {
+		g.dropPartialLocked(g.oldestPartialLocked())
+	}
+	g.partials[id] = p
+	p.timer = time.AfterFunc(partialKeep, func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if g.partials[id] == p {
+			g.dropPartialLocked(id)
+		}
+	})
+}
+
+// oldestPartialLocked is the id of the upload kept longest, or "" if none
+// is. g.mu must be held.
+func (g *server) oldestPartialLocked() string {
+	oldest := ""
+	for k, q := range g.partials {
+		if oldest == "" || q.kept.Before(g.partials[oldest].kept) {
+			oldest = k
+		}
+	}
+	return oldest
+}
+
+// reclaimPartials deletes uploads kept to resume, the oldest first, until
+// need bytes are free for the gateway's files, or none are left, and
+// returns the bytes free then (see diskSpace). A page reloaded or closed
+// part way through an upload can't resume it, so the room those take is
+// only borrowed.
+func (g *server) reclaimPartials(need int64) (int64, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for {
+		free, _, ok := diskSpace(g.downloadsDir)
+		if !ok || free >= need || len(g.partials) == 0 {
+			return free, ok
+		}
+		g.dropPartialLocked(g.oldestPartialLocked())
+	}
+}
+
+// uploadRoom is diskSpace for the gateway's files, counting the room the
+// uploads kept to resume take as free, since an upload that needs it gets
+// it (see reclaimPartials).
+func (g *server) uploadRoom() (free, total int64, ok bool) {
+	free, total, ok = diskSpace(g.downloadsDir)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, p := range g.partials {
+		free += p.held
+	}
+	return min(free, total), total, ok
+}
+
+// dropPartialLocked deletes the upload kept as id. g.mu must be held.
+func (g *server) dropPartialLocked(id string) {
+	p := g.partials[id]
+	delete(g.partials, id)
+	p.timer.Stop()
+	if root, err := os.OpenRoot(g.downloadsDir); err == nil {
+		root.Remove(p.tmp)
+		root.Close()
+	}
+}
+
+// activeUpload is an upload going on, through t, which can be resumed
+// before the server notices its connection is lost: resumed is then set,
+// and its connection closed, and over is closed once it's kept.
+type activeUpload struct {
+	t       *tunnel
+	resumed atomic.Bool
+	over    chan struct{}
+}
+
+// claimPartial takes the upload kept as id (see keepPartial) to carry on
+// with, if it's into dir and of a file size bytes long, and returns it
+// and how much of the file it has; else nil, and the page starts again.
+// If that upload still seems to be going on, as when the page has lost its
+// connection before the server noticed, it's stopped and kept first.
+func (g *server) claimPartial(root *os.Root, id, dir string, size int64) (*upload, int64) {
+	g.mu.Lock()
+	if a := g.uploads[id]; a != nil {
+		g.mu.Unlock()
+		a.resumed.Store(true)
+		a.t.c.CloseNow()
+		select {
+		case <-a.over:
+		case <-time.After(5 * time.Second):
+			return nil, 0
+		}
+		g.mu.Lock()
+	}
+	p := g.partials[id]
+	if p == nil || p.dir != dir || p.size != size {
+		g.mu.Unlock()
+		return nil, 0
+	}
+	delete(g.partials, id)
+	p.timer.Stop()
+	g.mu.Unlock()
+	f, err := root.OpenFile(p.tmp, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return nil, 0
+	}
+	u := &upload{root: root, dir: dir, tmp: p.tmp, f: f}
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Size() > size {
+		u.abort()
+		return nil, 0
+	}
+	return u, st.Size()
 }
 
 // numberedName is "base (i)ext", with base cut short (at a character's
@@ -306,12 +461,17 @@ func uploadError(err error) string {
 	return "The file couldn't be saved."
 }
 
-// tunnelUpload answers an upload request: the page sends the file's
-// contents in data messages, and the server acknowledges each with an
-// empty data message once it's written, as the page does for downloads, so
-// at most fileWindow chunks are on their way. Once it has req.Size bytes,
-// it saves the file and sends {"name":...} with the name it got, or
-// {"error":...}. With req.Replace, a file of that name is replaced.
+// tunnelUpload answers an upload request: it replies {"id":...,
+// "offset":...}, and the page sends the file's contents from offset in
+// data messages, and the server acknowledges each with an empty data
+// message once it's written, as the page does for downloads, so at most
+// fileWindow chunks are on their way. Once it has req.Size bytes, it saves
+// the file and sends {"name":...} with the name it got, or {"error":...}.
+// With req.Replace, a file of that name is replaced. The page cancels it
+// with a text message, which deletes what came; if it stops any other way
+// part way, as when the connection is lost, what came is kept, and a
+// request with req.Resume set to the id carries on from it (see
+// keepPartial); offset is 0 if it's gone.
 func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
 	if !validUploadName(req.Name) || req.Size < 0 {
 		fail(errUploadName.Error())
@@ -327,29 +487,66 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[strin
 	if dir == "" {
 		dir = "."
 	}
-	u, err := startUpload(root, dir)
-	if err != nil {
-		fail(uploadError(err))
+	var u *upload
+	offset := int64(0)
+	if req.Resume != "" {
+		u, offset = g.claimPartial(root, req.Resume, dir, req.Size)
+	}
+	// Refused at once if it can't fit, rather than failing part way.
+	if free, ok := g.reclaimPartials(req.Size - offset); ok && req.Size-offset > free {
+		if u != nil {
+			g.keepPartial(u, req.Size)
+		}
+		fail(fmt.Sprintf("There isn't room for it: it's %s, and %s is free.", humanSize(req.Size-offset), humanSize(free)))
 		return
 	}
-	saved := false
+	if u == nil {
+		var err error
+		if u, err = startUpload(root, dir); err != nil {
+			fail(uploadError(err))
+			return
+		}
+	}
+	saved, keep := false, false
+	active := &activeUpload{t: t, over: make(chan struct{})}
+	g.mu.Lock()
+	if g.uploads == nil {
+		g.uploads = map[string]*activeUpload{}
+	}
+	g.uploads[u.id()] = active
+	g.mu.Unlock()
 	defer func() {
-		if !saved {
+		switch {
+		case saved:
+		case keep || active.resumed.Load():
+			g.keepPartial(u, req.Size)
+		default:
 			u.abort()
 		}
+		g.mu.Lock()
+		delete(g.uploads, u.id())
+		g.mu.Unlock()
+		close(active.over)
 	}()
 	t.c.SetReadLimit(fileChunk + tunnelOverhead)
-	if !reply(nil) {
+	if !reply(map[string]any{"id": u.id(), "offset": offset}) {
 		return
 	}
-	for got := int64(0); got < req.Size; {
+	if offset > 0 {
+		log.Printf("upload of %s resumed at %s of %s", path.Join(dir, req.Name), humanSize(offset), humanSize(req.Size))
+	}
+	for got := offset; got < req.Size; {
 		ctx, cancel := context.WithTimeout(context.Background(), fileStall)
 		typ, p, err := t.Read(ctx)
 		cancel()
 		if err != nil {
+			keep = !errors.Is(err, errTunnelFrame)
 			return
 		}
-		if typ != websocket.MessageBinary || len(p) == 0 || got+int64(len(p)) > req.Size {
+		if typ == websocket.MessageText {
+			return // cancelled
+		}
+		if len(p) == 0 || got+int64(len(p)) > req.Size {
 			t.Close(websocket.StatusPolicyViolation, "bad upload")
 			return
 		}
@@ -362,6 +559,7 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[strin
 		err = t.Write(ctx, websocket.MessageBinary, nil)
 		cancel()
 		if err != nil {
+			keep = true
 			return
 		}
 	}
@@ -383,4 +581,14 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, reply func(map[strin
 	}
 	writeJSON(t, res)
 	t.Close(websocket.StatusNormalClosure, "")
+}
+
+// diskSpace returns the bytes free for the gateway's files on the file
+// system holding path, and its size, if it can tell.
+func diskSpace(path string) (free, total int64, ok bool) {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return 0, 0, false
+	}
+	return int64(st.Bavail) * st.Bsize, int64(st.Blocks) * st.Bsize, true
 }

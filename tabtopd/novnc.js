@@ -18,7 +18,7 @@
 import { TunnelSocket } from "./tunnel.js";
 import { logOut, nameTab, openPage, terminalOn } from "./nav.js";
 import { dropUploads } from "./drop.js";
-import { call, fileNames, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
+import { call, folderInfo, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
 import { fetchFile, humanBytes } from "./download.js";
 import { warnExpiry } from "./expiry.js";
 
@@ -56,7 +56,7 @@ if (settings) {
 
 document.head.append(Object.assign(document.createElement("link"), { rel: "stylesheet", href: new URL("./desktop.css", import.meta.url).href }));
 setLoginTitle("Desktop");
-dropUploads(uploadFile, makeFolder, () => {}, () => "", "(~/Downloads)", fileNames);
+dropUploads(uploadFile, makeFolder, () => {}, () => "", "(~/Downloads)", folderInfo);
 
 // The notices, newest at the top, at most MAX_NOTICES; each stays until
 // it's used or dismissed.

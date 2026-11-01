@@ -18,10 +18,10 @@
 
 import * as tunnel from "./tunnel.js";
 import { deleteFiles, dropUploads } from "./drop.js";
-import { askFolder, askName, rowMenu, statusRow } from "./ui.js";
+import { askFolder, askName, askYes, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
-import { call, fileNames, makeFolder, shellPath, uploadFile } from "./requests.js";
-import { fetchFile, fetchZip } from "./download.js";
+import { call, folderInfo, makeFolder, shellPath, uploadFile } from "./requests.js";
+import { fetchFile, fetchZip, humanBytes } from "./download.js";
 import { preview, previewable } from "./preview.js";
 import { reconnect, reconnected } from "./reconnect.js";
 import { warnExpiry } from "./expiry.js";
@@ -115,7 +115,7 @@ async function show({ refresh = false } = {}) {
     reconnected();
     document.title = "Downloads /" + (dir ? dir + "/" : "");
 
-    const sessions = (kept && document.getElementById("sessions")) || el("div", { id: "sessions" });
+    const sessions = (kept && document.getElementById("sessions")) || el("details", { id: "sessions", className: "security" });
     if (!refresh || !sessions.childElementCount) {
         showSessions(sessions);
     }
@@ -161,7 +161,7 @@ async function show({ refresh = false } = {}) {
     const head = el("tr");
     const tbody = el("tbody");
     const sortButton = (key, text) => {
-        const th = el("th", { className: key === "name" ? "" : key === "size" ? "num" : "num mod" },
+        const th = el("th", { className: key === "name" ? "" : key === "size" ? "num size" : "num mod" },
             button("sort", text, () => {
                 sort = { key, desc: sort.key === key ? !sort.desc : key !== "name" };
                 saveSort();
@@ -185,7 +185,7 @@ async function show({ refresh = false } = {}) {
         if (dir) {
             const up = dir.split("/").slice(0, -1).join("/");
             const tr = el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
-                el("td"), el("td", { className: "mod" }), el("td"));
+                el("td", { className: "size" }), el("td", { className: "mod" }), el("td"));
             tr.dataset.name = "..";
             moveTarget(tr, dir, up);
             rows.push(tr);
@@ -221,7 +221,7 @@ async function show({ refresh = false } = {}) {
                 ["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)],
             ]);
             const tr = el("tr", { draggable: true }, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
-                el("td", { className: "num", textContent: e.size ?? "", title: e.dir ? "" : `${(e.bytes ?? 0).toLocaleString()} bytes` }),
+                el("td", { className: "num size", textContent: e.size ?? "", title: e.dir ? "" : `${(e.bytes ?? 0).toLocaleString()} bytes` }),
                 el("td", { className: "num mod", textContent: e.time ? friendlyTime(e.time) : e.modified,
                     title: e.time ? exactTime(e.time) : "" }),
                 el("td", { className: "act" }, menu));
@@ -273,11 +273,12 @@ async function show({ refresh = false } = {}) {
         crumbs,
         ...(entries.length ? [el("div", { className: "find" }, filter, matches)] : []),
         selection,
-        el("table", {}, el("thead", {}, head), tbody),
+        el("table", { className: "file-table" }, el("thead", {}, head), tbody),
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
+        ...(t.reply.total ? [diskSpace(t.reply.free, t.reply.total)] : []),
         sessions);
     if (arrived) {
         scrollTo(0, scrolls.get(dir) ?? 0);
@@ -444,6 +445,14 @@ function restorePlace() {
     } catch {
         // The top, then.
     }
+}
+
+// diskSpace says how much room is left for uploads: free of total bytes,
+// in red once it's under a twentieth.
+function diskSpace(free, total) {
+    const low = free < total / 20;
+    return el("p", { className: low ? "space error" : "space hint",
+        textContent: `${humanBytes(free)} free of ${humanBytes(total)}${low ? ": uploads bigger than that are refused" : ""}` });
 }
 
 // breadcrumbs is the page's heading for dir: Downloads and each folder
@@ -746,18 +755,24 @@ function listKeys(e) {
 // showSessions lists the logins that are still live, where each has been
 // used from, and recent logins, with a button that ends every session.
 async function showSessions(box) {
+    const wasOpen = box.open;
     let r;
     try {
         const t = await call({ type: "sessions" });
         t.close();
         r = t.reply;
     } catch (err) {
-        box.replaceChildren(el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
+        box.replaceChildren(el("summary", { textContent: "Security and sessions" }),
+            el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
         return;
     }
     const when = (t) => clocks.short.format(new Date(t));
-    const everywhere = el("button", { textContent: "Log out everywhere" });
+    const everywhere = el("button", { className: "danger", textContent: "Log out everywhere" });
     everywhere.addEventListener("click", async () => {
+        if (!(await askYes("Log out every session? Everything open in every desktop and terminal will disconnect, including this one.",
+            "Log out everywhere"))) {
+            return;
+        }
         try {
             await tunnel.request({ type: "logout-all" });
         } catch {
@@ -766,30 +781,64 @@ async function showSessions(box) {
         tunnel.forgetSession();
         show();
     });
+    const field = (label, props = {}, ...children) => {
+        const td = el("td", props, ...children);
+        td.dataset.label = label;
+        return td;
+    };
     const rows = r.sessions.map((s) => {
         const login = s.uses[0];
         const others = s.uses.slice(1).map((u) => `${u.ip} (last ${when(u.last)})`).join(", ");
-        return el("tr", {}, el("td", { textContent: when(s.created) + (s.current ? " (this browser)" : "") }),
-            el("td", { className: "name" }, login.ip, ...(others ? [el("br"), el("span", { className: "error", textContent: "also " + others })] : [])),
-            el("td", { className: "num", textContent: s.open }));
+        // Another session can be ended from here; this one logs out.
+        const end = s.current ? "" : button("end", "End…", () => endSession(s, when, box));
+        return el("tr", {}, field("Logged in", {}, when(s.created) + (s.current ? " (this browser)" : ""),
+            ...(s.browser ? [el("br"), el("span", { className: "hint", textContent: s.browser })] : [])),
+            field("Used from", { className: "name" }, login.ip, ...(others ? [el("br"), el("span", { className: "error", textContent: "also " + others })] : [])),
+            field("Open", { className: "num", textContent: s.open }),
+            field("Actions", { className: "act" }, end));
     });
-    const logins = r.logins.map((l) => el("tr", {}, el("td", { textContent: when(l.time) }),
-        el("td", { className: "name", textContent: l.ip }),
-        el("td", { className: l.ok ? "" : "error", textContent: l.ok ? "logged in" : "failed" })));
+    const logins = r.logins.map((l) => el("tr", {}, field("When", { textContent: when(l.time) }),
+        field("Used from", { className: "name", textContent: l.browser ? `${l.ip}, ${l.browser}` : l.ip }),
+        field("Result", { className: l.ok ? "" : "error", textContent: l.ok ? "logged in" : "failed" })));
     const idle = r.idle_minutes ? ` A login with nothing open ends after ${r.idle_minutes} minutes.` : "";
+    const attention = r.logins.some((l) => !l.ok) || r.sessions.some((s) => s.uses.length > 1);
     box.replaceChildren(
+        el("summary", { className: attention ? "attention" : "", textContent: "Security and sessions" }),
         el("div", { className: "bar" }, el("h2", { textContent: "Sessions" }), everywhere),
-        el("table", {}, el("tr", {}, el("th", { textContent: "Logged in" }), el("th", { textContent: "Used from" }),
-            el("th", { className: "num", textContent: "Open" })), ...rows),
+        el("table", { className: "sessions-table" }, el("tr", {}, el("th", { textContent: "Logged in" }), el("th", { textContent: "Used from" }),
+            el("th", { className: "num", textContent: "Open" }), el("th", { className: "act" })), ...rows),
         el("h2", { textContent: "Recent logins" }),
-        el("table", {}, ...(logins.length ? logins : [el("tr", {}, el("td", { textContent: "None since the server started." }))])),
+        el("table", { className: "logins-table" }, ...(logins.length ? logins : [el("tr", {}, field("", { textContent: "None since the server started." }))])),
         el("p", { className: "hint", textContent: "A session used from an address it didn't log in from is marked in red. "
-            + "This page could hide that if it was changed on the way; the gateway also logs it (docker logs)." + idle }));
+            + "This page could hide that if it was changed on the way; the gateway also logs it (docker logs). "
+            + "Browsers name themselves, so a name tells logins apart but proves nothing. "
+            + "End… logs another session out." + idle }));
+    box.open = wasOpen || attention;
 }
 
 
+// endSession asks, then ends the session s, another than this one, as
+// listed in box, and lists the sessions again.
+async function endSession(s, when, box) {
+    const by = s.browser ? ` with ${s.browser}` : "";
+    if (!(await askYes(`End the session that logged in ${when(s.created)} from ${s.uses[0].ip}${by}? ` +
+        "Everything it has open closes, and it has to log in again.", "End it"))) {
+        return;
+    }
+    const row = statusRow("Ending a session");
+    try {
+        const t = await call({ type: "end-session", name: s.handle });
+        t.close();
+        row.set(`Ended the session from ${s.uses[0].ip}`);
+    } catch (err) {
+        row.set(`The session wasn't ended: ${err.message}`, true);
+    }
+    row.finish();
+    await showSessions(box);
+}
+
 // uploadButton makes the page's upload button (see drop.js).
-const uploadButton = dropUploads(uploadFile, makeFolder, () => show(), currentDir, "", fileNames);
+const uploadButton = dropUploads(uploadFile, makeFolder, () => show(), currentDir, "", folderInfo);
 document.addEventListener("keydown", listKeys);
 // "/" goes to the filter box, as in many sites' search, unless typing.
 document.addEventListener("keydown", (e) => {

@@ -173,9 +173,10 @@ func sessionKeys(ee, secret, clientEph, serverEph []byte, id string) []byte {
 	return keys
 }
 
-// loginTunnel runs the server's side of a login tunnel. hello is the
-// browser's first message after its version and kind bytes.
-func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
+// loginTunnel runs the server's side of a login tunnel, from ip, by
+// browser (see browserName). hello is the browser's first message after
+// its version and kind bytes.
+func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte) {
 	if len(hello) != cpaceSID+32 {
 		c.Close(websocket.StatusPolicyViolation, "bad hello")
 		return
@@ -195,7 +196,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	settle := func(failed bool) {
 		if !settled {
 			settled = true
-			g.endLogin(ip, failed)
+			g.endLogin(ip, browser, failed)
 		}
 	}
 	defer settle(false)
@@ -284,7 +285,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip string, hello []byte) {
 	}
 	settle(false)
 	log.Printf("login from %s succeeded", ip)
-	id, secret, history := g.newSession(ip)
+	id, secret, history := g.newSession(ip, browser)
 	if c.Write(ctx, websocket.MessageBinary, append([]byte{tunnelVersion}, keys[96:]...)) != nil {
 		return
 	}

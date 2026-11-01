@@ -599,14 +599,18 @@ How long a login lasts, and how to notice and end one you didn't make:
   address, and any failed attempts since. It stays on screen until
   dismissed when there were failed attempts or the previous login came from
   another address.
-- **The files page** lists the live sessions: when each logged in, the
+- **The files page** lists the live sessions: when each logged in, with
+  which browser (such as `Chrome on macOS`, as the browser describes
+  itself, so it tells logins apart but proves nothing), the
   address it logged in from, any other address it has been used from
   (marked in red), and how many connections it has open, not counting the
   page's own request. A page closed or left closes its connections. Below
-  are the last 20 logins, failed ones included. **Log out everywhere** ends
-  every session, this one too, and closes everything they have open: an
-  open desktop or terminal asks for a login when it reconnects, which it
-  does by itself.
+  are the last 20 logins, failed ones included, with their browsers. **End…** on another
+  session's row ends just that one, after asking, and closes everything it
+  has open; the page never sees other sessions' ids, only a name for each
+  derived from it. **Log out everywhere** ends every session, this one
+  too, and closes everything they have open: an open desktop or terminal
+  asks for a login when it reconnects, which it does by itself.
 - **The gateway's log** (`docker logs`) records each login and each time a
   session is used from an address it didn't log in from.
 
@@ -671,7 +675,12 @@ downloaded at `http://<host>:6080/downloads/`:
 - **Transfers:** downloads, uploads, zips and other changes show in a
   panel in the bottom corner, each with a progress bar while it goes and
   a **Cancel** button where it can be stopped, and a bar for how many are
-  done. **Clear** removes the finished ones; **▾** folds the panel away.
+  done. Those that went well go by themselves a minute after they finish
+  (not while the pointer is over the panel); those that failed stay, and a
+  failed download, zip or upload has **Retry**. An upload carries on
+  from where it stopped (see **Uploads**); a download or zip starts again
+  from the beginning, since the browser has dropped what it had. **Clear** removes the finished ones; **▾** folds the
+  panel away.
   While any are going, the tab's title starts with how far they've got
   (`⇅ 45% · …`, or how many are going where sizes aren't known), so it
   shows in a tab in the background too.
@@ -723,13 +732,20 @@ downloaded at `http://<host>:6080/downloads/`:
   and saved to disk. If the disk reports an error saving its folder
   too, the page says so next to the file; on a file system that can't
   save a folder on request at all, the file's own save is as far as it
-  goes, without a warning. One that's cut off is deleted, and any left by a
-  crash or a forced stop are deleted when the container next starts (it
-  spends at most 10 seconds looking, before serving anything), so don't
-  share `~/Downloads` between two running containers. Each upload has a
-  **Cancel** button while it's waiting or going; a cancelled one is
-  deleted. Interrupted downloads and uploads start again from the
-  beginning.
+  goes, without a warning. Each upload has a **Cancel** button while it's
+  waiting or going; a cancelled one is deleted. One cut off any other way,
+  as when the connection drops, is kept for an hour (the 16 most recent at
+  most), and **Retry** carries on from where it stopped, as long as the
+  file hasn't changed and the page hasn't been reloaded. The room kept
+  ones take counts as free, and an upload that needs it deletes them, the
+  oldest first. Any left by a
+  crash, a restart or a forced stop are deleted when the container next
+  starts (it spends at most 10 seconds looking, before serving anything),
+  so don't share `~/Downloads` between two running containers. Below the
+  list, the page shows how much room is left (`139.5 GB free of 745.1 GB`,
+  in red under a twentieth). A file bigger than that is refused before any
+  of it is sent, and so are several files, or a folder, that are more than
+  that together; **Retry** on one of them then tries just that one.
 - **Folder uploads:** drop a folder on the page, or pick one with
   **Upload a folder…** (in browsers that have it), to upload it with
   everything in it. It never merges into a folder already there: one whose
@@ -789,6 +805,18 @@ emulator compiled to WebAssembly.
   hold Shift to select with the page instead. ghostty-web doesn't send the
   mouse to programs itself, so the page does (clicks, drags and the wheel,
   in the encodings tmux asks for).
+- **Links:** Ctrl+click (⌘+click on a Mac) opens a web address shown in
+  the terminal in a new tab, even while tmux has the mouse. Only `http`,
+  `https` and `ftp` addresses open, so a program can't show a link that
+  runs a script on the site.
+- **Search:** **Search** in the bar at the top, or Ctrl+Shift+F, opens a
+  box at the bottom. Enter finds the text in tmux's history, from the
+  newest output back, and again for older matches; Shift+Enter goes to
+  newer ones, and **↑** and **↓** do the same. tmux marks the match and
+  shows how many there are at the top right. Esc closes the box and leaves
+  tmux's copy mode. It searches the window shown, and every tab on the
+  terminal sees the same search, since they share the tmux session. On a
+  touch screen, **Find** in the strip of keys opens it.
 - **Clipboard:** text copied in tmux, or sent with an OSC 52 escape
   sequence (as `~/.local/bin/ssh-yank.sh` does), goes to your browser's
   clipboard, up to 1 MB at a time. ghostty-web doesn't handle OSC 52, so the
@@ -806,7 +834,8 @@ emulator compiled to WebAssembly.
   the keys its on-screen keyboard lacks: **Esc**, **Tab**, **Ctrl** and
   **Alt** (which apply to the next key typed, so **Ctrl** then **c** is
   Ctrl+C), the arrows, `|`, `~`, `/`, `-`, and **A−** and **A+** for the
-  text size. It scrolls sideways if it doesn't fit.
+  text size, and **Find** for searching. It scrolls sideways if it doesn't
+  fit.
 - **Dropped files:** files and folders dropped on the terminal are
   uploaded into `~/Downloads`, as on the [files page](#downloads), and once
   they're done, their paths (`~/Downloads/report.pdf`, quoted if the shell
@@ -984,7 +1013,10 @@ deletes several at once, cancels an upload, sees the list update itself
 and the page go back to the folder it last showed, drops a file on the
 desktop and has the desktop announce one saved there, passes text both
 ways between noVNC and the clipboard, runs commands in the terminal (with
-its font size keys and touch keys) and drops a file on it, cuts the
+its font size keys and touch keys), drops a file on it and searches its
+history, retries a failed download, ends another session (named by its
+browser), has files too big together refused, carries on with an upload
+whose connection was cut, cuts the
 connection on each page to see it come back, logs in again when warned
 the login is ending, and logs out, then checks from
 inside the container what the pages left in `~/Downloads`, and what the

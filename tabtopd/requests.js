@@ -33,23 +33,49 @@ export async function call(req) {
 const UPLOAD_CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 16;
 
+// Uploads cut off, by File, as {id, dir}: the server keeps
+// what it had of one whose connection was lost (see keepPartial in
+// upload.go), so uploading the same file into the same folder again, as
+// Retry does, carries on from there.
+const partial = new WeakMap();
+
 // uploadFile uploads a dropped or picked file into the folder dir, and
 // returns the name it was saved as, and any warning. With replace, a file
 // with its name there is replaced; otherwise it gets a free name. Aborting
-// signal ends it, and the server then deletes what it had of the file.
+// signal ends it, telling the server to delete what it had of the file. If
+// it stopped any other way the last time this file was uploaded into dir,
+// it carries on from there. (If the file has changed on disk since it was
+// picked, the browser won't read it, so it fails rather than mixing the
+// two.)
 export async function uploadFile(file, progress, dir, signal, replace = false) {
     signal.throwIfAborted();
-    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size, ...(replace ? { replace: true } : {}) });
-    const abort = () => t.close();
+    const kept = partial.get(file);
+    const resume = kept?.dir === dir ? kept.id : "";
+    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size,
+        ...(replace ? { replace: true } : {}), ...(resume ? { resume } : {}) });
+    const abort = () => {
+        partial.delete(file);
+        try {
+            t.sendText(JSON.stringify({ cancel: true }));
+        } catch {
+            // Lost already: the server keeps it a while, then deletes it.
+        }
+        t.close();
+    };
     signal.addEventListener("abort", abort);
     try {
         signal.throwIfAborted();  // while it was opening
-        const chunks = Math.ceil(file.size / UPLOAD_CHUNK);
+        if (t.reply.id) {
+            partial.set(file, { id: t.reply.id, dir });
+        }
+        const offset = t.reply.offset ?? 0;
+        const chunks = Math.ceil((file.size - offset) / UPLOAD_CHUNK);
         let sent = 0;
         let acked = 0;
+        progress(offset);
         for (;;) {
             while (sent < chunks && sent - acked < UPLOAD_WINDOW) {
-                const start = sent * UPLOAD_CHUNK;
+                const start = offset + sent * UPLOAD_CHUNK;
                 t.sendData(new Uint8Array(await file.slice(start, start + UPLOAD_CHUNK).arrayBuffer()));
                 sent++;
             }
@@ -60,12 +86,13 @@ export async function uploadFile(file, progress, dir, signal, replace = false) {
             if (m.text !== undefined) {
                 const res = JSON.parse(m.text);
                 if (res.name && acked === chunks) {
+                    partial.delete(file);
                     return { name: res.name, warning: res.warning };
                 }
                 throw new Error(res.error || "the server's reply is malformed");
             }
             acked++;
-            progress(Math.min(acked * UPLOAD_CHUNK, file.size));
+            progress(Math.min(offset + acked * UPLOAD_CHUNK, file.size));
         }
     } finally {
         signal.removeEventListener("abort", abort);
@@ -79,12 +106,13 @@ export function shellPath(path) {
     return "~/Downloads/" + (/^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
 }
 
-// fileNames resolves to the names of the files in the folder dir (not
-// its folders, which an upload can't replace).
-export async function fileNames(dir) {
+// folderInfo resolves, for uploads into the folder dir, to {names, free}:
+// the names of the files in it (not its folders, which an upload can't
+// replace), and the bytes free there, or null if the server can't tell.
+export async function folderInfo(dir) {
     const t = await call({ type: "list", path: dir });
     t.close();
-    return new Set(t.reply.entries.filter((e) => !e.dir).map((e) => e.name));
+    return { names: new Set(t.reply.entries.filter((e) => !e.dir).map((e) => e.name)), free: t.reply.free ?? null };
 }
 
 // makeFolder makes the folder name in dir for an upload, and returns the

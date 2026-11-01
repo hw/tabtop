@@ -89,11 +89,13 @@ type server struct {
 	handshakes              handshakes
 
 	mu       sync.Mutex
-	sessions map[string]*session    // session id -> session
-	logins   []loginEvent           // recent logins, oldest first
-	ttys     map[string]int         // session token -> open terminals
-	failures map[string][]time.Time // client IP -> recent failed logins
-	pending  map[string]int         // client IP -> logins awaiting their result
+	sessions map[string]*session       // session id -> session
+	logins   []loginEvent              // recent logins, oldest first
+	ttys     map[string]int            // session token -> open terminals
+	failures map[string][]time.Time    // client IP -> recent failed logins
+	pending  map[string]int            // client IP -> logins awaiting their result
+	partials map[string]*partialUpload // id -> an upload cut off, kept to resume (see keepPartial)
+	uploads  map[string]*activeUpload  // id -> an upload going on (see claimPartial)
 
 	failuresSwept time.Time // when failures last lost its expired IPs
 
@@ -435,14 +437,14 @@ func (g *server) beginLogin(ip string) bool {
 	return true
 }
 
-func (g *server) endLogin(ip string, failed bool) {
+func (g *server) endLogin(ip, browser string, failed bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.pending[ip]--; g.pending[ip] <= 0 {
 		delete(g.pending, ip)
 	}
 	if failed {
-		g.recordLoginLocked(ip, false)
+		g.recordLoginLocked(ip, browser, false)
 		g.failures[ip] = append(g.failures[ip], time.Now())
 		g.sweepFailuresLocked()
 	}
@@ -702,6 +704,13 @@ const pageHead = `<!doctype html><html lang="en"><meta charset="utf-8">
 a { color: var(--accent); }
 body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 56rem;
        padding: 0 1rem; color: var(--fg); background: var(--bg); }
+button, input { font: inherit; }
+button:not(.sort) { padding: .3rem .7rem; color: inherit; background: var(--raised); border: 1px solid var(--line); border-radius: 5px; }
+button:not(.sort):not(:disabled) { cursor: pointer; }
+button:not(.sort):not(:disabled):hover { background: var(--hover); }
+button.danger, .selection button.delete { color: #c5221f; }
+@media (prefers-color-scheme: dark) { button.danger, .selection button.delete { color: #f28b82; } }
+button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 h1 { font-size: 1.25rem; font-weight: 600; overflow-wrap: anywhere; }
 h2 { font-size: 1.05rem; font-weight: 600; margin-top: 2rem; }
 table { width: 100%; border-collapse: collapse; }
@@ -714,11 +723,20 @@ td.name { overflow-wrap: anywhere; }
 .hint { opacity: .7; font-size: 13px; }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
+p.space { margin-top: -.25rem; }
+#sessions button.end { font: inherit; font-size: 13px; }
+details.security { margin-top: 2rem; padding-top: .75rem; border-top: 1px solid var(--line); }
+details.security > summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; }
+details.security > summary.attention { color: #c5221f; }
+details.security > summary.attention::after { content: " • attention needed"; font-size: 13px; font-weight: 400; }
+@media (prefers-color-scheme: dark) { details.security > summary.attention { color: #f28b82; } }
+details.security h2 { font-size: 1rem; margin-top: 1.5rem; }
 h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4rem; word-break: normal; overflow-wrap: anywhere;
        margin-top: .75rem; }
 .tabtop-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem; padding-bottom: .5rem;
        border-bottom: 1px solid var(--line); font-size: 14px; }
 .tabtop-nav a { text-decoration: none; } .tabtop-nav a:hover { text-decoration: underline; }
+.tabtop-nav a[target]::after { content: " ↗"; font-size: .8em; }
 .tabtop-nav [aria-current] { font-weight: 600; }
 .tabtop-nav button { margin-left: auto; font: inherit; }
 .find { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
@@ -775,6 +793,23 @@ dialog.preview .body pre { align-self: stretch; flex: 1; margin: 0; padding: .75
        dialog.preview { width: 100vw; height: 100vh; max-width: none; border-radius: 0; }
        dialog.preview .head { flex-wrap: wrap; } dialog.preview .head strong { flex-basis: 100%; }
        dialog.preview .head .hint { margin-right: auto; white-space: nowrap; } }
+@media (max-width: 30rem) {
+       body { margin-top: 1rem; padding: 0 .75rem; }
+       .file-table .size { display: none; }
+       th, td { padding-left: .35rem; padding-right: .35rem; }
+       details.menu summary { min-width: 28px; min-height: 38px; box-sizing: border-box; text-align: center; }
+       .sessions-table tr, .logins-table tr { display: block; padding: .5rem 0; border-bottom: 1px solid var(--line); }
+       .sessions-table tr:first-child { display: none; }
+       .sessions-table td, .logins-table td { display: grid; grid-template-columns: minmax(6rem, 35%) 1fr; gap: .5rem;
+              padding: .15rem .25rem; border: 0; text-align: left; white-space: normal; }
+       .sessions-table td::before, .logins-table td::before { content: attr(data-label); font-weight: 600; }
+       .sessions-table td.act:empty { display: none; }
+}
+@media (pointer: coarse) {
+       button, .tabtop-nav a, details.menu summary { min-height: 40px; }
+       .tabtop-nav a { display: inline-flex; align-items: center; }
+       input[type=checkbox] { width: 22px; height: 22px; }
+}
 ` + transfersCSS + `</style>`
 
 // transfersCSS styles the overlay shown while files are dragged over a
@@ -801,6 +836,8 @@ body.dropping #drop_overlay { display: flex; }
 #uploads p span { flex: 1 1 12rem; }
 #uploads p progress { order: 3; flex: 1 1 100%; height: 6px; }
 #uploads button { font: inherit; font-size: 12px; }
+.sr-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+       clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 40rem) { #transfers { left: .5rem; right: .5rem; bottom: .5rem; width: auto; } }
 `
 
@@ -814,6 +851,7 @@ const desktopCSS = `#drop_overlay, #transfers { --fg: #e8e8ea; --bg: #1c1c1e; --
 ` + transfersCSS + `#drop_overlay { z-index: 300; }
 #transfers { z-index: 200; }
 #transfers button { all: revert; font-size: 13px; }
+#transfers button:focus-visible, #tabtop_notices button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
 @media (min-width: 40.01rem) { #transfers { left: auto; right: 1rem; } }
 #tabtop_notices { position: fixed; top: 1rem; right: 1rem; z-index: 250; display: flex; flex-direction: column; gap: .5rem;
        width: min(24rem, calc(100vw - 2rem)); font: 14px/1.5 system-ui, sans-serif; color: #e8e8ea; text-align: left; }

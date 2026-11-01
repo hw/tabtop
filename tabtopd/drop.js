@@ -4,6 +4,7 @@
 // folder, and by the desktop and the terminal for files dropped on them.
 // How each goes shows in the transfers panel (see ui.js).
 
+import { humanBytes } from "./download.js";
 import { askChoice, askYes, statusRow } from "./ui.js";
 
 // dropUploads makes the page take dropped and pasted files and folders,
@@ -11,18 +12,21 @@ import { askChoice, askYes, statusRow } from "./ui.js";
 // turn to send(file, progress, dir, signal, replace), which resolves to
 // {name, warning}, the name it was saved as in the folder dir and anything
 // to say about it, calls progress(bytes) as it goes, and stops, rejecting,
-// once signal is aborted. If any of the files have the names of ones
-// already in the folder, as existing(dir) resolves to a Set of its names,
-// the person is asked whether to replace those (replace is then true) or
-// keep both (the new ones get numbered names). A folder is made with mkdir(dir, name), which resolves to the
-// name it got, and then filled the same way. Progress shows in the
+// once signal is aborted. inspect(dir) resolves to {names, free}: a Set of
+// the names of the files in the folder, and the bytes free there, or null.
+// If any of the files have the names of ones already in the folder, the
+// person is asked whether to replace those (replace is then true) or keep
+// both (the new ones get numbered names). Several files that won't fit
+// together aren't started (the server checks each file itself). A folder
+// is made with mkdir(dir, name), which resolves to the name it got, and
+// then filled the same way. Progress shows in the
 // transfers panel, with a Cancel button for each file or folder until
 // it's done; done(names, dir) is called, and awaited, once all have been
 // tried and any succeeded, with the names of the files and folders saved
 // in the folder dir. While files are dragged over the page, it says where
 // they'd go, followed by note. It returns a function that makes the upload
 // buttons, which send the files or folder picked the same way.
-export function dropUploads(send, mkdir, done, here, note = "", existing = async () => new Set()) {
+export function dropUploads(send, mkdir, done, here, note = "", inspect = async () => ({ names: new Set(), free: null })) {
     let depth = 0;
     const isFiles = (e) => e.dataTransfer?.types.includes("Files");
     const where = document.createElement("p");
@@ -58,17 +62,33 @@ export function dropUploads(send, mkdir, done, here, note = "", existing = async
             e.dataTransfer.dropEffect = "copy";
         }
     });
-    // upload sends files, then folders: promises of {name, files, dirs}.
+    // upload sends files, then folders: promises of {name, files, dirs},
+    // into dir, by default the one shown.
     let queue = Promise.resolve();
-    const upload = (files, folders = []) => {
-        const dir = here();
+    const upload = (files, folders = [], dir = here()) => {
         const jobs = [
             ...files.map((file) => ({ file, row: statusRow(`${file.name}: waiting`, true) })),
             ...folders.map((folder) => ({ folder, row: statusRow("Reading a folder…", true) })),
         ];
         // One upload at a time, after any still going from earlier ones.
         queue = queue.then(async () => {
-            const replace = await askReplace(files, dir, existing);
+            let info = null;
+            try {
+                info = await inspect(dir);
+            } catch {
+                // Uploaded anyway; the server checks each file.
+            }
+            const room = await tooBig(files, folders, info?.free);
+            if (room) {
+                // Each can be tried on its own, which the server checks.
+                for (const { file, folder, row } of jobs) {
+                    const name = file ? file.name : `${(await folder.catch(() => null))?.name ?? "A folder"}/`;
+                    row.set(`${name}: not uploaded: ${room}`, true);
+                    row.finish(() => upload(file ? [file] : [], folder ? [folder] : [], dir));
+                }
+                return;
+            }
+            const replace = await askReplace(files, dir, info?.names);
             if (replace === null) {
                 for (const { file, folder, row } of jobs) {
                     row.set(file ? `${file.name}: cancelled` : "A folder's upload: cancelled");
@@ -78,11 +98,12 @@ export function dropUploads(send, mkdir, done, here, note = "", existing = async
             }
             const saved = [];
             for (const { file, folder, row } of jobs) {
-                const name = await (file ? uploadOne(file, dir, row, send, replace.has(file.name)) : uploadFolder(folder, dir, row, send, mkdir));
+                const { name, retry } = await (file ? uploadOne(file, dir, row, send, replace.has(file.name), upload)
+                    : uploadFolder(folder, dir, row, send, mkdir, upload));
                 if (name) {
                     saved.push(name);
                 }
-                row.finish();
+                row.finish(retry);
             }
             if (saved.length) {
                 await redraw(() => done(saved, dir));
@@ -156,18 +177,33 @@ function pastedName(file) {
     return new File([file], `Pasted ${stamp}.${generic[1].toLowerCase()}`, { type: file.type, lastModified: file.lastModified });
 }
 
-// askReplace asks, if any of files have the names of ones already in dir,
-// whether to replace those, and resolves to the Set of names to replace
-// (empty to keep both), or null if the uploads are cancelled. If the
-// folder can't be read, it keeps both.
-async function askReplace(files, dir, existing) {
-    if (!files.length) {
-        return new Set();
+// tooBig says why files and folders (promises of them) can't all be
+// uploaded, if there's more than one file among them and together they're
+// more than free bytes; else "". A single file is left to the server,
+// which knows how much of one cut off it already has.
+async function tooBig(files, folders, free) {
+    if (free === null || free === undefined) {
+        return "";
     }
-    let names;
-    try {
-        names = await existing(dir);
-    } catch {
+    const read = (await Promise.allSettled(folders)).filter((r) => r.status === "fulfilled").map((r) => r.value);
+    const sizes = [...files.map((f) => f.size), ...read.flatMap(folderSizes)];
+    const total = sizes.reduce((a, b) => a + b, 0);
+    if (sizes.length < 2 || total <= free) {
+        return "";
+    }
+    return `there isn't room for all ${sizes.length} files: they're ${humanBytes(total)} together, and ${humanBytes(free)} is free.`;
+}
+
+function folderSizes(folder) {
+    return [...folder.files.map((f) => f.size), ...folder.dirs.flatMap(folderSizes)];
+}
+
+// askReplace asks, if any of files have the names of ones already in dir,
+// names (a Set, or undefined if the folder couldn't be read, when it keeps
+// both), whether to replace those, and resolves to the Set of names to
+// replace (empty to keep both), or null if the uploads are cancelled.
+async function askReplace(files, dir, names) {
+    if (!files.length || !names) {
         return new Set();
     }
     const taken = files.filter((f) => names.has(f.name)).map((f) => f.name);
@@ -183,12 +219,13 @@ async function askReplace(files, dir, existing) {
 }
 
 // uploadOne uploads file into dir, showing how it goes in row, and
-// returns the name it was saved as, or "" if it wasn't. With replace, a
-// file with its name there is replaced.
-async function uploadOne(file, dir, row, send, replace = false) {
+// returns {name, retry}: the name it was saved as, or "" if it wasn't, and
+// if it failed, a function that tries again, with upload(files, folders,
+// dir). With replace, a file with its name there is replaced.
+async function uploadOne(file, dir, row, send, replace, upload) {
     if (row.signal.aborted) {
         row.set(`${file.name}: cancelled`);
-        return "";
+        return { name: "" };
     }
     const progress = (got) => {
         row.set(`${file.name}: ${percent(got, file.size)}`);
@@ -201,14 +238,14 @@ async function uploadOne(file, dir, row, send, replace = false) {
         if (warning) {
             row.set(`${row.text} (${warning})`, true);
         }
-        return name;
+        return { name };
     } catch (err) {
         if (row.signal.aborted) {
             row.set(`${file.name}: cancelled`);
-        } else {
-            row.set(`${file.name}: failed: ${err.message}`, true);
+            return { name: "" };
         }
-        return "";
+        row.set(`${file.name}: failed: ${err.message}`, true);
+        return { name: "", retry: () => upload([file], [], dir) };
     }
 }
 
@@ -265,20 +302,22 @@ const percent = (got, size) => `${size ? Math.floor(got * 100 / size) : 100}%`;
 // uploadFolder uploads folder, a promise of one, into dir: a new folder,
 // named after it unless that's taken, and everything in it, until row's
 // Cancel button is pressed. Its progress shows in row, and files that fail
-// in rows of their own. It returns the name the new folder got, if any of
-// its files were saved, else "".
-async function uploadFolder(pending, dir, row, send, mkdir) {
+// in rows of their own, each with Retry. It returns {name, retry}: the
+// name the new folder got, if any of its files were saved, else "", and,
+// if the folder couldn't be made, a function that tries again with
+// upload(files, folders, dir).
+async function uploadFolder(pending, dir, row, send, mkdir, upload) {
     let folder;
     try {
         folder = await pending;
     } catch (err) {
         row.set(`A folder couldn't be read: ${err.message}`, true);
-        return "";
+        return { name: "" };
     }
     const { signal } = row;
     if (signal.aborted) {
         row.set(`${folder.name}/: cancelled`);
-        return "";
+        return { name: "" };
     }
     const total = countFiles(folder);
     let got;
@@ -286,14 +325,14 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
         got = await mkdir(dir, folder.name);
     } catch (err) {
         row.set(`${folder.name}/: failed: ${err.message}`, true);
-        return "";
+        return { name: "", retry: () => upload([], [Promise.resolve(folder)], dir) };
     }
     let tried = 0;
     let saved = 0;
-    const failed = (path, message) => {
+    const failed = (path, message, retry) => {
         const r = statusRow("");
         r.set(`${path}: failed: ${message}`, true);
-        r.finish();
+        r.finish(retry);
         row.set(row.text, true);
     };
     // fill uploads what's in f into the new folder at to, and shows it at
@@ -316,7 +355,7 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
                 }
             } catch (err) {
                 if (!signal.aborted) {
-                    failed(join(path, file.name), err.message);
+                    failed(join(path, file.name), err.message, () => upload([file], [], to));
                 }
             }
             tried++;
@@ -340,7 +379,7 @@ async function uploadFolder(pending, dir, row, send, mkdir) {
     const as = got === folder.name ? "" : `, as ${got}/`;
     row.set(signal.aborted ? `${folder.name}/: cancelled after ${saved} of ${total} files${as}`
         : `${folder.name}/: ${saved} of ${total} files uploaded${as}`);
-    return saved ? got : "";
+    return { name: saved ? got : "" };
 }
 
 // deleteFiles asks before deleting items, [{name, dir, remove}], each a

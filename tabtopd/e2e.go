@@ -130,15 +130,17 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 
 // tunnelRequest is a session tunnel's first message: what it's for.
 type tunnelRequest struct {
-	Type  string   `json:"type"` // vnc, logout, tty, list, file, zip, upload, mkdir, rename, move, delete, watch, changes or audio
+	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, tty, list, file, zip, upload, mkdir, rename, move, delete, watch, changes or audio
 	Path  string   `json:"path,omitempty"`
-	Name  string   `json:"name,omitempty"`  // upload, mkdir: the file's or folder's name, in the folder at Path; rename: the new name
+	Name  string   `json:"name,omitempty"`  // upload, mkdir: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
 	Size  int64    `json:"size,omitempty"`  // upload: its size
 	Names []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path
 	To    string   `json:"to,omitempty"`    // move: the folder to move what's at Path into
 	// upload: replace a file that has the name, rather than save under a
 	// free one
 	Replace bool `json:"replace,omitempty"`
+	// upload: the id of one cut off, to carry on with (see keepPartial)
+	Resume string `json:"resume,omitempty"`
 }
 
 type fileEntry struct {
@@ -187,7 +189,7 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	}
 	switch hello[1] {
 	case helloLogin:
-		g.loginTunnel(c, ip, hello[2:])
+		g.loginTunnel(c, ip, browserName(r.Header.Get("User-Agent")), hello[2:])
 	case helloSession:
 		t, session := g.sessionTunnel(c, hello[2:])
 		handshaken() // from here, the session's limit applies
@@ -240,6 +242,15 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	case "logout":
 		g.endSession(session, "Logged out.", t)
+		reply(nil)
+		t.Close(websocket.StatusNormalClosure, "")
+
+	case "end-session":
+		// Another of the sessions listed, by its handle (see sessionsReport).
+		if !g.endSessionByHandle(req.Name, session, ip) {
+			fail("That session is over already, or it's this one.")
+			return
+		}
 		reply(nil)
 		t.Close(websocket.StatusNormalClosure, "")
 
@@ -498,7 +509,11 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 			out = append(out, fileEntry{Name: strings.TrimSuffix(e.Name, "/"), Dir: e.dir, Size: e.Size, Bytes: e.bytes,
 				Modified: e.Modified, Time: e.time})
 		}
-		reply(map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone})
+		res := map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone}
+		if free, total, ok := g.uploadRoom(); ok {
+			res["free"], res["total"] = free, total
+		}
+		reply(res)
 		t.Close(websocket.StatusNormalClosure, "")
 		return
 	}

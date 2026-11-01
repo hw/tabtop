@@ -117,7 +117,7 @@ func TestLoginLimitParallel(t *testing.T) {
 			ok := g.beginLogin("192.0.2.1")
 			if ok {
 				time.Sleep(time.Millisecond)
-				g.endLogin("192.0.2.1", true)
+				g.endLogin("192.0.2.1", "", true)
 			}
 			started <- ok
 		})
@@ -163,13 +163,13 @@ func TestFailuresSwept(t *testing.T) {
 	}
 	g.failures["192.0.2.1"] = []time.Time{time.Now()}
 	g.beginLogin("192.0.2.2")
-	g.endLogin("192.0.2.2", true)
+	g.endLogin("192.0.2.2", "", true)
 	if len(g.failures) != 2 {
 		t.Fatalf("%d IPs tracked after a sweep, want 2", len(g.failures))
 	}
 	g.failures["2001:db8::1"] = []time.Time{old}
 	g.beginLogin("192.0.2.2")
-	g.endLogin("192.0.2.2", true)
+	g.endLogin("192.0.2.2", "", true)
 	if len(g.failures) != 3 {
 		t.Fatalf("swept again within the window: %d IPs tracked", len(g.failures))
 	}

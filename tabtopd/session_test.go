@@ -155,7 +155,7 @@ func TestLogoutEverywhere(t *testing.T) {
 // listed, the login's first.
 func TestSessionUses(t *testing.T) {
 	g := &server{}
-	id, _, _ := g.newSession("198.51.100.1")
+	id, _, _ := g.newSession("198.51.100.1", "Firefox on Linux")
 	for _, ip := range []string{"198.51.100.1", "203.0.113.9"} {
 		detach, err := g.attach(id, ip, &tunnel{})
 		if err != nil {
@@ -169,15 +169,34 @@ func TestSessionUses(t *testing.T) {
 	}
 	r := g.sessionsReport(id, nil)
 	list := r["sessions"].([]sessionInfo)
-	if len(list) != 1 || !list[0].Current || list[0].Open != 0 {
+	if len(list) != 1 || !list[0].Current || list[0].Open != 0 || list[0].Browser != "Firefox on Linux" {
 		t.Fatalf("sessions: %+v", list)
 	}
 	uses := list[0].Uses
 	if len(uses) != maxSessionUses || uses[0].IP != "198.51.100.1" {
 		t.Errorf("uses: %+v", uses)
 	}
-	if logins := r["logins"].([]loginEvent); len(logins) != 1 || logins[0].IP != "198.51.100.1" || !logins[0].OK {
+	if logins := r["logins"].([]loginEvent); len(logins) != 1 || logins[0].IP != "198.51.100.1" || logins[0].Browser != "Firefox on Linux" || !logins[0].OK {
 		t.Errorf("logins: %+v", logins)
+	}
+}
+
+func TestBrowserName(t *testing.T) {
+	for ua, want := range map[string]string{
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36":                   "Chrome on macOS",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0":           "Edge on Windows",
+		"Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0":                                                                  "Firefox on Linux",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1": "Safari on iPhone",
+		"Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0.0.0 Mobile/15E148 Safari/604.1":       "Chrome on iPad",
+		"Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36":                            "Chrome on Android",
+		"Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36":                          "Chrome on ChromeOS",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/130.0.0.0 Safari/537.36":                           "Chrome on Linux",
+		"curl/8.5.0": "",
+		"":           "",
+	} {
+		if got := browserName(ua); got != want {
+			t.Errorf("%s: %q, want %q", ua, got, want)
+		}
 	}
 }
 
@@ -205,7 +224,7 @@ func TestParseSessionLimit(t *testing.T) {
 
 func TestSessionTunnelLimit(t *testing.T) {
 	g := &server{}
-	id, _, _ := g.newSession("198.51.100.1")
+	id, _, _ := g.newSession("198.51.100.1", "")
 	detaches := []func(){}
 	for range maxSessionTunnels {
 		detach, err := g.attach(id, "198.51.100.1", &tunnel{})
@@ -365,5 +384,41 @@ func TestHandshakeTotal(t *testing.T) {
 	}
 	if _, ok := h.start("another"); ok {
 		t.Fatal("one too many in all")
+	}
+}
+
+func TestEndSessionByHandle(t *testing.T) {
+	g, srv := newE2EServer(t)
+	waitingTTY(t)
+	ctx := testCtx(t)
+	mine := login(t, ctx, srv.URL, code(0))
+	theirs := login(t, ctx, srv.URL, code(1))
+	open := openTTY(t, srv.URL, theirs)
+
+	r := openSession(t, ctx, srv.URL, mine).request(t, ctx, tunnelRequest{Type: "sessions"})
+	handles := map[bool]string{}
+	for _, s := range r["sessions"].([]any) {
+		s := s.(map[string]any)
+		handles[s["current"].(bool)], _ = s["handle"].(string)
+	}
+	if handles[true] == "" || handles[false] == "" || strings.Contains(handles[false], theirs.id) {
+		t.Fatalf("handles %v", handles)
+	}
+	for _, h := range []string{handles[true], "nope"} {
+		if reply := openSession(t, ctx, srv.URL, mine).request(t, ctx, tunnelRequest{Type: "end-session", Name: h}); reply["error"] == nil {
+			t.Errorf("ended %q: %v", h, reply)
+		}
+	}
+	if reply := openSession(t, ctx, srv.URL, mine).request(t, ctx, tunnelRequest{Type: "end-session", Name: handles[false]}); reply["ok"] != true {
+		t.Fatalf("end-session: %v", reply)
+	}
+	if code, _ := closedWith(t, open); code != closeLogin {
+		t.Errorf("the ended session's terminal closed with %d", code)
+	}
+	if _, ok := g.sessionSecret(theirs.id); ok {
+		t.Error("the other session is still live")
+	}
+	if _, ok := g.sessionSecret(mine.id); !ok {
+		t.Error("this session ended too")
 	}
 }
