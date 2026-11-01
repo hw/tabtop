@@ -694,7 +694,9 @@ function showLoginSummary(ip, logins) {
     box.id = "tabtop_login_summary";
     box.setAttribute("role", "status");
     Object.assign(box.style, {
-        position: "fixed", right: "1rem", bottom: "1rem", left: "1rem", marginLeft: "auto", maxWidth: "26rem",
+        // At the top, clear of the files page's transfers at the bottom
+        // and the terminal's bar.
+        position: "fixed", right: "1rem", top: "2.5rem", left: "1rem", marginLeft: "auto", maxWidth: "26rem",
         zIndex: "1001", padding: ".75rem 1rem", borderRadius: "8px", font: "14px/1.5 system-ui, sans-serif",
         color: "#e8e8ea", background: warn ? "#5c1d1a" : "#2c2c2e", boxShadow: "0 2px 12px rgba(0,0,0,.4)",
     });

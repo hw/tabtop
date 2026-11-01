@@ -15,11 +15,15 @@
 import * as tunnel from "./tunnel.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askName, rowMenu, statusRow } from "./ui.js";
+import { nameTab, navBar } from "./nav.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
+// Above it, links to the desktop and the terminal, and Log out (see
+// nav.js), which stay as the page is redrawn.
 const page = document.createElement("main");
-document.body.replaceChildren(page);
+document.body.replaceChildren(navBar("files"), page);
+nameTab("files");
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -88,16 +92,6 @@ async function show() {
 
     const sessions = el("div", { id: "sessions" });
     showSessions(sessions);
-    const logout = el("button", { textContent: "Log out" });
-    logout.addEventListener("click", async () => {
-        try {
-            await tunnel.request({ type: "logout" });
-        } catch {
-            // Forgotten here either way.
-        }
-        tunnel.forgetSession();
-        show();
-    });
     // Checked entries, by name, and the bar that offers what to do with
     // them, shown while there are any.
     const entries = t.reply.entries;
@@ -111,15 +105,24 @@ async function show() {
             selected.clear();
             drawRows();
         }));
-    const all = el("input", { type: "checkbox", title: "Select all" });
+    // The filter box narrows the list to names with what's typed in them;
+    // "Select all" then picks those shown.
+    let visible = entries;
+    const filter = el("input", { type: "search", className: "filter", placeholder: "Filter this folder  ( / )", autocomplete: "off",
+        spellcheck: false });
+    filter.setAttribute("aria-label", "Filter this folder");
+    const matches = el("span", { className: "hint" });
+    filter.addEventListener("input", () => drawRows());
+    const all = el("input", { type: "checkbox", title: "Select all shown" });
     const updateSelection = () => {
+        const picked = visible.filter((e) => selected.has(e.name)).length;
         selection.hidden = !selected.size;
-        count.textContent = `${selected.size} selected`;
-        all.checked = selected.size > 0 && selected.size === entries.length;
-        all.indeterminate = selected.size > 0 && selected.size < entries.length;
+        count.textContent = `${selected.size} selected` + (picked < selected.size ? ` (${selected.size - picked} not shown)` : "");
+        all.checked = picked > 0 && picked === visible.length;
+        all.indeterminate = picked > 0 && picked < visible.length;
     };
     all.addEventListener("change", () => {
-        for (const e of entries) {
+        for (const e of visible) {
             all.checked ? selected.set(e.name, e) : selected.delete(e.name);
         }
         drawRows();
@@ -154,7 +157,10 @@ async function show() {
             rows.push(el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
                 el("td"), el("td", { className: "mod" }), el("td")));
         }
-        for (const e of sortEntries(entries)) {
+        const q = filter.value.trim().toLocaleLowerCase();
+        visible = q ? entries.filter((e) => e.name.toLocaleLowerCase().includes(q)) : entries;
+        matches.textContent = q ? `${visible.length} of ${entries.length} shown` : "";
+        for (const e of sortEntries(visible)) {
             const path = join(dir, e.name);
             const link = el("a", { href: e.dir ? dirHash(path) : "#", textContent: e.name + (e.dir ? "/" : "") });
             if (!e.dir) {
@@ -181,6 +187,8 @@ async function show() {
         }
         if (!entries.length) {
             rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: "No files yet." })));
+        } else if (!visible.length) {
+            rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: `Nothing here has “${filter.value.trim()}” in its name.` })));
         }
         tbody.replaceChildren(...rows);
         updateSelection();
@@ -203,7 +211,8 @@ async function show() {
         await show();
     });
     page.replaceChildren(
-        el("div", { className: "bar" }, breadcrumbs(dir), logout),
+        breadcrumbs(dir),
+        ...(entries.length ? [el("div", { className: "find" }, filter, matches)] : []),
         selection,
         el("table", {}, el("thead", {}, head), tbody),
         ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
@@ -666,5 +675,15 @@ async function makeFolder(dir, name) {
 }
 
 uploadButton = dropUploads(uploadFile, makeFolder, show, currentDir);
+// "/" goes to the filter box, as in many sites' search, unless typing.
+document.addEventListener("keydown", (e) => {
+    if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest?.("input, textarea, [contenteditable], dialog")) {
+        const box = document.querySelector("input.filter");
+        if (box) {
+            e.preventDefault();
+            box.focus();
+        }
+    }
+});
 window.addEventListener("hashchange", show);
 show();

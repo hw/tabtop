@@ -6,7 +6,16 @@
 <style>
 @font-face { font-family: "Powerline Symbols"; src: url("PowerlineSymbols.otf") format("opentype"); }
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-#terminal { position: absolute; inset: 4px; }
+#terminal { position: absolute; inset: 30px 4px 4px; }
+.tabtop-nav { position: absolute; top: 0; left: 0; right: 0; height: 26px; display: flex; align-items: center;
+    gap: 1rem; padding: 0 .75rem; font: 13px system-ui, sans-serif; color: #a8a8ad; background: #1c1c1e;
+    border-bottom: 1px solid #2c2c2e; }
+.tabtop-nav a { color: #8ab4f8; text-decoration: none; }
+.tabtop-nav a:hover { text-decoration: underline; }
+.tabtop-nav [aria-current] { color: #e8e8ea; font-weight: 600; }
+.tabtop-nav button { margin-left: auto; font: inherit; color: inherit; background: none; border: 1px solid #3a3a3c;
+    border-radius: 4px; padding: 1px 8px; cursor: pointer; }
+.tabtop-nav button:hover { color: #e8e8ea; }
 </style>
 <div id="terminal"></div>
 <script type="module" src="tty.js"></script>

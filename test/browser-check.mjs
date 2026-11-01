@@ -156,8 +156,22 @@ try {
         await waitFor(`document.getElementById("tabtop_audio_button").title.startsWith("Stop audio")`, "audio to start");
     });
 
+    await step("desktop: links to the terminal and files", async () => {
+        const shown = await ev(`["terminal", "files", "logout"].filter((id) => {
+            const b = document.getElementById("tabtop_" + id + "_button");
+            return b && !b.classList.contains("noVNC_hidden");
+        }).join()`);
+        if (shown !== "terminal,files,logout") {
+            throw new Error(`the control bar has ${shown || "none of them"}`);
+        }
+    });
+
     await step("files: list, without a second login", async () => {
         await open("downloads/", `!!document.querySelector("table")`, "the listing");
+        const nav = await ev(`[...document.querySelectorAll(".tabtop-nav a, .tabtop-nav [aria-current]")].map((a) => a.textContent).join()`);
+        if (nav !== "Desktop,Terminal,Files") {
+            throw new Error(`the bar at the top holds ${nav}`);
+        }
         if (!(await ev(listed)).includes("hello.txt")) {
             throw new Error(`hello.txt isn't listed: ${await ev(listed)}`);
         }
@@ -197,6 +211,16 @@ try {
         await waitFor(`${files} === "hello.txt,up.bin"`, "by name");
     });
 
+    await step("files: filter", async () => {
+        const typeFilter = (text) => ev(`(() => { const f = document.querySelector("input.filter"); f.value = ${JSON.stringify(text)}; f.dispatchEvent(new Event("input")); })()`);
+        await typeFilter("HELL");
+        await waitFor(`${listed}.join() === "hello.txt"`, "only hello.txt");
+        await typeFilter("nothing-like-it");
+        await waitFor(`${listed}.length === 0 && document.querySelector("tbody").textContent.includes("Nothing here has")`, "nothing");
+        await typeFilter("");
+        await waitFor(`${listed}.includes("up.bin") && ${listed}.includes("hello.txt")`, "everything again");
+    });
+
     await step("files: delete", async () => {
         await ev(`${row("up.bin")}.querySelector("button.delete").click()`);
         await answer();
@@ -223,9 +247,14 @@ try {
     await step("files: folder dropped", async () => {
         await open("downloads/", `!!document.querySelector("table")`, "the listing");
         const data = { items: [], files: [`${work}/up-folder`], dragOperationsMask: 1 };
-        for (const type of ["dragEnter", "dragOver", "drop"]) {
+        for (const type of ["dragEnter", "dragOver"]) {
             await cdp("Input.dispatchDragEvent", { type, x: 300, y: 300, data });
         }
+        const overlay = await ev(`getComputedStyle(document.getElementById("drop_overlay")).display + " " + document.getElementById("drop_overlay").textContent`);
+        if (overlay !== "flex Drop to upload into Downloads") {
+            throw new Error(`while dragging, the overlay is ${JSON.stringify(overlay)}`);
+        }
+        await cdp("Input.dispatchDragEvent", { type: "drop", x: 300, y: 300, data });
         await waitFor(`/up-folder\\/: 3 of 3 files uploaded, as up-folder \\(2\\)\\//.test(${status})`, "the dropped folder, renamed");
     });
 
@@ -286,6 +315,10 @@ try {
         await open("tty/", `!!document.querySelector("canvas")`, "the terminal");
         if (await ev(`!!document.querySelector("#tabtop_login")`)) {
             throw new Error("asked for a login again");
+        }
+        const nav = await ev(`[...document.querySelectorAll(".tabtop-nav a")].map((a) => a.textContent).join()`);
+        if (nav !== "Desktop,Files") {
+            throw new Error(`the bar above the terminal links to ${nav}`);
         }
         await sleep(2000);  // for the shell's prompt
         await click(`document.querySelector("canvas")`);

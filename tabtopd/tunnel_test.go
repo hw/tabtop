@@ -499,6 +499,7 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/tunnel.js", http.StatusOK},
 		{"GET", "/tabtop/files.js", http.StatusOK},
 		{"GET", "/tabtop/ui.js", http.StatusOK},
+		{"GET", "/tabtop/nav.js", http.StatusOK},
 		{"GET", "/tabtop/novnc.js", http.StatusOK},
 		{"GET", noble + "/ciphers/chacha.js", http.StatusOK},
 		{"GET", noble + "/curves/abstract/montgomery.js", http.StatusOK},

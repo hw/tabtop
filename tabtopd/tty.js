@@ -5,6 +5,12 @@
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, TunnelSocket } from "../tabtop/tunnel.js";
+import { nameTab, navBar } from "../tabtop/nav.js";
+
+// Links to the desktop and the files page, and Log out, in a bar above
+// the terminal.
+nameTab("terminal");
+document.body.prepend(navBar("terminal"));
 
 // The most a program may copy at once, in base64 bytes.
 const maxCopy = 1 << 20;

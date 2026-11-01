@@ -18,6 +18,13 @@ get the terminal launcher; delete
 `~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml` and restart
 to get the new one.
 
+The desktop, the terminal and the files page link to each other: noVNC's
+control bar has buttons for the terminal and the files page, and the
+other two pages a bar at the top. Each opens in its own tab, and a link
+goes back to the tab already showing that page where the browser allows
+(as for tabs opened from each other). Each also has **Log out**, which
+logs out of all three.
+
 Everything is served on one port by `tabtopd` (in `tabtopd/`):
 
 | Path | What it serves |
@@ -595,7 +602,9 @@ downloaded at `http://<host>:6080/downloads/`:
   deletes files through the [encrypted tunnel](#encryption), so it needs
   JavaScript, and files have no plain URLs to give to `curl` or `wget`.
 - **Finding your way:** the heading shows the folder's path, each folder
-  in it a link back up. Click **Name**, **Size** or **Modified** to sort
+  in it a link back up. The box above the list (or **/** from anywhere on
+  the page) narrows it to names with what you type in them; **Select all**
+  then picks only those shown. Click **Name**, **Size** or **Modified** to sort
   by it, and again to turn the order round; folders stay first, and the
   order is remembered in this browser. Times are shown as "Today 9:34",
   "Yesterday", a weekday or a date, in your browser's language and the
@@ -631,7 +640,8 @@ downloaded at `http://<host>:6080/downloads/`:
   file. At most a few thousand items can be ticked for one zip (the request
   is limited to 1 MiB); a folder's own zip has no such limit.
 - **Uploads:** pick files with **Upload files…**, or drop them on the
-  page, to upload them into the folder it shows. An upload never replaces
+  page, to upload them into the folder it shows; while you drag them over
+  it, the page says which folder that is. An upload never replaces
   a file: one whose name is taken is saved as `name (1).ext`,
   `name (2).ext` and so on, with `name` cut short if the name would get
   too long. Each file is written to a hidden temporary file

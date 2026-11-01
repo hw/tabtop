@@ -19,9 +19,25 @@ import { askYes, statusRow } from "./ui.js";
 export function dropUploads(send, mkdir, done, here) {
     let depth = 0;
     const isFiles = (e) => e.dataTransfer?.types.includes("Files");
+    // While files are dragged over the page, it says where they'd go.
+    const where = document.createElement("p");
+    const overlay = document.createElement("div");
+    overlay.id = "drop_overlay";
+    overlay.append(where);
     document.addEventListener("dragenter", (e) => {
         if (isFiles(e)) {
-            depth++;
+            if (!depth++) {
+                let dir = "";
+                try {
+                    dir = here();
+                } catch {
+                    // A malformed address: the page says so, and uploads fail.
+                }
+                where.textContent = `Drop to upload into ${["Downloads", ...dir.split("/").filter(Boolean)].join(" / ")}`;
+                if (!overlay.isConnected) {
+                    document.body.append(overlay);
+                }
+            }
             document.body.classList.add("dropping");
         }
     });

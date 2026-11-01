@@ -42,7 +42,7 @@ const (
 	downloadSWCSP = "default-src 'none'"
 )
 
-//go:embed tunnel.js novnc.js files.js download-sw.js drop.js ui.js
+//go:embed tunnel.js novnc.js files.js download-sw.js drop.js ui.js nav.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -81,7 +81,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case name == "tunnel.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js":
+	case name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "download-sw.js":
 		h.Set("Content-Security-Policy", downloadSWCSP)
