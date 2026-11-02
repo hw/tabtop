@@ -2,8 +2,10 @@ package main
 
 import (
 	"io/fs"
+	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -26,12 +28,14 @@ const (
 // partialUpload is an upload cut off, kept to resume: its temporary file,
 // in its folder dir, holding held bytes of a file size bytes long.
 type partialUpload struct {
-	rootDir    string
-	identity   fs.FileInfo
-	dir, tmp   string
-	size, held int64
-	kept       time.Time
-	timer      lifecycleTimer
+	rootDir     string
+	identity    fs.FileInfo
+	device      uint64
+	deviceKnown bool
+	dir, tmp    string
+	size, held  int64
+	kept        time.Time
+	timer       lifecycleTimer
 }
 
 // keepPartial keeps u, an upload of a file size bytes long cut off by the
@@ -47,6 +51,9 @@ func (m *uploadManager) keepPartial(u *upload, size int64) {
 	}
 	u.f.Close()
 	p := &partialUpload{rootDir: u.root.Name(), identity: identity, dir: u.dir, tmp: u.tmp, size: size, held: held, kept: m.clock.Now()}
+	if st, ok := identitySys(identity); ok {
+		p.device, p.deviceKnown = uint64(st.Dev), true
+	}
 	id := u.id()
 	m.mu.Lock()
 	var dropped *partialUpload
@@ -54,7 +61,7 @@ func (m *uploadManager) keepPartial(u *upload, size int64) {
 		m.partials = map[string]*partialUpload{}
 	}
 	if len(m.partials) >= maxPartials {
-		dropped = m.dropPartialLocked(m.oldestPartialLocked())
+		dropped = m.dropPartialLocked(m.oldestPartialLocked(nil))
 	}
 	m.partials[id] = p
 	p.timer = m.clock.AfterFunc(partialKeep, func() {
@@ -70,11 +77,14 @@ func (m *uploadManager) keepPartial(u *upload, size int64) {
 	m.removePartial(dropped)
 }
 
-// oldestPartialLocked is the id of the upload kept longest, or "" if none
-// is. m.mu must be held.
-func (m *uploadManager) oldestPartialLocked() string {
+// oldestPartialLocked is the oldest eligible upload, or "" if none is.
+// A nil predicate accepts every upload. m.mu must be held.
+func (m *uploadManager) oldestPartialLocked(eligible func(*partialUpload) bool) string {
 	oldest := ""
 	for k, q := range m.partials {
+		if eligible != nil && !eligible(q) {
+			continue
+		}
 		if oldest == "" || q.kept.Before(m.partials[oldest].kept) {
 			oldest = k
 		}
@@ -83,18 +93,18 @@ func (m *uploadManager) oldestPartialLocked() string {
 }
 
 // reclaimPartials deletes uploads kept to resume, the oldest first, until
-// need bytes are free for the gateway's files, or none are left, and
-// returns the bytes free then (see diskSpace). A page reloaded or closed
+// need bytes are free on the destination's filesystem, or none on that
+// filesystem are left, and returns the bytes free then. A page reloaded or closed
 // part way through an upload can't resume it, so the room those take is
 // only borrowed.
-func (m *uploadManager) reclaimPartials(dir string, need int64) (int64, bool) {
+func (m *uploadManager) reclaimPartials(destination *os.File, need int64) (int64, bool) {
 	for {
-		free, _, ok := diskSpace(dir)
+		free, _, device, ok := fileDiskSpace(destination)
 		if !ok || free >= need {
 			return free, ok
 		}
 		m.mu.Lock()
-		p := m.dropPartialLocked(m.oldestPartialLocked())
+		p := m.dropPartialLocked(m.oldestPartialLocked(func(p *partialUpload) bool { return p.deviceKnown && p.device == device }))
 		m.mu.Unlock()
 		if p == nil {
 			return free, ok
@@ -103,15 +113,17 @@ func (m *uploadManager) reclaimPartials(dir string, need int64) (int64, bool) {
 	}
 }
 
-// uploadRoom is diskSpace for the gateway's files, counting the room the
-// uploads kept to resume take as free, since an upload that needs it gets
-// it (see reclaimPartials).
-func (m *uploadManager) uploadRoom(dir string) (free, total int64, ok bool) {
-	free, total, ok = diskSpace(dir)
+// uploadRoom counts resumable uploads on this destination's filesystem as
+// free, since an upload needing that space reclaims them (see reclaimPartials).
+func (m *uploadManager) uploadRoom(destination *os.File) (free, total int64, ok bool) {
+	var device uint64
+	free, total, device, ok = fileDiskSpace(destination)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, p := range m.partials {
-		free += p.held
+		if p.deviceKnown && p.device == device {
+			free += min(p.held, max(0, total-free))
+		}
 	}
 	return min(free, total), total, ok
 }
@@ -194,4 +206,13 @@ func (m *uploadManager) untrack(id string, a *activeUpload) {
 	}
 	m.mu.Unlock()
 	close(a.over)
+}
+
+// identitySys supplies the filesystem device captured with the partial file.
+func identitySys(info fs.FileInfo) (*syscall.Stat_t, bool) {
+	if info == nil {
+		return nil, false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return st, ok
 }

@@ -50,11 +50,15 @@ export function loginForm(title, cancellable = false) {
     input.focus();
 
     return new Promise((resolve) => {
+        const attempt = new AbortController();
+        let cancelled = false;
         if (cancellable) {
             const cancel = document.createElement("button");
             Object.assign(cancel, { type: "button", textContent: "Cancel" });
             look(cancel, false);
             cancel.addEventListener("click", () => {
+                cancelled = true;
+                attempt.abort();
                 box.remove();
                 resolve(null);
             });
@@ -62,22 +66,27 @@ export function loginForm(title, cancellable = false) {
         }
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
+            if (cancelled || button.disabled) { return; }
             button.disabled = true;
             button.style.opacity = ".6";  // busy agreeing on keys
             error.textContent = "";
             try {
-                const { ip, logins, ...s } = await login(input.value.trim());
+                const { ip, logins, ...s } = await login(input.value.trim(), undefined, { signal: attempt.signal });
+                if (cancelled) { return; }
                 saveSession(s);
                 box.remove();
                 showLoginSummary(ip, logins);
                 resolve(s);
             } catch (err) {
+                if (cancelled) { return; }
                 error.textContent = err.message;
                 input.value = "";
                 input.focus();
             } finally {
-                button.disabled = false;
-                button.style.opacity = "";
+                if (!cancelled) {
+                    button.disabled = false;
+                    button.style.opacity = "";
+                }
             }
         });
     });

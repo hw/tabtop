@@ -66,7 +66,17 @@ not through your browser.
 
 ## Sessions
 
+The desktop, terminal and files page share a login within one deployment.
+Deployments under different base paths keep separate browser sessions.
+Upgrading from a version that shared session storage across base paths asks
+for one fresh login; the old stored session cannot be assigned safely.
+
 How long a login lasts, and how to notice and end one you didn't make:
+
+Logging out clears the saved browser session immediately. The page waits
+at most three seconds for server revocation before reloading. If the server
+cannot be reached, its session may remain active until it expires or is
+ended separately.
 
 - **Limits:** a login lasts 12 hours at most (`WEB_SESSION_MAX`), and ends
   after an hour with nothing open (`WEB_SESSION_IDLE`). Anything still open

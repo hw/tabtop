@@ -113,7 +113,10 @@ downloaded at `http://<host>:6080/downloads/`:
   most), and **Retry** carries on from where it stopped, as long as the
   file hasn't changed and the page hasn't been reloaded. The room kept
   ones take counts as free, and an upload that needs it deletes them, the
-  oldest first. Any left by a
+  oldest first, on the upload destination's filesystem. Space shown for a
+  folder comes from its filesystem, including separately mounted subfolders;
+  partial uploads on another filesystem aren't counted or reclaimed for it.
+  Any left by a
   crash, a restart or a forced stop are deleted when the container next
   starts (it spends at most 10 seconds looking, before serving anything),
   so don't share `~/Downloads` between two running containers. Below the

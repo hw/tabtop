@@ -1,6 +1,7 @@
 import * as tunnel from "./tunnel.js";
 import { call } from "./requests.js";
 import { askYes, statusRow } from "./ui.js";
+import { logOut } from "./nav.js";
 
 const SECURITY_TITLE = "Security and sessions";
 function el(tag, props = {}, ...children) {
@@ -65,13 +66,7 @@ export function createSessionView({ security, refresh, formatTime }) {
                 "Log out everywhere"))) {
                 return;
             }
-            try {
-                await tunnel.request({ type: "logout-all" });
-            } catch {
-                // Forgotten here either way.
-            }
-            tunnel.forgetSession();
-            refresh();
+            await logOut({ everywhere: true });
         });
         const field = (label, props = {}, ...children) => {
             const td = el("td", props, ...children);

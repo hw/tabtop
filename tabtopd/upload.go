@@ -56,7 +56,7 @@ func removeStaleUploads(dir string, started time.Time, budget time.Duration) {
 	var stop atomic.Bool
 	removed := make(chan int, 1)
 	go func() {
-		root, err := os.OpenRoot(dir)
+		root, err := openDirectoryRoot(dir)
 		if err != nil {
 			removed <- 0
 			return
@@ -206,20 +206,23 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	if req.Resume != "" {
 		u, offset = g.transfers.claimPartial(root, req.Resume, dir, req.Size)
 	}
-	// Refused at once if it can't fit, rather than failing part way.
-	if free, ok := g.transfers.reclaimPartials(g.downloadsDir, req.Size-offset); ok && req.Size-offset > free {
-		if u != nil {
-			g.transfers.keepPartial(u, req.Size)
-		}
-		r.fail(fmt.Sprintf("There isn't room for it: it's %s, and %s is free.", humanSize(req.Size-offset), humanSize(free)))
-		return
-	}
+	resuming := u != nil
 	if u == nil {
-		var err error
 		if u, err = root.startUpload(dir); err != nil {
 			r.fail(uploadError(err))
 			return
 		}
+	}
+	// Check the file actually opened, so nested mounts and directory races
+	// cannot make the space check refer to a different filesystem.
+	if free, ok := g.transfers.reclaimPartials(u.f, req.Size-offset); ok && req.Size-offset > free {
+		if resuming {
+			g.transfers.keepPartial(u, req.Size)
+		} else {
+			u.abort()
+		}
+		r.fail(fmt.Sprintf("There isn't room for it: it's %s, and %s is free.", humanSize(req.Size-offset), humanSize(free)))
+		return
 	}
 	saved, keep := false, false
 	active := g.transfers.track(u.id(), func() { t.CloseNow() })
@@ -295,4 +298,15 @@ func diskSpace(path string) (free, total int64, ok bool) {
 		return 0, 0, false
 	}
 	return int64(st.Bavail) * st.Bsize, int64(st.Blocks) * st.Bsize, true
+}
+
+// fileDiskSpace uses the open destination's filesystem rather than a pathname
+// which may name another mount (or be replaced during a request).
+func fileDiskSpace(f *os.File) (free, total int64, device uint64, ok bool) {
+	var fs syscall.Statfs_t
+	var st syscall.Stat_t
+	if syscall.Fstatfs(int(f.Fd()), &fs) != nil || syscall.Fstat(int(f.Fd()), &st) != nil {
+		return 0, 0, 0, false
+	}
+	return int64(fs.Bavail) * fs.Bsize, int64(fs.Blocks) * fs.Bsize, uint64(st.Dev), true
 }

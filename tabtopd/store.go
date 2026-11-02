@@ -22,7 +22,7 @@ import (
 type downloadStore struct{ root *os.Root }
 
 func openDownloadStore(dir string) (*downloadStore, error) {
-	root, err := os.OpenRoot(dir)
+	root, err := openDirectoryRoot(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -30,10 +30,22 @@ func openDownloadStore(dir string) (*downloadStore, error) {
 }
 func (s *downloadStore) Close() error { return s.root.Close() }
 
+// A trailing separator makes the kernel require a directory before opening
+// the final component. os.OpenRoot alone can block on a FIFO before checking
+// its type. Keep an empty path invalid and avoid growing paths on resume.
+func openDirectoryRoot(dir string) (*os.Root, error) {
+	if dir != "" && !strings.HasSuffix(dir, string(os.PathSeparator)) {
+		dir += string(os.PathSeparator)
+	}
+	return os.OpenRoot(dir)
+}
+
 // Reject non-directories during open, before a swapped-in FIFO can block.
 // Root still confines symlink resolution to Downloads.
+const directoryOpenFlags = os.O_RDONLY | syscall.O_NONBLOCK | unix.O_DIRECTORY
+
 func openRootDirectory(root *os.Root, name string) (*os.File, error) {
-	return root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|unix.O_DIRECTORY, 0)
+	return root.OpenFile(name, directoryOpenFlags, 0)
 }
 
 func (s *downloadStore) open(name string) (*os.File, fs.FileInfo, error) {

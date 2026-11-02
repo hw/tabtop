@@ -8,7 +8,7 @@
 // browser lets one tab find another, as for tabs opened from each other)
 // rather than a new one opened each time.
 
-import { forgetSession, request } from "./tunnel.js";
+import { forgetSession, request, storedSession } from "./tunnel.js";
 
 const root = new URL("../", import.meta.url);  // the site's root, under any base path
 
@@ -40,7 +40,7 @@ export const pages = [
     { id: "files", label: "Files", href: new URL("downloads/", root).href },
 ];
 
-const tabName = (id) => `tabtop-${id}`;
+const tabName = (id) => `tabtop-${id}:${root.href}`;
 
 // nameTab names this tab after the page it shows.
 export function nameTab(id) {
@@ -61,16 +61,35 @@ export function terminalOn() {
     return terminal;
 }
 
-// logOut ends the session, everywhere it's used, and reloads this page,
-// which then asks for a login.
-export async function logOut() {
-    try {
-        await request({ type: "logout" });
-    } catch {
-        // Forgotten here either way.
-    }
+const LOGOUT_TIMEOUT = 3000;
+let loggingOut = null;
+
+// Forget locally before waiting for revocation. A stalled server must not
+// leave credentials saved or prevent this page from returning to login.
+export function logOut({ everywhere = false } = {}) {
+    if (loggingOut) { return loggingOut; }
+    const old = storedSession();
     forgetSession();
-    location.reload();
+    loggingOut = revokeSession(old, everywhere ? "logout-all" : "logout").finally(() => {
+        loggingOut = null;
+        location.reload();
+    });
+    return loggingOut;
+}
+
+async function revokeSession(old, type) {
+    if (!old) { return; }
+    let timer;
+    try {
+        await Promise.race([
+            request({ type }, old),
+            new Promise((resolve) => { timer = setTimeout(resolve, LOGOUT_TIMEOUT); }),
+        ]);
+    } catch {
+        // Local logout still completes if server revocation fails.
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 // navBar makes a bar of links to the other pages, each an icon named by

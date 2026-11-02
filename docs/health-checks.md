@@ -17,6 +17,10 @@ gateway's last login to that server went.
 `/doctor` is for troubleshooting and is off unless
 `WEB_DOCTOR_ENDPOINT=1`. It returns a JSON report:
 
+Socket status and audio probe results are shared for ten seconds, including
+failures, with only one probe batch running at a time. Clock, proxy, session
+state and the last VNC login result are evaluated for each request.
+
 - **checks:** each part's state: Xvnc, or the VNC server at `VNC_ADDR`
   (whether it's listening, checked as `/healthz` does; when the gateway
   logs in to it,

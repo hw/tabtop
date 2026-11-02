@@ -834,10 +834,11 @@ try {
         try {
             await tty.waitFor(`!!document.querySelector("canvas")`, "the terminal in another tab");
             await open("vnc.html?autoconnect=1", `document.documentElement.classList.contains("noVNC_connected")`, "the desktop");
-            const old = await ev(`localStorage.getItem("tabtop_session")`);
+            const sessionKey = JSON.stringify(await ev(`import("/tabtop/session-state.js").then((m) => m.SESSION_KEY)`));
+            const old = await ev(`localStorage.getItem(${sessionKey})`);
             // As if it ends in 5 minutes.
-            await ev(`(() => { const s = JSON.parse(localStorage.getItem("tabtop_session")); s.expires = Date.now() + 5 * 60000 - 1000;
-                localStorage.setItem("tabtop_session", JSON.stringify(s)); document.dispatchEvent(new Event("visibilitychange")); })()`);
+            await ev(`(() => { const s = JSON.parse(localStorage.getItem(${sessionKey})); s.expires = Date.now() + 5 * 60000 - 1000;
+                localStorage.setItem(${sessionKey}, JSON.stringify(s)); document.dispatchEvent(new Event("visibilitychange")); })()`);
             await waitFor(`/ends in 5 minutes/.test(document.getElementById("tabtop_expiry")?.textContent)`, "the warning on the desktop");
             // The other tab warns too, in its bar.
             await tty.waitFor(`/ends in 5 min/.test(document.querySelector(".tabtop-nav #tabtop_expiry")?.textContent)`, "the warning in the terminal");
@@ -847,7 +848,7 @@ try {
             await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
             await waitFor(`!document.querySelector("#tabtop_login") && !document.getElementById("tabtop_expiry")`, "the warning to go");
             await tty.waitFor(`!document.getElementById("tabtop_expiry")`, "the warning to go from the terminal");
-            const expires = await ev(`JSON.parse(localStorage.getItem("tabtop_session")).expires - Date.now()`);
+            const expires = await ev(`JSON.parse(localStorage.getItem(${sessionKey})).expires - Date.now()`);
             if (expires < 11 * 3600000) {
                 throw new Error(`the new login ends in ${expires} ms`);
             }
@@ -878,8 +879,12 @@ try {
         // An icon here, named for screen readers.
         const out = `document.querySelector(".tabtop-nav button.logout")`;
         await waitFor(`!!${out}`, "the logout button");
+        const old = await ev(`import("/tabtop/session-state.js").then((m) => m.storedSession())`);
         await ev(`${out}.click()`);
         await waitFor(`!!document.querySelector("#tabtop_login")`, "the login form after logout");
+        const revoked = await ev(`import("/tabtop/tunnel.js").then((m) => m.Tunnel.open({ type: "sessions" }, ${JSON.stringify(old)}))
+            .then((t) => { t.close(); return false; }, (e) => e.login === true)`);
+        if (!revoked) { throw new Error("the logged-out session still authenticates"); }
         await open("vnc.html?autoconnect=1", `!!document.querySelector("#tabtop_login input")`, "the desktop's login form after logout");
     });
 

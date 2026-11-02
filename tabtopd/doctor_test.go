@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -393,5 +394,101 @@ func TestDoctorCollector(t *testing.T) {
 	}
 	if strings.Contains(report.Checks["vnc"].Detail, g.vncAddr) {
 		t.Fatal("collector exposed VNC address")
+	}
+}
+
+func TestDoctorProbeCache(t *testing.T) {
+	clock := newManualClock()
+	cache := doctorProbeCache{clock: clock.lifecycle()}
+	var calls atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	probe := func() doctorProbeResult {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return doctorProbeResult{vnc: check{OK: false, Detail: "offline"}, audioErr: fmt.Errorf("no audio")}
+	}
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			result := cache.get(probe)
+			if result.vnc.OK || result.vnc.Detail != "offline" || result.audioErr == nil {
+				t.Errorf("cached result: %+v", result)
+			}
+		})
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("concurrent probe batches: %d", calls.Load())
+	}
+	clock.Advance(vncProbeCache - time.Nanosecond)
+	cache.get(probe)
+	if calls.Load() != 1 {
+		t.Fatal("failure result was not cached")
+	}
+	clock.Advance(time.Nanosecond)
+	cache.get(probe)
+	if calls.Load() != 2 {
+		t.Fatal("expired probes were not retried")
+	}
+}
+
+func TestDoctorBoundsUpstreamConnections(t *testing.T) {
+	for _, x509 := range []bool{false, true} {
+		t.Run(fmt.Sprint("x509=", x509), func(t *testing.T) {
+			g, srv := newDoctorServer(t, true)
+			clock := newManualClock()
+			g.doctorProbes.clock = clock.lifecycle()
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			var accepted atomic.Int32
+			go func() {
+				for {
+					c, err := l.Accept()
+					if err != nil {
+						return
+					}
+					accepted.Add(1)
+					c.Write(rfbVersionMsg(8))
+					c.Close()
+				}
+			}()
+			g.vncAddr, g.vncX509 = l.Addr().String(), x509
+			var wg sync.WaitGroup
+			for i := range 20 {
+				wg.Go(func() {
+					method := http.MethodHead
+					if i%2 == 0 {
+						method = http.MethodGet
+					}
+					req, _ := http.NewRequest(method, srv.URL+"/doctor", nil)
+					res, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer res.Body.Close()
+					if res.StatusCode != 200 {
+						t.Errorf("status=%d", res.StatusCode)
+					}
+				})
+			}
+			wg.Wait()
+			want := int32(0) // Diagnostics must never start a VNC login.
+			if n := accepted.Load(); n != want {
+				t.Fatalf("20 requests opened %d connections, want %d", n, want)
+			}
+			clock.Advance(vncProbeCache)
+			fetch(t, srv.URL+"/doctor")
+			if n := accepted.Load(); n != 2*want {
+				t.Fatalf("after expiry opened %d connections, want %d", n, 2*want)
+			}
+		})
 	}
 }

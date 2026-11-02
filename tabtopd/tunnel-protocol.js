@@ -105,13 +105,18 @@ class Socket {
 }
 
 // login runs CPace with the credential and returns the new session.
-export async function login(credential, url = tunnelURL()) {
+export async function login(credential, url = tunnelURL(), { signal } = {}) {
+    signal?.throwIfAborted();
     const c = await cryptoBackend();
     const { secret: y } = await c.keygen();
     const sid = crypto.getRandomValues(new Uint8Array(16));
     const ya = await c.scalarMult(y, await cpaceGenerator(c, credential, sid));
+    signal?.throwIfAborted();
     const s = new Socket(url);
+    const abort = () => s.ws.close();
+    signal?.addEventListener("abort", abort, { once: true });
     try {
+        signal?.throwIfAborted();
         await s.send(concat([VERSION, HELLO_LOGIN], sid, ya));
         const reply = await s.next();
         if (reply[0] !== VERSION || (reply.length - 1) % 32 !== 0) {
@@ -137,8 +142,10 @@ export async function login(credential, url = tunnelURL()) {
         const recv = chacha20poly1305(ks.slice(32, 64), nonce(0));
         const pt = recv.decrypt(await s.next());
         const res = JSON.parse(decoder.decode(pt.slice(1)));
+        signal?.throwIfAborted();
         return { id: res.session, secret: res.secret, expires: res.expires, ip: res.ip, logins: res.logins || [] };
     } finally {
+        signal?.removeEventListener("abort", abort);
         s.ws.close();
     }
 }
@@ -206,6 +213,11 @@ export class Tunnel {
         openSockets.add(s.ws);
         s.ws.onmessage = (e) => this._recv(e.data);
         s.ws.onclose = (e) => this._closed(e);
+        // Socket's old handler may have received a close while the awaits
+        // above derived keys. Forward it so next() cannot wait forever.
+        if (s.closeEvent) {
+            this._closed(s.closeEvent);
+        }
     }
 
     _recv(ct) {
@@ -310,8 +322,8 @@ globalThis.addEventListener?.("pageshow", (e) => {
 });
 
 // request opens a tunnel for a one-off request and returns the reply.
-export async function request(req) {
-    const t = await Tunnel.open(req);
+export async function request(req, sess = storedSession()) {
+    const t = await Tunnel.open(req, sess);
     t.close();
     return t.reply;
 }

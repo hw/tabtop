@@ -28,11 +28,14 @@ export class TunnelSocket {
 
     async _start(req, title) {
         for (;;) {
+            if (this.readyState === TunnelSocket.CLOSED) { return; }
             try {
                 this.session = title ? await session(title) : storedSession();
+                if (this.readyState === TunnelSocket.CLOSED) { return; }
                 this._t = await Tunnel.open(req, this.session);
                 break;
             } catch (e) {
+                if (this.readyState === TunnelSocket.CLOSED) { return; }
                 if (e.login && title) {
                     forgetSession(this.session);
                     continue;
@@ -50,8 +53,10 @@ export class TunnelSocket {
         this._opened = true;
         this.onopen?.(new Event("open"));
         for (let m; (m = await this._t.next());) {
+            if (this.readyState === TunnelSocket.CLOSED) { return; }
             this.onmessage?.({ data: m.text ?? m.data });
         }
+        if (this.readyState === TunnelSocket.CLOSED) { return; }
         this._finish(this._t.closeReason, this._t.closeLogin, !this._t.closeReason && !this._t.closeLogin);
     }
 
@@ -61,7 +66,7 @@ export class TunnelSocket {
         }
         this._done = true;
         this.readyState = TunnelSocket.CLOSED;
-        if (!this._opened) {
+        if (!this._opened && !this._closedByCaller) {
             // A WebSocket that fails to connect reports an error first.
             this.onerror?.(new Event("error"));
         }
@@ -80,10 +85,12 @@ export class TunnelSocket {
     }
 
     close() {
-        const wasOpen = this.readyState === TunnelSocket.OPEN;
+        if (this.readyState === TunnelSocket.CLOSED) { return; }
+        this._closedByCaller = true;
         this.readyState = TunnelSocket.CLOSED;
-        if (wasOpen) {
-            this._t.close();
-        }
+        this._t?.close();
+        // Like WebSocket, notify asynchronously, including when opening has
+        // not finished. A late open is still closed by _start above.
+        queueMicrotask(() => this._finish(""));
     }
 }

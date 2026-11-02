@@ -452,7 +452,7 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 				Modified: e.Modified, Time: e.time})
 		}
 		res := map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone}
-		if free, total, ok := g.transfers.uploadRoom(g.downloadsDir); ok {
+		if free, total, ok := g.transfers.uploadRoom(f); ok {
 			res["free"], res["total"] = free, total
 		}
 		r.finish(res)

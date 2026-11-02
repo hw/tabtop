@@ -346,13 +346,18 @@ func TestReclaimPartials(t *testing.T) {
 	u.Write(make([]byte, held))
 	u.f.Sync()
 	g.transfers.keepPartial(u, 2*held)
+	destination, err := openRootDirectory(root, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close()
 	free, _, _ := diskSpace(g.downloadsDir)
-	room, _, _ := g.transfers.uploadRoom(g.downloadsDir)
+	room, _, _ := g.transfers.uploadRoom(destination)
 	if d := room - free; d < held/2 || d > 2*held {
 		t.Errorf("%d more counted as free, with %d kept", d, held)
 	}
 	// More than there is: everything kept goes, and it's still refused.
-	if free, ok := g.transfers.reclaimPartials(g.downloadsDir, 1<<62); !ok || free >= 1<<62 {
+	if free, ok := g.transfers.reclaimPartials(destination, 1<<62); !ok || free >= 1<<62 {
 		t.Fatalf("free %d, %v", free, ok)
 	}
 	entries, _ := os.ReadDir(g.downloadsDir)

@@ -460,7 +460,7 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 // countEntries counts dir's entries, stopping after limit: "12", or
 // "10000+".
 func countEntries(dir string, limit int) (string, error) {
-	f, err := os.Open(dir)
+	f, err := os.OpenFile(dir, directoryOpenFlags, 0)
 	if err != nil {
 		return "0", err
 	}
