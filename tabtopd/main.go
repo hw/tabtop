@@ -733,11 +733,13 @@ details.security > summary.attention::after { content: " • attention needed"; 
 details.security h2 { font-size: 1rem; margin-top: 1.5rem; }
 h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4rem; word-break: normal; overflow-wrap: anywhere;
        margin-top: .75rem; }
-.tabtop-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem; padding-bottom: .5rem;
+.tabtop-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; padding-bottom: .5rem;
        border-bottom: 1px solid var(--line); font-size: 14px; }
-.tabtop-nav a { text-decoration: none; } .tabtop-nav a:hover { text-decoration: underline; }
-.tabtop-nav a[target]::after { content: " ↗"; font-size: .8em; }
-.tabtop-nav [aria-current] { font-weight: 600; }
+.tabtop-nav .page { display: inline-flex; align-items: center; justify-content: center; padding: 3px; border-radius: 6px;
+       color: var(--accent); }
+.tabtop-nav .page svg { display: block; width: 22px; height: 22px; }
+.tabtop-nav a.page:hover { background: var(--hover); }
+.tabtop-nav .page[aria-current] { color: var(--fg); background: var(--line); }
 .tabtop-nav button { margin-left: auto; font: inherit; }
 .find { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .find input { font: inherit; flex: 0 1 20rem; min-width: 0; padding: .3rem .5rem; color: inherit; background: var(--bg);
@@ -806,8 +808,8 @@ dialog.preview .body pre { align-self: stretch; flex: 1; margin: 0; padding: .75
        .sessions-table td.act:empty { display: none; }
 }
 @media (pointer: coarse) {
-       button, .tabtop-nav a, details.menu summary { min-height: 40px; }
-       .tabtop-nav a { display: inline-flex; align-items: center; }
+       button, details.menu summary { min-height: 40px; }
+       .tabtop-nav .page { min-width: 40px; min-height: 40px; box-sizing: border-box; }
        input[type=checkbox] { width: 22px; height: 22px; }
 }
 ` + transfersCSS + `</style>`

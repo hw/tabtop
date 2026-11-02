@@ -22,7 +22,9 @@ to get the new one.
 
 The desktop, the terminal and the files page link to each other: noVNC's
 control bar has buttons for the terminal and the files page, and the
-other two pages a bar at the top. Each opens in its own tab, and a link
+other two pages a bar at the top with an icon for each page, drawn like
+noVNC's own (hover over one for its name), the page you're on
+highlighted. Each opens in its own tab, and a link
 goes back to the tab already showing that page where the browser allows
 (as for tabs opened from each other). Each also has **Log out**, which
 logs out of all three.

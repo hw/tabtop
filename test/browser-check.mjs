@@ -286,7 +286,7 @@ try {
 
     await step("files: list, without a second login", async () => {
         await open("downloads/", `!!document.querySelector("table")`, "the listing");
-        const nav = await ev(`[...document.querySelectorAll(".tabtop-nav a, .tabtop-nav [aria-current]")].map((a) => a.textContent).join()`);
+        const nav = await ev(`[...document.querySelectorAll(".tabtop-nav .page")].map((a) => a.getAttribute("aria-label").split(" ")[0]).join()`);
         if (nav !== "Desktop,Terminal,Files") {
             throw new Error(`the bar at the top holds ${nav}`);
         }
@@ -667,7 +667,7 @@ try {
         if (await ev(`!!document.querySelector("#tabtop_login")`)) {
             throw new Error("asked for a login again");
         }
-        const nav = await ev(`[...document.querySelectorAll(".tabtop-nav a")].map((a) => a.textContent).join()`);
+        const nav = await ev(`[...document.querySelectorAll(".tabtop-nav a")].map((a) => a.getAttribute("aria-label").split(" ")[0]).join()`);
         if (nav !== "Desktop,Files") {
             throw new Error(`the bar above the terminal links to ${nav}`);
         }

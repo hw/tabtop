@@ -16,7 +16,7 @@
 // expiry.js).
 
 import { TunnelSocket } from "./tunnel.js";
-import { logOut, nameTab, openPage, terminalOn } from "./nav.js";
+import { iconSVG, logOut, nameTab, openPage, terminalOn } from "./nav.js";
 import { dropUploads } from "./drop.js";
 import { call, folderInfo, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
 import { fetchFile, humanBytes } from "./download.js";
@@ -27,17 +27,13 @@ window.tabtopChannel = () => new TunnelSocket({ type: "vnc" }, { title: "Desktop
 nameTab("desktop");
 warnExpiry();
 
-const icon = (body) => "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none" ' +
-    'stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + body + "</svg>");
+// White, as noVNC's own icons are.
+const icon = (id) => "data:image/svg+xml," + encodeURIComponent(iconSVG(id, "#fff"));
 
 const buttons = [
-    ["terminal", "Terminal (opens in its own tab)", icon('<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>'),
-        () => openPage("terminal")],
-    ["files", "Files in Downloads (opens in its own tab)", icon('<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>'),
-        () => openPage("files")],
-    ["logout", "Log out (here, in the terminal and on the files page)", icon('<path d="M10 4.5h-5v16h5m4-12l4.5 4-4.5 4m4.5-4h-10"/>'),
-        logOut],
+    ["terminal", "Terminal (opens in its own tab)", icon("terminal"), () => openPage("terminal")],
+    ["files", "Files in Downloads (opens in its own tab)", icon("files"), () => openPage("files")],
+    ["logout", "Log out (here, in the terminal and on the files page)", icon("logout"), logOut],
 ];
 
 const settings = document.getElementById("noVNC_settings_button");

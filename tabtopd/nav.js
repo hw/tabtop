@@ -12,6 +12,22 @@ import { forgetSession, request } from "./tunnel.js";
 
 const root = new URL("../", import.meta.url);  // the site's root, under any base path
 
+// Icons for the pages and logging out, drawn the way noVNC draws its
+// control bar's: 25 by 25, in round strokes 2 wide. novnc.js puts them in
+// that bar; navBar in the bar at the top of the other pages.
+export const icons = {
+    desktop: '<rect x="2.5" y="4" width="20" height="13.5" rx="1.5"/><path d="M8.5 21h8m-4-3.5v3.5"/>',
+    terminal: '<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>',
+    files: '<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>',
+    logout: '<path d="M10 4.5h-5v16h5m4-12l4.5 4-4.5 4m4.5-4h-10"/>',
+};
+
+// iconSVG draws the icon id in color (by default, the text's).
+export function iconSVG(id, color = "currentColor") {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none" stroke="${color}" ` +
+        `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[id]}</svg>`;
+}
+
 export const pages = [
     { id: "desktop", label: "Desktop", href: new URL("vnc.html?autoconnect=1", root).href },
     { id: "terminal", label: "Terminal", href: new URL("tty/", root).href },
@@ -51,8 +67,9 @@ export async function logOut() {
     location.reload();
 }
 
-// navBar makes a bar of links to the other pages, the current one, named
-// current, shown as where you are, and a Log out button.
+// navBar makes a bar of links to the other pages, each an icon named by
+// its title and label, the current one, named current, shown as where you
+// are, and a Log out button.
 export function navBar(current) {
     const nav = document.createElement("nav");
     nav.className = "tabtop-nav";
@@ -62,15 +79,20 @@ export function navBar(current) {
         if (page.id === current) {
             item = document.createElement("span");
             item.setAttribute("aria-current", "page");
+            item.setAttribute("role", "img");
+            item.title = `${page.label} (this page)`;
         } else {
             item = document.createElement("a");
             item.href = page.href;
             item.target = tabName(page.id);
+            item.title = `${page.label} (opens in its own tab)`;
             if (page.id === "terminal") {
                 terminalOn().then((on) => (item.hidden = !on));
             }
         }
-        item.textContent = page.label;
+        item.className = "page";
+        item.setAttribute("aria-label", item.title);
+        item.innerHTML = iconSVG(page.id);
         nav.append(item);
     }
     const out = document.createElement("button");
