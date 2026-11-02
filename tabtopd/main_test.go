@@ -428,3 +428,77 @@ func TestPageTimeZone(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitKey(t *testing.T) {
+	for ip, want := range map[string]string{
+		"192.0.2.1":           "192.0.2.1",
+		"::ffff:192.0.2.1":    "192.0.2.1",
+		"2001:db8:1:2:3::4":   "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff::": "2001:db8:1:2::/64",
+		"2001:db8:1:3::4":     "2001:db8:1:3::/64",
+		"not an address":      "not an address",
+	} {
+		if got := limitKey(ip); got != want {
+			t.Errorf("limitKey(%q) = %q, want %q", ip, got, want)
+		}
+	}
+}
+
+// TestLoginLimitIPv6 counts failed logins from one /64 together, whichever
+// of its addresses they come from.
+func TestLoginLimitIPv6(t *testing.T) {
+	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	for i := range maxFailures {
+		ip := fmt.Sprintf("2001:db8:0:1::%x", i+1)
+		if !g.beginLogin(ip) {
+			t.Fatalf("login %d refused", i+1)
+		}
+		g.endLogin(ip, "", true)
+	}
+	if g.beginLogin("2001:db8:0:1::ffff") {
+		t.Error("another address in the same /64 wasn't locked out")
+	}
+	if !g.beginLogin("2001:db8:0:2::1") {
+		t.Error("another /64 was locked out")
+	}
+}
+
+// TestLoginTurn slows logins down, from every address, once
+// maxSiteFailures have failed within the window, and stops once they're
+// older.
+func TestLoginTurn(t *testing.T) {
+	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	for i := range maxSiteFailures - 1 {
+		ip := fmt.Sprintf("198.51.100.%d", i+1)
+		g.beginLogin(ip)
+		g.endLogin(ip, "", true)
+	}
+	for range 3 {
+		if !g.loginTurn() {
+			t.Fatal("slowed down before maxSiteFailures failures")
+		}
+	}
+	g.beginLogin("203.0.113.1")
+	g.endLogin("203.0.113.1", "", true)
+	if !g.loginTurn() {
+		t.Fatal("the first login once slowed down was refused")
+	}
+	if g.loginTurn() {
+		t.Fatal("a second login within siteThrottle was allowed")
+	}
+	if len(g.siteFailures) != maxSiteFailures {
+		t.Errorf("%d site failures kept, want %d", len(g.siteFailures), maxSiteFailures)
+	}
+	g.mu.Lock()
+	g.nextLogin = time.Now().Add(-time.Second)
+	g.mu.Unlock()
+	if !g.loginTurn() {
+		t.Fatal("refused after siteThrottle")
+	}
+	g.mu.Lock()
+	g.siteFailures[0] = time.Now().Add(-failureWindow)
+	g.mu.Unlock()
+	if !g.loginTurn() || !g.loginTurn() || g.throttling {
+		t.Fatal("still slowed down once the oldest failure expired")
+	}
+}

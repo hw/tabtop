@@ -1,18 +1,19 @@
 // Browser terminal, served by tabtopd (see tty.go), drawn by ghostty-web.
 // Terminal bytes travel as data messages through the encrypted tunnel;
-// resizes go up as JSON text messages. The tunnel shows its login form when
-// there's no session. Ctrl + and Ctrl − change the font size, which is kept
-// in this browser; on touch screens, a strip of keys phones' keyboards
-// lack (Esc, Tab, Ctrl, Alt, the arrows...) sits below the terminal. If the connection is lost, the page tries again by
-// itself (see reconnect.js), and tmux, which the server runs the shell
-// in, picks up where it was (unless the server runs its own command
-// instead, TTY_COMMAND, as ssh to another machine). Files and folders dropped on the page are
-// uploaded into ~/Downloads, as on the files page (see drop.js), and their
-// paths typed at the cursor. Ctrl+click (⌘+click on a Mac) opens a web
-// address shown in the terminal, and Ctrl+Shift+F searches tmux's history
-// (see Search), when there's tmux. A bell, or a program's notification, while the tab isn't
-// in front marks its title, and shows a browser notification if they're
-// turned on (see Notices).
+// resizes go up as JSON text messages. The tunnel shows its login form
+// when there's no session. Ctrl + and Ctrl − change the font size, which
+// is kept in this browser; on touch screens, a strip of keys phones'
+// keyboards lack (Esc, Tab, Ctrl, Alt, the arrows...) sits below the
+// terminal. If the connection is lost, the page tries again by itself (see
+// reconnect.js), and tmux, which the server runs the shell in, picks up
+// where it was (unless the server runs its own command instead,
+// WEB_TTY_COMMAND, as ssh to another machine). Files and folders dropped
+// on the page are uploaded into ~/Downloads, as on the files page (see
+// drop.js), and their paths typed at the cursor. Ctrl+click (⌘+click on a
+// Mac) opens a web address shown in the terminal, and Ctrl+Shift+F
+// searches tmux's history (see Search), when there's tmux. A bell, or a
+// program's notification, while the tab isn't in front marks its title,
+// and shows a browser notification if they're turned on (see Notices).
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
@@ -43,16 +44,20 @@ const maxCopy = 1 << 20;
 //     which lets programs in the terminal (tmux's copy mode, ssh-yank.sh)
 //     copy to the browser's clipboard. Requests to read the clipboard ("?")
 //     get nothing back, so programs can't see what the viewer copied
-//     elsewhere.
+//     elsewhere. What's copied is passed to onCopy, for the page to say so:
+//     anything shown in the terminal can copy, a file being shown or a
+//     remote host included, so a command slipped onto the clipboard
+//     shouldn't go unnoticed.
 //   - A bell (BEL outside an OSC, where it ends one), passed to onBell.
 //   - A notification, OSC 9 ; <text> (iTerm2's) or OSC 777 ; notify ;
 //     <title> ; <text> (urxvt's, as the notify command sends), passed to
 //     onNotify(title, text). tmux only passes these on wrapped for its
 //     passthrough, as notify does.
 class Osc {
-    constructor(onBell, onNotify) {
+    constructor(onBell, onNotify, onCopy) {
         this.onBell = onBell;
         this.onNotify = onNotify;
+        this.onCopy = onCopy;
         this.state = 0;  // 0 text, 1 after ESC, 2 in an OSC, 3 ESC in an OSC
         this.buf = [];
     }
@@ -111,7 +116,7 @@ class Osc {
         }
         try {
             const text = new TextDecoder().decode(Uint8Array.from(atob(data), (c) => c.charCodeAt(0)));
-            navigator.clipboard?.writeText(text).catch(() => {});
+            navigator.clipboard?.writeText(text).then(() => this.onCopy(text), () => {});
         } catch {
             // Not base64: ignore it.
         }
@@ -276,6 +281,22 @@ function setFontSize(n) {
     }
 }
 
+// copied says, for a few seconds, that a program in the terminal copied
+// text to the clipboard (see Osc), showing how it starts.
+const copiedNote = Object.assign(document.createElement("div"), { id: "tty_copied", hidden: true });
+copiedNote.setAttribute("role", "status");
+document.body.append(copiedNote);
+let copiedTimer = 0;
+function copied(text) {
+    const line = text.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+    const start = line.length > 80 ? `${line.slice(0, 80)}…` : line;
+    copiedNote.textContent = `The terminal copied ${text.length} character${text.length === 1 ? "" : "s"} to your clipboard`
+        + (start ? `: “${start}”` : ".");
+    copiedNote.hidden = false;
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copiedNote.hidden = true), 5000);
+}
+
 // Before ghostty-web sees the keys, and the browser zooms.
 document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && ["=", "+", "-", "0"].includes(e.key)) {
@@ -284,7 +305,7 @@ document.addEventListener("keydown", (e) => {
         setFontSize(e.key === "0" ? defaultFontSize : fontSize + (e.key === "-" ? -1 : 1));
     }
 }, true);
-const osc = new Osc(() => notices.bell(), (title, text) => notices.notify(title, text));
+const osc = new Osc(() => notices.bell(), (title, text) => notices.notify(title, text), copied);
 new MouseReporter(term, (bytes) => send(bytes));
 
 const encoder = new TextEncoder();

@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,7 +150,8 @@ func newCheck(detail string, err error) check {
 // doctor reports what tabtopd sees: each part's state, the server's clock
 // (TOTP codes depend on it) and how this request arrived through any
 // proxies. It needs no login, so a broken login can be diagnosed with it,
-// and it leaves out the username, password and TOTP key.
+// so it leaves out the password and TOTP key, and redacts what would name
+// the account or the VNC server (see redact).
 func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	if !g.doctorOn {
 		http.NotFound(w, r)
@@ -212,7 +212,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 
 	g.mu.Lock()
 	now := time.Now()
-	sessions, ttys, lockedOut := 0, 0, 0
+	sessions, ttys, lockedOut, slowed := 0, 0, 0, g.throttling
 	for _, s := range g.sessions {
 		if g.liveLocked(s, now) {
 			sessions++
@@ -229,8 +229,10 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	g.mu.Unlock()
 
 	healthy := true
-	for _, c := range checks {
+	for name, c := range checks {
 		healthy = healthy && c.OK
+		c.Detail = g.redact(c.Detail)
+		checks[name] = c
 	}
 	report := map[string]any{
 		"healthy": healthy,
@@ -246,15 +248,34 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		"state": map[string]any{
 			"web_sessions":    sessions,
 			"open_terminals":  ttys,
-			"locked_out_ips":  lockedOut,
+			"locked_out_ips":  lockedOut, // IPv4 addresses and IPv6 /64s
+			"logins_slowed":   slowed,    // see loginTurn
 			"audio_listeners": g.audio.listenerCount(),
 		},
-		"go": runtime.Version(),
 	}
 	h.Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(report)
+}
+
+// redact takes out of a check's detail, errors included, what would tell
+// someone without a login the account's name or where the VNC server is:
+// the home folder (/home/<VNC_USER>) becomes ~, the runtime folder
+// (/tmp/runtime-<VNC_USER>) $XDG_RUNTIME_DIR, and the VNC server's address
+// VNC_ADDR.
+func (g *server) redact(s string) string {
+	vnc := strings.TrimPrefix(g.vncAddr, "unix:")
+	if vnc != "" {
+		s = strings.ReplaceAll(s, vnc, "VNC_ADDR")
+	}
+	if rt := os.Getenv("XDG_RUNTIME_DIR"); len(rt) > 1 {
+		s = strings.ReplaceAll(s, rt, "$XDG_RUNTIME_DIR")
+	}
+	if home, err := os.UserHomeDir(); err == nil && len(home) > 1 {
+		s = strings.ReplaceAll(s, home, "~")
+	}
+	return s
 }
 
 // proxyReport shows how this request's client IP and scheme were worked

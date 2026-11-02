@@ -23,3 +23,8 @@ run = "go build -o tabtopd ."
 description = "Build the image and check it end to end in headless Chrome"
 dir = "{{config_root}}"
 run = "docker build -t tabtop:check . && test/browser-check.sh tabtop:check"
+
+[tasks.lite-check]
+description = "Build both images and check the one without a desktop against the other's Xvnc"
+dir = "{{config_root}}"
+run = "docker build -t tabtop:check . && docker build --build-arg DESKTOP=none -t tabtop-lite:check . && test/lite-check.sh tabtop-lite:check tabtop:check"

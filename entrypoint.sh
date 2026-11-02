@@ -6,6 +6,10 @@ VNC_GEOMETRY="${VNC_GEOMETRY:-1600x900}"
 VNC_DEPTH="${VNC_DEPTH:-24}"
 VNC_RESIZE="${VNC_RESIZE:-remote}"
 VNC_ADDR="${VNC_ADDR:-}"
+VNC_X509="${VNC_X509:-0}"
+VNC_UPSTREAM_USERNAME="${VNC_UPSTREAM_USERNAME:-}"
+VNC_CA_FILE="${VNC_CA_FILE:-}"
+VNC_SERVER_NAME="${VNC_SERVER_NAME:-}"
 WEB_PORT="${WEB_PORT:-6080}"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
@@ -15,12 +19,26 @@ WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
 WEB_AUDIO_SINK="${WEB_AUDIO_SINK:-}"
 WEB_TTY="${WEB_TTY:-1}"
-TTY_COMMAND="${TTY_COMMAND:-}"
+WEB_TTY_COMMAND="${WEB_TTY_COMMAND:-}"
 WEB_DOCTOR_ENDPOINT="${WEB_DOCTOR_ENDPOINT:-0}"
 WEB_SESSION_MAX="${WEB_SESSION_MAX:-12h}"
 WEB_SESSION_IDLE="${WEB_SESSION_IDLE:-1h}"
 WEB_E2E="${WEB_E2E:-}"
 DISPLAY_NUM=1
+
+# VNC_USER: a plain user name. One of the image's own accounts (root, or a
+# system account such as daemon, whose home is /usr/sbin) is refused: the
+# desktop, terminal and gateway would run as it, and its home's files would
+# be handed to it. One the container made itself on an earlier start, from
+# uid 1000, is used again.
+if ! [[ "$VNC_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo "VNC_USER must be a user name: lowercase letters, digits, _ and -, starting with a letter or _ (got '${VNC_USER}')." >&2
+    exit 1
+fi
+if VNC_USER_UID="$(id -u "$VNC_USER" 2>/dev/null)" && { [ "$VNC_USER_UID" -lt 1000 ] || [ "$VNC_USER_UID" -ge 60000 ]; }; then
+    echo "VNC_USER=${VNC_USER} is one of the image's own accounts (uid ${VNC_USER_UID}); choose another name." >&2
+    exit 1
+fi
 
 VNC_TOTP_DIGITS="${VNC_TOTP_DIGITS:-6}"
 case "$VNC_TOTP_DIGITS" in
@@ -35,6 +53,46 @@ esac
 # instead of the container's own desktop; checked as the gateway will.
 if [ -n "$VNC_ADDR" ] && ! VNC_ADDR_ERROR=$(/usr/local/bin/tabtopd -check-vnc-addr "$VNC_ADDR" 2>&1); then
     echo "VNC_ADDR isn't usable: ${VNC_ADDR_ERROR#tabtopd: }" >&2
+    exit 1
+fi
+# An image built without its own desktop (DESKTOP=none) has no Xvnc.
+if [ -z "$VNC_ADDR" ] && ! command -v Xvnc >/dev/null; then
+    echo "This image has no desktop of its own (built with DESKTOP=none): set VNC_ADDR to an RFB server's address." >&2
+    exit 1
+fi
+# VNC_X509=1: the connection to the VNC server at VNC_ADDR must be VeNCrypt
+# with a verified certificate, logging in with VNC_UPSTREAM_PASSWORD, and
+# VNC_UPSTREAM_USERNAME for X509Plain (see docs/lite.md). What it needs is
+# checked here, rather than when someone connects.
+case "$VNC_X509" in
+    0|1) ;;
+    *) echo "VNC_X509 must be 0 or 1 (got '${VNC_X509}')." >&2; exit 1 ;;
+esac
+for VAR in VNC_UPSTREAM_USERNAME VNC_CA_FILE VNC_SERVER_NAME; do
+    if [[ "${!VAR}" == *[[:cntrl:][:space:]]* ]]; then
+        echo "${VAR} must not contain spaces or control characters." >&2
+        exit 1
+    fi
+done
+if [ "$VNC_X509" = 1 ]; then
+    if [ -z "$VNC_ADDR" ]; then
+        echo "VNC_X509=1 is for a VNC server elsewhere: set VNC_ADDR to its address." >&2
+        exit 1
+    fi
+    if [ -z "${VNC_UPSTREAM_PASSWORD:-}" ]; then
+        echo "VNC_X509=1 needs VNC_UPSTREAM_PASSWORD, the VNC server's password (its Unix account's, with VNC_UPSTREAM_USERNAME)." >&2
+        exit 1
+    fi
+    if [[ "$VNC_ADDR" == unix:* ]] && [ -z "$VNC_SERVER_NAME" ]; then
+        echo "With VNC_X509=1 and a Unix socket as VNC_ADDR, set VNC_SERVER_NAME to the name in the VNC server's certificate." >&2
+        exit 1
+    fi
+    if [ -n "$VNC_CA_FILE" ] && [ ! -f "$VNC_CA_FILE" ]; then
+        echo "VNC_CA_FILE=${VNC_CA_FILE} isn't a file: mount the VNC server's certificate there." >&2
+        exit 1
+    fi
+elif [ -n "$VNC_UPSTREAM_USERNAME" ] || [ -n "$VNC_CA_FILE" ] || [ -n "$VNC_SERVER_NAME" ]; then
+    echo "VNC_UPSTREAM_USERNAME, VNC_CA_FILE and VNC_SERVER_NAME only apply with VNC_X509=1." >&2
     exit 1
 fi
 case "$WEB_AUDIO" in
@@ -64,8 +122,8 @@ case "$WEB_TTY" in
 esac
 # A shell command each terminal tab runs instead of tmux, such as ssh to
 # another machine; on one line.
-if [[ "$TTY_COMMAND" == *[[:cntrl:]]* ]]; then
-    echo "TTY_COMMAND must be on one line, without control characters." >&2
+if [[ "$WEB_TTY_COMMAND" == *[[:cntrl:]]* ]]; then
+    echo "WEB_TTY_COMMAND must be on one line, without control characters." >&2
     exit 1
 fi
 if ! [[ "$WEB_TRUST_NPROXIES" =~ ^[0-9]{1,2}$ ]] || [ "$WEB_TRUST_NPROXIES" -gt 10 ]; then
@@ -124,6 +182,21 @@ fi
 
 USER_HOME="$(getent passwd "$VNC_USER" | cut -d: -f6)"
 
+# A volume meant for the home, mounted under /home/ at another name than
+# VNC_USER's, isn't used: the account gets a new, empty home beside it.
+# Mount points are the fifth field of mountinfo, with spaces as \040.
+while read -r _ _ _ _ MOUNT_POINT _; do
+    MOUNT_POINT="${MOUNT_POINT//\\040/ }"
+    case "$MOUNT_POINT" in
+        "$USER_HOME" | "$USER_HOME"/*) ;;
+        /home/*)
+            MOUNT_NAME="${MOUNT_POINT#/home/}"
+            echo "Warning: $MOUNT_POINT is mounted, but the home folder is $USER_HOME (VNC_USER=$VNC_USER)," >&2
+            echo "so it isn't used. Set VNC_USER=${MOUNT_NAME%%/*}, or mount it under $USER_HOME instead." >&2
+            ;;
+    esac
+done < /proc/self/mountinfo
+
 # An optionally mounted home may be root-owned and empty (useradd doesn't
 # populate an existing directory), or may come from a different UID. Only then
 # fix ownership and copy in the skeleton files, so a large home isn't re-chowned
@@ -150,7 +223,6 @@ fi
 # reading through a symlink would copy files the user can't read into
 # users.oath, which they can.
 TOTP_DIR="$USER_HOME/.config/tabtop"
-TOTP_SECRET_FILE="$TOTP_DIR/totp-secret"
 PASSWORD_FILE="$TOTP_DIR/password"
 TOTP_USERS_FILE="$TOTP_DIR/users.oath"
 run_as_user() { runuser -u "$VNC_USER" -- "$@"; }
@@ -162,8 +234,7 @@ if [ -L "$TOTP_DIR" ] || [ "$(stat -c %u "$TOTP_DIR")" != "$(id -u "$VNC_USER")"
     exit 1
 fi
 run_as_user chmod 700 "$TOTP_DIR"
-# The secret: VNC_TOTP_SECRET, else the one saved in the home directory,
-# else the well-known example secret below. VNC_TOTP_SECRET can be any
+# The secret: VNC_TOTP_SECRET, else the well-known example secret below. VNC_TOTP_SECRET can be any
 # string, for random generators that can't produce Base32: valid Base32 is
 # used as it is; anything else has the key derived from it, the first 20
 # bytes of its SHA-256 (a fixed size, as liboath refuses keys over 32
@@ -187,11 +258,6 @@ if [ -n "${VNC_TOTP_SECRET:-}" ]; then
     if ! TOTP_HEX="$(base32_hex "$VNC_TOTP_SECRET")"; then
         TOTP_HEX="$(printf '%s' "$VNC_TOTP_SECRET" | sha256sum | cut -c1-40)"
         DERIVED_SECRET=1
-    fi
-elif run_as_user test -s "$TOTP_SECRET_FILE"; then
-    if ! TOTP_HEX="$(base32_hex "$(run_as_user cat "$TOTP_SECRET_FILE")")"; then
-        echo "The TOTP secret in $TOTP_SECRET_FILE is not valid base32." >&2
-        exit 1
     fi
 else
     TOTP_HEX="$(base32_hex "$DEFAULT_TOTP_SECRET")"
@@ -223,6 +289,23 @@ if [ -z "$VNC_PASSWORD" ]; then
     OATH_PIN='-'
 else
     OATH_PIN="$VNC_PASSWORD"
+fi
+
+# The password the gateway gives the VNC server at VNC_ADDR, if it asks for
+# one: the server's own, never the login's (VNC Authentication sends a
+# DES-based response that can be cracked offline). It's kept in a file only
+# the user can read, which the gateway reads, rather than on its command
+# line or in its environment, where other processes would see it, and
+# removed when VNC_UPSTREAM_PASSWORD is unset, so noVNC asks instead.
+VNC_UPSTREAM_FILE="$TOTP_DIR/vnc-upstream-password"
+if [ -n "${VNC_UPSTREAM_PASSWORD:-}" ]; then
+    if [[ "$VNC_UPSTREAM_PASSWORD" == *[[:cntrl:]]* ]]; then
+        echo "VNC_UPSTREAM_PASSWORD must be on one line, without control characters." >&2
+        exit 1
+    fi
+    printf '%s' "$VNC_UPSTREAM_PASSWORD" | write_as_user "$VNC_UPSTREAM_FILE"
+else
+    run_as_user rm -f "$VNC_UPSTREAM_FILE"
 fi
 
 # pam_oath appends the last-used code's counter and time to this line; keep
@@ -259,9 +342,11 @@ if [ "$DERIVED_SECRET" = 1 ]; then
     echo "  URI:    ${TOTP_URI}"
     qrencode -t ANSIUTF8 "$TOTP_URI"
 fi
-unset VNC_TOTP_SECRET VNC_PASSWORD TOTP_HEX TOTP_ENTRY TOTP_URI OATH_PIN
+unset VNC_TOTP_SECRET VNC_PASSWORD VNC_UPSTREAM_PASSWORD TOTP_HEX TOTP_ENTRY TOTP_URI OATH_PIN
 
-if [ "${CHROMIUM_NO_SANDBOX:-1}" = 1 ]; then
+if [ ! -d /etc/chromium.d ]; then
+    :  # no Chromium in this image
+elif [ "${CHROMIUM_NO_SANDBOX:-1}" = 1 ]; then
     printf '%s\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type"' \
         > /etc/chromium.d/docker-flags
 else
@@ -310,8 +395,8 @@ as_user() {
 # desktop page puts it on the computer's own clipboard.
 #
 # With VNC_ADDR set, the gateway dials that RFB server instead, and none of
-# this desktop (Xvnc, its sound or XFCE) is started: noVNC asks for that
-# server's password, if it has one.
+# this desktop (Xvnc, its sound or XFCE) is started. If that server asks
+# for a password, the gateway gives it VNC_UPSTREAM_PASSWORD, or noVNC asks.
 XVNC_PID=""
 AUDIO_PIDS=()
 AUDIO_SINK=""
@@ -424,13 +509,27 @@ DOCTOR=false
 if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
     DOCTOR=true
 fi
+X509=false
+if [ "$VNC_X509" = 1 ]; then
+    X509=true
+    # The gateway reads it as the desktop user, for each connection.
+    if [ -n "$VNC_CA_FILE" ] && ! run_as_user test -r "$VNC_CA_FILE"; then
+        echo "VNC_CA_FILE=${VNC_CA_FILE} can't be read by ${VNC_USER}: make it readable to uid $(id -u "$VNC_USER")." >&2
+        exit 1
+    fi
+fi
 as_user /usr/local/bin/tabtopd \
     -listen ":${WEB_PORT}" \
     -base-path "$WEB_BASE_PATH" \
     -novnc-dir /opt/novnc \
     -vnc-addr "$VNC_ADDR" \
+    -vnc-x509="$X509" \
+    -vnc-username "$VNC_UPSTREAM_USERNAME" \
+    -vnc-ca-file "$VNC_CA_FILE" \
+    -vnc-server-name "$VNC_SERVER_NAME" \
     -noble-dir /opt/noble \
     -users-file "$TOTP_USERS_FILE" \
+    -vnc-password-file "$VNC_UPSTREAM_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
@@ -439,7 +538,7 @@ as_user /usr/local/bin/tabtopd \
     -audio-sink "$AUDIO_SINK" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \
-    -tty-command "$TTY_COMMAND" \
+    -tty-command "$WEB_TTY_COMMAND" \
     -doctor="$DOCTOR" \
     &
 TABTOPD_PID=$!

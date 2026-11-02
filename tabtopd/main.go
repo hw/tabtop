@@ -20,6 +20,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -31,6 +34,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,15 +45,19 @@ import (
 
 const (
 	downloadsPrefix = "/downloads/"
-	maxFailures     = 5 // failed logins per client IP per failureWindow
+	maxFailures     = 5 // failed logins per client address (see limitKey) per failureWindow
 	failureWindow   = 5 * time.Minute
+	// Failed logins per failureWindow, from every address together, past
+	// which logins are checked at most one per siteThrottle (see loginTurn).
+	maxSiteFailures = 30
+	siteThrottle    = 5 * time.Second
 	// Logins checked at once, from every address together.
 	maxLoginWork = 4
 	// Tunnels not yet logged in or tied to a session, from every address
 	// together and from one, so connections that never finish their
 	// handshake can't take everything.
 	maxHandshakes      = 256
-	maxHandshakesPerIP = 16
+	maxHandshakesPerIP = 16 // per address (see limitKey)
 	// Most entries a Downloads folder's listing shows.
 	maxListing = 10000
 	// Longest the search for unfinished uploads may hold up the start.
@@ -66,12 +75,16 @@ type server struct {
 	// URL path the site is served under: "/", or "/a/b/" behind a reverse
 	// proxy that passes it through. Handlers see paths with it cut down to
 	// "/" (see stripBase); abs puts it back in URLs sent to the browser.
-	base         string
-	novncDir     string
-	vncAddr      string
-	vncProbe     probeCache // healthz's connection checks of it (see vncListening)
-	usersFile    string
-	downloadsDir string
+	base                     string
+	novncDir                 string
+	vncAddr                  string
+	vncProbe                 probeCache // healthz's connection checks of it (see vncListening)
+	usersFile                string
+	vncPasswordFile          string // the VNC server's password (see vncPassword)
+	vncX509                  bool
+	vncCAFile, vncServerName string
+	vncUsername              string
+	downloadsDir             string
 	// Proxies whose X-Forwarded-For entries are believed; see clientIP.
 	trustedProxies []netip.Prefix
 	// How many proxy hops nearest the container are trusted whatever their
@@ -91,14 +104,20 @@ type server struct {
 	handshakes              handshakes
 
 	mu       sync.Mutex
-	sessions map[string]*session       // session id -> session
-	logins   []loginEvent              // recent logins, oldest first
-	ttys     map[string]int            // session token -> open terminals
-	failures map[string][]time.Time    // client IP -> recent failed logins
-	pending  map[string]int            // client IP -> logins awaiting their result
-	partials map[string]*partialUpload // id -> an upload cut off, kept to resume (see keepPartial)
-	uploads  map[string]*activeUpload  // id -> an upload going on (see claimPartial)
-	seen     time.Time                 // when the files page's security warnings were last marked as seen
+	sessions map[string]*session    // session id -> session
+	logins   []loginEvent           // recent logins, oldest first
+	ttys     map[string]int         // session token -> open terminals
+	failures map[string][]time.Time // client address (see limitKey) -> recent failed logins
+	pending  map[string]int         // client address (see limitKey) -> logins awaiting their result
+	// The latest failed logins from every address, at most
+	// maxSiteFailures, oldest first; while they're all within
+	// failureWindow, logins are throttled, the next allowed at nextLogin.
+	siteFailures []time.Time
+	nextLogin    time.Time
+	throttling   bool
+	partials     map[string]*partialUpload // id -> an upload cut off, kept to resume (see keepPartial)
+	uploads      map[string]*activeUpload  // id -> an upload going on (see claimPartial)
+	seen         time.Time                 // when the files page's security warnings were last marked as seen
 
 	failuresSwept time.Time // when failures last lost its expired IPs
 
@@ -117,7 +136,13 @@ func main() {
 	}
 	flag.StringVar(&g.novncDir, "novnc-dir", "/opt/novnc", "noVNC client files")
 	flag.StringVar(&g.vncAddr, "vnc-addr", "127.0.0.1:5901", "the RFB server's address, Xvnc's or another's: host:port, or unix:path for a socket")
+	flag.BoolVar(&g.vncX509, "vnc-x509", false, "require VeNCrypt with a verified certificate (X509Vnc, or X509Plain with -vnc-username) to log in to the VNC server")
+	flag.StringVar(&g.vncUsername, "vnc-username", "", "username for the VNC server; selects X509Plain with -vnc-x509")
+	flag.StringVar(&g.vncCAFile, "vnc-ca-file", "", "PEM certificates to trust for -vnc-x509, beside the system's")
+	flag.StringVar(&g.vncServerName, "vnc-server-name", "", "name the VNC server's certificate must carry with -vnc-x509; defaults to -vnc-addr's host")
 	flag.StringVar(&g.usersFile, "users-file", "", "pam_oath users file holding the TOTP key")
+	flag.StringVar(&g.vncPasswordFile, "vnc-password-file", "",
+		"file holding the password to give the VNC server, if it asks for one; empty or missing for noVNC to ask")
 	flag.StringVar(&g.downloadsDir, "downloads-dir", "", "directory served at "+downloadsPrefix)
 	flag.IntVar(&g.trustNProxies, "trust-nproxies", 0,
 		"how many proxies in front are trusted whatever their address, counting the one that connects")
@@ -134,6 +159,9 @@ func main() {
 	checkAddr := flag.String("check-vnc-addr", "", "only check an address as -vnc-addr takes it, and exit")
 	audioKbps := flag.Int("audio-bitrate", 64, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
 	flag.Parse()
+	if g.vncUsername != "" && !g.vncX509 {
+		log.Fatal("-vnc-username requires -vnc-x509")
+	}
 	log.SetFlags(0)
 	log.SetPrefix("tabtopd: ")
 	if *checkAddr != "" {
@@ -207,7 +235,7 @@ func main() {
 
 func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServerFS(noListingFS{os.DirFS(g.novncDir)}))
+	mux.Handle("/", novncHeaders(novncCSP(g.novncDir), http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})))
 	mux.HandleFunc(downloadsPrefix, g.filesPage)
 	mux.HandleFunc(ttyPrefix, g.tty)
 	// The mux would add the trailing slash itself, but to the path without
@@ -220,6 +248,56 @@ func (g *server) handler() http.Handler {
 	mux.HandleFunc("/healthz", g.healthz)
 	mux.HandleFunc("/doctor", g.doctor)
 	return noTransform(g.stripBase(mux))
+}
+
+// novncCSPFormat is the desktop page's Content-Security-Policy, with the
+// hashes of its inline scripts to put in (see novncCSP). Everything it
+// loads is the site's own: the session it keeps in localStorage is only as
+// safe as the scripts that can run beside it. Images may also be data: and
+// blob: URLs (noVNC's cursors, the bar's icons); media is noVNC's bell; a
+// worker and a hidden frame from the site save downloads (see download.js).
+const novncCSPFormat = "default-src 'none'; script-src 'self'%s; style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; media-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'self'; " +
+	"manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+
+// inlineScript matches a script element and what's in it; scriptSrc, an
+// element that loads its script from a file instead.
+var (
+	inlineScript = regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script>`)
+	scriptSrc    = regexp.MustCompile(`(?i)\bsrc\s*=`)
+)
+
+// novncCSP is the desktop page's Content-Security-Policy, allowing the
+// inline scripts in dir's vnc.html (noVNC's start-up module) by their
+// SHA-256, as the browser hashes them: with line endings made \n.
+func novncCSP(dir string) string {
+	page, _ := os.ReadFile(filepath.Join(dir, "vnc.html")) // a missing page is the doctor's to report
+	var hashes strings.Builder
+	for _, m := range inlineScript.FindAllSubmatch(page, -1) {
+		if scriptSrc.Match(m[1]) {
+			continue
+		}
+		text := bytes.ReplaceAll(bytes.ReplaceAll(m[2], []byte("\r\n"), []byte("\n")), []byte("\r"), []byte("\n"))
+		sum := sha256.Sum256(text)
+		hashes.WriteString(" 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'")
+	}
+	return fmt.Sprintf(novncCSPFormat, hashes.String())
+}
+
+// novncHeaders guards the desktop page and the rest of noVNC's files, as
+// the files and terminal pages are guarded: csp, which also keeps other
+// sites from showing them in a frame (where clicks and keys meant for
+// their own page could reach the desktop), as X-Frame-Options does for
+// older browsers, and none is taken for another type than it's served as.
+func novncHeaders(csp string, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hd := w.Header()
+		hd.Set("Content-Security-Policy", csp)
+		hd.Set("X-Frame-Options", "DENY")
+		hd.Set("X-Content-Type-Options", "nosniff")
+		hd.Set("Referrer-Policy", "no-referrer")
+		h.ServeHTTP(w, r)
+	})
 }
 
 // noTransform asks proxies, and CDNs such as Cloudflare, to pass every
@@ -465,29 +543,82 @@ func startLoginWork() bool {
 
 func endLoginWork() { <-loginWork }
 
+// limitKey is what failed logins and unfinished handshakes from ip are
+// counted against: an IPv4 address as it is, and an IPv6 address's /64,
+// since one subscriber usually has a whole /64 and could otherwise step
+// through it for a fresh limit with every guess.
+func limitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr = addr.Unmap(); addr.Is4() {
+		return addr.String()
+	}
+	p, _ := addr.Prefix(64)
+	return p.String()
+}
+
 // beginLogin reserves one of ip's login attempts until endLogin gives its
 // result, or reports that it has none left.
 func (g *server) beginLogin(ip string) bool {
+	key := limitKey(ip)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.lockedOutLocked(ip) {
+	if g.lockedOutLocked(key) {
 		return false
 	}
-	g.pending[ip]++
+	g.pending[key]++
 	return true
 }
 
 func (g *server) endLogin(ip, browser string, failed bool) {
+	key := limitKey(ip)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.pending[ip]--; g.pending[ip] <= 0 {
-		delete(g.pending, ip)
+	if g.pending[key]--; g.pending[key] <= 0 {
+		delete(g.pending, key)
 	}
 	if failed {
+		now := time.Now()
 		g.recordLoginLocked(ip, browser, false)
-		g.failures[ip] = append(g.failures[ip], time.Now())
+		g.failures[key] = append(g.failures[key], now)
 		g.sweepFailuresLocked()
+		g.siteFailures = append(g.siteFailures, now)
+		if len(g.siteFailures) > maxSiteFailures {
+			g.siteFailures = g.siteFailures[len(g.siteFailures)-maxSiteFailures:]
+		}
 	}
+}
+
+// loginTurn reports whether a login may be checked now. The limit per
+// address doesn't stop guesses spread over many addresses, so once
+// maxSiteFailures logins have failed within failureWindow, from anywhere,
+// logins are checked at most one per siteThrottle until the failures thin
+// out. That turns guessing a code-only login (one in about 333,000 for 6
+// digits, since three codes are accepted at a time) from a matter of hours
+// into weeks, and the owner can still get in, if not at the first try.
+func (g *server) loginTurn() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	if len(g.siteFailures) < maxSiteFailures || now.Sub(g.siteFailures[0]) >= failureWindow {
+		if g.throttling {
+			g.throttling = false
+			log.Printf("failed logins have thinned out: no longer slowing logins down")
+		}
+		return true
+	}
+	if !g.throttling {
+		g.throttling = true
+		log.Printf("warning: %d failed logins in %v, from all addresses together: slowing logins down to one per %v",
+			maxSiteFailures, failureWindow, siteThrottle)
+	}
+	if now.Before(g.nextLogin) {
+		return false
+	}
+	g.nextLogin = now.Add(siteThrottle)
+	return true
 }
 
 // sweepFailuresLocked forgets the failures of every IP that has none left

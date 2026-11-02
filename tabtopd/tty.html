@@ -46,6 +46,10 @@ body.touch-keys #terminal { bottom: 48px; }
 #touch_keys button { flex: 0 0 auto; min-width: 42px; padding: 0 8px; font: 15px system-ui, sans-serif; color: #e8e8ea;
     background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px; touch-action: manipulation; }
 #touch_keys button[aria-pressed=true] { color: #1c1c1e; background: #8ab4f8; border-color: #8ab4f8; }
+#tty_copied { position: absolute; right: 12px; bottom: 12px; max-width: min(36rem, calc(100% - 24px)); box-sizing: border-box;
+    padding: 6px 10px; font: 13px system-ui, sans-serif; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c;
+    border-radius: 6px; overflow-wrap: anywhere; z-index: 5; }
+body.touch-keys #tty_copied { bottom: 56px; }
 button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
 @media (max-width: 30rem) {
     #terminal { top: 76px; }

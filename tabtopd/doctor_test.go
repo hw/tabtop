@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -345,5 +347,63 @@ func TestHealthzSocket(t *testing.T) {
 	}
 	if n := accepted.Load(); n != 1 {
 		t.Errorf("socket under another path: connected %d times, want once", n)
+	}
+}
+
+// TestNoVNCHeaders checks that the desktop page can't be framed by another
+// site, nor its files sniffed.
+func TestNoVNCHeaders(t *testing.T) {
+	_, srv := newDoctorServer(t, false)
+	resp, err := http.Get(srv.URL + "/vnc.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for name, want := range map[string]string{
+		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Frame-Options":         "DENY",
+		"X-Content-Type-Options":  "nosniff",
+	} {
+		if got := resp.Header.Get(name); resp.StatusCode != 200 || !strings.Contains(got, want) {
+			t.Errorf("%d, %s: %q, want %q", resp.StatusCode, name, got, want)
+		}
+	}
+}
+
+// TestNoVNCCSP allows the desktop page's inline scripts by their hashes,
+// taken as the browser takes them, with \r\n made \n, and no others.
+func TestNoVNCCSP(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "vnc.html"), []byte("<script type=\"module\" src=\"a.js\"></script>\r\n"+
+		"<script type=\"module\">\r\n  start();\r\n</script>"), 0o644)
+	sum := sha256.Sum256([]byte("\n  start();\n"))
+	want := "script-src 'self' 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "';"
+	if csp := novncCSP(dir); !strings.Contains(csp, want) || strings.Count(csp, "sha256-") != 1 {
+		t.Errorf("CSP %q, want it to have %q", csp, want)
+	}
+	if csp := novncCSP(t.TempDir()); !strings.Contains(csp, "script-src 'self';") {
+		t.Errorf("without a page: %q", csp)
+	}
+}
+
+// TestDoctorRedacts keeps the home folder, which names the account, and
+// the VNC server's address out of the report.
+func TestDoctorRedacts(t *testing.T) {
+	g, srv := newDoctorServer(t, true)
+	home := filepath.Dir(g.usersFile)
+	t.Setenv("HOME", home)
+	status, body := fetch(t, srv.URL+"/doctor")
+	if status != 200 {
+		t.Fatalf("doctor: %d", status)
+	}
+	for _, leak := range []string{home, g.vncAddr, `"go"`} {
+		if strings.Contains(body, leak) {
+			t.Errorf("report has %q:\n%s", leak, body)
+		}
+	}
+	for _, want := range []string{"~/users.oath", "at VNC_ADDR"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("report lacks %q:\n%s", want, body)
+		}
 	}
 }

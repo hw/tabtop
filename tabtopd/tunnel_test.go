@@ -895,7 +895,7 @@ func TestTunnelUnderBasePath(t *testing.T) {
 // and a file, which needs the handshakes, key derivations and framing to
 // agree byte for byte. Needs
 // Node 22 or later, and $TABTOP_NOBLE_DIR laid out as the image's
-// /opt/noble (see the README).
+// /opt/noble (see docs/development.md).
 func TestTunnelInteropWithJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1020,5 +1020,28 @@ func TestTunnelTTYCommand(t *testing.T) {
 	case s := <-searched:
 		t.Errorf("searched with tmux: %s", s)
 	default:
+	}
+}
+
+// TestTunnelLoginSlowed turns a login away, as one to try again later,
+// while logins are slowed down after many failures.
+func TestTunnelLoginSlowed(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	now := time.Now()
+	g.mu.Lock()
+	for range maxSiteFailures {
+		g.siteFailures = append(g.siteFailures, now)
+	}
+	g.nextLogin = now.Add(time.Minute)
+	g.mu.Unlock()
+	if _, status := loginAt(t, ctx, wsURL(srv.URL), code(0)); status != websocket.StatusTryAgainLater {
+		t.Fatalf("slowed login closed with %v", status)
+	}
+	g.mu.Lock()
+	g.nextLogin = time.Time{}
+	g.mu.Unlock()
+	if s, status := loginAt(t, ctx, wsURL(srv.URL), code(0)); status != 0 || s.id == "" {
+		t.Fatalf("login once its turn came: %v", status)
 	}
 }

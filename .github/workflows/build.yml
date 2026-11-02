@@ -1,6 +1,10 @@
-# Tests tabtopd, builds the image, checks it end to end in headless Chrome
-# (test/browser-check.sh), and pushes it to ghcr.io/<owner>/<repo> once all
-# of that passes. Pull requests are built and checked but not pushed.
+# Tests tabtopd, builds the two images and checks them, and pushes them
+# once all of that passes: tabtop, with its own desktop, checked end to end
+# in headless Chrome (test/browser-check.sh), to ghcr.io/<owner>/<repo>;
+# and tabtop-lite, built without one (DESKTOP=none) for VNC_ADDR, checked
+# against Xvnc from the first (test/lite-check.sh), to
+# ghcr.io/<owner>/<repo>-lite. Pull requests are built and checked but not
+# pushed.
 name: Build
 
 on:
@@ -47,15 +51,24 @@ jobs:
       - uses: jdx/mise-action@v5
       - uses: docker/setup-buildx-action@v4
       # Built into the local Docker first, to check before pushing; the
-      # push below reuses the cache.
+      # pushes below reuse the caches, one for each image.
       - uses: docker/build-push-action@v7
         with:
           context: .
           load: true
           tags: tabtop:check
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=tabtop
+          cache-to: type=gha,mode=max,scope=tabtop
       - run: test/browser-check.sh tabtop:check
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          build-args: DESKTOP=none
+          tags: tabtop-lite:check
+          cache-from: type=gha,scope=tabtop-lite
+          cache-to: type=gha,mode=max,scope=tabtop-lite
+      - run: test/lite-check.sh tabtop-lite:check tabtop:check
       - uses: docker/login-action@v4
         if: github.event_name != 'pull_request'
         with:
@@ -63,11 +76,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # main → :main and :latest; tag v1.2.3 → :1.2.3 and :1.2; every push
-      # also gets :sha-<short sha>.
+      # also gets :sha-<short sha>. Both images get the same tags.
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - id: meta-lite
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}-lite
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -81,4 +105,12 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=tabtop
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: DESKTOP=none
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-lite.outputs.tags }}
+          labels: ${{ steps.meta-lite.outputs.labels }}
+          cache-from: type=gha,scope=tabtop-lite

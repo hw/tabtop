@@ -7,8 +7,9 @@
 # desktop's sound, which Chromium plays into a PipeWire null sink.
 #
 # Build: docker build -t tabtop .
-# Local: docker run -d -p 6080:6080 \
-#          -e VNC_USER=alice tabtop
+#        (--build-arg DESKTOP=none for an image without its own desktop,
+#        for VNC_ADDR: see DESKTOP below)
+# Local: docker run -d -p 6080:6080 -e VNC_USER=$USER tabtop
 # Enrol: docker logs <container>   (scan the QR code with an authenticator app)
 # Open:  http://localhost:6080/   (log in with the current TOTP code)
 # Files: http://localhost:6080/downloads/   (download files from ~/Downloads)
@@ -19,6 +20,13 @@
 #
 # No persistent volume is required. Optionally mount /home/$VNC_USER to keep
 # browser data, downloads and desktop settings across container replacement.
+
+# DESKTOP picks the image's build: xfce (default) has the container's own
+# desktop, Xvnc with XFCE, Chromium, the Arc theme, Numix icons and
+# PipeWire for its sound; none leaves all of that out, for showing an RFB
+# server elsewhere, which VNC_ADDR must then name:
+#   docker build --build-arg DESKTOP=none -t tabtop:lite.
+ARG DESKTOP=xfce
 
 # noVNC comes from its GitHub release rather than Debian's package, to get
 # the upstream version. Bump NOVNC_VERSION and NOVNC_SHA256 together; the
@@ -130,35 +138,18 @@ RUN go mod download
 COPY tabtopd/*.go tabtopd/*.js tabtopd/*.html ./
 RUN go build -trimpath -ldflags='-s -w' -o /tabtopd .
 
-FROM debian:trixie-slim
+# What every build has: the gateway's libraries, the terminal and its
+# tools. pulseaudio-utils (pactl) checks a host's sound server
+# (WEB_AUDIO_SERVER) as well as the desktop's.
+FROM debian:trixie-slim AS packages
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# No wallpapers: they come with xfdesktop4-data, which xfdesktop4 needs, so
-# dpkg is told not to install their files. The background is plain black.
-RUN printf '%s\n' 'path-exclude=/usr/share/backgrounds/*' > /etc/dpkg/dpkg.cfg.d/no-wallpapers
-
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         tini \
-        tigervnc-standalone-server \
-        xfce4-session \
-        xfwm4 \
-        xfce4-panel \
-        xfdesktop4 \
-        xfce4-settings \
-        xfconf \
-        xfce4-terminal \
-        thunar \
-        dbus-x11 \
-        chromium \
-        arc-theme \
-        numix-icon-theme \
-        librsvg2-common \
-        fonts-dejavu-core \
-        fonts-noto-color-emoji \
         ca-certificates \
         tzdata \
         procps \
@@ -166,9 +157,6 @@ RUN apt-get update \
         oathtool \
         qrencode \
         libopus0 \
-        pipewire \
-        pipewire-pulse \
-        wireplumber \
         pulseaudio-utils \
         tmux \
         openssh-client \
@@ -185,6 +173,69 @@ RUN apt-get update \
         && update-alternatives --set vi /usr/bin/vim.tiny \
         && rm -rf /var/lib/apt/lists/*
 
+FROM packages AS desktop-none
+
+FROM packages AS desktop-xfce
+
+# No wallpapers: they come with xfdesktop4-data, which xfdesktop4 needs, so
+# dpkg is told not to install their files. The background is plain black.
+RUN printf '%s\n' 'path-exclude=/usr/share/backgrounds/*' > /etc/dpkg/dpkg.cfg.d/no-wallpapers
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        tigervnc-standalone-server \
+        xfce4-session \
+        xfwm4 \
+        xfce4-panel \
+        xfdesktop4 \
+        xfce4-settings \
+        xfconf \
+        xfce4-terminal \
+        thunar \
+        dbus-x11 \
+        chromium \
+        arc-theme \
+        numix-icon-theme \
+        librsvg2-common \
+        fonts-dejavu-core \
+        fonts-noto-color-emoji \
+        pipewire \
+        pipewire-pulse \
+        wireplumber \
+ && rm -rf /var/lib/apt/lists/*
+
+# CHROMIUM_NO_SANDBOX=1 (default) disables Chromium's internal process
+# sandbox for compatibility with restricted container runtimes. Keep the
+# default on managed hosting; use 0 only where Chromium starts successfully
+# with its sandbox enabled.
+ENV CHROMIUM_NO_SANDBOX=1
+
+# XFCE defaults for new homes: one top panel (show desktop, Chromium
+# incognito and terminal launchers, window list, workspace name, tray and clock; no bottom
+# dock, applications menu or log-out menu), a single workspace called Main,
+# the Arc-Dark theme for applications and window borders, Numix icons, and a
+# plain black desktop without a Trash icon.
+COPY --chmod=644 config/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
+COPY --chmod=644 config/xfwm4.xml config/xsettings.xml config/xfce4-desktop.xml \
+    /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
+
+# Default applications: Chromium in incognito mode for web links (XFCE's
+# helper, the XDG MIME defaults and Debian's x-www-browser), xfce4-terminal
+# for terminals and Thunar for folders.
+COPY --chmod=755 config/chromium-incognito /usr/local/bin/
+COPY --chmod=644 config/chromium-incognito.desktop /usr/share/applications/
+COPY --chmod=644 config/xfce-helper-chromium-incognito.desktop \
+    /usr/share/xfce4/helpers/chromium-incognito.desktop
+COPY --chmod=644 config/helpers.rc /etc/xdg/xfce4/helpers.rc
+COPY --chmod=644 config/mimeapps.list /etc/xdg/mimeapps.list
+RUN update-alternatives --install /usr/bin/x-www-browser x-www-browser \
+        /usr/local/bin/chromium-incognito 100
+
+# The image: the build DESKTOP picks, then what changes most often (the
+# gateway, the entrypoint, the page files), so editing those doesn't
+# reinstall the desktop.
+FROM desktop-${DESKTOP}
+
 COPY --from=novnc /novnc /opt/novnc
 COPY --from=terminal /terminal /opt/terminal
 COPY --from=noble /noble /opt/noble
@@ -196,11 +247,11 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # VNC_USER: the desktop's Linux user, and the account name shown in the
 # authenticator app. Logins take only a TOTP code (or password + code). VNC_TOTP_SECRET sets the TOTP key: Base32 is used as it is, and
 # any other string has a key derived from it, printed at startup for the
-# authenticator app. If it's unset, the key saved in the home directory is
-# used, or else the PUBLIC example secret JBSWY3DPEHPK3PXP, with a warning on
-# every start. VNC_TOTP_DIGITS: code length, 6, 7 or 8. VNC_TOTP_SECRET and
-# VNC_PASSWORD are left out of ENV below: they're secrets, passed at run time
-# only. Set a fixed, random VNC_TOTP_SECRET for any deployment others can
+# authenticator app. If it's unset, the PUBLIC example secret
+# JBSWY3DPEHPK3PXP is used, with a warning on every start. VNC_TOTP_DIGITS: code length, 6, 7 or 8. VNC_TOTP_SECRET,
+# VNC_PASSWORD (the login's) and VNC_UPSTREAM_PASSWORD (the VNC server's,
+# with VNC_ADDR) are left out of ENV below: they're secrets, passed at run
+# time only. Set a fixed, random VNC_TOTP_SECRET for any deployment others can
 # reach.
 # VNC_RESIZE: default for how noVNC fits the desktop to the browser window:
 # remote (resize the desktop to match), scale (scale the image) or off
@@ -232,7 +283,7 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # other tunnel open, such as 1h (default) or 30m; 0 for no limit.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
 # the desktop and /downloads/; 0 turns it off.
-# TTY_COMMAND: a shell command each terminal tab runs instead of tmux,
+# WEB_TTY_COMMAND: a shell command each terminal tab runs instead of tmux,
 # e.g. ssh -t me@host.docker.internal; empty (default) for tmux.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
 # it off and doesn't start PipeWire. WEB_AUDIO_BITRATE: its Opus bitrate in
@@ -243,10 +294,6 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
 # without a login; 0 (default) turns it off. <base>healthz always answers
 # health checks.
-# CHROMIUM_NO_SANDBOX=1 (default) disables Chromium's internal process
-# sandbox for compatibility with restricted container runtimes. Keep the
-# default on managed hosting; use 0 only where Chromium starts successfully
-# with its sandbox enabled.
 ENV VNC_USER=user \
     VNC_TOTP_DIGITS=6 \
     VNC_GEOMETRY=1600x900 \
@@ -261,8 +308,7 @@ ENV VNC_USER=user \
     WEB_AUDIO=1 \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \
-    WEB_DOCTOR_ENDPOINT=0 \
-    CHROMIUM_NO_SANDBOX=1
+    WEB_DOCTOR_ENDPOINT=0
 
 # tmux settings for the browser terminal (users' ~/.tmux.conf still applies
 # after this): the mouse wheel scrolls tmux's history, colours are 24-bit,
@@ -283,31 +329,10 @@ COPY skel/ /etc/skel/
 RUN chmod -R u=rwX,go=rX /etc/skel
 
 # Shell prompt and terminal title without the hostname (a container ID):
-# "alice:~$". Fail the build if Debian's prompts no longer match.
+# "<VNC_USER>:~$". Fail the build if Debian's prompts no longer match.
 RUN sed -i 's/\\u@\\h/\\u/g' /etc/skel/.bashrc /etc/bash.bashrc \
  && ! grep -q '\\h' /etc/skel/.bashrc /etc/bash.bashrc \
  && grep -q 'PS1=.*\\u' /etc/skel/.bashrc
-
-# XFCE defaults for new homes: one top panel (show desktop, Chromium
-# incognito and terminal launchers, window list, workspace name, tray and clock; no bottom
-# dock, applications menu or log-out menu), a single workspace called Main,
-# the Arc-Dark theme for applications and window borders, Numix icons, and a
-# plain black desktop without a Trash icon.
-COPY --chmod=644 config/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
-COPY --chmod=644 config/xfwm4.xml config/xsettings.xml config/xfce4-desktop.xml \
-    /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
-
-# Default applications: Chromium in incognito mode for web links (XFCE's
-# helper, the XDG MIME defaults and Debian's x-www-browser), xfce4-terminal
-# for terminals and Thunar for folders.
-COPY --chmod=755 config/chromium-incognito /usr/local/bin/
-COPY --chmod=644 config/chromium-incognito.desktop /usr/share/applications/
-COPY --chmod=644 config/xfce-helper-chromium-incognito.desktop \
-    /usr/share/xfce4/helpers/chromium-incognito.desktop
-COPY --chmod=644 config/helpers.rc /etc/xdg/xfce4/helpers.rc
-COPY --chmod=644 config/mimeapps.list /etc/xdg/mimeapps.list
-RUN update-alternatives --install /usr/bin/x-www-browser x-www-browser \
-        /usr/local/bin/chromium-incognito 100
 
 EXPOSE 6080
 

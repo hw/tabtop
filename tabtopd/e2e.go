@@ -157,7 +157,7 @@ type fileEntry struct {
 // WebSocket here.
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	ip := g.clientIP(r)
-	handshaken, ok := g.handshakes.start(ip)
+	handshaken, ok := g.handshakes.start(limitKey(ip))
 	if !ok {
 		http.Error(w, "too many connections being set up", http.StatusServiceUnavailable)
 		return
@@ -177,7 +177,7 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	}
 	go keepalive(alive, c, interval)
 
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	typ, hello, err := c.Read(ctx)
 	cancel()
 	if err != nil {
@@ -345,10 +345,12 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 	}
 }
 
-// bridgeDesktop connects a session tunnel to Xvnc. The session is the
-// login: Xvnc listens on a socket only the desktop user can open and asks
-// for none, so noVNC goes straight to the desktop. Logging out, or the
-// session ending, closes it.
+// bridgeDesktop connects a session tunnel to Xvnc, or the VNC server at
+// -vnc-addr. The session is the login: Xvnc listens on a socket only the
+// desktop user can open and asks for none, so noVNC goes straight to the
+// desktop, and a server elsewhere is given the login password, if there's
+// one for it (see rfbauth.go). Logging out, or the session ending, closes
+// it.
 func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 	vnc, err := g.dialVNC()
 	if err != nil {
@@ -356,12 +358,31 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 		t.Close(websocket.StatusInternalError, "cannot reach the desktop")
 		return
 	}
+	conn := &tunnelConn{t: t}
+	// With a password for it (VNC_UPSTREAM_PASSWORD), the VNC server gets
+	// that, and noVNC no security (see rfbauth.go). The login's own
+	// password is never sent anywhere.
+	if password := g.vncPassword(); password != "" || g.vncX509 {
+		if password == "" {
+			vnc.Close()
+			log.Printf("VNC_X509 needs VNC_UPSTREAM_PASSWORD, and there's none")
+			t.Close(websocket.StatusInternalError, "cannot log in to the desktop")
+			return
+		}
+		if vnc, err = g.vncSecurity(vnc, conn, password); err != nil {
+			log.Printf("logging in to the VNC server: %v", err)
+			if vnc != nil {
+				vnc.Close()
+			}
+			t.Close(websocket.StatusInternalError, "cannot log in to the desktop")
+			return
+		}
+	}
 	defer vnc.Close()
 	log.Printf("desktop tunnel from %s opened", ip)
 	g.audio.link(session, ip)
 	defer g.audio.unlink(session, ip)
 
-	conn := &tunnelConn{t: t}
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(vnc, conn); done <- struct{}{} }()
 	go func() { io.Copy(conn, vnc); done <- struct{}{} }()

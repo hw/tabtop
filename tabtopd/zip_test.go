@@ -100,3 +100,73 @@ func TestTunnelZip(t *testing.T) {
 		}
 	}
 }
+
+// zipNames lists what a zip made by z holds.
+func zipNames(t *testing.T, b *bytes.Buffer) []string {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(b.Bytes()), int64(b.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
+// TestZipSwappedFolder leaves out a folder swapped for a symlink after it
+// was listed, here to the folder above it, rather than follow it.
+func TestZipSwappedFolder(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "top", "a"), 0o755)
+	os.WriteFile(filepath.Join(dir, "top", "a", "f.txt"), []byte("f"), 0o644)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	listed, err := root.Lstat("top/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Swapped once it's been listed.
+	os.Rename(filepath.Join(dir, "top", "a"), filepath.Join(dir, "top", "b"))
+	os.Symlink("..", filepath.Join(dir, "top", "a"))
+
+	var b bytes.Buffer
+	z := &zipper{root: root, zw: zip.NewWriter(&b)}
+	if err := z.addDir("top/a", "a", listed, 2); err != nil {
+		t.Fatal(err)
+	}
+	z.zw.Close()
+	if names := zipNames(t, &b); len(names) != 0 || z.skipped != 1 {
+		t.Errorf("swapped folder: zip holds %q, %d skipped; want nothing, 1 skipped", names, z.skipped)
+	}
+}
+
+// TestZipDepth stops maxZipDepth folders down.
+func TestZipDepth(t *testing.T) {
+	dir := t.TempDir()
+	deep := dir
+	for range maxZipDepth + 6 {
+		deep = filepath.Join(deep, "d")
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	var b bytes.Buffer
+	z := &zipper{root: root, zw: zip.NewWriter(&b)}
+	if err := z.add("d", "d"); err != nil {
+		t.Fatal(err)
+	}
+	z.zw.Close()
+	if names := zipNames(t, &b); len(names) != maxZipDepth || z.skipped != 1 {
+		t.Errorf("zip holds %d folders, %d skipped; want %d, 1 skipped", len(names), z.skipped, maxZipDepth)
+	}
+}

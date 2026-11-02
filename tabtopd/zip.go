@@ -43,15 +43,21 @@ func zipName(dir string, names []string) string {
 
 // zipper writes files from root into a zip. Folders are walked a batch at
 // a time; symlinks to files in root are followed, but not those to
-// folders, so a loop can't make it go on forever. What can't be opened is
-// counted in skipped and left out; a failure part way through a file, or
-// in sending, ends the zip.
+// folders, so a loop can't make it go on forever. A folder in a listing is
+// opened by name, so it's checked to be the same folder once open: one
+// swapped for a symlink in between, to a folder above it say, is left out
+// rather than followed. Folders deeper than maxZipDepth are left out too.
+// What can't be opened is counted in skipped and left out; a failure part
+// way through a file, or in sending, ends the zip.
 type zipper struct {
 	root    *os.Root
 	zw      *zip.Writer
 	files   int
 	skipped int
 }
+
+// maxZipDepth is how many folders deep a zip goes.
+const maxZipDepth = 64
 
 // add adds what's at p in root as name in the zip.
 func (z *zipper) add(p, name string) error {
@@ -61,7 +67,7 @@ func (z *zipper) add(p, name string) error {
 		z.skipped++
 		return nil
 	case st.IsDir():
-		return z.addDir(p, name)
+		return z.addDir(p, name, st, 1)
 	case st.Mode().IsRegular():
 		return z.addFile(p, name, st)
 	}
@@ -91,10 +97,12 @@ func (z *zipper) addFile(p, name string, st fs.FileInfo) error {
 	return nil
 }
 
-func (z *zipper) addDir(p, name string) error {
-	// Its own entry, so an empty folder is kept.
-	if _, err := z.zw.CreateHeader(&zip.FileHeader{Name: name + "/", Method: zip.Store}); err != nil {
-		return err
+// addDir adds the folder at p in root as name, depth folders deep, if it's
+// still the folder want describes.
+func (z *zipper) addDir(p, name string, want fs.FileInfo, depth int) error {
+	if depth > maxZipDepth {
+		z.skipped++
+		return nil
 	}
 	d, err := z.root.Open(p)
 	if err != nil {
@@ -102,6 +110,14 @@ func (z *zipper) addDir(p, name string) error {
 		return nil
 	}
 	defer d.Close()
+	if st, err := d.Stat(); err != nil || !st.IsDir() || !os.SameFile(st, want) {
+		z.skipped++
+		return nil
+	}
+	// Its own entry, so an empty folder is kept.
+	if _, err := z.zw.CreateHeader(&zip.FileHeader{Name: name + "/", Method: zip.Store}); err != nil {
+		return err
+	}
 	for {
 		des, rerr := d.ReadDir(256)
 		for _, de := range des {
@@ -112,7 +128,11 @@ func (z *zipper) addDir(p, name string) error {
 			var err error
 			switch {
 			case de.IsDir():
-				err = z.addDir(cp, cn)
+				if st, serr := de.Info(); serr == nil {
+					err = z.addDir(cp, cn, st, depth+1)
+				} else {
+					z.skipped++
+				}
 			case de.Type().IsRegular():
 				if st, serr := de.Info(); serr == nil {
 					err = z.addFile(cp, cn, st)

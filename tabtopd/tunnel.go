@@ -75,12 +75,15 @@ import (
 )
 
 const (
-	tunnelVersion  = 3
-	helloLogin     = 1
-	helloSession   = 2
-	tunnelLabel    = "tabtop tunnel v3"
-	tunnelTimeout  = 30 * time.Second // for each handshake step and the request
-	tunnelOverhead = 1 + chacha20poly1305.Overhead
+	tunnelVersion = 3
+	helloLogin    = 1
+	helloSession  = 2
+	tunnelLabel   = "tabtop tunnel v3"
+	tunnelTimeout = 30 * time.Second // for the request, once logged in
+	// For each message before that: a browser sends each straight away, so
+	// a connection that's slower is holding a handshake slot for nothing.
+	handshakeTimeout = 10 * time.Second
+	tunnelOverhead   = 1 + chacha20poly1305.Overhead
 	// Read limits: the handshakes' messages are small, the largest being
 	// the login tags (32 bytes per candidate code); then a session tunnel's
 	// request, which is up to 1 MiB for a zip of many files picked by name.
@@ -211,6 +214,11 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 		c.Close(websocket.StatusTryAgainLater, loginBusyMsg)
 		return true
 	}
+	if !g.loginTurn() {
+		log.Printf("login from %s refused: logins are being slowed down after many failed ones", ip)
+		c.Close(websocket.StatusTryAgainLater, "Many logins have failed here lately, so they're being slowed down. Try again in a few seconds.")
+		return
+	}
 	if busy() {
 		return
 	}
@@ -240,7 +248,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 		reply = append(reply, yb...)
 	}
 	endLoginWork()
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	defer cancel()
 	if c.Write(ctx, websocket.MessageBinary, reply) != nil {
 		return
@@ -324,7 +332,7 @@ func (g *server) sessionTunnel(c *websocket.Conn, hello []byte) (*tunnel, string
 	}
 	serverEph := eph.PublicKey().Bytes()
 	keys := sessionKeys(ee, secret, clientEph, serverEph, id)
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	defer cancel()
 	if c.Write(ctx, websocket.MessageBinary, append([]byte{tunnelVersion}, serverEph...)) != nil {
 		return nil, ""
