@@ -330,7 +330,9 @@ type sessionInfo struct {
 
 // sessionsReport lists the live sessions, oldest first, and the logins
 // remembered, newest first, for the session current. The tunnel asking
-// isn't counted as open, so the count is only what else is.
+// isn't counted as open, so the count is only what else is. "seen" is
+// when the warnings were last marked as seen, if they have been: failed
+// logins and addresses from before then don't need looking at again.
 func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -351,11 +353,15 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	if logins == nil {
 		logins = []loginEvent{}
 	}
-	return map[string]any{
+	res := map[string]any{
 		"sessions":     list,
 		"logins":       logins,
 		"idle_minutes": int(g.sessionIdle / time.Minute),
 	}
+	if !g.seen.IsZero() {
+		res["seen"] = g.seen
+	}
+	return res
 }
 
 // parseSessionLimit parses -session-max or -session-idle: a Go duration

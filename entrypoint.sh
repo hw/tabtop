@@ -250,8 +250,10 @@ install -d -m 700 -o "$VNC_USER" "$RUNTIME_DIR"
 
 # exec so that, when backgrounded, $! is runuser itself (which forwards
 # SIGTERM to its child) rather than a bash subshell that would orphan it.
+# It starts in the home directory, so what the desktop launches (the
+# panel's terminal, for one) does too, rather than in /.
 as_user() {
-    exec runuser -u "$VNC_USER" -- env -i \
+    exec runuser -u "$VNC_USER" -- env -i -C "$USER_HOME" \
         HOME="$USER_HOME" USER="$VNC_USER" LOGNAME="$VNC_USER" SHELL=/bin/bash \
         PATH=/usr/local/bin:/usr/bin:/bin LANG="$LANG" DISPLAY=":${DISPLAY_NUM}" \
         XDG_RUNTIME_DIR="$RUNTIME_DIR" TZ="$TZ" \

@@ -790,11 +790,17 @@ function showSecurity() {
     showSessions(box);
 }
 
-// needsAttention says whether the sessions report r has anything to look
-// at: failed logins, or a session used from more than one address. The
-// Security and sessions button is marked if so.
+// needsAttention says whether the sessions report r has anything new to
+// look at: a failed login since this session logged in (those before,
+// the summary shown after logging in told of) or since the warnings were
+// marked as seen, or a session used from another address since they
+// were. The Security and sessions button is marked if so. The times are
+// all the server's, so the browser's clock doesn't matter.
 function needsAttention(r) {
-    const attention = r.logins.some((l) => !l.ok) || r.sessions.some((s) => s.uses.length > 1);
+    const seen = Date.parse(r.seen) || 0;
+    const since = Math.max(seen, Date.parse(r.sessions.find((s) => s.current)?.created) || 0);
+    const attention = r.logins.some((l) => !l.ok && Date.parse(l.time) > since) ||
+        r.sessions.some((s) => s.uses.slice(1).some((u) => Date.parse(u.first) > seen));
     security.classList.toggle("attention", attention);
     security.title = attention ? `${SECURITY_TITLE}: something here needs attention (failed logins, or a session used from another address)`
         : SECURITY_TITLE;
@@ -862,8 +868,21 @@ async function showSessions(box) {
         field("Used from", { className: "name", textContent: l.browser ? `${l.ip}, ${l.browser}` : l.ip }),
         field("Result", { className: l.ok ? "" : "error", textContent: l.ok ? "logged in" : "failed" })));
     const idle = r.idle_minutes ? ` A login with nothing open ends after ${r.idle_minutes} minutes.` : "";
-    needsAttention(r);
+    const attention = needsAttention(r);
+    const markSeen = button("seen", "Mark as seen", async () => {
+        markSeen.disabled = true;
+        try {
+            (await call({ type: "seen" })).close();
+        } catch (err) {
+            const row = statusRow("");
+            row.set(`Not marked as seen: ${err.message}`, true);
+            row.finish();
+        }
+        await showSessions(box);
+    });
     box.replaceChildren(
+        ...(attention ? [el("p", { className: "attention" }, "Something here is new since you last looked: a failed login, "
+            + "or a session used from another address. ", markSeen)] : []),
         el("div", { className: "bar" }, el("h2", { textContent: "Sessions" }), everywhere),
         el("table", { className: "sessions-table" }, el("tr", {}, el("th", { textContent: "Logged in" }), el("th", { textContent: "Used from" }),
             el("th", { className: "num", textContent: "Open" }), el("th", { className: "act" })), ...rows),

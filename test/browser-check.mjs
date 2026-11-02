@@ -1,17 +1,17 @@
-// Checks a running TabTop end to end in headless Chrome, through the
-// pages a person uses: login, desktop, audio, the files page (list, free
-// space, download, preview, upload, replacing on a name clash, pasting,
-// the keyboard, delete, updating itself, going back to the folder last
-// shown, folder upload picked and dropped, folder delete, zips, new
-// folder, rename, move, copying a path, deleting several, cancelling an
-// upload, retrying a failed download, ending another session, which is
-// named by its browser, refusing files that won't fit together, and
-// carrying on with an upload whose connection was lost), a file
-// dropped on the desktop and the notice of one saved there, the desktop's
-// clipboard, the terminal (its font size keys, touch keys, a file dropped
-// on it, and searching its history), reconnecting after the connection is
-// lost on each page, logging in again when warned the login is ending,
-// and logout.
+// Checks a running TabTop end to end in headless Chrome, through the pages
+// a person uses: login, desktop, audio, the files page (list, free space,
+// download, preview, upload, replacing on a name clash, pasting, the
+// keyboard, delete, updating itself, going back to the folder last shown,
+// folder upload picked and dropped, folder delete, zips, new folder,
+// rename, move, copying a path, deleting several, cancelling an upload,
+// retrying a failed download, ending another session, which is named by
+// its browser, marking a failed login's warning as seen, refusing files
+// that won't fit together, and carrying on with an upload whose connection
+// was lost), a file dropped on the desktop and the notice of one saved
+// there, the desktop's clipboard, the terminal (its font size keys, touch
+// keys, a file dropped on it, searching its history, and notifications of
+// bells and notify), reconnecting after the connection is lost on each
+// page, logging in again when warned the login is ending, and logout.
 // browser-check.sh starts the container and Chrome and runs it; it exits
 // non-zero, saying which step failed, if anything doesn't work.
 //
@@ -555,6 +555,14 @@ try {
         await ev(`document.querySelector("#sessions button.end").click()`);
         await answer();
         await waitFor(`/Ended the session/.test(${status}) && !document.querySelector("#sessions button.end")`, "the session to end");
+        // A failed login since this one marks the shield, until it's
+        // marked as seen.
+        await ev(`import("/tabtop/tunnel.js").then((m) => m.login("x000000")).then(() => "", (e) => e.message)`);
+        await cdp("Page.reload");
+        await waitFor(`!!${button}?.classList.contains("attention") && !!document.querySelector("#sessions p.attention button.seen")`,
+            "the warning, with Mark as seen");
+        await ev(`document.querySelector("#sessions p.attention button.seen").click()`);
+        await waitFor(`!${button}.classList.contains("attention") && !document.querySelector("#sessions p.attention")`, "the warning to go");
         await ev(`${button}.click()`);
         await waitFor(`location.hash === "#/" && ${listed}.includes("renamed.txt") && ${button}.getAttribute("aria-pressed") === "false"`,
             "the folder again");
@@ -761,6 +769,39 @@ try {
         if (await ev(`document.getElementById("tty_search").classList.contains("open") || !document.querySelector("#tty_search button.search").offsetWidth`)) {
             throw new Error("the search box didn't fold back into the button");
         }
+    });
+
+    await step("terminal: notifications", async () => {
+        // Headless Chrome shows none, so a stand-in records them; and the
+        // tab counts as in front, so it's made to seem not to be.
+        await ev(`(() => {
+            window.shownNotices = [];
+            window.Notification = class {
+                static permission = "granted";
+                static requestPermission() { return Promise.resolve("granted"); }
+                constructor(title, o) { window.shownNotices.push(title + ": " + o.body); }
+                addEventListener() {}
+                close() {}
+            };
+            document.hasFocus = () => false;
+            return true;
+        })()`);
+        const bell = `document.querySelector(".tabtop-nav button.notify")`;
+        await ev(`${bell}.click()`);
+        await waitFor(`${bell}.getAttribute("aria-pressed") === "true"`, "notifications on");
+        await click(`document.querySelector("canvas")`);
+        await type("notify checked-$((40+2))");
+        await press("Enter");
+        await waitFor(`window.shownNotices.includes("Terminal: checked-42") && document.title.startsWith("🔔")`,
+            "the notification, and the title marked");
+        await type("printf '\\a'");
+        await press("Enter");
+        await waitFor(`window.shownNotices.some((n) => n.endsWith(": The terminal rang its bell."))`, "the bell's notification");
+        // Back in front: the mark goes.
+        await ev(`document.hasFocus = () => true; window.dispatchEvent(new Event("focus")); true`);
+        await waitFor(`!document.title.startsWith("🔔")`, "the title's mark to go");
+        await ev(`${bell}.click()`);
+        await waitFor(`${bell}.getAttribute("aria-pressed") === "false"`, "notifications off");
     });
 
     await step("terminal: touch keys", async () => {

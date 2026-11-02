@@ -20,6 +20,7 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 .tabtop-nav button:hover { color: #e8e8ea; }
 /* Search opens out in place, from the button into the box. */
 #tty_search { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+#tty_search:not(.open) { gap: 0; }  /* the folded box takes no room */
 #tty_search + button { margin-left: 0; }
 #tty_search button { margin-left: 0; }
 #tty_search input { box-sizing: border-box; width: 0; min-width: 0; padding: 1px 0; border: 1px solid transparent; opacity: 0;
@@ -29,9 +30,11 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
     transition: width .15s ease-out, opacity .15s, padding .15s; }
 #tty_search input::-webkit-search-cancel-button { display: none; }  /* ✕ does that */
 #tty_search .step, #tty_search.open button.search { display: none; }
-.tabtop-nav button.search, .tabtop-nav button.logout { display: inline-flex; align-items: center; justify-content: center;
-    padding: 1px 6px; }
-.tabtop-nav button.search svg, .tabtop-nav button.logout svg { display: block; width: 18px; height: 18px; }
+.tabtop-nav button.search, .tabtop-nav button.notify, .tabtop-nav button.logout { display: inline-flex; align-items: center;
+    justify-content: center; padding: 1px 6px; }
+.tabtop-nav button.search svg, .tabtop-nav button.notify svg, .tabtop-nav button.logout svg { display: block; width: 18px; height: 18px; }
+.tabtop-nav button.notify + button { margin-left: 0; }
+.tabtop-nav button.notify[aria-pressed=false] { opacity: .6; }
 #tty_search.open .step { display: inline-block; min-width: 24px; padding: 1px 4px; }
 @media (prefers-reduced-motion: reduce) { #tty_search input { transition: none; } }
 body.touch-keys #terminal { bottom: 48px; }

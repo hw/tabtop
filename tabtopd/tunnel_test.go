@@ -460,6 +460,20 @@ func TestTunnelSessions(t *testing.T) {
 		t.Errorf("version 1: %v", err)
 	}
 
+	// The security warnings, marked as seen, say when.
+	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "sessions"}); reply["seen"] != nil {
+		t.Errorf("seen before marking: %v", reply["seen"])
+	}
+	before := time.Now()
+	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "seen"}); reply["ok"] != true {
+		t.Fatalf("seen: %v", reply)
+	}
+	reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "sessions"})
+	text, _ := reply["seen"].(string)
+	if seen, err := time.Parse(time.RFC3339Nano, text); err != nil || seen.Before(before) {
+		t.Errorf("seen: %v, %v", reply["seen"], err)
+	}
+
 	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "logout"}); reply["ok"] != true {
 		t.Fatalf("logout: %v", reply)
 	}

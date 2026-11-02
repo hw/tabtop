@@ -130,7 +130,7 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 
 // tunnelRequest is a session tunnel's first message: what it's for.
 type tunnelRequest struct {
-	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, tty, list, file, zip, upload, mkdir, rename, move, delete, watch, changes or audio
+	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, seen, tty, list, file, zip, upload, mkdir, rename, move, delete, watch, changes or audio
 	Path  string   `json:"path,omitempty"`
 	Name  string   `json:"name,omitempty"`  // upload, mkdir: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
 	Size  int64    `json:"size,omitempty"`  // upload: its size
@@ -262,6 +262,16 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	case "sessions":
 		reply(g.sessionsReport(session, t))
+		t.Close(websocket.StatusNormalClosure, "")
+
+	case "seen":
+		// The files page's security warnings, marked as seen: what's
+		// listed now no longer marks it (see sessionsReport).
+		g.mu.Lock()
+		g.seen = time.Now()
+		g.mu.Unlock()
+		log.Printf("security warnings marked as seen from %s", ip)
+		reply(nil)
 		t.Close(websocket.StatusNormalClosure, "")
 
 	case "tty":

@@ -1,0 +1,21 @@
+#!/bin/sh
+# notify [message]: shows message (by default "Done") as a notification
+# in the browser's terminal tab, for when a long command finishes, as in
+# "make; notify built". The tab only shows it while it isn't in front, as
+# a 🔔 in its title, and as a browser notification if they're turned on
+# there (the bell in the bar). It sends OSC 777, wrapped for tmux's
+# passthrough when in tmux, to the terminal it runs in.
+set -eu
+
+# Control characters would end the sequence early; ";" is fine in the
+# text, which comes last.
+msg=$(printf '%s' "${*:-Done}" | tr -d '\000-\037\177' | cut -c1-500)
+seq=$(printf '\033]777;notify;Terminal;%s\007' "$msg")
+if [ -n "${TMUX:-}" ]; then
+    # Inside tmux's passthrough, each ESC is doubled.
+    seq=$(printf '\033Ptmux;%s\033\\' "$(printf '%s' "$seq" | sed 's/\x1b/\x1b\x1b/g')")
+fi
+# To the terminal, so it works in a pipeline or with output redirected.
+if ! printf '%s' "$seq" 2>/dev/null >/dev/tty; then
+    printf '%s' "$seq"
+fi

@@ -190,6 +190,7 @@ COPY --from=terminal /terminal /opt/terminal
 COPY --from=noble /noble /opt/noble
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
+COPY --chmod=755 config/notify /usr/local/bin/notify
 COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 
 # VNC_USER: the desktop's Linux user, and the account name shown in the
@@ -256,9 +257,12 @@ ENV VNC_USER=user \
     CHROMIUM_NO_SANDBOX=1
 
 # tmux settings for the browser terminal (users' ~/.tmux.conf still applies
-# after this): the mouse wheel scrolls tmux's history, and colours are 24-bit.
+# after this): the mouse wheel scrolls tmux's history, colours are 24-bit,
+# and programs can pass sequences through to the browser's terminal, as
+# notify does for its notifications (tmux keeps those to itself otherwise).
 RUN printf '%s\n' \
         'set -g mouse on' \
+        'set -g allow-passthrough on' \
         'set -g default-terminal tmux-256color' \
         'set -as terminal-features ",xterm-256color:RGB"' \
         > /etc/tmux.conf

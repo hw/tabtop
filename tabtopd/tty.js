@@ -9,7 +9,9 @@
 // uploaded into ~/Downloads, as on the files page (see drop.js), and their
 // paths typed at the cursor. Ctrl+click (⌘+click on a Mac) opens a web
 // address shown in the terminal, and Ctrl+Shift+F searches tmux's history
-// (see Search).
+// (see Search). A bell, or a program's notification, while the tab isn't
+// in front marks its title, and shows a browser notification if they're
+// turned on (see Notices).
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
@@ -19,8 +21,8 @@ import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
 import { folderInfo, makeFolder, setLoginTitle, shellPath, uploadFile } from "../tabtop/requests.js";
 
-// Links to the desktop and the files page, Search, and Log out, all
-// icons, in a bar above the terminal.
+// Links to the desktop and the files page, Search, notifications, and Log
+// out, all icons, in a bar above the terminal.
 nameTab("terminal");
 document.body.prepend(navBar("terminal", { logOutIcon: true }));
 warnExpiry();
@@ -34,14 +36,22 @@ window.open = (url, ...rest) => (/^(https?|ftp):\/\//i.test(String(url)) ? openW
 // The most a program may copy at once, in base64 bytes.
 const maxCopy = 1 << 20;
 
-// Osc52 lets programs in the terminal (tmux's copy mode, ssh-yank.sh) copy
-// to the browser's clipboard with OSC 52, which ghostty-web doesn't
-// implement: it watches the output for ESC ] 52 ; <selection> ; <base64>,
-// ended by BEL or ESC \, across message boundaries. Requests to read the
-// clipboard ("?") get nothing back, so programs can't see what the viewer
-// copied elsewhere.
-class Osc52 {
-    constructor() {
+// Osc watches the output, across message boundaries, for what ghostty-web
+// doesn't do itself:
+//   - OSC 52 (ESC ] 52 ; <selection> ; <base64>, ended by BEL or ESC \),
+//     which lets programs in the terminal (tmux's copy mode, ssh-yank.sh)
+//     copy to the browser's clipboard. Requests to read the clipboard ("?")
+//     get nothing back, so programs can't see what the viewer copied
+//     elsewhere.
+//   - A bell (BEL outside an OSC, where it ends one), passed to onBell.
+//   - A notification, OSC 9 ; <text> (iTerm2's) or OSC 777 ; notify ;
+//     <title> ; <text> (urxvt's, as the notify command sends), passed to
+//     onNotify(title, text). tmux only passes these on wrapped for its
+//     passthrough, as notify does.
+class Osc {
+    constructor(onBell, onNotify) {
+        this.onBell = onBell;
+        this.onNotify = onNotify;
         this.state = 0;  // 0 text, 1 after ESC, 2 in an OSC, 3 ESC in an OSC
         this.buf = [];
     }
@@ -52,6 +62,8 @@ class Osc52 {
             case 0:
                 if (b === 0x1b) {
                     this.state = 1;
+                } else if (b === 0x07) {
+                    this.onBell();
                 }
                 break;
             case 1:
@@ -83,6 +95,10 @@ class Osc52 {
 
     end() {
         this.state = 0;
+        if (this.buf[0] === 0x39 || this.buf[0] === 0x37) {  // "9", "7"
+            this.notification();
+            return;
+        }
         // 52;<selection>;<data>, in ASCII.
         if (this.buf[0] !== 0x35 || this.buf[1] !== 0x32 || this.buf[2] !== 0x3b) {
             return;
@@ -97,6 +113,18 @@ class Osc52 {
             navigator.clipboard?.writeText(text).catch(() => {});
         } catch {
             // Not base64: ignore it.
+        }
+    }
+
+    // notification passes on OSC 9 or 777's text, in UTF-8. OSC 9 followed
+    // by a number and ";" is ConEmu's (progress and such), not a message.
+    notification() {
+        const s = new TextDecoder().decode(Uint8Array.from(this.buf.slice(0, 4096)));
+        let m = /^9;(.*)$/s.exec(s);
+        if (m && !/^\d+(;|$)/.test(m[1])) {
+            this.onNotify("", m[1]);
+        } else if ((m = /^777;notify;([^;]*);(.*)$/s.exec(s))) {
+            this.onNotify(m[1], m[2]);
         }
     }
 }
@@ -255,7 +283,7 @@ document.addEventListener("keydown", (e) => {
         setFontSize(e.key === "0" ? defaultFontSize : fontSize + (e.key === "-" ? -1 : 1));
     }
 }, true);
-const osc52 = new Osc52();
+const osc = new Osc(() => notices.bell(), (title, text) => notices.notify(title, text));
 new MouseReporter(term, (bytes) => send(bytes));
 
 const encoder = new TextEncoder();
@@ -289,7 +317,7 @@ function connect() {
         };
         s.onmessage = (e) => {
             const bytes = new Uint8Array(e.data);
-            osc52.scan(bytes);
+            osc.scan(bytes);
             term.write(bytes);
         };
         s.onclose = (e) => {
@@ -396,9 +424,7 @@ term.onData((data) => {
     }
 });
 term.onResize(sendSize);
-term.onTitleChange((title) => {
-    document.title = title || "Terminal";
-});
+term.onTitleChange((title) => notices.title(title || "Terminal"));
 
 // Search -----------------------------------------------------------------
 
@@ -475,6 +501,100 @@ const search = (() => {
         }
     }, true);
     return { open };
+})();
+
+// Notices ----------------------------------------------------------------
+
+// A bell, or a program's notification (see Osc), while the tab isn't in
+// front marks its title with 🔔 until it is. With notifications turned on
+// (the bell in the bar, kept in this browser), it's also shown as one,
+// bells at most one every few seconds. They need HTTPS or localhost, and
+// the browser's permission, asked for when they're turned on; without
+// those, the button isn't shown, and only the title says so.
+const notices = (() => {
+    const KEY = "tabtop-tty-notify";
+    const supported = window.isSecureContext && "Notification" in window;
+    let base = "Terminal";
+    let marked = false;
+    let lastBell = 0;
+    let on = false;
+    try {
+        on = supported && localStorage.getItem(KEY) === "1";
+    } catch {
+        // Off, then.
+    }
+    const away = () => document.visibilityState !== "visible" || !document.hasFocus();
+    const draw = () => {
+        document.title = marked ? `🔔 ${base}` : base;
+    };
+    const back = () => {
+        if (marked && !away()) {
+            marked = false;
+            draw();
+        }
+    };
+    document.addEventListener("visibilitychange", back);
+    addEventListener("focus", back);
+    const show = (title, text) => {
+        if (!away()) {
+            return;
+        }
+        marked = true;
+        draw();
+        if (!on || Notification.permission !== "granted") {
+            return;
+        }
+        try {
+            const n = new Notification(title || base, { body: text, tag: "tabtop-terminal" });
+            n.addEventListener("click", () => {
+                window.focus();
+                term.focus();
+                n.close();
+            });
+        } catch {
+            // The browser wouldn't (some only allow them from a service worker).
+        }
+    };
+
+    const button = Object.assign(document.createElement("button"), { type: "button", className: "notify" });
+    const look = () => {
+        const denied = supported && Notification.permission === "denied";
+        button.innerHTML = iconSVG(on && !denied ? "bell" : "bell-off");
+        button.setAttribute("aria-pressed", String(on && !denied));
+        button.title = denied ? "Notifications are blocked for this site in the browser's settings"
+            : on ? "Notifications for bells and the notify command: on" : "Notifications for bells and the notify command: off";
+        button.setAttribute("aria-label", button.title);
+    };
+    button.addEventListener("click", async () => {
+        if (!on && Notification.permission === "default") {
+            await Notification.requestPermission().catch(() => {});
+        }
+        on = !on && Notification.permission === "granted";
+        try {
+            localStorage.setItem(KEY, on ? "1" : "0");
+        } catch {
+            // Just for this visit, then.
+        }
+        look();
+    });
+    if (supported) {
+        look();
+        document.querySelector(".tabtop-nav > button")?.before(button);
+    }
+    return {
+        bell: () => {
+            const now = Date.now();
+            if (now - lastBell > 5000) {
+                lastBell = now;
+                show("", "The terminal rang its bell.");
+            }
+        },
+        notify: (title, text) => show(title, text.slice(0, 500)),
+        title: (t) => {
+            base = t;
+            draw();
+        },
+    };
 })();
 
 // Dropped files ----------------------------------------------------------

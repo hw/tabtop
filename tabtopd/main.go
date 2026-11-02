@@ -96,6 +96,7 @@ type server struct {
 	pending  map[string]int            // client IP -> logins awaiting their result
 	partials map[string]*partialUpload // id -> an upload cut off, kept to resume (see keepPartial)
 	uploads  map[string]*activeUpload  // id -> an upload going on (see claimPartial)
+	seen     time.Time                 // when the files page's security warnings were last marked as seen
 
 	failuresSwept time.Time // when failures last lost its expired IPs
 
@@ -726,6 +727,10 @@ p.upload button { font: inherit; }
 p.space { margin-top: -.25rem; }
 #sessions button.end { font: inherit; font-size: 13px; }
 #sessions h2 { font-size: 1rem; margin-top: 1.5rem; }
+#sessions p.attention { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .6rem .8rem;
+       color: #c5221f; border: 1px solid currentColor; border-radius: 8px; }
+#sessions p.attention button { color: var(--fg); }
+@media (prefers-color-scheme: dark) { #sessions p.attention { color: #f28b82; } }
 h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .1rem; word-break: normal; overflow-wrap: anywhere;
        margin: .75rem 0 .5rem; font-size: 15px; font-weight: 500; }
 .tabtop-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; padding-bottom: .5rem;

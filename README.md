@@ -603,9 +603,11 @@ How long a login lasts, and how to notice and end one you didn't make:
   another address.
 - **The files page** lists the live sessions under **Security and
   sessions**, a shield by Log out that shows them in place of the folder
-  (and goes back to it when pressed again); it turns red, with a red dot,
-  when there were failed logins or a session was used from another
-  address. It shows
+  (and goes back to it when pressed again). It turns red, with a red dot,
+  for something new: a failed login since you logged in (those before
+  are in the summary shown after logging in), or a session used from
+  another address. **Mark as seen** clears it until something else
+  happens; the gateway keeps that, in memory, for every session. It shows
   when each logged in, with
   which browser (such as `Chrome on macOS`, as the browser describes
   itself, so it tells logins apart but proves nothing), the
@@ -826,6 +828,16 @@ emulator compiled to WebAssembly.
   back into the button and leaves tmux's copy mode. It searches the window shown, and every tab on the
   terminal sees the same search, since they share the tmux session. On a
   touch screen, **Find** in the strip of keys opens it.
+- **Notifications:** a bell, or a program's notification (OSC 9, or
+  OSC 777 `notify`), while the terminal's tab isn't in front marks its
+  title with 🔔 until you come back. The bell icon in the bar also shows
+  them as browser notifications (it asks the browser's permission the
+  first time; HTTPS or `localhost` only). To hear when a long command
+  finishes, end it with `notify`, as in `make; notify built` (a message
+  of up to 500 characters; "Done" by default), or with `tput bel`.
+  Bells notify at most every 5 seconds. tmux passes notifications on only
+  wrapped for its passthrough, which `/etc/tmux.conf` turns on and
+  `notify` does.
 - **Clipboard:** text copied in tmux, or sent with an OSC 52 escape
   sequence (as `~/.local/bin/ssh-yank.sh` does), goes to your browser's
   clipboard, up to 1 MB at a time. ghostty-web doesn't handle OSC 52, so the
@@ -1023,7 +1035,8 @@ and the page go back to the folder it last showed, drops a file on the
 desktop and has the desktop announce one saved there, passes text both
 ways between noVNC and the clipboard, runs commands in the terminal (with
 its font size keys and touch keys), drops a file on it and searches its
-history, retries a failed download, ends another session (named by its
+history, retries a failed download, marks a failed login as seen, ends
+another session (named by its
 browser), has files too big together refused, carries on with an upload
 whose connection was cut, cuts the
 connection on each page to see it come back, logs in again when warned

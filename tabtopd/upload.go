@@ -230,8 +230,8 @@ const (
 type partialUpload struct {
 	dir, tmp   string
 	size, held int64
-	kept     time.Time
-	timer    *time.Timer
+	kept       time.Time
+	timer      *time.Timer
 }
 
 // keepPartial keeps u, an upload of a file size bytes long cut off by the
