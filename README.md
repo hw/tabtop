@@ -26,8 +26,7 @@ other two pages a bar at the top with an icon for each page, drawn like
 noVNC's own (hover over one for its name), the page you're on
 highlighted. Each opens in its own tab, and a link
 goes back to the tab already showing that page where the browser allows
-(as for tabs opened from each other). Each also has **Log out** (an icon
-on the files page), which
+(as for tabs opened from each other). Each also has a **Log out** icon, which
 logs out of all three.
 
 If the connection to the server is lost, as when the network drops or the
@@ -603,9 +602,10 @@ How long a login lasts, and how to notice and end one you didn't make:
   dismissed when there were failed attempts or the previous login came from
   another address.
 - **The files page** lists the live sessions under **Security and
-  sessions**, a button by Log out that shows them in place of the folder
-  (and goes back to it when pressed again); it's marked in red when there
-  were failed logins or a session was used from another address. It shows
+  sessions**, a shield by Log out that shows them in place of the folder
+  (and goes back to it when pressed again); it turns red, with a red dot,
+  when there were failed logins or a session was used from another
+  address. It shows
   when each logged in, with
   which browser (such as `Chrome on macOS`, as the browser describes
   itself, so it tells logins apart but proves nothing), the
@@ -644,8 +644,9 @@ downloaded at `http://<host>:6080/downloads/`:
 - **In the page only:** the page lists, fetches, uploads, renames and
   deletes files through the [encrypted tunnel](#encryption), so it needs
   JavaScript, and files have no plain URLs to give to `curl` or `wget`.
-- **Finding your way:** the heading shows the folder's path, each folder
-  in it a link back up. The box above the list (or **/** from anywhere on
+- **Finding your way:** the line above the list shows the folder's path,
+  as the terminal would (`~/Downloads/photos/2024`), each folder in it a
+  link back up. The box above the list (or **/** from anywhere on
   the page) narrows it to names with what you type in them; **Select all**
   then picks only those shown. Click **Name**, **Size** or **Modified** to sort
   by it, and again to turn the order round; folders stay first, and the
@@ -816,8 +817,8 @@ emulator compiled to WebAssembly.
   the terminal in a new tab, even while tmux has the mouse. Only `http`,
   `https` and `ftp` addresses open, so a program can't show a link that
   runs a script on the site.
-- **Search:** **Search** in the bar at the top, or Ctrl+Shift+F, opens
-  out in place into a search box (on a phone, across the bar's second
+- **Search:** the magnifying glass in the bar at the top, or
+  Ctrl+Shift+F, opens out in place into a search box (on a phone, across the bar's second
   row). Enter finds the text in tmux's history, from the
   newest output back, and again for older matches; Shift+Enter goes to
   newer ones, and **↑** and **↓** do the same. tmux marks the match and

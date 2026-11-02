@@ -19,7 +19,7 @@
 import * as tunnel from "./tunnel.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askFolder, askName, askYes, rowMenu, statusRow } from "./ui.js";
-import { nameTab, navBar } from "./nav.js";
+import { iconSVG, nameTab, navBar } from "./nav.js";
 import { call, folderInfo, makeFolder, shellPath, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip, humanBytes } from "./download.js";
 import { preview, previewable } from "./preview.js";
@@ -41,7 +41,10 @@ nameTab("files");
 const SECURITY = "#sessions";
 const onSecurity = () => location.hash === SECURITY;
 let lastDir = "";
-const security = el("button", { type: "button", className: "security", textContent: "Security and sessions" });
+const SECURITY_TITLE = "Security and sessions";
+const security = el("button", { type: "button", className: "security", title: SECURITY_TITLE });
+security.setAttribute("aria-label", SECURITY_TITLE);
+security.innerHTML = iconSVG("security");
 security.addEventListener("click", () => {
     location.hash = onSecurity() ? dirHash(lastDir) : SECURITY;
 });
@@ -122,7 +125,7 @@ async function show({ refresh = false } = {}) {
         }
         stopChanges();
         shownDir = null;
-        page.replaceChildren(el("h1", { textContent: "Downloads" }), el("p", { className: "error", textContent: err.message }),
+        page.replaceChildren(el("h1", { className: "crumbs", textContent: "~/Downloads" }), el("p", { className: "error", textContent: err.message }),
             el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
         return true;
     }
@@ -482,7 +485,8 @@ function diskSpace(free, total) {
 function breadcrumbs(dir) {
     const parts = dir ? dir.split("/") : [];
     const h1 = el("h1", { className: "crumbs" });
-    const names = ["Downloads", ...parts];
+    // As a path, the way the terminal shows it: ~/Downloads/a/b.
+    const names = ["~/Downloads", ...parts];
     names.forEach((name, i) => {
         if (i) {
             h1.append(el("span", { className: "sep", textContent: "/" }));
@@ -792,7 +796,9 @@ function showSecurity() {
 function needsAttention(r) {
     const attention = r.logins.some((l) => !l.ok) || r.sessions.some((s) => s.uses.length > 1);
     security.classList.toggle("attention", attention);
-    security.title = attention ? "Something here needs attention: failed logins, or a session used from another address" : "";
+    security.title = attention ? `${SECURITY_TITLE}: something here needs attention (failed logins, or a session used from another address)`
+        : SECURITY_TITLE;
+    security.setAttribute("aria-label", security.title);
     return attention;
 }
 

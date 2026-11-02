@@ -29,6 +29,9 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
     transition: width .15s ease-out, opacity .15s, padding .15s; }
 #tty_search input::-webkit-search-cancel-button { display: none; }  /* ✕ does that */
 #tty_search .step, #tty_search.open button.search { display: none; }
+.tabtop-nav button.search, .tabtop-nav button.logout { display: inline-flex; align-items: center; justify-content: center;
+    padding: 1px 6px; }
+.tabtop-nav button.search svg, .tabtop-nav button.logout svg { display: block; width: 18px; height: 18px; }
 #tty_search.open .step { display: inline-block; min-width: 24px; padding: 1px 4px; }
 @media (prefers-reduced-motion: reduce) { #tty_search input { transition: none; } }
 body.touch-keys #terminal { bottom: 48px; }

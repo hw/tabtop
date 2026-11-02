@@ -12,14 +12,18 @@ import { forgetSession, request } from "./tunnel.js";
 
 const root = new URL("../", import.meta.url);  // the site's root, under any base path
 
-// Icons for the pages and logging out, drawn the way noVNC draws its
-// control bar's: 25 by 25, in round strokes 2 wide. novnc.js puts them in
-// that bar; navBar in the bar at the top of the other pages.
+// Icons for the pages, logging out, searching and security, drawn the way
+// noVNC draws its control bar's: 25 by 25, in round strokes 2 wide.
+// novnc.js puts them in that bar; navBar in the bar at the top of the
+// other pages, tty.js on its Search button, and files.js on its Security
+// and sessions button.
 export const icons = {
     desktop: '<rect x="2.5" y="4" width="20" height="13.5" rx="1.5"/><path d="M8.5 21h8m-4-3.5v3.5"/>',
     terminal: '<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>',
     files: '<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>',
     logout: '<path d="M10 4.5h-5v16h5m4-12l4.5 4-4.5 4m4.5-4h-10"/>',
+    search: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/>',
+    security: '<path d="M12.5 3l7.5 3v5.5c0 4.6-3.2 8.6-7.5 10-4.3-1.4-7.5-5.4-7.5-10v-5.5z"/><path d="M9.5 12.5l2.2 2.2 4-4"/>',
 };
 
 // iconSVG draws the icon id in color (by default, the text's).

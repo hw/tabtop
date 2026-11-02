@@ -420,7 +420,7 @@ try {
         await open("downloads/#/up-folder/sub/", `${listed}.sort().join() === "../,b.txt,deeper/"`, "up-folder/sub/ to hold deeper/ and b.txt");
         // The heading leads back up.
         const crumbs = await ev(`[...document.querySelectorAll("h1.crumbs a")].map((a) => a.textContent).join()`);
-        if (crumbs !== "Downloads,up-folder") {
+        if (crumbs !== "~/Downloads,up-folder") {
             throw new Error(`the heading links to ${crumbs}`);
         }
         await ev(`[...document.querySelectorAll("h1.crumbs a")].find((a) => a.textContent === "up-folder").click()`);

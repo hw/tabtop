@@ -726,8 +726,8 @@ p.upload button { font: inherit; }
 p.space { margin-top: -.25rem; }
 #sessions button.end { font: inherit; font-size: 13px; }
 #sessions h2 { font-size: 1rem; margin-top: 1.5rem; }
-h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4rem; word-break: normal; overflow-wrap: anywhere;
-       margin-top: .75rem; }
+h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .1rem; word-break: normal; overflow-wrap: anywhere;
+       margin: .75rem 0 .5rem; font-size: 15px; font-weight: 500; }
 .tabtop-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; padding-bottom: .5rem;
        border-bottom: 1px solid var(--line); font-size: 14px; }
 .tabtop-nav .page { display: inline-flex; align-items: center; justify-content: center; padding: 3px; border-radius: 6px;
@@ -737,12 +737,15 @@ h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4
 .tabtop-nav .page[aria-current] { color: var(--fg); background: var(--line); }
 .tabtop-nav button { margin-left: auto; font: inherit; }
 .tabtop-nav button + button { margin-left: 0; }
-.tabtop-nav button.security.attention { color: #c5221f; border-color: currentColor; }
-.tabtop-nav button.security.attention::after { content: " •"; }
-@media (prefers-color-scheme: dark) { .tabtop-nav button.security.attention { color: #f28b82; } }
+.tabtop-nav button.security.attention { position: relative; color: #c5221f; border-color: currentColor; }
+.tabtop-nav button.security.attention::after { content: ""; position: absolute; top: -4px; right: -4px; width: 9px; height: 9px;
+       border-radius: 50%; background: #c5221f; border: 2px solid var(--bg); }
+@media (prefers-color-scheme: dark) { .tabtop-nav button.security.attention { color: #f28b82; }
+       .tabtop-nav button.security.attention::after { background: #f28b82; } }
 .tabtop-nav button.security[aria-pressed=true] { color: var(--bg); background: var(--fg); border-color: var(--fg); }
-.tabtop-nav button.logout { display: inline-flex; align-items: center; justify-content: center; padding: 3px 6px; }
-.tabtop-nav button.logout svg { display: block; width: 22px; height: 22px; }
+.tabtop-nav button.logout, .tabtop-nav button.security { display: inline-flex; align-items: center; justify-content: center;
+       padding: 3px 6px; }
+.tabtop-nav button.logout svg, .tabtop-nav button.security svg { display: block; width: 22px; height: 22px; }
 .find { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .find input { font: inherit; flex: 0 1 20rem; min-width: 0; padding: .3rem .5rem; color: inherit; background: var(--bg);
        border: 1px solid var(--line); border-radius: 6px; }

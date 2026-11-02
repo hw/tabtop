@@ -13,16 +13,16 @@
 
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
-import { nameTab, navBar } from "../tabtop/nav.js";
+import { iconSVG, nameTab, navBar } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
 import { folderInfo, makeFolder, setLoginTitle, shellPath, uploadFile } from "../tabtop/requests.js";
 
-// Links to the desktop and the files page, a Search button, and Log out,
-// in a bar above the terminal.
+// Links to the desktop and the files page, Search, and Log out, all
+// icons, in a bar above the terminal.
 nameTab("terminal");
-document.body.prepend(navBar("terminal"));
+document.body.prepend(navBar("terminal", { logOutIcon: true }));
 warnExpiry();
 
 // ghostty-web opens links in the terminal, on Ctrl+click, with
@@ -461,8 +461,9 @@ const search = (() => {
         input.focus();
         input.select();
     };
-    const find = button("Search", "Search the history (Ctrl+Shift+F)", open);
+    const find = button("", "Search the history (Ctrl+Shift+F)", open);
     find.className = "search";
+    find.innerHTML = iconSVG("search");
     bar.prepend(find);
     document.querySelector(".tabtop-nav > button")?.before(bar);
     // Before ghostty-web sees it, as the font size keys.
