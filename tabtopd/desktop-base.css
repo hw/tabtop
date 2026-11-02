@@ -1,0 +1,2 @@
+#drop_overlay, #transfers { --fg: #e8e8ea; --bg: #1c1c1e; --line: #3a3a3c; --raised: #2c2c2e; --accent: #8ab4f8;
+       font: 14px/1.5 system-ui, sans-serif; color: var(--fg); text-align: left; }

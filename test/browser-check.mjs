@@ -618,7 +618,7 @@ try {
         await ev(`${failedRow}.querySelector("button.retry").click()`);
         await waitFor(`/resume.bin: uploaded/.test(${status})`, "the upload, carried on");
         const log = execFileSync("sh", ["-c", 'docker logs "$1" 2>&1', "sh", container], { encoding: "utf8", maxBuffer: 64 << 20 });
-        const resumed = /upload of resume\.bin resumed at ([\d.]+ \w+)/.exec(log);
+        const resumed = /upload of "resume\.bin" resumed at ([\d.]+ \w+)/.exec(log);
         if (!resumed) {
             throw new Error("it was sent again from the start");
         }

@@ -38,6 +38,8 @@ ended session asks for a login.
 Text copied on the desktop goes straight to your computer's clipboard, and
 text copied on your computer goes to the desktop's when you switch back to
 its tab, so **Ctrl+V** works both ways without noVNC's clipboard panel.
+When the desktop copies something to your clipboard, the page says so for
+a few seconds, with how it starts, so nothing lands there unnoticed.
 Browsers only allow this over HTTPS or on `localhost`. Sending your
 clipboard to the desktop needs the browser to let the page read it: Chrome
 and Edge ask once, the first time you click on the desktop; Firefox and
@@ -68,6 +70,8 @@ one, which shows a VNC server elsewhere, such as the host's own desktop
   clipboard and sound
 - [Running tabtop-lite with the host's desktop](docs/lite.md): the host's
   VNC server, sound and an SSH terminal
+- [Reverse proxy](docs/reverse-proxy.md): HTTPS in front of TabTop, with
+  nginx examples at the root and under `WEB_BASE_PATH`
 - [Environment variables](docs/environment.md): every setting in detail
 - [Encryption and security](docs/encryption.md): the end-to-end encrypted
   tunnel, sessions and security notes
@@ -127,7 +131,7 @@ For managed platforms, configure these environment variables before the
 first deployment:
 
 ```text
-VNC_USER=user
+VNC_USER=<preferred user name>
 VNC_TOTP_SECRET=<a fixed random string>
 ```
 
@@ -147,8 +151,11 @@ at least 32 random characters.
   [Secrets that aren't Base32](docs/environment.md#secrets-that-arent-base32).
 
 The platform should route its HTTPS address to container port `6080` and
-forward WebSocket connections. A volume mounted at `/home/<VNC_USER>` is
-optional and only retains browser data, downloads and desktop preferences.
+forward WebSocket connections. For a reverse proxy you run yourself, see
+[Reverse proxy](docs/reverse-proxy.md) (nginx at the site root or under
+`WEB_BASE_PATH`). Set `WEB_TRUSTED_PROXIES` so failed-login limits use each
+visitor's real address. A volume mounted at `/home/<VNC_USER>` is optional
+and only retains browser data, downloads and desktop preferences.
 
 ## Environment variables
 
@@ -159,13 +166,13 @@ optional and only retains browser data, downloads and desktop preferences.
 | [`VNC_TOTP_SECRET`](docs/environment.md#vnc_totp_secret) | `JBSWY3DPEHPK3PXP` (public; see [Default TOTP secret](docs/environment.md#default-totp-secret)) | TOTP secret: Base32 is used as it is; any other string has a secret derived from it, printed at startup. Always set it for a site others can reach: the default is a well-known example secret, used with a warning in the log. |
 | [`VNC_TOTP_DIGITS`](docs/environment.md#vnc_totp_digits) | `6` | Code length: `6`, `7` or `8`. |
 | [`VNC_GEOMETRY`](docs/environment.md#vnc_geometry-and-vnc_resize) | `1600x900` | Desktop size before the first browser connects. |
-| [`VNC_DEPTH`](docs/environment.md#vnc_depth) | `24` | Colour depth in bits. |
+| [`VNC_DEPTH`](docs/environment.md#vnc_depth) | `24` | Colour depth in bits: `16`, `24` or `32`. |
 | [`VNC_RESIZE`](docs/environment.md#vnc_geometry-and-vnc_resize) | `remote` | Default way noVNC fits the desktop to the browser window: `remote`, `scale` or `off`. |
 | [`VNC_UPSTREAM_PASSWORD`](docs/environment.md#vnc_upstream_password) | *(empty)* | With `VNC_ADDR`, the password to give that VNC server, so noVNC doesn't ask for it. The server's own, never TabTop's login password. |
 | [`VNC_ADDR`](docs/environment.md#vnc_addr) | *(empty)* | An RFB (VNC) server to show instead of the container's own desktop, as `host:port`, `[IPv6]:port` or `unix:/path`. See [`VNC_ADDR`](docs/environment.md#vnc_addr). |
 | [`VNC_X509`](docs/environment.md#vnc_x509) | `0` | `1` encrypts the connection to the VNC server at `VNC_ADDR` with TLS (VeNCrypt X509Vnc, or X509Plain with `VNC_UPSTREAM_USERNAME`), checking its certificate, with no unencrypted fallback. |
 | [`VNC_UPSTREAM_USERNAME`](docs/environment.md#vnc_upstream_username) | *(empty)* | With `VNC_X509=1`, a username for the VNC server, which selects X509Plain: a Unix account on its machine, whose password is `VNC_UPSTREAM_PASSWORD`. |
-| [`VNC_CA_FILE`](docs/environment.md#vnc_ca_file) | *(empty)* | With `VNC_X509=1`, PEM certificates to trust beside the system's, such as the VNC server's self-signed one, mounted into the container. |
+| [`VNC_CA_FILE`](docs/environment.md#vnc_ca_file) | *(empty)* | With `VNC_X509=1`, the PEM certificates to trust instead of the system's, such as the VNC server's self-signed one, mounted into the container. |
 | [`VNC_SERVER_NAME`](docs/environment.md#vnc_server_name) | *(the host in `VNC_ADDR`)* | With `VNC_X509=1`, the name the VNC server's certificate must carry; required for a Unix socket. |
 | [`WEB_PORT`](docs/environment.md#web_port) | `6080` | Port the gateway listens on inside the container. |
 | [`WEB_BASE_PATH`](docs/environment.md#web_base_path) | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
@@ -183,7 +190,8 @@ optional and only retains browser data, downloads and desktop preferences.
 | [`CHROMIUM_NO_SANDBOX`](docs/environment.md#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 | [`TZ`](docs/environment.md#tz) | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
 
-The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`, `VNC_ADDR`,
+The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
+`VNC_RESIZE`, `VNC_ADDR`, `WEB_PORT`,
 `VNC_X509` (or what it needs; see [`VNC_X509`](docs/environment.md#vnc_x509)),
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,

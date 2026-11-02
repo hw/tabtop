@@ -17,11 +17,15 @@ func TestWatchDownloads(t *testing.T) {
 	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
 	stop := make(chan struct{})
 	got := make(chan string, 16)
+	source, err := openDirectoryEvents(dir, downloadWatchMask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(source.Close)
 	done := make(chan error, 1)
 	go func() {
-		done <- watchDownloads(dir, stop, func(name string, size int64) { got <- name })
+		done <- monitorDownloads(dir, source, stop, func(name string, size int64) bool { got <- name; return true })
 	}()
-	time.Sleep(100 * time.Millisecond) // for the watch to start
 
 	write := func(name, data string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
@@ -94,13 +98,13 @@ func TestMoveEntry(t *testing.T) {
 	}
 	defer root.Close()
 
-	if err := moveEntry(root, "f.txt", "dest"); err != nil || !exists(filepath.Join(dir, "dest", "f.txt")) {
+	if err := (&downloadStore{root: root}).moveEntry("f.txt", "dest"); err != nil || !exists(filepath.Join(dir, "dest", "f.txt")) {
 		t.Errorf("file: %v", err)
 	}
-	if err := moveEntry(root, "dest/f.txt", ""); err != nil || !exists(filepath.Join(dir, "f.txt")) {
+	if err := (&downloadStore{root: root}).moveEntry("dest/f.txt", ""); err != nil || !exists(filepath.Join(dir, "f.txt")) {
 		t.Errorf("back up: %v", err)
 	}
-	if err := moveEntry(root, "a", "dest"); err != nil || !exists(filepath.Join(dir, "dest", "a", "b")) {
+	if err := (&downloadStore{root: root}).moveEntry("a", "dest"); err != nil || !exists(filepath.Join(dir, "dest", "a", "b")) {
 		t.Errorf("folder: %v", err)
 	}
 	for _, c := range []struct {
@@ -116,7 +120,7 @@ func TestMoveEntry(t *testing.T) {
 		{"f.txt", "escape", errNoFolder},
 		{"f.txt", "..", errNoFolder},
 	} {
-		if err := moveEntry(root, c.name, c.to); err != c.want {
+		if err := (&downloadStore{root: root}).moveEntry(c.name, c.to); err != c.want {
 			t.Errorf("move %s to %q: %v, want %v", c.name, c.to, err, c.want)
 		}
 	}
@@ -137,7 +141,6 @@ func TestTunnelWatchAndMove(t *testing.T) {
 	if reply := w.request(t, ctx, tunnelRequest{Type: "watch"}); reply["ok"] != true {
 		t.Fatalf("watch: %v", reply)
 	}
-	time.Sleep(100 * time.Millisecond)
 	// Moved in by the gateway: not told of. Saved by something else: told.
 	if reply := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "move", Path: "sub/inner.txt", To: ""}); reply["ok"] != true {
 		t.Fatalf("move: %v", reply)
@@ -157,11 +160,13 @@ func TestWatchChanges(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 	got := make(chan struct{}, 16)
+	source, err := openDirectoryEvents(dir, changesWatchMask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(source.Close)
 	done := make(chan error, 1)
-	go func() {
-		done <- watchChanges(dir, stop, func() {}, func() { got <- struct{}{} })
-	}()
-	time.Sleep(100 * time.Millisecond) // for the watch to start
+	go func() { done <- monitorChanges(source, stop, func() bool { got <- struct{}{}; return true }) }()
 	expect := func(what string, want bool) {
 		t.Helper()
 		select {
@@ -202,6 +207,11 @@ func TestWatchChanges(t *testing.T) {
 		if !errors.Is(err, errDirGone) {
 			t.Errorf("ended with %v", err)
 		}
+		select {
+		case <-source.done:
+		default:
+			t.Error("directory removal returned before the reader stopped")
+		}
 	case <-time.After(2 * time.Second):
 		t.Error("the watch didn't end")
 	}
@@ -229,7 +239,6 @@ func TestTunnelChanges(t *testing.T) {
 	if reply := w.request(t, ctx, tunnelRequest{Type: "changes", Path: "sub"}); reply["ok"] != true {
 		t.Fatalf("changes: %v", reply)
 	}
-	time.Sleep(100 * time.Millisecond)
 	os.WriteFile(filepath.Join(dir, "sub", "new.txt"), []byte("hello"), 0o644)
 	if res := w.readJSON(t, ctx); res["changed"] != true {
 		t.Errorf("told %v", res)
@@ -243,7 +252,6 @@ func TestTunnelChanges(t *testing.T) {
 	if reply := w.request(t, ctx, tunnelRequest{Type: "changes", Path: "empty"}); reply["ok"] != true {
 		t.Fatalf("changes: %v", reply)
 	}
-	time.Sleep(100 * time.Millisecond)
 	os.Remove(filepath.Join(dir, "empty"))
 	expectGone(t, ctx, w, "deleted")
 }

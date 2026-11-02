@@ -52,6 +52,67 @@ mise run vet
 mise run build   # writes tabtopd/tabtopd
 ```
 
+The browser's public tunnel API remains `tunnel.js`. Its implementation is
+split into `tunnel-protocol.js` (handshakes, framing and transport),
+`tunnel-crypto.js` (cryptographic primitives), `session-state.js` (stored
+credentials), `session.js` (login coordination), and `login-ui.js` (the form
+and login summary). The protocol layer has no dependency on the login UI.
+`files.js` owns navigation and selection; `file-format.js` provides sorting
+and time formatting, and `sessions-view.js` renders session administration.
+
+On the server, `store.go` owns opened-file validation, upload creation and
+resumption, publication, durability, deletion and moves; `store_zip.go`
+owns archive traversal. Each filesystem request acquires one store.
+`upload_manager.go` owns active/resumable upload transitions and timers
+under its own mutex. Tunnel handlers own transport and session policy,
+using `responder.go` to accept streams, finish requests and report errors.
+`rfbauth.go` shares VeNCrypt/TLS negotiation between login
+and diagnostics, and returns an explicit authentication outcome so its
+caller can manage cooldowns. Proxy parsing and login limits live in
+`proxy.go` and `login_limit.go`; page styles are embedded CSS assets.
+
+`serverConfig` holds startup settings separately from mutable services and
+session state. Defaults come from `defaultServerConfig`; `newServer`
+validates settings and initializes runtime maps and services. Integration
+tests use the same constructor as startup.
+
+The files page's `folder-model.js` owns listing generations, filtering,
+sorting and selection without DOM dependencies. `files.js` handles loading
+and rendering. `chunk_writer.go` isolates download flow control behind a
+small transport interface, with a configurable stall interval for tests.
+
+`terminal_process.go` owns PTY setup, I/O deadlines, resizing, child reaping
+and idempotent cleanup; the terminal handler only bridges its I/O to the
+tunnel. Active uploads carry an interruption callback, keeping transport
+internals out of upload coordination. Time formatting uses independent
+`createTimeFormatter` instances with injectable timezone, locale and clock;
+the files page passes its formatter to the session administration view.
+
+`transfer.js` owns one upload or download attempt's cancellation, cleanup
+and retry eligibility without DOM dependencies. Download presentation shares
+one file/ZIP path; upload and download wire protocols remain separate.
+
+`entrypoint.sh` orchestrates startup and supervises child processes. Its
+sourced `startup/config.sh` validates the environment; `startup/user.sh`
+provisions the account, credentials and runtime; `startup/desktop.sh` starts
+the desktop and configures audio. These functions run in the supervising
+shell so child PIDs and runtime outputs remain available for shutdown.
+Run `test/startup-check.sh <image>` to check external-VNC startup, a custom
+account, credential ownership, secret removal and restart with an existing home.
+
+Filesystem notifications use `watch_source.go` for inotify registration,
+decoding and reader shutdown; `watch_policy.go` for rename pairing, settling,
+duplicate suppression and debounce deadlines; and `watch_monitor.go` to
+connect events to notifications. Policies accept timestamps directly for
+deterministic tests. Tunnel streams are accepted only after registration;
+closing the event source interrupts and joins its reader, even with a full
+delivery queue.
+
+`osc.js` parses terminal escape sequences without browser APIs. The terminal
+UI performs clipboard writes in response to its events. Run
+`mise run test-js` for parser tests covering chunk boundaries, malformed
+sequences and oversized input; CI runs these alongside the Go tests.
+
 `TestTunnelInteropWithJS` runs the page's `tunnel.js` in Node against the
 gateway, to check that the two sides of the encrypted tunnel agree. It needs
 Node 22 or later and `TABTOP_NOBLE_DIR` set to a copy of the image's

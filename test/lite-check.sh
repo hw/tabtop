@@ -48,8 +48,8 @@ for ((i = 0; ; i++)); do
 done
 echo "ok - healthy with the RFB server at $name-rfb:5902"
 
-# Every part the doctor report checks works, the RFB server answering as
-# Xvnc does.
+# Every part the doctor report checks works; it names the RFB server
+# without connecting to it.
 curl -fsS "${site}doctor" | python3 -c '
 import json, sys
 checks = json.load(sys.stdin)["checks"]
@@ -57,7 +57,7 @@ bad = {k: v["detail"] for k, v in checks.items() if not v["ok"]}
 if bad:
     sys.exit(f"not ok - the doctor report has failures: {bad}")
 vnc = checks["vnc"]["detail"]
-if not vnc.startswith("RFB 003.008"):
+if "at VNC_ADDR" not in vnc:
     sys.exit(f"not ok - the RFB server: {vnc}")
 '
 echo "ok - the doctor report has no failures"

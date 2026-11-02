@@ -12,8 +12,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestX509VNC(t *testing.T) {
@@ -57,7 +61,7 @@ func TestX509VNC(t *testing.T) {
 			if err := negotiateX509VNC(client); err != nil {
 				t.Fatal(err)
 			}
-			g := &server{vncCAFile: ca, vncServerName: name}
+			g := &server{serverConfig: serverConfig{vncCAFile: ca, vncServerName: name}}
 			if name == "untrusted" {
 				g.vncCAFile, g.vncServerName = "", "example.com"
 			}
@@ -154,13 +158,20 @@ func TestX509PlainLogin(t *testing.T) {
 		if !reject {
 			go fakeNoVNC(browser)
 		}
-		g := &server{vncX509: true, vncUsername: "alice", vncCAFile: ca, vncServerName: "example.com"}
-		conn, err := g.vncSecurity(client, page, password)
+		g := &server{serverConfig: serverConfig{vncX509: true, vncUsername: "alice", vncCAFile: ca, vncServerName: "example.com"}}
+		result, err := g.vncSecurity(client, page, password)
+		conn := result.conn
 		if reject {
+			if result.outcome != vncPasswordRejected {
+				t.Fatal("password rejection lost from result")
+			}
 			if !errors.Is(err, errVNCPasswordRejected) {
 				t.Fatalf("password rejection: %v", err)
 			}
 		} else {
+			if result.outcome != vncAuthenticated {
+				t.Fatal("successful authentication lost from result")
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -418,6 +429,9 @@ func TestTunnelDesktopPassword(t *testing.T) {
 				t.Fatalf("noVNC offered %v, want %v", types, tc.want)
 			}
 			if tc.want[0] != rfbSecNone {
+				if tc.name == "rejected" && g.vncBackoff.waiting() <= 0 {
+					t.Fatal("password rejection cleared cooldown")
+				}
 				return
 			}
 			tc2.write(ctx, msgData, []byte{rfbSecNone})
@@ -429,5 +443,227 @@ func TestTunnelDesktopPassword(t *testing.T) {
 				t.Fatalf("ServerInit %q", init)
 			}
 		})
+	}
+}
+
+func TestVNCBackoff(t *testing.T) {
+	var b vncBackoff
+	if b.waiting() > 0 {
+		t.Fatal("waiting before any failure")
+	}
+	for _, want := range []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute} {
+		if got := b.failed(); got != want {
+			t.Errorf("after a failure: %v, want %v", got, want)
+		}
+	}
+	if b.waiting() <= 9*time.Minute {
+		t.Errorf("waiting %v after the cap", b.waiting())
+	}
+	b.succeeded()
+	if b.waiting() > 0 || b.failed() != vncBackoffMin {
+		t.Error("not reset by a login that worked")
+	}
+}
+
+// TestVNCBackoffTurns lets one login handshake run at a time: the others
+// wait for it, rather than being refused or running alongside, and then see
+// the cooldown its failure set.
+func TestVNCBackoffTurns(t *testing.T) {
+	var b vncBackoff
+	if b.begin() {
+		t.Fatal("cooling down before any failure")
+	}
+	var running, most atomic.Int32
+	results := make(chan bool, 8)
+	for range 8 {
+		go func() {
+			cooling := b.begin()
+			if n := running.Add(1); n > most.Load() {
+				most.Store(n)
+			}
+			running.Add(-1)
+			b.release()
+			results <- cooling
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	b.failed() // the first's login failed
+	b.release()
+	for range 8 {
+		if !<-results {
+			t.Error("a waiting handshake didn't see the cooldown")
+		}
+	}
+	if most.Load() != 1 {
+		t.Errorf("%d handshakes ran at once, want 1", most.Load())
+	}
+	b.succeeded()
+	if b.begin() {
+		t.Error("still cooling down after a login that worked")
+	}
+	b.release()
+}
+
+// TestTunnelDesktopBackoff stops logging in to the VNC server once that
+// has failed: under VNC_X509 the desktop is refused without trying the
+// server; without it, the gateway stays out of the handshake, so noVNC gets
+// the server's own and asks for its password.
+func TestTunnelDesktopBackoff(t *testing.T) {
+	for _, x509 := range []bool{true, false} {
+		t.Run(map[bool]string{true: "X509", false: "plain"}[x509], func(t *testing.T) {
+			g, srv := newE2EServer(t)
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			var accepted, logins atomic.Int32
+			go func() {
+				for {
+					c, err := l.Accept()
+					if err != nil {
+						return
+					}
+					accepted.Add(1)
+					go func() {
+						defer c.Close()
+						// Refuses the connection, with a reason, once it's
+						// been sent a version: a login attempt.
+						c.Write(rfbVersionMsg(8))
+						if _, err := io.ReadFull(c, make([]byte, 12)); err == nil {
+							logins.Add(1)
+							c.Write(append([]byte{0, 0, 0, 0, 7}, "go away"...))
+						}
+					}()
+				}
+			}()
+			g.vncAddr = l.Addr().String()
+			g.vncX509 = x509
+			g.vncPasswordFile = filepath.Join(t.TempDir(), "vnc-password")
+			os.WriteFile(g.vncPasswordFile, []byte("pw"), 0o600)
+			ctx := testCtx(t)
+			s := login(t, ctx, srv.URL, code(0))
+			for i := range 2 {
+				tc := openSession(t, ctx, srv.URL, s)
+				if reply := tc.request(t, ctx, tunnelRequest{Type: "vnc"}); reply["ok"] != true {
+					t.Fatalf("vnc %d: %v", i+1, reply)
+				}
+				_, p, err := tc.read(ctx)
+				switch {
+				case i == 0:
+				case x509 && websocket.CloseStatus(err) != websocket.StatusTryAgainLater:
+					t.Errorf("second desktop: %q, %v; want to try again later", p, err)
+				case !x509 && string(p) != "RFB 003.008\n":
+					t.Errorf("second desktop got %q, %v; want the server's own greeting", p, err)
+				}
+				tc.c.CloseNow()
+			}
+			want := int32(1) // only the first
+			if !x509 {
+				want = 2 // then passed through
+			}
+			if n := accepted.Load(); n != want {
+				t.Errorf("the VNC server was connected to %d times, want %d", n, want)
+			}
+			if n := logins.Load(); n != 1 {
+				t.Errorf("the gateway logged in %d times, want once", n)
+			}
+			if g.vncBackoff.waiting() <= 0 {
+				t.Error("not backing off")
+			}
+		})
+	}
+}
+
+// TestBeginVeNCryptRefusal reports a server's refusal, as TigerVNC sends
+// in RFB 3.3 to an address it has blacklisted, by its reason, and a server
+// that only speaks 3.3 as one that has no VeNCrypt.
+func TestBeginVeNCryptRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply []byte
+		want  string
+	}{
+		{"refused", append([]byte{0, 0, 0, 0, 0, 0, 0, 26}, "Too many security failures"...), "refused the connection: Too many security failures"},
+		{"3.3 only", []byte{0, 0, 0, 2}, "speaks RFB 3.3"},
+	} {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			server.Write(rfbVersionMsg(3))
+			io.ReadFull(server, make([]byte, 12))
+			server.Write(tc.reply)
+		}()
+		_, err := beginVeNCrypt(client)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
+		}
+		client.Close()
+	}
+}
+
+// TestVNCLoginCheck reports how the gateway's last login to the VNC server
+// went, rather than logging in for the report.
+func TestVNCLoginCheck(t *testing.T) {
+	g := &server{}
+	g.vncX509 = true
+	ok := check{OK: true, Detail: "listening at VNC_ADDR"}
+	if c := g.vncLoginCheck(ok); !c.OK || !strings.Contains(c.Detail, "no desktop has logged in") {
+		t.Errorf("before any login: %+v", c)
+	}
+	g.vncBackoff.record(nil)
+	if c := g.vncLoginCheck(ok); !c.OK || !strings.Contains(c.Detail, "with VeNCrypt X509Vnc with a verified certificate") {
+		t.Errorf("after a login: %+v", c)
+	}
+	g.vncBackoff.record(errors.New("tls: bad certificate"))
+	if c := g.vncLoginCheck(ok); c.OK || !strings.Contains(c.Detail, "failed: tls: bad certificate") {
+		t.Errorf("after a failure: %+v", c)
+	}
+	g.vncX509 = false // noVNC logs in itself
+	if c := g.vncLoginCheck(ok); c != ok {
+		t.Errorf("without a password for it: %+v", c)
+	}
+}
+
+// TestTunnelDesktopPageGone doesn't count a page that closes part way
+// through the handshake, after the gateway has logged in, as a failed
+// login: it starts no cooldown.
+func TestTunnelDesktopPageGone(t *testing.T) {
+	g, srv := newE2EServerPin(t, "s3cret")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go fakeRFB(c, 8, []byte{rfbSecVNCAuth}, "vnc-pw")
+		}
+	}()
+	g.vncAddr = l.Addr().String()
+	g.vncPasswordFile = filepath.Join(t.TempDir(), "vnc-password")
+	os.WriteFile(g.vncPasswordFile, []byte("vnc-pw"), 0o600)
+	ctx := testCtx(t)
+	tc := openSession(t, ctx, srv.URL, login(t, ctx, srv.URL, "s3cret"+code(0)))
+	if reply := tc.request(t, ctx, tunnelRequest{Type: "vnc"}); reply["ok"] != true {
+		t.Fatalf("vnc: %v", reply)
+	}
+	tc.read(ctx) // the version offered to noVNC
+	tc.c.CloseNow()
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if at, _ := g.vncBackoff.last(); !at.IsZero() {
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if left := g.vncBackoff.waiting(); left > 0 {
+		t.Errorf("cooling down for %v after the page went", left)
+	}
+	if at, err := g.vncBackoff.last(); at.IsZero() || err != nil {
+		t.Errorf("last login: %v, %v; want one that worked", at, err)
 	}
 }

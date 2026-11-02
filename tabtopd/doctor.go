@@ -5,12 +5,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -22,11 +20,9 @@ import (
 	"time"
 )
 
-const (
-	vncProbeTimeout = 2 * time.Second
-	// How long healthz trusts a connection check of the RFB server.
-	vncProbeCache = 10 * time.Second
-)
+// How long the doctor report's checks are kept, shared by every request
+// in the meantime.
+const vncProbeCache = 10 * time.Second
 
 // healthz answers 200 while Xvnc is listening and the TOTP users file can be
 // read, so logins can work. It needs no login and reveals nothing else.
@@ -52,39 +48,27 @@ func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "ok\n")
 }
 
-// vncListening reports whether the RFB server is there. Xvnc's own socket
-// is found in the kernel's socket table, without connecting, which Xvnc
-// would log every time. Anything else (a TCP address, or a socket mounted
-// from elsewhere, which the table lists under its original path) is
-// checked by connecting, at most once every vncProbeCache however many
-// checks arrive, since healthz needs no login.
+// vncListening reports whether the RFB server is there, without connecting
+// to it: a connection closed without logging in counts as an abandoned
+// login on servers such as TigerVNC, even one closed as soon as it opens,
+// and enough of them, which anyone could cause through healthz, get the
+// gateway's address blacklisted, refusing the desktop too. A socket is
+// found in the kernel's table, or, mounted from elsewhere (which the table
+// lists under its original path), by being a socket. A TCP address isn't
+// checked: health then says the gateway can serve, and the doctor report
+// how its last login to the server went.
 func (g *server) vncListening() error {
-	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok && unixListening(path) == nil {
+	path, ok := strings.CutPrefix(g.vncAddr, "unix:")
+	if !ok {
 		return nil
 	}
-	return g.vncProbe.check(func() (net.Conn, error) { return g.dialVNCWithin(vncProbeTimeout) })
-}
-
-// probeCache keeps a connection check's result for vncProbeCache. Checks
-// that arrive while one is connecting wait for it and share its result.
-type probeCache struct {
-	mu  sync.Mutex
-	at  time.Time
-	err error
-}
-
-func (p *probeCache) check(dial func() (net.Conn, error)) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.at.IsZero() && time.Since(p.at) < vncProbeCache {
-		return p.err
+	if unixListening(path) == nil {
+		return nil
 	}
-	c, err := dial()
-	if err == nil {
-		c.Close()
+	if st, err := os.Stat(path); err == nil && st.Mode()&os.ModeSocket != 0 {
+		return nil
 	}
-	p.at, p.err = time.Now(), err
-	return err
+	return fmt.Errorf("nothing listens on the VNC server's socket %s", path)
 }
 
 // unixListening looks for a listening socket at path in /proc/net/unix:
@@ -117,27 +101,72 @@ func (g *server) usersFileOK() error {
 	return nil
 }
 
-// probeVNC connects to Xvnc and reads its greeting, the protocol version.
-func (g *server) probeVNC() (string, error) {
-	conn, err := g.dialVNC()
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(vncProbeTimeout))
-	greeting := make([]byte, 12)
-	if _, err := io.ReadFull(conn, greeting); err != nil {
-		return "", fmt.Errorf("reading Xvnc's greeting: %w", err)
-	}
-	if !bytes.HasPrefix(greeting, []byte("RFB ")) {
-		return "", fmt.Errorf("unexpected greeting %q", greeting)
-	}
-	return strings.TrimSpace(string(greeting)), nil
-}
-
 type check struct {
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail"`
+}
+
+// Public diagnostics share one batch of network probes for ten seconds,
+// including failed probes. Holding mu through the batch bounds upstream
+// concurrency to one probe, even when many requests arrive together.
+type doctorProbeCache struct {
+	mu     sync.Mutex
+	clock  lifecycleClock
+	at     time.Time
+	result doctorProbeResult
+}
+
+type doctorProbeResult struct {
+	vnc      check
+	audioErr error
+}
+
+func (p *doctorProbeCache) get(probe func() doctorProbeResult) doctorProbeResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.at.IsZero() || p.clock.Now().Sub(p.at) >= vncProbeCache {
+		p.result = probe()
+		p.at = p.clock.Now()
+	}
+	return p.result
+}
+
+// vncLoginCheck adds to the VNC server's check how the gateway's last
+// login to it went, when the gateway logs in (VNC_UPSTREAM_PASSWORD or
+// VNC_X509): a failure fails the check, with its reason.
+func (g *server) vncLoginCheck(c check) check {
+	if g.vncPassword() == "" && !g.vncX509 {
+		return c // noVNC logs in itself
+	}
+	at, err := g.vncBackoff.last()
+	kind := "VNC Authentication"
+	if g.vncX509 {
+		kind = fmt.Sprintf("VeNCrypt %s with a verified certificate", x509Name(g.x509Subtype()))
+	}
+	switch {
+	case at.IsZero():
+		c.Detail += "; no desktop has logged in to it yet"
+	case err != nil:
+		return newCheck("", fmt.Errorf("the last login to it, %v ago, failed: %v", time.Since(at).Round(time.Second), err))
+	default:
+		c.Detail += fmt.Sprintf("; last logged in to %v ago, with %s", time.Since(at).Round(time.Second), kind)
+	}
+	return c
+}
+
+func (g *server) probeDoctorServices() doctorProbeResult {
+	// The same check as healthz, which doesn't connect (see vncListening).
+	// How the gateway's last real login went is reported instead (see
+	// vncLoginCheck).
+	detail := fmt.Sprintf("listening at %s", g.vncAddr)
+	if !strings.HasPrefix(g.vncAddr, "unix:") {
+		detail = fmt.Sprintf("at %s, not connected to (that could get the gateway blacklisted)", g.vncAddr)
+	}
+	result := doctorProbeResult{vnc: newCheck(detail, g.vncListening())}
+	if g.audio != nil {
+		result.audioErr = g.audio.checkSink()
+	}
+	return result
 }
 
 func newCheck(detail string, err error) check {
@@ -166,9 +195,53 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	report := g.collectDoctorReport(r)
+	h.Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(report)
+}
+
+type doctorReport struct {
+	Healthy  bool             `json:"healthy"`
+	Checks   map[string]check `json:"checks"`
+	Clock    doctorClock      `json:"clock"`
+	Proxy    map[string]any   `json:"proxy"`
+	BasePath string           `json:"base_path"`
+	State    doctorState      `json:"state"`
+}
+
+type doctorClock struct {
+	UTC      string `json:"utc"`
+	Unix     int64  `json:"unix"`
+	TOTPStep int64  `json:"totp_step"`
+	Note     string `json:"note"`
+}
+
+type doctorState struct {
+	WebSessions    int  `json:"web_sessions"`
+	OpenTerminals  int  `json:"open_terminals"`
+	LockedOutIPs   int  `json:"locked_out_ips"`
+	LoginsSlowed   bool `json:"logins_slowed"`
+	AudioListeners int  `json:"audio_listeners"`
+}
+
+// collectDoctorReport gathers and redacts diagnostics independently of HTTP
+// response handling. Request metadata is used only by the proxy diagnosis.
+func (g *server) collectDoctorReport(r *http.Request) doctorReport {
 	checks := map[string]check{}
-	greeting, err := g.probeVNC()
-	checks["vnc"] = newCheck(fmt.Sprintf("%s at %s", greeting, g.vncAddr), err)
+	probes := g.doctorProbes.get(g.probeDoctorServices)
+	checks["vnc"] = probes.vnc
+	// Runtime cooldown and counters remain fresh rather than being cached.
+	if left := g.vncBackoff.waiting(); probes.vnc.OK && left > 0 {
+		if g.vncX509 {
+			checks["vnc"] = newCheck("", fmt.Errorf("logging in to it failed (see the log), so the desktop is refused for another %v", left.Round(time.Second)))
+		} else {
+			checks["vnc"] = newCheck("", fmt.Errorf("it turned VNC_UPSTREAM_PASSWORD down (see the log), so noVNC asks for its password for another %v", left.Round(time.Second)))
+		}
+	} else if probes.vnc.OK {
+		checks["vnc"] = g.vncLoginCheck(probes.vnc)
+	}
 
 	digits := 0
 	data, err := os.ReadFile(g.usersFile)
@@ -189,7 +262,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	if g.audio == nil {
 		checks["audio"] = check{OK: true, Detail: "off"}
 	} else {
-		checks["audio"] = newCheck(g.audio.describe(), g.audio.checkSink())
+		checks["audio"] = newCheck(g.audio.describe(), probes.audioErr)
 	}
 
 	if g.termDir == "" {
@@ -210,23 +283,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks["tunnel"] = newCheck(fmt.Sprintf("CPace logins, ChaCha20-Poly1305 tunnels; noble libraries in %s", g.nobleDir), err)
 
-	g.mu.Lock()
-	now := time.Now()
-	sessions, ttys, lockedOut, slowed := 0, 0, 0, g.throttling
-	for _, s := range g.sessions {
-		if g.liveLocked(s, now) {
-			sessions++
-		}
-	}
-	for _, n := range g.ttys {
-		ttys += n
-	}
-	for ip := range g.failures {
-		if g.lockedOutLocked(ip) {
-			lockedOut++
-		}
-	}
-	g.mu.Unlock()
+	state, now := g.doctorSnapshot()
 
 	healthy := true
 	for name, c := range checks {
@@ -234,40 +291,43 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 		c.Detail = g.redact(c.Detail)
 		checks[name] = c
 	}
-	report := map[string]any{
-		"healthy": healthy,
-		"checks":  checks,
-		"clock": map[string]any{
-			"utc":       now.UTC().Format(time.RFC3339),
-			"unix":      now.Unix(),
-			"totp_step": now.Unix() / 30,
-			"note":      "codes are only accepted within 30s of this clock",
-		},
-		"proxy":     g.proxyReport(r),
-		"base_path": g.base,
-		"state": map[string]any{
-			"web_sessions":    sessions,
-			"open_terminals":  ttys,
-			"locked_out_ips":  lockedOut, // IPv4 addresses and IPv6 /64s
-			"logins_slowed":   slowed,    // see loginTurn
-			"audio_listeners": g.audio.listenerCount(),
-		},
+	return doctorReport{
+		Healthy: healthy, Checks: checks,
+		Clock: doctorClock{now.UTC().Format(time.RFC3339), now.Unix(), now.Unix() / 30, "codes are only accepted within 30s of this clock"},
+		Proxy: g.proxyReport(r), BasePath: g.base, State: state,
 	}
-	h.Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	enc.Encode(report)
+}
+
+func (g *server) doctorSnapshot() (doctorState, time.Time) {
+	var state doctorState
+	g.mu.Lock()
+	now := g.clock.Now()
+	for _, s := range g.sessions {
+		if g.liveLocked(s, now) {
+			state.WebSessions++
+		}
+	}
+	for _, n := range g.ttys {
+		state.OpenTerminals += n
+	}
+	g.mu.Unlock()
+	state.LockedOutIPs, state.LoginsSlowed = g.loginState()
+	state.AudioListeners = g.audio.listenerCount()
+	return state, now
 }
 
 // redact takes out of a check's detail, errors included, what would tell
 // someone without a login the account's name or where the VNC server is:
 // the home folder (/home/<VNC_USER>) becomes ~, the runtime folder
-// (/tmp/runtime-<VNC_USER>) $XDG_RUNTIME_DIR, and the VNC server's address
-// VNC_ADDR.
+// (/tmp/runtime-<VNC_USER>) $XDG_RUNTIME_DIR, the VNC server's address
+// VNC_ADDR, and the name in its certificate VNC_SERVER_NAME.
 func (g *server) redact(s string) string {
 	vnc := strings.TrimPrefix(g.vncAddr, "unix:")
 	if vnc != "" {
 		s = strings.ReplaceAll(s, vnc, "VNC_ADDR")
+	}
+	if g.vncServerName != "" {
+		s = strings.ReplaceAll(s, g.vncServerName, "VNC_SERVER_NAME")
 	}
 	if rt := os.Getenv("XDG_RUNTIME_DIR"); len(rt) > 1 {
 		s = strings.ReplaceAll(s, rt, "$XDG_RUNTIME_DIR")

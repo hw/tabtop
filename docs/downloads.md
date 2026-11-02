@@ -134,7 +134,10 @@ downloaded at `http://<host>:6080/downloads/`:
   shown (as `name (1)` if the name is taken), and **Rename…** in a row's
   menu renames it; for a file, only the part before the extension starts
   selected. A rename never replaces anything: if the new name is taken, it
-  fails and says so. Renaming a symlink renames the link.
+  fails and says so. Renaming a symlink renames the link. A new name, for
+  a folder, a rename or an upload, can't contain control characters, such
+  as a line break; a file already named with one can still be renamed and
+  deleted.
 - **Moving:** drag a row onto a folder in the list, onto `../`, or onto a
   folder in the heading, to move it there; dragging a ticked row moves all
   those ticked. **Move to…** in a row's menu, or in the bar above the list

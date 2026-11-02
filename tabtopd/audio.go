@@ -54,6 +54,7 @@ var audioConfig = fmt.Sprintf(`{"codec":"opus","sampleRate":%d,"channels":%d,"fr
 var errAudioDenied = errors.New("no open desktop for this session and IP")
 
 type audioHub struct {
+	clock lifecycleClock
 	// start begins recording, calling deliver with each Opus packet, and
 	// returns a function that stops it.
 	start func(deliver func([]byte)) (stop func(), err error)
@@ -73,7 +74,7 @@ type audioHub struct {
 	changing  *audioChange
 	failed    time.Time // when recording last failed to start
 	failErr   error     // why; nil once it starts
-	idleTimer *time.Timer
+	idleTimer lifecycleTimer
 }
 
 type audioDesktop struct{ token, ip string }
@@ -169,7 +170,7 @@ func (h *audioHub) unlink(token, ip string) {
 	d := audioDesktop{token, ip}
 	h.graceGen[d]++
 	gen := h.graceGen[d]
-	time.AfterFunc(h.grace, func() {
+	h.clock.AfterFunc(h.grace, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if h.graceGen[d] != gen {
@@ -218,7 +219,7 @@ func (h *audioHub) join(token, ip string) (*audioListener, error) {
 			}
 			continue
 		}
-		if h.failErr != nil && time.Since(h.failed) < h.retry {
+		if h.failErr != nil && h.clock.Now().Sub(h.failed) < h.retry {
 			return nil, h.failErr
 		}
 		c := &audioChange{done: make(chan struct{})}
@@ -229,7 +230,7 @@ func (h *audioHub) join(token, ip string) (*audioListener, error) {
 		h.changing, c.err = nil, err
 		close(c.done)
 		if err != nil {
-			h.failed, h.failErr = time.Now(), err
+			h.failed, h.failErr = h.clock.Now(), err
 			return nil, err
 		}
 		h.failErr = nil
@@ -256,8 +257,8 @@ func (h *audioHub) idleCheckLocked() {
 	if len(h.listeners) > 0 || h.stop == nil || h.idleTimer != nil {
 		return
 	}
-	var timer *time.Timer
-	timer = time.AfterFunc(h.idle, func() {
+	var timer lifecycleTimer
+	timer = h.clock.AfterFunc(h.idle, func() {
 		h.mu.Lock()
 		if h.idleTimer != timer || len(h.listeners) > 0 || h.stop == nil || h.changing != nil {
 			h.mu.Unlock()

@@ -27,6 +27,92 @@ func TestValidUploadName(t *testing.T) {
 	}
 }
 
+func TestFinishPublishesOpenFile(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		dir := t.TempDir()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		u, err := (&downloadStore{root: root}).startUpload(".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := u.Write([]byte("original")); err != nil {
+			t.Fatal(err)
+		}
+		if err := root.Rename(u.tmp, u.tmp+".old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, u.tmp), []byte("substituted"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if replace {
+			os.WriteFile(filepath.Join(dir, "result"), []byte("previous"), 0600)
+		}
+		if _, err := u.finish("result", replace); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "result"))
+		if err != nil || string(got) != "original" {
+			t.Fatalf("published %q: %v", got, err)
+		}
+	}
+}
+
+func TestResumeRejectsReplacedPartial(t *testing.T) {
+	for _, fifo := range []bool{false, true} {
+		dir := t.TempDir()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		g := &server{serverConfig: serverConfig{downloadsDir: dir}}
+		u, err := (&downloadStore{root: root}).startUpload(".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		u.Write([]byte("part"))
+		g.transfers.keepPartial(u, 10)
+		// Keep the old inode allocated to make identity differences deterministic.
+		if err := root.Rename(u.tmp, u.tmp+".old"); err != nil {
+			t.Fatal(err)
+		}
+		if fifo {
+			err = syscall.Mkfifo(filepath.Join(dir, u.tmp), 0600)
+		} else {
+			err = os.WriteFile(filepath.Join(dir, u.tmp), []byte("fake"), 0600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, offset := g.transfers.claimPartial(&downloadStore{root: root}, u.id(), ".", 10)
+		if res != nil || offset != 0 {
+			t.Fatal("resumed a replaced partial")
+		}
+		if _, err := root.Lstat(u.tmp); err != nil {
+			t.Fatal("deleted replacement")
+		}
+	}
+}
+
+func TestTunnelFilesRejectFIFO(t *testing.T) {
+	g, srv := newE2EServer(t)
+	if err := syscall.Mkfifo(filepath.Join(g.downloadsDir, "fifo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	for _, kind := range []string{"file", "list"} {
+		c := openSession(t, ctx, srv.URL, s)
+		if reply := c.request(t, ctx, tunnelRequest{Type: kind, Path: "fifo"}); reply["error"] == nil {
+			t.Fatalf("%s accepted FIFO: %v", kind, reply)
+		}
+	}
+}
+
 func TestListDirHidesUploadsInProgress(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644)
@@ -35,7 +121,7 @@ func TestListDirHidesUploadsInProgress(t *testing.T) {
 	defer root.Close()
 	f, _ := root.Open(".")
 	defer f.Close()
-	entries, _, err := listDir(root, ".", f)
+	entries, _, err := (&downloadStore{root: root}).listDir(".", f)
 	if err != nil || len(entries) != 1 || entries[0].Name != "a.txt" {
 		t.Errorf("listed %v: %v", entries, err)
 	}
@@ -144,9 +230,9 @@ func TestTunnelUploadResume(t *testing.T) {
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
 	partials := func() int {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		return len(g.partials)
+		g.transfers.mu.Lock()
+		defer g.transfers.mu.Unlock()
+		return len(g.transfers.partials)
 	}
 	// start begins an upload of size bytes, sends first, and returns the
 	// tunnel and the reply.
@@ -223,25 +309,25 @@ func TestTunnelUploadResume(t *testing.T) {
 // TestKeepPartialLimit checks that only maxPartials uploads cut off are
 // kept, the oldest going first.
 func TestKeepPartialLimit(t *testing.T) {
-	g := &server{downloadsDir: t.TempDir()}
+	g := &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}}
 	root, _ := os.OpenRoot(g.downloadsDir)
 	defer root.Close()
 	var first string
 	for i := range maxPartials + 1 {
-		u, err := startUpload(root, ".")
+		u, err := (&downloadStore{root: root}).startUpload(".")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if i == 0 {
 			first = u.id()
 		}
-		g.keepPartial(u, 1)
+		g.transfers.keepPartial(u, 1)
 	}
 	entries, _ := os.ReadDir(g.downloadsDir)
-	if len(g.partials) != maxPartials || len(entries) != maxPartials || g.partials[first] != nil {
-		t.Errorf("%d kept, %d files, the first kept: %v", len(g.partials), len(entries), g.partials[first] != nil)
+	if len(g.transfers.partials) != maxPartials || len(entries) != maxPartials || g.transfers.partials[first] != nil {
+		t.Errorf("%d kept, %d files, the first kept: %v", len(g.transfers.partials), len(entries), g.transfers.partials[first] != nil)
 	}
-	if u, _ := g.claimPartial(root, first, ".", 1); u != nil {
+	if u, _ := g.transfers.claimPartial(&downloadStore{root: root}, first, ".", 1); u != nil {
 		t.Error("the oldest could be resumed")
 	}
 }
@@ -249,29 +335,29 @@ func TestKeepPartialLimit(t *testing.T) {
 // TestReclaimPartials checks that the room uploads kept to resume take is
 // counted as free, and given up to an upload that needs it.
 func TestReclaimPartials(t *testing.T) {
-	g := &server{downloadsDir: t.TempDir()}
+	g := &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}}
 	root, _ := os.OpenRoot(g.downloadsDir)
 	defer root.Close()
-	u, err := startUpload(root, ".")
+	u, err := (&downloadStore{root: root}).startUpload(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	held := int64(4 << 20)
 	u.Write(make([]byte, held))
 	u.f.Sync()
-	g.keepPartial(u, 2*held)
+	g.transfers.keepPartial(u, 2*held)
 	free, _, _ := diskSpace(g.downloadsDir)
-	room, _, _ := g.uploadRoom()
+	room, _, _ := g.transfers.uploadRoom(g.downloadsDir)
 	if d := room - free; d < held/2 || d > 2*held {
 		t.Errorf("%d more counted as free, with %d kept", d, held)
 	}
 	// More than there is: everything kept goes, and it's still refused.
-	if free, ok := g.reclaimPartials(1 << 62); !ok || free >= 1<<62 {
+	if free, ok := g.transfers.reclaimPartials(g.downloadsDir, 1<<62); !ok || free >= 1<<62 {
 		t.Fatalf("free %d, %v", free, ok)
 	}
 	entries, _ := os.ReadDir(g.downloadsDir)
-	if len(g.partials) != 0 || len(entries) != 0 {
-		t.Errorf("%d still kept, %d files", len(g.partials), len(entries))
+	if len(g.transfers.partials) != 0 || len(entries) != 0 {
+		t.Errorf("%d still kept, %d files", len(g.transfers.partials), len(entries))
 	}
 }
 
@@ -400,7 +486,7 @@ func TestUploadLongNameTaken(t *testing.T) {
 			t.Fatalf("test name %q: %d bytes", name, len(name))
 		}
 		for i := range 3 {
-			u, err := startUpload(root, ".")
+			u, err := (&downloadStore{root: root}).startUpload(".")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -437,5 +523,139 @@ func TestRemoveStaleUploadsHung(t *testing.T) {
 	removeStaleUploads(fifo, start, 200*time.Millisecond)
 	if d := time.Since(start); d > time.Second {
 		t.Errorf("returned after %v", d)
+	}
+}
+
+// TestNewNameControl refuses control characters in a name being made, but
+// not in one already there, which can still be renamed and deleted.
+func TestNewNameControl(t *testing.T) {
+	for name, ok := range map[string]bool{"a.txt": true, "a\nb": false, "a\rb": false, "tab\there": false, "del\x7f": false, "é ü": true} {
+		if validNewName(name) != ok {
+			t.Errorf("validNewName(%q) = %v, want %v", name, !ok, ok)
+		}
+	}
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := (&downloadStore{root: root}).makeFolder(".", "new\nfolder"); err != errUploadName {
+		t.Errorf("folder with a line break: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "odd\nname"), []byte("x"), 0o644)
+	if err := (&downloadStore{root: root}).renameEntry("plain", "odd\nagain"); err != errUploadName {
+		t.Errorf("rename to a line break: %v", err)
+	}
+	if err := (&downloadStore{root: root}).renameEntry("odd\nname", "fixed"); err != nil {
+		t.Errorf("renaming a file with a line break: %v", err)
+	}
+	if _, err := (&downloadStore{root: root}).deleteFile("fixed"); err != nil {
+		t.Errorf("deleting it: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "odd\nname"), []byte("x"), 0o644)
+	if _, err := (&downloadStore{root: root}).deleteFile("odd\nname"); err != nil {
+		t.Errorf("deleting a file with a line break: %v", err)
+	}
+}
+
+func TestPartialRetentionDeadline(t *testing.T) {
+	clock := newManualClock()
+	m := uploadManager{clock: clock.lifecycle()}
+	store, err := openDownloadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	u, err := store.startUpload(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := u.id()
+	m.keepPartial(u, 1)
+	clock.Advance(partialKeep - time.Nanosecond)
+	if m.partials[id] == nil {
+		t.Fatal("partial expired before its retention deadline")
+	}
+	clock.Advance(time.Nanosecond)
+	if len(m.partials) != 0 {
+		t.Fatal("expired partial still tracked")
+	}
+	entries, err := os.ReadDir(store.root.Name())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("expired file remains: %v, %v", entries, err)
+	}
+
+	u, err = store.startUpload(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = u.id()
+	if _, err := u.f.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	m.keepPartial(u, 2)
+	resumed, held := m.claimPartial(store, id, ".", 2)
+	if resumed == nil || held != 1 {
+		t.Fatalf("resume: %v, held %d", resumed, held)
+	}
+	defer resumed.f.Close()
+	clock.Advance(partialKeep)
+	if _, err := store.root.Stat(resumed.tmp); err != nil {
+		t.Fatalf("retention timer removed resumed upload: %v", err)
+	}
+}
+
+// TestResumeRemovesChangedPartial deletes a kept upload that's still the
+// gateway's file but no longer as it was kept, since nothing else would.
+func TestResumeRemovesChangedPartial(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	g := &server{serverConfig: serverConfig{downloadsDir: dir}}
+	u, err := (&downloadStore{root: root}).startUpload(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Write([]byte("part"))
+	g.transfers.keepPartial(u, 10)
+	// The same file, grown since it was kept.
+	f, err := os.OpenFile(filepath.Join(dir, u.tmp), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("more"))
+	f.Close()
+	if res, _ := g.transfers.claimPartial(&downloadStore{root: root}, u.id(), ".", 10); res != nil {
+		t.Fatal("resumed a partial that changed")
+	}
+	if _, err := root.Lstat(u.tmp); !os.IsNotExist(err) {
+		t.Errorf("changed partial left behind: %v", err)
+	}
+}
+
+// TestRemoveStaleStages removes the staging folders replacing uploads left
+// behind, with the link to the file in them, but no others.
+func TestRemoveStaleStages(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-time.Hour)
+	stage := func(name string, when time.Time) string {
+		p := filepath.Join(dir, name)
+		os.Mkdir(p, 0o700)
+		os.WriteFile(filepath.Join(p, "saved"), []byte("data"), 0o644)
+		os.Chtimes(p, when, when)
+		return p
+	}
+	stale := stage(uploadTempPrefix+strings.Repeat("ab", 16)+".stage", old)
+	current := stage(uploadTempPrefix+strings.Repeat("cd", 16)+".stage", time.Now())
+	other := stage(uploadTempPrefix+"mine.stage", old) // not a name a replace makes
+	removeStaleUploads(dir, time.Now().Add(-time.Minute), time.Hour)
+	for p, want := range map[string]bool{stale: false, current: true, other: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s: exists %v, want %v", filepath.Base(p), err == nil, want)
+		}
 	}
 }

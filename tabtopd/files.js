@@ -16,9 +16,11 @@
 // it lists the live sessions and recent logins (see showSessions). If the
 // server can't be reached, it says so and tries again (see reconnect.js).
 
-import * as tunnel from "./tunnel.js";
+import { FolderModel } from "./folder-model.js";
+import { createTimeFormatter } from "./file-format.js";
+import { createSessionView } from "./sessions-view.js";
 import { deleteFiles, dropUploads } from "./drop.js";
-import { askFolder, askName, askYes, rowMenu, statusRow } from "./ui.js";
+import { askFolder, askName, rowMenu, statusRow } from "./ui.js";
 import { iconSVG, nameTab, navBar } from "./nav.js";
 import { call, folderInfo, makeFolder, shellPath, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip, humanBytes } from "./download.js";
@@ -30,6 +32,8 @@ import { warnExpiry } from "./expiry.js";
 // (see tunnel.js), added to the body, outlive a redraw.
 // Above it, links to the desktop and the terminal, Security and sessions,
 // and Log out (see nav.js), which stay as the page is redrawn.
+const timeFormatter = createTimeFormatter();
+const { setTimeZone, friendlyTime, exactTime } = timeFormatter;
 const page = document.createElement("main");
 const nav = navBar("files", { logOutIcon: true });
 document.body.replaceChildren(nav, page);
@@ -49,6 +53,7 @@ security.addEventListener("click", () => {
     location.hash = onSecurity() ? dirHash(lastDir) : SECURITY;
 });
 nav.querySelector(":scope > button").before(security);
+const { checkSecurity, showSessions } = createSessionView({ security, refresh: () => show(), formatTime: timeFormatter.shortTime });
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -80,10 +85,10 @@ function dirHash(dir) {
 
 // Counts calls to show, so one whose listing arrives after a later one's
 // draws nothing: moving quickly between folders ends on the last.
-let shown = 0;
+const folder = new FolderModel();
 
 // The folder the page shows, once one is.
-let shownDir = null;
+
 
 // show draws the folder named after the "#". It resolves to false if the
 // server couldn't be reached, having started trying again, else true.
@@ -95,7 +100,7 @@ async function show({ refresh = false } = {}) {
         showSecurity();
         return true;
     }
-    const me = ++shown;
+    const me = folder.begin();
     let dir, t;
     try {
         try {
@@ -105,13 +110,13 @@ async function show({ refresh = false } = {}) {
         }
         t = await call({ type: "list", path: dir });
     } catch (err) {
-        if (me !== shown) {
+        if (!folder.current(me)) {
             return true;
         }
         if (err.lost) {
             // The folder already shown stays, as it was last seen.
-            if (dir !== shownDir) {
-                shownDir = null;
+            if (dir !== folder.dir) {
+                folder.dir = null;
                 page.replaceChildren(breadcrumbs(dir ?? ""), el("p", { className: "error", textContent: err.message }));
             }
             reconnect("Can't reach the server.", () => show());
@@ -124,22 +129,27 @@ async function show({ refresh = false } = {}) {
             return show();
         }
         stopChanges();
-        shownDir = null;
+        folder.dir = null;
         page.replaceChildren(el("h1", { className: "crumbs", textContent: "~/Downloads" }), el("p", { className: "error", textContent: err.message }),
             el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
         return true;
     }
     t.close();
-    if (me !== shown) {
+    if (!folder.current(me)) {
         return true;
     }
     restoring = false;
     // The same folder drawn again keeps what's typed, ticked and focused.
-    const kept = dir === shownDir ? keepState() : null;
-    const arrived = dir !== shownDir;
-    shownDir = dir;
+    const kept = dir === folder.dir ? keepState() : null;
+    const arrived = dir !== folder.dir;
     lastDir = dir;
     reconnected();
+    folder.load(me, dir, t.reply.entries, kept);
+    return renderFolder({ dir, reply: t.reply, kept, arrived, refresh });
+}
+
+// Rendering consumes model state; requests and stale-response policy stay in show.
+function renderFolder({ dir, reply, kept, arrived, refresh }) {
     document.title = "Downloads /" + (dir ? dir + "/" : "");
 
     if (!refresh) {
@@ -147,9 +157,9 @@ async function show({ refresh = false } = {}) {
     }
     // Checked entries, by name, and the bar that offers what to do with
     // them, shown while there are any.
-    const entries = t.reply.entries;
-    setTimeZone(t.reply.tz || undefined);
-    const selected = new Map(entries.filter((e) => kept?.selected.has(e.name)).map((e) => [e.name, e]));
+    const entries = reply.entries;
+    setTimeZone(reply.tz || undefined);
+    const selected = folder.selected;
     const count = el("span");
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
@@ -163,10 +173,13 @@ async function show({ refresh = false } = {}) {
     // "Select all" then picks those shown.
     let visible = entries;
     const filter = el("input", { type: "search", className: "filter", placeholder: "Filter this folder  ( / )", autocomplete: "off",
-        spellcheck: false, value: entries.length ? kept?.filter ?? "" : "" });
+        spellcheck: false, value: folder.filter });
     filter.setAttribute("aria-label", "Filter this folder");
     const matches = el("span", { className: "hint" });
-    filter.addEventListener("input", () => drawRows());
+    filter.addEventListener("input", () => {
+        folder.filter = filter.value;
+        drawRows();
+    });
     const all = el("input", { type: "checkbox", title: "Select all shown" });
     const updateSelection = () => {
         const picked = visible.filter((e) => selected.has(e.name)).length;
@@ -176,9 +189,7 @@ async function show({ refresh = false } = {}) {
         all.indeterminate = picked > 0 && picked < visible.length;
     };
     all.addEventListener("change", () => {
-        for (const e of visible) {
-            all.checked ? selected.set(e.name, e) : selected.delete(e.name);
-        }
+        folder.selectVisible(all.checked);
         drawRows();
     });
 
@@ -189,7 +200,7 @@ async function show({ refresh = false } = {}) {
     const sortButton = (key, text) => {
         const th = el("th", { className: key === "name" ? "" : key === "size" ? "num size" : "num mod" },
             button("sort", text, () => {
-                sort = { key, desc: sort.key === key ? !sort.desc : key !== "name" };
+                folder.sort = { key, desc: folder.sort.key === key ? !folder.sort.desc : key !== "name" };
                 saveSort();
                 drawRows();
             }));
@@ -201,9 +212,9 @@ async function show({ refresh = false } = {}) {
 
     const drawRows = () => {
         for (const th of head.querySelectorAll("th[data-key]")) {
-            const on = th.dataset.key === sort.key;
-            th.setAttribute("aria-sort", on ? (sort.desc ? "descending" : "ascending") : "none");
-            th.querySelector("button").dataset.arrow = on ? (sort.desc ? "▼" : "▲") : "";
+            const on = th.dataset.key === folder.sort.key;
+            th.setAttribute("aria-sort", on ? (folder.sort.desc ? "descending" : "ascending") : "none");
+            th.querySelector("button").dataset.arrow = on ? (folder.sort.desc ? "▼" : "▲") : "";
         }
         // Focus in the list stays on the same row as it's redrawn.
         const focused = document.activeElement?.closest?.("tbody tr")?.dataset.name;
@@ -216,10 +227,10 @@ async function show({ refresh = false } = {}) {
             moveTarget(tr, dir, up);
             rows.push(tr);
         }
-        const q = filter.value.trim().toLocaleLowerCase();
-        visible = q ? entries.filter((e) => e.name.toLocaleLowerCase().includes(q)) : entries;
+        const q = folder.filter.trim();
+        visible = folder.visible;
         matches.textContent = q ? `${visible.length} of ${entries.length} shown` : "";
-        const sorted = sortEntries(visible);
+        const sorted = folder.sorted;
         // Previewing one steps through the rest shown that can be.
         const previews = sorted.filter((e) => !e.dir && previewable(e.name, e.bytes ?? 0));
         const open = (e) => preview(dir, previews, previews.indexOf(e), fetchFile);
@@ -235,7 +246,7 @@ async function show({ refresh = false } = {}) {
             }
             const box = el("input", { type: "checkbox", title: `Select ${e.name}`, checked: selected.has(e.name) });
             box.addEventListener("change", () => {
-                box.checked ? selected.set(e.name, e) : selected.delete(e.name);
+                folder.select(e.name, box.checked);
                 updateSelection();
             });
             const menu = rowMenu(`Actions for ${e.name}`, [
@@ -300,11 +311,11 @@ async function show({ refresh = false } = {}) {
         ...(entries.length ? [el("div", { className: "find" }, filter, matches)] : []),
         selection,
         el("table", { className: "file-table" }, el("thead", {}, head), tbody),
-        ...(t.reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${t.reply.max} entries, ` +
-            `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
+        ...(reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${reply.max} entries, ` +
+            `so only ${reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
-        ...(t.reply.total ? [diskSpace(t.reply.free, t.reply.total)] : []));
+        ...(reply.total ? [diskSpace(reply.free, reply.total)] : []));
     if (arrived) {
         scrollTo(0, scrolls.get(dir) ?? 0);
     }
@@ -332,7 +343,7 @@ function keepState() {
     return {
         filter: filter?.value ?? "",
         filterFocus: active && active === filter ? [filter.selectionStart, filter.selectionEnd] : null,
-        selected: new Set([...page.querySelectorAll("tbody td.sel input:checked")].map((box) => box.closest("tr").dataset.name)),
+        selected: folder.snapshot().selected,
         focused: page.contains(active) ? active.closest("tbody tr")?.dataset.name : undefined,
         focusedBox: !!active?.matches?.("td.sel input"),
     };
@@ -386,7 +397,7 @@ function watchChanges(dir) {
         }
         changes = null;
         changesFailed = Date.now() - started < 10000 ? changesFailed + 1 : 0;
-        setTimeout(() => shownDir === dir && show({ refresh: true }), Math.min(500 * 2 ** changesFailed, 60000));
+        setTimeout(() => folder.dir === dir && show({ refresh: true }), Math.min(500 * 2 ** changesFailed, 60000));
     })();
 }
 
@@ -405,7 +416,7 @@ function refreshSoon() {
     refreshTimer = setTimeout(() => {
         if (dragging || document.body.classList.contains("dropping") || page.querySelector("details.menu[open]")) {
             refreshSoon();
-        } else if (shownDir !== null) {
+        } else if (folder.dir !== null) {
             show({ refresh: true });
         }
     }, 300);
@@ -415,7 +426,7 @@ document.addEventListener("dragend", () => (dragging = false));
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
         stopChanges();
-    } else if (shownDir !== null) {
+    } else if (folder.dir !== null) {
         show({ refresh: true });  // catches up, and watches again
     }
 });
@@ -433,20 +444,20 @@ let restoring = false;
 
 let placeTimer = 0;
 addEventListener("scroll", () => {
-    if (shownDir === null) {
+    if (folder.dir === null) {
         return;
     }
-    scrolls.set(shownDir, scrollY);
+    scrolls.set(folder.dir, scrollY);
     clearTimeout(placeTimer);
     placeTimer = setTimeout(savePlace, 300);
 }, { passive: true });
 
 function savePlace() {
-    if (shownDir === null) {
+    if (folder.dir === null) {
         return;
     }
     try {
-        localStorage.setItem(PLACE_KEY, JSON.stringify({ dir: shownDir, y: Math.round(scrolls.get(shownDir) ?? 0) }));
+        localStorage.setItem(PLACE_KEY, JSON.stringify({ dir: folder.dir, y: Math.round(scrolls.get(folder.dir) ?? 0) }));
     } catch {
         // Not kept, then.
     }
@@ -505,11 +516,11 @@ function breadcrumbs(dir) {
 // The list's order: by name, size or time, either way round. Folders come
 // first either way, and those with the same size or time by name. It's
 // kept for the next visit, where the browser allows.
-let sort = { key: "name", desc: false };
+
 try {
     const saved = JSON.parse(localStorage.getItem("tabtop-files-sort"));
     if (["name", "size", "time"].includes(saved?.key)) {
-        sort = { key: saved.key, desc: !!saved.desc };
+        folder.sort = { key: saved.key, desc: !!saved.desc };
     }
 } catch {
     // The default, then.
@@ -517,88 +528,10 @@ try {
 
 function saveSort() {
     try {
-        localStorage.setItem("tabtop-files-sort", JSON.stringify(sort));
+        localStorage.setItem("tabtop-files-sort", JSON.stringify(folder.sort));
     } catch {
         // Only for this visit, then.
     }
-}
-
-const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare;
-
-function sortEntries(entries) {
-    const dirSign = (e) => (e.dir ? 0 : 1);
-    const value = { name: () => 0, size: (e) => e.bytes ?? 0, time: (e) => e.time ?? 0 }[sort.key];
-    return [...entries].sort((a, b) => {
-        let c = value(a) - value(b);
-        if (sort.key === "name" || c === 0) {
-            c = byName(a.name, b.name);
-        }
-        return dirSign(a) - dirSign(b) || (sort.desc ? -c : c);
-    });
-}
-
-// The time zone the page shows times in: the server's TZ, from its
-// listings, UTC until then, or if this browser doesn't know the zone.
-let timeZone;
-
-// clocks are the formats for times in timeZone, made again when it
-// changes.
-let clocks = null;
-
-function setTimeZone(tz = "UTC") {
-    try {
-        new Intl.DateTimeFormat(undefined, { timeZone: tz });
-    } catch {
-        tz = "UTC";  // a zone this browser doesn't know
-    }
-    if (clocks && tz === timeZone) {
-        return;
-    }
-    timeZone = tz;
-    const f = (options) => new Intl.DateTimeFormat(undefined, { timeZone, ...options });
-    clocks = {
-        relativeDay: new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }),
-        clock: f({ hour: "numeric", minute: "2-digit" }),
-        weekday: f({ weekday: "short" }),
-        dayMonth: f({ day: "numeric", month: "short" }),
-        withYear: f({ dateStyle: "medium" }),
-        exact: f({ weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit",
-            second: "2-digit", timeZoneName: "short" }),
-        short: f({ dateStyle: "short", timeStyle: "medium" }),
-        ymd: new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "numeric", day: "numeric" }),
-    };
-}
-setTimeZone();
-
-// dayNumber counts days to when's date in timeZone, to tell how many days
-// apart two times are there.
-function dayNumber(when) {
-    const part = Object.fromEntries(clocks.ymd.formatToParts(when).map((p) => [p.type, Number(p.value)]));
-    return Date.UTC(part.year, part.month - 1, part.day) / 86400000;
-}
-
-// friendlyTime is a time in Unix seconds as people say it, in the
-// browser's language and the page's time zone: today's and yesterday's
-// with the time, the rest of the past week's by the day and time, this
-// year's by the date, and older ones with the year. exactTime is the whole
-// of it, shown on hover.
-function friendlyTime(seconds) {
-    const when = new Date(seconds * 1000);
-    const now = new Date();
-    const days = dayNumber(now) - dayNumber(when);
-    if (days === 0 || days === 1) {
-        const name = clocks.relativeDay.format(-days, "day");  // "today", "yesterday"
-        return `${name[0].toUpperCase()}${name.slice(1)} ${clocks.clock.format(when)}`;
-    }
-    if (days > 1 && days < 7) {
-        return `${clocks.weekday.format(when)} ${clocks.clock.format(when)}`;
-    }
-    const year = (d) => clocks.ymd.formatToParts(d).find((p) => p.type === "year").value;
-    return year(when) === year(now) ? clocks.dayMonth.format(when) : clocks.withYear.format(when);
-}
-
-function exactTime(seconds) {
-    return clocks.exact.format(seconds * 1000);
 }
 
 // deletion is how deleteFiles (see drop.js) deletes the entry e in dir.
@@ -780,139 +713,14 @@ function listKeys(e) {
 
 // showSecurity shows the sessions and recent logins in place of a folder.
 function showSecurity() {
-    ++shown;  // a folder's listing still on its way draws nothing
+    folder.invalidate();  // a folder's listing still on its way draws nothing
     stopChanges();
-    shownDir = null;  // nor is it scrolled, saved as the place, or refreshed
+    folder.dir = null;  // nor is it scrolled, saved as the place, or refreshed
     document.title = "Security and sessions";
     const box = el("div", { id: "sessions" });
     page.replaceChildren(el("h1", { textContent: "Security and sessions" }), box);
     scrollTo(0, 0);
     showSessions(box);
-}
-
-// needsAttention says whether the sessions report r has anything new to
-// look at: a failed login since this session logged in (those before,
-// the summary shown after logging in told of) or since the warnings were
-// marked as seen, or a session used from another address since they
-// were. The Security and sessions button is marked if so. The times are
-// all the server's, so the browser's clock doesn't matter.
-function needsAttention(r) {
-    const seen = Date.parse(r.seen) || 0;
-    const since = Math.max(seen, Date.parse(r.sessions.find((s) => s.current)?.created) || 0);
-    const attention = r.logins.some((l) => !l.ok && Date.parse(l.time) > since) ||
-        r.sessions.some((s) => s.uses.slice(1).some((u) => Date.parse(u.first) > seen));
-    security.classList.toggle("attention", attention);
-    security.title = attention ? `${SECURITY_TITLE}: something here needs attention (failed logins, or a session used from another address)`
-        : SECURITY_TITLE;
-    security.setAttribute("aria-label", security.title);
-    return attention;
-}
-
-// checkSecurity marks the Security and sessions button if anything there
-// needs attention.
-async function checkSecurity() {
-    try {
-        const t = await call({ type: "sessions" });
-        t.close();
-        needsAttention(t.reply);
-    } catch {
-        // Checked again with the next folder.
-    }
-}
-
-// showSessions lists in box the logins that are still live, where each
-// has been used from, and recent logins, with a button that ends every
-// session.
-async function showSessions(box) {
-    let r;
-    try {
-        const t = await call({ type: "sessions" });
-        t.close();
-        r = t.reply;
-    } catch (err) {
-        box.replaceChildren(el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
-        return;
-    }
-    const when = (t) => clocks.short.format(new Date(t));
-    const everywhere = el("button", { className: "danger", textContent: "Log out everywhere" });
-    everywhere.addEventListener("click", async () => {
-        if (!(await askYes("Log out every session? Everything open in every desktop and terminal will disconnect, including this one.",
-            "Log out everywhere"))) {
-            return;
-        }
-        try {
-            await tunnel.request({ type: "logout-all" });
-        } catch {
-            // Forgotten here either way.
-        }
-        tunnel.forgetSession();
-        show();
-    });
-    const field = (label, props = {}, ...children) => {
-        const td = el("td", props, ...children);
-        td.dataset.label = label;
-        return td;
-    };
-    const rows = r.sessions.map((s) => {
-        const login = s.uses[0];
-        const others = s.uses.slice(1).map((u) => `${u.ip} (last ${when(u.last)})`).join(", ");
-        // Another session can be ended from here; this one logs out.
-        const end = s.current ? "" : button("end", "End…", () => endSession(s, when, box));
-        return el("tr", {}, field("Logged in", {}, when(s.created) + (s.current ? " (this browser)" : ""),
-            ...(s.browser ? [el("br"), el("span", { className: "hint", textContent: s.browser })] : [])),
-            field("Used from", { className: "name" }, login.ip, ...(others ? [el("br"), el("span", { className: "error", textContent: "also " + others })] : [])),
-            field("Open", { className: "num", textContent: s.open }),
-            field("Actions", { className: "act" }, end));
-    });
-    const logins = r.logins.map((l) => el("tr", {}, field("When", { textContent: when(l.time) }),
-        field("Used from", { className: "name", textContent: l.browser ? `${l.ip}, ${l.browser}` : l.ip }),
-        field("Result", { className: l.ok ? "" : "error", textContent: l.ok ? "logged in" : "failed" })));
-    const idle = r.idle_minutes ? ` A login with nothing open ends after ${r.idle_minutes} minutes.` : "";
-    const attention = needsAttention(r);
-    const markSeen = button("seen", "Mark as seen", async () => {
-        markSeen.disabled = true;
-        try {
-            (await call({ type: "seen" })).close();
-        } catch (err) {
-            const row = statusRow("");
-            row.set(`Not marked as seen: ${err.message}`, true);
-            row.finish();
-        }
-        await showSessions(box);
-    });
-    box.replaceChildren(
-        ...(attention ? [el("p", { className: "attention" }, "Something here is new since you last looked: a failed login, "
-            + "or a session used from another address. ", markSeen)] : []),
-        el("div", { className: "bar" }, el("h2", { textContent: "Sessions" }), everywhere),
-        el("table", { className: "sessions-table" }, el("tr", {}, el("th", { textContent: "Logged in" }), el("th", { textContent: "Used from" }),
-            el("th", { className: "num", textContent: "Open" }), el("th", { className: "act" })), ...rows),
-        el("h2", { textContent: "Recent logins" }),
-        el("table", { className: "logins-table" }, ...(logins.length ? logins : [el("tr", {}, field("", { textContent: "None since the server started." }))])),
-        el("p", { className: "hint", textContent: "A session used from an address it didn't log in from is marked in red. "
-            + "This page could hide that if it was changed on the way; the gateway also logs it (docker logs). "
-            + "Browsers name themselves, so a name tells logins apart but proves nothing. "
-            + "End… logs another session out." + idle }));
-}
-
-
-// endSession asks, then ends the session s, another than this one, as
-// listed in box, and lists the sessions again.
-async function endSession(s, when, box) {
-    const by = s.browser ? ` with ${s.browser}` : "";
-    if (!(await askYes(`End the session that logged in ${when(s.created)} from ${s.uses[0].ip}${by}? ` +
-        "Everything it has open closes, and it has to log in again.", "End it"))) {
-        return;
-    }
-    const row = statusRow("Ending a session");
-    try {
-        const t = await call({ type: "end-session", name: s.handle });
-        t.close();
-        row.set(`Ended the session from ${s.uses[0].ip}`);
-    } catch (err) {
-        row.set(`The session wasn't ended: ${err.message}`, true);
-    }
-    row.finish();
-    await showSessions(box);
 }
 
 // uploadButton makes the page's upload button (see drop.js).

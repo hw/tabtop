@@ -138,6 +138,10 @@ export async function collect(t, size, progress, type = "application/octet-strea
     const chunks = [];
     let got = 0;
     for (let data; (data = await t.nextChunk());) {
+        if (size !== null && got + data.byteLength > size) {
+            t.close();
+            throw new Error("more than the file's size");
+        }
         chunks.push(new Blob([data]));
         got += data.byteLength;
         progress(got);

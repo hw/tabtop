@@ -57,7 +57,9 @@ func newUsersFile(t *testing.T, pin string) *server {
 	if err := os.WriteFile(f, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return &server{usersFile: f}
+	c := defaultServerConfig()
+	c.usersFile = f
+	return &server{serverConfig: c}
 }
 
 func code(offset int64) string { return hotp(testKey, time.Now().Unix()/30+offset, 6) }
@@ -109,7 +111,7 @@ func TestOathAuthenticate(t *testing.T) {
 // which fail: only maxFailures of them may be checked, however they
 // interleave.
 func TestLoginLimitParallel(t *testing.T) {
-	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	g := &server{serverConfig: defaultServerConfig()}
 	started := make(chan bool, 50)
 	var wg sync.WaitGroup
 	for range cap(started) {
@@ -156,7 +158,7 @@ func fillLoginWork(t *testing.T) {
 // TestFailuresSwept checks that IPs whose failures have expired are
 // forgotten without being looked up again.
 func TestFailuresSwept(t *testing.T) {
-	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	g := &server{serverConfig: defaultServerConfig(), authentication: authentication{failures: map[string][]time.Time{}}}
 	old := time.Now().Add(-failureWindow)
 	for i := range 100 {
 		g.failures[fmt.Sprint("2001:db8::", i)] = []time.Time{old}
@@ -189,7 +191,7 @@ func TestListDirTruncated(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer f.Close()
-		entries, truncated, err := listDir(root, ".", f)
+		entries, truncated, err := (&downloadStore{root: root}).listDir(".", f)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -220,7 +222,7 @@ func TestClientIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := &server{trustedProxies: trusted}
+	g := &server{serverConfig: serverConfig{trustedProxies: trusted}}
 	for _, tc := range []struct {
 		name, peer string
 		xff        []string
@@ -260,7 +262,7 @@ func TestClientIPCloudflare(t *testing.T) {
 	if got := strings.Join(describePrefixes(trusted), " "); got != "cloudflare 172.18.0.5/32" {
 		t.Errorf("described as %q", got)
 	}
-	g := &server{trustedProxies: trusted}
+	g := &server{serverConfig: serverConfig{trustedProxies: trusted}}
 	for _, tc := range []struct {
 		name, peer string
 		xff        []string
@@ -309,7 +311,7 @@ func TestClientIPTrustNProxies(t *testing.T) {
 		{"count larger than the chain: leftmost entry", 3, "198.51.100.7:5000", []string{"203.0.113.9"}, "203.0.113.9"},
 		{"IPv4-mapped peer counts too", 1, "[::ffff:198.51.100.7]:5000", []string{"203.0.113.9"}, "203.0.113.9"},
 	} {
-		g := &server{trustedProxies: trusted, trustNProxies: tc.n}
+		g := &server{serverConfig: serverConfig{trustedProxies: trusted, trustNProxies: tc.n}}
 		r, _ := http.NewRequest("GET", "/", nil)
 		r.RemoteAddr = tc.peer
 		for _, v := range tc.xff {
@@ -321,7 +323,7 @@ func TestClientIPTrustNProxies(t *testing.T) {
 	}
 
 	// The trace says why each hop is trusted.
-	g := &server{trustedProxies: trusted, trustNProxies: 1}
+	g := &server{serverConfig: serverConfig{trustedProxies: trusted, trustNProxies: 1}}
 	r, _ := http.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "198.51.100.7:5000"
 	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.1")
@@ -339,7 +341,7 @@ func TestClientIPTrustNProxies(t *testing.T) {
 	if !g.secure(r) {
 		t.Error("X-Forwarded-Proto from a counted proxy ignored")
 	}
-	if (&server{trustedProxies: trusted}).secure(r) {
+	if (&server{serverConfig: serverConfig{trustedProxies: trusted}}).secure(r) {
 		t.Error("X-Forwarded-Proto believed without a count")
 	}
 }
@@ -391,7 +393,7 @@ func TestServeUnderBasePath(t *testing.T) {
 
 func TestSecure(t *testing.T) {
 	trusted, _ := parsePrefixes("10.0.0.1")
-	g := &server{trustedProxies: trusted}
+	g := &server{serverConfig: serverConfig{trustedProxies: trusted}}
 	for _, tc := range []struct {
 		name, peer, proto string
 		tls, want         bool
@@ -447,7 +449,7 @@ func TestLimitKey(t *testing.T) {
 // TestLoginLimitIPv6 counts failed logins from one /64 together, whichever
 // of its addresses they come from.
 func TestLoginLimitIPv6(t *testing.T) {
-	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	g := &server{serverConfig: defaultServerConfig()}
 	for i := range maxFailures {
 		ip := fmt.Sprintf("2001:db8:0:1::%x", i+1)
 		if !g.beginLogin(ip) {
@@ -467,7 +469,7 @@ func TestLoginLimitIPv6(t *testing.T) {
 // maxSiteFailures have failed within the window, and stops once they're
 // older.
 func TestLoginTurn(t *testing.T) {
-	g := &server{failures: map[string][]time.Time{}, pending: map[string]int{}}
+	g := &server{serverConfig: defaultServerConfig()}
 	for i := range maxSiteFailures - 1 {
 		ip := fmt.Sprintf("198.51.100.%d", i+1)
 		g.beginLogin(ip)
@@ -489,15 +491,15 @@ func TestLoginTurn(t *testing.T) {
 	if len(g.siteFailures) != maxSiteFailures {
 		t.Errorf("%d site failures kept, want %d", len(g.siteFailures), maxSiteFailures)
 	}
-	g.mu.Lock()
+	g.authMu.Lock()
 	g.nextLogin = time.Now().Add(-time.Second)
-	g.mu.Unlock()
+	g.authMu.Unlock()
 	if !g.loginTurn() {
 		t.Fatal("refused after siteThrottle")
 	}
-	g.mu.Lock()
+	g.authMu.Lock()
 	g.siteFailures[0] = time.Now().Add(-failureWindow)
-	g.mu.Unlock()
+	g.authMu.Unlock()
 	if !g.loginTurn() || !g.loginTurn() || g.throttling {
 		t.Fatal("still slowed down once the oldest failure expired")
 	}

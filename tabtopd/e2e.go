@@ -17,9 +17,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -42,7 +40,7 @@ const (
 	downloadSWCSP = "default-src 'none'"
 )
 
-//go:embed tunnel.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -79,10 +77,10 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Write(audioJS)
-	case name == "tunnel.js":
+	case name == "tunnel-crypto.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
+	case name == "transfer.js" || name == "folder-model.js" || name == "osc.js" || name == "tunnel.js" || name == "tunnel-protocol.js" || name == "session-state.js" || name == "session.js" || name == "login-ui.js" || name == "file-format.js" || name == "sessions-view.js" || name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
 		name == "requests.js" || name == "preview.js" || name == "reconnect.js" || name == "download.js" || name == "expiry.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "desktop.css":
@@ -221,48 +219,34 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 		t.Close(websocket.StatusPolicyViolation, "bad request")
 		return
 	}
-	reply := func(v map[string]any) bool {
-		if v == nil {
-			v = map[string]any{}
-		}
-		v["ok"] = true
-		return writeJSON(t, v) == nil
-	}
-	fail := func(msg string) {
-		writeJSON(t, map[string]any{"error": msg})
-		t.Close(websocket.StatusNormalClosure, "")
-	}
+	r := &tunnelResponder{t: t}
 
 	switch req.Type {
 	case "vnc":
 		t.c.SetReadLimit(maxClientMessage + tunnelOverhead)
-		if reply(nil) {
+		if r.accept(nil) {
 			g.bridgeDesktop(t, session, ip)
 		}
 
 	case "logout":
 		g.endSession(session, "Logged out.", t)
-		reply(nil)
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(nil)
 
 	case "end-session":
 		// Another of the sessions listed, by its handle (see sessionsReport).
 		if !g.endSessionByHandle(req.Name, session, ip) {
-			fail("That session is over already, or it's this one.")
+			r.fail("That session is over already, or it's this one.")
 			return
 		}
-		reply(nil)
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(nil)
 
 	case "logout-all":
 		log.Printf("all sessions logged out from %s", ip)
 		g.endAllSessions("Logged out everywhere.", t)
-		reply(nil)
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(nil)
 
 	case "sessions":
-		reply(g.sessionsReport(session, t))
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(g.sessionsReport(session, t))
 
 	case "seen":
 		// The files page's security warnings, marked as seen: what's
@@ -271,77 +255,76 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 		g.seen = time.Now()
 		g.mu.Unlock()
 		log.Printf("security warnings marked as seen from %s", ip)
-		reply(nil)
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(nil)
 
 	case "tty":
 		if g.termDir == "" {
-			fail("The terminal is turned off.")
+			r.fail("The terminal is turned off.")
 			return
 		}
 		if !g.openTTY(session) {
-			fail("Too many open terminals.")
+			r.fail("Too many open terminals.")
 			return
 		}
 		defer g.closeTTY(session)
 		t.c.SetReadLimit(maxTTYMessage + tunnelOverhead)
 		// search: whether there's tmux's history to search (see tty.go).
-		if reply(map[string]any{"search": g.ttyCommand == ""}) {
+		if r.accept(map[string]any{"search": g.ttyCommand == ""}) {
 			g.serveTTY(t, session, ip)
 		}
 
 	case "list", "file":
-		g.tunnelFiles(t, req, reply, fail)
+		g.tunnelFiles(t, req, r)
 
 	case "upload":
-		g.tunnelUpload(t, req, reply, fail)
+		g.tunnelUpload(t, req, r)
 
 	case "mkdir":
-		g.tunnelMkdir(t, req, reply, fail)
+		g.tunnelMkdir(t, req, r)
 
 	case "zip":
-		g.tunnelZip(t, req, ip, reply, fail)
+		g.tunnelZip(t, req, ip, r)
 
 	case "rename":
-		g.tunnelRename(t, req, ip, reply, fail)
+		g.tunnelRename(t, req, ip, r)
 
 	case "move":
-		g.tunnelMove(t, req, ip, reply, fail)
+		g.tunnelMove(t, req, ip, r)
 
 	case "watch":
-		g.tunnelWatch(t, reply, fail)
+		g.tunnelWatch(t, r)
 
 	case "changes":
-		g.tunnelChanges(t, req, reply, fail)
+		g.tunnelChanges(t, req, r)
 
 	case "delete":
-		g.tunnelDelete(t, req, ip, reply, fail)
+		g.tunnelDelete(t, req, ip, r)
 
 	case "audio":
 		if g.audio == nil {
-			fail("Desktop audio is turned off.")
+			r.fail("Desktop audio is turned off.")
 			return
 		}
 		// Only while this session has the desktop open, from the same IP.
 		l, err := g.audio.join(session, ip)
 		switch {
 		case errors.Is(err, errAudioDenied):
-			fail("Connect to the desktop first.")
+			r.fail("Connect to the desktop first.")
 			return
 		case err != nil:
 			log.Printf("audio: %v", err)
-			fail("Audio is unavailable.")
+			r.fail("Audio is unavailable.")
 			return
 		}
 		log.Printf("audio tunnel listener from %s joined", ip)
 		defer log.Printf("audio tunnel listener from %s left", ip)
 		defer g.audio.leave(l)
-		if reply(nil) {
+		if r.accept(nil) {
 			streamAudio(t, l)
 		}
 
 	default:
-		fail("Unknown request.")
+		r.fail("Unknown request.")
 	}
 }
 
@@ -352,6 +335,18 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 // one for it (see rfbauth.go). Logging out, or the session ending, closes
 // it.
 func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
+	cooling := g.vncBackoff.begin()
+	reserved := true
+	defer func() {
+		if reserved {
+			g.vncBackoff.release()
+		}
+	}()
+	if cooling && g.vncX509 {
+		// Logged once, when it failed (see vncBackoff).
+		t.Close(websocket.StatusTryAgainLater, "cannot log in to the desktop")
+		return
+	}
 	vnc, err := g.dialVNC()
 	if err != nil {
 		log.Printf("cannot reach VNC server: %v", err)
@@ -359,26 +354,51 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 		return
 	}
 	conn := &tunnelConn{t: t}
+	conn.SetDeadline(time.Now().Add(rfbHandshakeTimeout))
 	// With a password for it (VNC_UPSTREAM_PASSWORD), the VNC server gets
 	// that, and noVNC no security (see rfbauth.go). The login's own
 	// password is never sent anywhere.
-	if password := g.vncPassword(); password != "" || g.vncX509 {
+	// While cooling down without VNC_X509, the gateway doesn't log in, and
+	// noVNC asks for the server's password (see vncBackoff).
+	if password := g.vncPassword(); !cooling && (password != "" || g.vncX509) {
 		if password == "" {
 			vnc.Close()
 			log.Printf("VNC_X509 needs VNC_UPSTREAM_PASSWORD, and there's none")
 			t.Close(websocket.StatusInternalError, "cannot log in to the desktop")
 			return
 		}
-		if vnc, err = g.vncSecurity(vnc, conn, password); err != nil {
-			log.Printf("logging in to the VNC server: %v", err)
+		result, authErr := g.vncSecurity(vnc, conn, password)
+		vnc, err = result.conn, authErr
+		switch {
+		case result.outcome == vncAuthenticated:
+			g.vncBackoff.record(nil)
+			g.vncBackoff.succeeded()
+		case result.outcome == vncPasswordRejected && err == nil:
+			g.vncBackoff.record(errVNCPasswordRejected)
+		case err != nil && !errors.Is(err, errPageHandshake):
+			g.vncBackoff.record(err)
+		}
+		if err != nil {
+			if errors.Is(err, errPageHandshake) {
+				// The page went part way: not a failed login.
+				log.Printf("desktop tunnel from %s: %v", ip, err)
+			} else {
+				log.Printf("logging in to the VNC server: %v; not trying again for %v", err, g.vncBackoff.failed())
+			}
 			if vnc != nil {
 				vnc.Close()
 			}
 			t.Close(websocket.StatusInternalError, "cannot log in to the desktop")
 			return
 		}
+		if result.outcome == vncPasswordRejected {
+			log.Printf("noVNC asks for the VNC server's password; VNC_UPSTREAM_PASSWORD isn't tried again for %v", g.vncBackoff.failed())
+		}
 	}
 	defer vnc.Close()
+	conn.SetDeadline(time.Time{})
+	g.vncBackoff.release()
+	reserved = false
 	log.Printf("desktop tunnel from %s opened", ip)
 	g.audio.link(session, ip)
 	defer g.audio.unlink(session, ip)
@@ -396,144 +416,34 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 // tunnelFiles answers a list request with the directory's entries, and a
 // file request with the file's name and size, then its contents in data
 // messages.
-// chunkWriter sends what's written to it to the page in data messages of
-// fileChunk bytes. The page acknowledges each once it has used it, with an
-// empty data message, and at most fileWindow are unacknowledged, so a slow
-// or paused download holds the sender back here instead of piling up in
-// the page. Once the page goes, or leaves the writer waiting for room for
-// fileStall, writes fail.
-type chunkWriter struct {
-	t       *tunnel
-	ctx     context.Context
-	cancel  context.CancelFunc
-	credits chan struct{}
-	sent    atomic.Int64
-	stall   *time.Timer
-	buf     []byte
-}
-
-// errStalled is a chunkWriter's error once the page stops acknowledging.
-var errStalled = errors.New("the download stalled")
-
-func newChunkWriter(t *tunnel) *chunkWriter {
-	w := &chunkWriter{t: t, credits: make(chan struct{}, fileWindow), stall: time.NewTimer(fileStall),
-		buf: make([]byte, 0, fileChunk)}
-	w.stall.Stop() // runs only while waiting for room
-	for range fileWindow {
-		w.credits <- struct{}{}
-	}
-	w.ctx, w.cancel = context.WithCancel(context.Background())
-	go func() {
-		defer w.cancel() // ends the writes if the page goes
-		for acked := int64(0); ; acked++ {
-			typ, p, err := t.Read(w.ctx)
-			if err != nil {
-				t.CloseNow()
-				return
-			}
-			if typ != websocket.MessageBinary || len(p) != 0 || acked >= w.sent.Load() {
-				t.Close(websocket.StatusPolicyViolation, "bad acknowledgement")
-				return
-			}
-			w.credits <- struct{}{} // never blocks: one was taken for each chunk sent
-		}
-	}()
-	return w
-}
-
-func (w *chunkWriter) Write(p []byte) (int, error) {
-	n := 0
-	for len(p) > 0 {
-		k := min(len(p), fileChunk-len(w.buf))
-		w.buf = append(w.buf, p[:k]...)
-		p, n = p[k:], n+k
-		if len(w.buf) == fileChunk {
-			if err := w.flush(); err != nil {
-				return n, err
-			}
-		}
-	}
-	return n, nil
-}
-
-// flush sends what's buffered, once the page has room for it.
-func (w *chunkWriter) flush() error {
-	if len(w.buf) == 0 {
-		return nil
-	}
-	// Only time spent waiting for the page counts: a zip can take long
-	// between chunks on its own, walking a big folder.
-	select {
-	case <-w.credits:
-	default:
-		w.stall.Reset(fileStall)
-		select {
-		case <-w.credits:
-		case <-w.ctx.Done():
-			return w.ctx.Err()
-		case <-w.stall.C:
-			return errStalled
-		}
-		w.stall.Stop()
-	}
-	w.sent.Add(1)
-	if err := w.t.Write(w.ctx, websocket.MessageBinary, w.buf); err != nil {
-		return err
-	}
-	w.buf = w.buf[:0]
-	return nil
-}
-
-// fail ends the tunnel after err from Write or from what was being sent.
-func (w *chunkWriter) fail(err error) {
-	switch {
-	case errors.Is(err, errStalled):
-		w.t.Close(websocket.StatusPolicyViolation, "the download stalled")
-	case w.ctx.Err() != nil: // the page went
-	default:
-		w.t.Close(websocket.StatusInternalError, "read error")
-	}
-}
-
-// stop ends the acknowledgement reader.
-func (w *chunkWriter) stop() {
-	w.cancel()
-	w.stall.Stop()
-}
-
-func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string]any) bool, fail func(string)) {
+func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	// os.Root confines every lookup to the directory: ".." and symlinks
 	// leading outside it fail, even if they change between checks.
-	root, err := os.OpenRoot(g.downloadsDir)
+	store, err := openDownloadStore(g.downloadsDir)
 	if err != nil {
-		fail("The downloads folder is missing.")
+		r.fail("The downloads folder is missing.")
 		return
 	}
-	defer root.Close()
+	defer store.Close()
 	name := strings.Trim(req.Path, "/")
 	if name == "" {
 		name = "."
 	}
-	f, err := root.Open(name)
+	f, st, err := store.open(name)
 	if err != nil {
-		fail("Not found.")
+		r.fail("Not found.")
 		return
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		fail("Not found.")
-		return
-	}
 
 	if req.Type == "list" {
 		if !st.IsDir() {
-			fail("Not a folder.")
+			r.fail("Not a folder.")
 			return
 		}
-		entries, truncated, err := listDir(root, name, f)
+		entries, truncated, err := store.listDir(name, f)
 		if err != nil {
-			fail("Not found.")
+			r.fail("Not found.")
 			return
 		}
 		out := make([]fileEntry, 0, len(entries))
@@ -542,29 +452,28 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, reply func(map[string
 				Modified: e.Modified, Time: e.time})
 		}
 		res := map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone}
-		if free, total, ok := g.uploadRoom(); ok {
+		if free, total, ok := g.transfers.uploadRoom(g.downloadsDir); ok {
 			res["free"], res["total"] = free, total
 		}
-		reply(res)
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(res)
 		return
 	}
 
 	if !st.Mode().IsRegular() {
-		fail("Not a file.")
+		r.fail("Not a file.")
 		return
 	}
-	if !reply(map[string]any{"name": st.Name(), "size": st.Size()}) {
+	if !r.accept(map[string]any{"name": st.Name(), "size": st.Size()}) {
 		return
 	}
 	w := newChunkWriter(t)
 	defer w.stop()
-	if _, err := io.Copy(w, f); err != nil {
+	if _, err := io.CopyN(w, f, st.Size()); err != nil {
 		w.fail(err)
 		return
 	}
 	if w.flush() == nil {
-		t.Close(websocket.StatusNormalClosure, "")
+		r.finish(nil)
 	}
 }
 

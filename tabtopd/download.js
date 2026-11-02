@@ -8,6 +8,7 @@
 // panel (see ui.js).
 
 import { call, collect, complete, saveBlob } from "./requests.js";
+import { runTransfer } from "./transfer.js";
 import { statusRow } from "./ui.js";
 
 function el(tag, props = {}, ...children) {
@@ -48,84 +49,60 @@ function worker() {
     return downloadWorker;
 }
 
-// fetchFile downloads the file at path. How it goes shows in the
-// transfers panel, with a Cancel button, and Retry if it fails.
-export async function fetchFile(path) {
-    const label = path.split("/").pop();
-    const row = statusRow(`${label}: starting`, true);
-    let retry;
-    try {
-        const sw = await worker();
-        const t = await call({ type: "file", path });
-        row.signal.addEventListener("abort", () => t.close());
-        if (row.signal.aborted) {
-            t.close();  // while it was opening
-        }
-        const { name, size } = t.reply;
-        const progress = (got) => {
-            row.set(`${name}: ${size ? Math.floor(got * 100 / size) : 100}%`);
-            row.progress(size ? got / size : 1);
-        };
-        const failed = await (sw ? streamFile : saveFile)(t, name, size, progress, sw);
-        if (row.signal.aborted) {
-            row.set(`${name}: cancelled`);
-        } else if (failed) {
-            row.set(`${name}: ${failed}`, true);
-            retry = () => fetchFile(path);
-        } else {
-            row.set(`${name}: downloaded, ${humanBytes(size)}`);
-        }
-    } catch (err) {
-        row.set(`${label}: not downloaded: ${err.message}`, true);
-        retry = () => fetchFile(path);
-    }
-    row.finish(retry);
+// File and ZIP downloads share lifecycle handling; their wire metadata and
+// progress presentation remain different (ZIP sizes are unknown).
+export function fetchFile(path) {
+    return fetchDownload({ type: "file", path }, path.split("/").pop(), "starting", () => fetchFile(path));
 }
 
-// The biggest a zip request can be: the server takes requests up to 1 MiB.
+// Leave room below the gateway's 1 MiB request limit.
 const MAX_REQUEST = 1000000;
 
-// fetchZip downloads names, in the folder dir, as one zip, which the server
-// makes as it sends it. How it goes shows in the status list, with a
-// Cancel button, and Retry if it fails.
-export async function fetchZip(dir, names) {
+export function fetchZip(dir, names) {
     const label = names.length === 1 ? `${names[0]}/` : `${names.length} items`;
-    const row = statusRow(`${label}: zipping`, true);
-    let retry;
-    try {
-        const req = { type: "zip", path: dir, names };
-        if (JSON.stringify(req).length > MAX_REQUEST) {
-            throw new Error("too many to download at once; pick fewer");
-        }
-        const sw = await worker();
-        const t = await call(req);
-        row.signal.addEventListener("abort", () => t.close());
-        if (row.signal.aborted) {
-            t.close();  // while it was opening
-        }
-        const { name } = t.reply;
-        let bytes = 0;
-        const progress = (got) => {
-            bytes = got;
-            row.set(`${name}: ${humanBytes(got)}`);
-            row.progress(null);
-        };
-        const failed = await (sw ? streamFile : saveFile)(t, name, null, progress, sw);
-        if (row.signal.aborted) {
-            row.set(`${name}: cancelled`);
-        } else if (failed) {
-            row.set(`${name}: ${failed}`, true);
-            retry = () => fetchZip(dir, names);
-        } else if (t.trailer.skipped) {
-            row.set(`${name}: downloaded, ${humanBytes(bytes)}, without ${t.trailer.skipped} files or folders that couldn't be read`, true);
-        } else {
-            row.set(`${name}: downloaded, ${humanBytes(bytes)}`);
-        }
-    } catch (err) {
-        row.set(`${label}: not downloaded: ${err.message}`, true);
-        retry = () => fetchZip(dir, names);
+    return fetchDownload({ type: "zip", path: dir, names }, label, "zipping", () => fetchZip(dir, names));
+}
+
+async function fetchDownload(req, label, starting, retry) {
+    const zip = req.type === "zip";
+    const row = statusRow(`${label}: ${starting}`, true);
+    let name = label;
+    let opened = false;
+    const result = await runTransfer({
+        signal: row.signal, retry,
+        progress: (bytes, size) => {
+            row.set(zip ? `${name}: ${humanBytes(bytes)}` : `${name}: ${size ? Math.floor(bytes * 100 / size) : 100}%`);
+            row.progress(zip ? null : size ? bytes / size : 1);
+        },
+        run: async ({ signal, own, progress }) => {
+            if (zip && JSON.stringify(req).length > MAX_REQUEST) {
+                throw new Error("too many to download at once; pick fewer");
+            }
+            const sw = await worker();
+            signal.throwIfAborted();
+            const t = await call(req);
+            own(() => t.close());
+            name = t.reply.name;
+            opened = true;
+            const size = zip ? null : t.reply.size;
+            let bytes = 0;
+            const failed = await (sw ? streamFile : saveFile)(t, name, size, (got) => {
+                bytes = got;
+                progress(got, size);
+            }, sw, own);
+            if (failed) { throw new Error(failed); }
+            return { bytes: zip ? bytes : size, skipped: t.trailer?.skipped ?? 0 };
+        },
+    });
+    if (result.state === "cancelled") {
+        row.set(`${name}: cancelled`);
+    } else if (result.state === "failed") {
+        row.set(`${name}: ${opened ? "" : "not downloaded: "}${result.error.message}`, true);
+    } else {
+        const { bytes, skipped } = result.value;
+        row.set(`${name}: downloaded, ${humanBytes(bytes)}${skipped ? `, without ${skipped} files or folders that couldn't be read` : ""}`, !!skipped);
     }
-    row.finish(retry);
+    row.finish(result.retry);
 }
 
 // humanBytes is a size as the listing shows it (see humanSize in main.go):
@@ -148,7 +125,7 @@ const STREAM_IDLE = 30000;
 // browser's download asks for more, and returns why it failed, or "". The
 // service worker's response has the file's size, so the browser fails the
 // download, rather than keeping it, if this ends early.
-function streamFile(t, name, size, progress, sw) {
+function streamFile(t, name, size, progress, sw, own) {
     return new Promise((resolve) => {
         const { port1, port2 } = new MessageChannel();
         const id = crypto.randomUUID();
@@ -162,12 +139,13 @@ function streamFile(t, name, size, progress, sw) {
             finish("failed: the download stopped");
         };
         function finish(failed) {
+            if (done) { return; }
             done = true;
             clearInterval(ping);
             clearTimeout(idle);
+            clearTimeout(fallback);
             port1.onmessage = null;
-            t.close();
-            setTimeout(() => frame.remove(), 1000);
+            setTimeout(() => { frame.remove(); port1.close(); }, 1000);
             resolve(failed);
         }
         port1.onmessage = async (e) => {
@@ -211,6 +189,7 @@ function streamFile(t, name, size, progress, sw) {
             }
         };
         const fallback = setTimeout(openFrame, 2000);
+        own(() => finish("cancelled"));
         sw.postMessage({ type: "download", id, name, size, port: port2 }, [port2]);
     });
 }

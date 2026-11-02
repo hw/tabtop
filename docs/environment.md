@@ -32,8 +32,9 @@ are the code; everything before them is the password.
 The password is chosen in this order:
 
 1. `VNC_PASSWORD`, if the variable is set. It isn't saved to the home
+
    directory or printed to the log. An empty value means TOTP-only for this
-   run.
+    run.
 2. The password saved at `~/.config/tabtop/password`.
 3. No password: TOTP-only (backward compatible).
 
@@ -60,11 +61,6 @@ Without it, TabTop uses the [default secret](#default-totp-secret),
 `JBSWY3DPEHPK3PXP`, which is public, and logs it with a warning at every
 start. It isn't saved, so a container created later with
 `VNC_TOTP_SECRET` uses that instead.
-
-Earlier versions saved a secret at `~/.config/tabtop/totp-secret` and used
-it when the variable was unset. It's no longer read: a container with such
-a file and no `VNC_TOTP_SECRET` says so in its log. To keep using that
-secret, set `VNC_TOTP_SECRET` to the file's contents.
 
 Spaces, `=` padding and lowercase are accepted, so you can paste a secret the
 way an authenticator app or password manager shows it.
@@ -147,9 +143,10 @@ server isn't encrypted by TabTop, so keep it on a private network, a
 socket, or an SSH tunnel. If the server asks for a VNC password, the
 gateway gives it [`VNC_UPSTREAM_PASSWORD`](#vnc_upstream_password); without
 one, or if the server turns it down, noVNC asks for the server's own after
-the TabTop login. `/healthz` checks the server by
-connecting and closing the connection straight away, at most once every
-10 seconds however often it's asked.
+the TabTop login. `/healthz` doesn't connect to a server reached over TCP,
+which could get the gateway blacklisted (see
+[Health checks](health-checks.md)); the doctor report shows how the
+gateway's last login to it went.
 
 ```sh
 docker run -p 6080:6080 -e VNC_TOTP_SECRET=... -e VNC_ADDR=10.0.0.5:5900 tabtop
@@ -181,9 +178,12 @@ anything else.
 Without `VNC_X509`, noVNC asks for the server's password itself, as
 without this variable, when:
 
-- the server turns it down: the log says so;
+- the server turns it down: the log says so, and the gateway doesn't try
+  it again for 30 seconds, then twice as long after each further
+  rejection, up to 10 minutes, so it isn't sent on every reconnect;
+  meanwhile noVNC asks;
 - the server offers only other kinds of login, such as VeNCrypt (TLS),
-  RealVNC's RA2 or Apple's, which the gateway leaves to noVNC.
+RealVNC's RA2 or Apple's, which the gateway leaves to noVNC.
 
 ## `VNC_X509`
 
@@ -199,7 +199,16 @@ subjectAltName. `0` (default) leaves the connection as the server has it.
 Nothing falls back to an unencrypted login: if the server doesn't offer
 VeNCrypt and the chosen kind, its certificate doesn't check out, or it
 turns the password down, the desktop doesn't connect, and the log says
-why. The server must have X509Vnc or X509Plain turned on, with its
+why. After a failed login, the gateway doesn't try the
+server again for 30 seconds, then twice as long after each further
+failure, up to 10 minutes: noVNC reconnects every 2 seconds, and each try
+would be another failed login there, which could get the gateway's
+address blacklisted or, with X509Plain, the account locked. A login that
+works resets it, and the doctor report shows while it's waiting. The
+[doctor report](health-checks.md) shows how the last login went: the kind
+and the verified certificate, or why it failed. A page closed part way
+through connecting isn't a failed login. The server must have X509Vnc or
+X509Plain turned on, with its
 certificate and key; see
 [Encrypting the connection](lite.md#encrypting-the-connection-x509vnc-and-x509plain)
 for TigerVNC.
@@ -220,10 +229,11 @@ won't start with it set.
 ## `VNC_CA_FILE`
 
 With `VNC_X509=1`, the path in the container of a file of PEM certificates
-to trust, beside the system's: the VNC server's own, for a self-signed
-one, or a private CA's. Mount it read-only, readable by `VNC_USER`; the
-container won't start if it isn't. A certificate from a public CA needs
-none.
+to trust, instead of the system's: the VNC server's own, for a self-signed
+one, or a private CA's. Only those are trusted then, so no public CA's
+certificate for the same name would do. Mount it read-only, readable by
+`VNC_USER`; the container won't start if it isn't. A certificate from a
+public CA needs none.
 
 ## `VNC_SERVER_NAME`
 
@@ -238,11 +248,11 @@ host name (then it's required).
 connects:
 
 - `remote`: the desktop is resized to the browser window. `VNC_GEOMETRY`
-  only matters until then.
+only matters until then.
 - `scale`: the desktop stays at `VNC_GEOMETRY`, and the browser scales the
-  image to fit the window.
+image to fit the window.
 - `off`: the desktop stays at `VNC_GEOMETRY`, and the browser adds scrollbars
-  if the window is smaller.
+if the window is smaller.
 
 `VNC_RESIZE` is only a default. Viewers can change it in noVNC's settings
 panel, and their browser remembers their choice, so a later change to
@@ -251,7 +261,8 @@ a mode in the panel or clear the site's data.
 
 ## `VNC_DEPTH`
 
-The colour depth of the container's own desktop, in bits (default `24`).
+The colour depth of the container's own desktop, in bits: `16`, `24`
+(default) or `32`, the depths Xvnc runs with.
 Like `VNC_GEOMETRY`, it doesn't apply to a server named by `VNC_ADDR`.
 
 ## `WEB_PORT`
@@ -270,36 +281,20 @@ the top move under it: `/tabtop/downloads/`, `/tabtop/tty/` and so on.
 ```
 
 - **Format:** slashes at the ends are added if missing, so `tabtop`,
-  `/tabtop` and `/tabtop/` are the same. Each part may only contain letters,
-  digits, `-`, `.`, `_` and `~`, and can't be `.` or `..`.
+`/tabtop` and `/tabtop/` are the same. Each part may only contain letters,
+digits, `-`, `.`, `_` and `~`, and can't be `.` or `..`.
 - **Other paths:** `/tabtop` redirects to `/tabtop/`, and anything outside
-  `/tabtop/` is not found. That includes `/`, so open
-  `http://localhost:6080/tabtop/` when connecting to the container directly.
+`/tabtop/` is not found. That includes `/`, so open
+`http://localhost:6080/tabtop/` when connecting to the container directly.
 - **Same host, same origin:** browsers don't separate sites by path. Any page
-  on the same host can script this one and read its login session, and
-  noVNC's settings and the audio preference are shared with other copies of
-  TabTop on that host. Only put it
-  next to sites you trust.
+on the same host can script this one and read its login session, and
+noVNC's settings and the audio preference are shared with other copies of
+TabTop on that host. Only put it
+next to sites you trust.
 
-The proxy passes the path through unchanged, without stripping the base. With
-nginx, give `proxy_pass` no path after the address. `absolute_redirect off`
-keeps nginx's own redirect from `/tabtop` to `/tabtop/` working when its port
-differs from the one in the browser. The other settings are the same as in the
-[`WEB_TRUSTED_PROXIES`](#web_trusted_proxies) example:
-
-```nginx
-location /tabtop/ {
-    absolute_redirect off;
-    proxy_pass http://tabtop:6080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $http_host;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 1h;
-}
-```
+The proxy passes the path through unchanged, without stripping the base. Full
+nginx examples (site at `/` and under `/tabtop/`) are in
+[Reverse proxy](reverse-proxy.md).
 
 ## `WEB_TRUSTED_PROXIES`
 
@@ -317,55 +312,37 @@ find each visitor's IP.
 ```
 
 - **Untrusted senders:** the header is ignored for everyone else, so visitors
-  can't send a fake one.
+can't send a fake one.
 - **Reading the header:** it's read from right to left. Entries added by
-  trusted proxies are skipped, and the first other address is the visitor.
-  Anything further left is ignored, since the visitor could have written it.
+trusted proxies are skipped, and the first other address is the visitor.
+Anything further left is ignored, since the visitor could have written it.
 - **Docker networks:** a proxy container's IP can change when it's
-  recreated, so give it a fixed IP and trust only that. Don't trust the
-  whole network range: it includes the network's gateway, which is where
-  visitors through a published port (`-p`) appear to come from. The proxy
-  writes that address into `X-Forwarded-For`, so trusting it lets every
-  visitor choose their own IP. `/doctor` (see [Health checks](health-checks.md))
-  shows which addresses were trusted for a request.
+recreated, so give it a fixed IP and trust only that. Don't trust the
+whole network range: it includes the network's gateway, which is where
+visitors through a published port (`-p`) appear to come from. The proxy
+writes that address into `X-Forwarded-For`, so trusting it lets every
+visitor choose their own IP. `/doctor` (see [Health checks](health-checks.md))
+shows which addresses were trusted for a request.
 
 The proxy has to:
 
 - Pass the `Host` header through unchanged. Otherwise the gateway refuses
-  the tunnel's WebSocket as cross-origin.
+the tunnel's WebSocket as cross-origin.
 - Forward WebSocket upgrades.
 - Allow long idle times, or idle desktop sessions get cut off. The
-  gateway pings every WebSocket every 30 seconds, which is enough for idle
-  limits of a minute or more, such as nginx's default 60 s
-  `proxy_read_timeout`.
+gateway pings every WebSocket every 30 seconds, which is enough for idle
+limits of a minute or more, such as nginx's default 60 s
+`proxy_read_timeout`.
 - Send `X-Forwarded-Proto`, so `/doctor` can tell whether visitors arrive
-  over HTTPS. Like `X-Forwarded-For`, it's only believed from a trusted
-  proxy (by this variable or
-  [`WEB_TRUST_NPROXIES`](#web_trust_nproxies)).
-- Leave responses unchanged. The gateway sends `Cache-Control:
-  no-transform` with every page and script. Turn off any proxy or CDN
-  feature that rewrites scripts for this site, such as Cloudflare's Rocket
-  Loader: a changed script can break the tunnel.
+over HTTPS. Like `X-Forwarded-For`, it's only believed from a trusted
+proxy (by this variable or
+[`WEB_TRUST_NPROXIES`](#web_trust_nproxies)).
+- Leave responses unchanged. The gateway sends `Cache-Control: no-transform` with every page and script. Turn off any proxy or CDN
+feature that rewrites scripts for this site, such as Cloudflare's Rocket
+Loader: a changed script can break the tunnel.
 
-For example, with nginx:
-
-```nginx
-map $http_upgrade $connection_upgrade { default upgrade; '' close; }
-
-server {
-    listen 80;
-    location / {
-        proxy_pass http://tabtop:6080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $http_host;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 1h;
-    }
-}
-```
+nginx examples for a site at the root and under `WEB_BASE_PATH` are in
+[Reverse proxy](reverse-proxy.md).
 
 ## Behind Cloudflare
 
@@ -382,22 +359,22 @@ requests, so trusting the one you see in `/doctor` isn't enough.
 ```
 
 - **Straight from Cloudflare:** the edge adds the visitor's IP to
-  `X-Forwarded-For`, which is believed only when the connection comes from
-  one of Cloudflare's addresses. The entry Cloudflare added is taken as the
-  visitor even when it's a Cloudflare address too (a request from someone's
-  Cloudflare Worker), so entries the visitor wrote further left are never
-  read. Anyone who reaches the container directly isn't trusted, so they
-  can't pick their own IP either. That's safer than `WEB_TRUST_NPROXIES=1`,
-  which would believe them.
+`X-Forwarded-For`, which is believed only when the connection comes from
+one of Cloudflare's addresses. The entry Cloudflare added is taken as the
+visitor even when it's a Cloudflare address too (a request from someone's
+Cloudflare Worker), so entries the visitor wrote further left are never
+read. Anyone who reaches the container directly isn't trusted, so they
+can't pick their own IP either. That's safer than `WEB_TRUST_NPROXIES=1`,
+which would believe them.
 - **Cloudflare Tunnel:** cloudflared connects to the container, not the
-  edge, so trust cloudflared's address instead, and give it a fixed one on a
-  Docker network. `/doctor` notices this case from Cloudflare's `Cf-Ray`
-  header.
+edge, so trust cloudflared's address instead, and give it a fixed one on a
+Docker network. `/doctor` notices this case from Cloudflare's `Cf-Ray`
+header.
 - **Idle connections:** Cloudflare closes WebSockets that are idle for
-  about 100 seconds. The gateway pings every 30 seconds so that an idle
-  desktop or terminal stays open.
+about 100 seconds. The gateway pings every 30 seconds so that an idle
+desktop or terminal stays open.
 - **Scripts:** turn off Rocket Loader and other features that rewrite
-  scripts (see above).
+scripts (see above).
 
 ## `WEB_TRUST_NPROXIES`
 
@@ -413,19 +390,19 @@ the one that connects to it.
 ```
 
 - **How it reads the header:** with `1`, the connecting address is trusted
-  and the visitor is the rightmost `X-Forwarded-For` entry. With `2`, that
-  entry is trusted too (the CDN, as the load balancer saw it), and the
-  visitor is the one before it. Entries further left are ignored, as always.
+and the visitor is the rightmost `X-Forwarded-For` entry. With `2`, that
+entry is trusted too (the CDN, as the load balancer saw it), and the
+visitor is the one before it. Entries further left are ignored, as always.
 - **Together with `WEB_TRUSTED_PROXIES`:** a hop is trusted if it's within
-  the count or its address is listed. Listed proxies beyond the count are
-  still skipped, wherever they appear.
+the count or its address is listed. Listed proxies beyond the count are
+still skipped, wherever they appear.
 - **Exactly the right number:** one too many, and the gateway takes an
-  address the visitor wrote themselves, so they can pick their own IP and
-  dodge the login limit. One too few, and every visitor appears to come from
-  your outermost proxy, so one person's failed logins lock everyone out.
+address the visitor wrote themselves, so they can pick their own IP and
+dodge the login limit. One too few, and every visitor appears to come from
+your outermost proxy, so one person's failed logins lock everyone out.
 - **Only behind the proxy:** if visitors can also reach the container
-  directly, a count of 1 or more trusts them as a proxy too. Use it only when
-  the proxy is the only way in.
+directly, a count of 1 or more trusts them as a proxy too. Use it only when
+the proxy is the only way in.
 
 `/doctor` (see [Health checks](health-checks.md)) shows each hop, and whether
 it was trusted by address or by count.

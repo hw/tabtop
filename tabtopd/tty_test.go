@@ -21,8 +21,8 @@ func newTTYTestServer(t *testing.T) (*server, *httptest.Server) {
 	for _, name := range ttyAssets {
 		os.WriteFile(filepath.Join(dir, name), []byte("export {}"), 0o644)
 	}
-	g := &server{base: "/", sessions: map[string]*session{}, failures: map[string][]time.Time{},
-		pending: map[string]int{}, ttys: map[string]int{}, termDir: dir}
+	g := &server{serverConfig: serverConfig{base: "/",
+		termDir: dir}, sessions: map[string]*session{}, ttys: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(g.tty))
 	t.Cleanup(srv.Close)
 	return g, srv

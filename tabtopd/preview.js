@@ -39,7 +39,7 @@ const limits = { image: 50e6, video: 200e6, audio: 200e6, text: 2e6 };
 function typeOf(name) {
     const dot = name.lastIndexOf(".");
     const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-    if (types[ext]) {
+    if (Object.hasOwn(types, ext)) {
         return { kind: types[ext].split("/")[0], type: types[ext] };
     }
     // Names without an extension, as README and Makefile, are mostly text;

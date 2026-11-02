@@ -1,6 +1,6 @@
 # Web-accessible XFCE desktop with Chromium.
 #
-# TigerVNC (Xvnc) provides the X display, listening on localhost only.
+# TigerVNC (Xvnc) provides the X display, listening only on a Unix socket.
 # tabtopd (Go, in tabtopd/) is the one public web endpoint: it serves
 # the noVNC client, bridges its WebSocket to Xvnc, and serves the user's
 # ~/Downloads at /downloads/ behind its own TOTP login. It also streams the
@@ -25,7 +25,7 @@
 # desktop, Xvnc with XFCE, Chromium, the Arc theme, Numix icons and
 # PipeWire for its sound; none leaves all of that out, for showing an RFB
 # server elsewhere, which VNC_ADDR must then name:
-#   docker build --build-arg DESKTOP=none -t tabtop:lite.
+#   docker build --build-arg DESKTOP=none -t tabtop-lite .
 ARG DESKTOP=xfce
 
 # noVNC comes from its GitHub release rather than Debian's package, to get
@@ -135,7 +135,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
 RUN go mod download
-COPY tabtopd/*.go tabtopd/*.js tabtopd/*.html ./
+COPY tabtopd/*.go tabtopd/*.js tabtopd/*.html tabtopd/*.css ./
 RUN go build -trimpath -ldflags='-s -w' -o /tabtopd .
 
 # What every build has: the gateway's libraries, the terminal and its
@@ -240,6 +240,7 @@ COPY --from=novnc /novnc /opt/novnc
 COPY --from=terminal /terminal /opt/terminal
 COPY --from=noble /noble /opt/noble
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
 COPY --chmod=755 config/notify /usr/local/bin/notify
 COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd

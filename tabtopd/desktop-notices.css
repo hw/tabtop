@@ -1,0 +1,17 @@
+#drop_overlay { z-index: 300; }
+#transfers { z-index: 200; }
+#transfers button { all: revert; font-size: 13px; }
+#transfers button:focus-visible, #tabtop_notices button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+@media (min-width: 40.01rem) { #transfers { left: auto; right: 1rem; } }
+#tabtop_notices { position: fixed; top: 1rem; right: 1rem; z-index: 250; display: flex; flex-direction: column; gap: .5rem;
+       width: min(24rem, calc(100vw - 2rem)); font: 14px/1.5 system-ui, sans-serif; color: #e8e8ea; text-align: left; }
+#tabtop_notices .notice { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .5rem; padding: .6rem .75rem;
+       background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .35); }
+#tabtop_notices p { flex: 1 1 100%; margin: 0; overflow-wrap: anywhere; }
+#tabtop_notices button { all: revert; font-size: 13px; }
+#tabtop_notices button.primary { padding: .15rem .8rem; color: #1c1c1e; background: #8ab4f8; border: 1px solid #8ab4f8;
+       border-radius: 4px; }
+#tabtop_notices button.close { margin-left: auto; }
+#tabtop_copied { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 250; box-sizing: border-box;
+       max-width: min(36rem, calc(100vw - 2rem)); padding: .4rem .75rem; font: 13px/1.5 system-ui, sans-serif; color: #e8e8ea;
+       background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px; overflow-wrap: anywhere; }

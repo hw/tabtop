@@ -9,8 +9,41 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+func TestZipFileReplacedByFIFO(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "file")
+	if err := os.WriteFile(p, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(p, 0600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	var out bytes.Buffer
+	z := &zipper{store: &downloadStore{root: root}, zw: zip.NewWriter(&out)}
+	if err := z.addFile("file", "file", st); err != nil {
+		t.Fatal(err)
+	}
+	if z.skipped != 1 || z.files != 0 {
+		t.Fatalf("files=%d skipped=%d", z.files, z.skipped)
+	}
+	z.zw.Close()
+}
 
 // fetchZip makes a zip request and returns the zip, its name, and the
 // final message.
@@ -135,7 +168,7 @@ func TestZipSwappedFolder(t *testing.T) {
 	os.Symlink("..", filepath.Join(dir, "top", "a"))
 
 	var b bytes.Buffer
-	z := &zipper{root: root, zw: zip.NewWriter(&b)}
+	z := &zipper{store: &downloadStore{root: root}, zw: zip.NewWriter(&b)}
 	if err := z.addDir("top/a", "a", listed, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +194,7 @@ func TestZipDepth(t *testing.T) {
 	}
 	defer root.Close()
 	var b bytes.Buffer
-	z := &zipper{root: root, zw: zip.NewWriter(&b)}
+	z := &zipper{store: &downloadStore{root: root}, zw: zip.NewWriter(&b)}
 	if err := z.add("d", "d"); err != nil {
 		t.Fatal(err)
 	}

@@ -26,10 +26,18 @@ func openTTY(t *testing.T, srvURL string, s testSession) *tunnelClient {
 	return tc
 }
 
-func waitingTTY(t *testing.T) {
+func waitingTTY(t *testing.T) <-chan struct{} {
 	old := ttyCommand
-	ttyCommand = func(string) *exec.Cmd { return exec.Command("sh", "-c", "read x") }
+	started := make(chan struct{}, 1)
+	ttyCommand = func(string) *exec.Cmd {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		return exec.Command("sh", "-c", "read x")
+	}
 	t.Cleanup(func() { ttyCommand = old })
+	return started
 }
 
 // closedWith waits for the server to close tc, and returns how.
@@ -62,13 +70,15 @@ func TestLoginHistory(t *testing.T) {
 
 func TestSessionIdle(t *testing.T) {
 	g, srv := newE2EServer(t)
+	clock := newManualClock()
+	g.clock = clock.lifecycle()
 	g.sessionIdle = 200 * time.Millisecond
 	waitingTTY(t)
 	ctx := testCtx(t)
 
 	// Unused, it ends.
 	s := login(t, ctx, srv.URL, code(-1))
-	time.Sleep(300 * time.Millisecond)
+	clock.Advance(300 * time.Millisecond)
 	if _, status := openSessionAt(t, ctx, wsURL(srv.URL), s); status != closeLogin {
 		t.Errorf("idle session: status %d", status)
 	}
@@ -79,13 +89,14 @@ func TestSessionIdle(t *testing.T) {
 	// With a tunnel open, it doesn't; once that closes, it ends.
 	s = login(t, ctx, srv.URL, code(0))
 	tty := openTTY(t, srv.URL, s)
-	time.Sleep(400 * time.Millisecond)
+	clock.Advance(400 * time.Millisecond)
 	if _, ok := g.sessionSecret(s.id); !ok {
 		t.Fatal("session with a terminal open ended as idle")
 	}
 	tty.write(ctx, msgData, []byte("bye\n"))
 	closedWith(t, tty)
-	time.Sleep(400 * time.Millisecond)
+	eventually(t, "terminal to detach", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sessions[s.id].open) == 0 })
+	clock.Advance(400 * time.Millisecond)
 	if _, ok := g.sessionSecret(s.id); ok {
 		t.Error("session still live after its terminal closed and it sat idle")
 	}
@@ -93,15 +104,17 @@ func TestSessionIdle(t *testing.T) {
 
 func TestSessionMax(t *testing.T) {
 	g, srv := newE2EServer(t)
+	clock := newManualClock()
+	g.clock = clock.lifecycle()
 	g.sessionMax = 300 * time.Millisecond
-	waitingTTY(t)
+	started := waitingTTY(t)
 	tty := openTTY(t, srv.URL, login(t, testCtx(t), srv.URL, code(0)))
-	start := time.Now()
+	// Acceptance precedes process startup; synchronize the command override
+	// before expiry can close the tunnel and end the test.
+	<-started
+	clock.Advance(g.sessionMax)
 	if code, reason := closedWith(t, tty); code != closeLogin || !strings.Contains(reason, "over") {
 		t.Errorf("open terminal at the session's end: %d %q", code, reason)
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("closed %v after the session ended", d)
 	}
 }
 
@@ -154,7 +167,7 @@ func TestLogoutEverywhere(t *testing.T) {
 // TestSessionUses checks that the addresses a session is used from are
 // listed, the login's first.
 func TestSessionUses(t *testing.T) {
-	g := &server{}
+	g := &server{serverConfig: defaultServerConfig()}
 	id, _, _ := g.newSession("198.51.100.1", "Firefox on Linux")
 	for _, ip := range []string{"198.51.100.1", "203.0.113.9"} {
 		detach, err := g.attach(id, ip, &tunnel{})
@@ -223,7 +236,7 @@ func TestParseSessionLimit(t *testing.T) {
 }
 
 func TestSessionTunnelLimit(t *testing.T) {
-	g := &server{}
+	g := &server{serverConfig: defaultServerConfig()}
 	id, _, _ := g.newSession("198.51.100.1", "")
 	detaches := []func(){}
 	for range maxSessionTunnels {
@@ -350,7 +363,7 @@ func TestHandshakeLimit(t *testing.T) {
 }
 
 func TestHandshakeCount(t *testing.T) {
-	g := &server{}
+	g := &server{serverConfig: defaultServerConfig()}
 	var done []func()
 	for range maxHandshakesPerIP {
 		f, ok := g.handshakes.start("192.0.2.1")

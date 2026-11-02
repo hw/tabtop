@@ -66,6 +66,8 @@ func TestAudioHubNeedsDesktopLogin(t *testing.T) {
 
 func TestAudioHubLifecycle(t *testing.T) {
 	h, f := newTestHub()
+	clock := newManualClock()
+	h.clock = clock.lifecycle()
 	h.link("a", "ip1")
 	l, err := h.join("a", "ip1")
 	if err != nil || !f.isRunning() {
@@ -79,7 +81,7 @@ func TestAudioHubLifecycle(t *testing.T) {
 	// A reconnect within the grace period keeps the listener.
 	h.unlink("a", "ip1")
 	h.link("a", "ip1")
-	time.Sleep(3 * h.grace)
+	clock.Advance(3 * h.grace)
 	select {
 	case <-l.gone:
 		t.Fatal("listener stopped although the desktop reconnected")
@@ -88,6 +90,7 @@ func TestAudioHubLifecycle(t *testing.T) {
 
 	// The desktop going away stops the listener, then the recording.
 	h.unlink("a", "ip1")
+	clock.Advance(h.grace)
 	eventually(t, "listener to stop", func() bool {
 		select {
 		case <-l.gone:
@@ -96,6 +99,7 @@ func TestAudioHubLifecycle(t *testing.T) {
 			return false
 		}
 	})
+	clock.Advance(h.idle)
 	h.leave(l) // the handler leaves after seeing gone; must be harmless
 	eventually(t, "recording to stop", func() bool { return !f.isRunning() })
 	if _, err := h.join("a", "ip1"); !errors.Is(err, errAudioDenied) {
@@ -109,6 +113,8 @@ func TestAudioHubLifecycle(t *testing.T) {
 func TestAudioHubGraceFromLastUnlink(t *testing.T) {
 	h, _ := newTestHub()
 	h.grace = 300 * time.Millisecond
+	clock := newManualClock()
+	h.clock = clock.lifecycle()
 	h.link("a", "ip1")
 	l, err := h.join("a", "ip1")
 	if err != nil {
@@ -123,14 +129,14 @@ func TestAudioHubGraceFromLastUnlink(t *testing.T) {
 		}
 	}
 	h.unlink("a", "ip1")
-	time.Sleep(200 * time.Millisecond)
+	clock.Advance(200 * time.Millisecond)
 	h.link("a", "ip1")
 	h.unlink("a", "ip1")
-	time.Sleep(200 * time.Millisecond) // past the first grace period, within the second
+	clock.Advance(200 * time.Millisecond) // past the first grace period, within the second
 	if gone() {
 		t.Fatal("listener stopped by the first disconnect's grace period")
 	}
-	time.Sleep(200 * time.Millisecond)
+	clock.Advance(200 * time.Millisecond)
 	if !gone() {
 		t.Fatal("listener still running a grace period after the last disconnect")
 	}
@@ -138,16 +144,19 @@ func TestAudioHubGraceFromLastUnlink(t *testing.T) {
 
 func TestAudioHubIdleStop(t *testing.T) {
 	h, f := newTestHub()
+	clock := newManualClock()
+	h.clock = clock.lifecycle()
 	h.link("a", "ip1")
 	l, _ := h.join("a", "ip1")
 	h.leave(l)
 	// Rejoining before the idle timeout reuses the recording.
 	l, _ = h.join("a", "ip1")
-	time.Sleep(3 * h.idle)
+	clock.Advance(3 * h.idle)
 	if !f.isRunning() || f.starts != 1 {
 		t.Fatalf("running=%v starts=%d, want one continuous recording", f.isRunning(), f.starts)
 	}
 	h.leave(l)
+	clock.Advance(h.idle)
 	eventually(t, "recording to stop", func() bool { return !f.isRunning() })
 }
 
@@ -207,6 +216,8 @@ func TestAudioHubSlowStart(t *testing.T) {
 // waiting for it, and that it isn't tried again until h.retry has passed.
 func TestAudioHubStartFails(t *testing.T) {
 	h, _ := newTestHub()
+	clock := newManualClock()
+	h.clock = clock.lifecycle()
 	h.retry = 100 * time.Millisecond
 	release := make(chan struct{})
 	var mu sync.Mutex
@@ -241,7 +252,7 @@ func TestAudioHubStartFails(t *testing.T) {
 		t.Errorf("%d starts before the retry delay, want 1", starts)
 	}
 	mu.Unlock()
-	time.Sleep(h.retry)
+	clock.Advance(h.retry)
 	h.join("s", "ip")
 	mu.Lock()
 	defer mu.Unlock()

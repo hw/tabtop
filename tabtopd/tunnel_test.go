@@ -29,6 +29,50 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
+func TestDownloadGrowingFileIsBounded(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	p := filepath.Join(g.downloadsDir, "growing")
+	original := bytes.Repeat([]byte("x"), (fileWindow+2)*fileChunk)
+	if err := os.WriteFile(p, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := openSession(t, ctx, srv.URL, s)
+	reply := c.request(t, ctx, tunnelRequest{Type: "file", Path: "growing"})
+	if reply["size"] != float64(len(original)) {
+		t.Fatalf("reply: %v", reply)
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(bytes.Repeat([]byte("y"), fileChunk)); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	got := 0
+	for {
+		kind, data, err := c.read(ctx)
+		if err != nil {
+			break
+		}
+		if kind != msgData {
+			t.Fatalf("unexpected message %d", kind)
+		}
+		got += len(data)
+		if got > len(original) {
+			t.Fatal("sent bytes beyond advertised size")
+		}
+		if err := c.write(ctx, msgData, nil); err != nil {
+			break
+		}
+	}
+	if got != len(original) {
+		t.Fatalf("got %d, want %d", got, len(original))
+	}
+}
+
 // RFC 9380 appendix J.4.2 (curve25519_XMD:SHA-512_ELL2_NU_): the field
 // element u[0] and the u-coordinate of map_to_curve's output, Q.x.
 var elligator2Vectors = []struct {
@@ -284,9 +328,13 @@ func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	for _, name := range ttyAssets {
 		os.WriteFile(filepath.Join(term, name), []byte("export {}"), 0o644)
 	}
-	g.base, g.novncDir, g.downloadsDir, g.termDir, g.nobleDir = "/", novnc, t.TempDir(), term, fakeNoble(t)
-	g.sessions = map[string]*session{}
-	g.failures, g.pending, g.ttys = map[string][]time.Time{}, map[string]int{}, map[string]int{}
+	c := defaultServerConfig()
+	c.usersFile, c.novncDir, c.downloadsDir, c.termDir, c.nobleDir = g.usersFile, novnc, t.TempDir(), term, fakeNoble(t)
+	var err error
+	g, err = newServer(c)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(g.handler())
 	t.Cleanup(srv.Close)
 	return g, srv
@@ -314,8 +362,8 @@ func testCtx(t *testing.T) context.Context {
 }
 
 func failureCount(g *server) int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.authMu.Lock()
+	defer g.authMu.Unlock()
 	return len(g.failures["127.0.0.1"])
 }
 
@@ -373,8 +421,8 @@ func TestTunnelLoginLimit(t *testing.T) {
 	}
 	c.Close(websocket.StatusNormalClosure, "")
 	eventually(t, "the reservation released", func() bool {
-		g.mu.Lock()
-		defer g.mu.Unlock()
+		g.authMu.Lock()
+		defer g.authMu.Unlock()
 		return g.pending["127.0.0.1"] == 0
 	})
 	if n := failureCount(g); n != 0 {
@@ -512,8 +560,14 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/upload.js", http.StatusNotFound},
 		{"GET", "/tabtop/download-sw.js", http.StatusOK},
 		{"GET", "/tabtop/stream/x/f.bin", http.StatusNotFound},
+		{"GET", "/tabtop/tunnel-crypto.js", http.StatusOK},
 		{"GET", "/tabtop/tunnel.js", http.StatusOK},
+		{"GET", "/tabtop/session.js", http.StatusOK},
+		{"GET", "/tabtop/login-ui.js", http.StatusOK},
+		{"GET", "/tabtop/file-format.js", http.StatusOK},
+		{"GET", "/tabtop/sessions-view.js", http.StatusOK},
 		{"GET", "/tabtop/files.js", http.StatusOK},
+		{"GET", "/tabtop/transfer.js", http.StatusOK},
 		{"GET", "/tabtop/ui.js", http.StatusOK},
 		{"GET", "/tabtop/nav.js", http.StatusOK},
 		{"GET", "/tabtop/requests.js", http.StatusOK},
@@ -560,7 +614,7 @@ func TestEndpoints(t *testing.T) {
 			if ct := resp.Header.Get("Content-Type"); ct != "text/css; charset=utf-8" || !strings.Contains(string(body), "#transfers") {
 				t.Errorf("desktop.css is served as %q with %d bytes", ct, len(body))
 			}
-		case "GET /tabtop/tunnel.js":
+		case "GET /tabtop/tunnel-crypto.js":
 			if cache != "no-cache, no-transform" || strings.Contains(string(body), `"./noble/`) ||
 				!strings.Contains(string(body), `"./`+g.noblePath()+`/ciphers/chacha.js"`) {
 				t.Errorf("tunnel.js (cached as %q) doesn't import from %s", cache, noble)
@@ -867,7 +921,7 @@ func TestTunnelUnderBasePath(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx := testCtx(t)
 
-	if code, body := fetch(t, srv.URL+"/x/tabtop/tunnel.js"); code != http.StatusOK || !strings.Contains(body, g.noblePath()) {
+	if code, body := fetch(t, srv.URL+"/x/tabtop/tunnel-crypto.js"); code != http.StatusOK || !strings.Contains(body, g.noblePath()) {
 		t.Errorf("/x/tabtop/tunnel.js: %d %q", code, body)
 	}
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -915,7 +969,9 @@ func TestTunnelInteropWithJS(t *testing.T) {
 		os.MkdirAll(filepath.Dir(to), 0o755)
 		os.WriteFile(to, data, 0o644)
 	}
-	copyFile("tunnel.js", filepath.Join(dir, "tunnel.js"))
+	for _, name := range []string{"tunnel.js", "tunnel-protocol.js", "tunnel-crypto.js", "session.js", "session-state.js", "login-ui.js"} {
+		copyFile(name, filepath.Join(dir, name))
+	}
 	copyFile("testdata/tunnel_interop.mjs", filepath.Join(dir, "interop.mjs"))
 	for _, name := range nobleFiles {
 		copyFile(filepath.Join(nobleDir, name), filepath.Join(dir, "noble", name))
@@ -1029,18 +1085,18 @@ func TestTunnelLoginSlowed(t *testing.T) {
 	g, srv := newE2EServer(t)
 	ctx := testCtx(t)
 	now := time.Now()
-	g.mu.Lock()
+	g.authMu.Lock()
 	for range maxSiteFailures {
 		g.siteFailures = append(g.siteFailures, now)
 	}
 	g.nextLogin = now.Add(time.Minute)
-	g.mu.Unlock()
+	g.authMu.Unlock()
 	if _, status := loginAt(t, ctx, wsURL(srv.URL), code(0)); status != websocket.StatusTryAgainLater {
 		t.Fatalf("slowed login closed with %v", status)
 	}
-	g.mu.Lock()
+	g.authMu.Lock()
 	g.nextLogin = time.Time{}
-	g.mu.Unlock()
+	g.authMu.Unlock()
 	if s, status := loginAt(t, ctx, wsURL(srv.URL), code(0)); status != 0 || s.id == "" {
 		t.Fatalf("login once its turn came: %v", status)
 	}

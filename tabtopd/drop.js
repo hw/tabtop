@@ -4,6 +4,7 @@
 // folder, and by the desktop and the terminal for files dropped on them.
 // How each goes shows in the transfers panel (see ui.js).
 
+import { runTransfer } from "./transfer.js";
 import { humanBytes } from "./download.js";
 import { askChoice, askYes, statusRow } from "./ui.js";
 
@@ -223,30 +224,30 @@ async function askReplace(files, dir, names) {
 // if it failed, a function that tries again, with upload(files, folders,
 // dir). With replace, a file with its name there is replaced.
 async function uploadOne(file, dir, row, send, replace, upload) {
-    if (row.signal.aborted) {
+    const result = await runTransfer({
+        signal: row.signal,
+        retry: () => upload([file], [], dir),
+        progress: (got) => {
+            row.set(`${file.name}: ${percent(got, file.size)}`);
+            row.progress(file.size ? got / file.size : 1);
+        },
+        run: async ({ signal, progress }) => {
+            progress(0);
+            return send(file, progress, dir, signal, replace);
+        },
+    });
+    if (result.state === "cancelled") {
         row.set(`${file.name}: cancelled`);
         return { name: "" };
     }
-    const progress = (got) => {
-        row.set(`${file.name}: ${percent(got, file.size)}`);
-        row.progress(file.size ? got / file.size : 1);
-    };
-    progress(0);
-    try {
-        const { name, warning } = await send(file, progress, dir, row.signal, replace);
-        row.set(name === file.name ? `${file.name}: uploaded` : `${file.name}: uploaded as ${name}`);
-        if (warning) {
-            row.set(`${row.text} (${warning})`, true);
-        }
-        return { name };
-    } catch (err) {
-        if (row.signal.aborted) {
-            row.set(`${file.name}: cancelled`);
-            return { name: "" };
-        }
-        row.set(`${file.name}: failed: ${err.message}`, true);
-        return { name: "", retry: () => upload([file], [], dir) };
+    if (result.state === "failed") {
+        row.set(`${file.name}: failed: ${result.error.message}`, true);
+        return { name: "", retry: result.retry };
     }
+    const { name, warning } = result.value;
+    row.set(name === file.name ? `${file.name}: uploaded` : `${file.name}: uploaded as ${name}`);
+    if (warning) { row.set(`${row.text} (${warning})`, true); }
+    return { name };
 }
 
 // A folder to upload is {name, files, dirs}: its name, the Files in it,
@@ -348,7 +349,10 @@ async function uploadFolder(pending, dir, row, send, mkdir, upload) {
             };
             progress(0);
             try {
-                const { name, warning } = await send(file, progress, to, signal);
+                const result = await runTransfer({signal, progress, run: ({progress}) => send(file, progress, to, signal)});
+                if (result.state === "cancelled") { return; }
+                if (result.state === "failed") { throw result.error; }
+                const { name, warning } = result.value;
                 saved++;
                 if (warning) {
                     failed(join(path, name), warning);

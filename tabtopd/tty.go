@@ -24,7 +24,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
-	"github.com/creack/pty"
 )
 
 const (
@@ -164,12 +163,7 @@ func searchTerminal(m ttyMessage) {
 // token's session does. Input arrives as data messages, and resizes as JSON
 // text messages.
 func (g *server) serveTTY(c msgConn, token, ip string) {
-	cmd := ttyCommand(g.ttyCommand)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
-	if home, err := os.UserHomeDir(); err == nil {
-		cmd.Dir = home
-	}
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
+	process, err := startTerminal(g.ttyCommand)
 	if err != nil {
 		log.Printf("terminal for %s: %v", ip, err)
 		c.Close(websocket.StatusInternalError, "cannot start the terminal")
@@ -184,7 +178,7 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 	go func() {
 		buf := make([]byte, 32<<10)
 		for {
-			n, err := ptmx.Read(buf)
+			n, err := process.Read(buf)
 			if n > 0 && c.Write(ctx, websocket.MessageBinary, buf[:n]) != nil {
 				return
 			}
@@ -202,7 +196,7 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 			break
 		}
 		if typ == websocket.MessageBinary {
-			if _, err := ptmx.Write(data); err != nil {
+			if _, err := process.Write(data); err != nil {
 				break
 			}
 			continue
@@ -213,7 +207,7 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 		}
 		switch {
 		case m.Type == "resize" && m.Cols > 0 && m.Cols <= 1000 && m.Rows > 0 && m.Rows <= 1000:
-			pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(m.Cols), Rows: uint16(m.Rows)})
+			process.Resize(m.Cols, m.Rows)
 		case m.Type == "search" && g.ttyCommand == "":
 			searchTerminal(m)
 		}
@@ -222,15 +216,7 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 	// Closing the PTY hangs up tmux's client, which detaches; the tmux
 	// session and its shells keep running for the next tab.
 	cancel()
-	ptmx.Close()
-	exited := make(chan struct{})
-	go func() { cmd.Wait(); close(exited) }()
-	select {
-	case <-exited:
-	case <-time.After(2 * time.Second):
-		cmd.Process.Kill()
-		<-exited
-	}
+	process.Close()
 	c.Close(websocket.StatusNormalClosure, "terminal closed") // no-op if already closed
 	log.Printf("terminal from %s closed", ip)
 }

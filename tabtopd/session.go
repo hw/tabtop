@@ -40,8 +40,8 @@ type session struct {
 	idleSince time.Time    // when its last tunnel closed (or it was made)
 	uses      []sessionUse // where its tunnels came from: the login's first
 	browser   string       // what logged in, as browserName says
-	expire    *time.Timer
-	idle      *time.Timer // nil while a tunnel is open, or with no idle limit
+	expire    lifecycleTimer
+	idle      lifecycleTimer // nil while a tunnel is open, or with no idle limit
 }
 
 // sessionUse is one address a session was used from.
@@ -72,11 +72,8 @@ func (g *server) newSession(ip, browser string) (string, []byte, []loginEvent) {
 	id := newToken()
 	secret := make([]byte, 32)
 	rand.Read(secret) // can't fail (see newToken)
-	now := time.Now()
+	now := g.clock.Now()
 	max := g.sessionMax
-	if max == 0 {
-		max = defaultSessionMax // a server made by a test
-	}
 	s := &session{
 		secret: secret, created: now, expiry: now.Add(max), open: map[*tunnel]bool{},
 		idleSince: now, uses: []sessionUse{{ip, now, now}}, browser: browser,
@@ -87,11 +84,9 @@ func (g *server) newSession(ip, browser string) (string, []byte, []loginEvent) {
 		g.sessions = map[string]*session{}
 	}
 	g.sessions[id] = s
-	s.expire = time.AfterFunc(max, func() { g.endSession(id, "The session is over. Log in again.", nil) })
+	s.expire = g.clock.AfterFunc(max, func() { g.endSession(id, "The session is over. Log in again.", nil) })
 	g.armIdleLocked(id, s)
-	history := slices.Clone(g.logins)
-	slices.Reverse(history)
-	g.recordLoginLocked(ip, browser, true)
+	history := g.loginHistory(ip, browser, true)
 	return id, secret, history
 }
 
@@ -112,9 +107,9 @@ func (g *server) armIdleLocked(id string, s *session) {
 	if g.sessionIdle == 0 {
 		return
 	}
-	s.idle = time.AfterFunc(g.sessionIdle, func() {
+	s.idle = g.clock.AfterFunc(g.sessionIdle, func() {
 		g.mu.Lock()
-		idle := g.sessions[id] == s && !g.liveLocked(s, time.Now())
+		idle := g.sessions[id] == s && !g.liveLocked(s, g.clock.Now())
 		g.mu.Unlock()
 		if idle {
 			g.endSession(id, "", nil)
@@ -122,19 +117,12 @@ func (g *server) armIdleLocked(id string, s *session) {
 	})
 }
 
-func (g *server) recordLoginLocked(ip, browser string, ok bool) {
-	g.logins = append(g.logins, loginEvent{time.Now(), ip, browser, ok})
-	if len(g.logins) > maxLoginLog {
-		g.logins = slices.Delete(g.logins, 0, len(g.logins)-maxLoginLog)
-	}
-}
-
 // sessionSecret returns a live session's secret.
 func (g *server) sessionSecret(id string) ([]byte, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s, ok := g.sessions[id]
-	if !ok || !g.liveLocked(s, time.Now()) {
+	if !ok || !g.liveLocked(s, g.clock.Now()) {
 		return nil, false
 	}
 	return s.secret, true
@@ -147,7 +135,7 @@ func (g *server) attach(id, ip string, t *tunnel) (func(), error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s, ok := g.sessions[id]
-	now := time.Now()
+	now := g.clock.Now()
 	if !ok || !g.liveLocked(s, now) {
 		return nil, errSessionEnded
 	}
@@ -177,7 +165,7 @@ func (g *server) attach(id, ip string, t *tunnel) (func(), error) {
 		}
 		delete(s.open, t)
 		if len(s.open) == 0 {
-			s.idleSince = time.Now()
+			s.idleSince = g.clock.Now()
 			g.armIdleLocked(id, s)
 		}
 	}, nil
@@ -308,7 +296,7 @@ func (h *handshakes) start(ip string) (func(), bool) {
 func (g *server) liveSessions() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	n, now := 0, time.Now()
+	n, now := 0, g.clock.Now()
 	for _, s := range g.sessions {
 		if g.liveLocked(s, now) {
 			n++
@@ -336,7 +324,7 @@ type sessionInfo struct {
 func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	now := time.Now()
+	now := g.clock.Now()
 	list := []sessionInfo{}
 	for id, s := range g.sessions {
 		if g.liveLocked(s, now) {
@@ -348,11 +336,7 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 		}
 	}
 	slices.SortFunc(list, func(a, b sessionInfo) int { return a.Created.Compare(b.Created) })
-	logins := slices.Clone(g.logins)
-	slices.Reverse(logins)
-	if logins == nil {
-		logins = []loginEvent{}
-	}
+	logins := g.loginHistory("", "", false)
 	res := map[string]any{
 		"sessions":     list,
 		"logins":       logins,

@@ -37,6 +37,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -131,57 +132,57 @@ func rfbLogin(c io.ReadWriter, password string) (done bool, minor int, replay []
 }
 
 func rfbLoginTransport(c io.ReadWriter, password string, upgrade func(io.ReadWriter) (io.ReadWriter, bool, error)) (done bool, minor int, replay []byte, err error) {
-	if minor, err = rfbVersion(c); err != nil {
-		return false, 0, nil, err
-	}
-	if _, err = c.Write(rfbVersionMsg(minor)); err != nil {
-		return false, 0, nil, err
-	}
 	var choice byte
-	if minor == 3 {
-		if upgrade != nil {
-			return false, minor, nil, errors.New("the VNC server speaks RFB 3.3, which has no VeNCrypt, as VNC_X509 requires")
+	if upgrade != nil {
+		minor, err = beginVeNCrypt(c)
+		if err != nil {
+			return false, minor, nil, err
 		}
-		var typ uint32
-		if err = binary.Read(c, binary.BigEndian, &typ); err != nil {
-			return false, 0, nil, err
-		}
-		switch {
-		case typ == 0:
-			return false, 0, nil, fmt.Errorf("the VNC server refused the connection: %s", rfbReason(c))
-		case typ == rfbSecNone:
-			return true, minor, nil, nil
-		case typ != rfbSecVNCAuth:
-			return false, minor, binary.BigEndian.AppendUint32(nil, typ), nil
-		}
-		choice = rfbSecVNCAuth
+		choice = 19
 	} else {
-		var n [1]byte
-		if _, err = io.ReadFull(c, n[:]); err != nil {
+		if minor, err = rfbVersion(c); err != nil {
 			return false, 0, nil, err
 		}
-		if n[0] == 0 {
-			return false, 0, nil, fmt.Errorf("the VNC server refused the connection: %s", rfbReason(c))
-		}
-		types := make([]byte, n[0])
-		if _, err = io.ReadFull(c, types); err != nil {
+		if _, err = c.Write(rfbVersionMsg(minor)); err != nil {
 			return false, 0, nil, err
 		}
-		switch {
-		case upgrade != nil:
-			if !slices.Contains(types, byte(19)) {
-				return false, minor, nil, errors.New("the VNC server doesn't offer VeNCrypt, as VNC_X509 requires")
+		if minor == 3 {
+			var typ uint32
+			if err = binary.Read(c, binary.BigEndian, &typ); err != nil {
+				return false, 0, nil, err
 			}
-			choice = 19
-		case slices.Contains(types, rfbSecNone):
-			choice = rfbSecNone
-		case slices.Contains(types, rfbSecVNCAuth):
+			switch {
+			case typ == 0:
+				return false, 0, nil, fmt.Errorf("the VNC server refused the connection: %s", rfbReason(c))
+			case typ == rfbSecNone:
+				return true, minor, nil, nil
+			case typ != rfbSecVNCAuth:
+				return false, minor, binary.BigEndian.AppendUint32(nil, typ), nil
+			}
 			choice = rfbSecVNCAuth
-		default:
-			return false, minor, append(n[:], types...), nil
-		}
-		if _, err = c.Write([]byte{choice}); err != nil {
-			return false, 0, nil, err
+		} else {
+			var n [1]byte
+			if _, err = io.ReadFull(c, n[:]); err != nil {
+				return false, 0, nil, err
+			}
+			if n[0] == 0 {
+				return false, 0, nil, fmt.Errorf("the VNC server refused the connection: %s", rfbReason(c))
+			}
+			types := make([]byte, n[0])
+			if _, err = io.ReadFull(c, types); err != nil {
+				return false, 0, nil, err
+			}
+			switch {
+			case slices.Contains(types, rfbSecNone):
+				choice = rfbSecNone
+			case slices.Contains(types, rfbSecVNCAuth):
+				choice = rfbSecVNCAuth
+			default:
+				return false, minor, append(n[:], types...), nil
+			}
+			if _, err = c.Write([]byte{choice}); err != nil {
+				return false, 0, nil, err
+			}
 		}
 	}
 	if choice == 19 {
@@ -258,6 +259,142 @@ func rfbReplay(c io.ReadWriter, minor int, replay []byte) error {
 	return err
 }
 
+// beginVeNCrypt performs the common RFB security selection, stopping before TLS.
+func beginVeNCrypt(vnc io.ReadWriter) (int, error) {
+	minor, err := rfbVersion(vnc)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := vnc.Write(rfbVersionMsg(minor)); err != nil {
+		return 0, err
+	}
+	if minor == 3 {
+		// A server refusing the connection, as TigerVNC does an address it
+		// has blacklisted, says so in RFB 3.3 whatever it speaks otherwise:
+		// its reason says more than that 3.3 has no VeNCrypt.
+		var typ uint32
+		if err := binary.Read(vnc, binary.BigEndian, &typ); err != nil {
+			return 0, err
+		}
+		if typ == 0 {
+			return 0, fmt.Errorf("the VNC server refused the connection: %s", rfbReason(vnc))
+		}
+		return 0, errors.New("the VNC server speaks RFB 3.3, which has no VeNCrypt, as VNC_X509 requires")
+	}
+	var n [1]byte
+	if _, err := io.ReadFull(vnc, n[:]); err != nil {
+		return 0, err
+	}
+	if n[0] == 0 {
+		return 0, fmt.Errorf("the VNC server refused the connection: %s", rfbReason(vnc))
+	}
+	types := make([]byte, n[0])
+	if _, err := io.ReadFull(vnc, types); err != nil {
+		return 0, err
+	}
+	if !slices.Contains(types, byte(19)) {
+		return 0, errors.New("the VNC server doesn't offer VeNCrypt, as VNC_X509 requires")
+	}
+	if _, err := vnc.Write([]byte{19}); err != nil {
+		return 0, err
+	}
+	return minor, nil
+}
+
+// upgradeX509 verifies TLS before either diagnostics or credentials proceed.
+func (g *server) upgradeX509(vnc net.Conn) (*tls.Conn, error) {
+	if err := negotiateX509(vnc, g.x509Subtype()); err != nil {
+		return nil, err
+	}
+	cfg, err := g.vncTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	secure := tls.Client(vnc, cfg)
+	if err := secure.Handshake(); err != nil {
+		return nil, err
+	}
+	return secure, nil
+}
+
+// vncBackoff keeps the gateway from logging in to the VNC server again
+// and again while it fails, as with a wrong password or certificate under
+// VNC_X509: noVNC reconnects every 2 seconds, and each try would be another
+// failed login there, which can get the gateway's address blacklisted, or,
+// with X509Plain, a Unix account locked. After a failure, the gateway
+// doesn't log in to the server for vncBackoffMin, doubling with each
+// further failure up to vncBackoffMax; a login that works resets it. Meanwhile, under VNC_X509 the
+// desktop is refused, as there's no other way in; without it, the gateway
+// stays out of the handshake, and noVNC asks for the server's password.
+//
+// One login handshake runs at a time (turn), so tabs reconnecting together
+// can't each try the password before the first failure is recorded: the
+// others wait their turn, then see the cooldown it set.
+type vncBackoff struct {
+	turn  sync.Mutex
+	mu    sync.Mutex
+	until time.Time
+	delay time.Duration
+	// The last time the gateway logged in to the server, and how it went,
+	// for the doctor report, which doesn't log in itself: a check that
+	// stopped short would count as an abandoned login there, and could get
+	// the gateway blacklisted.
+	lastAt  time.Time
+	lastErr error
+}
+
+// record notes how a login to the server went: err is nil if it worked.
+func (b *vncBackoff) record(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastAt, b.lastErr = time.Now(), err
+}
+
+// last is when the gateway last logged in to the server, and how it went;
+// the zero time if it hasn't yet.
+func (b *vncBackoff) last() (time.Time, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastAt, b.lastErr
+}
+
+// begin waits for the turn to log in, and reports whether the server is
+// in its cooldown; release gives the turn back.
+func (b *vncBackoff) begin() (cooling bool) {
+	b.turn.Lock()
+	return b.waiting() > 0
+}
+
+func (b *vncBackoff) release() { b.turn.Unlock() }
+
+const (
+	vncBackoffMin = 30 * time.Second
+	vncBackoffMax = 10 * time.Minute
+)
+
+// waiting reports how long until the server may be tried again, if it's
+// not yet.
+func (b *vncBackoff) waiting() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return time.Until(b.until)
+}
+
+// failed records a failed login and returns how long until the next.
+func (b *vncBackoff) failed() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.delay = min(max(b.delay*2, vncBackoffMin), vncBackoffMax)
+	b.until = time.Now().Add(b.delay)
+	return b.delay
+}
+
+func (b *vncBackoff) succeeded() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.until, b.delay = time.Time{}, 0
+}
+
 // vncPassword is the password to give the VNC server, from
 // -vnc-password-file, read afresh for each connection, or "" for noVNC to
 // ask for it. A file rather than a flag or the environment, where every
@@ -276,28 +413,31 @@ func (g *server) vncPassword() string {
 	return strings.TrimSuffix(string(b), "\n")
 }
 
-// vncSecurity settles the security handshake between noVNC on page and
-// the VNC server on vnc, with password, and returns the connection to
-// relay the rest over: vnc, or a new one if the password was turned down.
-func (g *server) vncSecurity(vnc net.Conn, page io.ReadWriter, password string) (net.Conn, error) {
+// vncAuthOutcome separates authentication from transport fallback so the
+// caller, rather than the handshake, owns retry policy.
+type vncAuthOutcome uint8
+
+const (
+	vncAuthenticated vncAuthOutcome = iota
+	vncBrowserAuthRequired
+	vncPasswordRejected
+)
+
+type vncAuthResult struct {
+	conn    net.Conn
+	outcome vncAuthOutcome
+}
+
+// vncSecurity returns the connection whose ownership transfers to the caller,
+// including on errors. A fallback connection does not imply authentication.
+func (g *server) vncSecurity(vnc net.Conn, page io.ReadWriter, password string) (vncAuthResult, error) {
 	vnc.SetDeadline(time.Now().Add(rfbHandshakeTimeout))
 	var upgrade func(io.ReadWriter) (io.ReadWriter, bool, error)
 	if g.vncX509 {
 		upgrade = func(c io.ReadWriter) (io.ReadWriter, bool, error) {
 			plain := g.vncUsername != ""
-			subtype := uint32(261)
-			if plain {
-				subtype = 262
-			}
-			if err := negotiateX509(c, subtype); err != nil {
-				return nil, false, err
-			}
-			cfg, err := g.vncTLSConfig()
+			secure, err := g.upgradeX509(vnc)
 			if err != nil {
-				return nil, false, err
-			}
-			secure := tls.Client(vnc, cfg)
-			if err := secure.Handshake(); err != nil {
 				return nil, false, err
 			}
 			vnc = secure
@@ -313,25 +453,46 @@ func (g *server) vncSecurity(vnc net.Conn, page io.ReadWriter, password string) 
 	vnc.SetDeadline(time.Time{})
 	if errors.Is(err, errVNCPasswordRejected) {
 		if g.vncX509 {
-			return vnc, err
+			return vncAuthResult{vnc, vncPasswordRejected}, err
 		}
 		// noVNC asks for the server's own password instead, rather than
 		// reconnecting with the same one again and again.
-		log.Printf("%v; noVNC will ask for the VNC server's password", err)
+		log.Print(err) // the bridge says what happens next
 		vnc.Close()
-		return g.dialVNC()
+		next, dialErr := g.dialVNC()
+		return vncAuthResult{next, vncPasswordRejected}, dialErr
 	}
 	if err != nil {
-		return vnc, err
+		return vncAuthResult{vnc, vncBrowserAuthRequired}, err
 	}
 	if done {
-		return vnc, rfbOfferNone(page)
+		return vncAuthResult{vnc, vncAuthenticated}, pageError(rfbOfferNone(page))
 	}
-	return vnc, rfbReplay(page, minor, replay)
+	return vncAuthResult{vnc, vncBrowserAuthRequired}, pageError(rfbReplay(page, minor, replay))
+}
+
+// errPageHandshake marks an error on noVNC's side of the handshake, as when
+// the page closes part way: not a failed login to the server.
+var errPageHandshake = errors.New("noVNC's side of the handshake")
+
+func pageError(err error) error {
+	if err != nil {
+		return fmt.Errorf("%w: %v", errPageHandshake, err)
+	}
+	return nil
 }
 
 func negotiateX509VNC(c io.ReadWriter) error {
 	return negotiateX509(c, 261)
+}
+
+// x509Subtype is the VeNCrypt subtype VNC_X509 asks for: X509Plain (262)
+// with a username, else X509Vnc (261).
+func (g *server) x509Subtype() uint32 {
+	if g.vncUsername != "" {
+		return 262
+	}
+	return 261
 }
 
 // x509Name names a VeNCrypt subtype the gateway asks for.
@@ -410,15 +571,15 @@ func (g *server) vncTLSConfig() (*tls.Config, error) {
 		return nil, errors.New("VNC_X509 needs the name in the VNC server's certificate: set VNC_SERVER_NAME")
 	}
 	cfg := &tls.Config{ServerName: name, MinVersion: tls.VersionTLS12}
+	// With VNC_CA_FILE, only its certificates are trusted: added to the
+	// system's, any public CA's certificate for the server's name would do
+	// as well. Without it, the system's are.
 	if g.vncCAFile != "" {
 		pem, err := os.ReadFile(g.vncCAFile)
 		if err != nil {
 			return nil, err
 		}
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			roots = x509.NewCertPool()
-		}
+		roots := x509.NewCertPool()
 		if !roots.AppendCertsFromPEM(pem) {
 			return nil, errors.New("VNC_CA_FILE holds no PEM certificates")
 		}

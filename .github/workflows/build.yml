@@ -35,6 +35,7 @@ jobs:
       - run: test -z "$(gofmt -l tabtopd)" || { gofmt -l tabtopd; exit 1; }
       - run: mise run vet
       - run: mise run test
+      - run: mise run test-js
 
   image:
     needs: test

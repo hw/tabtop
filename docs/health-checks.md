@@ -5,18 +5,30 @@ the desktop's VNC server is there and the login file can be read, and
 `503` otherwise. It needs no login and reveals nothing else, so load
 balancers and uptime monitors can call it. The image's Docker
 `HEALTHCHECK` uses it, so `docker ps` shows `unhealthy` when it fails, and
-the reason is in the log. The container's own Xvnc is found without
-connecting to it, which would log every check. A server elsewhere
-(`VNC_ADDR`) is checked by connecting, at most once every 10 seconds
-however often `/healthz` is asked.
+the reason is in the log. It never connects to the VNC server: servers
+such as TigerVNC count a connection closed without logging in, even one
+closed at once, as an abandoned login, and enough of them get the
+gateway's address blacklisted, refusing the desktop too. The container's
+own Xvnc, and a socket given as `VNC_ADDR`, are checked without
+connecting; a server reached over TCP isn't checked, so `/healthz` then
+says the gateway itself can serve. The doctor report shows how the
+gateway's last login to that server went.
 
 `/doctor` is for troubleshooting and is off unless
 `WEB_DOCTOR_ENDPOINT=1`. It returns a JSON report:
 
-- **checks:** each part's state: Xvnc (connecting and reading its
-  greeting), the login file, noVNC, `~/Downloads`, audio (the PipeWire sink),
-  the terminal (tmux and ghostty-web) and the tunnel (whether the
-  JavaScript libraries it needs are in place).
+- **checks:** each part's state: Xvnc, or the VNC server at `VNC_ADDR`
+  (whether it's listening, checked as `/healthz` does; when the gateway
+  logs in to it,
+  with `VNC_UPSTREAM_PASSWORD` or `VNC_X509=1`, how its last login went,
+  and whether it's waiting after a failed one), the login file, noVNC,
+  `~/Downloads`, audio (the PipeWire sink), the terminal (tmux and
+  ghostty-web) and the tunnel (whether the JavaScript libraries it needs
+  are in place). The report connects to the VNC server no further than
+  `/healthz` does, and shares its result: a connection that read the
+  server's greeting or chose a login, then stopped, counts as an abandoned
+  login on servers such as TigerVNC, and enough of them get the gateway's
+  address blacklisted, refusing the desktop too.
 - **clock:** the server's time. Codes are only accepted within 30 seconds
   of it, so a wrong clock explains logins that always fail.
 - **proxy:** how your request arrived, for setting up a reverse proxy. It

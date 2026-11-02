@@ -150,8 +150,7 @@ container itself, not the host. A server reached over TCP instead, as
 `host.docker.internal:5901`, has to listen where the container can reach
 it, such as the Docker bridge's address, and the connection isn't
 encrypted by TabTop: keep it behind a firewall, with a password, or
-encrypt it with TLS (see
-[Encrypting the connection](#encrypting-the-connection-x509vnc-and-x509plain)).
+encrypt it with TLS (see [Encrypting the connection](#encrypting-the-connection-x509vnc-and-x509plain)).
 
 With its password as `VNC_UPSTREAM_PASSWORD`, the gateway logs in to the
 server for you, so there's no second prompt; see
@@ -182,8 +181,12 @@ the server's certificate, and only then logs in, in one of two ways:
 Nothing falls back to an unencrypted login: if the server doesn't offer
 the chosen kind, its certificate doesn't check out, or it turns the
 password down, the desktop doesn't connect, and the gateway's log
-(`docker logs tabtop`) says why. noVNC tries again every 2 seconds until
-the settings are fixed.
+(`docker logs tabtop`) says why. After a failed login, the gateway doesn't try the
+server again for 30 seconds, then twice as long after each further
+failure, up to 10 minutes: noVNC reconnects every 2 seconds, and each try
+would be another failed login there, which could get the gateway's
+address blacklisted or, with X509Plain, the account locked. A login that
+works resets it, and the doctor report shows while it's waiting.
 
 ### On the VNC server's machine
 
@@ -251,9 +254,9 @@ account's password as `VNC_UPSTREAM_PASSWORD`.
   to the host in `VNC_ADDR`; set it when they differ, as when `VNC_ADDR`
   is an IP address and the certificate names a DNS name, or for a Unix
   socket, which has no host name.
-- **`VNC_CA_FILE`:** certificates to trust, beside the system's. A
-  self-signed certificate is its own; a certificate from a public CA needs
-  none.
+- **`VNC_CA_FILE`:** the certificates to trust, instead of the system's.
+  A self-signed certificate is its own; a certificate from a public CA
+  needs none.
 - **`VNC_UPSTREAM_PASSWORD`** is required with `VNC_X509=1`. Like the
   others, it's kept in a file only the container's user can read, never
   on a command line; see

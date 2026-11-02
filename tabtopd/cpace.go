@@ -194,3 +194,18 @@ func sha256Sum(parts ...[]byte) []byte {
 	}
 	return h.Sum(nil)
 }
+
+// parseUsersOath reads the user and code length from the first line,
+// "HOTP/T30/<digits> <user> <pin> <hex key> [last use...]".
+func parseUsersOath(data string) (user string, digits int, ok bool) {
+	line, _, _ := strings.Cut(data, "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 4 {
+		return "", 0, false
+	}
+	digits, err := strconv.Atoi(fields[0][strings.LastIndex(fields[0], "/")+1:])
+	if err != nil || digits < 6 || digits > 8 {
+		return "", 0, false
+	}
+	return fields[1], digits, true
+}

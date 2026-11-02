@@ -139,7 +139,9 @@ async function watchDownloads() {
 
 // shareClipboard links the desktop's clipboard to this computer's, which
 // browsers only allow on HTTPS or localhost. Text copied on the desktop is
-// put on this computer's clipboard as it arrives. Text copied here goes to
+// put on this computer's clipboard as it arrives, which the page says, with
+// how it starts (see copied): with VNC_ADDR, the desktop is another
+// machine, and whatever it copies shouldn't land on this one unnoticed. Text copied here goes to
 // the desktop when the page is switched back to, where the browser lets
 // the page read the clipboard: Chrome and Edge ask once, the first time
 // the desktop is clicked; others, which would ask every time, are left to
@@ -160,10 +162,26 @@ async function shareClipboard() {
     shared = rfb;
     rfb.addEventListener("clipboard", (e) => {
         lastText = e.detail.text;
-        navigator.clipboard.writeText(e.detail.text).catch(() => {
+        navigator.clipboard.writeText(e.detail.text).then(() => copied(e.detail.text), () => {
             // Not focused, or not allowed: the panel has it.
         });
     });
+}
+
+// copied says, for a few seconds, that the desktop copied text to this
+// computer's clipboard, showing how it starts.
+const copiedNote = Object.assign(document.createElement("div"), { id: "tabtop_copied", hidden: true });
+copiedNote.setAttribute("role", "status");
+document.body.append(copiedNote);
+let copiedTimer = 0;
+function copied(text) {
+    const line = text.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+    const start = line.length > 80 ? `${line.slice(0, 80)}…` : line;
+    copiedNote.textContent = `The desktop copied ${text.length} character${text.length === 1 ? "" : "s"} to your clipboard`
+        + (start ? `: “${start}”` : ".");
+    copiedNote.hidden = false;
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copiedNote.hidden = true), 5000);
 }
 
 // readable resolves to whether the page may read the clipboard without
