@@ -28,7 +28,7 @@ func openTTY(t *testing.T, srvURL string, s testSession) *tunnelClient {
 
 func waitingTTY(t *testing.T) {
 	old := ttyCommand
-	ttyCommand = func() *exec.Cmd { return exec.Command("sh", "-c", "read x") }
+	ttyCommand = func(string) *exec.Cmd { return exec.Command("sh", "-c", "read x") }
 	t.Cleanup(func() { ttyCommand = old })
 }
 
@@ -311,7 +311,7 @@ func TestTTYStalledClient(t *testing.T) {
 	tunnelWriteTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { tunnelWriteTimeout = old })
 	oldCmd := ttyCommand
-	ttyCommand = func() *exec.Cmd { return exec.Command("yes") }
+	ttyCommand = func(string) *exec.Cmd { return exec.Command("yes") }
 	t.Cleanup(func() { ttyCommand = oldCmd })
 
 	openTTY(t, srv.URL, login(t, testCtx(t), srv.URL, code(0))) // and never read

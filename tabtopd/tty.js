@@ -5,11 +5,12 @@
 // in this browser; on touch screens, a strip of keys phones' keyboards
 // lack (Esc, Tab, Ctrl, Alt, the arrows...) sits below the terminal. If the connection is lost, the page tries again by
 // itself (see reconnect.js), and tmux, which the server runs the shell
-// in, picks up where it was. Files and folders dropped on the page are
+// in, picks up where it was (unless the server runs its own command
+// instead, TTY_COMMAND, as ssh to another machine). Files and folders dropped on the page are
 // uploaded into ~/Downloads, as on the files page (see drop.js), and their
 // paths typed at the cursor. Ctrl+click (⌘+click on a Mac) opens a web
 // address shown in the terminal, and Ctrl+Shift+F searches tmux's history
-// (see Search). A bell, or a program's notification, while the tab isn't
+// (see Search), when there's tmux. A bell, or a program's notification, while the tab isn't
 // in front marks its title, and shows a browser notification if they're
 // turned on (see Notices).
 
@@ -312,6 +313,7 @@ function connect() {
         s.onopen = () => {
             connecting = false;
             ws = s;
+            search.offer(s.reply?.search !== false);
             sendSize();
             resolve(true);
         };
@@ -389,6 +391,9 @@ function touchKeys() {
         if (key === "ctrl" || key === "alt") {
             b.setAttribute("aria-pressed", "false");
         }
+        if (label === "Find") {
+            b.className = "find";  // hidden without tmux (see search.offer)
+        }
         // Not taking the focus from the terminal, which would close the
         // on-screen keyboard.
         b.addEventListener("pointerdown", (e) => e.preventDefault());
@@ -434,7 +439,9 @@ term.onTitleChange((title) => notices.title(title || "Terminal"));
 // the terminal's top right). The Search button in the bar at the top
 // opens out in place into the box that takes the text: Enter (or ↑) finds
 // it, then older matches, Shift+Enter (or ↓) newer ones, and Esc (or ✕)
-// folds it back into the button and leaves copy mode.
+// folds it back into the button and leaves copy mode. Without tmux, when
+// the server runs its own command instead, there's nothing to search, so
+// it isn't offered (see offer).
 const search = (() => {
     const button = (text, label, onClick) => {
         const b = Object.assign(document.createElement("button"), { type: "button", textContent: text, title: label });
@@ -494,13 +501,30 @@ const search = (() => {
     document.querySelector(".tabtop-nav > button")?.before(bar);
     // Before ghostty-web sees it, as the font size keys.
     document.addEventListener("keydown", (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyF") {
+        if (api.on && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyF") {
             e.preventDefault();
             e.stopPropagation();
             open();
         }
     }, true);
-    return { open };
+    const api = {
+        on: true,
+        open,
+        // offer shows Search, its touch key and its keys, or hides them.
+        offer(on) {
+            api.on = on;
+            bar.hidden = !on;
+            const key = document.querySelector("#touch_keys .find");
+            if (key) {
+                key.hidden = !on;
+            }
+            if (!on) {
+                bar.classList.remove("open");
+                found = null;
+            }
+        },
+    };
+    return api;
 })();
 
 // Notices ----------------------------------------------------------------

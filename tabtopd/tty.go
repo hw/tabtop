@@ -4,7 +4,9 @@ package main
 // compiled to WebAssembly) in the page, a PTY running tmux on the server,
 // connected through the tunnel. Every tab attaches to the same tmux session
 // ("web"), so shells keep running when a tab is closed and the next tab
-// picks them up.
+// picks them up. With -tty-command, each tab runs that command instead,
+// as ssh to another machine, without tmux: it ends when its tab closes,
+// and there's no tmux history to search.
 
 import (
 	"bytes"
@@ -44,8 +46,18 @@ const (
 //go:embed tty.html tty.js
 var ttyFiles embed.FS
 
-// ttyCommand starts the terminal's program; a variable so tests can swap it.
-var ttyCommand = func() *exec.Cmd { return exec.Command("tmux", "new-session", "-A", "-s", "web") }
+// ttyCommand starts the terminal's program: tmux, or with command, that
+// instead, run with the user's shell; a variable so tests can swap it.
+var ttyCommand = func(command string) *exec.Cmd {
+	if command == "" {
+		return exec.Command("tmux", "new-session", "-A", "-s", "web")
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return exec.Command(shell, "-c", command)
+}
 
 // tmuxCommand runs a command for the terminal's tmux session, as searching
 // does; a variable so tests can swap it.
@@ -152,7 +164,7 @@ func searchTerminal(m ttyMessage) {
 // token's session does. Input arrives as data messages, and resizes as JSON
 // text messages.
 func (g *server) serveTTY(c msgConn, token, ip string) {
-	cmd := ttyCommand()
+	cmd := ttyCommand(g.ttyCommand)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	if home, err := os.UserHomeDir(); err == nil {
 		cmd.Dir = home
@@ -202,7 +214,7 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 		switch {
 		case m.Type == "resize" && m.Cols > 0 && m.Cols <= 1000 && m.Rows > 0 && m.Rows <= 1000:
 			pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(m.Cols), Rows: uint16(m.Rows)})
-		case m.Type == "search":
+		case m.Type == "search" && g.ttyCommand == "":
 			searchTerminal(m)
 		}
 	}

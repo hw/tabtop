@@ -26,7 +26,8 @@ const vncProbeTimeout = 2 * time.Second
 
 // healthz answers 200 while Xvnc is listening and the TOTP users file can be
 // read, so logins can work. It needs no login and reveals nothing else. It
-// doesn't connect to Xvnc, which would log every check.
+// doesn't connect to a local Xvnc, which would log every check; an RFB
+// server on another host (-vnc-addr) can only be checked by connecting.
 func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, no-transform")
@@ -49,14 +50,22 @@ func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // vncListening reports whether something listens on Xvnc's TCP port or
-// socket, from the kernel's socket tables.
+// socket, from the kernel's socket tables, or, for a server on another
+// host, whether it accepts a connection, closed straight away.
 func (g *server) vncListening() error {
 	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok {
 		return unixListening(path)
 	}
-	_, portStr, err := net.SplitHostPort(g.vncAddr)
+	host, portStr, err := net.SplitHostPort(g.vncAddr)
 	if err != nil {
 		return err
+	}
+	if !localHost(host) {
+		c, err := net.DialTimeout("tcp", g.vncAddr, vncProbeTimeout)
+		if err != nil {
+			return err
+		}
+		return c.Close()
 	}
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil {
@@ -80,6 +89,16 @@ func (g *server) vncListening() error {
 		f.Close()
 	}
 	return fmt.Errorf("nothing listens on Xvnc's port %d", port)
+}
+
+// localHost reports whether host, from a host:port, is this machine: empty,
+// localhost, or a loopback or unspecified address.
+func localHost(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 // unixListening looks for a listening socket at path in /proc/net/unix:

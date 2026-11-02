@@ -667,14 +667,14 @@ func TestTunnelFiles(t *testing.T) {
 func TestTunnelTTY(t *testing.T) {
 	_, srv := newE2EServer(t)
 	old := ttyCommand
-	ttyCommand = func() *exec.Cmd {
+	ttyCommand = func(string) *exec.Cmd {
 		return exec.Command("sh", "-c", "stty -echo; echo ready; read x; stty size; echo got $x")
 	}
 	t.Cleanup(func() { ttyCommand = old })
 	ctx := testCtx(t)
 
 	tc := openSession(t, ctx, srv.URL, login(t, ctx, srv.URL, code(0)))
-	if reply := tc.request(t, ctx, tunnelRequest{Type: "tty"}); reply["ok"] != true {
+	if reply := tc.request(t, ctx, tunnelRequest{Type: "tty"}); reply["ok"] != true || reply["search"] != true {
 		t.Fatalf("tty: %v", reply)
 	}
 	var out strings.Builder
@@ -984,5 +984,41 @@ func TestTunnelInteropWithJS(t *testing.T) {
 				t.Errorf("file came through as %s", res.FileSHA)
 			}
 		})
+	}
+}
+
+// TestTunnelTTYCommand runs -tty-command instead of tmux, which the reply
+// says has no history to search, and doesn't search with tmux.
+func TestTunnelTTYCommand(t *testing.T) {
+	g, srv := newE2EServer(t)
+	g.ttyCommand = "read x; echo got-$x"
+	t.Setenv("SHELL", "/bin/sh")
+	searched := make(chan string, 8)
+	oldTmux := tmuxCommand
+	tmuxCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		searched <- strings.Join(args, " ")
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { tmuxCommand = oldTmux })
+	ctx := testCtx(t)
+
+	tc := openSession(t, ctx, srv.URL, login(t, ctx, srv.URL, code(0)))
+	if reply := tc.request(t, ctx, tunnelRequest{Type: "tty"}); reply["ok"] != true || reply["search"] != false {
+		t.Fatalf("tty: %v", reply)
+	}
+	tc.write(ctx, msgText, []byte(`{"type":"search","do":"find","text":"x"}`))
+	tc.write(ctx, msgData, []byte("yes\r"))
+	var out strings.Builder
+	for !strings.Contains(out.String(), "got-yes") {
+		_, p, err := tc.read(ctx)
+		if err != nil {
+			t.Fatalf("waiting for got-yes, got %q: %v", out.String(), err)
+		}
+		out.Write(p)
+	}
+	select {
+	case s := <-searched:
+		t.Errorf("searched with tmux: %s", s)
+	default:
 	}
 }

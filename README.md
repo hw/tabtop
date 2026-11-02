@@ -145,23 +145,28 @@ optional and only retains browser data, downloads and desktop preferences.
 | `VNC_GEOMETRY` | `1600x900` | Desktop size before the first browser connects. |
 | `VNC_DEPTH` | `24` | Colour depth in bits. |
 | `VNC_RESIZE` | `remote` | Default way noVNC fits the desktop to the browser window: `remote`, `scale` or `off`. |
+| `VNC_ADDR` | *(empty)* | An RFB (VNC) server to show instead of the container's own desktop, as `host:port` or `unix:/path`. See [`VNC_ADDR`](#vnc_addr). |
 | `WEB_PORT` | `6080` | Port the gateway listens on inside the container. |
 | `WEB_BASE_PATH` | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
 | `WEB_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
 | `WEB_TRUST_NPROXIES` | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [`WEB_TRUST_NPROXIES`](#web_trust_nproxies). |
 | `WEB_AUDIO` | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
 | `WEB_AUDIO_BITRATE` | `64` | Sound quality in kbit/s, `32` to `256`. |
+| `WEB_AUDIO_SERVER` | *(empty)* | A PulseAudio or PipeWire socket mounted from the host, such as `/run/host-pulse/native`, whose sound is streamed instead of the container's own. See [Host audio](#host-audio). |
+| `WEB_AUDIO_SINK` | `@DEFAULT_SINK@` | With `WEB_AUDIO_SERVER`, the host's sink to stream; by default whichever is the host's default. |
 | `WEB_SESSION_MAX` | `12h` | How long a login lasts at most, in hours and minutes, such as `12h` or `90m`. See [Sessions](#sessions). |
 | `WEB_SESSION_IDLE` | `1h` | How long a login lasts with nothing open (no desktop, terminal or download), such as `1h` or `30m`. `0` for no limit. |
 | `WEB_TTY` | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
+| `TTY_COMMAND` | *(empty)* | A command each terminal tab runs instead of tmux, such as `ssh -t me@host.docker.internal`. See [`TTY_COMMAND`](#tty_command). |
 | `WEB_DOCTOR_ENDPOINT` | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](#health-checks). |
 | `CHROMIUM_NO_SANDBOX` | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 | `TZ` | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
 
-The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`,
+The container won't start if `VNC_TOTP_DIGITS`, `VNC_RESIZE`, `VNC_ADDR`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
-`WEB_TTY`, `WEB_DOCTOR_ENDPOINT`, `TZ` or `VNC_PASSWORD` has
+`WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
+`WEB_TTY`, `TTY_COMMAND`, `WEB_DOCTOR_ENDPOINT`, `TZ` or `VNC_PASSWORD` has
 an invalid value, or if a saved `~/.config/tabtop/totp-secret` isn't valid
 Base32. The error is printed to the log. `WEB_E2E` no longer exists, since
 the tunnel is always on: `WEB_E2E=1` is accepted, and any other value stops
@@ -289,6 +294,56 @@ earlier ones are refused too.
 If you change the digit count, change it in your authenticator app's entry
 too, or add the entry again. Some apps only support 6 digits, so use `6`
 unless your app supports more.
+
+### `VNC_ADDR`
+
+With `VNC_ADDR` set, the gateway dials that RFB server for the desktop
+page, through the same login and encrypted tunnel, and the container's own
+desktop isn't started: no Xvnc, XFCE or sound, so `VNC_GEOMETRY`,
+`VNC_DEPTH` and `WEB_AUDIO` don't apply. The terminal and the files page
+still work in the container. The connection from the gateway to that
+server isn't encrypted by TabTop, so keep it on a private network, a
+socket, or an SSH tunnel. If the server asks for a VNC password, noVNC
+asks for it after the TabTop login. `/healthz` connects to a server on
+another host to check it, and closes the connection straight away.
+
+```sh
+docker run -p 6080:6080 -e VNC_TOTP_SECRET=... -e VNC_ADDR=10.0.0.5:5900 tabtop
+```
+
+#### Host audio
+
+The sound comes from the container's own desktop. To stream the host's
+instead, as with `VNC_ADDR` pointing at the host's desktop, mount the host
+user's PulseAudio socket (PipeWire's `pipewire-pulse` provides one too) and
+set `WEB_AUDIO_SERVER` to where it's mounted:
+
+```sh
+docker run -p 6080:6080 -e VNC_TOTP_SECRET=... \
+    -e VNC_ADDR=host.docker.internal:5900 --add-host host.docker.internal:host-gateway \
+    -v /run/user/1000/pulse/native:/run/host-pulse/native \
+    -e WEB_AUDIO_SERVER=/run/host-pulse/native \
+    tabtop
+```
+
+The gateway then records the monitor of `WEB_AUDIO_SINK`, by default
+whichever sink is the host's default when a browser starts listening, and
+the container's PipeWire isn't started. Programs run in the terminal play
+on the host too. It's the host's playback only: there's no microphone.
+
+- Mount the socket file itself, not its folder. If the host path doesn't
+  exist, Docker mounts an empty folder there instead, and the container
+  won't start.
+- The container user (`VNC_USER`, uid 1000 when it's created) must be let
+  in. PipeWire and PulseAudio accept the same uid as their own user, which
+  is usually 1000 on a desktop. Otherwise, a PulseAudio server may want its
+  cookie: mount `~/.config/pulse/cookie` and set `PULSE_COOKIE` to its path.
+- The socket is only reachable on the same machine. A sound server on
+  another machine would need PulseAudio's unencrypted TCP module, which
+  isn't supported here.
+
+If the server doesn't answer at startup, the log says so and the container
+starts anyway; the [doctor report](#health-checks) shows why audio fails.
 
 ### `VNC_GEOMETRY` and `VNC_RESIZE`
 
@@ -504,6 +559,38 @@ quality at low rates compared with Opus at its usual settings.
 
 With `1`, `/tty/` is a terminal; see [Terminal](#terminal). With `0`, it
 returns 404.
+
+### `TTY_COMMAND`
+
+A shell command each terminal tab runs instead of tmux, run with the
+user's shell (`bash -c`). Use it to make the terminal a login on another
+machine, such as the host:
+
+```sh
+docker run -p 6080:6080 -e VNC_TOTP_SECRET=... \
+    --add-host host.docker.internal:host-gateway \
+    -e TTY_COMMAND='ssh -t me@host.docker.internal' \
+    -v tabtop-home:/home/user \
+    tabtop
+```
+
+- Each tab runs its own copy, which ends when the tab is closed or its
+  connection is lost; reconnecting starts it again. To keep sessions
+  running, use tmux or screen on the other machine, as in
+  `ssh -t me@host.docker.internal tmux new -A -s web`.
+- When it exits, as when SSH can't connect, what it printed stays on the
+  screen, and Enter runs it again.
+- Search isn't shown, since it searches tmux's history: the mouse wheel
+  scrolls the terminal's own. Bells and notifications (OSC 9 and 777) from
+  the other machine reach the page; copy `/usr/local/bin/notify` there to
+  send them.
+- SSH asks for a password, or uses a key in `~/.ssh`. With the home folder
+  on a volume, make one once with
+  `docker exec -u user <container> ssh-keygen -t ed25519`, and add
+  `~/.ssh/id_ed25519.pub` to the other machine's `~/.ssh/authorized_keys`.
+  SSH also asks, the first time, whether to trust the other machine's
+  host key.
+- Downloads and the files page are still the container's `~/Downloads`.
 
 ### `CHROMIUM_NO_SANDBOX`
 
@@ -810,7 +897,8 @@ emulator compiled to WebAssembly.
 - **tmux:** the shell runs inside a tmux session called `web`. Closing the
   tab leaves it running, and the next tab picks it up where it was. Every tab
   shows the same session. Typing `exit` in the last window ends it, and the
-  next tab starts a fresh one.
+  next tab starts a fresh one. With [`TTY_COMMAND`](#tty_command), each tab
+  runs that command instead, without tmux.
 - **Mouse:** the wheel scrolls tmux's history. Dragging selects text in tmux;
   hold Shift to select with the page instead. ghostty-web doesn't send the
   mouse to programs itself, so the page does (clicks, drags and the wheel,

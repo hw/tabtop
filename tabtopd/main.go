@@ -78,6 +78,7 @@ type server struct {
 	trustNProxies int
 	audio         *audioHub     // nil when audio is off
 	termDir       string        // ghostty-web files; empty when the terminal is off
+	ttyCommand    string        // what the terminal runs, if not tmux
 	doctorOn      bool          // serve the doctor report
 	nobleDir      string        // noble library files for tunnel.js
 	timeZone      string        // TZ's zone name, for the files page's times; UTC if it has none
@@ -114,7 +115,7 @@ func main() {
 		pending:  map[string]int{},
 	}
 	flag.StringVar(&g.novncDir, "novnc-dir", "/opt/novnc", "noVNC client files")
-	flag.StringVar(&g.vncAddr, "vnc-addr", "127.0.0.1:5901", "Xvnc's RFB address: host:port, or unix:path for a socket")
+	flag.StringVar(&g.vncAddr, "vnc-addr", "127.0.0.1:5901", "the RFB server's address, Xvnc's or another's: host:port, or unix:path for a socket")
 	flag.StringVar(&g.usersFile, "users-file", "", "pam_oath users file holding the TOTP key")
 	flag.StringVar(&g.downloadsDir, "downloads-dir", "", "directory served at "+downloadsPrefix)
 	flag.IntVar(&g.trustNProxies, "trust-nproxies", 0,
@@ -125,6 +126,7 @@ func main() {
 	sessionIdle := flag.String("session-idle", defaultSessionIdle.String(),
 		"how long a login lasts with nothing open, in whole minutes, e.g. 1h; 0 for no limit")
 	flag.StringVar(&g.termDir, "term-dir", "", "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
+	flag.StringVar(&g.ttyCommand, "tty-command", "", "shell command each terminal runs instead of tmux, e.g. ssh -t host; empty for tmux")
 	audioSink := flag.String("audio-sink", "", "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
 	flag.BoolVar(&g.doctorOn, "doctor", false, "serve a troubleshooting report at doctor, without a login")
 	flag.StringVar(&g.nobleDir, "noble-dir", "", "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
@@ -364,7 +366,7 @@ func listDir(root *os.Root, dir string, f *os.File) (entries []entry, truncated 
 	return entries, truncated, nil
 }
 
-// dialVNC connects to Xvnc, over TCP or (with "unix:") its socket.
+// dialVNC connects to the RFB server, over TCP or (with "unix:") a socket.
 func (g *server) dialVNC() (net.Conn, error) {
 	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok {
 		return net.DialTimeout("unix", path, 5*time.Second)

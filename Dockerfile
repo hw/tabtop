@@ -205,6 +205,9 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # VNC_RESIZE: default for how noVNC fits the desktop to the browser window:
 # remote (resize the desktop to match), scale (scale the image) or off
 # (scroll). Viewers can change it in noVNC's settings; their choice sticks.
+# VNC_ADDR: an RFB server to show instead of the container's own desktop,
+# host:port or unix:/path; empty (default) starts Xvnc, XFCE and the sound
+# here. The gateway's connection to it isn't encrypted: keep it private.
 # WEB_BASE_PATH: URL path the site is served under, for a reverse proxy that
 # puts it in a subdirectory, e.g. /tabtop/ (default /). The proxy passes the
 # path through unchanged.
@@ -229,9 +232,14 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # other tunnel open, such as 1h (default) or 30m; 0 for no limit.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
 # the desktop and /downloads/; 0 turns it off.
+# TTY_COMMAND: a shell command each terminal tab runs instead of tmux,
+# e.g. ssh -t me@host.docker.internal; empty (default) for tmux.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
 # it off and doesn't start PipeWire. WEB_AUDIO_BITRATE: its Opus bitrate in
 # kbit/s, 32 to 256 (default 64); sent at a constant rate even in silence.
+# WEB_AUDIO_SERVER: a PulseAudio socket mounted from the host, streamed
+# instead of the container's own sound (PipeWire isn't started then);
+# WEB_AUDIO_SINK: its sink, by default the host's default (@DEFAULT_SINK@).
 # WEB_DOCTOR_ENDPOINT=1 serves a troubleshooting report at <base>doctor,
 # without a login; 0 (default) turns it off. <base>healthz always answers
 # health checks.

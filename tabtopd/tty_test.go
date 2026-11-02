@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -168,5 +170,21 @@ func TestTTYAssetsGzip(t *testing.T) {
 		if string(body) != js {
 			t.Errorf("%q: body differs", tc.accept)
 		}
+	}
+}
+
+// TestTTYCommand runs a command, with the user's shell, instead of tmux.
+func TestTTYCommand(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	cmd := ttyCommand("echo from-$0; exit 3")
+	out, err := cmd.Output()
+	if got := strings.TrimSpace(string(out)); got != "from-/bin/sh" {
+		t.Errorf("printed %q, want from-/bin/sh", got)
+	}
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 3 {
+		t.Errorf("exit: %v, want status 3", err)
+	}
+	if args := ttyCommand("").Args; !slices.Equal(args, []string{"tmux", "new-session", "-A", "-s", "web"}) {
+		t.Errorf("without a command: %q", args)
 	}
 }

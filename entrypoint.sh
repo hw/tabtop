@@ -5,13 +5,17 @@ VNC_USER="${VNC_USER:-user}"
 VNC_GEOMETRY="${VNC_GEOMETRY:-1600x900}"
 VNC_DEPTH="${VNC_DEPTH:-24}"
 VNC_RESIZE="${VNC_RESIZE:-remote}"
+VNC_ADDR="${VNC_ADDR:-}"
 WEB_PORT="${WEB_PORT:-6080}"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
 WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
 WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
+WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
+WEB_AUDIO_SINK="${WEB_AUDIO_SINK:-}"
 WEB_TTY="${WEB_TTY:-1}"
+TTY_COMMAND="${TTY_COMMAND:-}"
 WEB_DOCTOR_ENDPOINT="${WEB_DOCTOR_ENDPOINT:-0}"
 WEB_SESSION_MAX="${WEB_SESSION_MAX:-12h}"
 WEB_SESSION_IDLE="${WEB_SESSION_IDLE:-1h}"
@@ -27,6 +31,12 @@ case "$VNC_RESIZE" in
     off|scale|remote) ;;
     *) echo "VNC_RESIZE must be off, scale or remote (got '${VNC_RESIZE}')." >&2; exit 1 ;;
 esac
+# An RFB server elsewhere, as host:port or unix:path, instead of the
+# container's own desktop.
+if [ -n "$VNC_ADDR" ] && ! [[ "$VNC_ADDR" =~ ^unix:/.+$|^[^[:space:]/]+:[0-9]{1,5}$ ]]; then
+    echo "VNC_ADDR must be host:port or unix:/path (got '${VNC_ADDR}')." >&2
+    exit 1
+fi
 case "$WEB_AUDIO" in
     0|1) ;;
     *) echo "WEB_AUDIO must be 0 or 1 (got '${WEB_AUDIO}')." >&2; exit 1 ;;
@@ -36,10 +46,28 @@ if ! [[ "$WEB_AUDIO_BITRATE" =~ ^[0-9]{1,3}$ ]] || [ "$WEB_AUDIO_BITRATE" -lt 32
     echo "WEB_AUDIO_BITRATE must be 32 to 256 kbit/s (got '${WEB_AUDIO_BITRATE}')." >&2
     exit 1
 fi
+# A PulseAudio (or pipewire-pulse) socket mounted from the host, whose sound
+# is streamed instead of the container's own: "unix:" is optional. A missing
+# host path is mounted as an empty directory, so check it's a socket.
+WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER#unix:}"
+if [ -n "$WEB_AUDIO_SERVER" ] && [ "$WEB_AUDIO" = 1 ] && [ ! -S "$WEB_AUDIO_SERVER" ]; then
+    echo "WEB_AUDIO_SERVER must be a mounted PulseAudio socket; ${WEB_AUDIO_SERVER} isn't a socket." >&2
+    exit 1
+fi
+if [ -n "$WEB_AUDIO_SINK" ] && ! [[ "$WEB_AUDIO_SINK" =~ ^[A-Za-z0-9@_.:-]+$ ]]; then
+    echo "WEB_AUDIO_SINK must be a sink name (got '${WEB_AUDIO_SINK}')." >&2
+    exit 1
+fi
 case "$WEB_TTY" in
     0|1) ;;
     *) echo "WEB_TTY must be 0 or 1 (got '${WEB_TTY}')." >&2; exit 1 ;;
 esac
+# A shell command each terminal tab runs instead of tmux, such as ssh to
+# another machine; on one line.
+if [[ "$TTY_COMMAND" == *[[:cntrl:]]* ]]; then
+    echo "TTY_COMMAND must be on one line, without control characters." >&2
+    exit 1
+fi
 if ! [[ "$WEB_TRUST_NPROXIES" =~ ^[0-9]{1,2}$ ]] || [ "$WEB_TRUST_NPROXIES" -gt 10 ]; then
     echo "WEB_TRUST_NPROXIES must be 0 to 10 (got '${WEB_TRUST_NPROXIES}')." >&2
     exit 1
@@ -248,6 +276,18 @@ RUNTIME_DIR="/tmp/runtime-${VNC_USER}"
 rm -rf "$RUNTIME_DIR"
 install -d -m 700 -o "$VNC_USER" "$RUNTIME_DIR"
 
+# With WEB_AUDIO_SERVER, everything run as the user, the gateway and the
+# terminal's programs alike, plays to and records from the host's sound
+# server. PULSE_COOKIE, for a PulseAudio server that asks for its cookie,
+# is passed on as it is.
+USER_AUDIO_ENV=()
+if [ -n "$WEB_AUDIO_SERVER" ]; then
+    USER_AUDIO_ENV+=(PULSE_SERVER="unix:${WEB_AUDIO_SERVER}")
+    if [ -n "${PULSE_COOKIE:-}" ]; then
+        USER_AUDIO_ENV+=(PULSE_COOKIE="$PULSE_COOKIE")
+    fi
+fi
+
 # exec so that, when backgrounded, $! is runuser itself (which forwards
 # SIGTERM to its child) rather than a bash subshell that would orphan it.
 # It starts in the home directory, so what the desktop launches (the
@@ -256,7 +296,7 @@ as_user() {
     exec runuser -u "$VNC_USER" -- env -i -C "$USER_HOME" \
         HOME="$USER_HOME" USER="$VNC_USER" LOGNAME="$VNC_USER" SHELL=/bin/bash \
         PATH=/usr/local/bin:/usr/bin:/bin LANG="$LANG" DISPLAY=":${DISPLAY_NUM}" \
-        XDG_RUNTIME_DIR="$RUNTIME_DIR" TZ="$TZ" \
+        XDG_RUNTIME_DIR="$RUNTIME_DIR" TZ="$TZ" "${USER_AUDIO_ENV[@]}" \
         "$@"
 }
 
@@ -268,66 +308,97 @@ as_user() {
 # failed logins per client IP instead. Only what's copied (CLIPBOARD) goes
 # to the browser, not text that's merely selected (PRIMARY), since the
 # desktop page puts it on the computer's own clipboard.
-VNC_SOCKET="$RUNTIME_DIR/vnc.sock"
-VNC_ADDR="unix:$VNC_SOCKET"
-as_user Xvnc ":${DISPLAY_NUM}" \
-    -geometry "$VNC_GEOMETRY" \
-    -depth "$VNC_DEPTH" \
-    -rfbunixpath "$VNC_SOCKET" -rfbport -1 -SecurityTypes None \
-    -AlwaysShared \
-    -AcceptSetDesktopSize \
-    -UseBlacklist=0 \
-    -SendPrimary=0 \
-    &
-XVNC_PID=$!
-
-for _ in $(seq 50); do
-    [ -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ] && break
-    sleep 0.1
-done
-if [ ! -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
-    echo "Xvnc did not create its display socket within 5s; exiting." >&2
-    exit 1
-fi
-
-# Sound: Chromium plays into a null sink (no sound card needed), and the
-# gateway records its monitor to stream it to the browser. Started before
-# the desktop so applications find it.
+#
+# With VNC_ADDR set, the gateway dials that RFB server instead, and none of
+# this desktop (Xvnc, its sound or XFCE) is started: noVNC asks for that
+# server's password, if it has one.
+XVNC_PID=""
 AUDIO_PIDS=()
 AUDIO_SINK=""
-if [ "$WEB_AUDIO" = 1 ]; then
-    as_user pipewire &
-    AUDIO_PIDS+=($!)
-    # WirePlumber and pipewire-pulse give up if PipeWire isn't listening yet.
+start_desktop() {
+    VNC_SOCKET="$RUNTIME_DIR/vnc.sock"
+    VNC_ADDR="unix:$VNC_SOCKET"
+    as_user Xvnc ":${DISPLAY_NUM}" \
+        -geometry "$VNC_GEOMETRY" \
+        -depth "$VNC_DEPTH" \
+        -rfbunixpath "$VNC_SOCKET" -rfbport -1 -SecurityTypes None \
+        -AlwaysShared \
+        -AcceptSetDesktopSize \
+        -UseBlacklist=0 \
+        -SendPrimary=0 \
+        &
+    XVNC_PID=$!
+
     for _ in $(seq 50); do
-        [ -S "$RUNTIME_DIR/pipewire-0" ] && break
+        [ -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ] && break
         sleep 0.1
     done
-    as_user wireplumber &
-    AUDIO_PIDS+=($!)
-    as_user pipewire-pulse &
-    AUDIO_PIDS+=($!)
-    # Retry until pipewire-pulse answers and WirePlumber has made the sink
-    # the default.
-    for _ in $(seq 50); do
-        if (as_user pactl list short sinks 2>/dev/null) | grep -q $'\ttabtop\t' \
-                || (as_user pactl load-module module-null-sink sink_name=tabtop \
-                        sink_properties=device.description=Desktop >/dev/null 2>&1); then
-            (as_user pactl set-default-sink tabtop 2>/dev/null) || true
-            if [ "$(as_user pactl get-default-sink 2>/dev/null)" = tabtop ]; then
-                AUDIO_SINK=tabtop
-                break
-            fi
-        fi
-        sleep 0.1
-    done
-    if [ -z "$AUDIO_SINK" ]; then
-        echo "PipeWire did not come up within 5s; exiting." >&2
+    if [ ! -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+        echo "Xvnc did not create its display socket within 5s; exiting." >&2
         exit 1
     fi
+
+    # Sound: Chromium plays into a null sink (no sound card needed), and the
+    # gateway records its monitor to stream it to the browser. Started before
+    # the desktop so applications find it. Not with WEB_AUDIO_SERVER: the
+    # host's server is used instead (see below).
+    if [ "$WEB_AUDIO" = 1 ] && [ -z "$WEB_AUDIO_SERVER" ]; then
+        as_user pipewire &
+        AUDIO_PIDS+=($!)
+        # WirePlumber and pipewire-pulse give up if PipeWire isn't listening yet.
+        for _ in $(seq 50); do
+            [ -S "$RUNTIME_DIR/pipewire-0" ] && break
+            sleep 0.1
+        done
+        as_user wireplumber &
+        AUDIO_PIDS+=($!)
+        as_user pipewire-pulse &
+        AUDIO_PIDS+=($!)
+        # Retry until pipewire-pulse answers and WirePlumber has made the sink
+        # the default.
+        for _ in $(seq 50); do
+            if (as_user pactl list short sinks 2>/dev/null) | grep -q $'\ttabtop\t' \
+                    || (as_user pactl load-module module-null-sink sink_name=tabtop \
+                            sink_properties=device.description=Desktop >/dev/null 2>&1); then
+                (as_user pactl set-default-sink tabtop 2>/dev/null) || true
+                if [ "$(as_user pactl get-default-sink 2>/dev/null)" = tabtop ]; then
+                    AUDIO_SINK=tabtop
+                    break
+                fi
+            fi
+            sleep 0.1
+        done
+        if [ -z "$AUDIO_SINK" ]; then
+            echo "PipeWire did not come up within 5s; exiting." >&2
+            exit 1
+        fi
+    fi
+
+    as_user dbus-launch --exit-with-session startxfce4 &
+}
+
+if [ -n "$VNC_ADDR" ]; then
+    echo "Using the RFB server at ${VNC_ADDR}; the container's own desktop isn't started."
+else
+    start_desktop
 fi
 
-as_user dbus-launch --exit-with-session startxfce4 &
+# The host's sound, from the PulseAudio socket mounted at WEB_AUDIO_SERVER:
+# the gateway records WEB_AUDIO_SINK's monitor, by default whichever sink is
+# the host's default when a browser starts listening. A server that doesn't
+# answer yet isn't fatal: the gateway tries again when someone listens, and
+# the doctor report shows why it can't.
+if [ "$WEB_AUDIO" = 1 ] && [ -n "$WEB_AUDIO_SERVER" ]; then
+    AUDIO_SINK="${WEB_AUDIO_SINK:-@DEFAULT_SINK@}"
+    if ! (as_user pactl info >/dev/null 2>&1); then
+        echo "Warning: the audio server at ${WEB_AUDIO_SERVER} doesn't answer ${VNC_USER} (uid $(id -u "$VNC_USER")); is it the host user's uid?" >&2
+    elif ! (as_user pactl list short sinks 2>/dev/null) | cut -f2 | grep -qxF "$AUDIO_SINK" \
+            && [ "$AUDIO_SINK" != @DEFAULT_SINK@ ]; then
+        echo "Warning: the host's audio server has no sink named ${AUDIO_SINK}." >&2
+    else
+        echo "Streaming the host's sound from ${AUDIO_SINK} at ${WEB_AUDIO_SERVER}."
+    fi
+fi
 
 # noVNC's defaults.json replaces its built-in setting defaults. A value the
 # viewer picks in the settings panel is saved in their browser and wins over
@@ -368,15 +439,16 @@ as_user /usr/local/bin/tabtopd \
     -audio-sink "$AUDIO_SINK" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \
+    -tty-command "$TTY_COMMAND" \
     -doctor="$DOCTOR" \
     &
 TABTOPD_PID=$!
 
-shutdown() { kill "$TABTOPD_PID" "$XVNC_PID" "${AUDIO_PIDS[@]}" 2>/dev/null || true; }
+shutdown() { kill "$TABTOPD_PID" $XVNC_PID "${AUDIO_PIDS[@]}" 2>/dev/null || true; }
 trap shutdown TERM INT
 
 # Exit (and let the container stop/restart) if Xvnc, the gateway or one of
 # the audio services dies.
-wait -n "$XVNC_PID" "$TABTOPD_PID" "${AUDIO_PIDS[@]}" || true
+wait -n $XVNC_PID "$TABTOPD_PID" "${AUDIO_PIDS[@]}" || true
 shutdown
 wait

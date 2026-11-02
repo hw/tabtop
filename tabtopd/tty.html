@@ -23,6 +23,9 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 #tty_search:not(.open) { gap: 0; }  /* the folded box takes no room */
 #tty_search + button { margin-left: 0; }
 #tty_search button { margin-left: 0; }
+/* Without tmux there's no Search, and what follows it goes to the right. */
+#tty_search[hidden] { display: none; }
+#tty_search[hidden] + button { margin-left: auto; }
 #tty_search input { box-sizing: border-box; width: 0; min-width: 0; padding: 1px 0; border: 1px solid transparent; opacity: 0;
     visibility: hidden; font: 13px system-ui, sans-serif; color: #e8e8ea; background: #000; border-radius: 4px;
     transition: width .15s ease-out, opacity .15s, padding .15s, visibility 0s .15s; }

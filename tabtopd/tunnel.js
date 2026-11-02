@@ -504,7 +504,7 @@ export async function request(req) {
 // session, and logs in again when the session is over. Its close event
 // has login if the session is over, and lost if the connection failed or
 // was lost without the server saying why, as when the network goes. Its
-// session is the one it used.
+// session is the one it used, and its reply the server's acceptance.
 export class TunnelSocket {
     static CONNECTING = 0;
     static OPEN = 1;
@@ -538,6 +538,7 @@ export class TunnelSocket {
             return;
         }
         this.readyState = TunnelSocket.OPEN;
+        this.reply = this._t.reply;
         this._opened = true;
         this.onopen?.(new Event("open"));
         for (let m; (m = await this._t.next());) {

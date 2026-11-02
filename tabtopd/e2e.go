@@ -285,7 +285,8 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 		}
 		defer g.closeTTY(session)
 		t.c.SetReadLimit(maxTTYMessage + tunnelOverhead)
-		if reply(nil) {
+		// search: whether there's tmux's history to search (see tty.go).
+		if reply(map[string]any{"search": g.ttyCommand == ""}) {
 			g.serveTTY(t, session, ip)
 		}
 

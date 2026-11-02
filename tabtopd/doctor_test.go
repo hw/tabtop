@@ -239,3 +239,14 @@ func TestCountEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"": true, "localhost": true, "127.0.0.1": true, "::1": true, "0.0.0.0": true,
+		"192.0.2.10": false, "2001:db8::1": false, "vnc.example": false,
+	} {
+		if got := localHost(host); got != want {
+			t.Errorf("localHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
