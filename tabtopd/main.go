@@ -725,12 +725,7 @@ p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
 p.space { margin-top: -.25rem; }
 #sessions button.end { font: inherit; font-size: 13px; }
-details.security { margin-top: 2rem; padding-top: .75rem; border-top: 1px solid var(--line); }
-details.security > summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; }
-details.security > summary.attention { color: #c5221f; }
-details.security > summary.attention::after { content: " • attention needed"; font-size: 13px; font-weight: 400; }
-@media (prefers-color-scheme: dark) { details.security > summary.attention { color: #f28b82; } }
-details.security h2 { font-size: 1rem; margin-top: 1.5rem; }
+#sessions h2 { font-size: 1rem; margin-top: 1.5rem; }
 h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4rem; word-break: normal; overflow-wrap: anywhere;
        margin-top: .75rem; }
 .tabtop-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; padding-bottom: .5rem;
@@ -741,6 +736,13 @@ h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .4
 .tabtop-nav a.page:hover { background: var(--hover); }
 .tabtop-nav .page[aria-current] { color: var(--fg); background: var(--line); }
 .tabtop-nav button { margin-left: auto; font: inherit; }
+.tabtop-nav button + button { margin-left: 0; }
+.tabtop-nav button.security.attention { color: #c5221f; border-color: currentColor; }
+.tabtop-nav button.security.attention::after { content: " •"; }
+@media (prefers-color-scheme: dark) { .tabtop-nav button.security.attention { color: #f28b82; } }
+.tabtop-nav button.security[aria-pressed=true] { color: var(--bg); background: var(--fg); border-color: var(--fg); }
+.tabtop-nav button.logout { display: inline-flex; align-items: center; justify-content: center; padding: 3px 6px; }
+.tabtop-nav button.logout svg { display: block; width: 22px; height: 22px; }
 .find { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .find input { font: inherit; flex: 0 1 20rem; min-width: 0; padding: .3rem .5rem; color: inherit; background: var(--bg);
        border: 1px solid var(--line); border-radius: 6px; }

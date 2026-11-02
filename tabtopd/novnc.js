@@ -41,7 +41,13 @@ if (settings) {
     for (const [id, title, src, onClick] of buttons) {
         const b = Object.assign(document.createElement("input"), { type: "image", id: `tabtop_${id}_button`, className: "noVNC_button", src, alt: title, title });
         b.addEventListener("click", onClick);
-        settings.before(b);
+        // Log out goes last, below Disconnect, since it ends more.
+        const disconnect = id === "logout" && document.getElementById("noVNC_disconnect_button");
+        if (disconnect) {
+            disconnect.after(b);
+        } else {
+            settings.before(b);
+        }
         if (id === "terminal") {
             terminalOn().then((on) => b.classList.toggle("noVNC_hidden", !on));
         }

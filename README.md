@@ -26,7 +26,8 @@ other two pages a bar at the top with an icon for each page, drawn like
 noVNC's own (hover over one for its name), the page you're on
 highlighted. Each opens in its own tab, and a link
 goes back to the tab already showing that page where the browser allows
-(as for tabs opened from each other). Each also has **Log out**, which
+(as for tabs opened from each other). Each also has **Log out** (an icon
+on the files page), which
 logs out of all three.
 
 If the connection to the server is lost, as when the network drops or the
@@ -601,7 +602,11 @@ How long a login lasts, and how to notice and end one you didn't make:
   address, and any failed attempts since. It stays on screen until
   dismissed when there were failed attempts or the previous login came from
   another address.
-- **The files page** lists the live sessions: when each logged in, with
+- **The files page** lists the live sessions under **Security and
+  sessions**, a button by Log out that shows them in place of the folder
+  (and goes back to it when pressed again); it's marked in red when there
+  were failed logins or a session was used from another address. It shows
+  when each logged in, with
   which browser (such as `Chrome on macOS`, as the browser describes
   itself, so it tells logins apart but proves nothing), the
   address it logged in from, any other address it has been used from
@@ -811,12 +816,13 @@ emulator compiled to WebAssembly.
   the terminal in a new tab, even while tmux has the mouse. Only `http`,
   `https` and `ftp` addresses open, so a program can't show a link that
   runs a script on the site.
-- **Search:** **Search** in the bar at the top, or Ctrl+Shift+F, opens a
-  box at the bottom. Enter finds the text in tmux's history, from the
+- **Search:** **Search** in the bar at the top, or Ctrl+Shift+F, opens
+  out in place into a search box (on a phone, across the bar's second
+  row). Enter finds the text in tmux's history, from the
   newest output back, and again for older matches; Shift+Enter goes to
   newer ones, and **↑** and **↓** do the same. tmux marks the match and
-  shows how many there are at the top right. Esc closes the box and leaves
-  tmux's copy mode. It searches the window shown, and every tab on the
+  shows how many there are at the top right. Esc (or **✕**) folds the box
+  back into the button and leaves tmux's copy mode. It searches the window shown, and every tab on the
   terminal sees the same search, since they share the tmux session. On a
   touch screen, **Find** in the strip of keys opens it.
 - **Clipboard:** text copied in tmux, or sent with an OSC 52 escape

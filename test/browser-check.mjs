@@ -290,6 +290,9 @@ try {
         if (nav !== "Desktop,Terminal,Files") {
             throw new Error(`the bar at the top holds ${nav}`);
         }
+        if (!(await ev(`/^Log out/.test(document.querySelector(".tabtop-nav button.logout svg") && document.querySelector(".tabtop-nav button.logout").getAttribute("aria-label"))`))) {
+            throw new Error("Log out isn't an icon");
+        }
         if (!(await ev(listed)).includes("hello.txt")) {
             throw new Error(`hello.txt isn't listed: ${await ev(listed)}`);
         }
@@ -538,7 +541,11 @@ try {
         // Logged in somewhere else.
         const code = await totp();
         await ev(`import("/tabtop/tunnel.js").then((m) => m.login(${JSON.stringify(code)})).then(() => true)`);
-        await cdp("Page.reload");
+        // Shown in place of the folder, from the button by Log out.
+        const button = `document.querySelector(".tabtop-nav button.security")`;
+        await ev(`${button}.click()`);
+        await waitFor(`location.hash === "#sessions" && ${button}.getAttribute("aria-pressed") === "true" && !document.querySelector("main table.file-table")`,
+            "the sessions, in place of the folder");
         await waitFor(`document.querySelectorAll("#sessions button.end").length === 1`, "the other session, with End…");
         // HeadlessChrome on Linux, as its User-Agent says.
         const named = await ev(`[...document.querySelectorAll("#sessions table:first-of-type tr")].filter((r) => r.textContent.includes("Chrome on Linux")).length`);
@@ -548,6 +555,9 @@ try {
         await ev(`document.querySelector("#sessions button.end").click()`);
         await answer();
         await waitFor(`/Ended the session/.test(${status}) && !document.querySelector("#sessions button.end")`, "the session to end");
+        await ev(`${button}.click()`);
+        await waitFor(`location.hash === "#/" && ${listed}.includes("renamed.txt") && ${button}.getAttribute("aria-pressed") === "false"`,
+            "the folder again");
     });
 
     await step("files: delete several", async () => {
@@ -731,7 +741,8 @@ try {
         for (const type of ["keyDown", "keyUp"]) {
             await cdp("Input.dispatchKeyEvent", { type, key: "F", code: "KeyF", windowsVirtualKeyCode: 70, modifiers: 2 | 8 });
         }
-        await waitFor(`document.activeElement?.matches("#tty_search input")`, "the search box");
+        // Opened out in place, in the bar at the top.
+        await waitFor(`document.activeElement?.matches(".tabtop-nav #tty_search.open input")`, "the search box");
         await cdp("Input.insertText", { text: "needle-42" });
         await press("Enter");
         const mode = () => inContainer("tmux", "display", "-p", "-t", "web", "#{pane_in_mode} #{search_present} #{search_match}");
@@ -747,8 +758,8 @@ try {
                 throw new Error("still in copy mode after Esc");
             }
         }
-        if (await ev(`!document.getElementById("tty_search").hidden`)) {
-            throw new Error("the search box stayed");
+        if (await ev(`document.getElementById("tty_search").classList.contains("open") || !document.querySelector("#tty_search button.search").offsetWidth`)) {
+            throw new Error("the search box didn't fold back into the button");
         }
     });
 
@@ -823,8 +834,10 @@ try {
     });
 
     await step("logout", async () => {
-        await waitFor(`[...document.querySelectorAll("button")].some((b) => b.textContent === "Log out")`, "the logout button");
-        await ev(`[...document.querySelectorAll("button")].find((b) => b.textContent === "Log out").click()`);
+        // An icon here, named for screen readers.
+        const out = `document.querySelector(".tabtop-nav button.logout")`;
+        await waitFor(`!!${out}`, "the logout button");
+        await ev(`${out}.click()`);
         await waitFor(`!!document.querySelector("#tabtop_login")`, "the login form after logout");
         await open("vnc.html?autoconnect=1", `!!document.querySelector("#tabtop_login input")`, "the desktop's login form after logout");
     });

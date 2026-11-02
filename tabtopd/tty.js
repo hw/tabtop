@@ -405,9 +405,10 @@ term.onTitleChange((title) => {
 // The history is tmux's, not the page's (tmux draws on the alternate
 // screen), so the server searches it with tmux's copy mode (see tty.go),
 // which marks the match on the screen and shows how many there are (at
-// the top right, so the bar that takes the text is at the bottom): Enter
-// (or ↑) finds it, then older matches, Shift+Enter (or ↓) newer ones, and
-// Esc (or ✕) closes the bar and leaves copy mode.
+// the terminal's top right). The Search button in the bar at the top
+// opens out in place into the box that takes the text: Enter (or ↑) finds
+// it, then older matches, Shift+Enter (or ↓) newer ones, and Esc (or ✕)
+// folds it back into the button and leaves copy mode.
 const search = (() => {
     const button = (text, label, onClick) => {
         const b = Object.assign(document.createElement("button"), { type: "button", textContent: text, title: label });
@@ -434,18 +435,18 @@ const search = (() => {
         input.focus();
     };
     const close = () => {
-        bar.hidden = true;
+        bar.classList.remove("open");
         if (found !== null) {
             found = null;
             ask("stop");
         }
         term.focus();
     };
-    const bar = document.createElement("div");
+    const bar = document.createElement("span");
     bar.id = "tty_search";
-    bar.hidden = true;
-    bar.append(input, button("↑", "Older (Enter)", () => go(true)), button("↓", "Newer (Shift+Enter)", () => go(false)),
-        button("✕", "Close (Esc)", close));
+    const step = (text, label, onClick) => Object.assign(button(text, label, onClick), { className: "step" });
+    bar.append(input, step("↑", "Older (Enter)", () => go(true)), step("↓", "Newer (Shift+Enter)", () => go(false)),
+        step("✕", "Close (Esc)", close));
     input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             e.preventDefault();
@@ -455,15 +456,15 @@ const search = (() => {
             close();
         }
     });
-    document.body.append(bar);
     const open = () => {
-        bar.hidden = false;
+        bar.classList.add("open");
         input.focus();
         input.select();
     };
     const find = button("Search", "Search the history (Ctrl+Shift+F)", open);
     find.className = "search";
-    document.querySelector(".tabtop-nav > button")?.before(find);
+    bar.prepend(find);
+    document.querySelector(".tabtop-nav > button")?.before(bar);
     // Before ghostty-web sees it, as the font size keys.
     document.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyF") {

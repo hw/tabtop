@@ -18,16 +18,20 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 .tabtop-nav button { margin-left: auto; font: inherit; color: inherit; background: none; border: 1px solid #3a3a3c;
     border-radius: 4px; padding: 1px 8px; cursor: pointer; }
 .tabtop-nav button:hover { color: #e8e8ea; }
-.tabtop-nav button.search + button { margin-left: 0; }
-#tty_search { position: absolute; bottom: 40px; right: 8px; z-index: 5; display: flex; gap: 4px; padding: 4px;
-    background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
-#tty_search[hidden] { display: none; }
-#tty_search input { width: min(16rem, 50vw); font: 14px system-ui, sans-serif; color: #e8e8ea; background: #000;
-    border: 1px solid #3a3a3c; border-radius: 4px; padding: 2px 6px; }
-#tty_search button { font: 14px system-ui, sans-serif; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c;
-    border-radius: 4px; min-width: 28px; cursor: pointer; }
+/* Search opens out in place, from the button into the box. */
+#tty_search { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+#tty_search + button { margin-left: 0; }
+#tty_search button { margin-left: 0; }
+#tty_search input { box-sizing: border-box; width: 0; min-width: 0; padding: 1px 0; border: 1px solid transparent; opacity: 0;
+    visibility: hidden; font: 13px system-ui, sans-serif; color: #e8e8ea; background: #000; border-radius: 4px;
+    transition: width .15s ease-out, opacity .15s, padding .15s, visibility 0s .15s; }
+#tty_search.open input { width: min(16rem, 40vw); padding: 1px 6px; border-color: #3a3a3c; opacity: 1; visibility: visible;
+    transition: width .15s ease-out, opacity .15s, padding .15s; }
+#tty_search input::-webkit-search-cancel-button { display: none; }  /* ✕ does that */
+#tty_search .step, #tty_search.open button.search { display: none; }
+#tty_search.open .step { display: inline-block; min-width: 24px; padding: 1px 4px; }
+@media (prefers-reduced-motion: reduce) { #tty_search input { transition: none; } }
 body.touch-keys #terminal { bottom: 48px; }
-body.touch-keys #tty_search { bottom: 84px; }
 #touch_keys { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; box-sizing: border-box; display: flex; gap: 4px;
     padding: 4px; overflow-x: auto; background: #1c1c1e; border-top: 1px solid #2c2c2e; }
 #touch_keys button { flex: 0 0 auto; min-width: 42px; padding: 0 8px; font: 15px system-ui, sans-serif; color: #e8e8ea;
@@ -40,8 +44,10 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         padding: max(4px, env(safe-area-inset-top)) 8px 4px; }
     .tabtop-nav .page { min-width: 34px; min-height: 34px; box-sizing: border-box; }
     .tabtop-nav button { min-height: 34px; padding: 4px 10px; }
-    #tty_search { left: 8px; right: 8px; }
-    #tty_search input { width: auto; min-width: 0; flex: 1; }
+    /* Open, it takes the second row of the bar. */
+    #tty_search.open { order: 1; flex: 1 0 100%; }
+    #tty_search.open + button { margin-left: auto; }
+    #tty_search.open input { width: auto; flex: 1; }
 }
 @media (pointer: coarse) {
     .tabtop-nav button, .tabtop-nav .page, #tty_search button { min-height: 40px; min-width: 40px; }

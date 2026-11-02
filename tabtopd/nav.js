@@ -69,8 +69,8 @@ export async function logOut() {
 
 // navBar makes a bar of links to the other pages, each an icon named by
 // its title and label, the current one, named current, shown as where you
-// are, and a Log out button.
-export function navBar(current) {
+// are, and a Log out button: an icon too, with logOutIcon.
+export function navBar(current, { logOutIcon = false } = {}) {
     const nav = document.createElement("nav");
     nav.className = "tabtop-nav";
     nav.setAttribute("aria-label", "TabTop");
@@ -97,7 +97,14 @@ export function navBar(current) {
     }
     const out = document.createElement("button");
     out.type = "button";
-    out.textContent = "Log out";
+    if (logOutIcon) {
+        out.className = "logout";
+        out.title = "Log out (here, on the desktop and in the terminal)";
+        out.setAttribute("aria-label", out.title);
+        out.innerHTML = iconSVG("logout");
+    } else {
+        out.textContent = "Log out";
+    }
     out.addEventListener("click", logOut);
     nav.append(out);
     return nav;

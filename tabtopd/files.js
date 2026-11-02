@@ -28,11 +28,24 @@ import { warnExpiry } from "./expiry.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
-// Above it, links to the desktop and the terminal, and Log out (see
-// nav.js), which stay as the page is redrawn.
+// Above it, links to the desktop and the terminal, Security and sessions,
+// and Log out (see nav.js), which stay as the page is redrawn.
 const page = document.createElement("main");
-document.body.replaceChildren(navBar("files"), page);
+const nav = navBar("files", { logOutIcon: true });
+document.body.replaceChildren(nav, page);
 nameTab("files");
+
+// The sessions and recent logins show in place of a folder, at this
+// address, opened with the button by Log out, which goes back to the
+// folder last shown (see showSecurity).
+const SECURITY = "#sessions";
+const onSecurity = () => location.hash === SECURITY;
+let lastDir = "";
+const security = el("button", { type: "button", className: "security", textContent: "Security and sessions" });
+security.addEventListener("click", () => {
+    location.hash = onSecurity() ? dirHash(lastDir) : SECURITY;
+});
+nav.querySelector(":scope > button").before(security);
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -40,7 +53,12 @@ function el(tag, props = {}, ...children) {
     return e;
 }
 
+// currentDir is the folder shown, or, while the sessions are, the one
+// shown last, which uploads dropped then go into.
 function currentDir() {
+    if (onSecurity()) {
+        return lastDir;
+    }
     const p = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
     return p.replace(/^\/+|\/+$/g, "");
 }
@@ -69,6 +87,11 @@ let shownDir = null;
 // With refresh, it's the folder shown, listed again because it changed,
 // and the sessions below aren't.
 async function show({ refresh = false } = {}) {
+    security.setAttribute("aria-pressed", String(onSecurity()));
+    if (onSecurity()) {
+        showSecurity();
+        return true;
+    }
     const me = ++shown;
     let dir, t;
     try {
@@ -112,12 +135,12 @@ async function show({ refresh = false } = {}) {
     const kept = dir === shownDir ? keepState() : null;
     const arrived = dir !== shownDir;
     shownDir = dir;
+    lastDir = dir;
     reconnected();
     document.title = "Downloads /" + (dir ? dir + "/" : "");
 
-    const sessions = (kept && document.getElementById("sessions")) || el("details", { id: "sessions", className: "security" });
-    if (!refresh || !sessions.childElementCount) {
-        showSessions(sessions);
+    if (!refresh) {
+        checkSecurity();
     }
     // Checked entries, by name, and the bar that offers what to do with
     // them, shown while there are any.
@@ -278,8 +301,7 @@ async function show({ refresh = false } = {}) {
             `so only ${t.reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(), newFolder,
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
-        ...(t.reply.total ? [diskSpace(t.reply.free, t.reply.total)] : []),
-        sessions);
+        ...(t.reply.total ? [diskSpace(t.reply.free, t.reply.total)] : []));
     if (arrived) {
         scrollTo(0, scrolls.get(dir) ?? 0);
     }
@@ -752,18 +774,51 @@ function listKeys(e) {
     e.preventDefault();
 }
 
-// showSessions lists the logins that are still live, where each has been
-// used from, and recent logins, with a button that ends every session.
+// showSecurity shows the sessions and recent logins in place of a folder.
+function showSecurity() {
+    ++shown;  // a folder's listing still on its way draws nothing
+    stopChanges();
+    shownDir = null;  // nor is it scrolled, saved as the place, or refreshed
+    document.title = "Security and sessions";
+    const box = el("div", { id: "sessions" });
+    page.replaceChildren(el("h1", { textContent: "Security and sessions" }), box);
+    scrollTo(0, 0);
+    showSessions(box);
+}
+
+// needsAttention says whether the sessions report r has anything to look
+// at: failed logins, or a session used from more than one address. The
+// Security and sessions button is marked if so.
+function needsAttention(r) {
+    const attention = r.logins.some((l) => !l.ok) || r.sessions.some((s) => s.uses.length > 1);
+    security.classList.toggle("attention", attention);
+    security.title = attention ? "Something here needs attention: failed logins, or a session used from another address" : "";
+    return attention;
+}
+
+// checkSecurity marks the Security and sessions button if anything there
+// needs attention.
+async function checkSecurity() {
+    try {
+        const t = await call({ type: "sessions" });
+        t.close();
+        needsAttention(t.reply);
+    } catch {
+        // Checked again with the next folder.
+    }
+}
+
+// showSessions lists in box the logins that are still live, where each
+// has been used from, and recent logins, with a button that ends every
+// session.
 async function showSessions(box) {
-    const wasOpen = box.open;
     let r;
     try {
         const t = await call({ type: "sessions" });
         t.close();
         r = t.reply;
     } catch (err) {
-        box.replaceChildren(el("summary", { textContent: "Security and sessions" }),
-            el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
+        box.replaceChildren(el("p", { className: "error", textContent: `Sessions: ${err.message}` }));
         return;
     }
     const when = (t) => clocks.short.format(new Date(t));
@@ -801,9 +856,8 @@ async function showSessions(box) {
         field("Used from", { className: "name", textContent: l.browser ? `${l.ip}, ${l.browser}` : l.ip }),
         field("Result", { className: l.ok ? "" : "error", textContent: l.ok ? "logged in" : "failed" })));
     const idle = r.idle_minutes ? ` A login with nothing open ends after ${r.idle_minutes} minutes.` : "";
-    const attention = r.logins.some((l) => !l.ok) || r.sessions.some((s) => s.uses.length > 1);
+    needsAttention(r);
     box.replaceChildren(
-        el("summary", { className: attention ? "attention" : "", textContent: "Security and sessions" }),
         el("div", { className: "bar" }, el("h2", { textContent: "Sessions" }), everywhere),
         el("table", { className: "sessions-table" }, el("tr", {}, el("th", { textContent: "Logged in" }), el("th", { textContent: "Used from" }),
             el("th", { className: "num", textContent: "Open" }), el("th", { className: "act" })), ...rows),
@@ -813,7 +867,6 @@ async function showSessions(box) {
             + "This page could hide that if it was changed on the way; the gateway also logs it (docker logs). "
             + "Browsers name themselves, so a name tells logins apart but proves nothing. "
             + "End… logs another session out." + idle }));
-    box.open = wasOpen || attention;
 }
 
 
