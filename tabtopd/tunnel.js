@@ -648,23 +648,35 @@ function loginForm(title, cancellable = false) {
     Object.assign(h1.style, { fontSize: "1.25rem", fontWeight: "600" });
     const error = document.createElement("p");
     error.style.color = "#f28b82";
-    const label = document.createElement("label");
-    label.append("Password + authenticator code", document.createElement("br"));
     const input = document.createElement("input");
-    Object.assign(input, { type: "password", autocomplete: "off", required: true });
-    Object.assign(input.style, { font: "inherit", fontSize: "1.25rem", width: "16em", maxWidth: "100%" });
-    label.append(input);
+    Object.assign(input, { type: "password", id: "tabtop_login_code", autocomplete: "off", required: true });
+    Object.assign(input.style, { font: "inherit", fontSize: "1.25rem", width: "16em", minWidth: "0", flex: "0 1 16em" });
+    const label = document.createElement("label");
+    label.htmlFor = input.id;
+    label.textContent = "Password + authenticator code";
+    // Its own look for the buttons, not the page's (the files page's are
+    // drawn for its light or dark theme; this form is always dark).
+    const look = (b, main) => Object.assign(b.style, {
+        all: "revert", font: "inherit", padding: "0 1rem", borderRadius: "6px", cursor: "pointer", whiteSpace: "nowrap",
+        flexShrink: "0",
+        ...(main ? { color: "#1c1c1e", background: "#8ab4f8", border: "1px solid #8ab4f8" }
+            : { color: "#e8e8ea", background: "transparent", border: "1px solid #5f6368" }),
+    });
     const button = document.createElement("button");
     button.textContent = "Log in";
+    look(button, true);
+    // The buttons on the same line as the field, which narrows to fit,
+    // and as tall as it.
+    const row = document.createElement("div");
+    Object.assign(row.style, { display: "flex", alignItems: "stretch", gap: ".5rem", marginTop: ".25rem" });
+    row.append(input, button);
     const note = document.createElement("p");
     Object.assign(note.style, { opacity: "0.7", fontSize: "13px" });
     note.textContent = "End-to-end encrypted. The code never leaves this page: it's used to agree on keys "
         + "with the desktop. One login covers the desktop, terminal and downloads.";
     const p1 = document.createElement("p");
-    p1.append(label);
-    const p2 = document.createElement("p");
-    p2.append(button);
-    form.append(h1, error, p1, p2, note);
+    p1.append(label, row);
+    form.append(h1, error, p1, note);
     box.append(form);
     document.body.append(box);
     input.focus();
@@ -673,16 +685,17 @@ function loginForm(title, cancellable = false) {
         if (cancellable) {
             const cancel = document.createElement("button");
             Object.assign(cancel, { type: "button", textContent: "Cancel" });
-            cancel.style.marginLeft = ".5rem";
+            look(cancel, false);
             cancel.addEventListener("click", () => {
                 box.remove();
                 resolve(null);
             });
-            p2.append(cancel);
+            row.append(cancel);
         }
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
             button.disabled = true;
+            button.style.opacity = ".6";  // busy agreeing on keys
             error.textContent = "";
             try {
                 const { ip, logins, ...s } = await login(input.value.trim());
@@ -696,6 +709,7 @@ function loginForm(title, cancellable = false) {
                 input.focus();
             } finally {
                 button.disabled = false;
+                button.style.opacity = "";
             }
         });
     });
