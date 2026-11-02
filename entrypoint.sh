@@ -31,10 +31,10 @@ case "$VNC_RESIZE" in
     off|scale|remote) ;;
     *) echo "VNC_RESIZE must be off, scale or remote (got '${VNC_RESIZE}')." >&2; exit 1 ;;
 esac
-# An RFB server elsewhere, as host:port or unix:path, instead of the
-# container's own desktop.
-if [ -n "$VNC_ADDR" ] && ! [[ "$VNC_ADDR" =~ ^unix:/.+$|^[^[:space:]/]+:[0-9]{1,5}$ ]]; then
-    echo "VNC_ADDR must be host:port or unix:/path (got '${VNC_ADDR}')." >&2
+# An RFB server elsewhere, as host:port, [IPv6]:port or unix:/path,
+# instead of the container's own desktop; checked as the gateway will.
+if [ -n "$VNC_ADDR" ] && ! VNC_ADDR_ERROR=$(/usr/local/bin/tabtopd -check-vnc-addr "$VNC_ADDR" 2>&1); then
+    echo "VNC_ADDR isn't usable: ${VNC_ADDR_ERROR#tabtopd: }" >&2
     exit 1
 fi
 case "$WEB_AUDIO" in

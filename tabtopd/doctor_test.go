@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -240,13 +242,108 @@ func TestCountEntries(t *testing.T) {
 	}
 }
 
-func TestLocalHost(t *testing.T) {
-	for host, want := range map[string]bool{
-		"": true, "localhost": true, "127.0.0.1": true, "::1": true, "0.0.0.0": true,
-		"192.0.2.10": false, "2001:db8::1": false, "vnc.example": false,
+func TestCheckVNCAddr(t *testing.T) {
+	for addr, ok := range map[string]bool{
+		"127.0.0.1:5901": true, "vnc.example:5900": true, "[2001:db8::1]:5900": true, "unix:/run/vnc.sock": true,
+		"vnc.example:0": false, "vnc.example:65536": false, "vnc.example:99999": false, "vnc.example:x": false,
+		"2001:db8::1:5900": false, "vnc.example": false, ":5900": false, "unix:": false, "unix:vnc.sock": false,
+		"unix:/": false, "a b:5900": false,
 	} {
-		if got := localHost(host); got != want {
-			t.Errorf("localHost(%q) = %v, want %v", host, got, want)
+		if err := checkVNCAddr(addr); (err == nil) != ok {
+			t.Errorf("checkVNCAddr(%q) = %v, want ok %v", addr, err, ok)
 		}
+	}
+}
+
+// countingListener accepts connections on l, counting them.
+func countingListener(t *testing.T, l net.Listener) *atomic.Int32 {
+	t.Helper()
+	t.Cleanup(func() { l.Close() })
+	var n atomic.Int32
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			n.Add(1)
+			c.Close()
+		}
+	}()
+	return &n
+}
+
+// TestHealthzProbe checks a TCP RFB server by connecting, once for many
+// checks at once, and again only once the result is old.
+func TestHealthzProbe(t *testing.T) {
+	g, srv := newDoctorServer(t, false)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := countingListener(t, l)
+	g.vncAddr = l.Addr().String()
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if status, _ := fetch(t, srv.URL+"/healthz"); status != 200 {
+				t.Errorf("healthz: %d", status)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := accepted.Load(); n != 1 {
+		t.Errorf("20 checks connected %d times, want once", n)
+	}
+
+	l.Close()
+	if status, _ := fetch(t, srv.URL+"/healthz"); status != 200 {
+		t.Errorf("within the cache: %d, want the cached 200", status)
+	}
+	g.vncProbe.mu.Lock()
+	g.vncProbe.at = time.Now().Add(-vncProbeCache)
+	g.vncProbe.mu.Unlock()
+	if status, _ := fetch(t, srv.URL+"/healthz"); status != 503 {
+		t.Errorf("after the cache, with nothing listening: %d, want 503", status)
+	}
+}
+
+// TestHealthzSocket finds Xvnc's own socket without connecting, and a
+// socket the kernel lists under another path (as one bind-mounted from
+// the host) by connecting.
+func TestHealthzSocket(t *testing.T) {
+	g, srv := newDoctorServer(t, false)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vnc.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := countingListener(t, l)
+
+	g.vncAddr = "unix:" + path
+	if status, _ := fetch(t, srv.URL+"/healthz"); status != 200 {
+		t.Errorf("own socket: %d", status)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Errorf("own socket: connected %d times, want none", n)
+	}
+
+	elsewhere := filepath.Join(t.TempDir(), "mounted.sock")
+	if err := os.Symlink(path, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if unixListening(elsewhere) == nil {
+		t.Fatal("the kernel's table lists the link's path; the test needs it not to")
+	}
+	g.vncAddr = "unix:" + elsewhere
+	if status, _ := fetch(t, srv.URL+"/healthz"); status != 200 {
+		t.Errorf("socket under another path: %d", status)
+	}
+	if n := accepted.Load(); n != 1 {
+		t.Errorf("socket under another path: connected %d times, want once", n)
 	}
 }

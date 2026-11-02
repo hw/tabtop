@@ -19,15 +19,19 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const vncProbeTimeout = 2 * time.Second
+const (
+	vncProbeTimeout = 2 * time.Second
+	// How long healthz trusts a connection check of the RFB server.
+	vncProbeCache = 10 * time.Second
+)
 
 // healthz answers 200 while Xvnc is listening and the TOTP users file can be
-// read, so logins can work. It needs no login and reveals nothing else. It
-// doesn't connect to a local Xvnc, which would log every check; an RFB
-// server on another host (-vnc-addr) can only be checked by connecting.
+// read, so logins can work. It needs no login and reveals nothing else.
+// See vncListening for how the RFB server is checked.
 func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, no-transform")
@@ -49,56 +53,39 @@ func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "ok\n")
 }
 
-// vncListening reports whether something listens on Xvnc's TCP port or
-// socket, from the kernel's socket tables, or, for a server on another
-// host, whether it accepts a connection, closed straight away.
+// vncListening reports whether the RFB server is there. Xvnc's own socket
+// is found in the kernel's socket table, without connecting, which Xvnc
+// would log every time. Anything else (a TCP address, or a socket mounted
+// from elsewhere, which the table lists under its original path) is
+// checked by connecting, at most once every vncProbeCache however many
+// checks arrive, since healthz needs no login.
 func (g *server) vncListening() error {
-	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok {
-		return unixListening(path)
+	if path, ok := strings.CutPrefix(g.vncAddr, "unix:"); ok && unixListening(path) == nil {
+		return nil
 	}
-	host, portStr, err := net.SplitHostPort(g.vncAddr)
-	if err != nil {
-		return err
-	}
-	if !localHost(host) {
-		c, err := net.DialTimeout("tcp", g.vncAddr, vncProbeTimeout)
-		if err != nil {
-			return err
-		}
-		return c.Close()
-	}
-	port, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return err
-	}
-	want := fmt.Sprintf(":%04X", port)
-	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		f, err := os.Open(table)
-		if err != nil {
-			continue
-		}
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			// sl local_address rem_address st ...; st 0A is LISTEN.
-			fields := strings.Fields(sc.Text())
-			if len(fields) > 3 && strings.HasSuffix(fields[1], want) && fields[3] == "0A" {
-				f.Close()
-				return nil
-			}
-		}
-		f.Close()
-	}
-	return fmt.Errorf("nothing listens on Xvnc's port %d", port)
+	return g.vncProbe.check(func() (net.Conn, error) { return g.dialVNCWithin(vncProbeTimeout) })
 }
 
-// localHost reports whether host, from a host:port, is this machine: empty,
-// localhost, or a loopback or unspecified address.
-func localHost(host string) bool {
-	if host == "" || host == "localhost" {
-		return true
+// probeCache keeps a connection check's result for vncProbeCache. Checks
+// that arrive while one is connecting wait for it and share its result.
+type probeCache struct {
+	mu  sync.Mutex
+	at  time.Time
+	err error
+}
+
+func (p *probeCache) check(dial func() (net.Conn, error)) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.at.IsZero() && time.Since(p.at) < vncProbeCache {
+		return p.err
 	}
-	ip, err := netip.ParseAddr(host)
-	return err == nil && (ip.IsLoopback() || ip.IsUnspecified())
+	c, err := dial()
+	if err == nil {
+		c.Close()
+	}
+	p.at, p.err = time.Now(), err
+	return err
 }
 
 // unixListening looks for a listening socket at path in /proc/net/unix:

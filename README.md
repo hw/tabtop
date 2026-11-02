@@ -145,7 +145,7 @@ optional and only retains browser data, downloads and desktop preferences.
 | `VNC_GEOMETRY` | `1600x900` | Desktop size before the first browser connects. |
 | `VNC_DEPTH` | `24` | Colour depth in bits. |
 | `VNC_RESIZE` | `remote` | Default way noVNC fits the desktop to the browser window: `remote`, `scale` or `off`. |
-| `VNC_ADDR` | *(empty)* | An RFB (VNC) server to show instead of the container's own desktop, as `host:port` or `unix:/path`. See [`VNC_ADDR`](#vnc_addr). |
+| `VNC_ADDR` | *(empty)* | An RFB (VNC) server to show instead of the container's own desktop, as `host:port`, `[IPv6]:port` or `unix:/path`. See [`VNC_ADDR`](#vnc_addr). |
 | `WEB_PORT` | `6080` | Port the gateway listens on inside the container. |
 | `WEB_BASE_PATH` | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
 | `WEB_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
@@ -304,8 +304,9 @@ desktop isn't started: no Xvnc, XFCE or sound, so `VNC_GEOMETRY`,
 still work in the container. The connection from the gateway to that
 server isn't encrypted by TabTop, so keep it on a private network, a
 socket, or an SSH tunnel. If the server asks for a VNC password, noVNC
-asks for it after the TabTop login. `/healthz` connects to a server on
-another host to check it, and closes the connection straight away.
+asks for it after the TabTop login. `/healthz` checks the server by
+connecting and closing the connection straight away, at most once every
+10 seconds however often it's asked.
 
 ```sh
 docker run -p 6080:6080 -e VNC_TOTP_SECRET=... -e VNC_ADDR=10.0.0.5:5900 tabtop
