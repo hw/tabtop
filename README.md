@@ -52,36 +52,6 @@ SHA-1, 30 seconds and 6 digits, which are most apps' defaults. Without
 machine nobody else can reach.
 
 
-## Managed deployment
-
-TabTop is a standalone Linux/amd64 web application. It exposes one HTTP port,
-`6080`, and runs with standard container settings. It needs no external
-database, cache, service or persistent storage. The desktop, terminal,
-downloads and audio all use the same HTTP endpoint, including their WebSocket
-connections.
-
-Set `VNC_TOTP_SECRET`. The container starts without it, but then uses the
-public [default secret](docs/environment.md#default-totp-secret), with a warning, and anyone who
-finds the site can log in. Keep the value unchanged across redeployments.
-
-Any random string works, so the platform's own generator can create it. Use
-at least 32 random characters.
-
-- **Valid Base32** (only `A`–`Z` and `2`–`7`): it's the TOTP secret. Add it to
-  the authenticator app as it is.
-- **Anything else** (such as `0`, `1`, `8`, `9`, `-` or `_`, which
-  general-purpose generators produce): a TOTP secret is derived from it, and
-  the container prints that derived secret to the log at every start, with a
-  QR code. Add the derived one to the authenticator app; see
-  [Secrets that aren't Base32](docs/environment.md#secrets-that-arent-base32).
-
-The platform should route its HTTPS address to container port `6080` and
-forward WebSocket connections. For a reverse proxy you run yourself, see
-[Reverse proxy](docs/reverse-proxy.md) (nginx at the site root or under
-`WEB_BASE_PATH`). Set `WEB_TRUSTED_PROXIES` so failed-login limits use each
-visitor's real address. A volume mounted at `/home/<VNC_USER>` is optional
-and only retains browser data, downloads and desktop preferences.
-
 ## Documentation
 
 - [Running TabTop with XFCE](docs/full-image.md): the full image's desktop,
