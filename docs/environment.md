@@ -1,7 +1,48 @@
 # Environment variables
 
-The [table in the README](../README.md#environment-variables) lists every
-variable with its default. This page describes each in detail.
+| Variable | Default | Description |
+|---|---|---|
+| [VNC_USER](#vnc_user) | `user` | The desktop's Unix account, and the account name in the authenticator app. Logins don't ask for it. |
+| [VNC_PASSWORD](#vnc_password) | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. Never sent anywhere. |
+| [VNC_TOTP_SECRET](#vnc_totp_secret) | `JBSWY3DPEHPK3PXP` (public; see [Default TOTP secret](#default-totp-secret)) | TOTP secret: Base32 is used as it is; any other string has a secret derived from it, printed at startup. Always set it for a site others can reach: the default is a well-known example secret, used with a warning in the log. |
+| [VNC_TOTP_DIGITS](#vnc_totp_digits) | `6` | Code length: `6`, `7` or `8`. |
+| [VNC_GEOMETRY](#vnc_geometry-and-vnc_resize) | `1600x900` | Desktop size before the first browser connects. |
+| [VNC_DEPTH](#vnc_depth) | `24` | Colour depth in bits: `16`, `24` or `32`. |
+| [VNC_RESIZE](#vnc_geometry-and-vnc_resize) | `remote` | Default way noVNC fits the desktop to the browser window: `remote`, `scale` or `off`. |
+| [VNC_UPSTREAM_PASSWORD](#vnc_upstream_password) | *(empty)* | With `VNC_ADDR`, the password to give that VNC server, so noVNC doesn't ask for it. The server's own, never TabTop's login password. |
+| [VNC_ADDR](#vnc_addr) | *(empty)* | An RFB (VNC) server to show instead of the container's own desktop, as `host:port`, `[IPv6]:port` or `unix:/path`. See [VNC_ADDR](#vnc_addr). |
+| [VNC_X509](#vnc_x509) | `0` | `1` encrypts the connection to the VNC server at `VNC_ADDR` with TLS (VeNCrypt X509Vnc, or X509Plain with `VNC_UPSTREAM_USERNAME`), checking its certificate, with no unencrypted fallback. |
+| [VNC_UPSTREAM_USERNAME](#vnc_upstream_username) | *(empty)* | With `VNC_X509=1`, a username for the VNC server, which selects X509Plain: a Unix account on its machine, whose password is `VNC_UPSTREAM_PASSWORD`. |
+| [VNC_CA_FILE](#vnc_ca_file) | *(empty)* | With `VNC_X509=1`, the PEM certificates to trust instead of the system's, such as the VNC server's self-signed one, mounted into the container. |
+| [VNC_SERVER_NAME](#vnc_server_name) | *(the host in `VNC_ADDR`)* | With `VNC_X509=1`, the name the VNC server's certificate must carry; required for a Unix socket. |
+| [WEB_PORT](#web_port) | `6080` | Port the gateway listens on inside the container. |
+| [WEB_BASE_PATH](#web_base_path) | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
+| [WEB_TRUSTED_PROXIES](#web_trusted_proxies) | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
+| [WEB_TRUST_NPROXIES](#web_trust_nproxies) | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [WEB_TRUST_NPROXIES](#web_trust_nproxies). |
+| [WEB_AUDIO](#web_audio) | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
+| [WEB_AUDIO_BITRATE](#web_audio_bitrate) | `64` | Sound quality in kbit/s, `32` to `256`. |
+| [WEB_AUDIO_SERVER](#web_audio_server-and-web_audio_sink) | *(empty)* | A PulseAudio or PipeWire socket mounted from the host, such as `/run/host-pulse/native`, whose sound is streamed instead of the container's own. See [Host audio](lite.md#host-audio). |
+| [WEB_AUDIO_SINK](#web_audio_server-and-web_audio_sink) | `@DEFAULT_SINK@` | With `WEB_AUDIO_SERVER`, the host's sink to stream; by default whichever is the host's default. |
+| [WEB_SESSION_MAX](#web_session_max-and-web_session_idle) | `12h` | How long a login lasts at most, in hours and minutes, such as `12h` or `90m`. See [Sessions](encryption.md#sessions). |
+| [WEB_SESSION_IDLE](#web_session_max-and-web_session_idle) | `1h` | How long a login lasts with nothing open (no desktop, terminal or download), such as `1h` or `30m`. `0` for no limit. |
+| [WEB_TTY](#web_tty) | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
+| [WEB_TTY_COMMAND](#web_tty_command) | *(empty)* | A command each terminal tab runs instead of tmux, such as `ssh -t me@host.docker.internal`. See [WEB_TTY_COMMAND](#web_tty_command). |
+| [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
+| [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
+| [TZ](#tz) | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
+
+All environment variables are optional - defaults will be used if a value is not set.
+
+The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
+`VNC_RESIZE`, `VNC_ADDR`, `WEB_PORT`,
+`VNC_X509` (or what it needs; see [VNC_X509](#vnc_x509)),
+`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
+`WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
+`WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
+`WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
+
+Each variable is described in detail below.
 
 ## `VNC_USER`
 
