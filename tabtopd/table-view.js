@@ -328,7 +328,7 @@ export function filterColumns(rows, order, filters, types) {
 
 // The statistics a column can show, by type, with what they're called.
 export const STATS = [
-    ["sum", "Sum", ["number"]], ["mean", "Mean", ["number"]], ["median", "Median", ["number"]],
+    ["sum", "Sum", ["number"]], ["mean", "Average", ["number"]], ["median", "Median", ["number"]],
     ["min", "Min", ["number", "date"]], ["max", "Max", ["number", "date"]], ["sd", "Std Dev", ["number"]],
     ["empty", "Empty", ["number", "date", "text"]], ["unique", "Unique", ["number", "date", "text"]],
 ];
