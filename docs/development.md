@@ -157,9 +157,9 @@ connection on each page to see it come back, logs in again when warned
 the login is ending, and logs out, then checks from
 inside the container what the pages left in `~/Downloads`, and what the
 zips hold. It prints `ok` or `not ok` for each step, and the container's
-log if one fails. It needs Docker, Node, Python 3 and Chrome or Chromium
-(set `CHROME` if it isn't found). `mise run browser-check` builds the image
-and runs it.
+log if one fails. It needs Docker, Node, Python 3, FFmpeg, and Chrome or
+Chromium (set `CHROME` if it isn't found). `mise run browser-check` builds
+the image and runs it.
 
 `test/lite-check.sh <lite image> <full image>` checks an image built
 without a desktop: that it has none, that it won't start without

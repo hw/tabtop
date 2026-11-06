@@ -60,6 +60,8 @@ jobs:
           tags: tabtop:check
           cache-from: type=gha,scope=tabtop
           cache-to: type=gha,mode=max,scope=tabtop
+      # Media preview checks generate MP3/MKV/MP4 fixtures with ffmpeg.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: test/browser-check.sh tabtop:check
       - uses: docker/build-push-action@v7
         with:
