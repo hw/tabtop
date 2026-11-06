@@ -30,6 +30,8 @@ const icons = {
     back: '<path d="M10 5l-7 7 7 7M3 12h18"/>',
     "download": '<path d="M6 2h6v10h4L9 21 2 12h4z"/><path stroke-width="1.5" fill="var(--raised, white)" d="M19 14l4 1.3v2.6c0 2-1.6 3.8-4 4.6-2.4-.8-4-2.6-4-4.6v-2.6z"/>',
     "download-direct": '<path d="M9 2h6v10h5L12 22 4 12h5z"/>',
+    // Arrow into a folder: extract ZIP entries beside the archive.
+    "extract": '<path d="M3 9a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9A1.5 1.5 0 0 1 22 11.5v7a1.5 1.5 0 0 1-1.5 1.5h-16A1.5 1.5 0 0 1 3 18.5z"/><path d="M12 2v11m-3-3l3 3 3-3"/>',
     "fold-all": '<path d="M8 3h13v13h-3"/><rect x="3" y="8" width="13" height="13" rx="1"/><path d="M6.5 14.5h6"/>',
     "fit-page": '<rect x="3" y="1" width="18" height="22" rx="1"/><path stroke-width="1.5" d="M10 9L6 5m0 3V5h3M14 9l4-4m-3 0h3v3M10 15l-4 4m0-3v3h3M14 15l4 4m-3 0h3v-3"/>',
     "fit-width": '<path d="M3 5v14m18-14v14M5 12h14M8 9l-3 3 3 3m8-6l3 3-3 3"/>',
@@ -47,7 +49,7 @@ const icons = {
 // Most navigation/desktop icons use the original 25px noVNC-style grid.
 // Preview icons retain their own grids, sizes, and stroke weights.
 const metrics = {
-    download: [18, 24, 2.6], "download-direct": [18, 24, 2.6],
+    download: [18, 24, 1.8], "download-direct": [18, 24, 1.8], extract: [18, 24, 1.8],
     back: [18, 24, 1.8], "fold-all": [18, 24, 1.8], "fit-page": [18, 24, 1.8],
     "fit-width": [18, 24, 1.8], "actual-size": [28, 24, 1.8],
 };

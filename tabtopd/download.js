@@ -34,8 +34,15 @@ export function fetchZip(dir, names) {
     return fetchDownload({ type: "zip", path: dir, names }, label, "zipping", () => fetchZip(dir, names));
 }
 
+// fetchZipEntries downloads selected entries from a ZIP on disk, without
+// extracting them into Downloads: one file as itself, several as a zip.
+export function fetchZipEntries(path, entries, if_mtime, if_size) {
+    const label = entries.length === 1 ? "ZIP entry" : `${entries.length} ZIP entries`;
+    return fetchDownload({ type: "zip-download", path, entries, if_mtime, if_size }, label, "starting",
+        () => fetchZipEntries(path, entries, if_mtime, if_size));
+}
+
 async function fetchDownload(req, label, starting, retry) {
-    const zip = req.type === "zip";
     const row = statusRow(`${label}: ${starting}`, true);
     row.destination("To: browser downloads");
     let name = label;
@@ -43,11 +50,11 @@ async function fetchDownload(req, label, starting, retry) {
     const result = await runTransfer({
         signal: row.signal, retry,
         progress: (bytes, size) => {
-            row.set(zip ? `${name}: ${humanBytes(bytes)}` : `${name}: ${size ? Math.floor(bytes * 100 / size) : 100}%`);
-            row.progress(zip ? null : size ? bytes / size : 1);
+            row.set(size == null ? `${name}: ${humanBytes(bytes)}` : `${name}: ${size ? Math.floor(bytes * 100 / size) : 100}%`);
+            row.progress(size == null ? null : size ? bytes / size : 1);
         },
         run: async ({ signal, own, progress }) => {
-            if (zip && JSON.stringify(req).length > MAX_REQUEST) {
+            if ((req.type === "zip" || req.type === "zip-download") && JSON.stringify(req).length > MAX_REQUEST) {
                 throw new Error("too many to download at once; pick fewer");
             }
             const sw = await streamWorker();
@@ -56,14 +63,15 @@ async function fetchDownload(req, label, starting, retry) {
             own(() => t.close());
             name = t.reply.name;
             opened = true;
-            const size = zip ? null : t.reply.size;
+            // Folder zips and multi-entry ZIP downloads have no known size.
+            const size = Object.hasOwn(t.reply, "size") ? t.reply.size : null;
             let bytes = 0;
             const failed = await (sw ? streamFile : saveFile)(t, name, size, (got) => {
                 bytes = got;
                 progress(got, size);
             }, sw, own);
             if (failed) { throw new Error(failed); }
-            return { bytes: zip ? bytes : size, skipped: t.trailer?.skipped ?? 0 };
+            return { bytes: size == null ? bytes : size, skipped: t.trailer?.skipped ?? 0 };
         },
     });
     if (result.state === "cancelled") {

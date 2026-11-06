@@ -1,6 +1,7 @@
 // Preview rendering is a map of adapters; orchestration lives in preview.js.
 // Each renderer returns a DOM element adapted to PreviewView by the controller.
 import { call } from "./requests.js";
+import { fetchZipEntries } from "./download.js";
 import { el } from "./preview-dom.js";
 import { render, structured, zipListing } from "./preview-content.js";
 import { markdownFrame, epubFrame, pdfFrame } from "./preview-frames.js";
@@ -24,10 +25,13 @@ async function mediaView({ path, file, signal }) {
     return mediaStream(path, file, signal);
 }
 const renderers = {
-    zip: ({ file, path }) => zipListing(file.entries, async (entries) => {
-        const t = await call({ type: "zip-extract", path, entries, if_mtime: file.mtime, if_size: file.size });
-        t.close();
-        return t.reply;
+    zip: ({ file, path }) => zipListing(file.entries, {
+        extract: async (entries) => {
+            const t = await call({ type: "zip-extract", path, entries, if_mtime: file.mtime, if_size: file.size });
+            t.close();
+            return t.reply;
+        },
+        download: (entries) => fetchZipEntries(path, entries, file.mtime, file.size),
     }),
     epub: ({ path, file, location, navigate }) => epubFrame(path, file, { location, navigate }),
     pdf: ({ path, file, location, navigate }) => pdfFrame(path, file, { location, navigate }),

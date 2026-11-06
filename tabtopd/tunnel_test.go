@@ -636,6 +636,10 @@ func TestEndpoints(t *testing.T) {
 					t.Errorf("files page CSP %q lacks %s", csp, want)
 				}
 			}
+			// Text previews colour with highlight.js classes (see highlight.css).
+			if !strings.Contains(string(body), ".hljs-keyword") {
+				t.Errorf("files page omits syntax-highlight styles")
+			}
 		case "GET /tabtop/download-sw.js":
 			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") ||
 				resp.Header.Get("Content-Security-Policy") != downloadSWCSP {

@@ -73,32 +73,27 @@ func extractZipFiles(ctx context.Context, opened *downloadItem, ids []int) (stri
 	return extractZipFilesWithSync(ctx, opened, ids, syncDir)
 }
 
-// A nonempty destination with an error means publication succeeded but its
-// parent could not be synced; callers must report a warning, not retry.
-func extractZipFilesWithSync(ctx context.Context, opened *downloadItem, ids []int, syncDirectory func(*os.Root, string) error) (string, error) {
+// zipSelectedFiles resolves preview ordinals to extractable entries, with the
+// same limits and path checks as extraction.
+func zipSelectedFiles(zr *zip.Reader, ids []int) (selected []*zip.File, names []string, total uint64, err error) {
 	if len(ids) == 0 || len(ids) > maxZipExtractFiles {
-		return "", fmt.Errorf("select between 1 and %d files", maxZipExtractFiles)
+		return nil, nil, 0, fmt.Errorf("select between 1 and %d files", maxZipExtractFiles)
 	}
-	zr, err := openBoundedZip(zipExtractReader{ReaderAt: opened.file, ctx: ctx}, opened.info.Size(), zipListingLimits)
-	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
-		return "", err
-	}
-	selected := make([]*zip.File, 0, len(ids))
-	names := make([]string, 0, len(ids))
+	selected = make([]*zip.File, 0, len(ids))
+	names = make([]string, 0, len(ids))
 	seen := map[string]bool{}
-	var total uint64
 	for _, id := range ids {
 		if id < 0 || id >= len(zr.File) {
-			return "", errors.New("the ZIP selection is invalid; open it again")
+			return nil, nil, 0, errors.New("the ZIP selection is invalid; open it again")
 		}
 		f := zr.File[id]
 		name, ok := zipExtractName(f)
 		if !ok || seen[name] {
-			return "", errors.New("the selection contains an unsafe, encrypted, unsupported or duplicate file")
+			return nil, nil, 0, errors.New("the selection contains an unsafe, encrypted, unsupported or duplicate file")
 		}
 		seen[name] = true
 		if f.UncompressedSize64 > maxZipExtractBytes-total {
-			return "", errors.New("extract at most 512 MiB at a time")
+			return nil, nil, 0, errors.New("at most 512 MiB at a time")
 		}
 		total += f.UncompressedSize64
 		selected = append(selected, f)
@@ -107,9 +102,23 @@ func extractZipFilesWithSync(ctx context.Context, opened *downloadItem, ids []in
 	for _, name := range names {
 		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
 			if seen[parent] {
-				return "", errors.New("a selected file is also used as a folder")
+				return nil, nil, 0, errors.New("a selected file is also used as a folder")
 			}
 		}
+	}
+	return selected, names, total, nil
+}
+
+// A nonempty destination with an error means publication succeeded but its
+// parent could not be synced; callers must report a warning, not retry.
+func extractZipFilesWithSync(ctx context.Context, opened *downloadItem, ids []int, syncDirectory func(*os.Root, string) error) (string, error) {
+	zr, err := openBoundedZip(zipExtractReader{ReaderAt: opened.file, ctx: ctx}, opened.info.Size(), zipListingLimits)
+	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
+		return "", err
+	}
+	selected, names, total, err := zipSelectedFiles(zr, ids)
+	if err != nil {
+		return "", err
 	}
 	dir := path.Dir(opened.name)
 	destination, err := openRootDirectory(opened.store.root, dir)

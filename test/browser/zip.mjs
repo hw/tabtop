@@ -36,13 +36,28 @@ export async function checkZIP(checks) {
         };
         await show("listing.zip");
         const details = await ev(`({ rows: document.querySelectorAll(".zip-table tbody tr").length, text: document.querySelector(".zip-listing").textContent,
-            injected: document.querySelectorAll(".zip-table img, .zip-table script, .zip-table a").length })`);
-        if ((await ev(`document.querySelector(".zip-table tbody td").textContent`)) !== "folder/") throw new Error("ZIP preview followed the decoy directory");
+            injected: document.querySelectorAll(".zip-table img, .zip-table script, .zip-table a").length,
+            folder: document.querySelector(".zip-table tbody tr.zip-folder .zip-folder-name")?.textContent,
+            pathFirst: document.querySelector(".zip-table thead th.sel")?.querySelector("input.zip-select-shown") != null })`);
+        if (details.folder !== "folder/") throw new Error("ZIP preview followed the decoy directory");
+        if (!details.pathFirst) throw new Error("ZIP select checkbox isn't in the header's first column");
         if (details.rows !== 500 || !details.text.includes("653 entries") || !details.text.includes("Encrypted") || !details.text.includes("<img src=x onerror=alert(1)>") || details.injected) throw new Error(`ZIP listing: ${JSON.stringify(details)}`);
+        if ((await ev(`document.querySelector(".zip-table tbody tr.zip-folder .zip-folder-toggle")?.textContent`)) !== "−") {
+            throw new Error("expanded folders should show −");
+        }
+        await ev(`document.querySelector(".zip-table tbody tr.zip-folder .zip-folder-toggle").click()`);
+        await waitFor(`document.querySelectorAll(".zip-table tbody tr").length === 3 && document.querySelector(".zip-table tbody tr.zip-folder .zip-folder-toggle")?.textContent === "+"`, "folder collapsed");
+        await ev(`document.querySelector(".zip-table tbody tr.zip-folder .zip-folder-toggle").click()`);
+        await waitFor(`document.querySelectorAll(".zip-table tbody tr").length === 500`, "folder expanded again");
         await ev(`document.querySelector(".zip-scroll > button").click()`);
         await waitFor(`document.querySelectorAll(".zip-table tbody tr").length === 653`, "all ZIP rows");
+        await ev(`document.querySelector(".zip-table tbody tr.zip-folder td.sel input").click()`);
+        if (!(await ev(`document.querySelector(".zip-selection-summary").textContent.includes("650 files selected") && document.querySelector(".zip-table tbody tr.zip-folder td.sel input").checked`))) {
+            throw new Error("folder checkbox didn't select its files");
+        }
+        await ev(`document.querySelector(".zip-clear-selection").click()`);
         await ev(`(() => { const b = document.querySelector(".zip-filter"); b.value = "item-649"; b.dispatchEvent(new Event("input")); })()`);
-        await waitFor(`document.querySelectorAll(".zip-table tbody tr").length === 1 && document.querySelector(".zip-table tbody td").textContent === "folder/item-649.txt"`, "ZIP path filtered");
+        await waitFor(`document.querySelectorAll(".zip-table tbody tr").length === 2 && document.querySelector(".zip-table tbody tr[data-path='folder/item-649.txt'] .zip-file-name")?.textContent === "item-649.txt"`, "ZIP path filtered");
         await ev(`document.querySelector(".zip-select-shown").click()`);
         if (!(await ev(`document.querySelector(".zip-select-shown").checked && document.querySelector(".zip-selection-summary").textContent.includes("1 file selected · 7 B")`))) throw new Error("shown-row selection or size missing");
         await ev(`(() => { const b = document.querySelector(".zip-filter"); b.value = "hello"; b.dispatchEvent(new Event("input")); })()`);
@@ -50,16 +65,20 @@ export async function checkZIP(checks) {
         await ev(`document.querySelector(".zip-clear-selection").click()`);
         if (!(await ev(`document.querySelector(".zip-extract-selected").disabled`))) throw new Error("Clear selection failed");
         await ev(`(() => { const b = document.querySelector(".zip-filter"); b.value = "item-649"; b.dispatchEvent(new Event("input")); })()`);
-        await ev(`document.querySelector(".zip-table tbody .zip-extract-one").click()`);
+        await ev(`document.querySelector(".zip-table tbody tr[data-path='folder/item-649.txt'] .zip-extract-one").click()`);
         await waitFor(`document.querySelector(".zip-extract-status")?.textContent.includes("Extracted 1 file into media/listing")`, "one ZIP entry extracted");
         if (inContainer("cat", "/home/user/Downloads/media/listing/folder/item-649.txt") !== "content") throw new Error("wrong extracted payload");
         await ev(`(() => { const b = document.querySelector(".zip-filter"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
-        if (!(await ev(`document.querySelector(".zip-table tbody input").disabled`))) throw new Error("encrypted folder was selectable");
+        if (!(await ev(`document.querySelector("tr.zip-folder .zip-extract-one").disabled && document.querySelector("tr.zip-folder").textContent.includes("Encrypted") && !document.querySelector("tr.zip-folder").textContent.includes("select individual")`))) {
+            throw new Error("encrypted folder extractable or still labeled to select files");
+        }
         await ev(`(() => { for (const name of ["hello.txt", "folder/item-0.txt"]) {
-            const row = [...document.querySelectorAll(".zip-table tbody tr")].find(r => r.querySelector("td.name").textContent === name);
-            row.querySelector("input").click();
+            const row = [...document.querySelectorAll(".zip-table tbody tr")].find(r => r.dataset.path === name);
+            row.querySelector("td.sel input").click();
         } })()`);
-        if (!(await ev(`document.querySelector(".zip-select-shown").indeterminate && document.querySelector(".zip-selection-summary").textContent.includes("2 files selected · 12 B")`))) throw new Error("partial selection or size missing");
+        if (!(await ev(`document.querySelector(".zip-select-shown").indeterminate && document.querySelector(".zip-selection-summary").textContent.includes("2 files selected · 12 B") && document.querySelector("tr.zip-folder td.sel input").indeterminate`))) {
+            throw new Error("partial selection or size missing");
+        }
         await ev(`document.querySelector(".zip-extract-selected").click()`);
         await waitFor(`document.querySelector(".zip-extract-status")?.textContent.includes("Extracted 2 files into media/listing (1)")`, "selected ZIP entries extracted");
         if (inContainer("cat", "/home/user/Downloads/media/listing (1)/hello.txt") !== "hello") throw new Error("selected file missing");
@@ -68,7 +87,7 @@ export async function checkZIP(checks) {
         await waitFor(`!document.querySelector("dialog.preview") && ${listed}.includes("hello.txt") && location.hash.includes("listing%20(1)")`, "extracted folder opened");
         await open("fs/#/media/", `${listed}.includes("encoding.zip")`, "ZIP listing again");
         await show("encoding.zip");
-        if ((await ev(`document.querySelector(".zip-table tbody td").textContent`)) !== "café.txt") throw new Error("ZIP legacy filename encoding was lost");
+        if ((await ev(`document.querySelector(".zip-table tbody .zip-file-name")?.textContent`)) !== "café.txt") throw new Error("ZIP legacy filename encoding was lost");
         await ev(`(() => { const b = document.querySelector(".zip-filter"); b.value = "café"; b.dispatchEvent(new Event("input")); })()`);
         if ((await ev(`document.querySelectorAll(".zip-table tbody tr").length`)) !== 1) throw new Error("decoded ZIP name wasn't searchable");
         await close();
@@ -80,6 +99,6 @@ export async function checkZIP(checks) {
         if (!(await ev(`!!document.querySelector("dialog.preview button.download")`))) throw new Error("failed ZIP preview lost Download");
         await close();
         inContainer("sh", "-c", "rm -r ~/Downloads/media/listing '/home/user/Downloads/media/listing (1)' ~/Downloads/media/listing.zip ~/Downloads/media/encoding.zip ~/Downloads/media/empty.zip ~/Downloads/media/broken.zip");
-        return "paged and filtered contents, safe filenames, individual and selected extraction, collision handling, empty and invalid archives";
+        return "paged folder tree, filtered contents, safe filenames, individual and selected extraction, collision handling, empty and invalid archives";
     });
 }

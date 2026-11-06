@@ -94,14 +94,15 @@ func listZipPreview(r io.ReaderAt, size int64) ([]zipPreviewEntry, error) {
 			modified = f.Modified.UTC().Format("2006-01-02T15:04:05Z")
 		}
 		_, extractable := zipExtractName(f)
+		isDir := f.FileInfo().IsDir()
 		reason := ""
 		switch {
 		case f.Flags&1 != 0:
 			reason = "Encrypted"
 		case f.Mode()&fs.ModeSymlink != 0:
 			reason = "Symlink"
-		case f.FileInfo().IsDir():
-			reason = "Folder — select individual files"
+		case isDir:
+			// Folders aren't extracted as entries; the listing selects their files.
 		case f.Method != zip.Store && f.Method != zip.Deflate:
 			reason = "Unsupported compression"
 		case !extractable:
@@ -109,7 +110,7 @@ func listZipPreview(r io.ReaderAt, size int64) ([]zipPreviewEntry, error) {
 		case f.UncompressedSize64 > maxZipExtractBytes:
 			reason = "Exceeds 512 MiB limit"
 		}
-		extractable = reason == ""
+		extractable = reason == "" && !isDir
 		entries = append(entries, zipPreviewEntry{Index: index, Extractable: extractable, Unavailable: reason, Name: name, Size: fmt.Sprint(f.UncompressedSize64), Packed: fmt.Sprint(f.CompressedSize64), Modified: modified, Kind: kind, Encrypted: f.Flags&1 != 0})
 	}
 	return entries, nil

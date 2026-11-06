@@ -74,27 +74,34 @@ downloaded at `http://<host>:6080/fs/`:
   by a link made for that one download, which is counted as it's made,
   and removed once the file has all come. What a browser can play varies: MP4,
   WebM, MP3 and the like play everywhere, others may not.
-- **ZIP archives** (`.zip`) show a searchable contents listing with full paths,
+- **ZIP archives** (`.zip`) show a searchable, collapsible folder tree with
   entry type, original and packed sizes, modification times, and encrypted
   entry markers. **Show more** adds rows after the first 500. Only directory
-  metadata is read until extraction is requested. Use **Extract** beside a file,
-  or tick files and choose **Extract selected**. The header checkbox selects
-  eligible files in the rows shown. The action bar keeps selected count and size
-  visible, notes selections hidden by filtering or paging, and offers **Clear
-  selection**. After extraction, **Open folder** opens the result. A new folder beside the ZIP
-  receives the files with their paths preserved; existing folders are never
-  overwritten. Each extraction allows up to 1,000 files and 512 MiB. Encrypted
-  files, symlinks, unsupported compression, and unsafe paths cannot be extracted.
-  ZIP64 sizes are preserved, and filenames support UTF-8, CP437 and validated
-  Unicode Path metadata. Listings are limited to 10,000 entries and 4 MB
-  of directory metadata; split archives aren't supported. **Download** saves
-  the original ZIP.
+  metadata is read until extraction or a contents download is requested. Beside
+  each file, the download glyph sends it through the encrypted tunnel without
+  writing into Downloads, and the extract glyph unpacks it into a new folder
+  beside the ZIP. Folders expand and collapse with **+** / **−**; ticking a
+  folder selects or clears every eligible file under it. Tick files (or
+  folders) and choose **Download selected** or **Extract selected** for
+  several at once (one file downloads as itself; several as a zip). The
+  header checkbox selects eligible files in the rows shown. The action bar
+  keeps selected count and size visible, notes selections hidden by filtering
+  or paging, and offers **Clear selection**. After extraction, **Open folder**
+  opens the result. Existing folders are never overwritten.
+  Each extraction or contents download allows up to 1,000 files and 512 MiB.
+  Encrypted files, symlinks, unsupported compression, and unsafe paths cannot
+  be extracted or downloaded from the listing. ZIP64 sizes are preserved, and
+  filenames support UTF-8, CP437 and validated Unicode Path metadata. Listings
+  are limited to 10,000 entries and 4 MB of directory metadata; split archives
+  aren't supported. The preview's main **Download** still saves the original
+  ZIP.
 - **PDFs** are shown by [pdf.js](https://mozilla.github.io/pdf.js/), a page
   at a time as you scroll to it, initially fitted to the width. **−** and
-  **+** zoom; the **Fit page** icon fits the whole page within the available
-  window, including after resizing. The adjacent **Fit width** icon fills
-  the preview's width. The rectangle marked **100%** uses a fixed scale that stays
-  the same when the window is resized. The page you're on is shown above: click it, type a
+  **+** zoom; the **Fit width** icon fills the preview's width. The adjacent
+  **Fit page** icon fits the whole page within the available window,
+  including after resizing. The rectangle marked **100%** uses a fixed
+  scale that stays the same when the window is resized. The page you're on
+  is shown above: click it, type a
   page's number and press Enter to go there. Links in a page work:
   to the web through the URL confirmation lightbox, within the PDF to the page. **Only what's shown
   is fetched:** the preview starts with the file's first 64 KB and asks

@@ -551,7 +551,7 @@
         actual.innerHTML = iconSVG("actual-size");
         const zooming = Object.assign(document.createElement("span"), { className: "group" });
         zooming.append(button(glyphs.minus, "Zoom out", () => rezoom(zoom / 1.25)), where, pageBox,
-            button(glyphs.plus, "Zoom in", () => rezoom(zoom * 1.25)), fit, width, actual);
+            button(glyphs.plus, "Zoom in", () => rezoom(zoom * 1.25)), width, fit, actual);
         const finding = Object.assign(document.createElement("span"), { className: "group" });
         finding.append(findBox, button(glyphs.up, "Previous match", () => step(-1)), button(glyphs.down, "Next match", () => step(1)), found, keepLooking);
         bar.replaceChildren(zooming, finding);

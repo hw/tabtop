@@ -26,7 +26,7 @@ var desktopBaseCSS string
 //go:embed desktop-notices.css
 var desktopNoticesCSS string
 
-var pageHead = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<style>" + filesCSS + transfersCSS + `</style>`
+var pageHead = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<style>" + filesCSS + transfersCSS + highlightCSS + `</style>`
 
 // transfersCSS styles the overlay shown while files are dragged over a
 // page (see drop.js) and the transfers panel (see ui.js), on the files

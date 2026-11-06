@@ -334,10 +334,26 @@ dialog.preview .body > .zip-listing { align-self: stretch; flex: 1; display: fle
 .zip-scroll { flex: 1; overflow: auto; min-height: 0; }
 .zip-table th { position: sticky; top: 0; background: var(--bg); }
 .zip-table td.name { min-width: 12rem; white-space: pre-wrap; }
+/* Fit Type/Size/Packed/Modified/Actions to their content so Path keeps the room. */
+.zip-table :is(th, td).zip-type, .zip-table :is(th, td).zip-size, .zip-table :is(th, td).zip-packed,
+.zip-table :is(th, td).zip-modified, .zip-table :is(th, td).act, .zip-table :is(th, td).sel {
+       width: 1%; white-space: nowrap; padding-left: .35rem; padding-right: .35rem; }
+.zip-table th.zip-type, .zip-table th.zip-size, .zip-table th.zip-packed, .zip-table th.zip-modified,
+.zip-table th.act { text-align: center; }
+.zip-table td.zip-type { text-align: left; }
+.zip-table td.zip-modified { text-align: right; font-variant-numeric: tabular-nums; }
+.zip-table td.act { white-space: nowrap; }
+.zip-table td.act button.glyph { display: inline-flex; align-items: center; justify-content: center;
+       min-width: 2rem; padding: .15rem .35rem; margin-left: .35rem; line-height: 0; }
+.zip-table td.act button.glyph:first-child { margin-left: 0; }
+.zip-table td.act button.glyph svg { display: block; }
+.zip-folder-toggle { font: inherit; font-family: ui-monospace, monospace; font-weight: 600; line-height: 1;
+       min-width: 1.1rem; padding: .1rem .2rem; margin-right: .25rem; color: inherit; background: none; border: 0;
+       cursor: pointer; vertical-align: baseline; text-align: center; }
+.zip-folder-toggle:disabled { opacity: .4; cursor: default; }
 .zip-scroll > button { margin: .75rem; }
 
-.zip-table td.name input { margin-right: .6rem; }
-.zip-extract-note, .zip-extract-status { margin: .25rem .75rem; }
+.zip-extract-status { margin: .25rem .75rem; }
 
 .zip-action-bar { position: sticky; bottom: 0; flex-shrink: 0; padding: .6rem .75rem; border-top: 1px solid var(--line); background: var(--bg); }
 .zip-selection-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
@@ -345,8 +361,7 @@ dialog.preview .body > .zip-listing { align-self: stretch; flex: 1; display: fle
 .zip-action-bar .zip-extract-status { margin: 0 0 .5rem; overflow-wrap: anywhere; }
 .zip-extract-status:empty { display: none; }
 .zip-extract-status.warning { color: #865200; background: #fff4d4; padding: .6rem; border-radius: .3rem; }
-.zip-unavailable { display: inline-block; margin-left: .5rem; padding: .1rem .4rem; border: 1px solid var(--line); border-radius: .3rem; font-size: .85em; }
-.zip-table th input { margin-right: .6rem; }
+.zip-unavailable { display: inline-block; margin-left: .35rem; padding: .05rem .3rem; border: 1px solid var(--line); border-radius: .3rem; font-size: .8em; }
 @media (prefers-color-scheme: dark) {
     .zip-extract-status.warning { color: #ffdc8a; background: #403010; }
 }
