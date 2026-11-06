@@ -449,12 +449,13 @@ export async function askName(message, ok, value = "", stem = false) {
 // it has, and a new cover picture, showing its cover (coverURL, if it has
 // one, hasCover, and it could be fetched), or why it can't be changed
 // (coverNote). The picture is one in Downloads, chosen with pick() (which
-// resolves to it, as a File, or null), or one dropped on the dialog or
-// pasted into it, from this computer. Rebuild contents closes this dialog
-// and resolves to {rebuildTOC: true} (after a confirm when hasTOC). Else
-// it resolves to {title, creator, picture}, picture null if none was
-// chosen, or null for Cancel.
-export async function askBookDetails({ title, creator, hasCover, coverURL, coverNote, pick, hasTOC }) {
+// resolves to it, as a File, or null), one already in the book, chosen with
+// pickEpub() the same way, or one dropped on the dialog or pasted into it,
+// from this computer. Rebuild contents closes this dialog and resolves to
+// {rebuildTOC: true} (after a confirm when hasTOC). Else it resolves to
+// {title, creator, picture}, picture null if none was chosen, or null for
+// Cancel.
+export async function askBookDetails({ title, creator, hasCover, coverURL, coverNote, pick, pickEpub, hasTOC }) {
     const field = (label, input) => el("label", { className: "field" }, el("span", { textContent: label }), input);
     const titleBox = el("input", { type: "text", value: title, required: true, maxLength: 500, spellcheck: false, autocomplete: "off" });
     const creatorBox = el("input", { type: "text", value: creator, maxLength: 500, spellcheck: false, autocomplete: "off",
@@ -505,6 +506,8 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
     });
     const fromDownloads = el("button", { type: "button", className: "cover-pick", textContent: "From Downloads…", disabled: !!coverNote });
     fromDownloads.addEventListener("click", async () => take(await pick()));
+    const fromEpub = el("button", { type: "button", className: "cover-pick-epub", textContent: "From EPUB Content…", disabled: !!coverNote });
+    fromEpub.addEventListener("click", async () => take(await pickEpub()));
     const cover = el("div", { className: "cover-field" + (coverNote ? " locked" : "") }, shown, none,
         ...(coverNote ? [] : [el("span", { className: "hint cover-drop-hint", textContent: "Drop or paste" })]));
     const note = el("p", { className: "hint cover-note", textContent: coverNote || (hasCover
@@ -512,7 +515,7 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
         : "A picture chosen is added as the cover.") });
     const body = el("div", { className: "book-edit" }, cover,
         el("div", { className: "book-meta" }, field("Title", titleBox), field("Author", creatorBox),
-            el("div", { className: "cover-actions" }, fromDownloads, clear), which, note));
+            el("div", { className: "cover-actions" }, fromDownloads, fromEpub, clear), which, note));
     const asking = choose("The book's details", [["", "Cancel"], ["ok", "Save"]], body);
     // A picture dropped on the dialog, or pasted into it, is the new cover,
     // not an upload into the folder, as one dropped on the page is.

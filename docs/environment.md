@@ -16,6 +16,8 @@
 | [VNC_CA_FILE](#vnc_ca_file) | *(empty)* | With `VNC_X509=1`, the PEM certificates to trust instead of the system's, such as the VNC server's self-signed one, mounted into the container. |
 | [VNC_SERVER_NAME](#vnc_server_name) | *(the host in `VNC_ADDR`)* | With `VNC_X509=1`, the name the VNC server's certificate must carry; required for a Unix socket. |
 | [WEB_PORT](#web_port) | `6080` | Port the gateway listens on inside the container. |
+| [WEB_VNC](#web_vnc-web_tty-and-web_fs) | `1` | `0` disables the desktop page and VNC connections, and skips desktop and audio startup. |
+| [WEB_FS](#web_vnc-web_tty-and-web_fs) | `1` | `0` disables file browsing, transfers, previews, share/upload links and URL fetching. |
 | [WEB_BASE_PATH](#web_base_path) | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
 | [WEB_TRUSTED_PROXIES](#web_trusted_proxies) | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
 | [WEB_TRUST_NPROXIES](#web_trust_nproxies) | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [WEB_TRUST_NPROXIES](#web_trust_nproxies). |
@@ -43,10 +45,39 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_VNC`, `WEB_FS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
+
+## `WEB_VNC`, `WEB_TTY` and `WEB_FS`
+
+These independent switches accept `0` or `1` and default to `1`. Disabled
+features disappear from navigation and their backend requests are refused,
+including requests from previously loaded pages. Keep at least one enabled.
+
+- `WEB_VNC=0`: no desktop page or VNC tunnel. The container does not start
+  Xvnc, XFCE, PipeWire or desktop audio/microphone services. No `VNC_ADDR`
+  is needed, including with `tabtop-lite`. Health checks skip the desktop.
+- `WEB_TTY=0`: no terminal page or shell sessions.
+- `WEB_FS=0`: no files page, file operations, previews, share/upload links
+  or URL fetching. Existing share links are inaccessible while it is off.
+
+For a files-only container:
+
+```sh
+docker run -p 6080:6080 -e VNC_TOTP_SECRET=... \
+  -e WEB_VNC=0 -e WEB_TTY=0 tabtop
+```
+
+For a terminal-only container, set `WEB_VNC=0 WEB_FS=0`. With VNC off,
+the root URL opens the terminal when enabled, otherwise Files. The same
+login and encrypted tunnel protect the remaining features. These switches
+control TabTop's interfaces; a terminal or desktop still has the Unix
+account's normal filesystem access.
+
+When running `tabtopd` directly, use `-disable-vnc`, `-disable-fs`, and an
+empty `-term-dir` to disable the corresponding features.
 
 ## `VNC_USER`
 

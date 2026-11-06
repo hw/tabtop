@@ -202,7 +202,7 @@ func TestEpubBook(t *testing.T) {
 				t.Fatal(err)
 			}
 			if book.Title != "A Book & More" || book.Creator != "Ann Author" || book.Language != "en" || book.Fixed ||
-				!reflect.DeepEqual(book.Spine, spine) {
+				!reflect.DeepEqual(book.Spine, spine) || !reflect.DeepEqual(book.Pictures, []string{"OEBPS/images/a.png"}) {
 				t.Errorf("%+v", book)
 			}
 			if c.toc != nil && !reflect.DeepEqual(book.TOC, c.toc) {

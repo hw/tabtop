@@ -21,6 +21,7 @@ export { previewable, previewLocation, resolvePath, previewWebURL } from "./prev
 // and saved (see startEditing).
 export function preview(dir, files, index, download, opts = {}) {
     const opener = document.activeElement;
+    let previewMode = opts.mode ?? null;
     const name = el("strong");
     const where = el("span", { className: "hint" });
     const button = (text, label, className = "") => {
@@ -138,13 +139,32 @@ export function preview(dir, files, index, download, opts = {}) {
         setPreviewWide(!previewWide());
         showWide();
     });
+    const setMode = async mode => {
+        if (mode === "text" && current?.textAvailable === false) return;
+        if (!current || typeOf(current.name) || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
+        previewMode = mode;
+        if (blob && ["text", "hex"].includes(current.kind) && ["text", "hex"].includes(mode) &&
+                (mode !== "text" || blob.size >= Math.min(current.size, 10_000_000))) {
+            // Both views use the same bytes; switching does not fetch the file again.
+            current = { ...current, kind: mode, type: mode === "text" ? "text/plain" : "application/octet-stream" };
+            await draw(shown);
+        } else {
+            display(current.dir, current.name);
+        }
+    };
+    const modeToggle = button("", "Show binary view", "preview-mode-toggle glyph");
+    modeToggle.addEventListener("click", () => {
+        if (!current || typeOf(current.name)) return;
+        setMode(current.kind === "hex" ? "text" : "hex");
+    });
+    const previewNotice = el("p", { className: "hint preview-limit", role: "status", hidden: true });
     const body = el("div", { className: "body" });
     const dialog = el("dialog", { className: "preview" },
         el("div", { className: "head", role: "toolbar", ariaLabel: "Preview actions" }, name, back, where,
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
             el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, saveStatus, store, done),
-            el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view),
-            saveGroup, widen, close), body);
+            el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle),
+            saveGroup, widen, close), previewNotice, body);
     showWide();
 
     // What's shown: counted, so a file that arrives after the next was
@@ -209,6 +229,8 @@ export function preview(dir, files, index, download, opts = {}) {
         editObserver.disconnect();
         saveStatus.hidden = true;
         editing.stop();
+        editing.syntaxToggle?.remove();
+        editing.formatButton?.remove();
         editing = null;
         store.hidden = done.hidden = true;
         return true;
@@ -230,6 +252,9 @@ export function preview(dir, files, index, download, opts = {}) {
         const me = ++shown;
         stop();
         const path = join(d, fname);
+        // An override belongs to this file, not to the next file or followed link.
+        if (typeOf(fname)) previewMode = null;
+        else if (selectedPath !== null && selectedPath !== path) previewMode = "auto";
         selectedPath = path;
         name.textContent = d === dir ? fname : path;
         dialog.setAttribute("aria-label", fname);
@@ -239,12 +264,12 @@ export function preview(dir, files, index, download, opts = {}) {
         prev.hidden = next.hidden = following || files.length < 2;
         prev.disabled = index === 0;
         next.disabled = index === files.length - 1;
-        edit.hidden = view.hidden = theme.hidden = true;
+        edit.hidden = view.hidden = theme.hidden = modeToggle.hidden = previewNotice.hidden = true;
         const status = el("p", { className: "hint", textContent: "Loading…", role: "status" });
         body.replaceChildren(status);
         try {
             loadingAbort = new AbortController();
-            const loaded = await loadPreview(d, fname, { signal: loadingAbort.signal, progress: (n, total) => {
+            const loaded = await loadPreview(d, fname, { mode: previewMode, signal: loadingAbort.signal, progress: (n, total) => {
                 if (me === shown) status.textContent = total ? `Loading… ${Math.floor(n * 100 / total)}% · ${n.toLocaleString()} of ${total.toLocaleString()} bytes` : "Loading…";
             } });
             if (me !== shown) return;
@@ -273,11 +298,20 @@ export function preview(dir, files, index, download, opts = {}) {
         const mine = ++drawing;
         const stale = () => me !== shown || mine !== drawing || !!editing;
         const { kind } = current;
+        modeToggle.hidden = !!typeOf(current.name);
+        const binary = kind === "hex";
+        modeToggle.innerHTML = iconSVG(binary ? "preview" : "binary");
+        modeToggle.title = binary && current.textAvailable === false ? "Text view unavailable for this binary file" : binary ? "Show text view" : "Show binary view";
+        modeToggle.setAttribute("aria-label", modeToggle.title);
+        modeToggle.setAttribute("aria-pressed", String(binary));
+        modeToggle.disabled = binary && current.textAvailable === false;
+        previewNotice.hidden = binary || !current.truncated;
+        previewNotice.textContent = current.truncated ? `Showing the first 10 MB (${current.previewSize.toLocaleString()} bytes) of ${current.size.toLocaleString()} bytes.` : "";
         const format = kind === "text" ? formatOf(current.name) : "";
         if (format === "table") {
             current.tableOptions = body.querySelector(".table-view")?.options() ?? current.tableOptions;
         }
-        const editable = kind === "epub" || kind === "text" && await editableText(blob);
+        const editable = !current.truncated && (kind === "epub" || kind === "text" && await editableText(blob));
         if (stale()) {
             return;
         }
@@ -351,7 +385,7 @@ export function preview(dir, files, index, download, opts = {}) {
             editBook();
             return;
         }
-        if (!blob || editing) {
+        if (!blob || editing || current?.truncated) {
             return;
         }
         // A save finishing after another file is shown (its editor left
@@ -380,6 +414,8 @@ export function preview(dir, files, index, download, opts = {}) {
         });
         frame?.stop();
         frame = null;
+        if (editing.syntaxToggle) widen.before(editing.syntaxToggle);
+        if (editing.formatButton) store.before(editing.formatButton);
         edit.hidden = view.hidden = saveGroup.hidden = prev.hidden = next.hidden = true;
         // Editing Markdown, it's rendered beside, in a frame.
         theme.hidden = languageOf(file.name) !== "markdown";
@@ -466,7 +502,7 @@ export function preview(dir, files, index, download, opts = {}) {
         // (Not from what takes the arrows itself: a box, a list, a sound, or
         // a table or tree scrolled sideways.)
         if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !editing && !e.defaultPrevented &&
-            !e.target.closest("video, audio, input, textarea, select, .table-scroll, .json-scroll, .table-filter-pop")) {
+            !e.target.closest("video, audio, input, textarea, select, .table-scroll, .json-scroll, .table-filter-pop, .hex-view, .kaitai-view")) {
             e.preventDefault();
             if (current?.dir === dir && current?.name === files[index].name) {
                 show(index + (e.key === "ArrowLeft" ? -1 : 1));

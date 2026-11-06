@@ -19,11 +19,12 @@ const hooks = registerHooks({
         return next(specifier, context);
     },
     load(url, context, next) {
-        return url.startsWith("https://nav.test/") ? { shortCircuit: true, format: "module", source } : next(url, context);
+        const served = url.includes("/files-only/") ? source.replace("{ desktop: true, terminal: true, files: true }", '{"desktop":false,"terminal":false,"files":true}') : source;
+        return url.startsWith("https://nav.test/") ? { shortCircuit: true, format: "module", source: served } : next(url, context);
     },
 });
-let root, a, b;
-try { [root, a, b] = await Promise.all(["/", "/a/", "/teams/b/"].map((base) => import(`https://nav.test${base}tabtop/nav.js`))); }
+let root, a, b, filesOnly;
+try { [root, a, b, filesOnly] = await Promise.all(["/", "/a/", "/teams/b/", "/files-only/"].map((base) => import(`https://nav.test${base}tabtop/nav.js`))); }
 finally { hooks.deregister(); }
 
 let reloads, opened, requests, pending, original;
@@ -103,4 +104,13 @@ test("root and nested deployments have distinct tab names and matching targets",
         assert.equal(link.target, window.name, "ordinary links use the same deployment scope");
     }
     assert.equal(names.size, 3);
+});
+
+test("disabled features are absent from navigation and cannot open tabs", () => {
+    assert.deepEqual(filesOnly.pages.map(p => p.id), ["files"]);
+    const nav = filesOnly.navBar("files");
+    assert.equal(nav.children.length, 2, "only Files and logout remain");
+    filesOnly.openPage("desktop");
+    filesOnly.openPage("terminal");
+    assert.equal(opened.length, 0);
 });

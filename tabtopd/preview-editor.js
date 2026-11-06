@@ -1,14 +1,15 @@
 // Text/table editors and EPUB metadata editing. Preview orchestration supplies
 // the current-file checks; editors own their save snapshots and UI resources.
-import { glyphs } from "./glyphs.js";
+import { glyphs, iconSVG } from "./glyphs.js";
 import { call, collect, uploadFile, saveBlob } from "./requests.js";
 import { askBookDetails, askYes, statusRow } from "./ui.js";
 import { checkJSON, formatJSON, FormatTooBig, parseJSON } from "./json-view.js";
 import { tableView } from "./table-view.js";
 import { el, join } from "./preview-dom.js";
-import { limits, typeOf, formatOf, jsonLines } from "./preview-model.js";
+import { limits, typeOf, formatOf, jsonLines, languageOf } from "./preview-model.js";
+import { colour } from "./preview-content.js";
 import { markdownFrame } from "./preview-frames.js";
-import { moveBookPlace } from "./preview-settings.js";
+import { moveBookPlace, editHighlight, setEditHighlight } from "./preview-settings.js";
 
 // editableText reports whether blob is text that can be edited here: not
 // too big, and UTF-8, which is what it's saved as.
@@ -35,19 +36,125 @@ const MARKDOWN_PIECE = 256 * 1024;
 // How long typing pauses before Markdown being edited is rendered again.
 const EDIT_RENDER_PAUSE = 600;
 
+// Keep the native textarea for selection, undo, accessibility and input methods.
+// Only its paint is replaced; the highlighted copy never receives input.
+function syntaxEditor(box, name) {
+    const language = languageOf(name);
+    const toggle = el("button", { type: "button", className: "syntax-toggle glyph", hidden: !language });
+    toggle.innerHTML = iconSVG("syntax");
+    toggle.setAttribute("aria-label", "Syntax highlighting");
+    if (!language) return { element: box, toggle, stop() {} };
+    let enabled = editHighlight();
+    const showToggle = () => {
+        toggle.setAttribute("aria-pressed", String(enabled));
+        toggle.title = enabled ? "Turn off syntax highlighting" : "Turn on syntax highlighting";
+    };
+    showToggle();
+    const paint = el("pre", { className: "editor-highlight" });
+    paint.setAttribute("aria-hidden", "true");
+    const element = el("div", { className: "syntax-editor" }, paint, box);
+    let timer, generation = 0, composing = false;
+    const sync = () => {
+        paint.style.width = box.clientWidth + "px";
+        paint.style.height = box.clientHeight + "px";
+        paint.scrollTop = box.scrollTop;
+        paint.scrollLeft = box.scrollLeft;
+    };
+    const refresh = () => {
+        clearTimeout(timer);
+        const version = ++generation;
+        element.classList.remove("highlighted");
+        if (composing || !enabled) return;
+        timer = setTimeout(async () => {
+            const value = box.value;
+            // colour applies the preview's size cap and validates the markup.
+            const code = await colour(value, language);
+            if (generation !== version || box.value !== value || !code) return;
+            // Preserve the final blank line in pre's layout.
+            code.append(document.createTextNode("\n"));
+            paint.replaceChildren(code);
+            element.classList.add("highlighted");
+            sync();
+        }, 150);
+    };
+    const compose = () => { composing = true; refresh(); };
+    const composed = () => { composing = false; refresh(); };
+    toggle.addEventListener("click", () => {
+        enabled = !enabled;
+        setEditHighlight(enabled);
+        showToggle();
+        refresh();
+    });
+    box.addEventListener("input", refresh);
+    box.addEventListener("scroll", sync);
+    box.addEventListener("compositionstart", compose);
+    box.addEventListener("compositionend", composed);
+    const resize = new ResizeObserver(sync);
+    resize.observe(box);
+    refresh();
+    return { element, toggle, stop() {
+        ++generation;
+        clearTimeout(timer);
+        resize.disconnect();
+        box.removeEventListener("input", refresh);
+        box.removeEventListener("scroll", sync);
+        box.removeEventListener("compositionstart", compose);
+        box.removeEventListener("compositionend", composed);
+    } };
+}
+
 function recoveryDownload(name, snapshot) {
     const button = el("button", { type: "button", className: "download-changes", textContent: "Download my changes", hidden: true });
     button.addEventListener("click", () => saveBlob(snapshot(), name));
     return button;
 }
 
+// Error messages stay inert text; only their reported source locations are
+// buttons. Measure a copy of the prefix so wrapped lines scroll correctly too.
+function editorMessage(target, message, box) {
+    target.replaceChildren();
+    let end = 0;
+    for (const match of message.matchAll(/\bline (\d+)(?:, column (\d+))?/g)) {
+        target.append(document.createTextNode(message.slice(end, match.index)));
+        const jump = el("button", { type: "button", className: "editor-error-jump", textContent: match[0],
+            title: `Go to ${match[0]}` });
+        jump.addEventListener("click", () => {
+            const text = box.value;
+            let offset = 0;
+            for (let line = 1; line < Number(match[1]); line++) {
+                const next = text.indexOf("\n", offset);
+                if (next < 0) { offset = text.length; break; }
+                offset = next + 1;
+            }
+            const lineEnd = text.indexOf("\n", offset);
+            offset = Math.min(offset + Math.max(0, Number(match[2] ?? 1) - 1), lineEnd < 0 ? text.length : lineEnd);
+            box.focus({ preventScroll: true });
+            box.setSelectionRange(offset, offset);
+            const mirror = el("div");
+            const style = getComputedStyle(box);
+            for (const property of ["font", "lineHeight", "letterSpacing", "padding", "tabSize", "whiteSpace", "overflowWrap", "boxSizing"]) {
+                mirror.style[property] = style[property];
+            }
+            Object.assign(mirror.style, { position: "fixed", top: "0", left: "0", visibility: "hidden", width: box.clientWidth + "px" });
+            const caret = el("span", { textContent: "\u200b" });
+            mirror.append(document.createTextNode(text.slice(0, offset)), caret);
+            document.body.append(mirror);
+            box.scrollTop = Math.max(0, caret.offsetTop - box.clientHeight / 2);
+            mirror.remove();
+        });
+        target.append(jump);
+        end = match.index + match[0].length;
+    }
+    target.append(document.createTextNode(message.slice(end)));
+}
+
 // startTableEditing uses the same Save/Done lifecycle and conflict checks
 // as the text editor, with records kept in their original order.
 export async function startTableEditing({ body, current, blob, saved }) {
-    const note = el("p", { className: "hint edit-status", textContent: "Editing cells. Ctrl S saves." });
+    const note = el("p", { className: "hint edit-status", hidden: true });
     const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(await blob.arrayBuffer());
     const table = tableView(text, { ...current.tableOptions, tab: /\.tsv$/i.test(current.name), editable: true,
-        changed: () => { note.textContent = table.dirty() ? "Changed, not saved. Ctrl S saves." : "Saved."; } });
+        changed: () => { note.hidden = true; note.textContent = table.dirty() ? "Changed, not saved." : "Saved."; } });
     const recovery = recoveryDownload(current.name, () => new Blob([table.snapshot().text], { type: "text/plain" }));
     const editor = el("div", { className: "table-editor" }, table, note, recovery);
     body.replaceChildren(editor);
@@ -60,9 +167,11 @@ export async function startTableEditing({ body, current, blob, saved }) {
         const file = new File([snapshot.text], current.name, { type: "text/plain" });
         if (file.size > limits.text) {
             note.textContent = "Too large to save from the table (the limit is 2 MB).";
+            note.hidden = false;
             return;
         }
         saving = true;
+        note.hidden = true;
         note.classList.remove("error");
         note.textContent = "Saving…";
         try {
@@ -71,7 +180,7 @@ export async function startTableEditing({ body, current, blob, saved }) {
             recovery.hidden = true;
             saved(new Blob([snapshot.text], { type: "text/plain" }), reply);
             table.markSaved(snapshot);
-            note.textContent = table.dirty() ? "Saved; changed since. Ctrl S saves." : "Saved.";
+            note.textContent = table.dirty() ? "Saved; changed since." : "Saved.";
         } catch (err) {
             note.classList.add("error");
             note.textContent = `Not saved: ${err.message}`;
@@ -104,8 +213,9 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     const box = el("textarea", { className: "editor", value: text, spellcheck: false, autocomplete: "off" });
     box.setAttribute("aria-label", `The text of ${current.name}`);
     let savedText = box.value;  // as the box has it: line endings made \n
-    const note = el("p", { className: "hint edit-status", textContent: "Editing. Ctrl S saves." });
-    const parts = [box];
+    const note = el("p", { className: "hint edit-status", hidden: true });
+    const syntax = syntaxEditor(box, current.name);
+    const parts = [syntax.element];
     // JSON is checked as it's typed, and Format lays it out. Saving it
     // broken asks first, if it was JSON to start with (files with
     // comments, as some settings files have, never were).
@@ -116,7 +226,8 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     const checkNow = () => {
         const why = checkJSON(box.value, lines);
         jsonStatus.classList.toggle("error", !!why);
-        jsonStatus.textContent = why ? `Not JSON: ${why}` : lines ? "Each line is JSON." : "It's JSON.";
+        jsonStatus.hidden = !why;
+        editorMessage(jsonStatus, why ? `Not JSON: ${why}` : lines ? "Each line is JSON." : "It's JSON.", box);
         return why;
     };
     if (json) {
@@ -134,6 +245,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
                 return;
             }
             jsonStatus.classList.add("error");
+            jsonStatus.hidden = false;
             jsonStatus.textContent = `Not laid out: ${err.message}.`;
             return;
         }
@@ -175,6 +287,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
         const text = new TextEncoder().encode(box.value);
         if (text.length > limits.text) {
             note.textContent = "Too long to render as it's typed.";
+            note.hidden = false;
             return;
         }
         let t;
@@ -190,7 +303,8 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
             }
             preview?.update(res.html);
         } catch (err) {
-            note.textContent = `Not rendered: ${err.message}`;
+            editorMessage(note, `Not rendered: ${err.message}`, box);
+            note.hidden = false;
         } finally {
             t?.close();
         }
@@ -205,14 +319,15 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
         return new Blob([...(bom ? [new Uint8Array([0xef, 0xbb, 0xbf])] : []), text], { type: "text/plain" });
     });
     const editor = el("div", { className: markdown ? "editing split" : "editing" },
-        el("div", { className: "edit-bar" }, note, jsonStatus, format, recovery), el("div", { className: "panes" }, ...parts));
+        el("div", { className: "edit-bar" }, note, jsonStatus, recovery), el("div", { className: "panes" }, ...parts));
     body.replaceChildren(editor);
     box.focus();
 
     const dirty = () => box.value !== savedText;
     const show = () => {
+        note.hidden = true;
         note.classList.remove("error");
-        note.textContent = dirty() ? "Changed, not saved. Ctrl S saves." : "Saved.";
+        note.textContent = dirty() ? "Changed, not saved." : "Saved.";
     };
     let checking;
     box.addEventListener("input", () => {
@@ -254,6 +369,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
         const encoded = new TextEncoder().encode(out);
         const parts = bom ? [new Uint8Array([0xef, 0xbb, 0xbf]), encoded] : [encoded];
         const file = new File(parts, current.name, { type: "text/plain" });
+        note.hidden = true;
         note.classList.remove("error");
         note.textContent = "Saving…";
         try {
@@ -263,7 +379,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
             savedText = value;
             note.dataset.mtime = reply.mtime ?? "";
             saved(new Blob(parts, { type: "text/plain" }), reply);
-            note.textContent = box.value === value ? "Saved." : "Saved; changed since. Ctrl S saves.";
+            note.textContent = box.value === value ? "Saved." : "Saved; changed since.";
         } catch (err) {
             note.classList.add("error");
             note.textContent = `Not saved: ${err.message}`;
@@ -280,12 +396,15 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     };
     editor.addEventListener("keydown", onKey);
     return {
+        syntaxToggle: syntax.toggle,
+        formatButton: format,
         saving: () => saving,
         dirty,
         save,
         stop() {
             clearTimeout(renderTimer);
             clearTimeout(checking);
+            syntax.stop();
             preview?.stop();
         },
     };
@@ -358,6 +477,52 @@ function pickPicture(start) {
         document.body.append(dialog);
         dialog.showModal();
         show(start);
+    });
+}
+
+// pickEpubPicture asks for a picture already in the book at path (opened as
+// file), listed from its pictures, and resolves to it, fetched through the
+// tunnel, as a File, or null if none is chosen.
+function pickEpubPicture(file) {
+    return new Promise((resolve) => {
+        const where = el("p", { className: "picker-where", textContent: file.name });
+        const list = el("ul", { className: "picker-list" });
+        const status = el("p", { className: "hint picker-status" });
+        status.setAttribute("aria-live", "polite");
+        const cancel = el("button", { type: "button", textContent: "Cancel" });
+        const dialog = el("dialog", { className: "picker" }, el("p", { textContent: "A picture in the book, for the cover" }), where, list, status,
+            el("div", { className: "buttons" }, cancel));
+        let chosen = null;
+        cancel.addEventListener("click", () => dialog.close());
+        dialog.addEventListener("close", () => {
+            dialog.remove();
+            resolve(chosen);
+        });
+        const entry = (text, className, onClick) => {
+            const b = el("button", { type: "button", className, textContent: text });
+            b.addEventListener("click", onClick);
+            return el("li", {}, b);
+        };
+        const take = async (item) => {
+            const name = item.split("/").pop();
+            const type = typeOf(name)?.type ?? "";
+            status.textContent = `${name}: fetching…`;
+            try {
+                const path = join(file.dir, file.name);
+                const t = await call({ type: "epub", path, item, if_mtime: file.mtime, if_size: file.size });
+                const blob = await collect(t, t.reply.size, (n) => (status.textContent = `${name}: ${t.reply.size ? Math.floor(n * 100 / t.reply.size) : 100}%`), t.reply.mime || type);
+                chosen = new File([blob], name, { type: t.reply.mime || type });
+                dialog.close();
+            } catch (err) {
+                status.textContent = `${name} can't be fetched: ${err.message}`;
+            }
+        };
+        const pictures = Array.isArray(file.book?.pictures) ? file.book.pictures : [];
+        list.replaceChildren(...pictures.map((item) => entry(item, "picker-picture", () => take(item))));
+        status.textContent = pictures.length ? "" : "No pictures in the book.";
+        document.body.append(dialog);
+        dialog.showModal();
+        (list.querySelector("button") ?? cancel).focus();
     });
 }
 
@@ -507,7 +672,7 @@ export async function editBookDetails({ file, body, isCurrent, isEditing, refres
     const tidy = (v) => v.trim().split(/\s+/).filter(Boolean).join(" ");
     const got = await askBookDetails({ title: file.book.title ?? "", creator: file.book.creator ?? "", hasCover: !!coverPath, coverURL,
         coverNote: canMake ? "" : `Its cover is ${pictureName(coverType)}, and only JPEG, PNG and WebP covers can be replaced here.`,
-        pick: () => pickPicture(file.dir), hasTOC: (file.book.toc?.length ?? 0) > 0 });
+        pick: () => pickPicture(file.dir), pickEpub: () => pickEpubPicture(file), hasTOC: (file.book.toc?.length ?? 0) > 0 });
     if (coverURL) {
         URL.revokeObjectURL(coverURL);
     }

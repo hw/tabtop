@@ -28,6 +28,7 @@ import { nameTab, navBar } from "./nav.js";
 import { call, createFile, folderInfo, makeFolder, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip, humanBytes } from "./download.js";
 import { preview, previewable } from "./preview.js";
+import { typeOf } from "./preview-model.js";
 import { reconnect, reconnected } from "./reconnect.js";
 import { warnExpiry } from "./expiry.js";
 
@@ -258,9 +259,9 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         const sorted = folder.sorted;
         // Previewing one steps through the rest shown that can be.
         const previews = sorted.filter((e) => !e.dir && previewable(e.name, e.bytes ?? 0));
-        const open = (e) => {
+        const open = (e, mode = null) => {
             const position = { x: scrollX, y: scrollY };
-            preview(dir, previews, previews.indexOf(e), fetchFile, { direct: reply.share ? directDownload : null,
+            preview(dir, mode ? [e] : previews, mode ? 0 : previews.indexOf(e), fetchFile, { mode, direct: reply.share ? directDownload : null,
                 restoreFocus: () => {
                     if (onSecurity() || onShares() || currentDir() !== dir) return;
                     const row = [...page.querySelectorAll(".file-table tbody tr")].find(tr => tr.dataset.name === e.name);
@@ -287,6 +288,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
             });
             const menu = rowMenu(`Actions for ${e.name}`, [
                 ...(canPreview ? [["preview", "Preview", () => open(e)]] : []),
+                ...(!e.dir && !typeOf(e.name) ? [["preview", "Preview", () => open(e, "auto")]] : []),
                 ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
                 ["rename", "Rename…", () => rename(dir, e)],
                 ["move", "Move to…", () => askMove(dir, [e.name])],

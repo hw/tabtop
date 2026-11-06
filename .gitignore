@@ -1,2 +1,6 @@
 # Built by `mise run build`.
 /tabtopd/tabtopd
+
+# Kaitai's build dependencies and generated parser assets.
+/scripts/kaitai/node_modules/
+/scripts/kaitai/dist/

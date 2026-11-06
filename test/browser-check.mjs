@@ -31,6 +31,7 @@ import net from "node:net";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 
 import { createBrowserHarness, sleep } from "./browser/harness.mjs";
+import { checkBinary } from "./browser/binary.mjs";
 import { checkZIP } from "./browser/zip.mjs";
 import { checkAudio, checkVideo, checkMKV } from "./browser/media.mjs";
 import { checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB } from "./browser/documents.mjs";
@@ -89,11 +90,11 @@ async function step(name, fn) {
 
 const checks = { port, base, downloads, work, container, inContainer, sleep, step, totp, cdp, ev, waitFor, click, press, type, open, newTab, listed, row, answer, waitForFile, status, setFiles, inFrame, inMarkdownFrame, checkPreviewLink, rendered };
 const groups = {
-    zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
+    binary: [checkBinary], zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
     media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkHTML],
-    markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], pdf: [checkPDF],
+    markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit], pdf: [checkPDF],
     epub: [checkEPUB], tables: [checkCells, checkStructured],
-    previews: [checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkCells, checkStructured],
+    previews: [checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkCells, checkStructured],
 };
 if (group !== "all" && !groups[group]) throw new Error(`Unknown group ${group}; choose all, ${Object.keys(groups).join(", ")}`);
 
@@ -303,6 +304,7 @@ try {
 
     await checkMKV(checks);
 
+    await checkBinary(checks);
     await checkText(checks);
 
     await checkHTML(checks);

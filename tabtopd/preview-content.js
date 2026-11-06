@@ -33,7 +33,7 @@ function highlighter() {
 
 // colour returns a <code> holding text coloured as language, or null if it
 // can't be.
-async function colour(text, language) {
+export async function colour(text, language) {
     const hljs = language && text.length <= COLOUR_LIMIT ? await highlighter() : null;
     if (!hljs?.getLanguage(language)) {
         return null;
@@ -63,7 +63,7 @@ async function colour(text, language) {
 }
 
 // render makes what shows blob, a file of kind at url.
-export async function render(kind, blob, url, name) {
+export async function render(kind, blob, url, name, { truncated = false } = {}) {
     const unshown = (what) => el("p", { className: "error", textContent: `This browser can't show ${what}. Download it instead.` });
     if (kind === "image") {
         const img = el("img", { src: url, alt: name });
@@ -77,7 +77,7 @@ export async function render(kind, blob, url, name) {
     if (bytes.subarray(0, 8000).includes(0)) {
         return el("p", { className: "hint", textContent: "This file isn't text, so it can't be shown here. Download it instead." });
     }
-    const text = new TextDecoder().decode(bytes);
+    const text = new TextDecoder().decode(bytes, { stream: truncated });
     const coloured = await colour(text, languageOf(name));
     return coloured ? el("pre", { className: "coloured" }, coloured) : el("pre", { textContent: text });
 }

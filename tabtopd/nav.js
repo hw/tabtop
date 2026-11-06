@@ -13,11 +13,13 @@ import { iconSVG } from "./glyphs.js";
 
 const root = new URL("../", import.meta.url);  // the site's root, under any base path
 
+// Replaced by the gateway to match its enabled services.
+const enabledPages = { desktop: true, terminal: true, files: true };
 export const pages = [
     { id: "desktop", label: "Desktop", href: new URL("vnc.html?autoconnect=1", root).href },
     { id: "terminal", label: "Terminal", href: new URL("tty/", root).href },
     { id: "files", label: "Files", href: new URL("fs/", root).href },
-];
+].filter((page) => enabledPages[page.id]);
 
 const tabName = (id) => `tabtop-${id}:${root.href}`;
 
@@ -29,6 +31,7 @@ export function nameTab(id) {
 // openPage opens the page id in its tab, at hash if given.
 export function openPage(id, hash = "") {
     const page = pages.find((p) => p.id === id);
+    if (!page) return;
     window.open(page.href + hash, tabName(id))?.focus();
 }
 

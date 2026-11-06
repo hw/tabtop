@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"html/template"
 	"io"
 	"log"
@@ -26,7 +27,7 @@ const (
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -155,13 +156,17 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		js, _ := e2eFiles.ReadFile(name)
 		js = bytes.ReplaceAll(js, []byte(`"./preview/`), []byte(`"./`+g.previewPath()+`/`))
 		w.Write(bytes.ReplaceAll(js, []byte(`"./highlight/`), []byte(`"./`+g.highlightPath()+`/`)))
+	case name == "nav.js":
+		js, _ := e2eFiles.ReadFile(name)
+		pages, _ := json.Marshal(map[string]bool{"desktop": !g.vncOff, "terminal": g.termDir != "", "files": !g.fsOff})
+		w.Write(bytes.Replace(js, []byte(`{ desktop: true, terminal: true, files: true }`), pages, 1))
 	case name == "preview.js" || name == "preview-content.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./highlight/`), []byte(`"./`+g.highlightPath()+`/`)))
 	case name == "tunnel-crypto.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "files-actions.js" || name == "preview-loaders.js" || name == "preview-renderers.js" || name == "ranged-file.js" || name == "file-types.js" || name == "file-types-worker.js" || name == "preview-dom.js" || name == "preview-editor.js" || name == "preview-frames.js" || name == "preview-links.js" || name == "preview-model.js" || name == "preview-settings.js" || name == "preview-view.js" || name == "stream-worker.js" || name == "media-source.js" || name == "media-stream.js" || name == "video-stream.js" || name == "epub-frame.js" || name == "json-view.js" || name == "table-view.js" || name == "transfer.js" || name == "folder-model.js" || name == "osc.js" || name == "tunnel.js" || name == "tunnel-protocol.js" || name == "session-state.js" || name == "session.js" || name == "login-ui.js" || name == "file-format.js" || name == "sessions-view.js" || name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
+	case name == "kaitai-errors.js" || name == "format-combobox.js" || name == "kaitai-view.js" || name == "kaitai-worker.js" || name == "hex-view.js" || name == "files-actions.js" || name == "preview-loaders.js" || name == "preview-renderers.js" || name == "ranged-file.js" || name == "file-types.js" || name == "file-types-worker.js" || name == "preview-dom.js" || name == "preview-editor.js" || name == "preview-frames.js" || name == "preview-links.js" || name == "preview-model.js" || name == "preview-settings.js" || name == "preview-view.js" || name == "stream-worker.js" || name == "media-source.js" || name == "media-stream.js" || name == "video-stream.js" || name == "epub-frame.js" || name == "json-view.js" || name == "table-view.js" || name == "transfer.js" || name == "folder-model.js" || name == "osc.js" || name == "tunnel.js" || name == "tunnel-protocol.js" || name == "session-state.js" || name == "session.js" || name == "login-ui.js" || name == "file-format.js" || name == "sessions-view.js" || name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
 		name == "requests.js" || name == "reconnect.js" || name == "download.js" || name == "expiry.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "desktop.css":
@@ -175,6 +180,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case g.highlightDir != "" && g.highlight.serve(w, r, g.highlightAssets(), name):
 	case g.previewDir != "" && g.preview.serve(w, r, g.previewAssets(), name):
 	case g.servePDFJS(w, r, name):
+	case g.serveKaitai(w, r, name):
 	default:
 		h.Del("Content-Type")
 		http.NotFound(w, r)
@@ -190,6 +196,10 @@ var filesTmpl = template.Must(template.New("files").Parse(pageHead + `
 // script shows the directory named after the "#", so other paths redirect
 // there.
 func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
+	if g.fsOff {
+		http.NotFound(w, r)
+		return
+	}
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, no-transform")
 	h.Set("X-Content-Type-Options", "nosniff")

@@ -9,14 +9,18 @@ source "$STARTUP_DIR/desktop.sh"
 
 provision_user "$VNC_USER" "$DISPLAY_NUM" "$WEB_AUDIO_SERVER"
 
-if [ -n "$VNC_ADDR" ]; then
+if [ "$WEB_VNC" = 0 ]; then
+    echo "Desktop support is turned off (WEB_VNC=0)."
+elif [ -n "$VNC_ADDR" ]; then
     echo "Using the RFB server at ${VNC_ADDR}; the container's own desktop isn't started."
 else
     start_desktop "$VNC_GEOMETRY" "$VNC_DEPTH" "$WEB_AUDIO" "$WEB_AUDIO_SERVER" "$WEB_MIC"
 fi
 
 configure_host_audio "$WEB_AUDIO" "$WEB_AUDIO_SERVER" "$WEB_AUDIO_SINK" "$WEB_MIC"
-configure_viewer "$VNC_RESIZE"
+if [ "$WEB_VNC" = 1 ]; then
+    configure_viewer "$VNC_RESIZE"
+fi
 
 # The gateway owns the web port: it serves the noVNC client, the files page
 # for ~/Downloads at /fs/ and a terminal at /tty/, and carries all of
@@ -24,7 +28,9 @@ configure_viewer "$VNC_RESIZE"
 # and encrypting with ChaCha20-Poly1305 from the noble libraries (in
 # /opt/noble). It runs as the desktop user, to read the downloads and the
 # pam_oath users file.
-runuser -u "$VNC_USER" -- mkdir -p "$USER_HOME/Downloads"
+if [ "$WEB_FS" = 1 ]; then
+    runuser -u "$VNC_USER" -- mkdir -p "$USER_HOME/Downloads"
+fi
 TERM_DIR=""
 if [ "$WEB_TTY" = 1 ]; then
     TERM_DIR=/opt/terminal
@@ -34,7 +40,7 @@ if [ "$WEB_DOCTOR_ENDPOINT" = 1 ]; then
     DOCTOR=true
 fi
 X509=false
-if [ "$VNC_X509" = 1 ]; then
+if [ "$WEB_VNC" = 1 ] && [ "$VNC_X509" = 1 ]; then
     X509=true
     # The gateway reads it as the desktop user, for each connection.
     if [ -n "$VNC_CA_FILE" ] && ! run_as_user test -r "$VNC_CA_FILE"; then
@@ -43,6 +49,8 @@ if [ "$VNC_X509" = 1 ]; then
     fi
 fi
 as_user /usr/local/bin/tabtopd \
+    -disable-vnc="$((1 - WEB_VNC))" \
+    -disable-fs="$((1 - WEB_FS))" \
     -listen ":${WEB_PORT}" \
     -base-path "$WEB_BASE_PATH" \
     -novnc-dir /opt/novnc \
@@ -55,6 +63,7 @@ as_user /usr/local/bin/tabtopd \
     -highlight-dir /opt/highlight \
     -preview-dir /opt/preview \
     -pdfjs-dir /opt/pdfjs \
+    -kaitai-dir /opt/kaitai \
     -users-file "$TOTP_USERS_FILE" \
     -vnc-password-file "$VNC_UPSTREAM_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \

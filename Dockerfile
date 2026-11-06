@@ -197,6 +197,24 @@ RUN mkdir -p /src /pdfjs/wasm \
  && ! find /pdfjs -name '*sandbox*' -o -name '*quickjs*' | grep -q . \
  && chmod -R u=rwX,go=rX /pdfjs
 
+# All Kaitai gallery schemas are compiled with byte-position metadata at build
+# time. The final image contains parsers and notices, without Node or the compiler.
+FROM node:24-trixie-slim AS kaitai
+ARG KAITAI_FORMATS_COMMIT=7d175667527372eb0c521045c1dac212230d9779
+ARG KAITAI_FORMATS_SHA256=4d1495704249e3dc9874bdd70b6c9effbc72010079e148c876c90813700f9761
+ADD --checksum=sha256:${KAITAI_FORMATS_SHA256} \
+    https://codeload.github.com/kaitai-io/kaitai_struct_formats/tar.gz/${KAITAI_FORMATS_COMMIT} /formats.tar.gz
+WORKDIR /build
+COPY scripts/kaitai/package.json scripts/kaitai/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY scripts/kaitai/build.mjs scripts/kaitai/runtime.mjs scripts/kaitai/instrument.mjs scripts/kaitai/sources.json ./
+COPY test/kaitai-budget.test.mjs ./
+RUN mkdir /formats \
+ && tar -xzf /formats.tar.gz -C /formats --strip-components=1 --no-same-owner \
+ && node build.mjs /formats /kaitai \
+ && KAITAI_ASSETS=/kaitai node --test kaitai-budget.test.mjs \
+ && chmod -R u=rwX,go=rX /kaitai
+
 # The Go version matches mise.toml, which pins it for local development.
 # tabtopd encodes audio with libopus and checks logins with liboath, through
 # cgo, so it links the system's libraries and glibc; the final stage is the
@@ -319,6 +337,7 @@ COPY --from=noble /noble /opt/noble
 COPY --from=highlight /highlight /opt/highlight
 COPY --from=preview /preview /opt/preview
 COPY --from=pdfjs /pdfjs /opt/pdfjs
+COPY --from=kaitai /kaitai /opt/kaitai
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
@@ -362,6 +381,9 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # such as 12h (default) or 90m. Open tunnels close when it ends.
 # WEB_SESSION_IDLE: how long a login lasts with no desktop, terminal or
 # other tunnel open, such as 1h (default) or 30m; 0 for no limit.
+# WEB_VNC=0 disables the desktop and its audio services. WEB_FS=0 disables
+# the files page, file operations and share links. Keep at least one of
+# WEB_VNC, WEB_TTY and WEB_FS enabled.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
 # the desktop and /fs/; 0 turns it off.
 # WEB_TTY_COMMAND: a shell command each terminal tab runs instead of tmux,
@@ -386,6 +408,8 @@ ENV VNC_USER=user \
     WEB_TRUST_NPROXIES=0 \
     WEB_SESSION_MAX=12h \
     WEB_SESSION_IDLE=1h \
+    WEB_VNC=1 \
+    WEB_FS=1 \
     WEB_AUDIO=1 \
     WEB_AUDIO_BITRATE=64 \
     WEB_TTY=1 \

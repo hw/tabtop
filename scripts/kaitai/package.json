@@ -1,0 +1,16 @@
+{
+  "name": "tabtop-kaitai-assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "acorn": "8.15.0",
+    "esbuild": "0.25.12",
+    "kaitai-struct": "0.11.0",
+    "kaitai-struct-compiler": "0.11.0",
+    "pako": "2.1.0",
+    "yaml": "2.8.3"
+  }
+}

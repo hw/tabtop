@@ -17,7 +17,7 @@
 
 import { glyphs, iconDataURL } from "./glyphs.js";
 import { TunnelSocket } from "./tunnel.js";
-import { logOut, nameTab, openPage, terminalOn } from "./nav.js";
+import { logOut, nameTab, openPage, terminalOn, pages } from "./nav.js";
 import { dropUploads } from "./drop.js";
 import { call, folderInfo, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
 import { fetchFile, humanBytes } from "./download.js";
@@ -40,6 +40,7 @@ const buttons = [
 const settings = document.getElementById("noVNC_settings_button");
 if (settings) {
     for (const [id, title, src, onClick] of buttons) {
+        if (id !== "logout" && !pages.some((page) => page.id === id)) continue;
         const b = Object.assign(document.createElement("input"), { type: "image", id: `tabtop_${id}_button`, className: "noVNC_button", src, alt: title, title });
         b.addEventListener("click", onClick);
         // Log out goes just above Disconnect, with the other ways to leave.
@@ -59,7 +60,9 @@ if (settings) {
 
 document.head.append(Object.assign(document.createElement("link"), { rel: "stylesheet", href: new URL("./desktop.css", import.meta.url).href }));
 setLoginTitle("Desktop");
-dropUploads(uploadFile, makeFolder, () => {}, () => "", "(~/Downloads)", folderInfo);
+if (pages.some((page) => page.id === "files")) {
+    dropUploads(uploadFile, makeFolder, () => {}, () => "", "(~/Downloads)", folderInfo);
+}
 
 // The notices, newest at the top, at most MAX_NOTICES; each stays until
 // it's used or dismissed.
@@ -102,7 +105,7 @@ let watching = null;   // the watch's tunnel, while it's open
 // server answers with each file saved into ~/Downloads, trying again,
 // less often each time, if it's lost; it stops if the server refuses it.
 async function watchDownloads() {
-    if (running) {
+    if (running || !pages.some((page) => page.id === "files")) {
         return;
     }
     running = true;

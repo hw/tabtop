@@ -58,6 +58,9 @@ func (g *server) healthz(w http.ResponseWriter, r *http.Request) {
 // checked: health then says the gateway can serve, and the doctor report
 // how its last login to the server went.
 func (g *server) vncListening() error {
+	if g.vncOff {
+		return nil
+	}
 	path, ok := strings.CutPrefix(g.vncAddr, "unix:")
 	if !ok {
 		return nil
@@ -135,6 +138,9 @@ func (p *doctorProbeCache) get(probe func() doctorProbeResult) doctorProbeResult
 // login to it went, when the gateway logs in (VNC_UPSTREAM_PASSWORD or
 // VNC_X509): a failure fails the check, with its reason.
 func (g *server) vncLoginCheck(c check) check {
+	if g.vncOff {
+		return check{OK: true, Detail: "off"}
+	}
 	if g.vncPassword() == "" && !g.vncX509 {
 		return c // noVNC logs in itself
 	}
@@ -163,6 +169,9 @@ func (g *server) probeDoctorServices() doctorProbeResult {
 		detail = fmt.Sprintf("at %s, not connected to (that could get the gateway blacklisted)", g.vncAddr)
 	}
 	result := doctorProbeResult{vnc: newCheck(detail, g.vncListening())}
+	if g.vncOff {
+		result.vnc = check{OK: true, Detail: "off"}
+	}
 	if g.audio != nil {
 		result.audioErr = g.audio.checkSink()
 	}
@@ -233,7 +242,7 @@ func (g *server) collectDoctorReport(r *http.Request) doctorReport {
 	probes := g.doctorProbes.get(g.probeDoctorServices)
 	checks["vnc"] = probes.vnc
 	// Runtime cooldown and counters remain fresh rather than being cached.
-	if left := g.vncBackoff.waiting(); probes.vnc.OK && left > 0 {
+	if left := g.vncBackoff.waiting(); !g.vncOff && probes.vnc.OK && left > 0 {
 		if g.vncX509 {
 			checks["vnc"] = newCheck("", fmt.Errorf("logging in to it failed (see the log), so the desktop is refused for another %v", left.Round(time.Second)))
 		} else {
@@ -255,9 +264,16 @@ func (g *server) collectDoctorReport(r *http.Request) doctorReport {
 
 	_, err = os.Stat(filepath.Join(g.novncDir, "vnc.html"))
 	checks["novnc"] = newCheck(g.novncDir, err)
+	if g.vncOff {
+		checks["novnc"] = check{OK: true, Detail: "off"}
+	}
 
-	entries, err := countEntries(g.downloadsDir, maxListing)
-	checks["downloads"] = newCheck(fmt.Sprintf("%s, %s entries", g.downloadsDir, entries), err)
+	if g.fsOff {
+		checks["downloads"] = check{OK: true, Detail: "off"}
+	} else {
+		entries, err := countEntries(g.downloadsDir, maxListing)
+		checks["downloads"] = newCheck(fmt.Sprintf("%s, %s entries", g.downloadsDir, entries), err)
+	}
 
 	if g.audio == nil {
 		checks["audio"] = check{OK: true, Detail: "off"}

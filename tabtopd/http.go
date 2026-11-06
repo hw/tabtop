@@ -17,12 +17,30 @@ import (
 
 func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", novncHeaders(novncCSP(g.novncDir), http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})))
+	if g.vncOff {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			target := filesPrefix
+			if g.termDir != "" {
+				target = ttyPrefix
+			}
+			http.Redirect(w, r, g.abs(target), http.StatusSeeOther)
+		})
+	} else {
+		mux.Handle("/", novncHeaders(novncCSP(g.novncDir), http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})))
+	}
 	mux.HandleFunc(filesPrefix, g.filesPage)
 	mux.HandleFunc(ttyPrefix, g.tty)
 	// The mux would add the trailing slash itself, but to the path without
 	// the base.
 	for _, p := range []string{filesPrefix, ttyPrefix} {
+		if p == filesPrefix && g.fsOff || p == ttyPrefix && g.termDir == "" {
+			mux.HandleFunc(strings.TrimSuffix(p, "/"), http.NotFound)
+			continue
+		}
 		mux.Handle(strings.TrimSuffix(p, "/"), http.RedirectHandler(g.abs(p), http.StatusMovedPermanently))
 	}
 	mux.HandleFunc("/tabtop/", g.scripts)

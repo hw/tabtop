@@ -1,6 +1,10 @@
 // Preview rendering is a map of adapters; orchestration lives in preview.js.
 // Each renderer returns a DOM element adapted to PreviewView by the controller.
-import { call } from "./requests.js";
+import { kaitaiView } from "./kaitai-view.js";
+import { call, collect } from "./requests.js";
+import { createRangedFileReader } from "./ranged-file.js";
+import { binaryChunkSize } from "./preview-model.js";
+const readBinaryRange = createRangedFileReader({ call, collect });
 import { fetchZipEntries } from "./download.js";
 import { el } from "./preview-dom.js";
 import { render, structured, zipListing } from "./preview-content.js";
@@ -42,7 +46,13 @@ const renderers = {
     table: ({ file, blob, url }) => structured("table", blob, url, file.name, file.tableOptions),
     json: ({ file, blob, url }) => structured("json", blob, url, file.name),
     image: ({ file, blob, url }) => render("image", blob, url, file.name),
-    text: ({ file, blob, url }) => render("text", blob, url, file.name),
+    hex: async ({ file, path, blob, signal }) => kaitaiView(new Uint8Array(await blob.slice(0, binaryChunkSize).arrayBuffer()), {
+        signal, size: file.size,
+        readRange: (begin, end, { signal: rangeSignal } = {}) => end <= blob.size
+            ? blob.slice(begin, end).arrayBuffer()
+            : readBinaryRange(path, file, begin, end, { maxBytes: binaryChunkSize, signal: rangeSignal }),
+    }),
+    text: ({ file, blob, url }) => render("text", blob, url, file.name, { truncated: file.truncated }),
 };
 export function renderPreview(options) {
     if (!Object.hasOwn(renderers, options.kind)) throw new Error("this file can't be rendered");

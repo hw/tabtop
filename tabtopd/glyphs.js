@@ -27,6 +27,9 @@ const icons = {
     "bell-off": '<path d="M6.5 17.5v-6.5a6 6 0 0 1 12 0v6.5l1.5 1.5h-15z"/><path d="M10.5 21.5h4M4 4l17 17"/>',
     security: '<path d="M12.5 3l7.5 3v5.5c0 4.6-3.2 8.6-7.5 10-4.3-1.4-7.5-5.4-7.5-10v-5.5z"/><path d="M9.5 12.5l2.2 2.2 4-4"/>',
     share: '<path d="M10.5 15l-1.8 1.8a4 4 0 0 1-5.7-5.6l4-4a4 4 0 0 1 5.7 0m1.8 2.8l1.8-1.8a4 4 0 0 1 5.7 5.6l-4 4a4 4 0 0 1-5.7 0M9 16l7-7"/>',
+    syntax: '<path d="M8 6l-6 6 6 6m8-12l6 6-6 6M14 3l-4 18"/>',
+    binary: '<rect x="4" y="4" width="5" height="7" rx="1"/><path d="M15 4h2v7m-2 0h4M4 15h2v7m-2 0h4"/><rect x="14" y="15" width="5" height="7" rx="1"/>',
+    preview: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
     back: '<path d="M10 5l-7 7 7 7M3 12h18"/>',
     "download": '<path d="M6 2h6v10h4L9 21 2 12h4z"/><path stroke-width="1.5" fill="var(--raised, white)" d="M19 14l4 1.3v2.6c0 2-1.6 3.8-4 4.6-2.4-.8-4-2.6-4-4.6v-2.6z"/>',
     "download-direct": '<path d="M9 2h6v10h5L12 22 4 12h5z"/>',
@@ -50,7 +53,7 @@ const icons = {
 // Preview icons retain their own grids, sizes, and stroke weights.
 const metrics = {
     download: [18, 24, 1.8], "download-direct": [18, 24, 1.8], extract: [18, 24, 1.8],
-    back: [18, 24, 1.8], "fold-all": [18, 24, 1.8], "fit-page": [18, 24, 1.8],
+    syntax: [18, 24, 1.8], binary: [18, 24, 1.8], preview: [18, 24, 1.8], back: [18, 24, 1.8], "fold-all": [18, 24, 1.8], "fit-page": [18, 24, 1.8],
     "fit-width": [18, 24, 1.8], "actual-size": [28, 24, 1.8],
 };
 const attribute = (value) => String(value).replace(/[&"<>]/g,

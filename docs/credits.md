@@ -16,6 +16,8 @@ files, except Ghostty's, which comes compiled into ghostty-web.
 | [ghostty-web](https://github.com/coder/ghostty-web) | The terminal page's emulator | MIT |
 | [Ghostty](https://github.com/ghostty-org/ghostty) | The terminal emulation in ghostty-web, compiled to WebAssembly | MIT |
 | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), patched by [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) | The terminal's font, with its icons and status-line arrows (regular and bold, as WOFF2) | OFL 1.1 (the font); the Nerd Fonts patcher is MIT |
+| [Kaitai Struct](https://kaitai.io/) and its [format gallery](https://formats.kaitai.io/) | Binary structure previews with links to source bytes | Runtime: Apache-2.0; each format has its own license, retained in `/opt/kaitai/sources`; compiler used only during the build |
+| [pako](https://github.com/nodeca/pako) | Bounded zlib decompression in binary previews | MIT |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | The colours of text previews, and of code in Markdown previews, on the files page | BSD-3-Clause |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | Math in Markdown previews | MIT |
 | [pdf.js](https://github.com/mozilla/pdf.js) (`pdfjs-dist`) | PDF previews, with its OpenJPEG, JBIG2 and QCMS decoders and the Foxit and Liberation standard fonts it ships | Apache-2.0 (the decoders and fonts under their own licences, in `/opt/pdfjs`) |

@@ -33,7 +33,9 @@ export function languageOf(name) {
 // The most of each kind that's previewed, in bytes.
 // Audio, video and PDFs are read in ranges, and a book a chapter at a time
 // (see epubFrame), so these have no whole-file buffer limit.
-export const limits = { image: 50e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER };
+export const binaryChunkSize = 1_000_000;
+
+export const limits = { image: 50e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, hex: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER };
 
 export function typeOf(name) {
     const dot = name.lastIndexOf(".");

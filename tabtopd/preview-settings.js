@@ -1,5 +1,21 @@
 import { glyphs } from "./glyphs.js";
 
+const EDIT_HIGHLIGHT = "tabtop.edit-highlight";
+export function editHighlight() {
+    try {
+        return localStorage.getItem(EDIT_HIGHLIGHT) !== "0";
+    } catch {
+        return true;
+    }
+}
+export function setEditHighlight(enabled) {
+    try {
+        localStorage.setItem(EDIT_HIGHLIGHT, enabled ? "1" : "0");
+    } catch {
+        // The current editor still keeps the choice.
+    }
+}
+
 // Whether previews fill the window, as last chosen in this browser.
 const PREVIEW_WIDE = "tabtop.preview-wide";
 export function previewWide() {

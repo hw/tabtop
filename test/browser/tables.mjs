@@ -406,6 +406,16 @@ export async function checkStructured(checks) {
         await waitFor(`${box}.value === '{\\n  "a": 1,\\n  "b": [\\n    1,\\n    2\\n  ]\\n}\\n'`, "the JSON laid out");
         await ev(`(() => { const b = ${box}; b.value = '{"a": }\\n'; b.dispatchEvent(new Event("input")); })()`);
         await waitFor(`(${status}).startsWith("Not JSON: a value should be here")`, "the JSON found broken");
+        await ev(`document.querySelector(".editor-error-jump").click()`);
+        if (!await ev(`document.activeElement === ${box} && ${box}.selectionStart === 6 && ${box}.selectionEnd === 6`)) {
+            throw new Error("the JSON error location did not focus its source column");
+        }
+        await ev(`(() => { const b = ${box}; b.value = '{\\n' + '\\n'.repeat(120) + '"a": }\\n'; b.dispatchEvent(new Event("input")); })()`);
+        await waitFor(`document.querySelector(".editor-error-jump")?.textContent === "line 122, column 6"`, "an error further down the file");
+        await ev(`document.querySelector(".editor-error-jump").click()`);
+        if (!await ev(`${box}.selectionStart === ${box}.value.indexOf("}") && ${box}.scrollTop > 0`)) {
+            throw new Error("the JSON error jump did not scroll to the reported line");
+        }
         await ev(`${box}.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }))`);
         const top = `[...document.querySelectorAll("dialog[open]")].at(-1)`;
         await waitFor(`${top}?.textContent.includes("isn't JSON as it is now")`, "a question before saving it broken");

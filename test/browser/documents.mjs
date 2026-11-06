@@ -214,6 +214,7 @@ export async function checkMarkdownLinks(checks) {
 export async function checkTextEdit(checks) {
     const { downloads, waitForFile, inContainer, sleep, step, ev, waitFor, click, type, open, listed, answer, status, rendered } = checks;
     await step("files: edit a file and save it", async () => {
+        inContainer("sh", "-c", "mkdir -p ~/Downloads/media/more; printf '# Index\\n' > ~/Downloads/media/index.md");
         inContainer("sh", "-c", "printf '#!/bin/sh\\r\\necho one\\r\\n' > ~/Downloads/media/edit.sh && chmod 755 ~/Downloads/media/edit.sh");
         const statEdit = () => inContainer("stat", "-c", "%y %s inode %i", "/home/user/Downloads/media/edit.sh");
         const made = statEdit();
@@ -231,9 +232,50 @@ export async function checkTextEdit(checks) {
         // In brackets: in "a ?? b === c", === goes first.
         const note = `(document.querySelector("dialog.preview .edit-status")?.textContent ?? "")`;
         await preview("edit.sh");
+        const highlighted = `document.querySelector("dialog.preview .syntax-editor.highlighted")`;
+        await waitFor(`!!${highlighted}?.querySelector(".hljs-meta")`, "shell syntax highlighted in the editor");
+        const syntaxToggle = `document.querySelector("dialog.preview button.syntax-toggle")`;
+        if (!await ev(`${syntaxToggle}.nextElementSibling?.classList.contains("widen")
+            && getComputedStyle(document.querySelector(".edit-bar")).display === "none"
+            && document.querySelector(".save-edit").title.includes("Ctrl S")`)) {
+            throw new Error("the edit hint bar is visible or the syntax toggle is not before fullscreen");
+        }
+        await click(syntaxToggle);
+        await type("#!/bin/sh\necho toggle\n");
+        await sleep(250);
+        if (await ev(`!!${highlighted} || ${syntaxToggle}.getAttribute("aria-pressed") !== "false"`)) {
+            throw new Error("syntax highlighting did not stay off while typing");
+        }
+        await click(syntaxToggle);
+        await waitFor(`!!${highlighted} && ${syntaxToggle}.getAttribute("aria-pressed") === "true"`, "syntax highlighting re-enabled");
+        if (await ev(`document.querySelector("textarea.editor").value`) !== "#!/bin/sh\necho toggle\n") {
+            throw new Error("toggling syntax highlighting changed the text");
+        }
+        await type("#!/bin/sh\necho one\n");
+        await waitFor(`!!${highlighted}`, "original shell source highlighted");
+        await ev(`document.querySelector("textarea.editor").dispatchEvent(new CompositionEvent("compositionstart"))`);
+        if (await ev(`!!${highlighted}`)) throw new Error("highlighting obscures composition input");
+        await ev(`document.querySelector("textarea.editor").dispatchEvent(new CompositionEvent("compositionend"))`);
+        await waitFor(`!!${highlighted}`, "highlighting resumes after composition");
         if (await ev(`document.querySelector("dialog.preview textarea.editor").value`) !== "#!/bin/sh\necho one\n") {
             throw new Error("the editor doesn't hold edit.sh's text");
         }
+        await type("#!/bin/sh\necho two\n");
+        await waitFor(`${highlighted}?.querySelector("code")?.textContent === "#!/bin/sh\\necho two\\n\\n"`, "highlighting updates as typed");
+        // Real textarea remains the input; the painted copy tracks scrolling
+        // and handles source that looks like markup as inert text.
+        await type('#!/bin/sh\n' + 'echo "<img src=x onerror=alert(1)>"\n'.repeat(120));
+        await waitFor(`!!${highlighted}`, "long highlighted source");
+        if (!await ev(`(() => {
+            const b = document.querySelector("textarea.editor"), p = document.querySelector(".editor-highlight");
+            b.scrollTop = 400; b.dispatchEvent(new Event("scroll"));
+            return b.scrollTop > 0 && b.scrollTop === p.scrollTop && b.clientWidth === p.clientWidth
+                && getComputedStyle(b).lineHeight === getComputedStyle(p).lineHeight
+                && p.textContent === b.value + "\\n" && !p.querySelector("img");
+        })()`)) throw new Error("the highlighted editor lost source text, scroll alignment or markup safety");
+        await type("x".repeat(512 * 1024 + 1));
+        await sleep(250);
+        if (await ev(`!!${highlighted}`)) throw new Error("large text was highlighted past the preview's cap");
         await type("#!/bin/sh\necho two\n");
         await saveKeys();
         await waitFor(`${note} === "Saved."`, "the save");
@@ -267,14 +309,19 @@ export async function checkTextEdit(checks) {
             throw new Error("the save went over the change made elsewhere");
         }
         // Done, with changes not saved: asked first.
+        await click(syntaxToggle);
         await ev(`document.querySelector("dialog.preview button.done-edit").click()`);
         await waitFor(`(document.querySelectorAll("dialog[open]")[1]?.textContent ?? "").includes("aren't saved")`, "the question");
         await answer();
         await waitFor(`!document.querySelector("dialog.preview textarea.editor")`, "editing ended");
+        if (await ev(`!!document.querySelector("dialog.preview .syntax-toggle")`)) throw new Error("the edit syntax toggle remained after Done");
         await ev(`document.querySelector("dialog.preview button.close").click()`);
         await waitFor(`!document.querySelector("dialog.preview")`, "the preview to close");
         // Markdown: rendered beside it, as it's typed.
         await preview("index.md");
+        if (await ev(`${syntaxToggle}.getAttribute("aria-pressed")`) !== "false") throw new Error("syntax preference was lost between files");
+        await click(syntaxToggle);
+        await waitFor(`!!${highlighted}?.querySelector(".hljs-section")`, "Markdown syntax highlighted beside its preview");
         await waitFor(`!!document.querySelector("dialog.preview .editing iframe.markdown")?.dataset.rendered`, "index.md, rendered beside it");
         await ev(`document.querySelector("dialog.preview .editing iframe.markdown").dataset.rendered = ""`);
         await type("# Changed\n\n$x^2$\n");
@@ -288,7 +335,7 @@ export async function checkTextEdit(checks) {
         await waitFor(`!document.querySelector("dialog.preview")`, "the preview to close");
         inContainer("sh", "-c", "cd ~/Downloads/media && rm -r edit.sh index.md more");
         await open("fs/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
-        return "CRLF and 755 kept, a stale save refused, unsaved changes asked about, Markdown rendered as typed";
+        return "live syntax highlighting, scrolling and composition, large-file fallback, CRLF and 755 kept, stale save refused, recovery download, Markdown rendered as typed";
     });
 }
 
@@ -667,7 +714,8 @@ export async function checkEPUB(checks) {
 
         // Its details: a new title and author, and a cover, where it had
         // none; shown again, where it was.
-        // The cover, a picture in Downloads, chosen there.
+        // The cover, first a picture already in the book, then one in
+        // Downloads, chosen there.
         writeFileSync(`${work}/cover.png`, pngSquare(60));
         execFileSync("docker", ["cp", "-q", `${work}/cover.png`, `${container}:/home/user/Downloads/media/cover.png`]);
         execFileSync("docker", ["exec", container, "chown", "user", "/home/user/Downloads/media/cover.png"]);
@@ -676,8 +724,16 @@ export async function checkEPUB(checks) {
         await waitFor(`${top}?.querySelector(".cover-field .no-cover:not([hidden])")`, "the details, without a cover");
         await ev(`(() => { const [title, author] = ${top}.querySelectorAll("input[type=text]");
             title.value = "A Checked Book"; author.value = "B. Checker"; })()`);
-        await ev(`${top}.querySelector("button.cover-pick").click()`);
         const picture = (name) => `[...document.querySelectorAll("dialog.picker button.picker-picture")].find((b) => b.textContent === ${JSON.stringify(name)})`;
+        await ev(`${top}.querySelector("button.cover-pick-epub").click()`);
+        await waitFor(`document.querySelector("dialog.picker .picker-where")?.textContent === "book.epub" && !!${picture("OEBPS/images/square.png")}`,
+            "the book's pictures, for the cover");
+        await ev(`${picture("OEBPS/images/square.png")}.click()`);
+        await waitFor(`!document.querySelector("dialog.picker") && ${top}.querySelector("img.cover:not([hidden])")?.naturalWidth === 40`,
+            "the book's picture, shown as the cover");
+        await ev(`${top}.querySelector("button.cover-clear").click()`);
+        await waitFor(`${top}?.querySelector(".cover-field .no-cover:not([hidden])")`, "the book's picture cleared");
+        await ev(`${top}.querySelector("button.cover-pick").click()`);
         await waitFor(`document.querySelector("dialog.picker .picker-where")?.textContent === "Downloads / media" && !!${picture("cover.png")}`,
             "the picker, in the book's folder");
         await ev(`${picture("cover.png")}.click()`);

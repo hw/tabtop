@@ -99,6 +99,8 @@ func main() {
 		os.Exit(renderEpubChild(os.Args[2:]))
 	}
 	c := defaultServerConfig()
+	flag.BoolVar(&c.vncOff, "disable-vnc", false, "disable the desktop page and VNC tunnel")
+	flag.BoolVar(&c.fsOff, "disable-fs", false, "disable file browsing, transfers, previews, share links and URL fetching")
 	listen := flag.String("listen", ":6080", "address to serve on")
 	basePath := flag.String("base-path", c.base, "URL path the site is served under, e.g. /tabtop/")
 	flag.StringVar(&c.novncDir, "novnc-dir", c.novncDir, "noVNC client files")
@@ -131,6 +133,7 @@ func main() {
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.doctorOn, "doctor", c.doctorOn, "serve a troubleshooting report at doctor, without a login")
+	flag.StringVar(&c.kaitaiDir, "kaitai-dir", c.kaitaiDir, "compiled Kaitai formats for binary previews; empty for none")
 	flag.StringVar(&c.pdfjsDir, "pdfjs-dir", c.pdfjsDir, "pdf.js, for PDF previews; empty for none, and PDFs download instead")
 	flag.StringVar(&c.previewDir, "preview-dir", c.previewDir, "KaTeX and Mermaid, for math and diagrams in Markdown previews; empty for none")
 	flag.StringVar(&c.highlightDir, "highlight-dir", c.highlightDir, "highlight.js files for the colours of text previews; empty for none")
@@ -162,6 +165,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	c = g.serverConfig
 	if len(c.trustedProxies) > 0 {
 		log.Printf("believing X-Forwarded-For from %s", strings.Join(describePrefixes(c.trustedProxies), ", "))
 	}
@@ -202,7 +206,9 @@ func main() {
 	}
 	// Before serving, so no upload is going yet, whatever the file
 	// system's timestamps.
-	removeStaleUploads(c.downloadsDir, time.Now(), staleUploadScan)
+	if !g.fsOff {
+		removeStaleUploads(c.downloadsDir, time.Now(), staleUploadScan)
+	}
 	// Read the files browsers keep now, rather than on the first request.
 	if tag, _ := g.noble.load(g.nobleAssets()); tag == "" {
 		log.Printf("warning: can't read the noble files in %s; see /doctor", c.nobleDir)
@@ -227,7 +233,7 @@ func main() {
 			log.Printf("warning: can't read the terminal's files in %s; see /doctor", g.termDir)
 		}
 	}
-	log.Printf("listening on %s under %s; %s serves %s", *listen, g.base, g.abs(filesPrefix), g.downloadsDir)
+	log.Printf("listening on %s under %s; desktop=%t terminal=%t files=%t", *listen, g.base, !g.vncOff, g.termDir != "", !g.fsOff)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()

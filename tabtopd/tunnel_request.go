@@ -172,9 +172,24 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 		return
 	}
 	r := &tunnelResponder{t: t}
+	// Gate access before dispatch, including requests from cached pages or
+	// clients that bypass navigation. Keep session management available.
+	if g.fsOff {
+		switch req.Type {
+		case "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes",
+			"zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "cleanup",
+			"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches":
+			r.fail("File support is turned off (WEB_FS=0).")
+			return
+		}
+	}
 
 	switch req.Type {
 	case "vnc":
+		if g.vncOff {
+			r.fail("The desktop is turned off (WEB_VNC=0).")
+			return
+		}
 		t.c.SetReadLimit(maxClientMessage + tunnelOverhead)
 		if r.accept(nil) {
 			g.bridgeDesktop(t, session, ip)

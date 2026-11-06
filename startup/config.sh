@@ -10,6 +10,8 @@ VNC_UPSTREAM_USERNAME="${VNC_UPSTREAM_USERNAME:-}"
 VNC_CA_FILE="${VNC_CA_FILE:-}"
 VNC_SERVER_NAME="${VNC_SERVER_NAME:-}"
 WEB_PORT="${WEB_PORT:-6080}"
+WEB_VNC="${WEB_VNC:-1}"
+WEB_FS="${WEB_FS:-1}"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
 WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
@@ -28,6 +30,21 @@ WEB_SESSION_MAX="${WEB_SESSION_MAX:-12h}"
 WEB_SESSION_IDLE="${WEB_SESSION_IDLE:-1h}"
 WEB_E2E="${WEB_E2E:-}"
 DISPLAY_NUM=1
+
+for VAR in WEB_VNC WEB_TTY WEB_FS; do
+    case "${!VAR}" in
+        0|1) ;;
+        *) echo "${VAR} must be 0 or 1 (got '${!VAR}')." >&2; exit 1 ;;
+    esac
+done
+if [ "$WEB_VNC$WEB_TTY$WEB_FS" = 000 ]; then
+    echo "Enable at least one of WEB_VNC, WEB_TTY or WEB_FS." >&2
+    exit 1
+fi
+if [ "$WEB_VNC" = 0 ]; then
+    WEB_AUDIO=0
+    WEB_MIC=0
+fi
 
 # VNC_USER: a plain user name. One of the image's own accounts (root, or a
 # system account such as daemon, whose home is /usr/sbin) is refused: the
@@ -68,12 +85,12 @@ if ! [[ "$WEB_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$WEB_PORT" -gt 65535 ]; then
 fi
 # An RFB server elsewhere, as host:port, [IPv6]:port or unix:/path,
 # instead of the container's own desktop; checked as the gateway will.
-if [ -n "$VNC_ADDR" ] && ! VNC_ADDR_ERROR=$(/usr/local/bin/tabtopd -check-vnc-addr "$VNC_ADDR" 2>&1); then
+if [ "$WEB_VNC" = 1 ] && [ -n "$VNC_ADDR" ] && ! VNC_ADDR_ERROR=$(/usr/local/bin/tabtopd -check-vnc-addr "$VNC_ADDR" 2>&1); then
     echo "VNC_ADDR isn't usable: ${VNC_ADDR_ERROR#tabtopd: }" >&2
     exit 1
 fi
 # An image built without its own desktop (DESKTOP=none) has no Xvnc.
-if [ -z "$VNC_ADDR" ] && ! command -v Xvnc >/dev/null; then
+if [ "$WEB_VNC" = 1 ] && [ -z "$VNC_ADDR" ] && ! command -v Xvnc >/dev/null; then
     echo "This image has no desktop of its own (built with DESKTOP=none): set VNC_ADDR to an RFB server's address." >&2
     exit 1
 fi
@@ -91,7 +108,9 @@ for VAR in VNC_UPSTREAM_USERNAME VNC_CA_FILE VNC_SERVER_NAME; do
         exit 1
     fi
 done
-if [ "$VNC_X509" = 1 ]; then
+if [ "$WEB_VNC" = 0 ]; then
+    : # Upstream TLS settings aren't used while the desktop is off.
+elif [ "$VNC_X509" = 1 ]; then
     if [ -z "$VNC_ADDR" ]; then
         echo "VNC_X509=1 is for a VNC server elsewhere: set VNC_ADDR to its address." >&2
         exit 1

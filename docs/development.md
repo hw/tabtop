@@ -24,6 +24,8 @@
 | `KATEX_VERSION` | `0.19.0` | KaTeX release from npm (`katex`), which draws math in Markdown previews. |
 | `KATEX_SHA256` | *(checksum of 0.19.0)* | SHA-256 of `https://registry.npmjs.org/katex/-/katex-<version>.tgz`. |
 | `MERMAID_VERSION` | `12.2.0` | Mermaid release from npm (`mermaid`), which draws diagrams in Markdown previews. |
+| `KAITAI_FORMATS_COMMIT` | `7d175667527372eb0c521045c1dac212230d9779` | Pinned Kaitai format library snapshot (191 formats). |
+| `KAITAI_FORMATS_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the format library archive. |
 | `MERMAID_SHA256` | *(checksum of 12.2.0)* | SHA-256 of `https://registry.npmjs.org/mermaid/-/mermaid-<version>.tgz`. |
 
 The build adds two `<script>` tags to noVNC's `vnc.html`, for the audio
@@ -106,6 +108,9 @@ the desktop and configures audio. These functions run in the supervising
 shell so child PIDs and runtime outputs remain available for shutdown.
 Run `test/startup-check.sh <image>` to check external-VNC startup, a custom
 account, credential ownership, secret removal and restart with an existing home.
+Run `bash test/features-check.sh <image>` to check
+files-only, terminal-only and desktop-only startup, disabled routes and
+navigation, health checks and invalid service switches.
 
 Filesystem notifications use `watch_source.go` for inotify registration,
 decoding and reader shutdown; `watch_policy.go` for rename pairing, settling,
@@ -200,6 +205,14 @@ receive the refresh callback and formatting helpers without importing the page.
 selects transport loaders; `preview-renderers.js` selects format adapters. Frame
 messaging is bound in `preview-frames.js`, editing lives in `preview-editor.js`,
 and each mounted renderer has the lifecycle documented in `preview-view.js`.
+Text editing reuses the preview's language detection and validated highlight.js
+markup behind a native textarea. Highlighting pauses during composition and
+falls back to plain text above the preview's 512 KiB character limit.
+The code glyph before fullscreen in the preview toolbar toggles highlighting
+while editing and remembers the choice in this browser. Routine edit status
+stays in the toolbar; the editor only shows validation errors, render failures
+and recovery controls when needed. Error line and column links focus and scroll
+the textarea to the reported location.
 `stream-worker.js` centralizes worker readiness and retries. `media-source.js`
 owns media lifetimes, while `ranged-file.js` validates and cancels shared PDF and
 media reads. Their range caps and concurrency policies remain format-specific.
@@ -225,9 +238,81 @@ group against a built image, or omit `--group` for the complete journey:
 ```sh
 mise exec -- bash test/browser-check.sh tabtop:review --group zip
 mise exec -- bash test/browser-check.sh tabtop:review --group mkv
+mise exec -- bash test/browser-check.sh tabtop:review --group editing
 mise exec -- bash test/browser-check.sh tabtop:review --group previews
 mise exec -- bash test/browser-check.sh tabtop:review
 ```
 
 Other groups are `audio`, `video`, `media`, `text`, `html`, `markdown`, `pdf`,
 `epub` and `tables`. Each creates its own required fixtures.
+
+## Binary structure previews
+
+Unknown files offer a single **Preview** action, choosing Text for readable
+UTF-8 and Binary for other data. The lightbox has a glyph button
+to switch between Text and Binary for unknown files using the same loaded bytes.
+Its tooltip names the view it will switch to. Known file types use their native
+previews and do not offer Binary view. Inside the binary preview, **Interpret as**
+is an autocomplete dropdown: open the arrow to browse all formats, or type to
+filter by name, ID or category. Use Up/Down and Enter to select a format; Escape
+closes the dropdown. You can also enter its exact format ID and press Enter.
+Expand decoded fields and click their names to highlight the corresponding file
+bytes. Formats with required parameters show an input form. A format mismatch
+shows the fields decoded so far while preserving the hex view. Decode status
+separates format validation failures, unexpected end-of-data, data outside the
+prefix, and resource-budget exhaustion. When a required original-file offset is
+known, **Jump to required bytes** fetches that hex range without extending the
+Kaitai decoding limit. Decoder details retain the underlying error for inspection.
+
+Click any field name to show its path, type, value, numeric hex value, enum,
+byte order, offset, length and documentation where available. Computed/lazy
+fields and transformed data can be inspected even without a source-byte range.
+Byte offsets are never inferred for decompressed or parameter buffers.
+
+Unknown files are classified using their first 1 MB. Readable text previews load
+up to the first 10 MB, with a notice when the rest is omitted; truncated text
+cannot be edited. Binary previews fetch aligned 1 MB ranges through the encrypted
+tunnel and render 4 KB pages. Previous/Next 1 MB and the byte-offset field browse
+the whole file. Reads use the original size/mtime and fail if the file changes.
+One fetched range is cached; the first range remains available for Kaitai.
+Already buffered text bytes can also be reused without another transfer.
+
+Kaitai decodes only the first 1 MB, regardless of the range being viewed in hex.
+Fields that need data beyond that prefix may fail to decode; the raw hex viewer
+can still browse those ranges. Existing known-type native preview limits remain
+in effect.
+The parser runs in a dedicated browser worker, terminated when the preview closes
+or decoding times out. Generated parsers are instrumented before bundling: allocation checks run
+before object/array creation, repeat loops spend work units, and constructors,
+readers and lazy getters have a depth limit. One parse, including all lazy
+expansions, has budgets of 20,000 allocations, 100,000 operations, 128 nesting
+levels, 32 MiB of transformed/string allocation and 8 MiB of cumulative inflated
+output. Tree children load in groups of 100 and UI expansion is separately
+capped at 20,000 fields. These structural bounds are not an exact browser heap
+quota; the worker timeout remains an additional cancellation mechanism. Transformed data is labelled separately
+and does not link to misleading original byte offsets. Numeric values above
+JavaScript's safe integer range are approximate; the hex bytes remain exact.
+
+The Docker build compiles all formats with byte-position metadata, bundles shared
+parser dependencies, and copies only generated assets and license/source notices
+into `/opt/kaitai`. It adds no compiler or Node service to the running container.
+Parsers are fetched only when selected and served from disk without retaining
+the full gallery in the gateway's asset cache. The gateway flag is
+`-kaitai-dir /opt/kaitai`; leave it empty to disable format decoding.
+
+For a local build, download the archive pinned in `scripts/kaitai/sources.json`,
+verify its SHA-256, and extract it. Then run:
+
+```sh
+npm ci --ignore-scripts --prefix scripts/kaitai
+node scripts/kaitai/build.mjs /path/to/extracted-formats scripts/kaitai/dist
+```
+
+Run the gateway with `-kaitai-dir scripts/kaitai/dist` (using an absolute path
+when starting it from another directory). `node test/kaitai.test.mjs` tests the
+generated parser bundles when present; `test/browser-check.sh <image> --group
+binary` verifies format selection, field jumps and error handling through the
+actual encrypted file preview. The Docker Kaitai stage also runs the allocation/decompression regression
+tests against its generated parser bundles. Build dependencies are pinned in
+`scripts/kaitai/package-lock.json`. Update the library commit and checksum in
+both `Dockerfile` and `scripts/kaitai/sources.json` when refreshing the gallery.

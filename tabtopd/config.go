@@ -10,6 +10,7 @@ import (
 // serverConfig contains settings fixed before serving. Runtime services and
 // mutable state belong to server, rather than the flag parser.
 type serverConfig struct {
+	vncOff, fsOff                         bool
 	base                                  string
 	novncDir                              string
 	vncAddr                               string
@@ -25,6 +26,7 @@ type serverConfig struct {
 	nobleDir, timeZone                    string
 	highlightDir                          string // highlight.js, for text previews' colours; "" for none
 	previewDir                            string // KaTeX and Mermaid, for Markdown previews; "" for none
+	kaitaiDir                             string // compiled Kaitai formats; "" for none
 	pdfjsDir                              string // pdf.js, for PDF previews; "" for none
 	sessionMax, sessionIdle               time.Duration
 	audioSink, micSink                    string
@@ -42,18 +44,27 @@ func defaultServerConfig() serverConfig {
 }
 
 func newServer(c serverConfig) (*server, error) {
-	if c.usersFile == "" || c.downloadsDir == "" || c.nobleDir == "" {
+	if c.usersFile == "" || !c.fsOff && c.downloadsDir == "" || c.nobleDir == "" {
 		return nil, fmt.Errorf("-users-file, -downloads-dir and -noble-dir are required")
+	}
+	if c.vncOff && c.fsOff && c.termDir == "" {
+		return nil, fmt.Errorf("enable at least one of VNC, terminal or files")
+	}
+	if c.fsOff {
+		c.shareOn, c.fetchOn = false, false
+	}
+	if c.vncOff {
+		c.audioSink, c.micSink, c.micCreate = "", "", false
 	}
 	base, err := parseBasePath(c.base)
 	if err != nil {
 		return nil, fmt.Errorf("-base-path: %w", err)
 	}
 	c.base = base
-	if err := checkVNCAddr(c.vncAddr); err != nil {
+	if err := checkVNCAddr(c.vncAddr); !c.vncOff && err != nil {
 		return nil, fmt.Errorf("-vnc-addr: %w", err)
 	}
-	if c.vncUsername != "" && !c.vncX509 {
+	if !c.vncOff && c.vncUsername != "" && !c.vncX509 {
 		return nil, fmt.Errorf("-vnc-username requires -vnc-x509")
 	}
 	if c.trustNProxies < 0 || c.trustNProxies > maxTrustNProxies {

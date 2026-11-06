@@ -6,8 +6,8 @@ package main
 // zip), and answers three things through the tunnel's "epub" request:
 //
 //   - with no Item, the book: its title, author and language, its chapters
-//     in reading order (the spine), and its contents (EPUB 3's nav, or
-//     EPUB 2's NCX);
+//     in reading order (the spine), its pictures (from the manifest, for
+//     choosing a cover), and its contents (EPUB 3's nav, or EPUB 2's NCX);
 //   - with Item a chapter, the chapter, as HTML: its body, rewritten (links
 //     and pictures as paths in the book, IDs prefixed so they can't clash
 //     with the frame's own) and then cleaned with bluemonday, as Markdown
@@ -41,6 +41,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -76,10 +77,11 @@ type epubBook struct {
 	Title    string        `json:"title"`
 	Creator  string        `json:"creator,omitempty"`
 	Language string        `json:"language,omitempty"`
-	RTL      bool          `json:"rtl,omitempty"`   // pages turn right to left
-	Fixed    bool          `json:"fixed,omitempty"` // laid out by page, as comics are: it may look wrong
-	Cover    string        `json:"cover,omitempty"` // its cover picture, as a path in the book, if it says which (see epubCover); perhaps missing from it
-	Spine    []string      `json:"spine"`           // the chapters, in reading order, as paths in the book
+	RTL      bool          `json:"rtl,omitempty"`      // pages turn right to left
+	Fixed    bool          `json:"fixed,omitempty"`    // laid out by page, as comics are: it may look wrong
+	Cover    string        `json:"cover,omitempty"`    // its cover picture, as a path in the book, if it says which (see epubCover); perhaps missing from it
+	Spine    []string      `json:"spine"`              // the chapters, in reading order, as paths in the book
+	Pictures []string      `json:"pictures,omitempty"` // pictures in the book, as paths, for choosing a cover (see askBookDetails)
 	TOC      []epubTOCItem `json:"toc"`
 }
 
@@ -427,6 +429,19 @@ func (z *epubZip) readBook() (*epubBook, error) {
 	// What the book names as its cover, even if it's not in the book, as
 	// happens: the editor puts one there.
 	book.Cover = epubCover(manifest, opfPath, coverImage, coverRef)
+
+	// Pictures in the book, from the manifest: for choosing one as the cover.
+	seenPic := map[string]bool{}
+	for _, it := range manifest {
+		if seenPic[it.href] || z.files[it.href] == nil || epubPictureType(it.href) == "" ||
+			it.mediaType != "" && !strings.HasPrefix(it.mediaType, "image/") ||
+			z.files[it.href].UncompressedSize64 > uint64(maxEpubPicture) {
+			continue
+		}
+		book.Pictures = append(book.Pictures, it.href)
+		seenPic[it.href] = true
+	}
+	slices.Sort(book.Pictures)
 
 	// The contents: EPUB 3's nav, else EPUB 2's NCX.
 	for _, it := range manifest {
