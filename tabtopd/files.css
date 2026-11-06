@@ -25,8 +25,15 @@ td.name { overflow-wrap: anywhere; }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
 p.space { margin-top: -.25rem; }
-#sessions button.end { font: inherit; font-size: 13px; }
-#sessions h2 { font-size: 1rem; margin-top: 1.5rem; }
+#sessions button.end, #sessions button.name-session { font: inherit; font-size: 13px; }
+#shares .shares-table button { font: inherit; font-size: 13px; }
+.shares-table td.act { white-space: nowrap; }
+#sessions .activity .bar .buttons { display: flex; gap: .5rem; }
+#sessions .activity button, #shares .cleanup button, #shares .shares-bar button { font: inherit; font-size: 13px; }
+#shares .shares-bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
+#sessions .activity .find select { font: inherit; padding: .25rem .4rem; }
+.activity-table td:first-child { white-space: nowrap; }
+:is(#sessions, #shares) h2 { font-size: 1rem; margin-top: 1.5rem; }
 #sessions p.attention { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .6rem .8rem;
        color: #c5221f; border: 1px solid currentColor; border-radius: 8px; }
 #sessions p.attention button { color: var(--fg); }
@@ -47,10 +54,10 @@ h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .1
        border-radius: 50%; background: #c5221f; border: 2px solid var(--bg); }
 @media (prefers-color-scheme: dark) { .tabtop-nav button.security.attention { color: #f28b82; }
        .tabtop-nav button.security.attention::after { background: #f28b82; } }
-.tabtop-nav button.security[aria-pressed=true] { color: var(--bg); background: var(--fg); border-color: var(--fg); }
-.tabtop-nav button.logout, .tabtop-nav button.security { display: inline-flex; align-items: center; justify-content: center;
+.tabtop-nav :is(button.security, button.shares)[aria-pressed=true] { color: var(--bg); background: var(--fg); border-color: var(--fg); }
+.tabtop-nav :is(button.logout, button.security, button.shares) { display: inline-flex; align-items: center; justify-content: center;
        padding: 3px 6px; }
-.tabtop-nav button.logout svg, .tabtop-nav button.security svg { display: block; width: 22px; height: 22px; }
+.tabtop-nav :is(button.logout, button.security, button.shares) svg { display: block; width: 22px; height: 22px; }
 .find { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .find input { font: inherit; flex: 0 1 20rem; min-width: 0; padding: .3rem .5rem; color: inherit; background: var(--bg);
        border: 1px solid var(--line); border-radius: 6px; }
@@ -85,10 +92,26 @@ dialog { width: min(26rem, calc(100vw - 2rem)); box-sizing: border-box; padding:
 dialog::backdrop { background: rgba(0, 0, 0, .4); }
 dialog p { margin: 0 0 .75rem; overflow-wrap: anywhere; }
 dialog input { font: inherit; width: 100%; box-sizing: border-box; padding: .4rem .5rem; }
+dialog label.field { display: flex; align-items: center; gap: .75rem; margin: 0 0 .6rem; }
+dialog label.field span { min-width: 4rem; }
+dialog label.field select { font: inherit; flex: 1; padding: .3rem .4rem; }
+dialog label.field input { flex: 1; width: auto; min-width: 0; }
+dialog label.check { display: flex; align-items: center; gap: .4rem; margin: -.2rem 0 .6rem; }
+dialog label.check input { width: auto; }
+.soon { color: #b06000; font-size: 13px; }
+@media (prefers-color-scheme: dark) { .soon { color: #fdd663; } }
+dialog p.hint { margin-top: .5rem; font-size: .85rem; }
+dialog .cover-field { display: flex; gap: .9rem; align-items: flex-start; margin: .2rem 0 .6rem; }
+dialog .cover-field img.cover { width: 5.5rem; max-height: 8rem; object-fit: contain; border: 1px solid var(--line, #ccc); }
+dialog .cover-field .no-cover { display: grid; place-items: center; width: 5.5rem; height: 7.5rem; border: 1px dashed var(--line, #ccc); }
+dialog .cover-field .no-cover[hidden], dialog .cover-field img[hidden] { display: none; }
+dialog .cover-field div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .35rem; }
+dialog .cover-field input[type=file] { padding: 0; }
 dialog .buttons { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
 dialog button { font: inherit; padding: .3rem .9rem; }
 dialog button.primary { color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; }
 @media (prefers-color-scheme: dark) { dialog button.primary { color: #1c1c1e; } }
+html:has(dialog.preview[open]) { overflow: hidden; }
 dialog.preview { width: min(72rem, calc(100vw - 2rem)); height: calc(100vh - 2rem); max-height: none; padding: 0; }
 dialog.preview[open] { display: flex; flex-direction: column; }
 dialog.preview .head { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
@@ -99,6 +122,22 @@ dialog.preview .body > * { max-width: 100%; max-height: 100%; }
 dialog.preview .body > p { padding: 1rem; }
 dialog.preview .body img, dialog.preview .body video { width: 100%; height: 100%; object-fit: scale-down; }
 dialog.preview .body audio { width: min(30rem, 90%); }
+dialog.preview .body > div.fallback { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+dialog.preview .body > div.fallback > p { margin: .5rem 1rem 0; }
+dialog.preview .body > div.fallback > pre { flex: 1; overflow: auto; }
+dialog.preview .body > div.editing, dialog.preview .body > .table-editor { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-height: 0; max-height: none; }
+dialog.preview .editing .edit-status, dialog.preview .table-editor .edit-status { margin: .4rem .75rem; }
+dialog.preview .editing .panes { flex: 1; display: flex; min-height: 0; border-top: 1px solid var(--line); }
+dialog.preview .editing .panes > * { flex: 1 1 0; min-width: 0; min-height: 0; }
+dialog.preview .editing.split .panes > textarea { border-right: 1px solid var(--line); }
+dialog.preview textarea.editor { box-sizing: border-box; margin: 0; padding: .75rem 1rem; resize: none; border: 0; outline: none;
+       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 4; color: var(--fg); background: var(--bg); }
+dialog.preview .editing iframe.markdown { border: 0; width: 100%; height: 100%; }
+@media (max-width: 40rem) { dialog.preview .editing .panes { flex-direction: column; }
+       dialog.preview .editing.split .panes > textarea { border-right: 0; border-bottom: 1px solid var(--line); } }
+dialog.preview .body > p.saving { margin: 0 0 .5rem; }
+dialog.preview .body iframe.pdf, dialog.preview .body iframe.epub { align-self: stretch; flex: 1; width: 100%; height: auto; max-height: none; border: 0; }
+dialog.preview .body iframe.markdown, dialog.preview .body iframe.html { align-self: stretch; flex: 1; width: 100%; height: auto; max-height: none; border: 0; }
 dialog.preview .body pre { align-self: stretch; flex: 1; margin: 0; padding: .75rem 1rem; max-height: none;
        font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 40rem) { .mod { display: none; }
@@ -110,11 +149,11 @@ dialog.preview .body pre { align-self: stretch; flex: 1; margin: 0; padding: .75
        .file-table .size { display: none; }
        th, td { padding-left: .35rem; padding-right: .35rem; }
        details.menu summary { min-width: 28px; min-height: 38px; box-sizing: border-box; text-align: center; }
-       .sessions-table tr, .logins-table tr { display: block; padding: .5rem 0; border-bottom: 1px solid var(--line); }
-       .sessions-table tr:first-child { display: none; }
-       .sessions-table td, .logins-table td { display: grid; grid-template-columns: minmax(6rem, 35%) 1fr; gap: .5rem;
+       .sessions-table tr, .logins-table tr, .shares-table tr, .activity-table tr { display: block; padding: .5rem 0; border-bottom: 1px solid var(--line); }
+       .sessions-table tr:first-child, .shares-table tr:first-child, .activity-table tr:first-child { display: none; }
+       .sessions-table td, .logins-table td, .shares-table td, .activity-table td { display: grid; grid-template-columns: minmax(6rem, 35%) 1fr; gap: .5rem;
               padding: .15rem .25rem; border: 0; text-align: left; white-space: normal; }
-       .sessions-table td::before, .logins-table td::before { content: attr(data-label); font-weight: 600; }
+       .sessions-table td::before, .logins-table td::before, .shares-table td::before, .activity-table td::before { content: attr(data-label); font-weight: 600; }
        .sessions-table td.act:empty { display: none; }
 }
 @media (pointer: coarse) {
@@ -122,3 +161,154 @@ dialog.preview .body pre { align-self: stretch; flex: 1; margin: 0; padding: .75
        .tabtop-nav .page { min-width: 40px; min-height: 40px; box-sizing: border-box; }
        input[type=checkbox] { width: 22px; height: 22px; }
 }
+
+/* The table (CSV, TSV) and tree (JSON) views of a text file (see
+   table-view.js and json-view.js), and the editor's bar. */
+dialog.preview .body > .table-view, dialog.preview .body > .json-view, dialog.preview .table-editor > .table-view { align-self: stretch; flex: 1; display: flex; flex-direction: column;
+       min-height: 0; max-height: none; }
+.table-bar, .json-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; padding: .5rem .75rem;
+       border-bottom: 1px solid var(--line); }
+.table-bar input[type=search], .json-bar input[type=search] { font: inherit; width: 14rem; max-width: 100%; padding: .25rem .45rem; }
+.table-bar select { font: inherit; max-width: 12rem; padding: .2rem .3rem; }
+.table-bar label.check, .table-stats-choice label.check { display: flex; align-items: center; gap: .35rem; }
+.table-summary { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem .75rem; }
+.table-summary .table-count, .table-summary label.check { white-space: nowrap; }
+.json-bar button { padding: .15rem .55rem; }
+.json-bar button.json-fold-all { display: inline-flex; align-items: center; justify-content: center; }
+.table-view > p.error, .json-view > p.error { margin: .5rem .75rem 0; }
+.table-scroll, .json-scroll { flex: 1; min-height: 0; overflow: auto; }
+.table-scroll table { border-collapse: collapse; font-size: .9rem; font-variant-numeric: tabular-nums; }
+.table-scroll th, .table-scroll td { padding: .3rem .6rem; border: 1px solid var(--line); text-align: left; vertical-align: top;
+       white-space: pre-wrap; max-width: 28rem; overflow-wrap: anywhere; }
+.table-scroll thead { position: sticky; top: 0; z-index: 1; }
+.table-scroll thead th, .table-scroll thead td { background: var(--raised); }
+.table-scroll thead tr.heads th { padding: 0; }
+.table-scroll thead th button { font: inherit; font-weight: 600; width: 100%; padding: .3rem .6rem; text-align: left; color: inherit;
+       background: none; border: 0; cursor: pointer; white-space: nowrap; }
+.table-scroll .row-number { color: #888; text-align: right; user-select: none; }
+.table-scroll thead th.row-number { padding: .3rem .6rem; }
+.table-scroll tbody tr:nth-child(2n) td { background: var(--hover); }
+.table-more, .json-tree li.more button { margin: .6rem .75rem; padding: .25rem .7rem; }
+.json-tree, .json-tree ul { list-style: none; margin: 0; padding: 0; }
+.json-tree { padding: .5rem .75rem 1.5rem; font: .85rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.json-tree ul { padding-left: 1.3rem; border-left: 1px dotted var(--line); margin-left: .45rem; }
+.json-tree ul[hidden] { display: none; }
+.json-line { display: flex; align-items: baseline; gap: 0; overflow-wrap: anywhere; }
+.json-line.current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+.json-toggle, .json-toggle-space { flex: none; width: 1.2rem; }
+.json-tree button.json-toggle { padding: 0; font: inherit; color: inherit; background: none; border: 0; border-radius: 3px;
+       cursor: pointer; }
+.json-tree button.json-toggle:disabled { opacity: .3; cursor: default; }
+.json-key { color: #8250df; } .json-index { color: #888; } .json-colon { color: #888; white-space: pre; }
+.json-string { color: #0a7d32; white-space: pre-wrap; } .json-number { color: #0550ae; } .json-bool, .json-null { color: #cf222e; }
+.json-summary { color: #888; } .json-error { color: #c5221f; }
+.json-tree .hit { background: rgba(255, 200, 0, .45); border-radius: 2px; }
+@media (prefers-color-scheme: dark) { .json-key { color: #d2a8ff; } .json-string { color: #7ee787; } .json-number { color: #79c0ff; }
+       .json-bool, .json-null { color: #ff7b72; } .json-error { color: #f28b82; } }
+dialog.preview .editing .edit-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0 1rem; padding-right: .75rem; }
+dialog.preview .editing .edit-bar .json-status { margin: .4rem 0; } dialog.preview .editing .edit-bar .json-status[hidden] { display: none; }
+dialog.preview .editing .edit-bar button.format { margin-left: auto; padding: .15rem .65rem; }
+dialog.preview .head .views { display: inline-flex; }
+dialog.preview .head .views[hidden] { display: none; }
+dialog.preview .head .views button { border-radius: 0; margin: 0; }
+dialog.preview .head .views button:first-child { border-radius: 5px 0 0 5px; }
+dialog.preview .head .views button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+dialog.preview .head .views button[aria-pressed="true"] { background: var(--hover); font-weight: 600; }
+.table-bar label.split { display: flex; align-items: center; gap: .35rem; }
+.table-notes > p { margin: .5rem .75rem 0; }
+/* The preview's Edit and Download, as glyphs, and Download's menu. */
+dialog.preview .head button.glyph { min-width: 2.2rem; font-size: 1.1rem; line-height: 1.2; padding: .1rem .5rem; }
+dialog.preview .head button.back:not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
+dialog.preview .head .download-group { position: relative; display: inline-flex; }
+dialog.preview .head .download-group[hidden] { display: none; }
+dialog.preview .head .download-group button.glyph { display: inline-flex; align-items: center; justify-content: center; }
+dialog.preview .head .download-group > button.download { border-radius: 5px 0 0 5px; }
+dialog.preview .head .download-group > button.download-more { border-radius: 0 5px 5px 0; margin-left: -1px; padding: .2rem .4rem; }
+dialog.preview .head .download-menu { position: absolute; z-index: 5; top: calc(100% + 4px); right: 0; display: flex; gap: .3rem;
+       padding: .3rem; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+dialog.preview .head .download-menu[hidden] { display: none; }
+/* The view and theme glyphs; the book's cover dropped on; the picture
+   picker. */
+dialog.preview .head .views button.glyph { min-width: 2rem; padding: .1rem .45rem; }
+dialog .cover-field.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 4px; }
+dialog .cover-field .cover-name { overflow-wrap: anywhere; }
+dialog.picker { width: min(30rem, calc(100vw - 2rem)); }
+dialog.picker .picker-where { font-weight: 600; overflow-wrap: anywhere; }
+dialog.picker .picker-list { list-style: none; margin: 0 0 .5rem; padding: 0; max-height: 50vh; overflow: auto;
+       border: 1px solid var(--line); border-radius: 6px; }
+dialog.picker .picker-list li { display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--line); }
+dialog.picker .picker-list li:last-child { border-bottom: 0; }
+dialog.picker .picker-list button { flex: 1; min-width: 0; text-align: left; border: 0; border-radius: 0; background: none;
+       padding: .45rem .7rem; overflow-wrap: anywhere; }
+dialog.picker .picker-list .hint { padding-right: .7rem; white-space: nowrap; }
+
+/* The table's bar, centred (not as a dialog's checkbox, which it's in);
+   its headings' sort and filter glyphs, the filter, and statistics. */
+.table-bar label.check, .table-stats-choice label.check { margin: 0; align-self: center; line-height: 1.2; }
+.table-bar label.check input, .table-stats-choice label.check input { margin: 0; }
+.table-stats-choice { display: flex; flex-wrap: wrap; justify-content: center; gap: .3rem 1rem; padding: .4rem .75rem; border-bottom: 1px solid var(--line); }
+.table-stats-choice[hidden] { display: none; }
+.table-scroll .col-head { display: flex; align-items: center; }
+.table-scroll thead th .col-head button.col-name { flex: 1; min-width: 0; }
+.table-scroll thead th .col-head button.glyph { width: auto; flex: none; padding: .3rem .25rem; font-weight: normal; color: #888; font-size: .85rem; }
+.table-scroll thead th .col-head button.glyph:hover, .table-scroll thead th .col-head button.col-filter.active { color: var(--accent); }
+.table-scroll thead th.type-number button.col-name, .table-scroll td.type-number { text-align: right; }
+.table-scroll thead tr.stats th.row-number { font-weight: 600; text-align: left; white-space: nowrap; font-size: .8rem; }
+.table-scroll thead tr.stats td { font-size: .85rem; color: var(--fg); font-variant-numeric: tabular-nums; }
+.table-scroll thead tr.stats td.type-number, .table-scroll thead tr.stats td { white-space: nowrap; }
+.table-view { position: relative; }
+.table-filter-pop { position: absolute; z-index: 3; width: 18rem; max-width: calc(100% - 16px); box-sizing: border-box; padding: .6rem .7rem;
+       background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+.table-filter-pop[hidden] { display: none; }
+.table-filter-pop .filter-title { margin: 0 0 .5rem; font-weight: 600; overflow-wrap: anywhere; }
+.table-filter-pop .filter-row { display: flex; gap: .4rem; }
+.table-filter-pop .filter-row select, .table-filter-pop .filter-row input { font: inherit; padding: .25rem .35rem; }
+.table-filter-pop .filter-row input { flex: 1; min-width: 0; width: auto; }
+.table-filter-pop .filter-why { margin: .35rem 0 0; color: var(--error, #c5221f); }
+.table-filter-pop .filter-why:empty { display: none; }
+.table-filter-pop .buttons { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .6rem; }
+/* The table's top: the headings, each with its glyphs and a handle to
+   drag its width, on a band of their own; the rows shown, in the corner;
+   then the statistics, set apart. */
+.table-scroll thead tr.heads th { position: relative; vertical-align: middle; background: var(--raised);
+       border-bottom: 2px solid var(--line); box-shadow: inset 0 -1px 0 var(--line); }
+.table-scroll thead tr.heads th .col-head button.col-name { padding: .45rem .5rem .45rem .6rem; font-weight: 600; letter-spacing: .01em; }
+.table-scroll thead tr.heads th.corner { padding: .45rem .6rem; text-align: right; vertical-align: middle; }
+.table-scroll thead tr.heads th.corner .rows-shown { font-size: .75rem; font-weight: 600; color: #888; white-space: nowrap;
+       font-variant-numeric: tabular-nums; }
+.table-scroll .col-resize { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; z-index: 2; cursor: col-resize; touch-action: none; }
+.table-scroll .col-resize::after { content: ""; position: absolute; top: 25%; bottom: 25%; left: 3px; width: 2px; border-radius: 1px;
+       background: transparent; }
+.table-scroll th:hover > .col-resize::after { background: var(--line); }
+.table-scroll td.editable-cell { cursor: text; }
+.table-scroll td.editable-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.table-cell-editor { box-sizing: border-box; width: 100%; min-width: 8rem; min-height: 3rem; resize: vertical;
+       font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--accent); padding: .3rem; }
+.table-scroll .col-resize:hover::after, .table-scroll .col-resize:focus-visible::after, .table-scroll .col-resize.dragging::after {
+       background: var(--accent); top: 0; bottom: 0; }
+.table-scroll .col-resize:focus-visible { outline: none; }
+.table-scroll thead tr.stats th, .table-scroll thead tr.stats td { background: color-mix(in srgb, var(--accent) 6%, var(--raised));
+       padding: .2rem .6rem; }
+.table-scroll thead tr.stats th.row-number { color: #888; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.table-scroll thead tr.stats td { font-size: .85rem; }
+.table-scroll thead tr.stats td.type-number { text-align: right; }
+.table-scroll thead tr.stats:last-child th, .table-scroll thead tr.stats:last-child td { border-bottom: 2px solid var(--line); }
+.table-scroll thead tr.stats th, .table-scroll thead tr.stats td { vertical-align: middle; }
+.table-scroll thead tr.heads th:last-child > .col-resize { right: 0; }
+.table-bar button.table-clear-filters { padding: .15rem .55rem; font-size: .85rem; }
+/* A preview filling the window (see widen in preview.js). */
+dialog.preview.wide { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border-radius: 0; }
+@media (max-width: 40rem) { dialog.preview .head button.widen { display: none; } }
+
+/* External destinations are confirmed above the current preview. */
+dialog.preview-link .buttons { flex-wrap: wrap; }
+dialog.preview-link .link-url { user-select: text; }
+
+/* ZIP metadata is listed as text, never extracted or made into links. */
+dialog.preview .body > .zip-listing { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.zip-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: .75rem; }
+.zip-tools input { width: min(22rem, 100%); font: inherit; padding: .3rem .5rem; box-sizing: border-box; }
+.zip-scroll { flex: 1; overflow: auto; min-height: 0; }
+.zip-table th { position: sticky; top: 0; background: var(--bg); }
+.zip-table td.name { min-width: 12rem; white-space: pre-wrap; }
+.zip-scroll > button { margin: .75rem; }

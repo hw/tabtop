@@ -23,8 +23,17 @@ type serverConfig struct {
 	termDir, ttyCommand                   string
 	doctorOn                              bool
 	nobleDir, timeZone                    string
+	highlightDir                          string // highlight.js, for text previews' colours; "" for none
+	previewDir                            string // KaTeX and Mermaid, for Markdown previews; "" for none
+	pdfjsDir                              string // pdf.js, for PDF previews; "" for none
 	sessionMax, sessionIdle               time.Duration
-	audioSink                             string
+	audioSink, micSink                    string
+	micCreate                             bool   // make micSink and its source on the audio server
+	shareOn                               bool   // share links
+	sharesFile                            string // where they're kept; "" for in memory
+	fetchOn, fetchPrivate                 bool   // fetching from URLs, and from private networks
+	activityFile                          string // where the activity log is kept; "" for in memory
+	shareKeyFile                          string // what share links' tokens are sealed with; "" for a key in memory
 	audioBitrate                          int
 }
 
@@ -56,13 +65,41 @@ func newServer(c serverConfig) (*server, error) {
 	if c.sessionIdle < 0 || c.sessionIdle%time.Minute != 0 {
 		return nil, fmt.Errorf("-session-idle: %w", errBadLimit)
 	}
+	if c.micCreate {
+		if c.micSink != "" {
+			return nil, fmt.Errorf("-mic-create makes its own sink, so takes no -mic-sink")
+		}
+		c.micSink = micSinkName
+	}
+	if c.micSink != "" && c.audioSink == "" {
+		return nil, fmt.Errorf("-mic-sink and -mic-create require -audio-sink")
+	}
 	if c.audioSink != "" && (c.audioBitrate < minAudioBitrate || c.audioBitrate > maxAudioBitrate) {
 		return nil, fmt.Errorf("-audio-bitrate must be %d to %d", minAudioBitrate, maxAudioBitrate)
 	}
 	c.trustedProxies = slices.Clone(c.trustedProxies)
 	g := &server{serverConfig: c, authentication: authentication{failures: map[string][]time.Time{}, pending: map[string]int{}}, sessions: map[string]*session{}, ttys: map[string]int{}}
+	g.activity = newActivityLog(c.activityFile, g.clock)
+	if c.pdfjsDir != "" {
+		g.pdfjsNames = pdfjsFiles(c.pdfjsDir)
+	}
+	if c.shareOn {
+		g.shares = newShareStore(c.sharesFile, g.clock)
+		if c.shareKeyFile != "" {
+			g.shares.key = loadShareKey(c.shareKeyFile)
+		}
+	}
+	if c.fetchOn {
+		private := c.fetchPrivate
+		g.fetches = &fetchManager{downloadsDir: c.downloadsDir, transfers: &g.transfers, activity: g.activity,
+			client: newFetchClient(fetchPolicy(private))}
+	}
 	if c.audioSink != "" {
-		g.audio = newAudioHub(c.audioSink, c.audioBitrate)
+		var devices *micDevices
+		if c.micCreate {
+			devices = &micDevices{}
+		}
+		g.audio = newAudioHub(c.audioSink, c.micSink, c.audioBitrate, devices)
 	}
 	return g, nil
 }

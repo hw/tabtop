@@ -67,11 +67,23 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 1h;
+        # Upload links: each link sets its own limit, and bodies go
+        # straight through, so the page's progress is real.
+        client_max_body_size 0;
+        proxy_request_buffering off;
     }
 }
 ```
 
-Open `https://example.com/`. Paths stay as in the README (`/downloads/`,
+`client_max_body_size 0` and `proxy_request_buffering off` are for
+[upload links](downloads.md#upload-links), the one thing that sends big
+request bodies over plain HTTP: the upload page sends 8 MB pieces, and
+`curl -T` a whole file. nginx refuses bodies over 1 MB by default, and
+otherwise holds each body on disk before passing it on, so the
+uploader's progress runs ahead of what's saved. Leave them out if you
+don't use upload links.
+
+Open `https://example.com/`. Paths stay as in the README (`/fs/`,
 `/tty/`, `/tunnel`, `/healthz`).
 
 ## nginx: site under a path (`WEB_BASE_PATH`)
@@ -114,12 +126,16 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 1h;
+        # Upload links: each link sets its own limit, and bodies go
+        # straight through, so the page's progress is real.
+        client_max_body_size 0;
+        proxy_request_buffering off;
     }
 }
 ```
 
 Open `https://example.com/tabtop/`. Paths move under the base
-(`/tabtop/downloads/`, `/tabtop/tty/`, and so on). Anything outside
+(`/tabtop/fs/`, `/tabtop/tty/`, and so on). Anything outside
 `/tabtop/` is not found on the container, including `/`.
 
 Browsers treat paths on the same host as one origin: any other page on

@@ -1,0 +1,61 @@
+/* An EPUB book, in its frame (see epub-frame.js): a chapter at a time, set
+   for reading, light and dark as the browser is set, with a bar for the
+   contents, the chapters and the text size. The book's own styles aren't
+   used. */
+:root { color-scheme: light dark; --fg: #1d1d1f; --bg: #fbfaf7; --bar: #fff; --muted: #6e6e73; --line: #d8d6d0;
+        --accent: #0b62c4; --error: #c5221f; --pick: #ecebe6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --fg: #e8e6e1; --bg: #1c1c1e; --bar: #232325; --muted: #a1a1a6;
+        --line: #3a3a3c; --accent: #6aa8ff; --error: #f28b82; --pick: #2c2c2e; } }
+:root[data-theme="dark"] { --fg: #e8e6e1; --bg: #1c1c1e; --bar: #232325; --muted: #a1a1a6;
+        --line: #3a3a3c; --accent: #6aa8ff; --error: #f28b82; --pick: #2c2c2e; }
+html { background: var(--bg); }
+body { margin: 0; color: var(--fg); background: var(--bg); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+#bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: .4rem; padding: .35rem .5rem;
+       background: var(--bar); border-bottom: 1px solid var(--line); }
+#bar button, #ends button { font: inherit; min-width: 2.2rem; padding: .2rem .6rem; color: inherit; background: none;
+       border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
+#bar button:disabled { opacity: .4; cursor: default; }
+#bar .where { flex: 1; min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+       font-variant-numeric: tabular-nums; }
+#contents { position: fixed; z-index: 2; inset: 2.6rem auto 0 0; width: min(22rem, 88vw); overflow: auto; background: var(--bar);
+       border-right: 1px solid var(--line); box-shadow: 2px 0 12px rgba(0, 0, 0, .15); }
+#contents[hidden] { display: none; }
+#contents .book { display: flex; flex-direction: column; gap: .15rem; padding: .9rem 1rem .6rem; border-bottom: 1px solid var(--line); }
+#contents .book span { color: var(--muted); }
+#contents ol { list-style: none; margin: 0; padding: .3rem 0 1rem; }
+#contents li button { display: block; width: 100%; padding: .4rem .75rem; text-align: start; font: inherit; color: inherit;
+       background: none; border: 0; cursor: pointer; }
+#contents li button:hover, #contents li button[aria-current] { background: var(--pick); }
+#contents li button[aria-current] { font-weight: 600; }
+#doc { max-width: 38rem; margin: 0 auto; padding: 1.75rem 1.25rem 1rem; overflow-wrap: break-word;
+       font: 18px/1.65 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Noto Serif", serif; }
+#doc[aria-busy] { opacity: .5; }
+#doc h1, #doc h2, #doc h3, #doc h4 { line-height: 1.25; margin: 1.6em 0 .7em; }
+#doc p { margin: 0 0 .9em; }
+#doc a { color: var(--accent); }
+#doc img { display: block; max-width: 100%; height: auto; margin: 1em auto; }
+#doc img.waiting { min-height: 4rem; background: var(--pick); }
+#doc blockquote { margin: 1em 1.5em; color: var(--muted); }
+#doc table { border-collapse: collapse; max-width: 100%; display: block; overflow: auto; }
+#doc th, #doc td { padding: .3em .6em; border: 1px solid var(--line); }
+#doc pre { overflow: auto; white-space: pre-wrap; }
+#doc figure { margin: 1em 0; text-align: center; }
+#doc figcaption { font-size: 90%; color: var(--muted); }
+/* The previous and next chapters: a bar at the frame's foot, there once
+   the chapter's read to its end (see showEnds), not after its text. */
+#ends { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; justify-content: space-between; gap: 1rem;
+       padding: .5rem .75rem; background: var(--bar); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgba(0, 0, 0, .08);
+       transform: translateY(100%); visibility: hidden; transition: transform .2s ease, visibility 0s linear .2s; }
+#ends.shown { transform: none; visibility: visible; transition: transform .2s ease; }
+#ends button { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ends button:only-child { margin-left: auto; }
+@media (prefers-reduced-motion: reduce) { #ends, #ends.shown { transition: none; } }
+/* Room, under the text, for the bar. */
+#doc { padding-bottom: 4.5rem; }
+.note { padding: .4em .7em; font: 14px/1.4 system-ui, sans-serif; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; }
+.note.error { color: var(--error); }
+
+/* Light or dark as chosen in the preview (see setTheme), else as the
+   system is. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }

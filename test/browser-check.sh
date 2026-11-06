@@ -3,7 +3,7 @@
 # and headless Chrome, checks the site through its pages, then checks what
 # the pages left in ~/Downloads, and what the zips it downloaded hold.
 # Prints the container's log if anything fails. Needs Docker, Node 22 or
-# later, Python 3, and Chrome or Chromium (CHROME names it if it isn't
+# later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
 # Usage: test/browser-check.sh <image>
@@ -32,7 +32,8 @@ trap cleanup EXIT
 
 # The secret is the Base32 of "12345678901234567890", which
 # browser-check.mjs makes its codes from.
-docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user \
+# WEB_FETCH_PRIVATE=1: the check fetches from the container's own address.
+docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"
 for ((i = 0; ; i++)); do
@@ -60,9 +61,11 @@ for f in a.txt sub/b.txt sub/deeper/c.txt; do echo "$f" >"$work/up-folder/$f"; d
 echo dropped >"$work/drop me.txt"
 
 # --no-sandbox: CI runners don't allow Chrome's sandbox, and the browser
-# only visits this container.
+# only visits this container. The fake media device is a microphone that
+# beeps, allowed without asking.
 "$chrome" --headless=new --no-sandbox --no-first-run --remote-debugging-port=0 \
     --user-data-dir="$work/chrome" --autoplay-policy=no-user-gesture-required \
+    --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
     about:blank >"$work/chrome.log" 2>&1 &
 chrome_pid=$!
 for ((i = 0; ; i++)); do

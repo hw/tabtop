@@ -12,12 +12,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"log"
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -119,6 +122,7 @@ func walkStaleUploads(root *os.Root, dirs []string, started time.Time, stop *ato
 var (
 	errUploadName    = errors.New("That name can't be used for a file.")
 	errReplaceFolder = errors.New("A folder has that name, so it can't be replaced.")
+	errReplaceLink   = errors.New("That's a link to another file, so it can't be saved over here. Open the file it leads to, and save that.")
 )
 
 // validUploadName reports whether name can be a file's name in a folder:
@@ -163,7 +167,7 @@ func (g *server) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 // uploadError is what to tell the user about err.
 func uploadError(err error) string {
 	switch {
-	case errors.Is(err, errUploadName), errors.Is(err, errReplaceFolder):
+	case errors.Is(err, errUploadName), errors.Is(err, errReplaceFolder), errors.Is(err, errReplaceLink):
 		return err.Error()
 	case errors.Is(err, fs.ErrNotExist):
 		return "The folder is missing."
@@ -174,6 +178,10 @@ func uploadError(err error) string {
 	}
 	return "The file couldn't be saved."
 }
+
+// uploadSavedHook is called once an upload is saved, before it's recorded
+// as done: for tests, to come between the two.
+var uploadSavedHook = func() {}
 
 // tunnelUpload answers an upload request: it replies {"id":...,
 // "offset":...}, and the page sends the file's contents from offset in
@@ -201,10 +209,44 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	if dir == "" {
 		dir = "."
 	}
+	// Carrying on with one saved already: its answer was lost, so it's
+	// answered again, and nothing more is done. (Before the check that the
+	// file's as it was: it's been changed since, by this upload.)
+	done := func() bool {
+		reply := g.transfers.doneUpload(req.Resume, dir, req.Size)
+		if req.Resume == "" || reply == nil {
+			return false
+		}
+		if r.accept(map[string]any{"id": req.Resume, "offset": req.Size}) {
+			r.finish(reply)
+		}
+		return true
+	}
+	if done() {
+		return
+	}
 	var u *upload
 	offset := int64(0)
-	if req.Resume != "" {
+	if req.Resume != "" && !g.transfers.wasDone(req.Resume) {
+		// The upload carried on with may still be going, perhaps saving
+		// the file now: it's stopped, or let finish, first, then asked
+		// about again, before the file is checked against how it was, which
+		// a save that has just replaced it would fail. (One saved already,
+		// though not as this asks, has nothing to wait for.)
 		u, offset = g.transfers.claimPartial(root, req.Resume, dir, req.Size)
+		if u == nil && done() {
+			return
+		}
+	}
+	if req.IfMtime != "" {
+		if err := unchangedSince(root, path.Join(dir, req.Name), req.IfMtime, req.IfSize); err != nil {
+			if u != nil {
+				// Kept again, as it was: it's not this request's to lose.
+				g.transfers.keepPartial(u, req.Size)
+			}
+			r.fail(err.Error())
+			return
+		}
 	}
 	resuming := u != nil
 	if u == nil {
@@ -271,7 +313,28 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 			return
 		}
 	}
+	// One replacing at a time, so a save from another tab can't come
+	// between this one's check and its replacing the file.
+	unlock := func() {}
+	if req.Replace {
+		unlock = lockReplacing(path.Join(dir, req.Name))
+	}
+	if req.IfMtime != "" {
+		// Again, now it's all here: it may have changed meanwhile.
+		if err := unchangedSince(root, path.Join(dir, req.Name), req.IfMtime, req.IfSize); err != nil {
+			unlock()
+			r.fail(err.Error())
+			return
+		}
+	}
 	name, err := u.finish(req.Name, req.Replace)
+	// Its time and size, read before another save can replace it: the
+	// page sends them back to say which file it has (see unchangedSince).
+	var st fs.FileInfo
+	if err == nil {
+		st, _ = root.stat(path.Join(dir, name))
+	}
+	unlock()
 	saved = true
 	if err != nil {
 		log.Printf("upload of %q: %v", path.Join(dir, req.Name), err)
@@ -284,10 +347,61 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	}
 	log.Printf("upload through the tunnel saved %q (%s%s)", path.Join(dir, name), humanSize(req.Size), replaced)
 	res := map[string]any{"name": name}
+	if st != nil {
+		res["mtime"], res["size"] = fileVersion(st), st.Size()
+	}
 	if u.unsynced {
 		res["warning"] = "saved, but the disk didn't confirm it; it could be lost if the power fails soon"
 	}
+	uploadSavedHook()
+	g.transfers.recordDone(u.id(), dir, req.Size, res)
 	r.finish(res)
+}
+
+// replacing are locks for uploads that replace a file, chosen by the
+// file's path: enough to keep those to one file in turn, few enough to
+// take no more room however many files are saved.
+var replacing [64]sync.Mutex
+
+// lockReplacing locks replacing the file at p (in ~/Downloads), and
+// returns the function that unlocks it.
+func lockReplacing(p string) func() {
+	h := fnv.New32a()
+	h.Write([]byte(path.Clean(p)))
+	mu := &replacing[h.Sum32()%uint32(len(replacing))]
+	mu.Lock()
+	return mu.Unlock
+}
+
+// fileVersion says which version of a file st is, as text, for a page to
+// send back to have something done only to the file as it read it (see
+// unchangedSince): when it was last changed, in Unix nanoseconds, and its
+// inode. The time alone isn't enough: the kernel stamps it from a clock
+// that moves only every few milliseconds, so a file replaced within one of
+// those, by one of the same size, would seem the same; a file replaced is
+// a new inode. (As text: a number that big loses digits as a JavaScript
+// number.)
+func fileVersion(st fs.FileInfo) string {
+	v := strconv.FormatInt(st.ModTime().UnixNano(), 10)
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+		v += "-" + strconv.FormatUint(sys.Ino, 10)
+	}
+	return v
+}
+
+var errChangedSince = errors.New("It's been changed since it was opened (by someone or something else). Reload it, or save your text as another file.")
+
+// unchangedSince reports, with an error to show, whether the file at p is
+// still the one the page read: as long, and last changed at mtime.
+func unchangedSince(store *downloadStore, p, mtime string, size int64) error {
+	st, err := store.stat(p)
+	if err != nil {
+		return errors.New("It's been deleted or moved since it was opened.")
+	}
+	if !st.Mode().IsRegular() || fileVersion(st) != mtime || st.Size() != size {
+		return errChangedSince
+	}
+	return nil
 }
 
 // diskSpace returns the bytes free for the gateway's files on the file

@@ -65,7 +65,35 @@ turns sound back on after a reconnect.
   separate login.
 - **Bandwidth:** 64 kbit/s per listener by default, even during silence;
   see [`WEB_AUDIO_BITRATE`](environment.md#web_audio_bitrate).
-- **Output only:** the desktop has no microphone.
+
+### Microphone
+
+Beside the speaker is a microphone button, which sends your device's
+microphone to the desktop, where applications see it as an ordinary
+microphone (the default one), for calls and recordings.
+
+- **Off until you press it,** every time the page is loaded, even if the
+  browser remembers that the site may use the microphone; it stays on
+  across reconnects while the page is open. Pressing it again releases the
+  microphone at once. The browser asks for permission the first time.
+- **How it works:** the browser records the microphone with its echo
+  cancellation, noise suppression and level control, encodes it as Opus
+  (about 32 kbit/s, with WebCodecs) and sends it through the
+  [encrypted tunnel](encryption.md). The gateway decodes it and plays it
+  into a PipeWire sink with no sound card behind it, `tabtop_mic` ("TabTop
+  Mic (feed)"), whose monitor is offered as the source `tabtop_mic_in`
+  ("TabTop Mic"), the desktop's default. It keeps at most 0.2 s waiting, so
+  it doesn't fall behind. The desktop's own sound plays into the sink
+  `tabtop` ("TabTop Audio").
+- **Login:** as for sound, only for a session with the desktop open from
+  the same IP address; it stops when the desktop connection does.
+- **HTTPS only,** like sound, and the browser needs WebCodecs' audio
+  encoder: over plain HTTP the button says "The microphone needs HTTPS".
+- **Turning it off:** [`WEB_MIC=0`](environment.md#web_mic) takes the button
+  away. There's no microphone with `WEB_AUDIO=0`. With the host's sound
+  ([`WEB_AUDIO_SERVER`](environment.md#web_audio_server-and-web_audio_sink)),
+  and in `tabtop-lite`, the microphone is "TabTop Mic" on the host instead:
+  see [Host microphone](lite.md#host-microphone).
 
 At startup, PipeWire logs a few errors and notices about realtime scheduling,
 D-Bus, Bluetooth and cameras, which a container doesn't have. They're

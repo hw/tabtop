@@ -15,8 +15,9 @@
 // minutes before the login runs out, a banner offers to log in again (see
 // expiry.js).
 
+import { glyphs, iconDataURL } from "./glyphs.js";
 import { TunnelSocket } from "./tunnel.js";
-import { iconSVG, logOut, nameTab, openPage, terminalOn } from "./nav.js";
+import { logOut, nameTab, openPage, terminalOn } from "./nav.js";
 import { dropUploads } from "./drop.js";
 import { call, folderInfo, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
 import { fetchFile, humanBytes } from "./download.js";
@@ -28,7 +29,7 @@ nameTab("desktop");
 warnExpiry();
 
 // White, as noVNC's own icons are.
-const icon = (id) => "data:image/svg+xml," + encodeURIComponent(iconSVG(id, "#fff"));
+const icon = (id) => iconDataURL(id);
 
 const buttons = [
     ["terminal", "Terminal (opens in its own tab)", icon("terminal"), () => openPage("terminal")],
@@ -82,7 +83,7 @@ function notice(name, bytes) {
             fetchFile(name);
         }),
         button("Files", "", () => openPage("files", "#/")),  // where it is, not the folder last shown
-        button("✕", "close", () => box.remove()));
+        button(glyphs.close, "close", () => box.remove()));
     box.lastChild.title = box.lastChild.ariaLabel = "Dismiss";
     notices.prepend(box);
     while (notices.children.length > MAX_NOTICES) {

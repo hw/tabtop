@@ -4,7 +4,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>Terminal</title>
 <style>
-@font-face { font-family: "Powerline Symbols"; src: url("PowerlineSymbols.otf") format("opentype"); }
+/* The terminal's own font (see tty.js), served with the page. */
+@font-face { font-family: "TabTop JetBrains Mono"; font-weight: 400; src: url("JetBrainsMonoNerdFont-Regular.woff2") format("woff2"); }
+@font-face { font-family: "TabTop JetBrains Mono"; font-weight: 700; src: url("JetBrainsMonoNerdFont-Bold.woff2") format("woff2"); }
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 #terminal { position: absolute; inset: 34px 4px 4px; }
 .tabtop-nav { position: absolute; top: 0; left: 0; right: 0; height: 30px; box-sizing: border-box; display: flex; align-items: center;
@@ -36,7 +38,23 @@ html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 .tabtop-nav button.search, .tabtop-nav button.notify, .tabtop-nav button.logout { display: inline-flex; align-items: center;
     justify-content: center; padding: 1px 6px; }
 .tabtop-nav button.search svg, .tabtop-nav button.notify svg, .tabtop-nav button.logout svg { display: block; width: 18px; height: 18px; }
-.tabtop-nav button.notify + button { margin-left: 0; }
+.tabtop-nav button.notify + button, .tabtop-nav button.font + button { margin-left: 0; }
+.tabtop-nav button.font { min-width: 32px; padding: 1px 6px; font-weight: 600; }
+.tabtop-nav button.font[aria-expanded=true] { color: #e8e8ea; background: #3a3a3c; }
+/* The font menu, below the bar at the right. */
+#tty_font_menu { position: absolute; top: 34px; right: 8px; z-index: 10; width: min(20rem, calc(100% - 16px)); box-sizing: border-box;
+    display: grid; gap: 6px; padding: 10px 12px; font: 13px system-ui, sans-serif; color: #e8e8ea; background: #1c1c1e;
+    border: 1px solid #3a3a3c; border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
+#tty_font_menu[hidden] { display: none; }
+#tty_font_menu select, #tty_font_menu input, #tty_font_menu button { font: inherit; color: inherit; background: #2c2c2e;
+    border: 1px solid #3a3a3c; border-radius: 4px; padding: 3px 6px; }
+#tty_font_menu input[hidden] { display: none; }
+#tty_font_menu .size { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+#tty_font_menu .size span { margin-right: auto; }
+#tty_font_menu .size button { min-width: 30px; cursor: pointer; }
+#tty_font_menu output { min-width: 3.5em; text-align: center; font-variant-numeric: tabular-nums; }
+#tty_font_menu .note { margin: 2px 0 0; color: #a8a8ad; font-size: 12px; }
+#tty_font_menu .note[hidden] { display: none; }
 .tabtop-nav button.notify[aria-pressed=false] { opacity: .6; }
 #tty_search.open .step { display: inline-block; min-width: 24px; padding: 1px 4px; }
 @media (prefers-reduced-motion: reduce) { #tty_search input { transition: none; } }
@@ -50,9 +68,10 @@ body.touch-keys #terminal { bottom: 48px; }
     padding: 6px 10px; font: 13px system-ui, sans-serif; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c;
     border-radius: 6px; overflow-wrap: anywhere; z-index: 5; }
 body.touch-keys #tty_copied { bottom: 56px; }
-button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
 @media (max-width: 30rem) {
     #terminal { top: 76px; }
+    #tty_font_menu { top: 76px; }
     .tabtop-nav { height: 72px; flex-wrap: wrap; align-content: center; gap: 4px 12px;
         padding: max(4px, env(safe-area-inset-top)) 8px 4px; }
     .tabtop-nav .page { min-width: 34px; min-height: 34px; box-sizing: border-box; }
@@ -64,6 +83,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 }
 @media (pointer: coarse) {
     .tabtop-nav button, .tabtop-nav .page, #tty_search button { min-height: 40px; min-width: 40px; }
+    #tty_font_menu select, #tty_font_menu input, #tty_font_menu button { min-height: 40px; }
 }
 </style>
 <div id="terminal"></div>

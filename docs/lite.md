@@ -277,9 +277,8 @@ The gateway then records the monitor of `WEB_AUDIO_SINK`, by default
 whichever sink is the host's default when a browser starts listening, and
 streams it as the full image streams its own; see
 [Audio](full-image.md#audio). Programs run in the terminal play on the
-host too. It's the host's playback only: there's no microphone. The full
-image can use the host's sound the same way, and then doesn't start its
-own PipeWire.
+host too. The full image can use the host's sound the same way, and then
+doesn't start its own PipeWire.
 
 - Mount the folder, not the socket itself: the sound server makes a new
   socket each time it starts, which a mount of the old one wouldn't see.
@@ -295,6 +294,30 @@ own PipeWire.
 
 If the server doesn't answer at startup, the log says so and the container
 starts anyway; the [doctor report](health-checks.md) shows why audio fails.
+
+### Host microphone
+
+With host audio, the browser's microphone comes out on the host as an input
+named **TabTop Mic**, for the host's applications, such as a video call,
+to record from; the desktop page has the microphone button as in the full
+image (see [Microphone](full-image.md#microphone)). It needs nothing on the
+host beyond what host audio does.
+
+- **Pick it in the application.** It isn't made the host's default input,
+  so the host's own microphone stays as it was for everything else. Its
+  feed shows as an output named "TabTop Mic (feed)", which nothing should
+  play into.
+- **While the container runs:** the gateway adds TabTop Mic (a null sink
+  and a source from its monitor, `tabtop_mic` and `tabtop_mic_in`) when it
+  starts, or when a browser first turns the microphone on if the sound
+  server didn't answer then, and removes it when the container stops.
+- **If the container is killed** rather than stopped, TabTop Mic stays on
+  the host until the container next starts and stops, or until it's
+  removed by hand (`pactl unload-module` with the indices that
+  `pactl list short modules | grep tabtop_mic` shows), or the sound server
+  restarts.
+- **Turning it off:** [`WEB_MIC=0`](environment.md#web_mic), and nothing is
+  added to the host.
 
 ## An SSH terminal
 

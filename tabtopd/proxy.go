@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -100,6 +101,38 @@ func (g *server) traceClientIP(r *http.Request) (string, []hop) {
 		afterCloudflare = inCloudflare(addr)
 	}
 	return client.String(), trace
+}
+
+// ipWarning says what's wrong, if r's client IP looks like a proxy's rather
+// than the visitor's, else "": when a proxy says who it's passing on (in
+// X-Forwarded-For, or Cloudflare's Cf-Ray), but isn't trusted, so the
+// client is taken as the proxy itself; or when the client is taken as one
+// of Cloudflare's addresses. Then failed logins from everyone count against
+// one address, and Sessions and Activity shows the proxy's for every
+// login. The rest is what /doctor would advise. A visitor connecting
+// directly, with no such headers, is never warned about, whatever its
+// address.
+func (g *server) ipWarning(r *http.Request) string {
+	client, trace := g.traceClientIP(r)
+	a, err := netip.ParseAddr(client)
+	if err != nil {
+		return ""
+	}
+	cloudflare := inCloudflare(a.Unmap())
+	proxied := r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Cf-Ray") != ""
+	if !cloudflare && !(proxied && !trace[0].Trusted) {
+		return ""
+	}
+	what := "a proxy's"
+	if cloudflare {
+		what = "one of Cloudflare's"
+	}
+	msg := fmt.Sprintf("The server sees this browser as %s, which looks like %s address rather than yours: "+
+		"failed logins from everyone count against it, and the addresses on this page are the proxy's.", client, what)
+	if d, _ := g.proxyReport(r)["diagnosis"].([]string); len(d) > 0 {
+		msg += " " + d[0]
+	}
+	return msg
 }
 
 // secure reports whether the browser reached the site over HTTPS: to
@@ -208,4 +241,12 @@ func parsePrefixes(s string) ([]netip.Prefix, error) {
 
 func escapePath(p string) string {
 	return (&url.URL{Path: p}).EscapedPath()
+}
+
+// ipWarningOf is ipWarning for the request that opened t, if it has one.
+func (g *server) ipWarningOf(t *tunnel) string {
+	if t.req == nil {
+		return ""
+	}
+	return g.ipWarning(t.req)
 }

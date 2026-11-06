@@ -11,11 +11,22 @@ if (typeof WebSocket === "undefined") {
     process.exit(3);
 }
 
-const { Tunnel, login, elligator2, cryptoBackend } = await import(new URL("./tunnel.js", import.meta.url));
-const [url, credential, vectors, backend, refusing] = process.argv.slice(2);
+const { Tunnel, login, elligator2, cpaceGenerator, cpaceISK, cryptoBackend } = await import(new URL("./tunnel.js", import.meta.url));
+const [url, credential, vectors, backend, refusing, cpaceVectors] = process.argv.slice(2);
 const crypto_ = await cryptoBackend({ useNoble: backend === "noble" });
 
 const ell = JSON.parse(vectors).map((v) => elligator2(BigInt("0x" + v.in)).toString(16));
+
+// The draft's CPace vectors: the generator, and the ISK from the given K and
+// shares (X25519 itself is the backend's).
+const unhex = (s) => Uint8Array.from(s.match(/../g) ?? [], (b) => parseInt(b, 16));
+const tohex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const cv = JSON.parse(cpaceVectors);
+const cpace = {
+    generator: tohex(await cpaceGenerator(crypto_, cv.prs, unhex(cv.sid), cv.ci)),
+    isk: tohex(await cpaceISK(crypto_, unhex(cv.sid), unhex(cv.k), unhex(cv.ya), unhex(cv.yb),
+        new TextEncoder().encode(cv.ada), new TextEncoder().encode(cv.adb))),
+};
 
 const refused = [];
 for (const attempt of [() => login(credential, refusing), () => Tunnel.open({ type: "list", path: "" }, { id: "x", secret: "" }, refusing)]) {
@@ -43,7 +54,8 @@ console.log(JSON.stringify({
     backend: crypto_.name,
     refused,
     elligator: ell,
+    cpace,
     session: session.id,
     entries: list.reply.entries,
-    fileSHA: Array.from(sum, (b) => b.toString(16).padStart(2, "0")).join(""),
+    fileSHA: tohex(sum),
 }));

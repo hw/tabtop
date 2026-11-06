@@ -1,7 +1,7 @@
 // Command tabtopd is the container's only public web endpoint.
 //
 // It serves the noVNC client, the files page for the desktop user's
-// ~/Downloads at /downloads/, and a browser terminal at /tty/ (tty.go),
+// ~/Downloads at /fs/, and a browser terminal at /tty/ (tty.go),
 // and streams the desktop's audio (audio.go). Everything private goes
 // through one encrypted tunnel between the page's JavaScript and tabtopd
 // (tunnel.go, e2e.go), so a proxy that terminates TLS on the way sees
@@ -20,20 +20,24 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 const (
-	downloadsPrefix = "/downloads/"
-	maxFailures     = 5 // failed logins per client address (see limitKey) per failureWindow
-	failureWindow   = 5 * time.Minute
+	filesPrefix   = "/fs/"
+	maxFailures   = 5 // failed logins per client address (see limitKey) per failureWindow
+	failureWindow = 5 * time.Minute
 	// Failed logins per failureWindow, from every address together, past
 	// which logins are checked at most one per siteThrottle (see loginTurn).
 	maxSiteFailures = 30
@@ -65,7 +69,15 @@ type server struct {
 	audio           *audioHub
 	pingInterval    time.Duration // test override; zero uses the protocol default
 	noble, ttyFiles assetSet
+	highlight       assetSet
+	preview         assetSet
+	pdfjs           assetSet
+	pdfjsNames      []string // pdf.js's files, in pdfjsDir (see pdfjsFiles)
 	handshakes      handshakes
+	drain           tunnelDrain
+	shares          *shareStore   // nil when share links are off
+	fetches         *fetchManager // nil when fetching from URLs is off
+	activity        *activityLog
 
 	mu       sync.Mutex
 	sessions map[string]*session // session id -> session
@@ -80,6 +92,12 @@ type server struct {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == markdownChildArg {
+		os.Exit(renderMarkdownChild())
+	}
+	if len(os.Args) >= 2 && os.Args[1] == epubChildArg {
+		os.Exit(renderEpubChild(os.Args[2:]))
+	}
 	c := defaultServerConfig()
 	listen := flag.String("listen", ":6080", "address to serve on")
 	basePath := flag.String("base-path", c.base, "URL path the site is served under, e.g. /tabtop/")
@@ -92,7 +110,7 @@ func main() {
 	flag.StringVar(&c.usersFile, "users-file", c.usersFile, "pam_oath users file holding the TOTP key")
 	flag.StringVar(&c.vncPasswordFile, "vnc-password-file", c.vncPasswordFile,
 		"file holding the password to give the VNC server, if it asks for one; empty or missing for noVNC to ask")
-	flag.StringVar(&c.downloadsDir, "downloads-dir", c.downloadsDir, "directory served at "+downloadsPrefix)
+	flag.StringVar(&c.downloadsDir, "downloads-dir", c.downloadsDir, "directory served at "+filesPrefix)
 	flag.IntVar(&c.trustNProxies, "trust-nproxies", c.trustNProxies,
 		"how many proxies in front are trusted whatever their address, counting the one that connects")
 	trusted := flag.String("trusted-proxies", "",
@@ -102,8 +120,20 @@ func main() {
 		"how long a login lasts with nothing open, in whole minutes, e.g. 1h; 0 for no limit")
 	flag.StringVar(&c.termDir, "term-dir", c.termDir, "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
 	flag.StringVar(&c.ttyCommand, "tty-command", c.ttyCommand, "shell command each terminal runs instead of tmux, e.g. ssh -t host; empty for tmux")
+	flag.BoolVar(&c.micCreate, "mic-create", c.micCreate,
+		"make the microphone's devices (TabTop Mic) on the audio server, not as its default, and remove them on stopping; for a host's sound server")
+	flag.StringVar(&c.micSink, "mic-sink", c.micSink, "PulseAudio sink browsers' microphones play into, for the desktop to record from its monitor; empty turns the microphone off")
 	flag.StringVar(&c.audioSink, "audio-sink", c.audioSink, "PulseAudio sink whose sound is streamed to browsers; empty turns audio off")
+	flag.BoolVar(&c.shareOn, "share", c.shareOn, "let logged-in pages make share links: plain URLs for files and folders, outside the encrypted tunnel")
+	flag.StringVar(&c.sharesFile, "shares-file", c.sharesFile, "where share links are kept, to last across restarts; empty keeps them in memory")
+	flag.StringVar(&c.shareKeyFile, "share-key-file", c.shareKeyFile, "the key share links' tokens are kept sealed with, to show them again; empty keeps one in memory")
+	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
+	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
+	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.doctorOn, "doctor", c.doctorOn, "serve a troubleshooting report at doctor, without a login")
+	flag.StringVar(&c.pdfjsDir, "pdfjs-dir", c.pdfjsDir, "pdf.js, for PDF previews; empty for none, and PDFs download instead")
+	flag.StringVar(&c.previewDir, "preview-dir", c.previewDir, "KaTeX and Mermaid, for math and diagrams in Markdown previews; empty for none")
+	flag.StringVar(&c.highlightDir, "highlight-dir", c.highlightDir, "highlight.js files for the colours of text previews; empty for none")
 	flag.StringVar(&c.nobleDir, "noble-dir", c.nobleDir, "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
 	checkAddr := flag.String("check-vnc-addr", "", "only check an address as -vnc-addr takes it, and exit")
 	flag.IntVar(&c.audioBitrate, "audio-bitrate", c.audioBitrate, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
@@ -138,11 +168,29 @@ func main() {
 	if c.trustNProxies > 0 {
 		log.Printf("believing X-Forwarded-For from the %d nearest proxies, whatever their address", c.trustNProxies)
 	}
+	if g.fetches != nil && c.fetchPrivate {
+		log.Print("fetching from URLs on, private networks included")
+	}
+	if g.shares != nil {
+		log.Printf("share links on: %d kept in %s", len(g.shares.list("")), c.sharesFile)
+	}
 	if c.doctorOn {
 		log.Printf("serving the troubleshooting report at %s, without a login", g.abs("/doctor"))
 	}
 	if c.audioSink != "" {
 		log.Printf("streaming audio from sink %s at %d kbit/s", c.audioSink, c.audioBitrate)
+		if g.micSink != "" {
+			log.Printf("playing browsers' microphones into sink %s", g.micSink)
+		}
+		if d := g.audio.devices; d != nil {
+			// Now, so it can be picked in applications before anyone
+			// turns it on; if the server isn't answering yet, then.
+			go func() {
+				if err := d.ensure(); err != nil {
+					log.Printf("%s will be made when a browser turns it on: %v", micName, err)
+				}
+			}()
+		}
 	}
 
 	srv := &http.Server{
@@ -159,11 +207,46 @@ func main() {
 	if tag, _ := g.noble.load(g.nobleAssets()); tag == "" {
 		log.Printf("warning: can't read the noble files in %s; see /doctor", c.nobleDir)
 	}
+	if g.previewDir != "" {
+		// Only checked: they're 7 MB, read when a Markdown preview first
+		// asks for them.
+		for _, name := range previewFiles {
+			if _, err := os.Stat(filepath.Join(c.previewDir, name)); err != nil {
+				log.Printf("warning: can't read KaTeX and Mermaid in %s; Markdown previews show math and diagrams as their source", c.previewDir)
+				break
+			}
+		}
+	}
+	if g.highlightDir != "" {
+		if tag, _ := g.highlight.load(g.highlightAssets()); tag == "" {
+			log.Printf("warning: can't read the highlight.js files in %s; text previews have no colours", c.highlightDir)
+		}
+	}
 	if g.termDir != "" {
 		if tag, _ := g.ttyFiles.load(g.termAssets()); tag == "" {
 			log.Printf("warning: can't read the terminal's files in %s; see /doctor", g.termDir)
 		}
 	}
-	log.Printf("listening on %s under %s; %s serves %s", *listen, g.base, g.abs(downloadsPrefix), g.downloadsDir)
-	log.Fatal(srv.ListenAndServe())
+	log.Printf("listening on %s under %s; %s serves %s", *listen, g.base, g.abs(filesPrefix), g.downloadsDir)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	served := make(chan error, 1)
+	go func() { served <- srv.ListenAndServe() }()
+	select {
+	case err := <-served:
+		log.Fatal(err)
+	case <-ctx.Done():
+	}
+	stop() // a second signal kills at once
+	log.Print("stopping: closing connections")
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	// Shutdown stops listening and waits for requests going on; the
+	// tunnels, which it can't see, the gateway closes itself.
+	var wg sync.WaitGroup
+	wg.Go(func() { srv.Shutdown(ctx) })
+	if err := g.shutdown(ctx); err != nil {
+		log.Printf("stopping: some connections didn't close in %s", shutdownGrace)
+	}
+	wg.Wait()
+	log.Print("stopped")
 }

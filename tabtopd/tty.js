@@ -1,8 +1,8 @@
 // Browser terminal, served by tabtopd (see tty.go), drawn by ghostty-web.
 // Terminal bytes travel as data messages through the encrypted tunnel;
 // resizes go up as JSON text messages. The tunnel shows its login form
-// when there's no session. Ctrl + and Ctrl − change the font size, which
-// is kept in this browser; on touch screens, a strip of keys phones'
+// when there's no session. Ctrl + and Ctrl − change the font size, and the
+// "Aa" menu the font and size, kept in this browser; on touch screens, a strip of keys phones'
 // keyboards lack (Esc, Tab, Ctrl, Alt, the arrows...) sits below the
 // terminal. If the connection is lost, the page tries again by itself (see
 // reconnect.js), and tmux, which the server runs the shell in, picks up
@@ -15,10 +15,11 @@
 // program's notification, while the tab isn't in front marks its title,
 // and shows a browser notification if they're turned on (see Notices).
 
+import { glyphs, iconSVG } from "../tabtop/glyphs.js";
 import { Osc } from "../tabtop/osc.js";
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
-import { iconSVG, nameTab, navBar } from "../tabtop/nav.js";
+import { nameTab, navBar } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
@@ -154,18 +155,45 @@ try {
 } catch {
     // The default, then.
 }
-// Powerline Symbols only has the status-line arrows, so the browser draws
-// those with it and everything else with DejaVu or the default monospace.
-// Load it before the terminal measures its font and draws, so the arrows
-// don't start out as boxes.
-await document.fonts.load(`${fontSize}px "Powerline Symbols"`).catch(() => {});
+// The font: TabTop's own, JetBrains Mono Nerd Font, served with the page
+// (see tty.html), or one on this computer picked from the font menu (see
+// Fonts), kept in this browser. TabTop's comes after a picked one, so the
+// Nerd Font icons prompts and tools draw (and tmux's status-line arrows)
+// show whatever the font.
+const OWN_FONT = "TabTop JetBrains Mono";
+const FAMILY_KEY = "tabtop-tty-font-family";
+let fontName = "";  // "" for TabTop's own
+try {
+    fontName = cleanFontName(localStorage.getItem(FAMILY_KEY) ?? "");
+} catch {
+    // TabTop's, then.
+}
+
+// cleanFontName keeps a font's name to what can go in quotes in CSS.
+function cleanFontName(name) {
+    return String(name).replace(/["'\\\x00-\x1f\x7f;{}]/g, "").trim().slice(0, 64);
+}
+
+function fontFamily(name) {
+    return name ? `"${name}", "${OWN_FONT}", monospace` : `"${OWN_FONT}", monospace`;
+}
+
+// loadFonts loads the faces the terminal draws with before it measures
+// them: drawn on a canvas, text in a font not loaded yet would stay in
+// the fallback until something redraws it. Bold too, for the same reason.
+function loadFonts(name) {
+    const faces = [OWN_FONT, ...(name ? [name] : [])].flatMap((f) => [`${fontSize}px "${f}"`, `bold ${fontSize}px "${f}"`]);
+    return Promise.all(faces.map((f) => document.fonts.load(f).catch(() => {})));
+}
+
+await loadFonts(fontName);
 await init();
 
 const term = new Terminal({
     cursorBlink: true,
     // Black like the page around it (ghostty-web's default is dark grey).
     theme: { background: "#000000" },
-    fontFamily: '"DejaVu Sans Mono", "Powerline Symbols", monospace',
+    fontFamily: fontFamily(fontName),
     fontSize,
 });
 const fit = new FitAddon();
@@ -174,6 +202,8 @@ term.open(document.getElementById("terminal"));
 fit.fit();
 fit.observeResize();
 term.focus();
+
+const fontChanged = [];  // called after the font or its size changes
 
 function setFontSize(n) {
     fontSize = Math.min(Math.max(n, 8), 32);
@@ -184,6 +214,21 @@ function setFontSize(n) {
     } catch {
         // Only for this visit, then.
     }
+    fontChanged.forEach((f) => f());
+}
+
+// setFont draws the terminal in the font named, "" for TabTop's own.
+async function setFont(name) {
+    fontName = cleanFontName(name);
+    await loadFonts(fontName);
+    term.options.fontFamily = fontFamily(fontName);
+    fit.fit();
+    try {
+        fontName ? localStorage.setItem(FAMILY_KEY, fontName) : localStorage.removeItem(FAMILY_KEY);
+    } catch {
+        // Only for this visit, then.
+    }
+    fontChanged.forEach((f) => f());
 }
 
 // copied says, for a few seconds, that a program in the terminal copied
@@ -307,9 +352,9 @@ function touchKeys() {
     const arrow = (c) => () => (term.getMode(1) ? "\x1bO" : "\x1b[") + c;
     const keys = [
         ["Esc", "\x1b"], ["Tab", "\t"], ["Ctrl", "ctrl"], ["Alt", "alt"],
-        ["←", arrow("D")], ["↑", arrow("A")], ["↓", arrow("B")], ["→", arrow("C")],
+        [glyphs.left, arrow("D")], [glyphs.up, arrow("A")], [glyphs.down, arrow("B")], [glyphs.right, arrow("C")],
         ["|", "|"], ["~", "~"], ["/", "/"], ["-", "-"],
-        ["A−", () => setFontSize(fontSize - 1)], ["A+", () => setFontSize(fontSize + 1)],
+        [glyphs.fontSmaller, () => setFontSize(fontSize - 1)], [glyphs.fontLarger, () => setFontSize(fontSize + 1)],
         ["Find", () => search.open()],
     ];
     const strip = document.createElement("div");
@@ -406,8 +451,8 @@ const search = (() => {
     const bar = document.createElement("span");
     bar.id = "tty_search";
     const step = (text, label, onClick) => Object.assign(button(text, label, onClick), { className: "step" });
-    bar.append(input, step("↑", "Older (Enter)", () => go(true)), step("↓", "Newer (Shift+Enter)", () => go(false)),
-        step("✕", "Close (Esc)", close));
+    bar.append(input, step(glyphs.up, "Older (Enter)", () => go(true)), step(glyphs.down, "Newer (Shift+Enter)", () => go(false)),
+        step(glyphs.close, "Close (Esc)", close));
     input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             e.preventDefault();
@@ -477,7 +522,7 @@ const notices = (() => {
     }
     const away = () => document.visibilityState !== "visible" || !document.hasFocus();
     const draw = () => {
-        document.title = marked ? `🔔 ${base}` : base;
+        document.title = marked ? `${glyphs.notification} ${base}` : base;
     };
     const back = () => {
         if (marked && !away()) {
@@ -547,6 +592,139 @@ const notices = (() => {
             draw();
         },
     };
+})();
+
+// Fonts ------------------------------------------------------------------
+
+// The font menu, "Aa" in the bar at the top: TabTop's own font, or one of
+// the usual monospace fonts this computer has (or any other, by name), and
+// the size, as Ctrl + and Ctrl − change it.
+(() => {
+    const CANDIDATES = ["DejaVu Sans Mono", "Menlo", "Monaco", "SF Mono", "Consolas", "Cascadia Mono", "Cascadia Code",
+        "JetBrains Mono", "Fira Code", "Fira Mono", "Source Code Pro", "Hack", "IBM Plex Mono", "Ubuntu Mono",
+        "Roboto Mono", "Noto Sans Mono", "Liberation Mono", "Inconsolata", "Courier New"];
+    const OTHER = "\u0000other";
+
+    // installed tells whether this computer has a font, the only way a page
+    // can: text in it measures differently from text in the fallbacks.
+    const canvas = document.createElement("canvas").getContext("2d");
+    const width = (font) => {
+        canvas.font = font;
+        return canvas.measureText("mmmmmmmmmmlli1WQ@#").width;
+    };
+    const installed = (name) => ["monospace", "serif", "sans-serif"].some((f) => width(`72px "${name}", ${f}`) !== width(`72px ${f}`));
+
+    const el = (tag, props = {}, ...children) => {
+        const e = Object.assign(document.createElement(tag), props);
+        e.append(...children);
+        return e;
+    };
+    const button = el("button", { type: "button", className: "font", textContent: glyphs.font, title: "Font and size" });
+    button.setAttribute("aria-haspopup", "true");
+    button.setAttribute("aria-expanded", "false");
+    const select = el("select", { id: "tty_font_family" });
+    const other = el("input", { type: "text", placeholder: "A font on this computer", maxLength: 64, hidden: true });
+    other.setAttribute("aria-label", "Font name");
+    const size = el("output", { id: "tty_font_size" });
+    const sizeButton = (text, label, onClick) => {
+        const b = el("button", { type: "button", textContent: text, title: label });
+        b.setAttribute("aria-label", label);
+        b.addEventListener("click", onClick);
+        return b;
+    };
+    const missing = el("p", { className: "note", hidden: true });
+    const menu = el("div", { id: "tty_font_menu", hidden: true },
+        el("label", { htmlFor: "tty_font_family", textContent: "Font" }), select, other, missing,
+        el("div", { className: "size" },
+            el("span", { textContent: "Size" }),
+            sizeButton(glyphs.minus, "Smaller (Ctrl −)", () => setFontSize(fontSize - 1)), size,
+            sizeButton(glyphs.plus, "Bigger (Ctrl +)", () => setFontSize(fontSize + 1)),
+            sizeButton("Reset", "Back to the usual size (Ctrl 0)", () => setFontSize(defaultFontSize))),
+        el("p", { className: "note", textContent: "Icons and symbols come from JetBrains Mono Nerd Font whatever the font." }));
+    menu.setAttribute("role", "dialog");
+    menu.setAttribute("aria-label", "Font and size");
+
+    // The fonts to offer, looked for once the menu first opens.
+    let filled = false;
+    const fill = () => {
+        const found = CANDIDATES.filter(installed);
+        if (fontName && !found.includes(fontName)) {
+            found.unshift(fontName);
+        }
+        select.replaceChildren(
+            el("option", { value: "", textContent: "JetBrains Mono Nerd Font (TabTop's)" }),
+            ...found.map((f) => el("option", { value: f, textContent: f })),
+            el("option", { value: OTHER, textContent: "Another font…" }));
+        filled = true;
+    };
+    const show = () => {
+        size.textContent = `${fontSize} px`;
+        if (filled) {
+            select.value = fontName;
+        }
+        missing.hidden = !fontName || installed(fontName);
+        missing.textContent = `This computer doesn't seem to have ${fontName}, so TabTop's font is used instead.`;
+    };
+    fontChanged.push(show);
+
+    select.addEventListener("change", () => {
+        if (select.value === OTHER) {
+            other.hidden = false;
+            other.value = "";
+            other.focus();
+            return;
+        }
+        other.hidden = true;
+        setFont(select.value);
+    });
+    other.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && cleanFontName(other.value)) {
+            e.preventDefault();
+            const name = cleanFontName(other.value);
+            if (![...select.options].some((o) => o.value === name)) {
+                select.lastElementChild.before(el("option", { value: name, textContent: name }));
+            }
+            other.hidden = true;
+            setFont(name);
+        }
+    });
+
+    const close = (refocus = true) => {
+        menu.hidden = true;
+        other.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        if (refocus) {
+            term.focus();
+        }
+    };
+    button.addEventListener("click", () => {
+        if (!menu.hidden) {
+            close();
+            return;
+        }
+        if (!filled) {
+            fill();
+        }
+        show();
+        menu.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        select.focus();
+    });
+    menu.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            close();
+        }
+    });
+    document.addEventListener("pointerdown", (e) => {
+        if (!menu.hidden && !menu.contains(e.target) && !button.contains(e.target)) {
+            close(false);
+        }
+    });
+
+    document.querySelector(".tabtop-nav > button")?.before(button);
+    document.body.append(menu);
 })();
 
 // Dropped files ----------------------------------------------------------

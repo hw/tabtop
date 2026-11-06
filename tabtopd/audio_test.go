@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 	"testing"
@@ -35,7 +36,7 @@ func (f *fakeRecorder) isRunning() bool {
 
 func newTestHub() (*audioHub, *fakeRecorder) {
 	f := &fakeRecorder{}
-	h := newAudioHub("test", 64)
+	h := newAudioHub("test", "", 64, nil)
 	h.start, h.grace, h.idle = f.start, 20*time.Millisecond, 20*time.Millisecond
 	return h, f
 }
@@ -258,5 +259,14 @@ func TestAudioHubStartFails(t *testing.T) {
 	defer mu.Unlock()
 	if starts != 2 {
 		t.Errorf("%d starts after the retry delay, want 2", starts)
+	}
+}
+
+// TestMicOfferedLine: the gateway turns the microphone off by replacing
+// this line of audio.js as it serves it (see scripts in e2e.go); changed,
+// that would silently do nothing.
+func TestMicOfferedLine(t *testing.T) {
+	if n := bytes.Count(audioJS, []byte("const micOffered = true;")); n != 1 {
+		t.Errorf("audio.js has %d lines saying const micOffered = true;, not 1", n)
 	}
 }

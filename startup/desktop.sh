@@ -13,10 +13,12 @@
 XVNC_PID=""
 AUDIO_PIDS=()
 AUDIO_SINK=""
-# Uses the provisioned user runtime and sets VNC_ADDR, XVNC_PID, AUDIO_PIDS
-# and AUDIO_SINK in the supervising shell (never in a subshell).
+MIC_SINK=""
+MIC_CREATE=0
+# Uses the provisioned user runtime and sets VNC_ADDR, XVNC_PID, AUDIO_PIDS,
+# AUDIO_SINK and MIC_SINK in the supervising shell (never in a subshell).
 start_desktop() {
-    local VNC_GEOMETRY="$1" VNC_DEPTH="$2" WEB_AUDIO="$3" WEB_AUDIO_SERVER="$4"
+    local VNC_GEOMETRY="$1" VNC_DEPTH="$2" WEB_AUDIO="$3" WEB_AUDIO_SERVER="$4" WEB_MIC="$5"
     VNC_SOCKET="$RUNTIME_DIR/vnc.sock"
     VNC_ADDR="unix:$VNC_SOCKET"
     as_user Xvnc ":${DISPLAY_NUM}" \
@@ -60,7 +62,7 @@ start_desktop() {
         for _ in $(seq 50); do
             if (as_user pactl list short sinks 2>/dev/null) | grep -q $'\ttabtop\t' \
                     || (as_user pactl load-module module-null-sink sink_name=tabtop \
-                            sink_properties=device.description=Desktop >/dev/null 2>&1); then
+                            "sink_properties=\"device.description='TabTop Audio'\"" >/dev/null 2>&1); then
                 (as_user pactl set-default-sink tabtop 2>/dev/null) || true
                 if [ "$(as_user pactl get-default-sink 2>/dev/null)" = tabtop ]; then
                     AUDIO_SINK=tabtop
@@ -73,6 +75,24 @@ start_desktop() {
             echo "PipeWire did not come up within 5s; exiting." >&2
             exit 1
         fi
+        # The browser's microphone: the gateway plays it into a second null
+        # sink, whose monitor is offered as an ordinary microphone and made
+        # the default, so applications record it without being told.
+        # Applications still play into tabtop.
+        if [ "$WEB_MIC" = 1 ]; then
+            # The same devices, under the same names, as the gateway makes on
+            # a host's sound server (micModules in tabtopd/mic.go).
+            if (as_user pactl load-module module-null-sink sink_name=tabtop_mic \
+                    "sink_properties=\"device.description='TabTop Mic (feed)'\"" >/dev/null) \
+                && (as_user pactl load-module module-remap-source master=tabtop_mic.monitor \
+                    source_name=tabtop_mic_in "source_properties=\"device.description='TabTop Mic'\"" >/dev/null) \
+                && (as_user pactl set-default-source tabtop_mic_in) \
+                && (as_user pactl set-default-sink tabtop); then
+                MIC_SINK=tabtop_mic
+            else
+                echo "Warning: couldn't set up the browser microphone; it's off." >&2
+            fi
+        fi
     fi
 
     as_user dbus-launch --exit-with-session startxfce4 &
@@ -80,7 +100,7 @@ start_desktop() {
 
 # Host audio is optional even when it cannot be reached at startup.
 configure_host_audio() {
-    local WEB_AUDIO="$1" WEB_AUDIO_SERVER="$2" WEB_AUDIO_SINK="$3"
+    local WEB_AUDIO="$1" WEB_AUDIO_SERVER="$2" WEB_AUDIO_SINK="$3" WEB_MIC="$4"
     # The host's sound, from the PulseAudio socket mounted at WEB_AUDIO_SERVER:
     # the gateway records WEB_AUDIO_SINK's monitor, by default whichever sink is
     # the host's default when a browser starts listening. A server that doesn't
@@ -95,6 +115,12 @@ configure_host_audio() {
             echo "Warning: the host's audio server has no sink named ${AUDIO_SINK}." >&2
         else
             echo "Streaming the host's sound from ${AUDIO_SINK} at ${WEB_AUDIO_SERVER}."
+        fi
+        # The browser's microphone, as "TabTop Mic" on the host's server: the
+        # gateway makes it (not as the default) and removes it on stopping,
+        # or makes it later if the server doesn't answer yet.
+        if [ "$WEB_MIC" = 1 ]; then
+            MIC_CREATE=1
         fi
     fi
 }

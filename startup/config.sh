@@ -14,6 +14,10 @@ WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
 WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
 WEB_AUDIO="${WEB_AUDIO:-1}"
+WEB_MIC="${WEB_MIC:-1}"
+WEB_SHARE="${WEB_SHARE:-1}"
+WEB_FETCH="${WEB_FETCH:-1}"
+WEB_FETCH_PRIVATE="${WEB_FETCH_PRIVATE:-0}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
 WEB_AUDIO_SINK="${WEB_AUDIO_SINK:-}"
@@ -111,6 +115,22 @@ fi
 case "$WEB_AUDIO" in
     0|1) ;;
     *) echo "WEB_AUDIO must be 0 or 1 (got '${WEB_AUDIO}')." >&2; exit 1 ;;
+esac
+case "$WEB_MIC" in
+    0|1) ;;
+    *) echo "WEB_MIC must be 0 or 1 (got '${WEB_MIC}')." >&2; exit 1 ;;
+esac
+case "$WEB_SHARE" in
+    0|1) ;;
+    *) echo "WEB_SHARE must be 0 or 1 (got '${WEB_SHARE}')." >&2; exit 1 ;;
+esac
+case "$WEB_FETCH" in
+    0|1) ;;
+    *) echo "WEB_FETCH must be 0 or 1 (got '${WEB_FETCH}')." >&2; exit 1 ;;
+esac
+case "$WEB_FETCH_PRIVATE" in
+    0|1) ;;
+    *) echo "WEB_FETCH_PRIVATE must be 0 or 1 (got '${WEB_FETCH_PRIVATE}')." >&2; exit 1 ;;
 esac
 if ! [[ "$WEB_AUDIO_BITRATE" =~ ^[0-9]{1,3}$ ]] || [ "$WEB_AUDIO_BITRATE" -lt 32 ] \
         || [ "$WEB_AUDIO_BITRATE" -gt 256 ]; then

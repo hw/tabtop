@@ -3,7 +3,7 @@
 # TigerVNC (Xvnc) provides the X display, listening only on a Unix socket.
 # tabtopd (Go, in tabtopd/) is the one public web endpoint: it serves
 # the noVNC client, bridges its WebSocket to Xvnc, and serves the user's
-# ~/Downloads at /downloads/ behind its own TOTP login. It also streams the
+# ~/Downloads at /fs/ behind its own TOTP login. It also streams the
 # desktop's sound, which Chromium plays into a PipeWire null sink.
 #
 # Build: docker build -t tabtop .
@@ -71,20 +71,32 @@ ARG GHOSTTY_WEB_VERSION=0.4.0
 ARG GHOSTTY_WEB_SHA256=90bf473b6c7f43ab5e52ee98d8295e04fb1c6b07b928e9795489df1e8cb8802e
 ADD --checksum=sha256:${GHOSTTY_WEB_SHA256} \
     https://registry.npmjs.org/ghostty-web/-/ghostty-web-${GHOSTTY_WEB_VERSION}.tgz /ghostty-web.tgz
-# Powerline's symbol font (2 KB, U+E0A0-E0A2 and U+E0B0-E0B3) draws the
-# arrows in tmux status lines; the browser's own monospace font does the rest.
-ARG POWERLINE_VERSION=2.8.4
-ARG POWERLINE_FONT_SHA256=4a2496a009b1649878ce067a7ec2aed9f79656c90136971e1dba00766515f7a1
-ARG POWERLINE_LICENSE_SHA256=46d5355e4734468135d8e4a30d0916292cc4df2b3ec30aa68c866f82497933be
-ADD --checksum=sha256:${POWERLINE_FONT_SHA256} \
-    https://raw.githubusercontent.com/powerline/powerline/${POWERLINE_VERSION}/font/PowerlineSymbols.otf /terminal/PowerlineSymbols.otf
-ADD --checksum=sha256:${POWERLINE_LICENSE_SHA256} \
-    https://raw.githubusercontent.com/powerline/powerline/${POWERLINE_VERSION}/LICENSE /terminal/LICENSE.powerline
-RUN mkdir /src \
+# The terminal's own font, served to browsers: JetBrains Mono Nerd Font,
+# whose icons (Powerline arrows, file types, git and the like) prompts and
+# tools such as starship, lazygit and eza draw with. The "NL Mono" cut: no
+# ligatures, which ghostty-web can't draw anyway, and icons one cell wide.
+# Regular and bold, made WOFF2 (about 1 MB each). From the Nerd
+# Fonts release; bump the version together with the checksum of the
+# .tar.xz the URL points at.
+ARG NERD_FONTS_VERSION=v3.5.1
+ARG NERD_FONT_SHA256=04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf
+ADD --checksum=sha256:${NERD_FONT_SHA256} \
+    https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VERSION}/JetBrainsMono.tar.xz /jetbrains-mono.tar.xz
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends woff2 xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+RUN mkdir /src /font /terminal \
  && tar -xzf /ghostty-web.tgz -C /src --no-same-owner \
  && cp /src/package/dist/ghostty-web.js /src/package/dist/__vite-browser-external-2447137e.js /terminal/ \
  && grep -q '__vite-browser-external-2447137e.js' /terminal/ghostty-web.js \
  && cp /src/package/LICENSE /terminal/LICENSE.ghostty-web \
+ && tar -xJf /jetbrains-mono.tar.xz -C /font --no-same-owner \
+      JetBrainsMonoNLNerdFontMono-Regular.ttf JetBrainsMonoNLNerdFontMono-Bold.ttf OFL.txt \
+ && for w in Regular Bold; do \
+      woff2_compress /font/JetBrainsMonoNLNerdFontMono-$w.ttf \
+      && mv /font/JetBrainsMonoNLNerdFontMono-$w.woff2 /terminal/JetBrainsMonoNerdFont-$w.woff2; \
+    done \
+ && cp /font/OFL.txt /terminal/LICENSE.jetbrains-mono-nerd-font \
  && chmod -R u=rwX,go=rX /terminal
 
 # The noble libraries, for the cryptography the encrypted tunnel does in the
@@ -123,6 +135,67 @@ RUN set -e; mkdir /noble; for p in ciphers curves hashes; do \
  && sed -i "s#from '@noble/hashes/#from '../../hashes/#" /noble/curves/abstract/*.js \
  && ! grep -rnE "^[^*]*from ['\"]@noble/" /noble \
  && chmod -R u=rwX,go=rX /noble
+
+# highlight.js, for the colours of text previews on the files page: its ES
+# module build, with the common languages in it, and a few more the
+# preview colours, and the same as classic scripts, for Markdown previews'
+# code blocks (tabtopd's highlightFiles lists the same files). From npm;
+# bump the version together with its checksum.
+FROM debian:trixie-slim AS highlight
+ARG HIGHLIGHT_VERSION=11.12.0
+ARG HIGHLIGHT_SHA256=b8a006d30f45afe783072569f3d69c5b60c0e7b9ca28cd474e12f2584e2a3bd9
+ADD --checksum=sha256:${HIGHLIGHT_SHA256} \
+    https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-${HIGHLIGHT_VERSION}.tgz /highlight.tgz
+RUN mkdir -p /src /highlight/languages /highlight/classic/languages \
+ && tar -xzf /highlight.tgz -C /src --no-same-owner \
+ && cp /src/package/es/highlight.min.js /highlight/ \
+ && cp /src/package/highlight.min.js /highlight/classic/ \
+ && for l in dockerfile dos latex nginx powershell scala; do \
+      cp /src/package/es/languages/$l.min.js /highlight/languages/; \
+      cp /src/package/languages/$l.min.js /highlight/classic/languages/; \
+    done \
+ && cp /src/package/LICENSE /highlight/LICENSE.highlight.js \
+ && chmod -R u=rwX,go=rX /highlight
+
+# KaTeX and Mermaid, for math and diagrams in Markdown previews on the
+# files page, which run in the preview's sandboxed frame (see md-frame.js
+# in tabtopd): their classic builds, each one self-contained file (tabtopd's
+# previewFiles lists them). KaTeX draws math as MathML, which browsers draw
+# themselves, so its fonts and stylesheet aren't needed. From npm; bump each
+# version together with its checksum.
+FROM debian:trixie-slim AS preview
+ARG KATEX_VERSION=0.19.0
+ARG KATEX_SHA256=d8e49f2fea6eeed7cdae2cf4fd48e2f1d348758aa9e5740715e4533c2c96d1ee
+ARG MERMAID_VERSION=12.2.0
+ARG MERMAID_SHA256=071914164d0f6d53e5c26a10a220230d4ae8d37ed0f2263fbf072266f0af3a0a
+ADD --checksum=sha256:${KATEX_SHA256} https://registry.npmjs.org/katex/-/katex-${KATEX_VERSION}.tgz /katex.tgz
+ADD --checksum=sha256:${MERMAID_SHA256} https://registry.npmjs.org/mermaid/-/mermaid-${MERMAID_VERSION}.tgz /mermaid.tgz
+RUN set -e; mkdir /preview; for p in katex mermaid; do \
+      mkdir -p /src/$p; tar -xzf /$p.tgz -C /src/$p --strip-components=1 --no-same-owner; \
+      cp /src/$p/dist/$p.min.js /src/$p/LICENSE /preview/; mv /preview/LICENSE /preview/LICENSE.$p; \
+    done \
+ && chmod -R u=rwX,go=rX /preview
+
+# pdf.js, for PDF previews on the files page, which run in the preview's
+# sandboxed frame (see pdf-frame.js in tabtopd): its legacy build, which
+# works in browsers a few years old too, its worker, the character maps
+# and standard fonts some PDFs need, its WebAssembly image decoders and
+# colour profiles. Not its scripting sandbox: PDFs' scripts never run.
+# tabtopd serves every file in these folders (see pdfjsFolders). From npm;
+# bump the version together with its checksum.
+FROM debian:trixie-slim AS pdfjs
+ARG PDFJS_VERSION=6.4.299
+ARG PDFJS_SHA256=86269b40170eb41740ea05ad2102d71d33de4f122b34eb2f478be0ea7779c415
+ADD --checksum=sha256:${PDFJS_SHA256} https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-${PDFJS_VERSION}.tgz /pdfjs.tgz
+RUN mkdir -p /src /pdfjs/wasm \
+ && tar -xzf /pdfjs.tgz -C /src --no-same-owner \
+ && cp /src/package/legacy/build/pdf.min.mjs /src/package/legacy/build/pdf.worker.min.mjs /pdfjs/ \
+ && cp -r /src/package/cmaps /src/package/standard_fonts /src/package/iccs /pdfjs/ \
+ && cd /src/package/wasm \
+ && cp openjpeg.wasm jbig2.wasm qcms_bg.wasm openjpeg_nowasm_fallback.js jbig2_nowasm_fallback.js LICENSE_* /pdfjs/wasm/ \
+ && cp /src/package/LICENSE /pdfjs/LICENSE.pdfjs \
+ && ! find /pdfjs -name '*sandbox*' -o -name '*quickjs*' | grep -q . \
+ && chmod -R u=rwX,go=rX /pdfjs
 
 # The Go version matches mise.toml, which pins it for local development.
 # tabtopd encodes audio with libopus and checks logins with liboath, through
@@ -239,6 +312,9 @@ FROM desktop-${DESKTOP}
 COPY --from=novnc /novnc /opt/novnc
 COPY --from=terminal /terminal /opt/terminal
 COPY --from=noble /noble /opt/noble
+COPY --from=highlight /highlight /opt/highlight
+COPY --from=preview /preview /opt/preview
+COPY --from=pdfjs /pdfjs /opt/pdfjs
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
@@ -283,7 +359,7 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # WEB_SESSION_IDLE: how long a login lasts with no desktop, terminal or
 # other tunnel open, such as 1h (default) or 30m; 0 for no limit.
 # WEB_TTY=1 (default) serves a terminal at /tty/, behind the same login as
-# the desktop and /downloads/; 0 turns it off.
+# the desktop and /fs/; 0 turns it off.
 # WEB_TTY_COMMAND: a shell command each terminal tab runs instead of tmux,
 # e.g. ssh -t me@host.docker.internal; empty (default) for tmux.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns

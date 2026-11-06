@@ -227,6 +227,9 @@ func loginAt(t *testing.T, ctx context.Context, url, credential string) (testSes
 			Expires         int64
 		}
 		json.Unmarshal(pt[1:], &res)
+		// Answer the server's close, as a browser does, so its handler ends
+		// now rather than after waiting for that.
+		go c.Read(ctx)
 		secret, _ := base64.StdEncoding.DecodeString(res.Secret)
 		return testSession{res.Session, secret, res.Logins, res.Expires}, 0
 	}
@@ -549,13 +552,13 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/audio/stream.ogg", http.StatusNotFound},
 		{"GET", "/tty/ws", http.StatusNotFound},
 		{"POST", "/tty/", http.StatusMethodNotAllowed},
-		{"POST", "/downloads/", http.StatusMethodNotAllowed},
-		{"PUT", "/downloads/a.txt", http.StatusMethodNotAllowed},
-		{"DELETE", "/downloads/a.txt", http.StatusMethodNotAllowed},
+		{"POST", "/fs/", http.StatusMethodNotAllowed},
+		{"PUT", "/fs/a.txt", http.StatusMethodNotAllowed},
+		{"DELETE", "/fs/a.txt", http.StatusMethodNotAllowed},
 		{"GET", "/tty/", http.StatusOK},
 		{"GET", "/tty/" + g.ttyPath() + "/ghostty-web.js", http.StatusOK},
-		{"GET", "/downloads/", http.StatusOK},
-		{"GET", "/downloads/a%20b/c", http.StatusSeeOther},
+		{"GET", "/fs/", http.StatusOK},
+		{"GET", "/fs/a%20b/c", http.StatusSeeOther},
 		{"GET", "/tabtop/e2e.js", http.StatusNotFound},
 		{"GET", "/tabtop/upload.js", http.StatusNotFound},
 		{"GET", "/tabtop/download-sw.js", http.StatusOK},
@@ -570,8 +573,11 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/transfer.js", http.StatusOK},
 		{"GET", "/tabtop/ui.js", http.StatusOK},
 		{"GET", "/tabtop/nav.js", http.StatusOK},
+		{"GET", "/tabtop/glyphs.js", http.StatusOK},
 		{"GET", "/tabtop/requests.js", http.StatusOK},
 		{"GET", "/tabtop/preview.js", http.StatusOK},
+		{"GET", "/tabtop/video-stream.js", http.StatusOK},
+		{"GET", "/tabtop/media-stream.js", http.StatusOK},
 		{"GET", "/tabtop/reconnect.js", http.StatusOK},
 		{"GET", "/tabtop/expiry.js", http.StatusOK},
 		{"GET", "/tabtop/download.js", http.StatusOK},
@@ -619,15 +625,15 @@ func TestEndpoints(t *testing.T) {
 				!strings.Contains(string(body), `"./`+g.noblePath()+`/ciphers/chacha.js"`) {
 				t.Errorf("tunnel.js (cached as %q) doesn't import from %s", cache, noble)
 			}
-		case "GET /downloads/a%20b/c":
-			if loc := resp.Header.Get("Location"); loc != "/downloads/#/a%20b/c" {
+		case "GET /fs/a%20b/c":
+			if loc := resp.Header.Get("Location"); loc != "/fs/#/a%20b/c" {
 				t.Errorf("redirect to %q", loc)
 			}
-		case "GET /downloads/":
+		case "GET /fs/":
 			csp := resp.Header.Get("Content-Security-Policy")
 			for _, want := range []string{"connect-src 'self'", "worker-src 'self'", "frame-src 'self'"} {
 				if !strings.Contains(csp, want) {
-					t.Errorf("downloads CSP %q lacks %s", csp, want)
+					t.Errorf("files page CSP %q lacks %s", csp, want)
 				}
 			}
 		case "GET /tabtop/download-sw.js":
@@ -925,12 +931,12 @@ func TestTunnelUnderBasePath(t *testing.T) {
 		t.Errorf("/x/tabtop/tunnel.js: %d %q", code, body)
 	}
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := noRedirect.Get(srv.URL + "/x/downloads/a")
+	resp, err := noRedirect.Get(srv.URL + "/x/fs/a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if loc := resp.Header.Get("Location"); loc != "/x/downloads/#/a" {
+	if loc := resp.Header.Get("Location"); loc != "/x/fs/#/a" {
 		t.Errorf("redirect to %q", loc)
 	}
 	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/x/tunnel"
@@ -984,6 +990,10 @@ func TestTunnelInteropWithJS(t *testing.T) {
 	rand.Read(data)
 	os.WriteFile(filepath.Join(g.downloadsDir, "f.bin"), data, 0o644)
 	vectors, _ := json.Marshal(elligator2Vectors)
+	cpaceVectors, _ := json.Marshal(map[string]string{
+		"prs": cpaceVecPRS, "ci": cpaceVecCI, "sid": cpaceVecSID, "k": cpaceVecK,
+		"ya": cpaceVecYaPub, "yb": cpaceVecYbPub, "ada": "ADa", "adb": "ADb",
+	})
 	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no", http.StatusForbidden)
 	}))
@@ -994,7 +1004,7 @@ func TestTunnelInteropWithJS(t *testing.T) {
 	for i, backend := range []string{"webcrypto", "noble"} {
 		t.Run(backend, func(t *testing.T) {
 			cmd := exec.Command(node, filepath.Join(dir, "interop.mjs"),
-				wsURL(srv.URL), pin+code(int64(i)), string(vectors), backend, wsURL(refusing.URL))
+				wsURL(srv.URL), pin+code(int64(i)), string(vectors), backend, wsURL(refusing.URL), string(cpaceVectors))
 			cmd.Stderr = os.Stderr
 			out, err := cmd.Output()
 			var exit *exec.ExitError
@@ -1008,6 +1018,7 @@ func TestTunnelInteropWithJS(t *testing.T) {
 				Backend   string
 				Refused   []string
 				Elligator []string
+				CPace     struct{ Generator, ISK string }
 				Session   string
 				Entries   []fileEntry
 				FileSHA   string
@@ -1028,6 +1039,12 @@ func TestTunnelInteropWithJS(t *testing.T) {
 				if i >= len(res.Elligator) || res.Elligator[i] != strings.TrimLeft(v.Out, "0") {
 					t.Errorf("JS elligator2(%s) = %v, want %s", v.In, res.Elligator, v.Out)
 				}
+			}
+			if res.CPace.Generator != cpaceVecG {
+				t.Errorf("JS CPace generator = %s, want %s", res.CPace.Generator, cpaceVecG)
+			}
+			if res.CPace.ISK != cpaceVecISK {
+				t.Errorf("JS CPace ISK = %s, want %s", res.CPace.ISK, cpaceVecISK)
 			}
 			if _, ok := g.sessionSecret(res.Session); !ok {
 				t.Errorf("session %q isn't valid", res.Session)

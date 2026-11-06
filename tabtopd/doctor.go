@@ -357,6 +357,33 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 		suggest = strings.Join(append(trusted, suggest), ",")
 	}
 
+	// A proxy behind Cloudflare puts the address Cloudflare's edge
+	// connected from at the right of X-Forwarded-For: then both it and
+	// Cloudflare need trusting, and the visitor is the entry left of it.
+	var entries []string
+	for _, v := range xff {
+		entries = append(entries, strings.Split(v, ",")...)
+	}
+	edge, visitor := "", ""
+	if n := len(entries); n > 0 {
+		if a, err := parseHop(strings.TrimSpace(entries[n-1])); err == nil && inCloudflare(a) {
+			edge = a.String()
+			if n > 1 {
+				visitor = strings.TrimSpace(entries[n-2])
+			}
+		}
+	}
+	behind := func(proxy string) string {
+		via := ""
+		if visitor != "" {
+			via = fmt.Sprintf(" Then the client is taken as %s, the address Cloudflare added.", visitor)
+		}
+		return fmt.Sprintf("Trust both: WEB_TRUSTED_PROXIES=%s.%s If %s changes (a platform's load balancer) and "+
+			"every visitor comes through it, use WEB_TRUST_NPROXIES=1 with WEB_TRUSTED_PROXIES=%s instead.",
+			proxy, via, peer.Addr, strings.Join(append(trusted, "cloudflare"), ","))
+	}
+	clientAddr, _ := netip.ParseAddr(client)
+
 	var diagnosis []string
 	last := trace[len(trace)-1]
 	switch {
@@ -369,6 +396,11 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 			"addresses, which aren't trusted, so failed logins count against %s and every visitor shares "+
 			"Cloudflare's few addresses. Trust them all: WEB_TRUSTED_PROXIES=%s. Not just this one; "+
 			"Cloudflare connects from many.", peer.Addr, client, suggest))
+	case !peer.Trusted && edge != "":
+		diagnosis = append(diagnosis, fmt.Sprintf("The request came through Cloudflare, then a proxy at %s: "+
+			"X-Forwarded-For ends with %s, one of Cloudflare's addresses, which that proxy added. Neither is "+
+			"trusted, so failed logins count against %s. %s", peer.Addr, edge, client,
+			behind(strings.Join(append(trusted, peer.Addr, "cloudflare"), ","))))
 	case !peer.Trusted && r.Header.Get("Cf-Ray") != "":
 		diagnosis = append(diagnosis, fmt.Sprintf("The request came through Cloudflare (it has a Cf-Ray "+
 			"header), but the connection comes from %s, which isn't one of Cloudflare's addresses or "+
@@ -384,6 +416,10 @@ func (g *server) proxyReport(r *http.Request) map[string]any {
 			"published port appear to come from. If the proxy's address changes (a platform's load "+
 			"balancer) and every visitor comes through it, use WEB_TRUST_NPROXIES=1 instead.",
 			peer.Addr, client, peer.Addr, suggest))
+	case clientAddr.IsValid() && inCloudflare(clientAddr) && !last.Trusted:
+		diagnosis = append(diagnosis, fmt.Sprintf("The client is taken as %s, one of Cloudflare's addresses: "+
+			"%s is behind Cloudflare, which isn't trusted, so every visitor counts as one of Cloudflare's few "+
+			"addresses. %s", client, peer.Addr, behind(strings.Join(append(trusted, "cloudflare"), ","))))
 	case len(xff) == 0:
 		diagnosis = append(diagnosis, fmt.Sprintf("%s is a trusted proxy but sent no X-Forwarded-For, so "+
 			"every visitor through it counts as %s. Have the proxy set X-Forwarded-For.", peer.Addr, client))

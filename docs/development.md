@@ -9,15 +9,22 @@
 | `NOVNC_SHA256` | *(checksum of 1.7.0)* | SHA-256 of `https://github.com/novnc/noVNC/archive/refs/tags/v<version>.tar.gz`. A mismatch fails the build. |
 | `GHOSTTY_WEB_VERSION` | `0.4.0` | ghostty-web release for the terminal, downloaded from npm (`ghostty-web`). |
 | `GHOSTTY_WEB_SHA256` | *(checksum of 0.4.0)* | SHA-256 of `https://registry.npmjs.org/ghostty-web/-/ghostty-web-<version>.tgz`. |
-| `POWERLINE_VERSION` | `2.8.4` | Powerline release that `PowerlineSymbols.otf` and its license are taken from. |
-| `POWERLINE_FONT_SHA256` | *(checksum for 2.8.4)* | SHA-256 of `https://raw.githubusercontent.com/powerline/powerline/<version>/font/PowerlineSymbols.otf`. |
-| `POWERLINE_LICENSE_SHA256` | *(checksum for 2.8.4)* | SHA-256 of the `LICENSE` file at the same version. |
+| `NERD_FONTS_VERSION` | `v3.5.1` | Nerd Fonts release that the terminal's font, JetBrains Mono Nerd Font (its `NL Mono` regular and bold, made WOFF2), and its license are taken from. |
+| `NERD_FONT_SHA256` | *(checksum of v3.5.1)* | SHA-256 of `https://github.com/ryanoasis/nerd-fonts/releases/download/<version>/JetBrainsMono.tar.xz`. |
 | `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses for the [tunnel](encryption.md). |
 | `NOBLE_CIPHERS_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/ciphers/-/ciphers-<version>.tgz`. |
 | `NOBLE_CURVES_VERSION` | `2.4.0` | `@noble/curves` release from npm, whose X25519 the page uses for the [tunnel](encryption.md). |
 | `NOBLE_CURVES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/curves/-/curves-<version>.tgz`. |
 | `NOBLE_HASHES_VERSION` | `2.4.0` | `@noble/hashes` release from npm, whose SHA-2 and HKDF the page uses for the [tunnel](encryption.md). Must be the version `@noble/curves` depends on. |
 | `NOBLE_HASHES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/hashes/-/hashes-<version>.tgz`. |
+| `HIGHLIGHT_VERSION` | `11.12.0` | highlight.js release from npm (`@highlightjs/cdn-assets`), which colours text previews on the files page. |
+| `HIGHLIGHT_SHA256` | *(checksum of 11.12.0)* | SHA-256 of `https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-<version>.tgz`. |
+| `PDFJS_VERSION` | `6.4.299` | pdf.js release from npm (`pdfjs-dist`), its legacy build, which shows PDFs in the files page's previews. |
+| `PDFJS_SHA256` | *(checksum of 6.4.299)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
+| `KATEX_VERSION` | `0.19.0` | KaTeX release from npm (`katex`), which draws math in Markdown previews. |
+| `KATEX_SHA256` | *(checksum of 0.19.0)* | SHA-256 of `https://registry.npmjs.org/katex/-/katex-<version>.tgz`. |
+| `MERMAID_VERSION` | `12.2.0` | Mermaid release from npm (`mermaid`), which draws diagrams in Markdown previews. |
+| `MERMAID_SHA256` | *(checksum of 12.2.0)* | SHA-256 of `https://registry.npmjs.org/mermaid/-/mermaid-<version>.tgz`. |
 
 The build adds two `<script>` tags to noVNC's `vnc.html`, for the audio
 button and the encrypted tunnel, and changes one line of `app/ui.js` so the
@@ -108,6 +115,12 @@ deterministic tests. Tunnel streams are accepted only after registration;
 closing the event source interrupts and joins its reader, even with a full
 delivery queue.
 
+`tabtopd/glyphs.js` owns the UI's SVG icons and text glyphs. Use `iconSVG`
+for inline SVG, `iconDataURL` for desktop image buttons, and `glyphs` for
+text symbols. Keep labels and behavior with each control. The module has
+no DOM or session dependencies; sandboxed PDF and EPUB frames import it
+through its CORS-enabled asset route.
+
 `osc.js` parses terminal escape sequences without browser APIs. The terminal
 UI performs clipboard writes in response to its events. Run
 `mise run test-js` for parser tests covering chunk boundaries, malformed
@@ -172,3 +185,6 @@ and `ghcr.io/<owner>/<repo>-lite`, each with these tags:
 
 The first push creates each package as private. To let others pull them without
 logging in, make each public in its package settings on GitHub.
+
+The browser regression suite also uses FFmpeg to generate an indexed video
+fixture for range-based playback and seeking tests.

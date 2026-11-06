@@ -39,6 +39,23 @@ func TestNewServerInitializesRuntime(t *testing.T) {
 	}
 }
 
+// -mic-create plays into the sink it makes, and the hub knows to make it.
+func TestNewServerMicCreate(t *testing.T) {
+	c := validTestConfig()
+	c.audioSink, c.micCreate = "sink", true
+	g, err := newServer(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.micSink != micSinkName || g.audio.devices == nil || g.audio.play == nil {
+		t.Fatalf("mic sink %q, devices %v", g.micSink, g.audio.devices)
+	}
+	c.micCreate, c.micSink = false, "mic"
+	if g, err = newServer(c); err != nil || g.audio.devices != nil || g.audio.play == nil {
+		t.Fatalf("a given mic sink: %v, devices %v", err, g.audio.devices)
+	}
+}
+
 func TestNewServerRejectsInvalidConfiguration(t *testing.T) {
 	for name, change := range map[string]func(*serverConfig){
 		"missing users":           func(c *serverConfig) { c.usersFile = "" },
@@ -52,6 +69,9 @@ func TestNewServerRejectsInvalidConfiguration(t *testing.T) {
 		"fractional max lifetime": func(c *serverConfig) { c.sessionMax = time.Second },
 		"negative idle":           func(c *serverConfig) { c.sessionIdle = -time.Minute },
 		"invalid audio":           func(c *serverConfig) { c.audioSink = "sink"; c.audioBitrate = 1 },
+		"mic without audio":       func(c *serverConfig) { c.micSink = "mic" },
+		"made mic without audio":  func(c *serverConfig) { c.micCreate = true },
+		"made mic and a sink":     func(c *serverConfig) { c.audioSink = "sink"; c.micSink = "mic"; c.micCreate = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validTestConfig()

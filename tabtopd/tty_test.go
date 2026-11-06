@@ -57,7 +57,7 @@ func TestTTYPage(t *testing.T) {
 	}
 	tag := g.ttyPath()
 	for p, want := range map[string]int{"/tty/tty.js": 200, "/tty/" + tag + "/ghostty-web.js": 200,
-		"/tty/" + tag + "/" + ghosttyStub: 200, "/tty/" + tag + "/PowerlineSymbols.otf": 200,
+		"/tty/" + tag + "/" + ghosttyStub: 200, "/tty/" + tag + "/" + ttyFontRegular: 200, "/tty/" + tag + "/" + ttyFontBold: 200,
 		"/tty/ghostty-web.js": 404, "/tty/ghostty-0123456789ab/ghostty-web.js": 404, "/tty/" + tag + "/tty.js": 404,
 		"/tty/xterm.mjs": 404, "/tty/../main.go": 404, "/tty/other": 404, "/tty/ws": 404} {
 		if resp := get(t, srv.URL+p); resp.StatusCode != want {
@@ -65,20 +65,27 @@ func TestTTYPage(t *testing.T) {
 		}
 	}
 	// The page and its script are sent afresh, pointing at the cached files.
-	for p, want := range map[string]string{"/tty/": `url("` + tag + `/PowerlineSymbols.otf")`, "/tty/tty.js": `"./` + tag + `/ghostty-web.js"`} {
+	for p, wants := range map[string][]string{
+		"/tty/":       {`url("` + tag + `/` + ttyFontRegular + `")`, `url("` + tag + `/` + ttyFontBold + `")`},
+		"/tty/tty.js": {`"./` + tag + `/ghostty-web.js"`},
+	} {
 		resp, err := http.Get(srv.URL + p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if !strings.Contains(string(body), want) || !strings.Contains(resp.Header.Get("Cache-Control"), "no-store") {
-			t.Errorf("%s: Cache-Control %q, without %s", p, resp.Header.Get("Cache-Control"), want)
+		for _, want := range wants {
+			if !strings.Contains(string(body), want) || !strings.Contains(resp.Header.Get("Cache-Control"), "no-store") {
+				t.Errorf("%s: Cache-Control %q, without %s", p, resp.Header.Get("Cache-Control"), want)
+			}
 		}
 	}
-	resp = get(t, srv.URL+"/tty/"+tag+"/PowerlineSymbols.otf")
-	if resp.Header.Get("Content-Type") != "font/otf" || !strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
-		t.Errorf("font: Content-Type %q, Cache-Control %q", resp.Header.Get("Content-Type"), resp.Header.Get("Cache-Control"))
+	for _, font := range []string{ttyFontRegular, ttyFontBold} {
+		resp = get(t, srv.URL+"/tty/"+tag+"/"+font)
+		if resp.Header.Get("Content-Type") != "font/woff2" || !strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
+			t.Errorf("%s: Content-Type %q, Cache-Control %q", font, resp.Header.Get("Content-Type"), resp.Header.Get("Cache-Control"))
+		}
 	}
 }
 
@@ -106,7 +113,7 @@ func TestTTYLimit(t *testing.T) {
 // the bytes it was named after.
 func TestTTYAssetsMissing(t *testing.T) {
 	g, srv := newTTYTestServer(t)
-	font := filepath.Join(g.termDir, "PowerlineSymbols.otf")
+	font := filepath.Join(g.termDir, ttyFontRegular)
 	os.Remove(font)
 	if p := g.ttyPath(); p != "ghostty-missing" {
 		t.Fatalf("path with a file missing: %q", p)
@@ -123,7 +130,7 @@ func TestTTYAssetsMissing(t *testing.T) {
 	g.ttyFiles.failed = time.Time{} // as if assetRetry had passed
 	tag := g.ttyPath()
 	os.WriteFile(font, []byte("changed"), 0o644)
-	r, err := http.Get(srv.URL + "/tty/" + tag + "/PowerlineSymbols.otf")
+	r, err := http.Get(srv.URL + "/tty/" + tag + "/" + ttyFontRegular)
 	if err != nil {
 		t.Fatal(err)
 	}

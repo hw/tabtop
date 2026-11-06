@@ -13,6 +13,9 @@ const hooks = registerHooks({
         if (context.parentURL?.startsWith("https://nav.test/") && specifier === "./tunnel.js") {
             return { shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(tunnelStub) };
         }
+        if (context.parentURL?.startsWith("https://nav.test/") && specifier === "./glyphs.js") {
+            return { shortCircuit: true, url: new URL("../tabtopd/glyphs.js", import.meta.url).href };
+        }
         return next(specifier, context);
     },
     load(url, context, next) {

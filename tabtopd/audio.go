@@ -49,6 +49,9 @@ const (
 //go:embed audio.js
 var audioJS []byte
 
+//go:embed mic-worklet.js
+var micWorkletJS []byte
+
 var audioConfig = fmt.Sprintf(`{"codec":"opus","sampleRate":%d,"channels":%d,"frameMs":10}`, audioRate, audioChannels)
 
 var errAudioDenied = errors.New("no open desktop for this session and IP")
@@ -58,17 +61,23 @@ type audioHub struct {
 	// start begins recording, calling deliver with each Opus packet, and
 	// returns a function that stops it.
 	start func(deliver func([]byte)) (stop func(), err error)
-	sink  string
-	kbps  int
-	grace time.Duration
-	idle  time.Duration
-	retry time.Duration
+	// play starts playing what buf holds into the microphone's sink, and
+	// returns a function that stops it; nil when there's no microphone.
+	play func(buf *micBuffer) (stop func(), err error)
+	sink string
+	kbps int
+	// The microphone's devices, when the gateway makes them (-mic-create).
+	devices *micDevices
+	grace   time.Duration
+	idle    time.Duration
+	retry   time.Duration
 
 	mu        sync.Mutex
 	desktops  map[string]map[string]int // session -> client IP -> open desktop tunnels
 	graceGen  map[audioDesktop]uint64   // changes with each link and unlink, so older grace timers do nothing
 	listeners map[*audioListener]struct{}
-	stop      func() // stops recording; nil when not recording
+	mics      map[*audioListener]struct{} // microphones being sent, which stop with the desktop too
+	stop      func()                      // stops recording; nil when not recording
 	// While recording starts or stops, which talks to the audio server
 	// and so happens without h.mu held.
 	changing  *audioChange
@@ -93,10 +102,25 @@ type audioListener struct {
 	gone    chan struct{} // closed when the listener's desktop connection is gone
 }
 
-// newAudioHub streams sink's sound, encoded at kbps kbit/s.
-func newAudioHub(sink string, kbps int) *audioHub {
+// newAudioHub streams sink's sound, encoded at kbps kbit/s, and plays
+// browsers' microphones into micSink, if it isn't "". With devices, it
+// makes the microphone's sink and source first, if they're missing.
+func newAudioHub(sink, micSink string, kbps int, devices *micDevices) *audioHub {
+	var play func(*micBuffer) (func(), error)
+	if micSink != "" {
+		play = func(buf *micBuffer) (func(), error) {
+			if devices != nil {
+				if err := devices.ensure(); err != nil {
+					return nil, err
+				}
+			}
+			return playMic(micSink, buf)
+		}
+	}
 	return &audioHub{
+		devices:   devices,
 		start:     func(deliver func([]byte)) (func(), error) { return recordSink(sink, kbps*1000, deliver) },
+		play:      play,
 		sink:      sink,
 		kbps:      kbps,
 		grace:     audioGrace,
@@ -105,6 +129,7 @@ func newAudioHub(sink string, kbps int) *audioHub {
 		desktops:  map[string]map[string]int{},
 		graceGen:  map[audioDesktop]uint64{},
 		listeners: map[*audioListener]struct{}{},
+		mics:      map[*audioListener]struct{}{},
 	}
 }
 
@@ -185,6 +210,12 @@ func (h *audioHub) unlink(token, ip string) {
 			if l.token == token && l.ip == ip {
 				close(l.gone)
 				delete(h.listeners, l)
+			}
+		}
+		for m := range h.mics {
+			if m.token == token && m.ip == ip {
+				close(m.gone)
+				delete(h.mics, m)
 			}
 		}
 		h.idleCheckLocked()

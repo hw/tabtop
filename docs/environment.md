@@ -20,6 +20,7 @@
 | [WEB_TRUSTED_PROXIES](#web_trusted_proxies) | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
 | [WEB_TRUST_NPROXIES](#web_trust_nproxies) | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [WEB_TRUST_NPROXIES](#web_trust_nproxies). |
 | [WEB_AUDIO](#web_audio) | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
+| [WEB_MIC](#web_mic) | `1` | `1` gives the desktop page a microphone button, which sends the browser's microphone to the desktop as "TabTop Mic". `0` turns it off. Needs `WEB_AUDIO=1`, and the container's own sound or `WEB_AUDIO_SERVER`. |
 | [WEB_AUDIO_BITRATE](#web_audio_bitrate) | `64` | Sound quality in kbit/s, `32` to `256`. |
 | [WEB_AUDIO_SERVER](#web_audio_server-and-web_audio_sink) | *(empty)* | A PulseAudio or PipeWire socket mounted from the host, such as `/run/host-pulse/native`, whose sound is streamed instead of the container's own. See [Host audio](lite.md#host-audio). |
 | [WEB_AUDIO_SINK](#web_audio_server-and-web_audio_sink) | `@DEFAULT_SINK@` | With `WEB_AUDIO_SERVER`, the host's sink to stream; by default whichever is the host's default. |
@@ -27,6 +28,9 @@
 | [WEB_SESSION_IDLE](#web_session_max-and-web_session_idle) | `1h` | How long a login lasts with nothing open (no desktop, terminal or download), such as `1h` or `30m`. `0` for no limit. |
 | [WEB_TTY](#web_tty) | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
 | [WEB_TTY_COMMAND](#web_tty_command) | *(empty)* | A command each terminal tab runs instead of tmux, such as `ssh -t me@host.docker.internal`. See [WEB_TTY_COMMAND](#web_tty_command). |
+| [WEB_SHARE](#web_share) | `1` | `1` lets the files page make [share links](downloads.md#share-links) and [upload links](downloads.md#upload-links): plain URLs for downloading files and folders, or uploading into a folder, for `wget`, `curl` or someone without a login, outside the encrypted tunnel. `0` turns them off. |
+| [WEB_FETCH](#web_fetch-and-web_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
+| [WEB_FETCH_PRIVATE](#web_fetch-and-web_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 | [TZ](#tz) | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
@@ -37,9 +41,9 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `VNC_RESIZE`, `VNC_ADDR`, `WEB_PORT`,
 `VNC_X509` (or what it needs; see [VNC_X509](#vnc_x509)),
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
-`WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_AUDIO_BITRATE`,
+`WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
@@ -165,7 +169,7 @@ terminal can also read it: the key is stored in `~/.config/tabtop/users.oath`
 
 Codes change every 30 seconds. To allow for clock differences, the previous
 and next code are accepted too. Each code works only once, across the
-desktop, `/downloads/` and `/tty/` together and across restarts: after logging
+desktop, `/fs/` and `/tty/` together and across restarts: after logging
 in to one, wait for the next code to log in to another. Once a code is used,
 earlier ones are refused too.
 
@@ -315,7 +319,7 @@ The port inside the container. If you change it, publish the new port with
 
 Serves the site under a subdirectory, so a reverse proxy can put it at
 `https://example.com/tabtop/` next to other sites. The paths in the table at
-the top move under it: `/tabtop/downloads/`, `/tabtop/tty/` and so on.
+the top move under it: `/tabtop/fs/`, `/tabtop/tty/` and so on.
 
 ```sh
 -e WEB_BASE_PATH=/tabtop/
@@ -346,6 +350,12 @@ proxy's IP, so one person's failed logins would lock everyone out. Set this
 variable to the proxy's address, and the gateway uses `X-Forwarded-For` to
 find each visitor's IP.
 
+If a proxy is in front but not trusted, or the visitor comes out as one
+of Cloudflare's addresses, **Sessions and Activity** on the files page
+says so in red, with what `/doctor` would advise, whether or not
+[`WEB_DOCTOR_ENDPOINT`](#web_doctor_endpoint) is on, and marks its
+button until it's fixed.
+
 ```sh
 -e WEB_TRUSTED_PROXIES=10.0.0.5
 -e WEB_TRUSTED_PROXIES=10.0.0.5,172.16.0.0/12
@@ -374,6 +384,13 @@ the tunnel's WebSocket as cross-origin.
 gateway pings every WebSocket every 30 seconds, which is enough for idle
 limits of a minute or more, such as nginx's default 60 s
 `proxy_read_timeout`.
+- For [upload links](downloads.md#upload-links), allow request bodies of
+at least 8 MB (the upload page's pieces), and as big as the links take
+for `curl -T`, and pass them on as they come rather than buffering them
+(nginx refuses bodies over 1 MB by default; see
+[Reverse proxy](reverse-proxy.md)). Cloudflare limits a request body to
+100 MB on its Free and Pro plans, so bigger `curl -T` uploads through it
+fail; the page's pieces get through.
 - Send `X-Forwarded-Proto`, so `/doctor` can tell whether visitors arrive
 over HTTPS. Like `X-Forwarded-For`, it's only believed from a trusted
 proxy (by this variable or
@@ -397,6 +414,8 @@ requests, so trusting the one you see in `/doctor` isn't enough.
 -e WEB_TRUSTED_PROXIES=cloudflare               # Cloudflare connects to the container
 -e WEB_TRUSTED_PROXIES=cloudflare,172.18.0.5    # and another proxy of yours, too
 -e WEB_TRUSTED_PROXIES=172.18.0.5               # a Cloudflare Tunnel's cloudflared
+-e WEB_TRUSTED_PROXIES=10.0.0.1,cloudflare      # Cloudflare, then a proxy of yours
+-e WEB_TRUST_NPROXIES=1 -e WEB_TRUSTED_PROXIES=cloudflare   # the same, the proxy's address changing
 ```
 
 - **Straight from Cloudflare:** the edge adds the visitor's IP to
@@ -411,6 +430,17 @@ which would believe them.
 edge, so trust cloudflared's address instead, and give it a fixed one on a
 Docker network. `/doctor` notices this case from Cloudflare's `Cf-Ray`
 header.
+- **Cloudflare, then another proxy:** when Cloudflare connects to a proxy
+or load balancer of yours, which then connects to the container, that
+proxy adds the address Cloudflare's edge connected from to
+`X-Forwarded-For`, so it ends like `61.13.203.162, 108.162.226.144`:
+the visitor, then Cloudflare. Trusting only the proxy makes every visitor
+one of Cloudflare's addresses; trust both, the proxy and `cloudflare`. If
+the proxy's address isn't fixed (a platform's load balancer), and nothing
+reaches the container except through it, trust it by count instead:
+`WEB_TRUST_NPROXIES=1` with `WEB_TRUSTED_PROXIES=cloudflare`. `/doctor`
+notices this case from Cloudflare's address at the end of
+`X-Forwarded-For`.
 - **Idle connections:** Cloudflare closes WebSockets that are idle for
 about 100 seconds. The gateway pings every 30 seconds so that an idle
 desktop or terminal stays open.
@@ -454,6 +484,19 @@ With `1`, the container runs PipeWire and the browser gets a speaker button;
 see [Audio](full-image.md#audio). With `0`, PipeWire isn't started, the button doesn't
 appear, and the gateway refuses sound requests.
 
+## `WEB_MIC`
+
+With `1` (default), the desktop has a microphone fed from the browser,
+"TabTop Mic", and noVNC's control bar a button to turn it on; see
+[Microphone](full-image.md#microphone). With `0`, there's no button and the
+gateway refuses microphone requests. With the container's own sound, it's
+the desktop's default microphone. With
+[`WEB_AUDIO_SERVER`](#web_audio_server-and-web_audio_sink), in
+`tabtop-lite` or the full image, the gateway adds it to the host's sound
+server while it runs, not as the default; see
+[Host microphone](lite.md#host-microphone). There's none with `WEB_AUDIO=0`,
+or in `tabtop-lite` without `WEB_AUDIO_SERVER`.
+
 ## `WEB_AUDIO_BITRATE`
 
 How many kbit/s the sound uses per listener. It's sent at this rate all the
@@ -495,6 +538,34 @@ user's shell (`bash -c`), such as `ssh -t me@host.docker.internal` to make
 the terminal a login on another machine. Each tab runs its own copy, and
 there's no tmux history to search. See
 [An SSH terminal](lite.md#an-ssh-terminal).
+
+## `WEB_SHARE`
+
+With `1` (default), **Share…** and **Direct Download** in the files
+page's menus make share links, and **Upload link…** upload links, which
+the gateway serves at `/fs/<token>/`; see
+[Share links](downloads.md#share-links) and
+[Upload links](downloads.md#upload-links). Nothing is shared, and nobody
+can upload, until someone logged in makes a link. With `0`, the page
+doesn't offer them, the gateway serves no links (those made before are
+kept in `~/.config/tabtop/shares.json`, and work again with `1`), and
+everything goes through the encrypted tunnel.
+
+## `WEB_FETCH` and `WEB_FETCH_PRIVATE`
+
+With `WEB_FETCH=1` (default), **Fetch from URL…** on the files page has
+the server download a file from the web into `~/Downloads`; see
+[Fetching from a URL](downloads.md#fetching-from-a-url). `0` turns it off.
+
+A fetch only connects to public internet addresses: the server may be
+where the person using it isn't, beside the VNC server, a cloud metadata
+service or a private network. `WEB_FETCH_PRIVATE=1` lets it reach private
+networks too (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
+fc00::/7), such as a NAS on your LAN, and the Docker host's address on
+the container's network, which is private too. The container's own
+addresses (loopback, 127.0.0.1 and ::1, and its address on each of its
+networks, public or private) and link-local ones (169.254.x.x, fe80::/10)
+are never fetched from. Fetches don't use a proxy.
 
 ## `WEB_DOCTOR_ENDPOINT`
 

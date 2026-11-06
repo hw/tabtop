@@ -87,8 +87,14 @@ func lv(parts ...[]byte) []byte {
 // password and the session id, mapped onto the curve, as 32 little-endian
 // bytes.
 func cpaceGenerator(prs string, sid []byte) []byte {
+	return cpaceGeneratorCI(prs, cpaceCI, sid)
+}
+
+// cpaceGeneratorCI is cpaceGenerator with another channel identifier, for
+// the draft's test vectors.
+func cpaceGeneratorCI(prs, ci string, sid []byte) []byte {
 	zpad := max(0, 128-len(lv([]byte(prs)))-len(lv([]byte(cpaceDSI)))-1)
-	h := sha512.Sum512(lv([]byte(cpaceDSI), []byte(prs), make([]byte, zpad), []byte(cpaceCI), sid))
+	h := sha512.Sum512(lv([]byte(cpaceDSI), []byte(prs), make([]byte, zpad), []byte(ci), sid))
 	le := h[:32]
 	le[31] &= 0x7f
 	r := new(big.Int).SetBytes(reversed(le))
@@ -125,7 +131,14 @@ func x25519(y *ecdh.PrivateKey, u []byte) ([]byte, error) {
 // cpaceISK is the shared secret from the exchange, bound to the session id
 // and both shares.
 func cpaceISK(sid, k, ya, yb []byte) []byte {
-	h := sha512.Sum512(append(lv([]byte(cpaceDSI+"_ISK"), sid, k), lv(ya, nil, yb, nil)...))
+	return cpaceISKAD(sid, k, ya, nil, yb, nil)
+}
+
+// cpaceISKAD is cpaceISK with each side's associated data, which the
+// tunnel leaves empty, for the draft's test vectors: the initiator-responder
+// transcript, lv(Ya, ADa) || lv(Yb, ADb).
+func cpaceISKAD(sid, k, ya, ada, yb, adb []byte) []byte {
+	h := sha512.Sum512(append(lv([]byte(cpaceDSI+"_ISK"), sid, k), lv(ya, ada, yb, adb)...))
 	return h[:]
 }
 

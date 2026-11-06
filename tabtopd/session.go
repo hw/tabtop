@@ -40,6 +40,7 @@ type session struct {
 	idleSince time.Time    // when its last tunnel closed (or it was made)
 	uses      []sessionUse // where its tunnels came from: the login's first
 	browser   string       // what logged in, as browserName says
+	label     string       // what the person using it called it, such as "work laptop"
 	expire    lifecycleTimer
 	idle      lifecycleTimer // nil while a tunnel is open, or with no idle limit
 }
@@ -313,7 +314,32 @@ type sessionInfo struct {
 	Open    int          `json:"open"`
 	Uses    []sessionUse `json:"uses"`
 	Browser string       `json:"browser,omitempty"` // what logged in, as browserName says
+	Label   string       `json:"label,omitempty"`
 	Current bool         `json:"current"`
+}
+
+// sessionName is what the session id has been called, or "".
+func (g *server) sessionName(id string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if s := g.sessions[id]; s != nil {
+		return s.label
+	}
+	return ""
+}
+
+// nameSession calls the session with handle (or asking, for "") label,
+// and reports whether there was one, and whether it was asking.
+func (g *server) nameSession(handle, asking, label string) (found, own bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for id, s := range g.sessions {
+		if handle == "" && id == asking || handle != "" && sessionHandle(id) == handle {
+			s.label = label
+			return true, id == asking
+		}
+	}
+	return false, false
 }
 
 // sessionsReport lists the live sessions, oldest first, and the logins
@@ -332,12 +358,13 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 			if s.open[asking] {
 				open--
 			}
-			list = append(list, sessionInfo{sessionHandle(id), s.created, s.expiry, open, slices.Clone(s.uses), s.browser, id == current})
+			list = append(list, sessionInfo{sessionHandle(id), s.created, s.expiry, open, slices.Clone(s.uses), s.browser, s.label, id == current})
 		}
 	}
 	slices.SortFunc(list, func(a, b sessionInfo) int { return a.Created.Compare(b.Created) })
 	logins := g.loginHistory("", "", false)
 	res := map[string]any{
+		"now":          now,
 		"sessions":     list,
 		"logins":       logins,
 		"idle_minutes": int(g.sessionIdle / time.Minute),

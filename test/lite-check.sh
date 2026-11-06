@@ -62,7 +62,7 @@ if "at VNC_ADDR" not in vnc:
 '
 echo "ok - the doctor report has no failures"
 
-for page in vnc.html tty/ downloads/; do
+for page in vnc.html tty/ fs/; do
     curl -fsS -o /dev/null "$site$page" || { echo "not ok - $page didn't load"; exit 1; }
 done
 echo "ok - the desktop, terminal and files pages load"

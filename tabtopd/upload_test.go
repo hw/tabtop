@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -298,7 +300,11 @@ func TestTunnelUploadResume(t *testing.T) {
 	if entries, _ := os.ReadDir(g.downloadsDir); len(entries) != 1 {
 		t.Errorf("Downloads holds %d entries", len(entries))
 	}
-	// Gone, as after a restart: it starts again.
+	// Gone, as after a restart (which forgets those saved, too): it starts
+	// again.
+	g.transfers.mu.Lock()
+	g.transfers.done = nil
+	g.transfers.mu.Unlock()
 	if tc, reply := start(10, id, ""); reply["offset"] != 0.0 {
 		t.Errorf("resuming one gone: %v", reply)
 	} else {
@@ -662,5 +668,241 @@ func TestRemoveStaleStages(t *testing.T) {
 		if _, err := os.Stat(p); (err == nil) != want {
 			t.Errorf("%s: exists %v, want %v", filepath.Base(p), err == nil, want)
 		}
+	}
+}
+
+// Saving from the editor: replaces the file only if it's as it was read,
+// keeping its permissions, and says when it's been changed meanwhile.
+func TestTunnelUploadIfUnchanged(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	file := filepath.Join(g.downloadsDir, "run.sh")
+	os.WriteFile(file, []byte("echo old\n"), 0o755)
+	read := func() (string, int64) {
+		tc := openSession(t, ctx, srv.URL, s)
+		r := tc.request(t, ctx, tunnelRequest{Type: "file", Path: "run.sh"})
+		tc.c.CloseNow()
+		return r["mtime"].(string), int64(r["size"].(float64))
+	}
+	save := func(text, mtime string, size int64) map[string]any {
+		tc := openSession(t, ctx, srv.URL, s)
+		r := tc.request(t, ctx, tunnelRequest{Type: "upload", Name: "run.sh", Size: int64(len(text)), Replace: true, IfMtime: mtime, IfSize: size})
+		if r["ok"] != true {
+			return r
+		}
+		tc.write(ctx, msgData, []byte(text))
+		tc.read(ctx)
+		return tc.readJSON(t, ctx)
+	}
+	mtime, size := read()
+	r := save("echo new\n", mtime, size)
+	if r["name"] != "run.sh" || r["mtime"] == nil || r["mtime"] == mtime {
+		t.Fatalf("save: %v", r)
+	}
+	if st, _ := os.Stat(file); st.Mode().Perm() != 0o755 {
+		t.Errorf("the saved file is %v, not 0755 as before", st.Mode().Perm())
+	}
+	// Saved again from the same reading: it's changed since.
+	if r := save("echo stale\n", mtime, size); !strings.Contains(fmt.Sprint(r["error"]), "changed since it was opened") {
+		t.Errorf("stale save: %v", r)
+	}
+	// From the save's own answer, it's as expected.
+	if r2 := save("echo newer\n", r["mtime"].(string), int64(r["size"].(float64))); r2["name"] != "run.sh" {
+		t.Errorf("save after save: %v", r2)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "echo newer\n" {
+		t.Errorf("holds %q", b)
+	}
+	os.Remove(file)
+	if r := save("x", mtime, size); !strings.Contains(fmt.Sprint(r["error"]), "deleted or moved") {
+		t.Errorf("deleted meanwhile: %v", r)
+	}
+	// Text being edited, rendered: sent after the request, as data, so
+	// more of it than a request can hold (1 MiB) renders too.
+	render := func(text string) map[string]any {
+		tc := openSession(t, ctx, srv.URL, s)
+		if r := tc.request(t, ctx, tunnelRequest{Type: "markdown", Size: int64(len(text))}); r["ok"] != true {
+			return r
+		}
+		for at := 0; at < len(text); at += fileChunk {
+			tc.write(ctx, msgData, []byte(text[at:min(at+fileChunk, len(text))]))
+		}
+		return tc.readJSON(t, ctx)
+	}
+	if r := render("# Draft\n"); !strings.Contains(fmt.Sprint(r["html"]), `<h1 id="draft">Draft</h1>`) {
+		t.Errorf("markdown text: %v", r)
+	}
+	big := "# Big\n\n" + strings.Repeat("Some \"quoted\" text, escaped in JSON as more.\n\n", 1_500_000/48)
+	if r := render(big); !strings.Contains(fmt.Sprint(r["html"]), `<h1 id="big">Big</h1>`) {
+		t.Errorf("1.5 MB of text: %.200v", r)
+	}
+	if r := render(strings.Repeat("x", maxMarkdown+1)); r["error"] == nil {
+		t.Errorf("too much text: %v", r)
+	}
+}
+
+// Saves from the same reading, at once, as from two tabs: one is saved,
+// the rest are told the file changed, and none is lost silently.
+func TestTunnelUploadIfUnchangedConcurrent(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	os.WriteFile(filepath.Join(g.downloadsDir, "notes.txt"), []byte("v0"), 0o644)
+	tc := openSession(t, ctx, srv.URL, s)
+	r := tc.request(t, ctx, tunnelRequest{Type: "file", Path: "notes.txt"})
+	tc.c.CloseNow()
+	mtime := r["mtime"].(string)
+	const n = 8
+	results := make([]map[string]any, n)
+	conns := make([]*tunnelClient, n)
+	for i := range n {
+		conns[i] = openSession(t, ctx, srv.URL, s)
+		text := fmt.Sprintf("tab %d", i)
+		if r := conns[i].request(t, ctx, tunnelRequest{Type: "upload", Name: "notes.txt", Size: int64(len(text)), Replace: true,
+			IfMtime: mtime, IfSize: 2}); r["ok"] != true {
+			t.Fatalf("upload %d: %v", i, r)
+		}
+	}
+	// All have passed the first check; now all send at once.
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			conns[i].write(ctx, msgData, []byte(fmt.Sprintf("tab %d", i)))
+			conns[i].read(ctx)
+			results[i] = conns[i].readJSON(t, ctx)
+		})
+	}
+	wg.Wait()
+	saved := 0
+	for _, r := range results {
+		if r["name"] == "notes.txt" {
+			saved++
+		} else if !strings.Contains(fmt.Sprint(r["error"]), "changed since") {
+			t.Errorf("answered %v", r)
+		}
+	}
+	if saved != 1 {
+		t.Errorf("%d saves went through from the same reading", saved)
+	}
+}
+
+// TestTunnelUploadDoneTwice: an upload saved, whose page lost the answer and
+// asks to carry on with it, as uploadFile does, is told it's saved, with
+// the answer it would have had; not saved again, as another file, or
+// refused as changed since (by itself) when it's a save from the editor.
+func TestTunnelUploadDoneTwice(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	file := filepath.Join(g.downloadsDir, "notes.txt")
+	os.WriteFile(file, []byte("old"), 0o644)
+	st, _ := os.Stat(file)
+	req := tunnelRequest{Type: "upload", Name: "notes.txt", Size: 3, Replace: true, IfMtime: fileVersion(st), IfSize: 3}
+	upload := func(req tunnelRequest, data string) (map[string]any, map[string]any) {
+		tc := openSession(t, ctx, srv.URL, s)
+		reply := tc.request(t, ctx, req)
+		if reply["ok"] != true {
+			return reply, nil
+		}
+		if data != "" {
+			tc.write(ctx, msgData, []byte(data))
+			if kind, _, err := tc.read(ctx); err != nil || kind != msgData {
+				t.Fatalf("acknowledgement: %v", err)
+			}
+		}
+		_, p, err := tc.read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var res map[string]any
+		json.Unmarshal(p, &res)
+		return reply, res
+	}
+	first, saved := upload(req, "new")
+	if saved["name"] != "notes.txt" {
+		t.Fatalf("saved: %v %v", first, saved)
+	}
+	// Again, carrying on with it.
+	req.Resume = first["id"].(string)
+	again, res := upload(req, "")
+	if again["offset"] != 3.0 || res["name"] != "notes.txt" || res["mtime"] != saved["mtime"] {
+		t.Errorf("asked again: %v %v, first %v", again, res, saved)
+	}
+	des, _ := os.ReadDir(g.downloadsDir)
+	if b, _ := os.ReadFile(file); string(b) != "new" || len(des) != 1 {
+		t.Errorf("notes.txt holds %q; in the folder: %v", b, des)
+	}
+	// Not for another folder's, or another size.
+	req.Size = 4
+	if again, _ := upload(req, ""); again["offset"] == 4.0 {
+		t.Errorf("another size: %v", again)
+	}
+}
+
+// TestTunnelUploadRetryWhileSaving: the page asks to carry on with an
+// editor's save as that save replaces the file, before it's recorded as
+// done: told it's saved, once it is, not that the file changed since.
+func TestTunnelUploadRetryWhileSaving(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	file := filepath.Join(g.downloadsDir, "notes.txt")
+	os.WriteFile(file, []byte("old"), 0o644)
+	st, _ := os.Stat(file)
+	saving := make(chan struct{})
+	release := make(chan struct{})
+	uploadSavedHook = func() {
+		close(saving)
+		<-release
+	}
+	defer func() { uploadSavedHook = func() {} }()
+	req := tunnelRequest{Type: "upload", Name: "notes.txt", Size: 3, Replace: true, IfMtime: fileVersion(st), IfSize: 3}
+	tc := openSession(t, ctx, srv.URL, s)
+	first := tc.request(t, ctx, req)
+	tc.write(ctx, msgData, []byte("new"))
+	<-saving // replaced, not yet recorded as done
+	req.Resume = first["id"].(string)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		close(release)
+	}()
+	tc2 := openSession(t, ctx, srv.URL, s)
+	again := tc2.request(t, ctx, req)
+	if again["ok"] != true || again["offset"] != 3.0 {
+		t.Fatalf("asked again while it saved: %v", again)
+	}
+	if res := tc2.readJSON(t, ctx); res["name"] != "notes.txt" {
+		t.Errorf("told %v", res)
+	}
+	des, _ := os.ReadDir(g.downloadsDir)
+	if b, _ := os.ReadFile(file); string(b) != "new" || len(des) != 1 {
+		t.Errorf("notes.txt holds %q; in the folder: %v", b, des)
+	}
+}
+
+// TestFileVersionReplaced: a file replaced by one of the same size, with
+// the same time (as happens within one tick of the kernel's clock), isn't
+// taken for the same: it's another inode.
+func TestFileVersionReplaced(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f")
+	os.WriteFile(file, []byte("old"), 0o644)
+	st, _ := os.Stat(file)
+	before := fileVersion(st)
+	os.WriteFile(filepath.Join(dir, "g"), []byte("new"), 0o644)
+	os.Chtimes(filepath.Join(dir, "g"), st.ModTime(), st.ModTime())
+	os.Rename(filepath.Join(dir, "g"), file)
+	st2, _ := os.Stat(file)
+	if !st2.ModTime().Equal(st.ModTime()) || st2.Size() != st.Size() {
+		t.Fatal("not the same time and size")
+	}
+	if fileVersion(st2) == before {
+		t.Errorf("replaced, it's the same version: %s", before)
+	}
+	store, _ := openDownloadStore(dir)
+	defer store.Close()
+	if err := unchangedSince(store, "f", before, 3); err == nil {
+		t.Error("taken as unchanged")
 	}
 }

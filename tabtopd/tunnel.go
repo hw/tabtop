@@ -67,6 +67,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -141,6 +142,10 @@ type tunnel struct {
 
 	wmu   sync.Mutex
 	sendN uint64
+
+	// The request that opened it: for what's wrong with its client IP, if
+	// anything (see ipWarning), worked out only for those that show it.
+	req *http.Request
 }
 
 func newTunnel(c *websocket.Conn, fromClient, fromServer []byte) (*tunnel, error) {
@@ -288,11 +293,13 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 	if match < 0 || err != nil {
 		settle(true)
 		log.Printf("login from %s failed", ip)
+		g.activity.failedLogin(ip, browser)
 		c.Close(closeLoginFailed, "Those credentials are wrong, expired or already used.")
 		return
 	}
 	settle(false)
 	log.Printf("login from %s succeeded", ip)
+	g.activity.add("login", ip, "logged in%s", withBrowser(browser))
 	id, secret, history := g.newSession(ip, browser)
 	if c.Write(ctx, websocket.MessageBinary, append([]byte{tunnelVersion}, keys[96:]...)) != nil {
 		return

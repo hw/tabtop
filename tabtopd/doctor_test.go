@@ -214,6 +214,39 @@ func TestDoctorCloudflare(t *testing.T) {
 		!strings.Contains(d, "WEB_TRUSTED_PROXIES=172.18.0.5)") {
 		t.Errorf("cloudflared: %s", d)
 	}
+	// A proxy behind Cloudflare, which added the edge's address: trust
+	// both, and the visitor is the entry left of it.
+	behind := func() *http.Request {
+		r, _ := http.NewRequest("GET", "/doctor", nil)
+		r.RemoteAddr = "10.192.45.1:60088"
+		r.Header.Set("X-Forwarded-For", "61.13.203.162, 108.162.226.144")
+		r.Header.Set("Cf-Ray", "8a1b2c3d4e5f-SIN")
+		return r
+	}
+	d := strings.Join(g.proxyReport(behind())["diagnosis"].([]string), " ")
+	if !strings.Contains(d, "WEB_TRUSTED_PROXIES=10.192.45.1,cloudflare.") || !strings.Contains(d, "taken as 61.13.203.162") ||
+		!strings.Contains(d, "WEB_TRUST_NPROXIES=1 with WEB_TRUSTED_PROXIES=cloudflare") || strings.Contains(d, "cloudflared") {
+		t.Errorf("behind Cloudflare: %s", d)
+	}
+	// Either fix it suggests works.
+	for _, fix := range []struct {
+		proxies string
+		n       int
+	}{{"10.192.45.1,cloudflare", 0}, {"cloudflare", 1}} {
+		h := &server{serverConfig: defaultServerConfig()}
+		h.trustedProxies, _ = parsePrefixes(fix.proxies)
+		h.trustNProxies = fix.n
+		if got := h.clientIP(behind()); got != "61.13.203.162" {
+			t.Errorf("%+v: client %s", fix, got)
+		}
+	}
+	// With only the proxy trusted, the client is a Cloudflare address:
+	// trust Cloudflare too.
+	h := &server{serverConfig: defaultServerConfig()}
+	h.trustedProxies, _ = parsePrefixes("10.192.45.1")
+	if d := strings.Join(h.proxyReport(behind())["diagnosis"].([]string), " "); !strings.Contains(d, "WEB_TRUSTED_PROXIES=10.192.45.1/32,cloudflare.") {
+		t.Errorf("only the proxy trusted: %s", d)
+	}
 	// With another proxy trusted already, still all of Cloudflare.
 	g.trustedProxies, _ = parsePrefixes("10.0.0.5")
 	if d := diagnosis("162.158.1.2:5000"); !strings.Contains(d, "WEB_TRUSTED_PROXIES=10.0.0.5/32,cloudflare.") {
@@ -490,5 +523,48 @@ func TestDoctorBoundsUpstreamConnections(t *testing.T) {
 				t.Fatalf("after expiry opened %d connections, want %d", n, 2*want)
 			}
 		})
+	}
+}
+
+// The warning Sessions and Activity shows when the client IP looks like a
+// proxy's.
+func TestIPWarning(t *testing.T) {
+	req := func(peer string, header ...string) *http.Request {
+		r := httptest.NewRequest("GET", "/tunnel", nil)
+		r.RemoteAddr = peer
+		for i := 0; i+1 < len(header); i += 2 {
+			r.Header.Set(header[i], header[i+1])
+		}
+		return r
+	}
+	behind := []string{"X-Forwarded-For", "61.13.203.162, 108.162.226.144", "Cf-Ray", "8a1b2c3d4e5f-SIN"}
+	for _, c := range []struct {
+		trusted string
+		n       int
+		r       *http.Request
+		want    string // in the warning; "" for none
+	}{
+		// Direct, from anywhere: nothing to say.
+		{"", 0, req("192.168.1.20:5000"), ""},
+		{"", 0, req("203.0.113.9:5000"), ""},
+		// A trusted LAN proxy passing on a LAN visitor: fine.
+		{"10.0.0.5", 0, req("10.0.0.5:5000", "X-Forwarded-For", "192.168.1.20"), ""},
+		// The setup in the report: neither trusted.
+		{"", 0, req("10.192.45.1:60088", behind...), "sees this browser as 10.192.45.1, which looks like a proxy's"},
+		// Only the proxy: the visitor is taken as Cloudflare.
+		{"10.192.45.1", 0, req("10.192.45.1:60088", behind...), "one of Cloudflare's"},
+		// Fixed, either way.
+		{"10.192.45.1,cloudflare", 0, req("10.192.45.1:60088", behind...), ""},
+		{"cloudflare", 1, req("10.192.45.1:60088", behind...), ""},
+		// Cloudflare connecting straight to the container, not trusted.
+		{"", 0, req("162.158.1.2:5000", "X-Forwarded-For", "203.0.113.9"), "WEB_TRUSTED_PROXIES=cloudflare"},
+	} {
+		g := &server{serverConfig: defaultServerConfig()}
+		g.trustedProxies, _ = parsePrefixes(c.trusted)
+		g.trustNProxies = c.n
+		got := g.ipWarning(c.r)
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%q, %d, from %s %v: %q, want %q", c.trusted, c.n, c.r.RemoteAddr, c.r.Header, got, c.want)
+		}
 	}
 }

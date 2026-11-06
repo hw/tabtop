@@ -10,7 +10,7 @@ const stubs = {
     "./session.js": `export const SESSION_KEY='test';
         export const storedSession=()=>({id:'stored'}), session=()=>globalThis.getSession(), forgetSession=()=>globalThis.forgot++;
         export const renewSession=()=>{};`,
-    "./tunnel-crypto.js": `export const elligator2=()=>{}, cpaceGenerator=()=>{}, cryptoBackend=()=>{};`,
+    "./tunnel-crypto.js": `export const elligator2=()=>{}, cpaceGenerator=()=>{}, cpaceISK=()=>{}, cryptoBackend=()=>{};`,
 };
 const hooks = registerHooks({ resolve(specifier, context, next) {
     if (context.parentURL === target && stubs[specifier]) {

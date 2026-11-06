@@ -55,6 +55,43 @@ func (e *opusEncoder) encode(pcm []int16) ([]byte, error) {
 
 func (e *opusEncoder) close() { C.opus_encoder_destroy(e.enc) }
 
+// opusDecoder wraps libopus's decoder, for the browser's microphone. It
+// isn't safe for concurrent use.
+type opusDecoder struct {
+	dec      *C.OpusDecoder
+	channels int
+	pcm      []int16
+}
+
+// opusMaxFrame is the most samples per channel one Opus packet decodes to
+// at 48 kHz: 120 ms.
+const opusMaxFrame = 5760
+
+func newOpusDecoder(rate, channels int) (*opusDecoder, error) {
+	var status C.int
+	dec := C.opus_decoder_create(C.opus_int32(rate), C.int(channels), &status)
+	if status != C.OPUS_OK {
+		return nil, opusError(status)
+	}
+	return &opusDecoder{dec: dec, channels: channels, pcm: make([]int16, opusMaxFrame*channels)}, nil
+}
+
+// decode turns one Opus packet into interleaved samples, valid until the
+// next call.
+func (d *opusDecoder) decode(packet []byte) ([]int16, error) {
+	if len(packet) == 0 {
+		return nil, opusError(C.OPUS_INVALID_PACKET)
+	}
+	n := C.opus_decode(d.dec, (*C.uchar)(unsafe.Pointer(&packet[0])), C.opus_int32(len(packet)),
+		(*C.opus_int16)(unsafe.Pointer(&d.pcm[0])), C.int(opusMaxFrame), 0)
+	if n < 0 {
+		return nil, opusError(n)
+	}
+	return d.pcm[:int(n)*d.channels], nil
+}
+
+func (d *opusDecoder) close() { C.opus_decoder_destroy(d.dec) }
+
 type opusError C.int
 
 func (e opusError) Error() string { return "opus: " + C.GoString(C.opus_strerror(C.int(e))) }

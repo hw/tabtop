@@ -16,6 +16,19 @@ type uploadManager struct {
 	mu       sync.Mutex
 	partials map[string]*partialUpload
 	active   map[string]*activeUpload
+	// Uploads saved lately, by id, so a page that lost the answer, and asks
+	// to carry on, is told it's saved rather than starting it again (see
+	// recordDone).
+	done map[string]uploadDone
+}
+
+// uploadDone is an upload saved: into dir, size bytes, and what the page
+// was answered.
+type uploadDone struct {
+	dir   string
+	size  int64
+	reply map[string]any
+	at    time.Time
 }
 
 const (
@@ -23,7 +36,58 @@ const (
 	partialKeep = time.Hour
 	// Uploads cut off kept at once; past that, the oldest goes.
 	maxPartials = 16
+	// How long, and how many, uploads saved are remembered.
+	uploadDoneKeep = 10 * time.Minute
+	maxUploadDone  = 256
 )
+
+// recordDone remembers that the upload id, into dir, size bytes, was saved,
+// and answered reply.
+func (m *uploadManager) recordDone(id, dir string, size int64, reply map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.clock.Now()
+	if m.done == nil {
+		m.done = map[string]uploadDone{}
+	}
+	for k, d := range m.done {
+		if now.Sub(d.at) >= uploadDoneKeep {
+			delete(m.done, k)
+		}
+	}
+	for len(m.done) >= maxUploadDone {
+		oldest := ""
+		for k, d := range m.done {
+			if oldest == "" || d.at.Before(m.done[oldest].at) {
+				oldest = k
+			}
+		}
+		delete(m.done, oldest)
+	}
+	m.done[id] = uploadDone{dir, size, reply, now}
+}
+
+// wasDone reports whether the upload id was saved lately, into whatever
+// folder, of whatever size: then there's nothing of it kept to carry on
+// with (or wait for).
+func (m *uploadManager) wasDone(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.done[id]
+	return ok && m.clock.Now().Sub(d.at) < uploadDoneKeep
+}
+
+// doneUpload is what the upload id, into dir, size bytes, was answered when
+// it was saved, if it was, lately; else nil.
+func (m *uploadManager) doneUpload(id, dir string, size int64) map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.done[id]
+	if !ok || d.dir != dir || d.size != size || m.clock.Now().Sub(d.at) >= uploadDoneKeep {
+		return nil
+	}
+	return d.reply
+}
 
 // partialUpload is an upload cut off, kept to resume: its temporary file,
 // in its folder dir, holding held bytes of a file size bytes long.

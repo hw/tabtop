@@ -84,7 +84,13 @@ func (g *server) tty(w http.ResponseWriter, r *http.Request) {
 
 // ttyAssets are the terminal page's files from -term-dir, which browsers
 // keep (see assetSet).
-var ttyAssets = []string{"ghostty-web.js", ghosttyStub, "PowerlineSymbols.otf"}
+var ttyAssets = []string{"ghostty-web.js", ghosttyStub, ttyFontRegular, ttyFontBold}
+
+// The terminal's own font, JetBrains Mono Nerd Font (see the Dockerfile).
+const (
+	ttyFontRegular = "JetBrainsMonoNerdFont-Regular.woff2"
+	ttyFontBold    = "JetBrainsMonoNerdFont-Bold.woff2"
+)
 
 // ttyPath is where ttyAssets are served, under /tty/.
 func (g *server) ttyPath() string { return g.ttyFiles.path(g.termAssets()) }
@@ -100,7 +106,10 @@ func (g *server) ttyFile(w http.ResponseWriter, r *http.Request, name string) {
 		w.Header().Set("Content-Security-Policy", ttyCSP)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := ttyFiles.ReadFile("tty.html")
-		w.Write(bytes.ReplaceAll(page, []byte(`url("PowerlineSymbols.otf")`), []byte(`url("`+g.ttyPath()+`/PowerlineSymbols.otf")`)))
+		for _, font := range []string{ttyFontRegular, ttyFontBold} {
+			page = bytes.ReplaceAll(page, []byte(`url("`+font+`")`), []byte(`url("`+g.ttyPath()+`/`+font+`")`))
+		}
+		w.Write(page)
 	case name == "tty.js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := ttyFiles.ReadFile("tty.js")

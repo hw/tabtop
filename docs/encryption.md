@@ -2,8 +2,8 @@
 
 Everything private goes through an encrypted tunnel between the page's
 JavaScript and the gateway: the login, the desktop (screen, keyboard and
-clipboard), terminal sessions, file listings, downloads and uploads, and
-sound. It's meant for the case where HTTPS alone isn't enough: a proxy that
+clipboard), terminal sessions, file listings, downloads and uploads,
+sound, and the microphone. It's meant for the case where HTTPS alone isn't enough: a proxy that
 decrypts HTTPS on the way, such as a corporate TLS-inspection proxy, a CDN
 like Cloudflare, or a platform's load balancer that logs traffic. Such a
 proxy would otherwise see TOTP codes and passwords, the screen and
@@ -18,7 +18,9 @@ keystrokes, terminal sessions, files and anything it could replay.
   password-authenticated key exchange on X25519. Both sides prove they know
   the same code without sending it, so a recording of the login doesn't help
   anyone guess it later, even with TOTP-only logins. The gateway tries the
-  codes for the previous, current and next 30 seconds. Codes are
+  codes for the previous, current and next 30 seconds. Both the gateway's
+  and the page's CPace are tested against the draft's published test
+  vectors. Codes are
   single-use, and failed logins count against the
   [login limit](environment.md#web_trusted_proxies).
 - **Sessions:** a successful login gives the page a random session secret,
@@ -61,6 +63,14 @@ JavaScript comes through the same proxy. What a proxy can still see is which
 pages and scripts you load, when you connect, and how much data flows,
 including the timing of terminal keystrokes.
 
+[Share links](downloads.md#share-links) and
+[upload links](downloads.md#upload-links) are the one exception, made only
+when asked for: what a link serves or takes is plain HTTPS, for `wget`,
+`curl` and people without a login, so such a proxy sees the link and the
+files. [`WEB_SHARE=0`](environment.md#web_share) turns them off. (A
+[fetch from a URL](downloads.md#fetching-from-a-url) goes between the
+container and the site it fetches from, not through your browser.)
+
 The desktop's own Chromium isn't affected: it browses from the container,
 not through your browser.
 
@@ -83,7 +93,7 @@ ended separately.
   then closes at once. The idle limit only ends sessions nobody is using:
   one that someone keeps a desktop or terminal open on, or a files page in
   view, lasts until the maximum. A login can have 64 connections open at
-  once (a desktop tab uses three, a terminal, a files page in view or a
+  once (a desktop tab uses three, four with the microphone on, a terminal, a files page in view or a
   download one); more are refused until some close. At most 16 connections from one address, and 256 in all, can be
   waiting to log in or prove their session; more are refused. A
   connection whose browser stops taking data for a minute is closed.
@@ -116,6 +126,25 @@ ended separately.
   derived from it. **Log out everywhere** ends every session, this one
   too, and closes everything they have open: an open desktop or terminal
   asks for a login when it reconnects, which it does by itself.
+- **Naming sessions:** **Name…** beside a session calls it something,
+  such as "work laptop" or "phone", shown in the list and the activity
+  log. This browser's own name is kept in the browser, and given to each
+  of its next logins too; another session's lasts as long as it does.
+- **The activity log,** below them, lists what's been done that matters
+  for security, newest first, with when and from which address: logins
+  (failed ones too), logging out, **End…** and **Log out everywhere**,
+  share and upload links made, changed, revoked and used, files received
+  through upload links, and fetches from URLs. Unlike the rest, it's kept
+  across restarts, in `~/.config/tabtop/activity.jsonl` (with
+  `/home/<VNC_USER>` mounted, across replacing the container too): the
+  newest 2,000 entries. It never holds a link's token or a fetched
+  address beyond its host. Each entry a session made shows that
+  session's name, if it has one. The list above it shows only one kind
+  (failed logins, say), or entries with an address or words in them.
+  **Show all** lists every entry, **Download**
+  saves it as tab-separated text, and **Clear…** empties it, after asking,
+  leaving one entry that says it was cleared and from where, so it can't
+  be cleared unseen. Logging out everywhere doesn't clear it.
 - **The gateway's log** (`docker logs`) records each login and each time a
   session is used from an address it didn't log in from.
 
@@ -125,9 +154,9 @@ connections you didn't open give it away. All of this is drawn by the page,
 which such a proxy could change too. Check from a network you trust, or
 read `docker logs`. If you suspect a session was taken, log out everywhere
 from a trusted network and change `VNC_PASSWORD`: a changed page could have
-read the password, but never the TOTP secret. Sessions and the login
-history are kept in memory only, so restarting the container logs everyone
-out and starts the history empty.
+read the password, but never the TOTP secret. Sessions and the recent
+logins are kept in memory only, so restarting the container logs everyone
+out and starts that list empty; the activity log stays.
 
 ## Security notes
 

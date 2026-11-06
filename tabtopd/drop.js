@@ -227,8 +227,8 @@ async function uploadOne(file, dir, row, send, replace, upload) {
     const result = await runTransfer({
         signal: row.signal,
         retry: () => upload([file], [], dir),
-        progress: (got) => {
-            row.set(`${file.name}: ${percent(got, file.size)}`);
+        progress: (got, note) => {
+            row.set(`${file.name}: ${percent(got, file.size)}${note ? `, ${note}` : ""}`);
             row.progress(file.size ? got / file.size : 1);
         },
         run: async ({ signal, progress }) => {
@@ -343,8 +343,8 @@ async function uploadFolder(pending, dir, row, send, mkdir, upload) {
             if (signal.aborted) {
                 return;
             }
-            const progress = (bytes) => {
-                row.set(`${folder.name}/: ${tried} of ${total} files, ${file.name} ${percent(bytes, file.size)}`);
+            const progress = (bytes, note) => {
+                row.set(`${folder.name}/: ${tried} of ${total} files, ${file.name} ${percent(bytes, file.size)}${note ? `, ${note}` : ""}`);
                 row.progress((tried + (file.size ? bytes / file.size : 1)) / total);
             };
             progress(0);

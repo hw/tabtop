@@ -8,6 +8,18 @@ var filesCSS string
 //go:embed transfers.css
 var transfersCSS string
 
+//go:embed highlight.css
+var highlightCSS string
+
+//go:embed md-frame.css
+var mdFrameCSS string
+
+//go:embed pdf-frame.css
+var pdfFrameCSS string
+
+//go:embed epub-frame.css
+var epubFrameCSS string
+
 //go:embed desktop-base.css
 var desktopBaseCSS string
 

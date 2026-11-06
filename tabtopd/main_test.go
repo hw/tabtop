@@ -378,13 +378,13 @@ func TestServeUnderBasePath(t *testing.T) {
 		return resp
 	}
 	for p, want := range map[string]int{"/": 404, "/vnc.html": 404, "/tabtopx": 404, "/tabtopx/vnc.html": 404,
-		"/downloads/": 404, "/tabtop/vnc.html": 200, "/tabtop/downloads/": 200, "/tabtop/tty/": 200} {
+		"/fs/": 404, "/tabtop/vnc.html": 200, "/tabtop/fs/": 200, "/tabtop/tty/": 200} {
 		if resp := do(p); resp.StatusCode != want {
 			t.Errorf("GET %s: status %d, want %d", p, resp.StatusCode, want)
 		}
 	}
-	for p, want := range map[string]string{"/tabtop": "/tabtop/", "/tabtop/downloads": "/tabtop/downloads/",
-		"/tabtop/tty": "/tabtop/tty/", "/tabtop/downloads/sub%20dir/": "/tabtop/downloads/#/sub%20dir/"} {
+	for p, want := range map[string]string{"/tabtop": "/tabtop/", "/tabtop/fs": "/tabtop/fs/",
+		"/tabtop/tty": "/tabtop/tty/", "/tabtop/fs/sub%20dir/": "/tabtop/fs/#/sub%20dir/"} {
 		if resp := do(p); resp.StatusCode/100 != 3 || resp.Header.Get("Location") != want {
 			t.Errorf("GET %s: %d to %q, want a redirect to %s", p, resp.StatusCode, resp.Header.Get("Location"), want)
 		}

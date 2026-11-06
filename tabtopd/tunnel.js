@@ -2,7 +2,7 @@
 import { Tunnel } from "./tunnel-protocol.js";
 import { session, storedSession, forgetSession } from "./session.js";
 export { Tunnel, TunnelError, login, tunnelURL, request } from "./tunnel-protocol.js";
-export { elligator2, cpaceGenerator, cryptoBackend } from "./tunnel-crypto.js";
+export { elligator2, cpaceGenerator, cpaceISK, cryptoBackend } from "./tunnel-crypto.js";
 export { SESSION_KEY, storedSession, forgetSession, session, renewSession } from "./session.js";
 
 // TunnelSocket looks enough like a WebSocket for noVNC (as its "channel"),

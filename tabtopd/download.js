@@ -26,10 +26,10 @@ let downloadWorker = null;
 // browser checks an unchanged address for a newer worker only now and
 // then, so it goes up whenever download-sw.js changes in a way the page
 // relies on, as it did when zips of unknown size came in (2), and when it
-// started saying it's ready for a download (3).
-const DOWNLOAD_SW_VERSION = 3;
+// started saying it's ready for a download (3), video ranges (4), and Matroska video ranges (5), then shared audio/video ranges (6), then worker-lifetime tokens (7).
+const DOWNLOAD_SW_VERSION = 7;
 
-function worker() {
+export function streamWorker() {
     downloadWorker ??= (async () => {
         try {
             const reg = await navigator.serviceWorker.register(new URL(`./download-sw.js?v=${DOWNLOAD_SW_VERSION}`, import.meta.url),
@@ -47,6 +47,33 @@ function worker() {
         }
     })();
     return downloadWorker;
+}
+
+// Media subresources are intercepted only when their owning page is
+// controlled. Keep this registration separate from download navigations.
+let mediaRegistration = null;
+export function mediaWorker() {
+    mediaRegistration ??= (async () => {
+        try {
+            const scope = new URL("./", location.href).pathname;
+            const reg = await navigator.serviceWorker.register(new URL(`./download-sw.js?v=${DOWNLOAD_SW_VERSION}`, import.meta.url), { scope });
+            const ready = () => reg.active && !reg.installing && !reg.waiting && navigator.serviceWorker.controller === reg.active;
+            const end = Date.now() + 5000;
+            while (!ready() && Date.now() < end) {
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            return ready() ? reg.active : null;
+        } catch {
+            return null;
+        }
+    })();
+    const pending = mediaRegistration;
+    return pending.then((worker) => {
+        // Slow activation and temporary registration errors are retryable.
+        // Concurrent callers still share a single initialization attempt.
+        if (!worker && mediaRegistration === pending) mediaRegistration = null;
+        return worker;
+    });
 }
 
 // File and ZIP downloads share lifecycle handling; their wire metadata and
@@ -78,7 +105,7 @@ async function fetchDownload(req, label, starting, retry) {
             if (zip && JSON.stringify(req).length > MAX_REQUEST) {
                 throw new Error("too many to download at once; pick fewer");
             }
-            const sw = await worker();
+            const sw = await streamWorker();
             signal.throwIfAborted();
             const t = await call(req);
             own(() => t.close());

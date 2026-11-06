@@ -101,8 +101,11 @@ func (a *assetSet) serve(w http.ResponseWriter, r *http.Request, f assets, name 
 	h := w.Header()
 	h.Set("Cache-Control", immutableCache)
 	typ := mime.TypeByExtension(path.Ext(file))
-	if path.Ext(file) == ".otf" {
-		typ = "font/otf" // not in Go's or Debian's MIME tables; nosniff needs the right type
+	if path.Ext(file) == ".woff2" {
+		typ = "font/woff2" // not in Go's table, nor always the system's; nosniff needs the right type
+	}
+	if typ == "" {
+		typ = "application/octet-stream" // pdf.js's character maps (.bcmap), say: not sniffed as something else
 	}
 	h.Set("Content-Type", typ)
 	data := as.data

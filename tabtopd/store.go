@@ -158,6 +158,15 @@ func (u *upload) finish(name string, replace bool) (string, error) {
 		target := path.Join(u.dir, name)
 		if st, err := u.root.Lstat(target); err == nil && st.IsDir() {
 			return "", errReplaceFolder
+		} else if err == nil && st.Mode()&fs.ModeSymlink != 0 {
+			// Replaced, the link would go, and the file it leads to stay as
+			// it was, though what's checked first (see unchangedSince) is
+			// that file.
+			return "", errReplaceLink
+		} else if err == nil && st.Mode().IsRegular() {
+			// The new file keeps the old one's permissions: a script edited
+			// stays one that runs.
+			u.f.Chmod(st.Mode().Perm())
 		}
 		if err := u.publish(name, true); err != nil {
 			return "", err

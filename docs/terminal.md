@@ -49,11 +49,20 @@ emulator compiled to WebAssembly.
   or a remote host included, the page says so each time, with the start of
   what was copied, so a command slipped onto your clipboard doesn't go
   unnoticed.
-- **Font:** the terminal uses DejaVu Sans Mono if your computer has it,
-  otherwise your browser's monospace font. A small Powerline symbols font is
-  served with the page for the arrows in tmux's status line. **Ctrl +** and
-  **Ctrl −** make the text bigger and smaller (instead of zooming the page),
-  and **Ctrl 0** puts it back to 14 px; the size is remembered in this
+- **Font:** the terminal uses JetBrains Mono Nerd Font, served with the
+  page, so it looks the same on every device, and the icons that prompts and
+  tools such as starship, lazygit and eza draw (and the arrows in tmux's
+  status line) show rather than boxes. The **Aa** menu in the bar at the top
+  picks another: the common monospace fonts your computer has are listed,
+  and **Another font…** takes any installed font by name. Icons still come
+  from the Nerd Font whatever you pick. The font is the browser's to draw,
+  so it must be on the computer you're browsing from, not the container;
+  if it isn't, the menu says so and TabTop's is used. Fonts with
+  ligatures (Fira Code, say) show without them. The two font files (regular
+  and bold, about 1 MB each) are fetched once and then kept by the browser.
+- **Size:** **Ctrl +** and **Ctrl −** make the text bigger and smaller
+  (instead of zooming the page), and **Ctrl 0** puts it back to 14 px; the
+  **Aa** menu has the same. The font and size are remembered in this
   browser.
 - **Touch screens:** on a phone or tablet, a strip below the terminal has
   the keys its on-screen keyboard lacks: **Esc**, **Tab**, **Ctrl** and

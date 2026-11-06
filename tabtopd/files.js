@@ -16,13 +16,14 @@
 // it lists the live sessions and recent logins (see showSessions). If the
 // server can't be reached, it says so and tries again (see reconnect.js).
 
+import { glyphs, iconSVG } from "./glyphs.js";
 import { FolderModel } from "./folder-model.js";
 import { createTimeFormatter } from "./file-format.js";
 import { createSessionView } from "./sessions-view.js";
 import { deleteFiles, dropUploads } from "./drop.js";
-import { askFolder, askName, rowMenu, statusRow } from "./ui.js";
-import { iconSVG, nameTab, navBar } from "./nav.js";
-import { call, folderInfo, makeFolder, shellPath, uploadFile } from "./requests.js";
+import { askFolder, askName, askShare, askUploadLink, askURL, copyText, rowMenu, showLink, statusRow } from "./ui.js";
+import { nameTab, navBar } from "./nav.js";
+import { call, folderInfo, makeFolder, shareURL, shellPath, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip, humanBytes } from "./download.js";
 import { preview, previewable } from "./preview.js";
 import { reconnect, reconnected } from "./reconnect.js";
@@ -30,8 +31,8 @@ import { warnExpiry } from "./expiry.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
-// Above it, links to the desktop and the terminal, Security and sessions,
-// and Log out (see nav.js), which stay as the page is redrawn.
+// Above it, links to the desktop and the terminal, Sessions and Activity,
+// Share links, and Log out (see nav.js), which stay as the page is redrawn.
 const timeFormatter = createTimeFormatter();
 const { setTimeZone, friendlyTime, exactTime } = timeFormatter;
 const page = document.createElement("main");
@@ -41,11 +42,14 @@ nameTab("files");
 
 // The sessions and recent logins show in place of a folder, at this
 // address, opened with the button by Log out, which goes back to the
-// folder last shown (see showSecurity).
+// folder last shown (see showSecurity); and share links, at their own
+// address, with the button beside it (see showShares).
 const SECURITY = "#sessions";
-const onSecurity = () => location.hash === SECURITY;
+const onSecurity = () => location.hash === SECURITY || location.hash === "#activity";
+const SHARES = "#shares";
+const onShares = () => location.hash === SHARES;
 let lastDir = "";
-const SECURITY_TITLE = "Security and sessions";
+const SECURITY_TITLE = "Sessions and Activity";
 const security = el("button", { type: "button", className: "security", title: SECURITY_TITLE });
 security.setAttribute("aria-label", SECURITY_TITLE);
 security.innerHTML = iconSVG("security");
@@ -53,7 +57,15 @@ security.addEventListener("click", () => {
     location.hash = onSecurity() ? dirHash(lastDir) : SECURITY;
 });
 nav.querySelector(":scope > button").before(security);
-const { checkSecurity, showSessions } = createSessionView({ security, refresh: () => show(), formatTime: timeFormatter.shortTime });
+const SHARES_TITLE = "Share links";
+const shares = el("button", { type: "button", className: "shares", title: SHARES_TITLE });
+shares.setAttribute("aria-label", SHARES_TITLE);
+shares.innerHTML = iconSVG("share");
+shares.addEventListener("click", () => {
+    location.hash = onShares() ? dirHash(lastDir) : SHARES;
+});
+security.after(shares);
+const { checkSecurity, showSessions, showShares: showShareLinks } = createSessionView({ security, formatTime: timeFormatter.shortTime });
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -61,10 +73,10 @@ function el(tag, props = {}, ...children) {
     return e;
 }
 
-// currentDir is the folder shown, or, while the sessions are, the one
-// shown last, which uploads dropped then go into.
+// currentDir is the folder shown, or, while the sessions or share links
+// are shown, the last folder, which uploads dropped then go into.
 function currentDir() {
-    if (onSecurity()) {
+    if (onSecurity() || onShares()) {
         return lastDir;
     }
     const p = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
@@ -96,8 +108,13 @@ const folder = new FolderModel();
 // and the sessions below aren't.
 async function show({ refresh = false } = {}) {
     security.setAttribute("aria-pressed", String(onSecurity()));
+    shares.setAttribute("aria-pressed", String(onShares()));
     if (onSecurity()) {
         showSecurity();
+        return true;
+    }
+    if (onShares()) {
+        showShares();
         return true;
     }
     const me = folder.begin();
@@ -144,6 +161,10 @@ async function show({ refresh = false } = {}) {
     const arrived = dir !== folder.dir;
     lastDir = dir;
     reconnected();
+    if (t.reply.fetch && !fetchesFollowed) {
+        fetchesFollowed = true;
+        followGoing();
+    }
     folder.load(me, dir, t.reply.entries, kept);
     return renderFolder({ dir, reply: t.reply, kept, arrived, refresh });
 }
@@ -214,7 +235,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         for (const th of head.querySelectorAll("th[data-key]")) {
             const on = th.dataset.key === folder.sort.key;
             th.setAttribute("aria-sort", on ? (folder.sort.desc ? "descending" : "ascending") : "none");
-            th.querySelector("button").dataset.arrow = on ? (folder.sort.desc ? "▼" : "▲") : "";
+            th.querySelector("button").dataset.arrow = on ? (folder.sort.desc ? glyphs.triangleDown : glyphs.triangleUp) : "";
         }
         // Focus in the list stays on the same row as it's redrawn.
         const focused = document.activeElement?.closest?.("tbody tr")?.dataset.name;
@@ -233,7 +254,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         const sorted = folder.sorted;
         // Previewing one steps through the rest shown that can be.
         const previews = sorted.filter((e) => !e.dir && previewable(e.name, e.bytes ?? 0));
-        const open = (e) => preview(dir, previews, previews.indexOf(e), fetchFile);
+        const open = (e) => preview(dir, previews, previews.indexOf(e), fetchFile, { direct: reply.share ? directDownload : null });
         for (const e of sorted) {
             const path = join(dir, e.name);
             const canPreview = previews.includes(e);
@@ -255,6 +276,8 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
                 ["rename", "Rename…", () => rename(dir, e)],
                 ["move", "Move to…", () => askMove(dir, [e.name])],
                 ["copy", "Copy path", () => copyPath(path)],
+                ...(reply.share ? [["share", "Share…", () => share(path, e.dir)],
+                    ["direct", "Direct Download", () => directLink(path, e.dir)]] : []),
                 ["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)],
             ]);
             const tr = el("tr", { draggable: true }, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
@@ -314,6 +337,8 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         ...(reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${reply.max} entries, ` +
             `so only ${reply.max} of them are shown, chosen in no particular order.` })] : []),
         el("p", { className: "upload" }, uploadButton(), newFolder,
+            ...(reply.fetch ? [button("fetch-url", "Fetch from URL…", () => fetchURL(dir))] : []),
+            ...(reply.share ? [button("upload-link", "Upload link…", () => uploadLink(dir))] : []),
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
         ...(reply.total ? [diskSpace(reply.free, reply.total)] : []));
     if (arrived) {
@@ -633,26 +658,257 @@ async function copyPath(path) {
     row.finish();
 }
 
-// copyText puts text on the clipboard: with the clipboard API where the
-// browser has it (over HTTPS or on localhost) and allows it, else the old
-// way.
-async function copyText(text) {
-    try {
-        await navigator.clipboard.writeText(text);
+// Share links -------------------------------------------------------------
+
+// makeLink makes a share link to what's at path (a folder if dir), lasting
+// expires seconds and allowing max downloads, and resolves to its URL and
+// when it ends. The URL ends in the name it's saved as, so plain wget gets
+// that.
+async function makeLink(path, dir, expires, max, label = "") {
+    const t = await call({ type: "share", path, expires, max, label });
+    t.close();
+    const { token, name, expires: ends } = t.reply;
+    return { url: shareURL(token, { name, dir }), ends };
+}
+
+// share asks how a link to what's at path should work, makes it and shows
+// it.
+async function share(path, dir) {
+    const name = path.split("/").pop();
+    const how = await askShare(name, dir);
+    if (!how) {
         return;
-    } catch {
-        // No clipboard API here, or not allowed.
     }
-    const area = el("textarea", { value: text, readOnly: true });
-    Object.assign(area.style, { position: "fixed", opacity: "0" });
-    (document.querySelector("dialog[open]") ?? document.body).append(area);
-    area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    if (!ok) {
-        throw new Error("not copied");
+    let link;
+    try {
+        link = await makeLink(path, dir, how.expires, how.max, how.label);
+    } catch (err) {
+        const row = statusRow("");
+        row.set(`No link to ${name}: ${err.message}`, true);
+        row.finish();
+        return;
+    }
+    const allows = how.max ? `, for ${how.max} download${how.max === 1 ? "" : "s"}` : "";
+    if (await showLink(`A link to ${name}${dir ? " (as a .zip)" : ""}, until ${exactTime(Date.parse(link.ends) / 1000)}${allows}. `
+        + "Revoke it from Share links.", link.url)) {
+        await copyAndSay(link.url, `the link to ${name}`);
     }
 }
+
+// Fetches from URLs: the gateway's, going on whether this page is open
+// or not (see fetch.go). A row follows each, with a Cancel button; the
+// page, opened again, follows those still going.
+const following = new Set();
+let fetchesFollowed = false;
+
+// fetchURL asks for an address, and has the gateway fetch it into dir.
+async function fetchURL(dir) {
+    const url = await askURL(dir ? dir.split("/").pop() : "Downloads");
+    if (!url) {
+        return;
+    }
+    let t;
+    try {
+        t = await call({ type: "fetch", path: dir, url });
+    } catch (err) {
+        const row = statusRow("");
+        row.set(`Not fetched: ${err.message}`, true);
+        row.finish();
+        return;
+    }
+    followFetch(t);
+}
+
+// followGoing follows the fetches going, started here before or elsewhere.
+async function followGoing() {
+    let t;
+    try {
+        t = await call({ type: "fetches" });
+        t.close();
+    } catch {
+        return;
+    }
+    for (const f of t.reply.fetches ?? []) {
+        if (!f.done && !following.has(f.id)) {
+            try {
+                followFetch(await call({ type: "fetch", name: f.id }));
+            } catch {
+                // Finished meanwhile.
+            }
+        }
+    }
+}
+
+// followFetch shows how the fetch t replied about goes, in a row, until
+// it's done. If the connection is lost, it follows it again once it can:
+// the fetch goes on meanwhile.
+async function followFetch(t) {
+    const id = t.reply.fetch.id;
+    if (following.has(id)) {
+        t.close();
+        return;
+    }
+    following.add(id);
+    let last = t.reply.fetch;
+    const label = () => `${last.name || "a file"} from ${last.host}`;
+    const row = statusRow(`${label()}: fetching`, true);
+    row.signal.addEventListener("abort", () => {
+        try {
+            t.sendText(JSON.stringify({ cancel: true }));
+        } catch {
+            // Lost: cancelled once it's followed again.
+        }
+    });
+    const update = (f) => {
+        last = f;
+        row.set(`${label()}: ${humanBytes(f.got)}${f.total >= 0 ? ` of ${humanBytes(f.total)}` : ""}`);
+        row.progress(f.total > 0 ? f.got / f.total : null);
+    };
+    update(last);
+    const where = last.dir === "." ? "Downloads" : last.dir;
+    try {
+        for (;;) {
+            const m = await t.next();
+            if (!m) {
+                t.close();
+                row.set(`${label()}: still fetching; reconnecting to follow it…`);
+                t = await refollow(id, row.signal);
+                if (row.signal.aborted) {
+                    t.sendText(JSON.stringify({ cancel: true }));
+                }
+                continue;
+            }
+            if (m.text === undefined) {
+                continue;
+            }
+            const res = JSON.parse(m.text);
+            if (res.error) {
+                throw new Error(res.error);
+            }
+            update(res.fetch);
+            if (res.fetch.done) {
+                row.set(`${res.fetch.name}: fetched from ${res.fetch.host} into ${where}${res.warning ? ` (${res.warning})` : ""}`);
+                break;
+            }
+        }
+    } catch (err) {
+        if (err.message === FETCH_FORGOTTEN) {
+            // Ended while this page was away, so long ago how isn't known:
+            // not said to have failed.
+            row.set(`${label()}: finished while this page was away; see the folder, or Sessions and Activity`);
+            return;
+        }
+        row.set(err.message === "cancelled" ? `${label()}: cancelled` : `${label()}: not fetched: ${err.message}`, err.message !== "cancelled");
+    } finally {
+        t.close();
+        following.delete(id);
+        row.finish();
+    }
+}
+
+// What the server says of a fetch that ended too long ago for it to say how
+// (see errFetchForgotten in fetch.go).
+const FETCH_FORGOTTEN = "That fetch finished a while ago.";
+
+// refollow follows the fetch id again, trying until it can.
+async function refollow(id, signal) {
+    for (let wait = 1000; ; wait = Math.min(wait * 2, 15000)) {
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        try {
+            return await call({ type: "fetch", name: id });
+        } catch (err) {
+            if (!err.lost || signal.aborted) {
+                throw err;
+            }
+        }
+    }
+}
+
+// uploadLink asks how a link for uploading into dir should work, makes it
+// and shows it.
+async function uploadLink(dir) {
+    const name = dir ? dir.split("/").pop() : "Downloads";
+    const how = await askUploadLink(name);
+    if (!how) {
+        return;
+    }
+    let reply;
+    try {
+        const t = await call({ type: "share", path: dir, expires: how.expires, max: how.max, upload: true, max_bytes: how.maxBytes, label: how.label });
+        t.close();
+        reply = t.reply;
+    } catch (err) {
+        const row = statusRow("");
+        row.set(`No upload link to ${name}: ${err.message}`, true);
+        row.finish();
+        return;
+    }
+    const url = shareURL(reply.token, { upload: true });
+    const files = how.max ? `${how.max} file${how.max === 1 ? "" : "s"}` : "any number of files";
+    if (await showLink(`A link for uploading into ${name}, until ${exactTime(Date.parse(reply.expires) / 1000)}, for ${files} `
+        + `of up to ${humanBytes(how.maxBytes)} in all. Open it in a browser, or upload with curl -T <file> <link>. `
+        + "Revoke it from Share links.", url)) {
+        await copyAndSay(url, `the upload link to ${name}`);
+    }
+}
+
+// directLink makes a link that downloads what's at path elsewhere, with
+// wget, curl, a browser or anything else, once, within an hour, and shows
+// it. It's copied from the dialog, by a click of its own: one made before
+// the link came back may no longer be allowed to.
+async function directLink(path, dir) {
+    const name = path.split("/").pop() + (dir ? ".zip" : "");
+    let link;
+    try {
+        link = await makeLink(path, dir, 3600, 1);
+    } catch (err) {
+        const row = statusRow("");
+        row.set(`No direct download link for ${name}: ${err.message}`, true);
+        row.finish();
+        return;
+    }
+    if (await showLink(`A direct download link for ${name}, for one download until ${exactTime(Date.parse(link.ends) / 1000)}, `
+        + "with wget -c, curl -fLO -C -, a browser or anything else. Revoke it from Share links.", link.url)) {
+        await copyAndSay(link.url, `the direct download link for ${name}`);
+    }
+}
+
+// directDownload downloads what's at path, a file, straight from the
+// gateway over HTTPS, as a browser downloads anything, rather than through
+// the encrypted tunnel: by a link made for this one download, counted as
+// it's made, and a ticket for it (see ticket in share.go), which fetches
+// the file rather than the link's page. The link stays listed in Security
+// and sessions till it ends, as any does.
+async function directDownload(path) {
+    const name = path.split("/").pop();
+    let reply;
+    try {
+        const t = await call({ type: "share", path, expires: 3600, max: 1, label: "Direct Download", direct: true });
+        t.close();
+        reply = t.reply;
+    } catch (err) {
+        const row = statusRow("");
+        row.set(`${name}: not downloaded directly: ${err.message}`, true);
+        row.finish();
+        return;
+    }
+    const a = el("a", { href: `${shareURL(reply.token, { name: reply.name })}?t=${encodeURIComponent(reply.ticket)}`, hidden: true });
+    (document.querySelector("dialog[open]") ?? document.body).append(a);
+    a.click();
+    a.remove();
+}
+
+async function copyAndSay(text, what) {
+    const row = statusRow("");
+    try {
+        await copyText(text);
+        row.set(`Copied ${what}`);
+    } catch {
+        row.set(`Couldn't copy ${what}: ${text}`, true);
+    }
+    row.finish();
+}
+
 
 // The keyboard -----------------------------------------------------------
 
@@ -716,11 +972,23 @@ function showSecurity() {
     folder.invalidate();  // a folder's listing still on its way draws nothing
     stopChanges();
     folder.dir = null;  // nor is it scrolled, saved as the place, or refreshed
-    document.title = "Security and sessions";
+    document.title = "Sessions and Activity";
     const box = el("div", { id: "sessions" });
-    page.replaceChildren(el("h1", { textContent: "Security and sessions" }), box);
+    page.replaceChildren(el("h1", { textContent: "Sessions and Activity" }), box);
     scrollTo(0, 0);
     showSessions(box);
+}
+
+// showShares shows share links and cleanup in place of a folder.
+function showShares() {
+    folder.invalidate();  // as for the sessions (see showSecurity)
+    stopChanges();
+    folder.dir = null;
+    document.title = SHARES_TITLE;
+    const box = el("div", { id: "shares" });
+    page.replaceChildren(el("h1", { textContent: SHARES_TITLE }), box);
+    scrollTo(0, 0);
+    showShareLinks(box);
 }
 
 // uploadButton makes the page's upload button (see drop.js).

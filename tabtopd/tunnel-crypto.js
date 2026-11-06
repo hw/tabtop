@@ -102,18 +102,25 @@ function bigToLE(x) {
     return out;
 }
 
-export async function cpaceGenerator(c, prs, sid) {
+// cpaceGenerator takes another channel identifier, ci, only for the
+// draft's test vectors.
+export async function cpaceGenerator(c, prs, sid, ci = CI) {
     const p = encoder.encode(prs);
     const dsi = encoder.encode(DSI);
     const zpad = new Uint8Array(Math.max(0, 128 - lv(p).length - lv(dsi).length - 1));
-    const le = (await c.sha512(lv(dsi, p, zpad, encoder.encode(CI), sid))).slice(0, 32);
+    const le = (await c.sha512(lv(dsi, p, zpad, encoder.encode(ci), sid))).slice(0, 32);
     le[31] &= 0x7f;
     return bigToLE(elligator2(leToBig(le) % P));
 }
 
+// cpaceISK is the shared secret from the exchange, bound to the session id
+// and both shares, with each side's associated data (empty for the login).
+export function cpaceISK(c, sid, k, ya, yb, ada = [], adb = []) {
+    return c.sha512(concat(lv(encoder.encode(DSI + "_ISK"), sid, k), lv(ya, ada, yb, adb)));
+}
+
 export async function loginKeys(c, sid, k, ya, yb) {
-    const isk = await c.sha512(concat(lv(encoder.encode(DSI + "_ISK"), sid, k), lv(ya, [], yb, [])));
-    return c.hkdf(isk, new Uint8Array(), "tabtop login v3 keys", 128);
+    return c.hkdf(await cpaceISK(c, sid, k, ya, yb), new Uint8Array(), "tabtop login v3 keys", 128);
 }
 
 // The handshakes' primitives, from WebCrypto or noble. Each backend has

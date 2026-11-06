@@ -1,26 +1,25 @@
-// Desktop audio for noVNC, served by tabtopd (see audio.go).
+// Desktop audio for noVNC, served by tabtopd (see audio.go and mic.go).
 //
 // Adds a speaker button to noVNC's control bar while connected. It fetches
 // the Opus packets through the encrypted tunnel, with the desktop's
 // session, decodes them with WebCodecs and schedules them back to back
 // through a small adaptive buffer, for a delay of roughly 100-200 ms.
 // WebCodecs needs HTTPS (or localhost).
+//
+// And a microphone button, which records this device's microphone, encodes
+// it as Opus with WebCodecs and sends it through the tunnel, for the
+// desktop's applications to record. It's never on until pressed in this
+// page: a permission the browser remembers mustn't turn it on by itself.
 
 import { TunnelSocket } from "./tunnel.js";
+import { iconDataURL } from "./glyphs.js";
 
 const PREF_KEY = "tabtop_audio";
 const supported = window.isSecureContext && "AudioDecoder" in window;
 
-const icon = (extra) => "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none" ' +
-    'stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M3.5 9.5h3.5l4.5-4v14l-4.5-4h-3.5z" fill="#fff"/>' + extra + "</svg>");
-const ICONS = {
-    off: icon('<path d="M15.5 10l5 5m0-5l-5 5"/>'),
-    connecting: icon('<path d="M15 12.5h.01m3 0h.01m3 0h.01"/>'),
-    on: icon('<path d="M15 9.5a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/>'),
-    error: icon('<path d="M18 8.5v5m0 3.5h.01"/>'),
-};
+const states = ["off", "connecting", "on", "error"];
+const ICONS = Object.fromEntries(states.map((state) => [state, iconDataURL(`audio-${state}`)]));
+const MIC_ICONS = Object.fromEntries(states.map((state) => [state, iconDataURL(`mic-${state}`)]));
 
 function savedPref() {
     try {
@@ -150,6 +149,187 @@ class StreamPlayer {
     }
 }
 
+// What the gateway says when it has no microphone (noMicMsg in e2e.go):
+// the button goes for good.
+const NO_MIC = "There's no microphone here.";
+// The gateway serves this as false when it has no microphone (see scripts
+// in e2e.go), so the button never shows.
+const micOffered = true;
+const micSupported = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia
+    && "AudioEncoder" in window && "AudioWorkletNode" in window;
+
+// MicSender records the microphone and sends it through the tunnel as
+// Opus packets, one per message.
+class MicSender {
+    constructor(onEnd) {
+        this.onEnd = onEnd;
+    }
+
+    async start() {
+        // The tunnel first, so a gateway without a microphone never has
+        // the browser ask for one.
+        this.ws = new TunnelSocket({ type: "mic" });
+        await new Promise((resolve, reject) => {
+            this.ws.onopen = resolve;
+            this.ws.onclose = (e) => reject(Object.assign(new Error(e.reason || "microphone connection failed"),
+                { noMic: e.reason === NO_MIC }));
+        });
+        if (this.stopped) {
+            return;
+        }
+        this.ws.onclose = () => this.onEnd();
+        this.stream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+        if (this.stopped) {
+            this.stop();
+            return;
+        }
+        // The device's own rate: Firefox won't connect a microphone to a
+        // context at another. The gateway decodes Opus at 48 kHz whatever
+        // it was encoded from.
+        this.ctx = new AudioContext({ latencyHint: "interactive" });
+        const rate = this.ctx.sampleRate;
+        const config = { codec: "opus", sampleRate: rate, numberOfChannels: 1, bitrate: 32000 };
+        if (!(await AudioEncoder.isConfigSupported(config)).supported) {
+            throw new Error(`this browser can't encode the microphone at ${rate} Hz`);
+        }
+        this.encoder = new AudioEncoder({
+            output: (chunk) => {
+                const packet = new Uint8Array(chunk.byteLength);
+                chunk.copyTo(packet);
+                this.ws.send(packet);
+            },
+            error: () => this.ws.close(),
+        });
+        this.encoder.configure(config);
+        await this.ctx.audioWorklet.addModule(new URL("./mic-worklet.js", import.meta.url));
+        if (this.stopped) {
+            return;
+        }
+        this.node = new AudioWorkletNode(this.ctx, "tabtop-mic");
+        let timestamp = 0;
+        this.node.port.onmessage = (e) => {
+            if (this.encoder.state !== "configured") {
+                return;
+            }
+            const data = new AudioData({ format: "f32", sampleRate: rate, numberOfFrames: e.data.length,
+                numberOfChannels: 1, timestamp, data: e.data });
+            this.encoder.encode(data);
+            data.close();
+            timestamp += e.data.length * 1e6 / rate;
+        };
+        this.ctx.createMediaStreamSource(this.stream).connect(this.node);
+        this.node.connect(this.ctx.destination);  // silence, but keeps it running
+        if (this.ctx.state !== "running") {
+            await this.ctx.resume();
+        }
+    }
+
+    // stop releases the microphone at once, so the browser stops showing
+    // it in use.
+    stop() {
+        this.stopped = true;
+        this.stream?.getTracks().forEach((t) => t.stop());
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.close();
+        }
+        if (this.encoder && this.encoder.state !== "closed") {
+            this.encoder.close();
+        }
+        this.ctx?.close();
+    }
+}
+
+const micButton = document.createElement("input");
+micButton.type = "image";
+micButton.id = "tabtop_mic_button";
+micButton.className = "noVNC_button noVNC_hidden";
+micButton.alt = "Microphone";
+
+let micWanted = false;  // in this page only: see the top
+let micGone = !micOffered;  // the gateway has none
+let mic = null;
+let micRetryTimer = null;
+let micRetryDelay = 1000;
+
+function setMicState(state, title) {
+    micButton.src = MIC_ICONS[state];
+    micButton.title = title;
+    micButton.classList.toggle("noVNC_selected", state === "on");
+}
+
+function stopMic() {
+    clearTimeout(micRetryTimer);
+    micRetryTimer = null;
+    if (mic) {
+        mic.stop();
+        mic = null;
+    }
+}
+
+function retryMic(message) {
+    stopMic();
+    setMicState("error", `${message}. Retrying… (click to stop)`);
+    micRetryTimer = setTimeout(startMic, micRetryDelay);
+    micRetryDelay = Math.min(micRetryDelay * 2, 10000);
+}
+
+async function startMic() {
+    stopMic();
+    if (!connected()) {
+        return;
+    }
+    if (!micSupported) {
+        micWanted = false;
+        setMicState("error", !window.isSecureContext ? "The microphone needs HTTPS"
+            : "This browser can't send the microphone (no WebCodecs)");
+        return;
+    }
+    setMicState("connecting", "Connecting the microphone… (click to stop)");
+    const m = new MicSender(() => {
+        if (mic === m) {
+            retryMic("Microphone disconnected");
+        }
+    });
+    mic = m;
+    try {
+        await m.start();
+    } catch (e) {
+        if (mic !== m) {
+            return;  // stopped meanwhile
+        }
+        if (e.noMic) {
+            stopMic();
+            micGone = true;
+            micButton.remove();
+        } else if (e.name === "NotAllowedError" || e.name === "NotFoundError" || e.name === "NotReadableError") {
+            stopMic();
+            micWanted = false;
+            setMicState("error", e.name === "NotAllowedError" ? "The microphone isn't allowed for this site"
+                : e.name === "NotFoundError" ? "No microphone found" : "The microphone is in use elsewhere");
+        } else {
+            retryMic("Microphone unavailable");
+        }
+        return;
+    }
+    if (mic === m) {
+        micRetryDelay = 1000;
+        setMicState("on", "Stop the microphone");
+    }
+}
+
+micButton.addEventListener("click", () => {
+    micWanted = !(mic || micRetryTimer);
+    if (micWanted) {
+        startMic();
+    } else {
+        stopMic();
+        setMicState("off", "Send your microphone to the desktop");
+    }
+});
+
 const button = document.createElement("input");
 button.type = "image";
 button.id = "tabtop_audio_button";
@@ -245,18 +425,28 @@ button.addEventListener("click", () => {
 
 function update() {
     button.classList.toggle("noVNC_hidden", !connected());
+    micButton.classList.toggle("noVNC_hidden", !connected() || micGone);
     if (!connected()) {
         stopPlayer();
         setState("off", "Start audio");
-    } else if (wanted && !player && !retryTimer) {
-        start();
+        stopMic();
+        setMicState("off", "Send your microphone to the desktop");
+    } else {
+        if (wanted && !player && !retryTimer) {
+            start();
+        }
+        if (micWanted && !mic && !micRetryTimer) {
+            startMic();
+        }
     }
 }
 
 const settings = document.getElementById("noVNC_settings_button");
 if (settings) {
     settings.before(button);
+    settings.before(micButton);
     setState("off", "Start audio");
+    setMicState("off", "Send your microphone to the desktop");
     new MutationObserver(update).observe(document.documentElement, { attributeFilter: ["class"] });
     update();
 } else {

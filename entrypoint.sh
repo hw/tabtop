@@ -12,14 +12,14 @@ provision_user "$VNC_USER" "$DISPLAY_NUM" "$WEB_AUDIO_SERVER"
 if [ -n "$VNC_ADDR" ]; then
     echo "Using the RFB server at ${VNC_ADDR}; the container's own desktop isn't started."
 else
-    start_desktop "$VNC_GEOMETRY" "$VNC_DEPTH" "$WEB_AUDIO" "$WEB_AUDIO_SERVER"
+    start_desktop "$VNC_GEOMETRY" "$VNC_DEPTH" "$WEB_AUDIO" "$WEB_AUDIO_SERVER" "$WEB_MIC"
 fi
 
-configure_host_audio "$WEB_AUDIO" "$WEB_AUDIO_SERVER" "$WEB_AUDIO_SINK"
+configure_host_audio "$WEB_AUDIO" "$WEB_AUDIO_SERVER" "$WEB_AUDIO_SINK" "$WEB_MIC"
 configure_viewer "$VNC_RESIZE"
 
 # The gateway owns the web port: it serves the noVNC client, the files page
-# for ~/Downloads at /downloads/ and a terminal at /tty/, and carries all of
+# for ~/Downloads at /fs/ and a terminal at /tty/, and carries all of
 # them, and the audio, through its encrypted tunnel, logging in with CPace
 # and encrypting with ChaCha20-Poly1305 from the noble libraries (in
 # /opt/noble). It runs as the desktop user, to read the downloads and the
@@ -52,14 +52,25 @@ as_user /usr/local/bin/tabtopd \
     -vnc-ca-file "$VNC_CA_FILE" \
     -vnc-server-name "$VNC_SERVER_NAME" \
     -noble-dir /opt/noble \
+    -highlight-dir /opt/highlight \
+    -preview-dir /opt/preview \
+    -pdfjs-dir /opt/pdfjs \
     -users-file "$TOTP_USERS_FILE" \
     -vnc-password-file "$VNC_UPSTREAM_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
+    -share="$WEB_SHARE" \
+    -shares-file "$USER_HOME/.config/tabtop/shares.json" \
+    -share-key-file "$USER_HOME/.config/tabtop/share-link.key" \
+    -activity-file "$USER_HOME/.config/tabtop/activity.jsonl" \
+    -fetch="$WEB_FETCH" \
+    -fetch-private="$WEB_FETCH_PRIVATE" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
     -session-max "$WEB_SESSION_MAX" \
     -session-idle "$WEB_SESSION_IDLE" \
     -audio-sink "$AUDIO_SINK" \
+    -mic-sink "$MIC_SINK" \
+    -mic-create="$MIC_CREATE" \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \
     -tty-command "$WEB_TTY_COMMAND" \

@@ -9,7 +9,7 @@ everything after them use an [encrypted tunnel](docs/encryption.md), so a
 proxy that only decrypts HTTPS can't read them.
 
 One HTTP port (`6080`) serves the desktop (`/`), [files](docs/downloads.md)
-(`/downloads/`), [terminal](docs/terminal.md) (`/tty/`), the tunnel, and
+(`/fs/`), [terminal](docs/terminal.md) (`/tty/`), the tunnel, and
 [health checks](docs/health-checks.md).
 
 Two images: `tabtop`, with its own desktop

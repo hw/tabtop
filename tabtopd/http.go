@@ -18,11 +18,11 @@ import (
 func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", novncHeaders(novncCSP(g.novncDir), http.FileServerFS(noListingFS{os.DirFS(g.novncDir)})))
-	mux.HandleFunc(downloadsPrefix, g.filesPage)
+	mux.HandleFunc(filesPrefix, g.filesPage)
 	mux.HandleFunc(ttyPrefix, g.tty)
 	// The mux would add the trailing slash itself, but to the path without
 	// the base.
-	for _, p := range []string{downloadsPrefix, ttyPrefix} {
+	for _, p := range []string{filesPrefix, ttyPrefix} {
 		mux.Handle(strings.TrimSuffix(p, "/"), http.RedirectHandler(g.abs(p), http.StatusMovedPermanently))
 	}
 	mux.HandleFunc("/tabtop/", g.scripts)
@@ -122,8 +122,8 @@ func (g *server) stripBase(h http.Handler) http.Handler {
 	})
 }
 
-// abs turns a path as the handlers see it ("/downloads/") into the one the
-// browser uses ("/tabtop/downloads/").
+// abs turns a path as the handlers see it ("/fs/") into the one the
+// browser uses ("/tabtop/fs/").
 func (g *server) abs(p string) string {
 	return g.base + strings.TrimPrefix(p, "/")
 }

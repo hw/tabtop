@@ -39,6 +39,13 @@ const UPLOAD_WINDOW = 16;
 // Retry does, carries on from there.
 const partial = new WeakMap();
 
+// Waits before each try to carry on with an upload whose connection was
+// lost, in seconds (the last repeats), and how long it may go without
+// getting anywhere before it fails: well inside the hour the server keeps
+// what it had (partialKeep in upload_manager.go).
+const RESUME_DELAYS = [1, 2, 4, 8, 15, 30];
+const RESUME_GIVE_UP = 15 * 60 * 1000;
+
 // uploadFile uploads a dropped or picked file into the folder dir, and
 // returns the name it was saved as, and any warning. With replace, a file
 // with its name there is replaced; otherwise it gets a free name. Aborting
@@ -47,12 +54,65 @@ const partial = new WeakMap();
 // it carries on from there. (If the file has changed on disk since it was
 // picked, the browser won't read it, so it fails rather than mixing the
 // two.)
-export async function uploadFile(file, progress, dir, signal, replace = false) {
+//
+// If the connection is lost, it tries again by itself, carrying on from
+// what the server has, until it gets somewhere or RESUME_GIVE_UP passes
+// without it; meanwhile progress gets the bytes sent and a note saying so.
+// Anything else the server says, such as a full disk, fails it at once.
+//
+// With expect, {mtime, size}, as the file request told of the file it
+// replaces, it's only saved if that file is still so (for the editor in
+// preview.js): else it fails, saying why. It resolves with the saved
+// file's mtime and size too.
+export async function uploadFile(file, progress, dir, signal, replace = false,
+    { delays = RESUME_DELAYS, giveUp = RESUME_GIVE_UP, expect = null } = {}) {
+    let got = 0;
+    let since = Date.now();
+    const sent = (bytes) => {
+        if (bytes > got) {
+            since = Date.now();  // getting somewhere
+        }
+        got = bytes;
+        progress(bytes);
+    };
+    for (let tries = 0; ; tries++) {
+        try {
+            return await uploadOnce(file, sent, dir, signal, replace, expect);
+        } catch (err) {
+            if (!err.lost || signal.aborted || Date.now() - since >= giveUp) {
+                throw err;
+            }
+        }
+        progress(got, "connection lost, reconnecting…");
+        await sleep(delays[Math.min(tries, delays.length - 1)] * 1000, signal);
+    }
+}
+
+// sleep waits ms, or throws once signal is aborted.
+function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+        const done = () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", done);
+            resolve();
+        }, ms);
+        signal.addEventListener("abort", done, { once: true });
+        if (signal.aborted) {
+            done();
+        }
+    });
+}
+
+async function uploadOnce(file, progress, dir, signal, replace, expect) {
     signal.throwIfAborted();
     const kept = partial.get(file);
     const resume = kept?.dir === dir ? kept.id : "";
     const t = await call({ type: "upload", path: dir, name: file.name, size: file.size,
-        ...(replace ? { replace: true } : {}), ...(resume ? { resume } : {}) });
+        ...(replace ? { replace: true } : {}), ...(resume ? { resume } : {}),
+        ...(expect ? { if_mtime: expect.mtime, if_size: expect.size } : {}) });
     const abort = () => {
         partial.delete(file);
         try {
@@ -81,13 +141,13 @@ export async function uploadFile(file, progress, dir, signal, replace = false) {
             }
             const m = await t.next();
             if (!m) {
-                throw new Error(t.closeReason || "connection lost");
+                throw new tunnel.TunnelError(t.closeReason || "connection lost", t.closeLogin, !t.closeReason && !t.closeLogin);
             }
             if (m.text !== undefined) {
                 const res = JSON.parse(m.text);
                 if (res.name && acked === chunks) {
                     partial.delete(file);
-                    return { name: res.name, warning: res.warning };
+                    return { name: res.name, warning: res.warning, mtime: res.mtime, size: res.size };
                 }
                 throw new Error(res.error || "the server's reply is malformed");
             }
@@ -98,6 +158,17 @@ export async function uploadFile(file, progress, dir, signal, replace = false) {
         signal.removeEventListener("abort", abort);
         t.close();
     }
+}
+
+// The site's root, under any base path, which links are made from: this
+// script's own address, not one the gateway would have to guess from
+// behind a proxy.
+const siteRoot = new URL("../", import.meta.url);
+
+// shareURL is the address of the share link with token: to name (as a
+// .zip, for a folder, dir), or for uploading, with upload.
+export function shareURL(token, { name, dir = false, upload = false }) {
+    return new URL(`fs/${token}/${upload ? "" : encodeURIComponent(dir ? name + ".zip" : name)}`, siteRoot).href;
 }
 
 // shellPath is the path of path, in ~/Downloads, as a shell takes it:
