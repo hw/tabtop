@@ -34,9 +34,9 @@ const (
 type tunnelRequest struct {
 	Entries []int `json:"entries,omitempty"` // zip-extract: entry ordinals from the preview
 
-	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, seen, tty, list, file, zip, upload, mkdir, rename, move, delete, watch, changes, audio, mic, share, share-again, reshare, unshare, cleanup, name-session, reshare-many, zip-preview, zip-extract, markdown, epub, epub-edit, fetch, fetches, activity or activity-clear
+	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, seen, tty, list, file, zip, upload, mkdir, create, rename, move, delete, watch, changes, audio, mic, share, share-again, reshare, unshare, cleanup, name-session, reshare-many, zip-preview, zip-extract, markdown, epub, epub-edit, fetch, fetches, activity or activity-clear
 	Path  string   `json:"path,omitempty"`
-	Name  string   `json:"name,omitempty"`  // upload, mkdir: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
+	Name  string   `json:"name,omitempty"`  // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
 	Size  int64    `json:"size,omitempty"`  // upload: its size
 	Names []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path
 	To    string   `json:"to,omitempty"`    // move: the folder to move what's at Path into
@@ -410,6 +410,9 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 
 	case "mkdir":
 		g.tunnelMkdir(t, req, r)
+
+	case "create":
+		g.tunnelCreate(t, req, r)
 
 	case "zip":
 		g.tunnelZip(t, req, ip, r)

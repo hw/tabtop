@@ -194,6 +194,13 @@ export async function makeFolder(dir, name) {
     return t.reply.name;
 }
 
+// createFile makes an empty file name in dir, and returns the name it got.
+export async function createFile(dir, name) {
+    const t = await call({ type: "create", path: dir, name });
+    t.close();
+    return t.reply.name;
+}
+
 // complete reports whether a download that's ended came whole: all size
 // bytes of a file, or a zip (size null) the server said it finished.
 export function complete(t, got, size) {

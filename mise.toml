@@ -22,7 +22,7 @@ run = "node --test test/*.test.mjs"
 [tasks.build]
 description = "Build the tabtopd binary into tabtopd/tabtopd"
 dir = "{{config_root}}/tabtopd"
-run = "go build -o tabtopd ."
+run = "go build -ldflags=\"-X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)\" -o tabtopd ."
 
 [tasks.browser-check]
 description = "Build the image and check it end to end in headless Chrome"

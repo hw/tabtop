@@ -372,6 +372,9 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	if !g.seen.IsZero() {
 		res["seen"] = g.seen
 	}
+	if t := tabtopBuildTime(); t != "" {
+		res["build_time"] = t
+	}
 	return res
 }
 

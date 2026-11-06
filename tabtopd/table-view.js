@@ -248,11 +248,16 @@ export function columnType(rows, column) {
     return !any ? "text" : numbers ? "number" : dates ? "date" : "text";
 }
 
-// The ways a column can be filtered, by its type: {op: label}.
+// The ways a column can be filtered, by its type: {op: label}. Numbers
+// use maths operators; text includes the inverse of each match. A column
+// may have several conditions at once (all must match), for ranges.
 export const FILTER_OPS = {
-    number: { "<": "less than", ">": "more than", "=": "equal to" },
+    number: { "=": "=", "≠": "≠", "≥": "≥", "≤": "≤", "<": "<", ">": ">" },
     date: { "<": "before", ">": "after", "=": "on" },
-    text: { starts: "starts with", ends: "ends with", contains: "contains" },
+    text: {
+        contains: "contains", starts: "starts with", ends: "ends with",
+        "!contains": "does not contain", "!starts": "does not start with", "!ends": "does not end with",
+    },
 };
 
 // filterValueOK reports whether value can filter a column of type: a
@@ -265,7 +270,7 @@ export function filterValueOK(type, value) {
 // cellMatches reports whether cell, in a column of type, is as filter
 // {op, value} asks: numbers compared exactly (see compareNumbers); dates by
 // the day, for a date without a time, else to the moment; text ignoring
-// case.
+// case (including the !… inverses).
 export function cellMatches(cell, { op, value }, type) {
     const c = cell.trim();
     const v = value.trim();
@@ -293,22 +298,28 @@ export function cellMatches(cell, { op, value }, type) {
     } else {
         const a = cell.toLowerCase();
         const b = value.toLowerCase();
-        return op === "starts" ? a.startsWith(b) : op === "ends" ? a.endsWith(b) : a.includes(b);
+        const hit = op === "starts" || op === "!starts" ? a.startsWith(b)
+            : op === "ends" || op === "!ends" ? a.endsWith(b)
+            : a.includes(b);
+        return op.startsWith("!") ? !hit : hit;
     }
-    return op === "<" ? order < 0 : op === ">" ? order > 0 : order === 0;
+    return op === "<" ? order < 0 : op === ">" ? order > 0 : op === "≠" ? order !== 0
+        : op === "≤" ? order <= 0 : op === "≥" ? order >= 0 : order === 0;
 }
 
 // filterColumns returns the indexes, of those in order, of rows every
-// filter (by column, {op, value}) lets through, filters a Map, types the
-// columns' types.
+// filter lets through. filters is a Map of column → [{op, value}, …]
+// (several conditions on one column all apply); types the columns' types.
 export function filterColumns(rows, order, filters, types) {
     if (!filters.size) {
         return order;
     }
     return order.filter((i) => {
-        for (const [c, f] of filters) {
-            if (!cellMatches(rows[i][c] ?? "", f, types[c])) {
-                return false;
+        for (const [c, list] of filters) {
+            for (const f of list) {
+                if (!cellMatches(rows[i][c] ?? "", f, types[c])) {
+                    return false;
+                }
             }
         }
         return true;
@@ -317,7 +328,7 @@ export function filterColumns(rows, order, filters, types) {
 
 // The statistics a column can show, by type, with what they're called.
 export const STATS = [
-    ["sum", "Sum", ["number"]], ["mean", "Average", ["number"]], ["median", "Median", ["number"]],
+    ["sum", "Sum", ["number"]], ["mean", "Mean", ["number"]], ["median", "Median", ["number"]],
     ["min", "Min", ["number", "date"]], ["max", "Max", ["number", "date"]], ["sd", "Std Dev", ["number"]],
     ["empty", "Empty", ["number", "date", "text"]], ["unique", "Unique", ["number", "date", "text"]],
 ];
@@ -439,7 +450,8 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
 
     let types = [];                  // each column's type (see columnType)
     const widths = new Map();        // by column: its width, in pixels, as dragged (see resizer)
-    const filters = new Map();       // by column: {op, value} (see cellMatches)
+    const filters = new Map();       // by column: [{op, value}, …] (see cellMatches)
+    const filterCount = () => [...filters.values()].reduce((n, list) => n + list.length, 0);
     const stats = statsChoice();     // {on, shown: [key]}, as last chosen
 
     const split = el("select", { className: "table-delimiter" });
@@ -633,9 +645,11 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
                 title: sorted ? `Sorted by ${name(c)}, ${sortDir > 0 ? "up" : "down"}: click to change` : `Sort by ${name(c)}` });
             sort.setAttribute("aria-label", sort.title);
             sort.addEventListener("click", () => sortBy(c));
-            const f = filters.get(c);
-            const funnel = el("button", { type: "button", className: `col-filter glyph${f ? " active" : ""}`, textContent: f ? glyphs.triangleDown : glyphs.filter,
-                title: f ? `${name(c)} ${FILTER_OPS[types[c]][f.op]} ${f.value}: click to change` : `Filter by ${name(c)}` });
+            const fs = filters.get(c);
+            const how = fs?.length ? fs.map((f) => `${FILTER_OPS[types[c]][f.op]} ${f.value}`).join(" and ") : "";
+            const funnel = el("button", { type: "button", className: `col-filter glyph${fs?.length ? " active" : ""}`,
+                textContent: fs?.length ? glyphs.triangleDown : glyphs.filter,
+                title: fs?.length ? `${name(c)} ${how}: click to change` : `Filter by ${name(c)}` });
             funnel.setAttribute("aria-label", funnel.title);
             funnel.addEventListener("click", () => openFilter(c, funnel));
             const th = el("th", { className: `type-${types[c]}` }, el("div", { className: "col-head" }, label, sort, funnel), resizer(c));
@@ -681,35 +695,92 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
         }
     };
 
-    // openFilter shows, by the button at, the filter of column c, to
-    // change: the ways for its type, and the value.
+    // openFilter shows, by the button at, the filters of column c, to
+    // change: one or more conditions for its type (all must match).
     const openFilter = (c, at) => {
         const type = types[c];
-        const f = filters.get(c) ?? { op: Object.keys(FILTER_OPS[type])[0], value: "" };
-        const op = el("select", { className: "filter-op" });
-        op.setAttribute("aria-label", `How ${name(c)} is to be`);
-        for (const [k, label] of Object.entries(FILTER_OPS[type])) {
-            op.append(el("option", { value: k, textContent: label }));
+        const firstOp = Object.keys(FILTER_OPS[type])[0];
+        const draft = (filters.get(c) ?? []).map((f) => ({ ...f }));
+        if (!draft.length) {
+            draft.push({ op: firstOp, value: "" });
         }
-        op.value = f.op;
-        const value = el("input", { type: "text", className: "filter-value", value: f.value, spellcheck: false, autocomplete: "off",
-            placeholder: type === "number" ? "a number" : type === "date" ? "YYYY-MM-DD" : "text" });
-        value.setAttribute("aria-label", "What it's compared with");
+        const list = el("div", { className: "filter-list" });
         const why = el("p", { className: "hint filter-why" });
         const apply = el("button", { type: "button", className: "primary", textContent: "Filter" });
         const clear = el("button", { type: "button", textContent: "Clear", disabled: !filters.has(c) });
+        const add = el("button", { type: "button", className: "filter-add", textContent: "Add condition" });
         const done = () => {
             pop.hidden = true;
             at.isConnected && at.focus();
         };
-        apply.addEventListener("click", () => {
-            if (!filterValueOK(type, value.value)) {
-                why.textContent = type === "number" ? "That's not a number." : type === "date" ? "A date is written YYYY-MM-DD (and a time, if you like)." : "Give some text.";
-                value.focus();
+        const syncDraft = () => {
+            const rows = [...list.querySelectorAll(".filter-row")];
+            if (!rows.length) {
                 return;
             }
-            // (Text as typed, spaces and all; a number or date, trimmed.)
-            filters.set(c, { op: op.value, value: type === "text" ? value.value : value.value.trim() });
+            draft.length = 0;
+            for (const row of rows) {
+                draft.push({
+                    op: row.querySelector("select.filter-op").value,
+                    value: row.querySelector("input.filter-value").value,
+                });
+            }
+        };
+        const paint = () => {
+            list.replaceChildren(...draft.map((f, i) => {
+                const op = el("select", { className: "filter-op" });
+                op.setAttribute("aria-label", `How ${name(c)} is to be`);
+                for (const [k, label] of Object.entries(FILTER_OPS[type])) {
+                    op.append(el("option", { value: k, textContent: label }));
+                }
+                op.value = f.op in FILTER_OPS[type] ? f.op : firstOp;
+                const value = el("input", { type: "text", className: "filter-value", value: f.value, spellcheck: false, autocomplete: "off",
+                    placeholder: type === "number" ? "a number" : type === "date" ? "YYYY-MM-DD" : "text" });
+                value.setAttribute("aria-label", "What it's compared with");
+                const remove = el("button", { type: "button", className: "filter-remove", textContent: "×", title: "Remove this condition",
+                    disabled: draft.length === 1 });
+                remove.setAttribute("aria-label", "Remove this condition");
+                remove.addEventListener("click", () => {
+                    syncDraft();
+                    draft.splice(i, 1);
+                    if (!draft.length) {
+                        draft.push({ op: firstOp, value: "" });
+                    }
+                    paint();
+                });
+                return el("div", { className: "filter-row" }, op, value, remove);
+            }));
+        };
+        add.addEventListener("click", () => {
+            syncDraft();
+            draft.push({ op: firstOp, value: "" });
+            paint();
+            list.querySelector(".filter-row:last-child input.filter-value")?.focus();
+        });
+        apply.addEventListener("click", () => {
+            const next = [];
+            const rows = [...list.querySelectorAll(".filter-row")];
+            for (const [i, row] of rows.entries()) {
+                const op = row.querySelector("select.filter-op").value;
+                const raw = row.querySelector("input.filter-value").value;
+                const empty = type === "text" ? raw === "" : raw.trim() === "";
+                if (empty) {
+                    continue;
+                }
+                if (!filterValueOK(type, raw)) {
+                    why.textContent = type === "number" ? "That's not a number." : type === "date"
+                        ? "A date is written YYYY-MM-DD (and a time, if you like)." : "Give some text.";
+                    row.querySelector("input")?.focus();
+                    return;
+                }
+                // (Text as typed, spaces and all; a number or date, trimmed.)
+                next.push({ op, value: type === "text" ? raw : raw.trim() });
+            }
+            if (next.length) {
+                filters.set(c, next);
+            } else {
+                filters.delete(c);
+            }
             pop.hidden = true;
             update();
         });
@@ -718,14 +789,15 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
             pop.hidden = true;
             update();
         });
+        paint();
         pop.replaceChildren(el("p", { className: "filter-title", textContent: `${name(c)} (${kindOf[type]})` }),
-            el("div", { className: "filter-row" }, op, value), why, el("div", { className: "buttons" }, clear, apply));
+            list, add, why, el("div", { className: "buttons" }, clear, apply));
         pop.onkeydown = (e) => {
             if (e.key === "Escape") {
                 e.preventDefault();
                 e.stopPropagation();
                 done();
-            } else if (e.key === "Enter" && e.target === value) {
+            } else if (e.key === "Enter" && e.target.classList?.contains("filter-value")) {
                 e.preventDefault();
                 apply.click();
             }
@@ -735,7 +807,7 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
         const r = at.getBoundingClientRect();
         pop.style.top = `${r.bottom - box.top + 4}px`;
         pop.style.left = `${Math.max(8, Math.min(r.left - box.left, box.width - pop.offsetWidth - 8))}px`;
-        value.focus();
+        list.querySelector("input.filter-value")?.focus();
     };
     // A click elsewhere closes it.
     view.addEventListener("click", (e) => {
@@ -779,8 +851,9 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
         const total = rows.length;
         count.textContent = `${order.length === total ? total.toLocaleString() : `${order.length.toLocaleString()} of ${total.toLocaleString()}`} ` +
             `${total === 1 ? "row" : "rows"} × ${columns} ${columns === 1 ? "column" : "columns"}`;
-        clearFilters.hidden = !filters.size;
-        clearFilters.textContent = filters.size === 1 ? "Clear the column's filter" : `Clear ${filters.size} columns' filters`;
+        const n = filterCount();
+        clearFilters.hidden = !n;
+        clearFilters.textContent = n === 1 ? "Clear the filter" : `Clear ${n} filters`;
     };
     // The row array is the record itself, independent of sorting/filtering.
     const editCell = (cell, row, c) => {

@@ -209,7 +209,11 @@ WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
 RUN go mod download
 COPY tabtopd/*.go tabtopd/*.js tabtopd/*.json tabtopd/*.html tabtopd/*.css ./
-RUN go build -trimpath -ldflags='-s -w' -o /tabtopd .
+# BUILD_TIME stamps Sessions and Activity (UTC RFC3339). Empty uses the
+# time this stage runs.
+ARG BUILD_TIME=
+RUN BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+ && go build -trimpath -ldflags="-s -w -X main.buildTime=${BUILD_TIME}" -o /tabtopd .
 
 # What every build has: the gateway's libraries, the terminal and its
 # tools. pulseaudio-utils (pactl) checks a host's sound server

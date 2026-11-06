@@ -8,13 +8,13 @@ downloaded at `http://<host>:6080/fs/`:
   already logged in to the desktop or the [terminal](terminal.md) in this
   browser. One login covers all three (see [Sessions](encryption.md#sessions)), and
   logging out of any of them logs out of all.
-- **In the page:** the page lists, fetches, uploads, renames and
-  deletes files through the [encrypted tunnel](encryption.md), so it needs
-  JavaScript. For someone else, or for `wget` and `curl`, make a
-  [share link](#share-links); to have someone else send you files, an
-  [upload link](#upload-links). **Fetch from URL…** has the server
-  download a file from the web itself (see
-  [Fetching from a URL](#fetching-from-a-url)).
+- **In the page:** the page lists, fetches, uploads, creates empty
+  files and folders, renames and deletes files through the
+  [encrypted tunnel](encryption.md), so it needs JavaScript. For someone
+  else, or for `wget` and `curl`, make a [share link](#share-links); to
+  have someone else send you files, an [upload link](#upload-links).
+  **Fetch from URL…** has the server download a file from the web itself
+  (see [Fetching from a URL](#fetching-from-a-url)).
 - **Finding your way:** the line above the list shows the folder's path,
   as the terminal would (`~/Downloads/photos/2024`), each folder in it a
   link back up. The box above the list (or **/** from anywhere on
@@ -188,12 +188,15 @@ downloaded at `http://<host>:6080/fs/`:
     (↓), then back to the file's order. Numbers sort as numbers, exactly,
     and dates as dates; empty cells go last.
   - **Filtering:** **Filter rows** finds text in any column, or the one
-    chosen. A heading's **▽** filters its column by value: numbers and
-    dates by **less than**, **more than** or **equal to** (a date without a
-    time, by the day), text by **starts with**, **ends with** or
-    **contains**. Filters on several columns all apply, and **Clear
-    filters** takes them off. The top left corner says how many rows are
-    shown.
+    chosen. A heading's **▽** filters its column by value: numbers by
+    **=**, **≠**, **≥**, **≤**, **<** or **>**, dates by **before**,
+    **after** or **on** (a date without a time, by the day), text by
+    **contains**, **starts with**, **ends with**, **does not contain**,
+    **does not start with** or **does not end with**. A column can have
+    several conditions (**Add condition**); all must match, so a number
+    range is **≥** and **≤**. Filters on several columns all apply, and
+    **Clear filters** takes them off. The top left corner says how many
+    rows are shown.
   - **Statistics**, next to **First row is headings**, shows rows under the
     headings, of the rows shown (so as filtered), each one chosen: **Sum**,
     **Average**, **Median**, **Min**, **Max** and **Std Dev** (the sample's)
@@ -372,14 +375,17 @@ downloaded at `http://<host>:6080/fs/`:
   since browsers don't pass them on; dropped ones are kept. Cancelling a
   folder's upload stops it at once: the file being uploaded is deleted,
   and those uploaded before it are kept.
-- **New folders and renaming:** **New folder…** makes a folder in the one
-  shown (as `name (1)` if the name is taken), and **Rename…** in a row's
-  menu renames it; for a file, only the part before the extension starts
+- **New folders, new files and renaming:** **New folder…** makes a folder
+  in the one shown (as `name (1)` if the name is taken), and **New
+  file…** makes an empty file there (as `name (1).ext` if taken), starting
+  from `Untitled.txt` so you can keep the extension or change it to
+  `.md`, `.csv`, `.json` or another name. **Rename…** in a row's menu
+  renames it; for a file, only the part before the extension starts
   selected. A rename never replaces anything: if the new name is taken, it
   fails and says so. Renaming a symlink renames the link. A new name, for
-  a folder, a rename or an upload, can't contain control characters, such
-  as a line break; a file already named with one can still be renamed and
-  deleted.
+  a folder, a file, a rename or an upload, can't contain control
+  characters, such as a line break; a file already named with one can
+  still be renamed and deleted.
 - **Moving:** drag a row onto a folder in the list, onto `../`, or onto a
   folder in the heading, to move it there; dragging a ticked row moves all
   those ticked. **Move to…** in a row's menu, or in the bar above the list
@@ -490,10 +496,11 @@ makes one:
 ## Activity log
 
 The **Sessions and Activity** button opens `fs/#sessions`, with active
-sessions, **Recent logins**, and the activity log below them. The separate
-**Share links** button opens `fs/#shares`, with share and upload links,
-followed by **Temporary files** and its cleanup controls. Click the active
-tab's button again to return to the folder you were viewing.
+sessions, **Recent logins**, and the activity log below them. It also
+shows when this TabTop was built. The separate **Share links** button
+opens `fs/#shares`, with share and upload links, followed by **Temporary
+files** and its cleanup controls. Click the active tab's button again to
+return to the folder you were viewing.
 
 The log shows recent activity and can be filtered by kind, address or
 words. **Show all** lists older entries, **Download** saves the whole log

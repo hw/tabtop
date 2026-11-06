@@ -275,6 +275,19 @@ export async function checkStructured(checks) {
             ${column("name")}.querySelector("button.col-filter").textContent === "▼"`, "names starting s, scores over 9");
         await ev(`document.querySelector("dialog.preview button.table-clear-filters").click()`);
         await waitFor(`${tableCount} === "3 rows × 3 columns"`, "the filters cleared");
+        // Several conditions on one column (a range).
+        await ev(`${column("score")}.querySelector("button.col-filter").click()`);
+        await waitFor(`!document.querySelector("dialog.preview .table-filter-pop").hidden`, "score's filter");
+        await ev(`(() => { const p = document.querySelector("dialog.preview .table-filter-pop");
+            p.querySelector("select.filter-op").value = "≥"; p.querySelector("input.filter-value").value = "9";
+            p.querySelector("button.filter-add").click();
+            const rows = p.querySelectorAll(".filter-row");
+            rows[1].querySelector("select.filter-op").value = "≤"; rows[1].querySelector("input.filter-value").value = "10";
+            p.querySelector("button.primary").click(); })()`);
+        await waitFor(`${tableCount} === "2 of 3 rows × 3 columns" && ${scores} === "10,9" &&
+            document.querySelector("dialog.preview button.table-clear-filters").textContent === "Clear 2 filters"`, "scores from 9 to 10");
+        await ev(`document.querySelector("dialog.preview button.table-clear-filters").click()`);
+        await waitFor(`${tableCount} === "3 rows × 3 columns"`, "the range cleared");
         // A number's filter takes only a number.
         await filterBy("score", "<", "ten");
         await waitFor(`document.querySelector("dialog.preview .filter-why")?.textContent === "That's not a number."`, "a number asked for");

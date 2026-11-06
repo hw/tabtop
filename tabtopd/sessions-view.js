@@ -157,6 +157,9 @@ export function createSessionView({ security, formatTime }) {
         // Not something to mark as seen: it lasts till the setup is fixed.
         const ipWarning = r.ip_warning ? [el("p", { className: "attention ip-warning" }, r.ip_warning)] : [];
         const marked = newSince(r);
+        const built = typeof r.build_time === "string" && r.build_time
+            ? el("p", { className: "hint build-time", textContent: `TabTop built ${when(r.build_time)}` })
+            : null;
         box.replaceChildren(...ipWarning,
             ...(marked ? [el("p", { className: "attention" }, "Something here is new since you last looked: a failed login, "
                 + "a session used from another address, or a share link another session made. ",
@@ -173,6 +176,9 @@ export function createSessionView({ security, formatTime }) {
         const activity = el("section", { className: "activity" });
         box.append(activity);
         await showActivity(activity, when, field);
+        if (built) {
+            box.append(built);
+        }
     }
 
     // Share and upload links, with cleanup below the links.

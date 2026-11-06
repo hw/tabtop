@@ -224,8 +224,11 @@ test("CSV: columns' types", () => {
 test("CSV: filtering a column by value, as its type is", () => {
     const n = (cell, op, value) => cellMatches(cell, { op, value }, "number");
     assert.ok(n("10", ">", "9") && n("9", "<", "10") && n("1.50", "=", "1.5") && n("-0", "=", "0"));
+    assert.ok(n("10", "≠", "9") && !n("1.50", "≠", "1.5") && n("-0", "≠", "1"));
+    assert.ok(n("10", "≥", "10") && n("10", "≥", "9") && !n("9", "≥", "10"));
+    assert.ok(n("10", "≤", "10") && n("9", "≤", "10") && !n("11", "≤", "10"));
     assert.ok(n("9007199254740993", ">", "9007199254740992"), "exactly, past what JavaScript's numbers hold");
-    assert.ok(!n("", "<", "5") && !n("", "=", "0"), "an empty cell matches no comparison");
+    assert.ok(!n("", "<", "5") && !n("", "=", "0") && !n("", "≠", "0"), "an empty cell matches no comparison");
     const d = (cell, op, value) => cellMatches(cell, { op, value }, "date");
     assert.ok(d("2026-11-05T23:59", "=", "2026-11-05"), "by the day, for a date alone");
     assert.ok(d("2026-11-05", "<", "2026-11-06") && d("2026-11-06 00:00", ">", "2026-11-05") && !d("2026-11-05", ">", "2026-11-05"));
@@ -233,11 +236,16 @@ test("CSV: filtering a column by value, as its type is", () => {
     const t = (cell, op, value) => cellMatches(cell, { op, value }, "text");
     assert.ok(t("Apple pie", "starts", "apple") && t("Apple pie", "ends", "PIE") && t("Apple pie", "contains", "le p"));
     assert.ok(!t("Apple pie", "starts", "pie") && !t("Apple pie", "ends", "apple"));
+    assert.ok(t("Apple pie", "!contains", "cake") && !t("Apple pie", "!contains", "pie"));
+    assert.ok(t("Apple pie", "!starts", "pie") && t("Apple pie", "!ends", "apple"));
+    assert.ok(!t("Apple pie", "!starts", "apple") && !t("Apple pie", "!ends", "pie"));
     assert.ok(filterValueOK("number", " 1e3 ") && !filterValueOK("number", "ten") && filterValueOK("date", "2026-11-05") && !filterValueOK("date", "5/11/2026"));
-    // Filters on several columns, all at once.
-    const rows = [["a", "1"], ["b", "5"], ["ab", "9"]];
-    const filters = new Map([[0, { op: "starts", value: "a" }], [1, { op: ">", value: "2" }]]);
-    assert.deepEqual(filterColumns(rows, [0, 1, 2], filters, ["text", "number"]), [2]);
+    // Filters on several columns, and several on one column (a range), all at once.
+    const rows = [["a", "1"], ["b", "5"], ["ab", "9"], ["x", "9"]];
+    const filters = new Map([[0, [{ op: "!starts", value: "a" }]], [1, [{ op: ">", value: "2" }]]]);
+    assert.deepEqual(filterColumns(rows, [0, 1, 2, 3], filters, ["text", "number"]), [1, 3]);
+    const range = new Map([[1, [{ op: "≥", value: "5" }, { op: "≤", value: "9" }]]]);
+    assert.deepEqual(filterColumns(rows, [0, 1, 2, 3], range, ["text", "number"]), [1, 2, 3]);
 });
 
 test("CSV: a column's statistics", () => {

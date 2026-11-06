@@ -456,6 +456,45 @@ func TestTunnelMkdir(t *testing.T) {
 	}
 }
 
+func TestTunnelCreate(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	os.Mkdir(filepath.Join(g.downloadsDir, "notes"), 0o755)
+	os.WriteFile(filepath.Join(g.downloadsDir, "notes", "readme.md"), nil, 0o644)
+	s := login(t, ctx, srv.URL, code(0))
+	create := func(req tunnelRequest) map[string]any {
+		req.Type = "create"
+		return openSession(t, ctx, srv.URL, s).request(t, ctx, req)
+	}
+	if res := create(tunnelRequest{Path: "notes", Name: "readme.md"}); res["name"] != "readme (1).md" {
+		t.Fatalf("readme.md taken: %v", res)
+	}
+	if res := create(tunnelRequest{Path: "notes", Name: "todo.txt"}); res["name"] != "todo.txt" {
+		t.Fatalf("todo.txt: %v", res)
+	}
+	if res := create(tunnelRequest{Name: "Untitled.txt"}); res["name"] != "Untitled.txt" {
+		t.Fatalf("Untitled.txt: %v", res)
+	}
+	if res := create(tunnelRequest{Name: "Untitled.txt"}); res["name"] != "Untitled (1).txt" {
+		t.Fatalf("Untitled.txt again: %v", res)
+	}
+	for _, name := range []string{"notes/readme (1).md", "notes/todo.txt", "Untitled.txt", "Untitled (1).txt"} {
+		st, err := os.Stat(filepath.Join(g.downloadsDir, name))
+		if err != nil || st.IsDir() || st.Size() != 0 {
+			t.Fatalf("%s: %v %#v", name, err, st)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(g.downloadsDir, "notes")); len(entries) != 3 {
+		t.Errorf("notes holds %d entries", len(entries))
+	}
+	for _, req := range []tunnelRequest{{Name: ".."}, {Name: "a/b"}, {Name: ""}, {Path: "../", Name: "x"},
+		{Path: "missing", Name: "x"}, {Path: "notes/readme.md", Name: "x"}, {Name: uploadTempPrefix + "x"}} {
+		if res := create(req); res["error"] == nil {
+			t.Errorf("create %+v: %v", req, res)
+		}
+	}
+}
+
 // TestRemoveStaleUploadsSwapped checks that a queued folder replaced by a
 // symlink to one outside isn't followed.
 func TestRemoveStaleUploadsSwapped(t *testing.T) {
@@ -553,6 +592,9 @@ func TestNewNameControl(t *testing.T) {
 	defer root.Close()
 	if _, err := (&downloadStore{root: root}).makeFolder(".", "new\nfolder"); err != errUploadName {
 		t.Errorf("folder with a line break: %v", err)
+	}
+	if _, err := (&downloadStore{root: root}).createFile(".", "new\nfile"); err != errUploadName {
+		t.Errorf("file with a line break: %v", err)
 	}
 	os.WriteFile(filepath.Join(dir, "odd\nname"), []byte("x"), 0o644)
 	if err := (&downloadStore{root: root}).renameEntry("plain", "odd\nagain"); err != errUploadName {

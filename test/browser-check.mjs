@@ -3,7 +3,7 @@
 // download, preview, upload, replacing on a name clash, pasting, the
 // keyboard, delete, updating itself, going back to the folder last shown,
 // folder upload picked and dropped, folder delete, zips, new folder,
-// rename, move, copying a path, deleting several, cancelling an upload,
+// new file, rename, move, copying a path, deleting several, cancelling an upload,
 // retrying a failed download, ending another session, which is named by
 // its browser, marking a failed login's warning as seen, refusing files
 // that won't fit together, and carrying on with an upload whose connection
@@ -475,10 +475,16 @@ try {
         await waitForFile(`${downloads}/Downloads.zip`, "Downloads.zip");
     });
 
-    await step("files: new folder and rename", async () => {
+    await step("files: new folder, new file and rename", async () => {
         await ev(`[...document.querySelectorAll("p.upload button")].find((b) => b.textContent === "New folder…").click()`);
         await answer("made-here");
         await waitFor(`${listed}.includes("made-here/")`, "made-here/");
+        await ev(`[...document.querySelectorAll("p.upload button")].find((b) => b.textContent === "New file…").click()`);
+        await answer("notes.md");
+        await waitFor(`${listed}.includes("notes.md")`, "notes.md");
+        await ev(`[...document.querySelectorAll("p.upload button")].find((b) => b.textContent === "New file…").click()`);
+        await answer("notes.md");
+        await waitFor(`${listed}.includes("notes (1).md")`, "notes.md taken → notes (1).md");
         await ev(`${row("hello.txt")}.querySelector("button.rename").click()`);
         await answer("renamed.txt");
         await waitFor(`${listed}.includes("renamed.txt") && !${listed}.includes("hello.txt")`, "hello.txt renamed");

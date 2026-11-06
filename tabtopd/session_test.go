@@ -180,10 +180,16 @@ func TestSessionUses(t *testing.T) {
 		detach, _ := g.attach(id, fmt.Sprintf("192.0.2.%d", i), &tunnel{})
 		detach()
 	}
+	wasBuild := buildTime
+	buildTime = "2026-05-01T12:00:00Z"
+	t.Cleanup(func() { buildTime = wasBuild })
 	r := g.sessionsReport(id, nil)
 	list := r["sessions"].([]sessionInfo)
 	if len(list) != 1 || !list[0].Current || list[0].Open != 0 || list[0].Browser != "Firefox on Linux" {
 		t.Fatalf("sessions: %+v", list)
+	}
+	if r["build_time"] != "2026-05-01T12:00:00Z" {
+		t.Errorf("build_time: %v", r["build_time"])
 	}
 	uses := list[0].Uses
 	if len(uses) != maxSessionUses || uses[0].IP != "198.51.100.1" {

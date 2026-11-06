@@ -332,6 +332,41 @@ func (s *downloadStore) makeFolder(dir, name string) (string, error) {
 	return "", errors.New("too many folders with that name")
 }
 
+// createFile creates an empty file name in dir, or the first free name
+// like it (as an upload does), and returns the name it got.
+func (s *downloadStore) createFile(dir, name string) (string, error) {
+	root := s.root
+	if !validNewName(name) {
+		return "", errUploadName
+	}
+	if st, err := root.Stat(dir); err != nil || !st.IsDir() {
+		return "", fs.ErrNotExist
+	}
+	ext := path.Ext(name)
+	if ext == name {
+		ext = "" // ".bashrc" is all name
+	}
+	base := strings.TrimSuffix(name, ext)
+	for i := 0; i < 1000; i++ {
+		got := name
+		if i > 0 {
+			got = numberedName(base, ext, i)
+		}
+		f, err := root.OpenFile(path.Join(dir, got), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err == nil {
+			f.Close()
+			if err := syncDir(root, dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+				log.Printf("empty file saved as %q, but syncing its folder failed: %v", path.Join(dir, got), err)
+			}
+			return got, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("too many files with that name")
+}
+
 // deleteFile deletes the file or folder at name in root, a folder with
 // everything in it, and reports whether it was a folder. A symlink is
 // deleted itself, not what it leads to, and nothing is followed out of

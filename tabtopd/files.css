@@ -277,13 +277,16 @@ dialog.picker .picker-list .hint { padding-right: .7rem; white-space: nowrap; }
 .table-scroll thead tr.stats td { font-size: .85rem; color: var(--fg); font-variant-numeric: tabular-nums; }
 .table-scroll thead tr.stats td.type-number, .table-scroll thead tr.stats td { white-space: nowrap; }
 .table-view { position: relative; }
-.table-filter-pop { position: absolute; z-index: 3; width: 18rem; max-width: calc(100% - 16px); box-sizing: border-box; padding: .6rem .7rem;
+.table-filter-pop { position: absolute; z-index: 3; width: 20rem; max-width: calc(100% - 16px); box-sizing: border-box; padding: .6rem .7rem;
        background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
 .table-filter-pop[hidden] { display: none; }
 .table-filter-pop .filter-title { margin: 0 0 .5rem; font-weight: 600; overflow-wrap: anywhere; }
-.table-filter-pop .filter-row { display: flex; gap: .4rem; }
+.table-filter-pop .filter-list { display: flex; flex-direction: column; gap: .35rem; }
+.table-filter-pop .filter-row { display: flex; gap: .4rem; align-items: center; }
 .table-filter-pop .filter-row select, .table-filter-pop .filter-row input { font: inherit; padding: .25rem .35rem; }
 .table-filter-pop .filter-row input { flex: 1; min-width: 0; width: auto; }
+.table-filter-pop .filter-remove { flex: none; min-width: 1.8rem; padding: .2rem .4rem; line-height: 1.2; }
+.table-filter-pop .filter-add { margin-top: .45rem; font: inherit; font-size: .9rem; }
 .table-filter-pop .filter-why { margin: .35rem 0 0; color: var(--error, #c5221f); }
 .table-filter-pop .filter-why:empty { display: none; }
 .table-filter-pop .buttons { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .6rem; }

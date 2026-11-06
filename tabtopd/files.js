@@ -6,15 +6,16 @@
 // and folders picked with their checkboxes, download as one zip. Files and
 // folders dropped or pasted on the page are uploaded into the folder shown,
 // as are those picked with its buttons (see drop.js, uploadFile and
-// makeFolder), and each file and folder can be renamed, moved into another
-// folder (from its menu, or dragged onto the folder), and deleted. The
-// list sorts by any column (see sortEntries), and can be used from the
-// keyboard (see listKeys). While the page is in view, the list updates
-// itself as the folder changes (see watchChanges), keeping what's typed in
-// the filter box, ticked and focused. Opened again, the page goes back to
-// the folder it last showed, where it was scrolled to (see Places). Below,
-// it lists the live sessions and recent logins (see showSessions). If the
-// server can't be reached, it says so and tries again (see reconnect.js).
+// makeFolder), and empty files with New file… (see createFile). Each file
+// and folder can be renamed, moved into another folder (from its menu, or
+// dragged onto the folder), and deleted. The list sorts by any column (see
+// sortEntries), and can be used from the keyboard (see listKeys). While the
+// page is in view, the list updates itself as the folder changes (see
+// watchChanges), keeping what's typed in the filter box, ticked and focused.
+// Opened again, the page goes back to the folder it last showed, where it
+// was scrolled to (see Places). Below, it lists the live sessions and
+// recent logins (see showSessions). If the server can't be reached, it says
+// so and tries again (see reconnect.js).
 
 import { createFileActions, MOVE_TYPE } from "./files-actions.js";
 import { glyphs, iconSVG } from "./glyphs.js";
@@ -24,7 +25,7 @@ import { createSessionView } from "./sessions-view.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askName, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
-import { call, folderInfo, makeFolder, uploadFile } from "./requests.js";
+import { call, createFile, folderInfo, makeFolder, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip, humanBytes } from "./download.js";
 import { preview, previewable } from "./preview.js";
 import { reconnect, reconnected } from "./reconnect.js";
@@ -339,6 +340,21 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         row.finish();
         await show();
     });
+    const newFile = button("", "New file…", async () => {
+        const name = await askName("The new file's name:", "Make file", "Untitled.txt", true);
+        if (name === null) {
+            return;
+        }
+        const row = statusRow(`${name}: making`);
+        try {
+            const got = await createFile(dir, name);
+            row.set(got === name ? `${name}: made` : `${name}: made as ${got}, since the name is taken`);
+        } catch (err) {
+            row.set(`${name}: not made: ${err.message}`, true);
+        }
+        row.finish();
+        await show();
+    });
     const crumbs = breadcrumbs(dir);
     for (const a of crumbs.querySelectorAll("a")) {
         moveTarget(a, dir, a.dataset.dir);
@@ -350,7 +366,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         el("table", { className: "file-table" }, el("thead", {}, head), tbody),
         ...(reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${reply.max} entries, ` +
             `so only ${reply.max} of them are shown, chosen in no particular order.` })] : []),
-        el("p", { className: "upload" }, uploadButton(), newFolder,
+        el("p", { className: "upload" }, uploadButton(), newFolder, newFile,
             ...(reply.fetch ? [button("fetch-url", "Fetch from URL…", () => fetchURL(dir))] : []),
             ...(reply.share ? [button("upload-link", "Upload link…", () => uploadLink(dir))] : []),
             el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),

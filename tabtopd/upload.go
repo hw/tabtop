@@ -164,6 +164,29 @@ func (g *server) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	r.finish(map[string]any{"name": name})
 }
 
+// tunnelCreate answers a create request, for an empty file req.Name in
+// req.Path, with {"name":...}, the name it got.
+func (g *server) tunnelCreate(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+	root, err := openDownloadStore(g.downloadsDir)
+	if err != nil {
+		r.fail(uploadError(fs.ErrNotExist))
+		return
+	}
+	defer root.Close()
+	dir := strings.Trim(req.Path, "/")
+	if dir == "" {
+		dir = "."
+	}
+	name, err := root.createFile(dir, req.Name)
+	if err != nil {
+		log.Printf("file %q: %v", path.Join(dir, req.Name), err)
+		r.fail(uploadError(err))
+		return
+	}
+	log.Printf("empty file %q created through the tunnel", path.Join(dir, name))
+	r.finish(map[string]any{"name": name})
+}
+
 // uploadError is what to tell the user about err.
 func uploadError(err error) string {
 	switch {
