@@ -6,10 +6,22 @@
 # later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
-# Usage: test/browser-check.sh <image>
+# Usage: test/browser-check.sh <image> [--group all|zip|media|audio|video|mkv|text|html|markdown|pdf|epub|tables|previews]
 set -euo pipefail
 
-image=${1:?usage: $0 <image>}
+image=${1:?usage: $0 <image> [--group group]}
+shift
+group=all
+while (($#)); do
+    case "$1" in
+        --group) group=${2:?--group requires a value}; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+case "$group" in
+    all|zip|media|audio|video|mkv|text|html|markdown|pdf|epub|tables|previews) ;;
+    *) echo "Unknown browser test group: $group" >&2; exit 1 ;;
+esac
 here=$(cd "$(dirname "$0")" && pwd)
 chrome=${CHROME:-$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)}
 [[ -n "$chrome" ]] || { echo "Chrome isn't installed; set CHROME to it" >&2; exit 1; }
@@ -75,7 +87,11 @@ for ((i = 0; ; i++)); do
 done
 port=$(head -n 1 "$work/chrome/DevToolsActivePort")
 
-timeout 540 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$work" "$name"
+timeout 540 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$work" "$name" "$group"
+
+# Feature checks own their fixtures; the remaining file assertions belong to
+# the complete user journey only.
+[[ "$group" == all ]] || exit 0
 
 # What the pages did, as the container sees it.
 holds() {

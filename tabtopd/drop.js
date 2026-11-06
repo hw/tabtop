@@ -224,6 +224,7 @@ async function askReplace(files, dir, names) {
 // if it failed, a function that tries again, with upload(files, folders,
 // dir). With replace, a file with its name there is replaced.
 async function uploadOne(file, dir, row, send, replace, upload) {
+    row.destination(`To: Downloads${dir ? "/" + dir : ""}`);
     const result = await runTransfer({
         signal: row.signal,
         retry: () => upload([file], [], dir),

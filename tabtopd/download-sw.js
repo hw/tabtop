@@ -1,3 +1,7 @@
+// The classic worker and module views derive from the same checked registry.
+importScripts("./file-types-worker.js");
+const mediaMIMETypes = new Set(Object.values(self.TabTopFileTypes).filter((type) => type.kind === "audio" || type.kind === "video").map((type) => type.mime));
+
 // The files page's service worker, served by tabtopd (see e2e.go). It
 // turns a file the page is fetching through the encrypted tunnel into an
 // ordinary browser download, written to disk as it arrives instead of being
@@ -180,7 +184,7 @@ async function mediaResponse(event, id, legacyVideo = false) {
         const metadata = receive();
         client.postMessage({ type: legacyVideo ? "video-range" : "media-range", id, instance: MEDIA_INSTANCE }, [port2]);
         const { size, type } = await metadata;
-        if (!Number.isSafeInteger(size) || size < 0 || !/^(video\/(mp4|webm|quicktime|ogg|x-matroska)|audio\/(mpeg|mp4|aac|ogg|wav|flac))$/.test(type)) throw new Error("invalid media metadata");
+        if (!Number.isSafeInteger(size) || size < 0 || !mediaMIMETypes.has(type)) throw new Error("invalid media metadata");
         const at = mediaRange(event.request.headers.get("Range"), size);
         const headers = { "Content-Type": type, "Accept-Ranges": "bytes", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
         if (!at) {

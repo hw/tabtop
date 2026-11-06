@@ -188,3 +188,46 @@ logging in, make each public in its package settings on GitHub.
 
 The browser regression suite also uses FFmpeg to generate an indexed video
 fixture for range-based playback and seeking tests.
+
+## Preview and file modules
+
+`files.js` owns folder listing, selection and keyboard navigation;
+`files-actions.js` owns mutations, share links and transfer tracking. Actions
+receive the refresh callback and formatting helpers without importing the page.
+`e2e.go` serves page assets and headers; `tunnel_request.go` owns tunnel routing.
+
+`preview.js` owns the lightbox, navigation and cancellation. `preview-loaders.js`
+selects transport loaders; `preview-renderers.js` selects format adapters. Frame
+messaging is bound in `preview-frames.js`, editing lives in `preview-editor.js`,
+and each mounted renderer has the lifecycle documented in `preview-view.js`.
+`stream-worker.js` centralizes worker readiness and retries. `media-source.js`
+owns media lifetimes, while `ranged-file.js` validates and cancels shared PDF and
+media reads. Their range caps and concurrency policies remain format-specific.
+The `video-stream.js` shim and legacy video-range messages support cached pages;
+media's buffered fallback still supports browsers without service workers.
+
+`file-types.json` is the binary MIME/kind registry shared by the browser, worker
+and EPUB picture validation. After editing it, run `go -C tabtopd generate` and
+commit the two generated JavaScript files. The MIME interop test checks them
+against the registry. Text previews retain their separate plain-text policy.
+
+The Go preview handlers share Downloads file opening and child-process
+mechanics. Each format retains its own input, output and timeout limits. Work
+admission waits up to five seconds, then returns that format's busy error; each
+read/render format has two slots and EPUB rewriting has one. ZIP listing and EPUB
+opening share bounded directory validation (10,000 entries/4 MiB for listings,
+20,000 entries/8 MiB for EPUB), before the standard ZIP parser allocates entries.
+See [preview sanitizer boundaries](preview-security.md) before changing HTML handling.
+
+Browser fixtures and feature checks live under `test/browser/`. Run an independent
+group against a built image, or omit `--group` for the complete journey:
+
+```sh
+mise exec -- bash test/browser-check.sh tabtop:review --group zip
+mise exec -- bash test/browser-check.sh tabtop:review --group mkv
+mise exec -- bash test/browser-check.sh tabtop:review --group previews
+mise exec -- bash test/browser-check.sh tabtop:review
+```
+
+Other groups are `audio`, `video`, `media`, `text`, `html`, `markdown`, `pdf`,
+`epub` and `tables`. Each creates its own required fixtures.

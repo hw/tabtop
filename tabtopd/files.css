@@ -101,12 +101,32 @@ dialog label.check input { width: auto; }
 .soon { color: #b06000; font-size: 13px; }
 @media (prefers-color-scheme: dark) { .soon { color: #fdd663; } }
 dialog p.hint { margin-top: .5rem; font-size: .85rem; }
-dialog .cover-field { display: flex; gap: .9rem; align-items: flex-start; margin: .2rem 0 .6rem; }
-dialog .cover-field img.cover { width: 5.5rem; max-height: 8rem; object-fit: contain; border: 1px solid var(--line, #ccc); }
-dialog .cover-field .no-cover { display: grid; place-items: center; width: 5.5rem; height: 7.5rem; border: 1px dashed var(--line, #ccc); }
-dialog .cover-field .no-cover[hidden], dialog .cover-field img[hidden] { display: none; }
-dialog .cover-field div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .35rem; }
-dialog .cover-field input[type=file] { padding: 0; }
+dialog.book-details { width: min(34rem, calc(100vw - 2rem)); }
+dialog.book-details .book-edit { display: flex; gap: 1.1rem; align-items: flex-start; margin: .15rem 0 .2rem; }
+dialog.book-details .book-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+dialog.book-details label.field { flex-direction: column; align-items: stretch; gap: .25rem; margin: 0 0 .65rem; }
+dialog.book-details label.field span { min-width: 0; font-size: .85rem; opacity: .75; }
+dialog.book-details label.field input { width: 100%; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: 6px;
+       background: var(--bg); color: inherit; }
+dialog.book-details .cover-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .1rem 0 .35rem; }
+dialog.book-details .cover-actions button { font: inherit; font-size: .9rem; }
+dialog.book-details .cover-clear[hidden] { display: none; }
+dialog.book-details .cover-name:empty { display: none; }
+dialog.book-details .cover-note { margin: .35rem 0 0; }
+dialog.book-details .buttons .rebuild-toc { margin-right: auto; }
+dialog.book-details .cover-field { display: flex; flex-direction: column; align-items: center; gap: .35rem; flex: none; margin: 0;
+       padding: .35rem; border-radius: 8px; }
+dialog.book-details .cover-field img.cover, dialog.book-details .cover-field .no-cover {
+       width: 8.5rem; height: 12rem; box-sizing: border-box; border-radius: 6px; background: var(--bg); }
+dialog.book-details .cover-field img.cover { object-fit: contain; border: 1px solid var(--line);
+       box-shadow: 0 2px 12px rgba(0, 0, 0, .12); }
+dialog.book-details .cover-field .no-cover { display: grid; place-items: center; text-align: center; padding: .5rem;
+       border: 1px dashed var(--line); }
+dialog.book-details .cover-field .no-cover[hidden], dialog.book-details .cover-field img[hidden] { display: none; }
+dialog.book-details .cover-field .cover-drop-hint { margin: 0; text-align: center; }
+dialog.book-details .cover-field:not(.locked):hover { background: var(--hover); }
+@media (max-width: 28rem) { dialog.book-details .book-edit { flex-direction: column; align-items: center; }
+       dialog.book-details .book-meta { width: 100%; } }
 dialog .buttons { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
 dialog button { font: inherit; padding: .3rem .9rem; }
 dialog button.primary { color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; }
@@ -230,8 +250,8 @@ dialog.preview .head .download-menu[hidden] { display: none; }
 /* The view and theme glyphs; the book's cover dropped on; the picture
    picker. */
 dialog.preview .head .views button.glyph { min-width: 2rem; padding: .1rem .45rem; }
-dialog .cover-field.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 4px; }
-dialog .cover-field .cover-name { overflow-wrap: anywhere; }
+dialog.book-details .cover-field.dropping { outline: 2px dashed var(--accent); outline-offset: 2px; background: var(--hover); }
+dialog.book-details .cover-name { overflow-wrap: anywhere; }
 dialog.picker { width: min(30rem, calc(100vw - 2rem)); }
 dialog.picker .picker-where { font-weight: 600; overflow-wrap: anywhere; }
 dialog.picker .picker-list { list-style: none; margin: 0 0 .5rem; padding: 0; max-height: 50vh; overflow: auto;
@@ -304,7 +324,7 @@ dialog.preview.wide { inset: 0; width: auto; height: auto; max-width: none; max-
 dialog.preview-link .buttons { flex-wrap: wrap; }
 dialog.preview-link .link-url { user-select: text; }
 
-/* ZIP metadata is listed as text, never extracted or made into links. */
+/* ZIP names remain inert text; extraction actions are explicit. */
 dialog.preview .body > .zip-listing { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .zip-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: .75rem; }
 .zip-tools input { width: min(22rem, 100%); font: inherit; padding: .3rem .5rem; box-sizing: border-box; }
@@ -312,3 +332,32 @@ dialog.preview .body > .zip-listing { align-self: stretch; flex: 1; display: fle
 .zip-table th { position: sticky; top: 0; background: var(--bg); }
 .zip-table td.name { min-width: 12rem; white-space: pre-wrap; }
 .zip-scroll > button { margin: .75rem; }
+
+.zip-table td.name input { margin-right: .6rem; }
+.zip-extract-note, .zip-extract-status { margin: .25rem .75rem; }
+
+.zip-action-bar { position: sticky; bottom: 0; flex-shrink: 0; padding: .6rem .75rem; border-top: 1px solid var(--line); background: var(--bg); }
+.zip-selection-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.zip-selection-summary { flex: 1; min-width: 12rem; }
+.zip-action-bar .zip-extract-status { margin: 0 0 .5rem; overflow-wrap: anywhere; }
+.zip-extract-status:empty { display: none; }
+.zip-extract-status.warning { color: #865200; background: #fff4d4; padding: .6rem; border-radius: .3rem; }
+.zip-unavailable { display: inline-block; margin-left: .5rem; padding: .1rem .4rem; border: 1px solid var(--line); border-radius: .3rem; font-size: .85em; }
+.zip-table th input { margin-right: .6rem; }
+@media (prefers-color-scheme: dark) {
+    .zip-extract-status.warning { color: #ffdc8a; background: #403010; }
+}
+
+/* Keep file actions visible without changing the list's scroll position. */
+.selection { position: sticky; top: .5rem; z-index: 4; background: var(--raised); border: 1px solid var(--line); }
+.selection > span { flex: 1; }
+dialog.preview .preview-navigation, dialog.preview .preview-edit-actions, dialog.preview .preview-appearance { display: inline-flex; align-items: center; gap: .35rem; }
+dialog.preview .head .save-status { max-width: 16rem; font-size: .8rem; }
+dialog.preview .download-menu button { display: flex; align-items: center; gap: .5rem; text-align: left; white-space: normal; }
+dialog.preview .download-menu { min-width: 17rem; }
+dialog.preview .download-menu svg { flex-shrink: 0; }
+dialog.preview .preview-failure { padding: 1rem; overflow-wrap: anywhere; }
+dialog.preview .preview-failure button { margin-right: .5rem; }
+dialog.preview .download-changes { align-self: flex-start; margin: .25rem .75rem; }
+
+dialog.preview .head .download-menu { flex-direction: column; max-width: calc(100vw - 2rem); }

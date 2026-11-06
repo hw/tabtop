@@ -30,6 +30,44 @@ func openDownloadStore(dir string) (*downloadStore, error) {
 }
 func (s *downloadStore) Close() error { return s.root.Close() }
 
+// downloadItem owns both the confined store and its opened descriptor.
+// Callers choose whether directories are allowed; protocol errors stay uniform.
+type downloadItem struct {
+	store *downloadStore
+	file  *os.File
+	info  fs.FileInfo
+	name  string
+}
+
+var errDownloadsMissing = errors.New("The downloads folder is missing.")
+var errDownloadMissing = errors.New("Not found.")
+
+func openDownloadsItem(dir, name string) (*downloadItem, error) {
+	store, err := openDownloadStore(dir)
+	if err != nil {
+		return nil, errDownloadsMissing
+	}
+	name = path.Clean(strings.Trim(name, "/"))
+	f, st, err := store.open(name)
+	if err != nil {
+		store.Close()
+		return nil, errDownloadMissing
+	}
+	return &downloadItem{store: store, file: f, info: st, name: name}, nil
+}
+func openDownloadsFile(dir, name string) (*downloadItem, error) {
+	item, err := openDownloadsItem(dir, name)
+	if err != nil {
+		return nil, err
+	}
+	if !item.info.Mode().IsRegular() {
+		item.Close()
+		return nil, errDownloadMissing
+	}
+	return item, nil
+}
+func (item *downloadItem) Close() error { return errors.Join(item.file.Close(), item.store.Close()) }
+
 // A trailing separator makes the kernel require a directory before opening
 // the final component. os.OpenRoot alone can block on a FIFO before checking
 // its type. Keep an empty path invalid and avoid growing paths on resume.

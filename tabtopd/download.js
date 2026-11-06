@@ -10,70 +10,14 @@
 import { call, collect, complete, saveBlob } from "./requests.js";
 import { runTransfer } from "./transfer.js";
 import { statusRow } from "./ui.js";
+import { streamWorker } from "./stream-worker.js";
+// Compatibility for pages loaded before worker registration was extracted.
+export { streamWorker, mediaWorker } from "./stream-worker.js";
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
     e.append(...children);
     return e;
-}
-
-// downloadWorker resolves to the active download service worker, or null
-// where there's none: over plain HTTP, or where the browser refuses it (as
-// in some private windows).
-let downloadWorker = null;
-
-// DOWNLOAD_SW_VERSION names the worker's version in its address. A
-// browser checks an unchanged address for a newer worker only now and
-// then, so it goes up whenever download-sw.js changes in a way the page
-// relies on, as it did when zips of unknown size came in (2), and when it
-// started saying it's ready for a download (3), video ranges (4), and Matroska video ranges (5), then shared audio/video ranges (6), then worker-lifetime tokens (7).
-const DOWNLOAD_SW_VERSION = 7;
-
-export function streamWorker() {
-    downloadWorker ??= (async () => {
-        try {
-            const reg = await navigator.serviceWorker.register(new URL(`./download-sw.js?v=${DOWNLOAD_SW_VERSION}`, import.meta.url),
-                { scope: new URL("./stream/", import.meta.url).pathname });
-            // A browser that used the page before may still run an older
-            // worker, which a new version replaces: wait for it to take
-            // over, so downloads use it.
-            const end = Date.now() + 5000;
-            while ((!reg.active || reg.installing || reg.waiting) && Date.now() < end) {
-                await new Promise((r) => setTimeout(r, 50));
-            }
-            return reg.active;
-        } catch {
-            return null;
-        }
-    })();
-    return downloadWorker;
-}
-
-// Media subresources are intercepted only when their owning page is
-// controlled. Keep this registration separate from download navigations.
-let mediaRegistration = null;
-export function mediaWorker() {
-    mediaRegistration ??= (async () => {
-        try {
-            const scope = new URL("./", location.href).pathname;
-            const reg = await navigator.serviceWorker.register(new URL(`./download-sw.js?v=${DOWNLOAD_SW_VERSION}`, import.meta.url), { scope });
-            const ready = () => reg.active && !reg.installing && !reg.waiting && navigator.serviceWorker.controller === reg.active;
-            const end = Date.now() + 5000;
-            while (!ready() && Date.now() < end) {
-                await new Promise((resolve) => setTimeout(resolve, 50));
-            }
-            return ready() ? reg.active : null;
-        } catch {
-            return null;
-        }
-    })();
-    const pending = mediaRegistration;
-    return pending.then((worker) => {
-        // Slow activation and temporary registration errors are retryable.
-        // Concurrent callers still share a single initialization attempt.
-        if (!worker && mediaRegistration === pending) mediaRegistration = null;
-        return worker;
-    });
 }
 
 // File and ZIP downloads share lifecycle handling; their wire metadata and
@@ -93,6 +37,7 @@ export function fetchZip(dir, names) {
 async function fetchDownload(req, label, starting, retry) {
     const zip = req.type === "zip";
     const row = statusRow(`${label}: ${starting}`, true);
+    row.destination("To: browser downloads");
     let name = label;
     let opened = false;
     const result = await runTransfer({

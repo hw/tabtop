@@ -77,7 +77,14 @@ downloaded at `http://<host>:6080/fs/`:
 - **ZIP archives** (`.zip`) show a searchable contents listing with full paths,
   entry type, original and packed sizes, modification times, and encrypted
   entry markers. **Show more** adds rows after the first 500. Only directory
-  metadata is read; entries are never extracted or executed, including symlinks.
+  metadata is read until extraction is requested. Use **Extract** beside a file,
+  or tick files and choose **Extract selected**. The header checkbox selects
+  eligible files in the rows shown. The action bar keeps selected count and size
+  visible, notes selections hidden by filtering or paging, and offers **Clear
+  selection**. After extraction, **Open folder** opens the result. A new folder beside the ZIP
+  receives the files with their paths preserved; existing folders are never
+  overwritten. Each extraction allows up to 1,000 files and 512 MiB. Encrypted
+  files, symlinks, unsupported compression, and unsafe paths cannot be extracted.
   ZIP64 sizes are preserved, and filenames support UTF-8, CP437 and validated
   Unicode Path metadata. Listings are limited to 10,000 entries and 4 MB
   of directory metadata; split archives aren't supported. **Download** saves
@@ -124,7 +131,13 @@ downloaded at `http://<host>:6080/fs/`:
 
   **Edit** changes a book's title, its author and its cover. The author
   is the book's first; any others stay as they are, and an empty author
-  removes it.
+  removes it. **Rebuild contents** remakes the contents list from each
+  chapter's headings (`h1`–`h3`) that have usable IDs. Chapters without
+  anchored headings get one entry from their filename. Chapter files stay
+  unchanged: written as EPUB 3's nav, and as the NCX too when the book
+  already has one. Other nav sections (landmarks, page-list) are left as
+  they are. If the book already has a contents list, it asks before
+  replacing it.
   - **Choosing it:** **From Downloads…** picks a picture in Downloads,
     starting in the book's folder. A picture from your computer can be
     dropped on the dialog, or pasted into it; it isn't uploaded into the
@@ -142,7 +155,8 @@ downloaded at `http://<host>:6080/fs/`:
   - **What's kept:** everything else in the book is copied unchanged.
     Sort keys that went with the old title or author (`file-as`) are
     removed, since they'd be stale. The NCX's own title and author are
-    left as they are.
+    left as they are (its contents list is rewritten only when **Rebuild
+    contents** is used).
   - **Saving:** the book is saved as a new copy, read back to check it,
     then put in place of the old one in one step, keeping its permissions.
     If anything goes wrong, or the book changed since you opened it, it's
@@ -566,3 +580,21 @@ container rather than through your browser and connection.
   had. The gateway's log names the host it fetched from, never the rest of
   the address, which could hold a token.
   [`WEB_FETCH=0`](environment.md#web_fetch-and-web_fetch_private) turns fetching off.
+
+The distinct Markdown, EPUB and HTML sanitizer policies and their security
+boundaries are documented in [preview sanitizers](preview-security.md).
+
+Closing a preview restores focus to its original file and keeps the row in
+view. Preview navigation, editing, appearance and download controls are grouped
+consistently. Failed previews retain **Retry preview** and **Download** actions;
+buffered previews show byte progress while loading.
+
+The file-selection bar stays visible while scrolling and shows the total size
+of selected files. Folder contents are marked separately because their size
+isn't known. The header checkbox selects all filtered files; selections hidden
+by the filter remain counted until cleared.
+
+Editing status appears beside **Save**. If saving fails, **Download my changes**
+keeps a local copy of the current work, including text line endings and BOM.
+Transfer rows show their destinations; active and failed transfers appear first,
+with completed transfers available through **Show completed** while work continues.

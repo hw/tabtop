@@ -1,13 +1,15 @@
 package main
 
 // Editing a book's details: its title, its author (the first dc:creator;
-// any others stay) and its cover picture, from the preview (see editBook in
-// preview.js), with the tunnel's "epub-edit" request.
+// any others stay), its cover picture, and rebuilding its contents list
+// from chapter headings (see editBook in preview.js), with the tunnel's
+// "epub-edit" request.
 //
 // The book is rewritten whole, as a new file beside it, which then replaces
 // it in one step, as the editor saves text (see tunnelUpload): every file in
 // it copied as it is, compressed bytes and all (so mimetype stays first,
-// stored, as EPUB needs), but for the package file (the OPF) and the cover.
+// stored, as EPUB needs), but for the package file (the OPF), the cover,
+// and, when rebuilding contents, the nav (and NCX if the book has one).
 // The OPF is changed in place, a few elements spliced, rather than
 // rewritten from what an XML parser makes of it, which would lose its
 // namespace prefixes and the rest of how it's written. A new cover is
@@ -15,6 +17,7 @@ package main
 // show the new one; it must be the same type of picture, which the page
 // makes it (see coverBytes in preview.js). A book without a cover is given
 // one, beside its OPF, named in the manifest as EPUB 3 and EPUB 2 name one.
+// A book without a nav is given one beside its OPF when contents are rebuilt.
 //
 // As reading is, it's done in the child process (see readEpubIsolated),
 // here with longer to do it in, as it copies the whole book. What it makes
@@ -56,18 +59,20 @@ var (
 	errEpubNoChange  = errors.New("nothing was changed")
 	errEpubBadOPF    = errors.New("its package file (the OPF) can't be changed here")
 	errEpubEditBusy  = errors.New("another book is being changed; try again in a moment")
-	epubEditSlots    = make(chan struct{}, 1)
+	epubEditSlots    = newPreviewWork(previewEditConcurrency)
 	epubFileAsAttr   = regexp.MustCompile(`\s+(?:[A-Za-z_][\w.-]*:)?file-as\s*=\s*(?:"[^"]*"|'[^']*')`)
 	epubXMLEncoding  = regexp.MustCompile(`^\s*<\?xml[^>]*\bencoding\s*=\s*["']([^"']+)["']`)
 	epubStaleRefines = map[string]bool{"file-as": true, "alternate-script": true}
 )
 
 // epubEdit is what's changed, as the child is told it: the title and the
-// author, and whether a new cover comes, on its file descriptor 3.
+// author, whether a new cover comes, on its file descriptor 3, and whether
+// to rebuild the contents list from the chapters' headings.
 type epubEdit struct {
-	Title   string `json:"title"`
-	Creator string `json:"creator"`
-	Cover   bool   `json:"cover"`
+	Title         string `json:"title"`
+	Creator       string `json:"creator"`
+	Cover         bool   `json:"cover"`
+	RegenerateTOC bool   `json:"regenerate_toc,omitempty"`
 }
 
 // epubEditTimeout is how long rewriting a book of size bytes may take: two
@@ -297,7 +302,9 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 	if z.protected() {
 		return errEpubProtected
 	}
-	title, err := epubDetail(e.Title, "title", true)
+	// Rebuild contents alone may leave the title empty (Untitled books);
+	// title/author edits still require a non-empty title.
+	title, err := epubDetail(e.Title, "title", !e.RegenerateTOC)
 	if err != nil {
 		return err
 	}
@@ -337,31 +344,36 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 	// the element that uses it) can't be counted on.
 	const dc, dcDeclare = "dc:", ` xmlns:dc="http://purl.org/dc/elements/1.1/"`
 	changed := false
-	if sc.title == nil {
-		insert(sc.metadata.endStart, "<"+dc+"title"+dcDeclare+">"+xmlText(title)+"</"+dc+"title>\n")
-		changed = true
-	} else if sc.title.value() != title {
-		edits = append(edits, opfEdit{sc.title.start, sc.title.end, withValue(opf, sc.title, title)})
-		dropRefines(sc.title, false)
-		for _, m := range sc.metas {
-			if m.attrs["name"] == "calibre:title_sort" {
-				remove(m)
+	// Rebuild with no title sent (Untitled books): leave title and author
+	// alone. A non-empty title means the client is also saving details.
+	touchMeta := !e.RegenerateTOC || title != ""
+	if touchMeta {
+		if sc.title == nil {
+			insert(sc.metadata.endStart, "<"+dc+"title"+dcDeclare+">"+xmlText(title)+"</"+dc+"title>\n")
+			changed = true
+		} else if sc.title.value() != title {
+			edits = append(edits, opfEdit{sc.title.start, sc.title.end, withValue(opf, sc.title, title)})
+			dropRefines(sc.title, false)
+			for _, m := range sc.metas {
+				if m.attrs["name"] == "calibre:title_sort" {
+					remove(m)
+				}
 			}
+			changed = true
 		}
-		changed = true
-	}
-	switch {
-	case sc.creator == nil && creator != "":
-		insert(sc.metadata.endStart, "<"+dc+"creator"+dcDeclare+">"+xmlText(creator)+"</"+dc+"creator>\n")
-		changed = true
-	case sc.creator != nil && creator == "":
-		remove(sc.creator)
-		dropRefines(sc.creator, true)
-		changed = true
-	case sc.creator != nil && sc.creator.value() != creator:
-		edits = append(edits, opfEdit{sc.creator.start, sc.creator.end, withValue(opf, sc.creator, creator)})
-		dropRefines(sc.creator, false)
-		changed = true
+		switch {
+		case sc.creator == nil && creator != "":
+			insert(sc.metadata.endStart, "<"+dc+"creator"+dcDeclare+">"+xmlText(creator)+"</"+dc+"creator>\n")
+			changed = true
+		case sc.creator != nil && creator == "":
+			remove(sc.creator)
+			dropRefines(sc.creator, true)
+			changed = true
+		case sc.creator != nil && sc.creator.value() != creator:
+			edits = append(edits, opfEdit{sc.creator.start, sc.creator.end, withValue(opf, sc.creator, creator)})
+			dropRefines(sc.creator, false)
+			changed = true
+		}
 	}
 
 	// The cover the book names: written over, or, if the book names one
@@ -442,6 +454,41 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 		}
 		changed = true
 	}
+
+	var navBytes, ncxBytes []byte
+	navPath, ncxPath := "", ""
+	if e.RegenerateTOC {
+		items, err := z.buildTOCFromSpine()
+		if err != nil {
+			return err
+		}
+		var navID string
+		navID, navPath = findNavItem(sc)
+		if navPath == "" {
+			name := z.freeOPFName(opfPath, "nav.xhtml")
+			navPath = path.Join(path.Dir(opfPath), name)
+			navID = freeManifestID(sc, "nav")
+			insert(sc.manifest.endStart, fmt.Sprintf("<%sitem id=%q href=%q media-type=%q properties=%q/>\n",
+				sc.manifest.prefix(), navID, xmlText(name), "application/xhtml+xml", "nav"))
+			navBytes = writeNavDocument(items, navPath)
+		} else if old, err := z.read(navPath, maxEpubMeta); errors.Is(err, errEpubMissing) {
+			navBytes = writeNavDocument(items, navPath)
+		} else if err != nil {
+			return err
+		} else {
+			navBytes = rewriteNavDocument(old, items, navPath)
+		}
+		ncxPath = findNCXItem(sc)
+		if ncxPath != "" {
+			old, err := z.read(ncxPath, maxEpubMeta)
+			if err != nil {
+				return err
+			}
+			ncxBytes = rewriteNCXNavMap(old, items, ncxPath)
+		}
+		changed = true
+	}
+
 	if !changed {
 		return errEpubNoChange
 	}
@@ -458,9 +505,14 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 	}
 	// It reads back as meant: and with a new cover, it's the one cover.
 	check, err := scanOPF(newOPF, opfPath)
-	if err != nil || check.title == nil || check.title.value() != title ||
-		creator != "" && (check.creator == nil || check.creator.value() != creator) {
+	if err != nil {
 		return errEpubBadOPF
+	}
+	if touchMeta {
+		if check.title == nil || check.title.value() != title ||
+			creator != "" && (check.creator == nil || check.creator.value() != creator) {
+			return errEpubBadOPF
+		}
 	}
 	if e.Cover {
 		want := coverPath
@@ -477,6 +529,12 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 			return errEpubBadOPF
 		}
 	}
+	if e.RegenerateTOC {
+		id, href := findNavItem(check)
+		if href != navPath || id == "" {
+			return errEpubBadOPF
+		}
+	}
 
 	w := zip.NewWriter(out)
 	if err := w.SetComment(z.comment); err != nil {
@@ -489,7 +547,7 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 		}
 		return err
 	}
-	opfDone, coverDone := false, false
+	opfDone, coverDone, navDone, ncxDone := false, false, false, false
 	for _, f := range z.all {
 		switch {
 		case f.Name == opfPath && !opfDone:
@@ -498,6 +556,12 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 		case e.Cover && f.Name == coverPath && !coverDone:
 			err = wrote(f.Name, zip.Store, cover)
 			coverDone = true
+		case e.RegenerateTOC && f.Name == navPath && !navDone:
+			err = wrote(f.Name, zip.Deflate, navBytes)
+			navDone = true
+		case e.RegenerateTOC && ncxPath != "" && f.Name == ncxPath && !ncxDone:
+			err = wrote(f.Name, zip.Deflate, ncxBytes)
+			ncxDone = true
 		default:
 			err = w.Copy(f)
 		}
@@ -510,6 +574,11 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 	}
 	if newCover != "" {
 		if err := wrote(newCover, zip.Store, cover); err != nil {
+			return err
+		}
+	}
+	if e.RegenerateTOC && !navDone {
+		if err := wrote(navPath, zip.Deflate, navBytes); err != nil {
 			return err
 		}
 	}
@@ -546,7 +615,8 @@ func epubEditChild(z *epubZip, args []string) ([]byte, error) {
 // tunnelEpubEdit answers an "epub-edit" request: the book at req.Path,
 // as it was (req.IfMtime, req.IfSize), given the title req.Title and the
 // author req.Creator, and, if req.Size, a new cover, its bytes sent after
-// the request.
+// the request; with req.RegenerateTOC, its contents list is rebuilt from
+// the chapters' headings.
 func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	p := path.Clean(strings.Trim(req.Path, "/"))
 	if req.IfMtime == "" || len(req.Title) > 4*maxEpubDetail || len(req.Creator) > 4*maxEpubDetail {
@@ -557,23 +627,14 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 		r.fail(fmt.Sprintf("The cover picture is too big: it can be at most %s.", humanSize(maxEpubPicture)))
 		return
 	}
-	store, err := openDownloadStore(g.downloadsDir)
+	opened, err := openDownloadsFile(g.downloadsDir, p)
 	if err != nil {
-		r.fail("The downloads folder is missing.")
+		r.fail(err.Error())
 		return
 	}
-	defer store.Close()
-	f, st, err := store.open(p)
-	if err != nil {
-		r.fail("Not found.")
-		return
-	}
-	// Closed however this ends, a folder or other than a file too.
-	defer f.Close()
-	if !st.Mode().IsRegular() {
-		r.fail("Not found.")
-		return
-	}
+	defer opened.Close()
+	f, st := opened.file, opened.info
+	store := opened.store
 	if fileVersion(st) != req.IfMtime || st.Size() != req.IfSize {
 		r.fail(errEpubChanged.Error())
 		return
@@ -624,7 +685,7 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 			cover = append(cover, b...)
 		}
 	}
-	edit, _ := json.Marshal(epubEdit{Title: req.Title, Creator: req.Creator, Cover: req.Size > 0})
+	edit, _ := json.Marshal(epubEdit{Title: req.Title, Creator: req.Creator, Cover: req.Size > 0, RegenerateTOC: req.RegenerateTOC})
 
 	u, err := store.startUpload(dir)
 	if err != nil {
@@ -654,10 +715,14 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 	if err == nil && json.Unmarshal(got, &after) != nil {
 		err = errEpubNotBook
 	}
-	title, _ := epubDetail(req.Title, "title", true)
+	title, _ := epubDetail(req.Title, "title", !req.RegenerateTOC)
 	creator, _ := epubDetail(req.Creator, "author", false)
-	if err != nil || after.Title != title || creator != "" && after.Creator != creator || len(after.Spine) != len(before.Spine) ||
-		req.Size > 0 && after.Cover == "" {
+	metaOK := after.Title == title && (creator == "" || after.Creator == creator)
+	if req.RegenerateTOC && title == "" {
+		metaOK = after.Title == before.Title && after.Creator == before.Creator
+	}
+	if err != nil || !metaOK || len(after.Spine) != len(before.Spine) ||
+		req.Size > 0 && after.Cover == "" || req.RegenerateTOC && len(after.TOC) == 0 {
 		log.Printf("editing %q: the changed book didn't read back as it should (%v)", p, err)
 		fail("The changed book didn't read back as it should, so the book was left as it was.")
 		return
@@ -680,7 +745,11 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 		r.fail(uploadError(err))
 		return
 	}
-	log.Printf("changed the details of the book %q", p)
+	if req.RegenerateTOC {
+		log.Printf("rebuilt the contents of the book %q", p)
+	} else {
+		log.Printf("changed the details of the book %q", p)
+	}
 	res := map[string]any{"book": after}
 	if nst != nil {
 		res["mtime"], res["size"] = fileVersion(nst), nst.Size()
@@ -698,14 +767,11 @@ var epubEditCopied = func() {}
 // runEpubEdit has a child write the book open as f, changed as edit says,
 // to out, with cover as its new cover if it's not empty.
 func runEpubEdit(f, out *os.File, cover []byte, size int64, edit string) error {
-	wait := time.NewTimer(epubWait)
-	defer wait.Stop()
-	select {
-	case epubEditSlots <- struct{}{}:
-	case <-wait.C:
+	release, ok := epubEditSlots.acquire()
+	if !ok {
 		return errEpubEditBusy
 	}
-	defer func() { <-epubEditSlots }()
+	defer release()
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return err

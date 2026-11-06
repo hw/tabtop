@@ -16,16 +16,13 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"html"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -93,6 +90,7 @@ func (h *headingIDs) Generate(value []byte, kind ast.NodeKind) []byte {
 func (h *headingIDs) Put(value []byte) { h.used[string(value)] = true }
 
 // markdownPolicy is what's kept of the HTML goldmark makes.
+// Keep this policy distinct from EPUB and raw HTML: docs/preview-security.md.
 var markdownPolicy = func() *bluemonday.Policy {
 	p := bluemonday.UGCPolicy()
 	p.AllowAttrs("class").Matching(regexp.MustCompile(
@@ -140,16 +138,15 @@ func renderMarkdown(r io.Reader) (string, error) {
 // takes time that grows with the square of some shapes of text (thousands
 // of nested quotes, say), so a file made to take minutes, as one sent
 // through an upload link could be, costs a few seconds of one core, and
-// the preview shows its source instead. At most markdownRenders go at once.
+// the preview shows its source instead. Admission uses the shared preview work policy (preview_work.go).
 const (
 	markdownChildArg = "-render-markdown"
 	markdownTimeout  = 5 * time.Second
-	markdownRenders  = 2
 	maxMarkdownHTML  = 32 << 20
 )
 
 var (
-	markdownSlots   = make(chan struct{}, markdownRenders)
+	markdownSlots   = newPreviewWork(previewReadConcurrency)
 	errMarkdownSlow = errors.New("it takes too long to render")
 	errMarkdownBusy = errors.New("other files are being rendered; try again in a moment")
 )
@@ -168,52 +165,24 @@ func renderMarkdownChild() int {
 
 // renderMarkdownIsolated is renderMarkdown, in a child process.
 func renderMarkdownIsolated(src io.Reader) (string, error) {
-	select {
-	case markdownSlots <- struct{}{}:
-	default:
+	release, ok := markdownSlots.acquire()
+	if !ok {
 		return "", errMarkdownBusy
 	}
-	defer func() { <-markdownSlots }()
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), markdownTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, markdownChildArg)
-	cmd.Stdin = io.LimitReader(src, maxMarkdown+1)
-	out := &cappedBuffer{max: maxMarkdownHTML}
-	cmd.Stdout = out
-	cmd.Env = []string{"GOMAXPROCS=1", "GOMEMLIMIT=512MiB"}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	err = cmd.Run()
+	defer release()
+	result := runIsolatedChild(isolatedChild{Args: []string{markdownChildArg}, Input: io.LimitReader(src, maxMarkdown+1), Timeout: markdownTimeout, OutputLimit: maxMarkdownHTML})
 	switch {
-	case ctx.Err() != nil:
+	case result.TimedOut:
 		return "", errMarkdownSlow
-	case out.over:
+	case result.Overflow:
 		return "", errMarkdownTooBig
-	case err != nil:
-		if out.String() == errMarkdownTooBig.Error() {
+	case result.Err != nil:
+		if string(result.Output) == errMarkdownTooBig.Error() {
 			return "", errMarkdownTooBig
 		}
 		return "", errors.New("it couldn't be rendered")
 	}
-	return out.String(), nil
-}
-
-// cappedBuffer keeps what's written, up to max bytes; past that, it's over.
-type cappedBuffer struct {
-	bytes.Buffer
-	max  int
-	over bool
-}
-
-func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if c.Len()+len(p) > c.max {
-		c.over = true
-		return 0, errMarkdownTooBig
-	}
-	return c.Buffer.Write(p)
+	return string(result.Output), nil
 }
 
 // splitFrontMatter takes the YAML front matter many notes start with (a

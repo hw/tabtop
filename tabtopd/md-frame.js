@@ -176,6 +176,8 @@
         "width max-width min-width height max-height margin margin-top margin-right margin-bottom margin-left " +
         "padding padding-top padding-right padding-bottom padding-left border border-width border-style border-color border-collapse " +
         "border-spacing border-radius table-layout list-style-type").split(" "));
+    // Raw HTML is reconstructed from inert nodes, unlike server-rendered
+    // Markdown/EPUB. See docs/preview-security.md before changing this policy.
     function cleanHTML(html) {
         const template = document.createElement("template");
         template.innerHTML = html;

@@ -208,7 +208,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
 RUN go mod download
-COPY tabtopd/*.go tabtopd/*.js tabtopd/*.html tabtopd/*.css ./
+COPY tabtopd/*.go tabtopd/*.js tabtopd/*.json tabtopd/*.html tabtopd/*.css ./
 RUN go build -trimpath -ldflags='-s -w' -o /tabtopd .
 
 # What every build has: the gateway's libraries, the terminal and its

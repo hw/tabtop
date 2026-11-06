@@ -58,17 +58,25 @@ function transfers() {
     announcements.setAttribute("aria-live", "polite");
     const summary = el("span", { className: "summary" });
     const overall = el("progress", { className: "overall", max: 1 });
-    const clear = el("button", { type: "button", textContent: "Clear" });
+    const clear = el("button", { type: "button", textContent: "Clear finished" });
     const fold = el("button", { type: "button", className: "fold" });
+    const completed = el("button", { type: "button", className: "show-completed", textContent: "Show completed" });
     const box = el("section", { id: "transfers", hidden: true },
-        el("div", { className: "head" }, el("strong", { textContent: "Transfers" }), summary, clear, fold), overall, list, announcements);
+        el("div", { className: "head" }, el("strong", { textContent: "Transfers" }), summary, completed, clear, fold), overall, list, announcements);
     box.setAttribute("aria-label", "Transfers");
     const update = () => {
         const rows = [...list.children];
         const going = rows.filter((p) => p.classList.contains("going")).length;
         box.hidden = !rows.length;
         document.body.classList.toggle("has-transfers", !box.hidden);
-        summary.textContent = going ? `${going} going` : "all done";
+        const failed = rows.filter(p => !p.classList.contains("going") && p.classList.contains("error")).length;
+        const done = rows.length - going - failed;
+        summary.textContent = going ? `${going} active${failed ? ` · ${failed} failed` : ""}` : failed ? `${failed} failed · ${done} completed` : `${done} completed`;
+        box.classList.toggle("has-active", going > 0);
+        completed.hidden = !going || !done;
+        const showDone = box.classList.contains("show-finished");
+        completed.textContent = `${showDone ? "Hide" : "Show"} completed (${done})`;
+        completed.setAttribute("aria-expanded", String(showDone));
         overall.hidden = !going;
         overall.value = rows.length ? (rows.length - going) / rows.length : 0;
         clear.disabled = going === rows.length;
@@ -79,6 +87,7 @@ function transfers() {
         fold.setAttribute("aria-expanded", String(!folded));
         showProgress(rows);
     };
+    completed.addEventListener("click", () => { box.classList.toggle("show-finished"); update(); });
     clear.addEventListener("click", () => {
         for (const p of [...list.children]) {
             if (!p.classList.contains("going")) {
@@ -131,7 +140,8 @@ export function statusRow(text, cancellable = false) {
     const { list, announcements, update } = transfers();
     const span = el("span", { textContent: text });
     const bar = el("progress", { max: 1, hidden: true });
-    const p = el("p", { className: "going" }, span, bar);
+    const destination = el("small", { className: "transfer-destination", hidden: true });
+    const p = el("p", { className: "going" }, span, destination, bar);
     const abort = new AbortController();
     let button = null;
     if (cancellable) {
@@ -145,9 +155,11 @@ export function statusRow(text, cancellable = false) {
     list.append(p);
     update();
     return {
+        destination(text) { destination.textContent = text; destination.hidden = !text; },
         set(t, error = false) {
             span.textContent = t;
             p.classList.toggle("error", error);
+            update();
         },
         progress(fraction) {
             bar.hidden = false;
@@ -438,9 +450,11 @@ export async function askName(message, ok, value = "", stem = false) {
 // one, hasCover, and it could be fetched), or why it can't be changed
 // (coverNote). The picture is one in Downloads, chosen with pick() (which
 // resolves to it, as a File, or null), or one dropped on the dialog or
-// pasted into it, from this computer. It resolves to {title, creator,
-// picture}, picture null if none was chosen, or null for Cancel.
-export async function askBookDetails({ title, creator, hasCover, coverURL, coverNote, pick }) {
+// pasted into it, from this computer. Rebuild contents closes this dialog
+// and resolves to {rebuildTOC: true} (after a confirm when hasTOC). Else
+// it resolves to {title, creator, picture}, picture null if none was
+// chosen, or null for Cancel.
+export async function askBookDetails({ title, creator, hasCover, coverURL, coverNote, pick, hasTOC }) {
     const field = (label, input) => el("label", { className: "field" }, el("span", { textContent: label }), input);
     const titleBox = el("input", { type: "text", value: title, required: true, maxLength: 500, spellcheck: false, autocomplete: "off" });
     const creatorBox = el("input", { type: "text", value: creator, maxLength: 500, spellcheck: false, autocomplete: "off",
@@ -451,8 +465,20 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
     }
     const none = el("span", { className: "hint no-cover", textContent: hasCover ? "Not shown" : "No cover", hidden: !!coverURL });
     const which = el("span", { className: "hint cover-name" });
+    const clear = el("button", { type: "button", className: "cover-clear", textContent: "Clear new picture", hidden: true });
     let picked = null;
     let pickedURL = null;
+    const showCover = (src) => {
+        if (src) {
+            shown.src = src;
+            shown.hidden = false;
+            none.hidden = true;
+        } else {
+            shown.removeAttribute("src");
+            shown.hidden = true;
+            none.hidden = false;
+        }
+    };
     const take = (file) => {
         if (coverNote || !file || !file.type.startsWith("image/")) {
             return false;
@@ -462,22 +488,64 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
             URL.revokeObjectURL(pickedURL);
         }
         pickedURL = URL.createObjectURL(file);
-        shown.src = pickedURL;
-        shown.hidden = false;
-        none.hidden = true;
+        showCover(pickedURL);
         which.textContent = file.name ? `New: ${file.name}` : "New: a picture pasted";
+        clear.hidden = false;
         return true;
     };
+    clear.addEventListener("click", () => {
+        picked = null;
+        if (pickedURL) {
+            URL.revokeObjectURL(pickedURL);
+            pickedURL = null;
+        }
+        showCover(coverURL || "");
+        which.textContent = "";
+        clear.hidden = true;
+    });
     const fromDownloads = el("button", { type: "button", className: "cover-pick", textContent: "From Downloads…", disabled: !!coverNote });
     fromDownloads.addEventListener("click", async () => take(await pick()));
-    const cover = el("div", { className: "cover-field" }, shown, none,
-        el("div", {}, el("span", { textContent: "Cover" }), fromDownloads, which,
-            el("p", { className: "hint", textContent: coverNote || `${hasCover ? "A new picture takes the old one's place, as the same type of picture."
-                : "The book has none: a picture chosen is added as its cover."} Or drop or paste one here, from this computer.` })));
-    const asking = ask("The book's details", "Save", field("Title", titleBox), field("Author", creatorBox), cover);
+    const cover = el("div", { className: "cover-field" + (coverNote ? " locked" : "") }, shown, none,
+        ...(coverNote ? [] : [el("span", { className: "hint cover-drop-hint", textContent: "Drop or paste" })]));
+    const note = el("p", { className: "hint cover-note", textContent: coverNote || (hasCover
+        ? "A new picture replaces the cover, as the same type."
+        : "A picture chosen is added as the cover.") });
+    const body = el("div", { className: "book-edit" }, cover,
+        el("div", { className: "book-meta" }, field("Title", titleBox), field("Author", creatorBox),
+            el("div", { className: "cover-actions" }, fromDownloads, clear), which, note));
+    const asking = choose("The book's details", [["", "Cancel"], ["ok", "Save"]], body);
     // A picture dropped on the dialog, or pasted into it, is the new cover,
     // not an upload into the folder, as one dropped on the page is.
-    const dialog = cover.closest("dialog");
+    const dialog = body.closest("dialog");
+    dialog.classList.add("book-details");
+    const rebuild = el("button", { type: "button", className: "rebuild-toc", textContent: "Rebuild contents" });
+    rebuild.addEventListener("click", async () => {
+        if (rebuild.disabled || dialog.returnValue) {
+            return;
+        }
+        rebuild.disabled = true;
+        try {
+            const dirty = titleBox.value !== title || creatorBox.value !== creator || !!picked;
+            const parts = [];
+            if (hasTOC) {
+                parts.push("Replace the book's contents list with one made from its headings?");
+            }
+            if (dirty) {
+                parts.push("Title, author and cover changes in this dialog won't be saved.");
+            }
+            if (parts.length && !(await askYes(parts.join(" "), "Rebuild"))) {
+                return;
+            }
+            dialog.close("rebuild");
+        } finally {
+            if (dialog.open) {
+                rebuild.disabled = false;
+            }
+        }
+    });
+    dialog.querySelector(".buttons")?.prepend(rebuild);
+    titleBox.focus();
+    titleBox.select();
     const pictureIn = (list) => [...(list ?? [])].find((f) => f.type.startsWith("image/")) ?? null;
     for (const type of ["dragenter", "dragover", "dragleave"]) {
         dialog.addEventListener(type, (e) => {
@@ -485,7 +553,9 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
             if (type === "dragover" && e.dataTransfer?.types.includes("Files")) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = coverNote ? "none" : "copy";
-                cover.classList.add("dropping");
+                if (!coverNote) {
+                    cover.classList.add("dropping");
+                }
             } else if (type === "dragleave" && !dialog.contains(e.relatedTarget)) {
                 cover.classList.remove("dropping");
             }
@@ -511,11 +581,14 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
             e.preventDefault();
         }
     });
-    const ok = await asking;
+    const result = await asking;
     if (pickedURL) {
         URL.revokeObjectURL(pickedURL);
     }
-    return ok ? { title: titleBox.value, creator: creatorBox.value, picture: picked } : null;
+    if (result === "rebuild") {
+        return { rebuildTOC: true };
+    }
+    return result === "ok" ? { title: titleBox.value, creator: creatorBox.value, picture: picked } : null;
 }
 
 // askFolder asks for a folder in ~/Downloads, by its path there,

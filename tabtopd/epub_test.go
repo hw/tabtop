@@ -4,8 +4,11 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -452,5 +455,43 @@ func TestEpubLayoutNotTitle(t *testing.T) {
 	book, err := openTestEpub(t, makeEpub(t, editBookFiles(opf)...)).readBook()
 	if err != nil || book.Title != "layout: pre-paginated" || book.Creator != "layout: Ann" || !book.Fixed {
 		t.Errorf("%+v, %v", book, err)
+	}
+}
+
+// Directory validation must not detach archive/zip's payload offsets or lose
+// the archive comment when EPUB editing copies the original entries.
+func TestEpubBoundedDirectory(t *testing.T) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	if err := w.SetComment("kept when editing"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := w.Create("chapter.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(f, "<p>chapter payload</p>"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{"", "prepended archive stub"} {
+		data := append([]byte(prefix), buf.Bytes()...)
+		z, err := openEpubZip(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := z.read("chapter.xhtml", 100)
+		if err != nil || string(got) != "<p>chapter payload</p>" || z.comment != "kept when editing" {
+			t.Fatalf("prefix %q: payload %q, comment %q, error %v", prefix, got, z.comment, err)
+		}
+	}
+	// Reject a forged metadata length before allocating or parsing entries.
+	data := append([]byte(nil), buf.Bytes()...)
+	end := len(data) - zipEndSize - len("kept when editing")
+	binary.LittleEndian.PutUint32(data[end+12:], uint32(epubDirectoryLimits.bytes+1))
+	if _, err := openEpubZip(bytes.NewReader(data), int64(len(data))); !errors.Is(err, epubDirectoryLimits.err) {
+		t.Fatalf("oversized directory: %v", err)
 	}
 }

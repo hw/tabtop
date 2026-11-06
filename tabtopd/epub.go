@@ -31,7 +31,6 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -40,11 +39,9 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -54,11 +51,6 @@ import (
 const (
 	epubChildArg = "-render-epub"
 	epubTimeout  = 10 * time.Second
-	// At most epubRenders children at once; a request waits up to epubWait
-	// for one, as opening a book asks for its structure, then a chapter,
-	// then its pictures.
-	epubRenders = 2
-	epubWait    = 5 * time.Second
 
 	maxEpubEntries = 20000
 	maxEpubMeta    = 4 << 20  // container.xml, the OPF, the nav or NCX: each, unpacked
@@ -111,7 +103,10 @@ type epubZip struct {
 }
 
 func openEpubZip(r io.ReaderAt, size int64) (*epubZip, error) {
-	zr, err := zip.NewReader(r, size)
+	zr, err := openBoundedZip(r, size, epubDirectoryLimits)
+	if errors.Is(err, epubDirectoryLimits.err) {
+		return nil, err
+	}
 	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
 		return nil, errEpubNotBook
 	}
@@ -649,7 +644,8 @@ var (
 		"start": true}
 )
 
-// epubPolicy is what's kept of a chapter, as for Markdown.
+// epubPolicy checks the rewritten chapter, after its XML allowlist.
+// Its distinct trust boundary is documented in docs/preview-security.md.
 var epubPolicy = func() *bluemonday.Policy {
 	p := bluemonday.UGCPolicy()
 	p.AllowElements("figure", "figcaption", "section", "article", "aside", "header", "footer", "nav", "ruby", "rt", "rp",
@@ -807,11 +803,14 @@ func (z *epubZip) renderChapter(chapter string) (string, error) {
 	return epubPolicy.Sanitize(out.String()), nil
 }
 
-// epubPictureTypes are the pictures given out, by extension.
-var epubPictureTypes = map[string]string{".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
-	".webp": "image/webp", ".svg": "image/svg+xml", ".avif": "image/avif", ".bmp": "image/bmp"}
-
-func epubPictureType(name string) string { return epubPictureTypes[strings.ToLower(path.Ext(name))] }
+// EPUB's image subset is declared alongside browser MIME/kind metadata.
+func epubPictureType(name string) string {
+	kind := fileTypes[strings.TrimPrefix(strings.ToLower(path.Ext(name)), ".")]
+	if kind.EpubPicture {
+		return kind.MIME
+	}
+	return ""
+}
 
 // renderEpubChild is main for the child: the book on stdin; args say what
 // of it: "book", "chapter <name>", "picture <name>", or "edit <edit>" (see
@@ -875,19 +874,16 @@ var epubFrameHTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n
 	epubFrameCSS + "</style>\n<div id=\"bar\"></div><nav id=\"contents\" hidden aria-label=\"Contents\"></nav>" +
 	"<main id=\"doc\"></main><nav id=\"ends\" aria-label=\"Chapters\"></nav>\n<script src=\"epub-frame.js\"></script>\n"
 
-var epubSlots = make(chan struct{}, epubRenders)
+var epubSlots = newPreviewWork(previewReadConcurrency)
 
 // readEpubIsolated asks a child about the book open as f (see
 // renderEpubChild).
 func readEpubIsolated(f *os.File, args ...string) ([]byte, error) {
-	wait := time.NewTimer(epubWait)
-	defer wait.Stop()
-	select {
-	case epubSlots <- struct{}{}:
-	case <-wait.C:
+	release, ok := epubSlots.acquire()
+	if !ok {
 		return nil, errEpubBusy
 	}
-	defer func() { <-epubSlots }()
+	defer release()
 	return runEpubChild(f, epubTimeout, nil, args...)
 }
 
@@ -895,55 +891,30 @@ func readEpubIsolated(f *os.File, args ...string) ([]byte, error) {
 // as its file descriptors from 3, killed after timeout, and returns its
 // answer.
 func runEpubChild(f *os.File, timeout time.Duration, extra []*os.File, args ...string) ([]byte, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, append([]string{epubChildArg}, args...)...)
-	// The file itself, not a pipe: the child reads the zip where it needs.
-	cmd.Stdin = f
-	cmd.ExtraFiles = extra
-	out := &cappedBuffer{max: maxEpubOut}
-	cmd.Stdout = out
-	cmd.Env = []string{"GOMAXPROCS=1", "GOMEMLIMIT=512MiB"}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	err = cmd.Run()
-	var exit *exec.ExitError
+	result := runIsolatedChild(isolatedChild{Args: append([]string{epubChildArg}, args...), Input: f, ExtraFiles: extra, Timeout: timeout, OutputLimit: maxEpubOut})
 	switch {
-	case ctx.Err() != nil:
+	case result.TimedOut:
 		return nil, errEpubSlow
-	case out.over:
+	case result.Overflow:
 		return nil, errEpubTooBig
-	case errors.As(err, &exit) && exit.ExitCode() == 1 && out.Len() < 300:
-		return nil, errors.New(out.String())
-	case err != nil:
+	case result.Err != nil && result.ExitCode == 1 && len(result.Output) < 300:
+		return nil, errors.New(string(result.Output))
+	case result.Err != nil:
 		return nil, errors.New("it couldn't be read")
 	}
-	return out.Bytes(), nil
+	return result.Output, nil
 }
 
 // tunnelEpub answers an "epub" request: the book at req.Path, or with
 // req.Item, a chapter or picture of it (see the top of this file).
 func (g *server) tunnelEpub(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	store, err := openDownloadStore(g.downloadsDir)
+	opened, err := openDownloadsFile(g.downloadsDir, req.Path)
 	if err != nil {
-		r.fail("The downloads folder is missing.")
+		r.fail(err.Error())
 		return
 	}
-	defer store.Close()
-	f, st, err := store.open(path.Clean(strings.Trim(req.Path, "/")))
-	if err != nil {
-		r.fail("Not found.")
-		return
-	}
-	// Closed however this ends, a folder or other than a file too.
-	defer f.Close()
-	if !st.Mode().IsRegular() {
-		r.fail("Not found.")
-		return
-	}
+	defer opened.Close()
+	f, st := opened.file, opened.info
 	if req.IfMtime != "" && (fileVersion(st) != req.IfMtime || st.Size() != req.IfSize) {
 		r.fail(errEpubChanged.Error())
 		return

@@ -22,3 +22,13 @@ body.dropping #drop_overlay { display: flex; }
 .sr-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
        clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 40rem) { #transfers { left: .5rem; right: .5rem; bottom: .5rem; width: auto; } }
+
+#transfers.has-active:not(.show-finished) #uploads > p:not(.going):not(.error) { display: none; }
+#uploads { display: flex; flex-direction: column; }
+#uploads > .going { order: -2; }
+#uploads > .error:not(.going) { order: -1; }
+body:has(#transfers.folded:not([hidden])) { padding-bottom: 4rem; }
+
+#transfers .head { flex-wrap: wrap; }
+#transfers.folded .show-completed { display: none; }
+#uploads .transfer-destination { flex-basis: 100%; opacity: .75; font-size: .85em; }

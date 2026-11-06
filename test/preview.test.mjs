@@ -1,23 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
-
-// Classification needs no browser or tunnel. Stub only the preview's transport
-// import, so these checks exercise the real exported classifier.
-const previewURL = new URL("../tabtopd/preview.js", import.meta.url).href;
-const hooks = registerHooks({
-    resolve(specifier, context, next) {
-        if (context.parentURL === previewURL && specifier === "./requests.js") {
-            return { shortCircuit: true, url: "data:text/javascript,export const call = () => { throw new Error('transport not expected'); }; export const collect = call, saveBlob = call, uploadFile = call;" };
-        }
-        if (context.parentURL === previewURL && specifier === "./ui.js") {
-            return { shortCircuit: true, url: "data:text/javascript,export const askYes = () => { throw new Error('dialogs not expected'); }; export const askBookDetails = askYes, statusRow = askYes, copyText = askYes;" };
-        }
-        return next(specifier, context);
-    },
-});
-let previewable, resolvePath, previewLocation, previewWebURL;
-try { ({ previewable, resolvePath, previewLocation, previewWebURL } = await import(previewURL)); } finally { hooks.deregister(); }
+import { previewable, resolvePath, previewLocation, previewWebURL } from "../tabtopd/preview-model.js";
 
 test("links and pictures resolve within Downloads, relative to their folder", () => {
     const cases = [

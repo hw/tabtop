@@ -3,30 +3,59 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { MessageChannel } from "node:worker_threads";
+import { FILE_TYPES } from "../tabtopd/file-types.js";
+import { createMediaSource } from "../tabtopd/media-source.js";
+import { createWorkerRegistration } from "../tabtopd/stream-worker.js";
 
 const source = readFileSync(new URL("../tabtopd/download-sw.js", import.meta.url), "utf8");
+// The worker remains a classic script for existing registrations. Execute its
+// exact source and exercise its public fetch event, without exposing internals.
 function worker(client) {
-    const env = { self: { addEventListener() {}, clients: { get: async () => client } },
+    const listeners = {};
+    const env = { self: { addEventListener(type, fn) { listeners[type] = fn; },
+        location: { href: "https://test/tabtop/download-sw.js" }, clients: { get: async () => client } },
         Request, Response, ReadableStream, MessageChannel, ArrayBuffer, Uint8Array, URL, crypto, setTimeout, clearTimeout };
-    return runInNewContext(source + "\n({ mediaRange, mediaResponse })", env);
+    env.importScripts = (file) => {
+        assert.equal(file, "./file-types-worker.js");
+        runInNewContext(readFileSync(new URL("../tabtopd/file-types-worker.js", import.meta.url), "utf8"), env);
+    };
+    runInNewContext(source, env);
+    return { mediaResponse(event, _id, legacy = false) {
+        let response;
+        const request = new Request(`https://test/tabtop/stream/${legacy ? "video" : "media"}/00000000-0000-0000-0000-000000000001`,
+            { method: event.request.method, headers: event.request.headers });
+        listeners.fetch({ ...event, request, respondWith(value) { response = value; } });
+        assert.ok(response, "worker must handle its media URL");
+        return response;
+    } };
 }
 
-test("video ranges cover open, closed, suffix and invalid requests", () => {
-    const { mediaRange: range } = worker(null);
+function metadataClient(size, type = "video/mp4") {
+    return { postMessage(_, [port]) {
+        port.on("message", (m) => { if (m.cancel) port.close(); });
+        port.postMessage({ size, type });
+    } };
+}
+
+test("media fetches handle open, closed, suffix and invalid ranges", async () => {
     const cases = [
         [null, 100, [0, 100, 200]], ["bytes=0-9", 100, [0, 10, 206]],
         ["bytes=20-", 100, [20, 100, 206]], ["bytes=-10", 100, [90, 100, 206]],
         ["bytes=-200", 100, [0, 100, 206]], ["bytes=90-999", 100, [90, 100, 206]],
         [null, 0, [0, 0, 200]],
     ];
-    for (const [header, size, expected] of cases) {
-        const got = range(header, size);
-        assert.deepEqual([got.begin, got.end, got.status], expected);
+    for (const [header, size, [begin, end, status]] of cases) {
+        const headers = header === null ? {} : { Range: header };
+        const response = await worker(metadataClient(size)).mediaResponse({ clientId: "owner", request: new Request("https://test/", { headers }) });
+        assert.equal(response.status, status);
+        assert.equal(response.headers.get("Content-Length"), String(end - begin));
+        if (status === 206) assert.equal(response.headers.get("Content-Range"), `bytes ${begin}-${end - 1}/${size}`);
+        await response.body?.cancel();
     }
-    for (const header of ["bytes=100-", "bytes=20-10", "bytes=-0", "bytes=-", "bytes=0-1,3-4", "items=0-10", "bytes=9007199254740992-", "bytes=1-9007199254740992"]) {
-        assert.equal(range(header, 100), null, header);
+    for (const [header, size] of ["bytes=100-", "bytes=20-10", "bytes=-0", "bytes=-", "bytes=0-1,3-4", "items=0-10", "bytes=9007199254740992-", "bytes=1-9007199254740992"].map((h) => [h, 100]).concat([["bytes=0-", 0]])) {
+        const response = await worker(metadataClient(size)).mediaResponse({ clientId: "owner", request: new Request("https://test/", { headers: { Range: header } }) });
+        assert.equal(response.status, 416, header);
     }
-    assert.equal(range("bytes=0-", 0), null);
 });
 
 test("video responses pull bounded, exact ranges and return HTTP range metadata", async () => {
@@ -74,9 +103,6 @@ test("cancelling a video body closes its page channel without reading ahead", as
 });
 
 test("plain HTTP video fallback works without secure-context crypto or service workers", async () => {
-    const source = readFileSync(new URL("../tabtopd/media-stream.js", import.meta.url), "utf8")
-        .replace(/^import .*;$/gm, "").replace("export async function", "async function")
-        .replaceAll("import.meta.url", JSON.stringify("https://test/tabtop/media-stream.js"));
     let requested;
     let closed = 0;
     let revoked = null;
@@ -88,7 +114,7 @@ test("plain HTTP video fallback works without secure-context crypto or service w
         navigator: {},
         URL: { createObjectURL: () => "blob:buffered", revokeObjectURL: (value) => { revoked = value; } },
     };
-    const mediaStream = runInNewContext(source + "\nmediaStream", env);
+    const mediaStream = createMediaSource({ getWorker: env.mediaWorker, call: env.call, collect: env.collect, document: env.document, urlAPI: env.URL });
     const media = await mediaStream("clip.mp4", { size: 5, mtime: "version", type: "video/mp4" });
     assert.equal(media.src, "blob:buffered");
     assert.equal(media.dataset.streamed, "false");
@@ -131,7 +157,7 @@ test("Matroska is served with its own MIME type and byte-range headers", async (
 });
 
 test("audio formats retain their MIME type and range response headers", async () => {
-    for (const type of ["audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/wav", "audio/flac"]) {
+    for (const type of new Set(Object.values(FILE_TYPES).filter((type) => type.kind === "audio").map((type) => type.mime))) {
         let cancelled;
         const ended = new Promise((resolve) => { cancelled = resolve; });
         const client = { postMessage(message, [port]) {
@@ -167,9 +193,6 @@ test("older video previews keep their message protocol after worker upgrades", a
 });
 
 test("worker replacement reclaims eight orphaned channels while preserving the live request limit", async () => {
-    const source = readFileSync(new URL("../tabtopd/media-stream.js", import.meta.url), "utf8")
-        .replace(/^import .*;$/gm, "").replace("export async function", "async function")
-        .replaceAll("import.meta.url", JSON.stringify("https://test/tabtop/media-stream.js"));
     let answer;
     let closedTunnels = 0;
     let startedRead;
@@ -182,7 +205,7 @@ test("worker replacement reclaims eight orphaned channels while preserving the l
         call: async () => ({ close() { closedTunnels++; } }),
         collect: () => { startedRead(); return new Promise(() => {}); }, // A read pending when the worker dies.
     };
-    const media = await runInNewContext(source + "\nmediaStream", env)("sound.mp3", { size: 1000, mtime: "v", type: "audio/mpeg" });
+    const media = await createMediaSource({ getWorker: env.mediaWorker, call: env.call, collect: env.collect, document: env.document, serviceWorker: env.navigator.serviceWorker, randomUUID: env.crypto.randomUUID, baseURL: "https://test/tabtop/media-source.js" })("sound.mp3", { size: 1000, mtime: "v", type: "audio/mpeg" });
     const makePort = () => ({ replies: [], start() {}, close() {}, postMessage(m) { this.replies.push(m); } });
     const connect = (instance) => {
         const port = makePort();
@@ -214,13 +237,8 @@ test("media registration retries after slow activation instead of caching failur
     const sw = {};
     const reg = { active: null, installing: {}, waiting: null };
     const navigator = { serviceWorker: { controller: null, async register() { registrations++; return reg; } } };
-    const source = readFileSync(new URL("../tabtopd/download.js", import.meta.url), "utf8");
-    const helper = source.slice(source.indexOf("let mediaRegistration = null;"), source.indexOf("// File and ZIP downloads"))
-        .replace("export function", "function").replaceAll("import.meta.url", JSON.stringify("https://test/tabtop/download.js"));
-    const get = runInNewContext("const DOWNLOAD_SW_VERSION = 7;\n" + helper + "\nmediaWorker", {
-        navigator, location: { href: "https://test/fs/" }, URL,
-        Date: { now: () => now }, setTimeout(resolve, ms) { now += ms; resolve(); },
-    });
+    const get = createWorkerRegistration({ scope: "/fs/", requireController: true, serviceWorker: navigator.serviceWorker,
+        now: () => now, delay: async (ms) => { now += ms; } });
     const first = await Promise.all([get(), get()]);
     assert.deepEqual(first, [null, null]);
     assert.equal(registrations, 1, "concurrent callers share activation");
@@ -239,13 +257,8 @@ test("media updates never return an old worker while installing, waiting or clai
         const replacement = { version: "new" };
         const reg = { active: oldWorker, installing: null, waiting: null, [phase]: replacement };
         const navigator = { serviceWorker: { controller: oldWorker, async register() { registrations++; return reg; } } };
-        const source = readFileSync(new URL("../tabtopd/download.js", import.meta.url), "utf8");
-        const helper = source.slice(source.indexOf("let mediaRegistration = null;"), source.indexOf("// File and ZIP downloads"))
-            .replace("export function", "function").replaceAll("import.meta.url", JSON.stringify("https://test/tabtop/download.js"));
-        const get = runInNewContext("const DOWNLOAD_SW_VERSION = 7;\n" + helper + "\nmediaWorker", {
-            navigator, location: { href: "https://test/fs/" }, URL,
-            Date: { now: () => now }, setTimeout(resolve, ms) { now += ms; resolve(); },
-        });
+        const get = createWorkerRegistration({ scope: "/fs/", requireController: true, serviceWorker: navigator.serviceWorker,
+            now: () => now, delay: async (ms) => { now += ms; } });
         assert.equal(await get(), null, `${phase}: old active worker must not be returned after timeout`);
         assert.equal(registrations, 1);
         reg[phase] = null;
@@ -258,4 +271,19 @@ test("media updates never return an old worker while installing, waiting or clai
         assert.equal(await get(), replacement);
         assert.equal(registrations, 3, "only the ready replacement is cached");
     }
+});
+
+test("download registration shares retry policy without requiring page control", async () => {
+    const active = {};
+    let calls = 0;
+    const serviceWorker = { controller: null, async register() {
+        if (++calls === 1) throw new Error("temporary registration failure");
+        return { active, installing: null, waiting: null };
+    } };
+    const get = createWorkerRegistration({ scope: "/tabtop/stream/", serviceWorker });
+    assert.equal(await get(), null);
+    assert.equal(await get(), active, "download navigations don't require a controlled owner page");
+    assert.equal(calls, 2);
+    assert.equal(await get(), active);
+    assert.equal(calls, 2);
 });
