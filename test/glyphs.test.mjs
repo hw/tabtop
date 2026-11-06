@@ -12,7 +12,7 @@ test("shared SVGs retain navigation and preview sizes without browser dependenci
     }
     assert.match(iconSVG("download"), /width="18" height="18"/);
     assert.match(iconSVG("download-direct"), /width="18" height="18"/);
-    assert.match(iconSVG("download-direct"), /stroke-width="2.6"/);
+    assert.match(iconSVG("download-direct"), /stroke-width="1.8"/);
     for (const id of ["back", "fold-all", "fit-page", "fit-width"]) {
         assert.match(iconSVG(id), /width="18" height="18" viewBox="0 0 24 24"/);
     }
