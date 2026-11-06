@@ -208,5 +208,3 @@ func TestEpubHrefAndFilenameLabel(t *testing.T) {
 		t.Errorf("label: %q", got)
 	}
 }
-
-
