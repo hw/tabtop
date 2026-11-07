@@ -179,8 +179,30 @@ func (u *upload) abort() {
 // returns the name it got. With replace, it's saved as name even if a file
 // has that name, replacing it in one step, but never a folder.
 func (u *upload) finish(name string, replace bool) (string, error) {
+	return u.finishAt(name, replace, nil)
+}
+
+// target pins the destination used by the replacement's lock and version
+// check. Temporary-file cleanup still uses the upload's original store.
+func (u *upload) finishAt(name string, replace bool, target *downloadStore) (string, error) {
+	root, dir := u.root, u.dir
+	if target != nil {
+		root, dir = target.root, "."
+	}
 	defer u.f.Close()
-	defer u.root.Remove(u.tmp)
+	temporary, _ := u.f.Stat()
+	defer func() {
+		// If the alias was retargeted after pinning, clean up through the
+		// pinned destination rather than another directory now at u.dir.
+		if target != nil && temporary != nil {
+			name := path.Base(u.tmp)
+			if st, err := target.root.Lstat(name); err == nil && os.SameFile(st, temporary) {
+				target.root.Remove(name)
+				return
+			}
+		}
+		u.root.Remove(u.tmp)
+	}()
 	// On disk before the page is told it's saved, so a power cut can't
 	// lose it after.
 	if err := u.f.Sync(); err != nil {
@@ -193,8 +215,8 @@ func (u *upload) finish(name string, replace bool) (string, error) {
 	}
 	base := strings.TrimSuffix(name, ext)
 	if replace {
-		target := path.Join(u.dir, name)
-		if st, err := u.root.Lstat(target); err == nil && st.IsDir() {
+		target := path.Join(dir, name)
+		if st, err := root.Lstat(target); err == nil && st.IsDir() {
 			return "", errReplaceFolder
 		} else if err == nil && st.Mode()&fs.ModeSymlink != 0 {
 			// Replaced, the link would go, and the file it leads to stay as
@@ -206,10 +228,10 @@ func (u *upload) finish(name string, replace bool) (string, error) {
 			// stays one that runs.
 			u.f.Chmod(st.Mode().Perm())
 		}
-		if err := u.publish(name, true); err != nil {
+		if err := u.publishAt(name, true, root, dir); err != nil {
 			return "", err
 		}
-		if err := syncDir(u.root, u.dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+		if err := syncDir(root, dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
 			log.Printf("upload saved as %q, but syncing its folder failed: %v", target, err)
 			u.unsynced = true
 		}
@@ -245,7 +267,11 @@ func (u *upload) finish(name string, replace bool) (string, error) {
 // pathname. Replacement uses an isolated staging directory on the same
 // filesystem and descriptor-relative rename into the opened destination.
 func (u *upload) publish(name string, replace bool) error {
-	d, err := openRootDirectory(u.root, u.dir)
+	return u.publishAt(name, replace, u.root, u.dir)
+}
+
+func (u *upload) publishAt(name string, replace bool, root *os.Root, dir string) error {
+	d, err := openRootDirectory(root, dir)
 	if err != nil {
 		return err
 	}
@@ -258,12 +284,12 @@ func (u *upload) publish(name string, replace bool) error {
 	}
 	b := make([]byte, 16)
 	rand.Read(b)
-	stage := path.Join(u.dir, uploadTempPrefix+hex.EncodeToString(b)+".stage")
-	if err := u.root.Mkdir(stage, 0700); err != nil {
+	stage := path.Join(dir, uploadTempPrefix+hex.EncodeToString(b)+".stage")
+	if err := root.Mkdir(stage, 0700); err != nil {
 		return err
 	}
-	defer u.root.Remove(stage)
-	s, err := openRootDirectory(u.root, stage)
+	defer root.Remove(stage)
+	s, err := openRootDirectory(root, stage)
 	if err != nil {
 		return err
 	}

@@ -201,7 +201,7 @@
         const me = ++going;
         report.stage = "loading";
         doc.setAttribute("aria-busy", "true");
-        const got = await ask({ type: "chapter", item: chapter });
+        const got = await ask({ type: "chapter", item: chapter, render: me });
         if (me !== going) {
             return;
         }
@@ -284,7 +284,7 @@
                     continue;
                 }
                 const src = itemOf(img.dataset.src);
-                const got = src ? await ask({ type: "image", src }) : { error: "not in the book" };
+                const got = src ? await ask({ type: "image", src, render: me }) : { error: "not in the book" };
                 if (me !== going) {
                     return;
                 }

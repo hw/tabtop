@@ -1331,7 +1331,7 @@ func TestUploadFormPartsCapped(t *testing.T) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	for i := range 10000 {
-		w, _ := mw.CreateFormFile("file", fmt.Sprintf(".hidden-%d", i)) // a name refused
+		w, _ := mw.CreateFormField(fmt.Sprintf("ignored-%d", i))
 		w.Write([]byte("x"))
 	}
 	mw.Close()

@@ -177,6 +177,10 @@ type shareStore struct {
 	downloadsAll int
 	// Uploads through links going, all told (see reserve).
 	uploadsAll int
+	// Multipart requests are admitted before parsing fields, including ignored
+	// fields and files rejected before reserve can take a transfer slot.
+	formsAll int
+	forms    map[string]int
 }
 
 // errTooManyShares is a link refused as there are maxShares already.

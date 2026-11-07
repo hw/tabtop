@@ -6,7 +6,7 @@
 # later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
-# Usage: test/browser-check.sh <image> [--group all|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|epub|tables|previews]
+# Usage: test/browser-check.sh <image> [--group all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|epub|tables|previews]
 set -euo pipefail
 
 image=${1:?usage: $0 <image> [--group group]}
@@ -19,7 +19,7 @@ while (($#)); do
     esac
 done
 case "$group" in
-    all|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|epub|tables|previews) ;;
+    all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|epub|tables|previews) ;;
     *) echo "Unknown browser test group: $group" >&2; exit 1 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
@@ -45,7 +45,9 @@ trap cleanup EXIT
 # The secret is the Base32 of "12345678901234567890", which
 # browser-check.mjs makes its codes from.
 # WEB_FETCH_PRIVATE=1: the check fetches from the container's own address.
-docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 \
+service_args=()
+if [[ "$group" == services ]]; then service_args=(-e WEB_VNC=0 -e WEB_FS=0); fi
+docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 "${service_args[@]}" \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"
 for ((i = 0; ; i++)); do
@@ -56,7 +58,7 @@ done
 echo "site: $site"
 
 in_container() { docker exec -u user "$name" sh -c "$1"; }
-in_container 'echo hello from the desktop > ~/Downloads/hello.txt'
+in_container 'mkdir -p ~/Downloads && echo hello from the desktop > ~/Downloads/hello.txt'
 # A second of a 440 Hz tone, to preview.
 python3 -c 'import math, struct, sys, wave
 w = wave.open(sys.argv[1], "wb")

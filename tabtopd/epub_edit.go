@@ -728,17 +728,21 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 		return
 	}
 	// One replacing at a time, and only if it's still as it was.
-	unlock := lockReplacing(p)
-	if err := unchangedSince(store, p, req.IfMtime, req.IfSize); err != nil {
+	target, unlock, err := store.beginReplacement(p)
+	if err != nil {
+		fail(uploadError(err))
+		return
+	}
+	if err := unchangedSince(target, path.Base(p), req.IfMtime, req.IfSize); err != nil {
 		unlock()
 		fail(errEpubChanged.Error())
 		return
 	}
-	_, err = u.finish(path.Base(p), true)
+	_, err = u.finishAt(path.Base(p), true, target)
 	// Its time and size, read before another save can replace it.
 	var nst fs.FileInfo
 	if err == nil {
-		nst, _ = store.stat(p)
+		nst, _ = target.stat(path.Base(p))
 	}
 	unlock()
 	if err != nil {

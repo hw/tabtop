@@ -251,6 +251,7 @@
 
     async function render(html, fragment, htmlMode = false) {
         const me = ++renders;
+        page.postMessage({ type: "render-start", render: me }, "*");
         rendering = true;
         shownHTML = html;
         shownAsHTML = htmlMode;
@@ -290,7 +291,11 @@
                 continue;
             }
             img.removeAttribute("src");
-            const got = await ask({ type: "image", src });
+            const got = await ask({ type: "image", src, render: me });
+            if (me !== renders) {
+                for (const url of urls) URL.revokeObjectURL(url);
+                return;
+            }
             if (got.bytes) {
                 img.src = URL.createObjectURL(new Blob([got.bytes], { type: got.mime }));
                 urls.push(img.src);

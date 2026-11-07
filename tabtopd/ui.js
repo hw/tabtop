@@ -445,6 +445,15 @@ export async function askName(message, ok, value = "", stem = false) {
     return (await ask(message, ok, input)) ? input.value : null;
 }
 
+// askLine accepts a one-based line number within the current text.
+export async function askLine(current, total) {
+    const input = el("input", { type: "number", min: "1", max: String(total), step: "1",
+        value: String(current), required: true });
+    input.setAttribute("aria-label", "Line number");
+    requestAnimationFrame(() => input.select());
+    return (await ask(`Go to line (1–${total})`, "Go", input)) ? Number(input.value) : null;
+}
+
 // askBookDetails asks for a book's title and author, starting with those
 // it has, and a new cover picture, showing its cover (coverURL, if it has
 // one, hasCover, and it could be fetched), or why it can't be changed

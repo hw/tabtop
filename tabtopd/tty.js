@@ -19,7 +19,7 @@ import { glyphs, iconSVG } from "../tabtop/glyphs.js";
 import { Osc } from "../tabtop/osc.js";
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
-import { nameTab, navBar } from "../tabtop/nav.js";
+import { nameTab, navBar, pages } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
@@ -735,7 +735,7 @@ document.head.append(Object.assign(document.createElement("link"), { rel: "style
 setLoginTitle("Terminal");
 // Once uploaded, their paths are pasted at the cursor, as text pasted is,
 // so a shell doesn't run the line.
-dropUploads(uploadFile, makeFolder, (names, dir) => {
+if (pages.some((page) => page.id === "files")) dropUploads(uploadFile, makeFolder, (names, dir) => {
     if (ws) {
         term.paste(names.map((n) => shellPath(dir ? `${dir}/${n}` : n)).join(" ") + " ");
         term.focus();

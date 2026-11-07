@@ -260,7 +260,8 @@ downloaded at `http://<host>:6080/fs/`:
     says why, above its source.
   - **Pictures** beside the file, or elsewhere in `~/Downloads` by a
     relative path (`![](img/plot.png)`), are fetched through the tunnel,
-    up to 100 per file and 20 MB each. Pictures from the web aren't
+    up to 100 per render, 20 MB each and 64 MiB in total. Repeated pictures
+    count toward the render limits too. Pictures from the web aren't
     loaded, so a document can't tell anyone it was opened: a note says
     which.
   - **Links** to the web show a lightbox with the destination URL: **Copy URL**,
@@ -282,7 +283,8 @@ downloaded at `http://<host>:6080/fs/`:
     handed to it.
 - **Editing:** **Edit** in the preview of a text file (UTF-8, up to
   2 MB) opens it in a plain editor; for Markdown, it's rendered beside it
-  as you type. **Save** (or Ctrl S, ⌘ S) writes it back through the
+  as you type. Ctrl G (⌘ G) opens **Go to line**; Enter jumps to the
+  chosen line and Escape cancels. **Save** (or Ctrl S, ⌘ S) writes it back through the
   encrypted tunnel, replacing the file in one step and keeping its
   permissions (a script stays one that runs), its line endings (Windows'
   `\r\n` stay so) and any byte order mark. If the file has changed since

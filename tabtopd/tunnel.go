@@ -47,6 +47,8 @@ package main
 // tunnel. A session tunnel's first message from the browser is a JSON
 // request (tunnelRequest) and the server's first is the reply:
 // {"ok":true,...}, or {"error":...} followed by the end of the tunnel.
+// That first encrypted request proves the session secret. Until it arrives,
+// the connection retains handshake limits and cannot update session activity.
 //
 // A file request's data comes with flow control: the browser sends an
 // empty data message for each chunk it has used, and the server sends at

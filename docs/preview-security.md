@@ -13,6 +13,16 @@ headers in `tabtopd/e2e.go`. The parent checks message sources, brokers local
 pictures, and prompts before opening external links. These controls supplement
 the sanitizers.
 
+Markdown and raw HTML also use `preview-pictures.js` to bound each render to
+100 image occurrences and 64 MiB of delivered image bytes, with a separate
+64 MiB source-cache cap and a 20 MB per-file cap. Fragment/path aliases share a
+source read; each repeated occurrence still spends the delivery budget.
+EPUB chapters use the same cumulative cache/delivery budgets, retaining the
+server's 20 MiB per-picture cap. A repeated book picture is read once per
+chapter; each occurrence still spends the delivery budget. Starting another
+chapter, another render or closing the frame aborts its outstanding picture
+reads. Replies transfer their buffers instead of cloning them again.
+
 When changing a policy, check that scripts from the input never survive:
 
 - Script elements, event handlers, executable URLs and foreign namespaces do not enter the displayed DOM.

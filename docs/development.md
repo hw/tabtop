@@ -111,6 +111,9 @@ account, credential ownership, secret removal and restart with an existing home.
 Run `bash test/features-check.sh <image>` to check
 files-only, terminal-only and desktop-only startup, disabled routes and
 navigation, health checks and invalid service switches.
+The `services` browser group checks that a terminal with `WEB_FS=0` installs
+no file-drop or screenshot-upload handlers. It runs separately from the normal
+browser journey because it needs a terminal-only container.
 
 Filesystem notifications use `watch_source.go` for inotify registration,
 decoding and reader shutdown; `watch_policy.go` for rename pairing, settling,

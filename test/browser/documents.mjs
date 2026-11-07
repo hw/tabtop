@@ -61,7 +61,8 @@ export async function checkHTML(checks) {
         writeFileSync(`${work}/demo.html`, html);
         writeFileSync(`${work}/next.htm`, `<h1>Next file</h1>${'<p>Filler.</p>'.repeat(50)}<h2 id="part">Part</h2>`);
         writeFileSync(`${work}/htmlpic.png`, pngSquare(40));
-        for (const name of ["demo.html", "next.htm", "htmlpic.png"]) {
+        writeFileSync(`${work}/limits.html`, Array.from({ length: 500 }, (_, i) => `<img src="htmlpic.png#${i}" alt="Repeated image">`).join(""));
+        for (const name of ["demo.html", "next.htm", "htmlpic.png", "limits.html"]) {
             execFileSync("docker", ["cp", "-q", `${work}/${name}`, `${container}:/home/user/Downloads/media/${name}`]);
             execFileSync("docker", ["exec", container, "chown", "user", `/home/user/Downloads/media/${name}`]);
         }
@@ -105,7 +106,34 @@ export async function checkHTML(checks) {
         await show();
         await ev(`document.querySelector("dialog.preview button.close").click()`);
         await waitFor(`!document.querySelector("dialog.preview")`, "HTML preview closed again");
-        inContainer("sh", "-c", "cd ~/Downloads/media && rm demo.html next.htm htmlpic.png");
+        await ev(`[...document.querySelectorAll("td.name a")].find(a => a.textContent === "limits.html").click()`);
+        await waitFor(`JSON.parse(document.querySelector("dialog.preview iframe.html")?.dataset.rendered ?? "null")?.images === 100`, "repeated images respect the per-render limit");
+        if (await inFrame("md-frame.html", `document.querySelectorAll("#doc .note").length`) !== 400) throw new Error("repeated image limit did not refuse remaining images");
+        // Supersede a render after it has created an image URL. URLs made by
+        // that incomplete render must be revoked, along with the old display.
+        await inFrame("md-frame.html", `(() => {
+            window.auditURLs = []; window.auditRevoked = [];
+            const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+            URL.createObjectURL = blob => { const url = create(blob); auditURLs.push(url);
+                if (auditURLs.length === 1) parent.postMessage({type:"audit-picture"}, "*"); return url; };
+            URL.revokeObjectURL = url => { auditRevoked.push(url); revoke(url); };
+        })()`);
+        await ev(`(() => {
+            const frame = document.querySelector("dialog.preview iframe.html");
+            const replace = event => { if (event.source !== frame.contentWindow || event.data?.type !== "audit-picture") return;
+                window.removeEventListener("message", replace);
+                frame.contentWindow.postMessage({type:"render", format:"html", html:"<p>Replacement without pictures</p>"}, "*"); };
+            window.addEventListener("message", replace);
+            frame.contentWindow.postMessage({type:"render", format:"html", html:'<img src="htmlpic.png">'.repeat(50)}, "*");
+        })()`);
+        await waitFor(`JSON.parse(document.querySelector("dialog.preview iframe.html")?.dataset.rendered ?? "null")?.images === 0`, "superseded image render");
+        await sleep(100);
+        if (!await inFrame("md-frame.html", `auditURLs.length > 0 && auditURLs.every(url => auditRevoked.includes(url))`)) {
+            throw new Error("cancelled picture rendering leaked object URLs");
+        }
+        await ev(`document.querySelector("dialog.preview button.close").click()`);
+        await waitFor(`!document.querySelector("dialog.preview")`, "limited preview closes");
+        inContainer("sh", "-c", "cd ~/Downloads/media && rm demo.html next.htm htmlpic.png limits.html");
         return "sanitized HTML and inline formatting, local images, source toggle, web link confirmation and Back history";
     });
 }
@@ -248,6 +276,13 @@ export async function checkTextEdit(checks) {
         }
         await click(syntaxToggle);
         await waitFor(`!!${highlighted} && ${syntaxToggle}.getAttribute("aria-pressed") === "true"`, "syntax highlighting re-enabled");
+        const toolbarSaved = await ev(`(() => {
+            const glyph = ${syntaxToggle}; glyph.focus();
+            const event = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true });
+            glyph.dispatchEvent(event); return event.defaultPrevented;
+        })()`);
+        if (!toolbarSaved) throw new Error("Ctrl+S from the syntax toolbar control did not save");
+        await waitFor(`${note} === "Saved."`, "save from the toolbar shortcut");
         if (await ev(`document.querySelector("textarea.editor").value`) !== "#!/bin/sh\necho toggle\n") {
             throw new Error("toggling syntax highlighting changed the text");
         }
@@ -273,6 +308,27 @@ export async function checkTextEdit(checks) {
                 && getComputedStyle(b).lineHeight === getComputedStyle(p).lineHeight
                 && p.textContent === b.value + "\\n" && !p.querySelector("img");
         })()`)) throw new Error("the highlighted editor lost source text, scroll alignment or markup safety");
+        // Go to a logical line, reveal it, and preserve the edited source.
+        const goto = async (target = 'document.querySelector("textarea.editor")') => {
+            if (!await ev(`(() => { const target = ${target}; target.focus();
+                const e = new KeyboardEvent("keydown", { key: "g", ctrlKey: true, bubbles: true, cancelable: true });
+                target.dispatchEvent(e); return e.defaultPrevented; })()`)) throw new Error("Ctrl+G was not handled");
+            await waitFor(`!!document.querySelector('input[aria-label="Line number"]')`, "Go to line dialog");
+        };
+        await goto();
+        if (!await ev(`(() => { const input = document.querySelector('input[aria-label="Line number"]');
+            input.value = "0"; const invalid = !input.checkValidity();
+            input.value = "99999"; const pastEnd = !input.checkValidity();
+            input.value = "100"; input.form.requestSubmit(input.form.querySelector("button.primary"));
+            return invalid && pastEnd; })()`)) throw new Error("Go to line accepted an invalid line");
+        await waitFor(`document.activeElement === document.querySelector("textarea.editor") &&
+            document.querySelector("textarea.editor").selectionStart === document.querySelector("textarea.editor").value.split("\\n").slice(0, 99).join("\\n").length + 1`, "caret on line 100");
+        if (!await ev(`document.querySelector("textarea.editor").scrollTop > 0 && document.querySelector("textarea.editor").value.startsWith("#!/bin/sh")`)) throw new Error("Go to line did not scroll or changed the source");
+        await goto(syntaxToggle);
+        await ev(`(() => { const input = document.querySelector('input[aria-label="Line number"]');
+            if (input.value !== "100") throw new Error("current line was not offered");
+            input.form.closest("dialog").close(); })()`);
+        await waitFor(`!document.querySelector('input[aria-label="Line number"]')`, "Go to line cancelled");
         await type("x".repeat(512 * 1024 + 1));
         await sleep(250);
         if (await ev(`!!${highlighted}`)) throw new Error("large text was highlighted past the preview's cap");
@@ -605,6 +661,37 @@ export async function checkPDF(checks) {
         return `${(pdf.length / 1e6).toFixed(1)} MB, 40 pages: ${(first / 1e3).toFixed(0)} KB for page 1, ${(last / 1e6).toFixed(1)} MB with page 40, ` +
             `asked after ${((atPause - beforeFind) / 1e6).toFixed(1)} MB more, ${(searched / 1e6).toFixed(1)} MB once searched; ` +
             "text selected, found with Ctrl+F and highlighted; a scanned one's finding stopped till asked";
+    });
+}
+
+export async function checkEPUBPictureBudget({ work, container, inContainer, step, ev, waitFor, open, listed, inFrame }) {
+    await step("files: bound EPUB picture memory per chapter", async () => {
+        const picture = Buffer.alloc(20 * 1024 * 1024);
+        pngSquare(20).copy(picture); // Valid PNG with harmless padding up to the per-image cap.
+        const chapter = body => `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Budget</title></head><body>${body}</body></html>`;
+        const book = zipFile([
+            ["mimetype", "application/epub+zip"],
+            ["META-INF/container.xml", `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`],
+            ["book.opf", `<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Picture budget</dc:title></metadata><manifest>` +
+                `<item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/><item id="picture" href="picture.png" media-type="image/png"/>` +
+                `</manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>`],
+            ["one.xhtml", chapter('<img src="picture.png" alt="Repeated"/>'.repeat(4) + '<a href="two.xhtml">Next</a>')],
+            ["two.xhtml", chapter('<img src="picture.png" alt="Next chapter"/>')],
+            ["picture.png", picture],
+        ]);
+        writeFileSync(`${work}/bounded.epub`, book);
+        execFileSync("docker", ["cp", "-q", `${work}/bounded.epub`, `${container}:/home/user/Downloads/media/bounded.epub`]);
+        execFileSync("docker", ["exec", container, "chown", "user", "/home/user/Downloads/media/bounded.epub"]);
+        await open("fs/#/media/", `${listed}.includes("bounded.epub")`, "the bounded EPUB");
+        await ev(`[...document.querySelectorAll("td.name a")].find(a => a.textContent === "bounded.epub").click()`);
+        const report = `JSON.parse(document.querySelector("dialog.preview iframe.epub")?.dataset.rendered ?? "null")`;
+        await waitFor(`${report}?.pictures === 3 && ${report}.errors.some(e => e.includes("preview limit"))`, "three 20 MiB pictures fit, the fourth is refused", 60000);
+        await inFrame("epub-frame.html", `document.querySelector('#doc a').click()`);
+        await waitFor(`${report}?.chapter === 2 && ${report}.pictures === 1`, "the next chapter gets a fresh budget", 60000);
+        await ev(`document.querySelector("dialog.preview button.close").click()`);
+        await waitFor(`!document.querySelector("dialog.preview")`, "EPUB budget preview closes");
+        inContainer("rm", "/home/user/Downloads/media/bounded.epub");
+        return "repeated 20 MiB pictures share a read and spend the 64 MiB budget; next chapter resets it";
     });
 }
 

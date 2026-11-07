@@ -34,8 +34,9 @@ import { createBrowserHarness, sleep } from "./browser/harness.mjs";
 import { checkBinary } from "./browser/binary.mjs";
 import { checkZIP } from "./browser/zip.mjs";
 import { checkAudio, checkVideo, checkMKV } from "./browser/media.mjs";
-import { checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB } from "./browser/documents.mjs";
+import { checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget } from "./browser/documents.mjs";
 import { checkCells, checkStructured } from "./browser/tables.mjs";
+import { checkServices } from "./browser/services.mjs";
 
 const [port, base, downloads, work, container, group = "all"] = process.argv.slice(2);
 // inContainer runs a command in the container as its user, and returns
@@ -90,11 +91,12 @@ async function step(name, fn) {
 
 const checks = { port, base, downloads, work, container, inContainer, sleep, step, totp, cdp, ev, waitFor, click, press, type, open, newTab, listed, row, answer, waitForFile, status, setFiles, inFrame, inMarkdownFrame, checkPreviewLink, rendered };
 const groups = {
+    services: [checkServices],
     binary: [checkBinary], zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
     media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkHTML],
     markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit], pdf: [checkPDF],
-    epub: [checkEPUB], tables: [checkCells, checkStructured],
-    previews: [checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkCells, checkStructured],
+    epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured],
+    previews: [checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured],
 };
 if (group !== "all" && !groups[group]) throw new Error(`Unknown group ${group}; choose all, ${Object.keys(groups).join(", ")}`);
 
@@ -109,10 +111,11 @@ try {
 
     if (group !== "all") {
         await step("login for " + group, async () => {
-            await open("fs/#/", `!!document.querySelector("#tabtop_login input")`, "the login form");
+            await open(group === "services" ? "tty/" : "fs/#/", `!!document.querySelector("#tabtop_login input")`, "the login form");
             const code = await totp();
             await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
-            await waitFor(`!document.querySelector("#tabtop_login") && ${listed}.includes("hello.txt")`, "the file listing");
+            await waitFor(group === "services" ? `!document.querySelector("#tabtop_login") && !!document.querySelector("#terminal canvas")`
+                : `!document.querySelector("#tabtop_login") && ${listed}.includes("hello.txt")`, "the logged-in page");
         });
         for (const check of groups[group]) await check(checks);
     } else {
@@ -318,6 +321,7 @@ try {
     await checkPDF(checks);
 
     await checkEPUB(checks);
+    await checkEPUBPictureBudget(checks);
 
     await checkCells(checks);
 

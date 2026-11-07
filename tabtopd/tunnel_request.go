@@ -141,29 +141,19 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 		g.loginTunnel(c, ip, browserName(r.Header.Get("User-Agent")), hello[2:])
 	case helloSession:
 		t, session := g.sessionTunnel(c, hello[2:])
-		handshaken() // from here, the session's limit applies
 		if t != nil {
-			detach, err := g.attach(session, ip, t)
-			switch err {
-			case errSessionEnded:
-				t.Close(closeLogin, err.Error())
-				return
-			case errTooManyTunnels:
-				t.Close(websocket.StatusTryAgainLater, err.Error())
-				return
-			}
-			defer detach()
 			t.req = r
-			g.serveRequest(t, session, ip)
+			g.serveRequest(t, session, ip, handshaken)
 		}
 	default:
 		c.Close(websocket.StatusPolicyViolation, "bad hello")
 	}
 }
 
-// serveRequest answers a session tunnel's request.
-func (g *server) serveRequest(t *tunnel, session, ip string) {
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
+// The first encrypted request proves possession of the session secret. Until
+// then, retain handshake limits and leave the session's idle timer and uses alone.
+func (g *server) serveRequest(t *tunnel, session, ip string, authenticated func()) {
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	typ, msg, err := t.Read(ctx)
 	cancel()
 	var req tunnelRequest
@@ -171,6 +161,17 @@ func (g *server) serveRequest(t *tunnel, session, ip string) {
 		t.Close(websocket.StatusPolicyViolation, "bad request")
 		return
 	}
+	detach, err := g.attach(session, ip, t)
+	if err != nil {
+		code := closeLogin
+		if errors.Is(err, errTooManyTunnels) {
+			code = websocket.StatusTryAgainLater
+		}
+		t.Close(code, err.Error())
+		return
+	}
+	defer detach()
+	authenticated()
 	r := &tunnelResponder{t: t}
 	// Gate access before dispatch, including requests from cached pages or
 	// clients that bypass navigation. Keep session management available.

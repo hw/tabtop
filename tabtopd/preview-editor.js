@@ -2,7 +2,7 @@
 // the current-file checks; editors own their save snapshots and UI resources.
 import { glyphs, iconSVG } from "./glyphs.js";
 import { call, collect, uploadFile, saveBlob } from "./requests.js";
-import { askBookDetails, askYes, statusRow } from "./ui.js";
+import { askBookDetails, askYes, askLine, statusRow } from "./ui.js";
 import { checkJSON, formatJSON, FormatTooBig, parseJSON } from "./json-view.js";
 import { tableView } from "./table-view.js";
 import { el, join } from "./preview-dom.js";
@@ -109,8 +109,35 @@ function recoveryDownload(name, snapshot) {
     return button;
 }
 
+// Position and reveal the caret, including when logical lines wrap.
+function goToEditorLine(box, lineNumber, column = 1) {
+    const text = box.value;
+    let offset = 0;
+    for (let line = 1; line < lineNumber; line++) {
+        const next = text.indexOf("\n", offset);
+        if (next < 0) { offset = text.length; break; }
+        offset = next + 1;
+    }
+    const lineEnd = text.indexOf("\n", offset);
+    offset = Math.min(offset + Math.max(0, column - 1), lineEnd < 0 ? text.length : lineEnd);
+    box.focus({ preventScroll: true });
+    box.setSelectionRange(offset, offset);
+    const mirror = el("div");
+    const style = getComputedStyle(box);
+    for (const property of ["font", "lineHeight", "letterSpacing", "padding", "tabSize", "whiteSpace", "overflowWrap", "boxSizing"]) {
+        mirror.style[property] = style[property];
+    }
+    Object.assign(mirror.style, { position: "fixed", top: "0", left: "0", visibility: "hidden", width: box.clientWidth + "px" });
+    const caret = el("span", { textContent: "\u200b" });
+    mirror.append(document.createTextNode(text.slice(0, offset)), caret);
+    document.body.append(mirror);
+    box.scrollTop = Math.max(0, caret.offsetTop - box.clientHeight / 2);
+    mirror.remove();
+    box.dispatchEvent(new Event("scroll"));
+}
+
 // Error messages stay inert text; only their reported source locations are
-// buttons. Measure a copy of the prefix so wrapped lines scroll correctly too.
+// buttons; jumping uses the same caret positioning as Go to line.
 function editorMessage(target, message, box) {
     target.replaceChildren();
     let end = 0;
@@ -119,28 +146,7 @@ function editorMessage(target, message, box) {
         const jump = el("button", { type: "button", className: "editor-error-jump", textContent: match[0],
             title: `Go to ${match[0]}` });
         jump.addEventListener("click", () => {
-            const text = box.value;
-            let offset = 0;
-            for (let line = 1; line < Number(match[1]); line++) {
-                const next = text.indexOf("\n", offset);
-                if (next < 0) { offset = text.length; break; }
-                offset = next + 1;
-            }
-            const lineEnd = text.indexOf("\n", offset);
-            offset = Math.min(offset + Math.max(0, Number(match[2] ?? 1) - 1), lineEnd < 0 ? text.length : lineEnd);
-            box.focus({ preventScroll: true });
-            box.setSelectionRange(offset, offset);
-            const mirror = el("div");
-            const style = getComputedStyle(box);
-            for (const property of ["font", "lineHeight", "letterSpacing", "padding", "tabSize", "whiteSpace", "overflowWrap", "boxSizing"]) {
-                mirror.style[property] = style[property];
-            }
-            Object.assign(mirror.style, { position: "fixed", top: "0", left: "0", visibility: "hidden", width: box.clientWidth + "px" });
-            const caret = el("span", { textContent: "\u200b" });
-            mirror.append(document.createTextNode(text.slice(0, offset)), caret);
-            document.body.append(mirror);
-            box.scrollTop = Math.max(0, caret.offsetTop - box.clientHeight / 2);
-            mirror.remove();
+            goToEditorLine(box, Number(match[1]), Number(match[2] ?? 1));
         });
         target.append(jump);
         end = match.index + match[0].length;
@@ -388,7 +394,25 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
             saving = false;
         }
     };
+    let askingLine = false, stopped = false;
+    const goToLine = async () => {
+        if (askingLine || stopped) return;
+        askingLine = true;
+        try {
+            const line = box.value.slice(0, box.selectionStart).split("\n").length;
+            const total = box.value.split("\n").length;
+            const chosen = await askLine(line, total);
+            if (!stopped && chosen !== null) goToEditorLine(box, chosen);
+        } finally {
+            askingLine = false;
+        }
+    };
     const onKey = (e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "g") {
+            e.preventDefault();
+            goToLine();
+            return;
+        }
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
             e.preventDefault();
             save();
@@ -396,12 +420,14 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     };
     editor.addEventListener("keydown", onKey);
     return {
+        goToLine,
         syntaxToggle: syntax.toggle,
         formatButton: format,
         saving: () => saving,
         dirty,
         save,
         stop() {
+            stopped = true;
             clearTimeout(renderTimer);
             clearTimeout(checking);
             syntax.stop();

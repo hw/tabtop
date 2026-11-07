@@ -491,6 +491,20 @@ export function preview(dir, files, index, download, opts = {}) {
         }
     });
     dialog.addEventListener("keydown", (e) => {
+        // Toolbar controls are outside the editor; saving works from either.
+        // A nested confirmation dialog owns its own keys.
+        if (editing && !e.defaultPrevented && e.target.closest("dialog") === dialog &&
+            (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "s") {
+            e.preventDefault();
+            editing.save();
+            return;
+        }
+        if (editing?.goToLine && !e.defaultPrevented && e.target.closest("dialog") === dialog &&
+            (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "g") {
+            e.preventDefault();
+            editing.goToLine();
+            return;
+        }
         // Ctrl+F, over a PDF, finds in it, not in this page.
         const pdf = dialog.querySelector("iframe.pdf");
         if (pdf && (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {

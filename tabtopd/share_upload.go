@@ -288,14 +288,23 @@ func (g *server) serveUploadLink(w http.ResponseWriter, r *http.Request, l *shar
 // receiveForm saves the files posted with the upload page's form, each as
 // it comes, rather than all of them first somewhere else.
 func (g *server) receiveForm(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, page bool, ip string) {
-	r.Body = io.NopCloser(stallReader{r.Body, http.NewResponseController(w)})
+	limit, done, err := g.shares.startForm(l)
+	if err != nil {
+		refuseUpload(w, err)
+		return
+	}
+	defer done()
+	limited := http.MaxBytesReader(w, r.Body, limit)
+	r.Body = io.NopCloser(stallReader{limited, http.NewResponseController(w)})
 	mr, err := r.MultipartReader()
 	if err != nil {
+		w.Header().Set("Connection", "close")
 		shareFail(w, page, http.StatusBadRequest, "Pick files to upload.")
 		return
 	}
 	var sent []sentLine
 	code := http.StatusOK
+	ignored := int64(0)
 	for parts := 0; ; parts++ {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -303,28 +312,43 @@ func (g *server) receiveForm(w http.ResponseWriter, r *http.Request, l *shareLin
 		}
 		if err == nil && parts == maxFormParts {
 			// No more: each part, refused or not, is kept to say so.
-			part.Close()
+			w.Header().Set("Connection", "close")
 			sent = append(sent, sentLine{fmt.Sprintf("Only %d files can be sent at once: the rest weren't taken.", maxFormParts), true})
 			code = http.StatusRequestEntityTooLarge
 			break
 		}
 		if err != nil {
+			w.Header().Set("Connection", "close")
 			sent = append(sent, sentLine{"The upload was cut off.", true})
 			code = http.StatusBadRequest
+			if _, tooBig := errors.AsType[*http.MaxBytesError](err); tooBig {
+				code = http.StatusRequestEntityTooLarge
+			}
 			break
 		}
 		if part.FormName() != "file" || part.FileName() == "" {
-			part.Close()
+			// Part.Close drains to the next boundary. Bound ignored fields
+			// independently of the space allowed for actual uploaded files.
+			n, err := io.Copy(io.Discard, io.LimitReader(part, maxFormOverhead-ignored+1))
+			ignored += n
+			if err != nil || ignored > maxFormOverhead {
+				w.Header().Set("Connection", "close")
+				sent = append(sent, sentLine{"The upload form is too large or was cut off.", true})
+				code = http.StatusRequestEntityTooLarge
+				break
+			}
 			continue
 		}
 		name := partName(part)
 		got, err := g.receive(l, store, ip, name, part, -1)
-		part.Close()
 		if err != nil {
+			// Never drain a rejected file: its body can be arbitrarily large
+			// or continue forever while making progress before each deadline.
+			w.Header().Set("Connection", "close")
 			c, msg := errorCode(err)
 			sent = append(sent, sentLine{name + ": " + msg, true})
 			code = c
-			continue
+			break
 		}
 		sent = append(sent, sentLine{"Uploaded " + got, false})
 	}
@@ -343,6 +367,38 @@ func (g *server) receiveForm(w http.ResponseWriter, r *http.Request, l *shareLin
 // maxFormParts is the most parts a form posted through an upload link may
 // have (files, or anything else): past that, the rest aren't read.
 const maxFormParts = 100
+
+const maxFormOverhead = 1 << 20
+
+// Multipart's header parser may use more memory than a streaming file copy.
+// Admit fewer forms than ordinary PUT/chunk transfers, before parsing headers.
+const maxUploadForms = 8
+const maxUploadFormsPerLink = 4
+
+func (s *shareStore) startForm(l *shareLink) (int64, func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.links[l.ID] != l || !s.clock.Now().Before(l.Expires) {
+		return 0, nil, &uploadLinkError{http.StatusNotFound, "This link has ended."}
+	}
+	if s.formsAll >= maxUploadForms || s.forms[l.ID] >= maxUploadFormsPerLink {
+		return 0, nil, &uploadLinkError{http.StatusServiceUnavailable, "Too many upload forms are going; try again later."}
+	}
+	if s.forms == nil {
+		s.forms = map[string]int{}
+	}
+	s.formsAll++
+	s.forms[l.ID]++
+	limit := max(0, l.MaxBytes-l.Bytes-l.pendingBytes) + maxFormOverhead
+	return limit, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.formsAll--
+		if s.forms[l.ID]--; s.forms[l.ID] == 0 {
+			delete(s.forms, l.ID)
+		}
+	}, nil
+}
 
 // partName is the name of the file a form part holds, without any folders
 // a browser put before it.

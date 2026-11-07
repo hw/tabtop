@@ -339,23 +339,34 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	// One replacing at a time, so a save from another tab can't come
 	// between this one's check and its replacing the file.
 	unlock := func() {}
+	var target *downloadStore
+	checkStore, checkPath := root, path.Join(dir, req.Name)
 	if req.Replace {
-		unlock = lockReplacing(path.Join(dir, req.Name))
+		target, unlock, err = root.beginReplacement(checkPath)
+		if err != nil {
+			r.fail(uploadError(err))
+			return
+		}
+		checkStore, checkPath = target, req.Name
 	}
 	if req.IfMtime != "" {
 		// Again, now it's all here: it may have changed meanwhile.
-		if err := unchangedSince(root, path.Join(dir, req.Name), req.IfMtime, req.IfSize); err != nil {
+		if err := unchangedSince(checkStore, checkPath, req.IfMtime, req.IfSize); err != nil {
 			unlock()
 			r.fail(err.Error())
 			return
 		}
 	}
-	name, err := u.finish(req.Name, req.Replace)
+	name, err := u.finishAt(req.Name, req.Replace, target)
 	// Its time and size, read before another save can replace it: the
 	// page sends them back to say which file it has (see unchangedSince).
 	var st fs.FileInfo
 	if err == nil {
-		st, _ = root.stat(path.Join(dir, name))
+		resultPath := path.Join(dir, name)
+		if target != nil {
+			resultPath = name
+		}
+		st, _ = checkStore.stat(resultPath)
 	}
 	unlock()
 	saved = true
@@ -381,19 +392,42 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	r.finish(res)
 }
 
-// replacing are locks for uploads that replace a file, chosen by the
-// file's path: enough to keep those to one file in turn, few enough to
-// take no more room however many files are saved.
+// replacing are locks for uploads that replace a file, chosen by its
+// destination directory's identity and basename: enough to serialize aliases,
+// few enough to take no more room however many files are saved.
 var replacing [64]sync.Mutex
 
-// lockReplacing locks replacing the file at p (in ~/Downloads), and
-// returns the function that unlocks it.
-func lockReplacing(p string) func() {
+func lockReplacing(key string) func() {
 	h := fnv.New32a()
-	h.Write([]byte(path.Clean(p)))
+	h.Write([]byte(key))
 	mu := &replacing[h.Sum32()%uint32(len(replacing))]
 	mu.Lock()
 	return mu.Unlock
+}
+
+// Resolve within Downloads, then pin the same directory for the version check
+// and publication. Aliases of it acquire the same lock, even after a rename.
+func (s *downloadStore) beginReplacement(p string) (*downloadStore, func(), error) {
+	d, err := openRootDirectory(s.root, path.Dir(p))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer d.Close()
+	st, err := d.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	sys, ok := identitySys(st)
+	if !ok {
+		return nil, nil, fs.ErrInvalid
+	}
+	root, err := openDirectoryRoot(fmt.Sprintf("/proc/self/fd/%d", d.Fd()))
+	if err != nil {
+		return nil, nil, err
+	}
+	target := &downloadStore{root: root}
+	unlock := lockReplacing(fmt.Sprintf("%d:%d:%s", sys.Dev, sys.Ino, path.Base(p)))
+	return target, func() { target.Close(); unlock() }, nil
 }
 
 // fileVersion says which version of a file st is, as text, for a page to

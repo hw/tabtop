@@ -5,6 +5,7 @@ import { el } from "./preview-dom.js";
 import { typeOf, resolvePath } from "./preview-model.js";
 import { readingTheme, bookPlace, setBookPlace } from "./preview-settings.js";
 import { previewLink } from "./preview-links.js";
+import { pictureLoader } from "./preview-pictures.js";
 
 const readRange = createRangedFileReader({ call, collect });
 
@@ -57,26 +58,35 @@ export async function markdownFrame(path, dir, opts = {}) {
     const htmlMode = opts.format === "html";
     const frame = sandboxFrame(htmlMode ? "html" : "markdown", htmlMode ? "HTML, rendered" : "Markdown, rendered", "md-frame.html");
     let ready = false;
-    let asked = 0;
-    const pictures = new Map();  // by src, as asked: each fetched once, however often it's rendered
+    let pictures = null, render = 0;
+    const newPictures = () => pictureLoader({
+        resolve: src => resolvePath(dir, src.split("#")[0]),
+        load: framePicture,
+    });
     const send = (fragment = "", location = null) => frame.contentWindow?.postMessage({ type: "render", html, fragment, location, format: htmlMode ? "html" : "markdown" }, "*");
     const answer = async (m) => {
         if (m.type === "ready") {
             ready = true;
             send(opts.fragment ?? "", opts.location);
+        } else if (m.type === "render-start" && Number.isSafeInteger(m.render) && m.render > render) {
+            render = m.render;
+            pictures?.stop();
+            pictures = newPictures();
         } else if (m.type === "image" && typeof m.src === "string") {
-            if (!pictures.has(m.src)) {
-                pictures.set(m.src, framePicture(dir, m.src, ++asked));
-            }
-            const got = await pictures.get(m.src);
-            // A copy for each answer: what's sent is moved, not copied.
-            frame.contentWindow?.postMessage({ id: m.id, ...got, ...(got.bytes ? { bytes: got.bytes.slice(0) } : {}) }, "*");
+            const loader = pictures;
+            let got = loader && m.render === render ? await loader.read(m.src) : { error: "Preview replaced." };
+            if (loader !== pictures) got = { error: "Preview replaced." };
+            // Keep the cached source, but transfer the reply copy to the frame.
+            const bytes = got.bytes?.slice(0);
+            frame.contentWindow?.postMessage({ id: m.id, ...got, ...(bytes ? { bytes } : {}) }, "*", bytes ? [bytes] : []);
         } else if (m.type === "open" && typeof m.href === "string") {
             opts.open?.(m.href, m.location);
 
         }
     };
     bindFrame(frame, answer, opts, () => ready, true);
+    const unbind = frame.stop;
+    frame.stop = () => { pictures?.stop(); pictures = null; unbind(); };
     frame.update = (newHTML) => {
         html = newHTML;
         if (ready) {
@@ -93,17 +103,50 @@ export async function markdownFrame(path, dir, opts = {}) {
 export function epubFrame(path, file, opts = {}) {
     let ready = false;
     const frame = sandboxFrame("epub", file.book.title || file.name, "epub-frame.html");
-    const ask = (item) => call({ type: "epub", path, item, if_mtime: file.mtime, if_size: file.size });
+    let render = 0, pictures = null, chapterAbort = null;
+    const ask = async (item, signal, consume) => {
+        let tunnel;
+        const cancel = () => tunnel?.close();
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+            signal.throwIfAborted();
+            tunnel = await call({ type: "epub", path, item, if_mtime: file.mtime, if_size: file.size });
+            signal.throwIfAborted();
+            return await consume(tunnel);
+        } finally {
+            signal.removeEventListener("abort", cancel);
+            tunnel?.close();
+        }
+    };
+    const newPictures = () => pictureLoader({
+        // The child resolves book URLs to decoded ZIP-entry paths (itemOf).
+        // Preserve literal '%' and '#' in those filenames rather than decoding
+        // or splitting them a second time.
+        resolve: src => src,
+        load: (src, reserve, signal) => ask(src, signal, async t => {
+            if (typeOf(src.split("/").pop() ?? "")?.kind !== "image" ||
+                !t.reply.mime?.startsWith("image/") || !Number.isSafeInteger(t.reply.size) || t.reply.size < 0 ||
+                t.reply.size > 20 * 1024 * 1024) throw new Error("not a supported picture");
+            if (!reserve(t.reply.size)) return { error: "Pictures exceed the 64 MiB preview budget." };
+            const blob = await collect(t, t.reply.size, () => {}, t.reply.mime);
+            signal.throwIfAborted();
+            return { bytes: await blob.arrayBuffer(), mime: t.reply.mime };
+        }),
+    });
     const reply = (m) => frame.contentWindow?.postMessage(m, "*", m.bytes ? [m.bytes] : []);
     const answer = async (m) => {
         if (m.type === "ready") {
             ready = true;
             reply({ type: "open", book: file.book, start: opts.location ?? bookPlace(path, file.size) });
-        } else if (m.type === "chapter" && typeof m.item === "string") {
+        } else if (m.type === "chapter" && typeof m.item === "string" && Number.isSafeInteger(m.render) && m.render > render) {
+            render = m.render;
+            chapterAbort?.abort();
+            pictures?.stop();
+            chapterAbort = new AbortController();
+            pictures = newPictures();
             try {
-                const t = await ask(m.item);
-                t.close();
-                reply({ id: m.id, html: t.reply.html });
+                const got = await ask(m.item, chapterAbort.signal, t => ({ html: t.reply.html }));
+                reply({ id: m.id, ...got });
             } catch (err) {
                 reply({ id: m.id, error: err.message });
             }
@@ -112,56 +155,51 @@ export function epubFrame(path, file, opts = {}) {
                 reply({ id: m.id, error: "not a picture" });
                 return;
             }
-            try {
-                const t = await ask(m.src);
-                if (!t.reply.mime?.startsWith("image/") || !Number.isSafeInteger(t.reply.size)) {
-                    t.close();
-                    throw new Error("not a picture");
-                }
-                const blob = await collect(t, t.reply.size, () => {}, t.reply.mime);
-                reply({ id: m.id, bytes: await blob.arrayBuffer(), mime: t.reply.mime });
-            } catch (err) {
-                reply({ id: m.id, error: err.message });
-            }
+            const loader = pictures;
+            let got = loader && m.render === render ? await loader.read(m.src) : { error: "Chapter replaced." };
+            if (loader !== pictures) got = { error: "Chapter replaced." };
+            const bytes = got.bytes?.slice(0);
+            reply({ id: m.id, ...got, ...(bytes ? { bytes } : {}) });
         } else if (m.type === "at" && typeof m.item === "string" && m.item.length < 1000 && Number.isFinite(m.fraction)) {
             setBookPlace(path, file.size, { item: m.item, fraction: m.fraction, size: Number.isInteger(m.size) ? m.size : undefined });
 
         }
     };
     bindFrame(frame, answer, opts, () => ready, true);
+    const unbind = frame.stop;
+    frame.stop = () => { chapterAbort?.abort(); pictures?.stop(); pictures = null; unbind(); };
     return frame;
 }
 
-// The most pictures a Markdown file's frame is given, and the biggest.
-const FRAME_PICTURES = 100;
+// Per-source cap, in addition to pictureLoader's count and cumulative budgets.
 const FRAME_PICTURE_BYTES = 20e6;
 
-// framePicture fetches the picture src, the n-th asked for, relative to
-// the folder dir, for a Markdown file's frame: {bytes, mime}, or {error}.
-// Only pictures in ~/Downloads, by a path from dir.
-async function framePicture(dir, src, n) {
-    if (n > FRAME_PICTURES) {
-        return { error: "too many pictures" };
-    }
-    const path = resolvePath(dir, src.split("#")[0]);
-    if (path === null) {
-        return { error: "not in Downloads, beside this file" };
-    }
+// Read a confined, canonical picture path after reserving its cache space.
+async function framePicture(path, reserve, signal) {
     const t = typeOf(path.split("/").pop() ?? "");
     if (t?.kind !== "image") {
         return { error: "not a picture" };
     }
+    let tt;
+    const cancel = () => tt?.close();
+    signal.addEventListener("abort", cancel, { once: true });
     try {
-        const tt = await call({ type: "file", path });
+        signal.throwIfAborted();
+        tt = await call({ type: "file", path });
+        signal.throwIfAborted();
         const { size } = tt.reply;
         if (size > FRAME_PICTURE_BYTES) {
-            tt.close();
             return { error: "too big to show" };
         }
+        if (!reserve(size)) return { error: "Pictures exceed the 64 MiB preview budget." };
         const blob = await collect(tt, size, () => {}, t.type);
+        signal.throwIfAborted();
         return { bytes: await blob.arrayBuffer(), mime: t.type };
     } catch (err) {
         return { error: err.message };
+    } finally {
+        signal.removeEventListener("abort", cancel);
+        tt?.close();
     }
 }
 
