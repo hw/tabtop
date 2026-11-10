@@ -227,6 +227,7 @@ WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
 RUN go mod download
 COPY tabtopd/*.go tabtopd/*.js tabtopd/*.json tabtopd/*.html tabtopd/*.css ./
+COPY tabtopd/third-party/ ./third-party/
 # BUILD_TIME stamps Sessions and Activity (UTC RFC3339). Empty uses the
 # time this stage runs.
 ARG BUILD_TIME=

@@ -19,7 +19,8 @@
 // the system is). A link to another file, by a relative path, is passed to
 // the page, {type: "open", href}, which shows that file instead. Once it's
 // With format: "html", raw HTML is rebuilt from a formatting allowlist;
-// scripts, forms, embeds, stylesheets and event handlers are discarded.
+// scripts, forms, active embeds and event handlers are discarded. Stylesheets,
+// fonts and ordinary media use the selected resource mode and bounded brokers.
 // Once done, it tells the page {type: "rendered", report}, what it rendered and
 // what it couldn't.
 
@@ -34,7 +35,13 @@
 
     let requestedPosition = null;
     let rendering = false;
+    let externalMode = "none";
     const position = () => ({ top: scrollY, left: scrollX });
+    let positionTimer;
+    window.addEventListener("scroll", () => {
+        clearTimeout(positionTimer);
+        positionTimer = setTimeout(() => page.postMessage({ type: "position", location: position() }, "*"), 50);
+    });
     const waiting = new Map();
     let lastId = 0;
     function ask(message) {
@@ -54,6 +61,7 @@
             waiting.get(m.id)(m);
             waiting.delete(m.id);
         } else if (m.type === "render" && typeof m.html === "string") {
+            externalMode = ["proxy", "direct"].includes(m.externalMode) ? m.externalMode : "none";
             requestedPosition = m.location ?? requestedPosition;
             render(m.html, typeof m.fragment === "string" ? m.fragment : "", m.format === "html");
         } else if (m.type === "restore" && m.location) {
@@ -69,7 +77,7 @@
     // the parent; relative file links go to the parent to be previewed.
     document.addEventListener("click", (e) => {
         const a = e.target.closest("a[href]");
-        const href = a?.getAttribute("href") ?? "";
+        const href = TabTopHTMLLinks.reference(a?.getAttribute("href"));
         if (!a) return;
         e.preventDefault();
         if (/^(https?:|mailto:)/i.test(href)) {
@@ -88,7 +96,7 @@
     });
 
     document.addEventListener("auxclick", (e) => {
-        const href = e.target.closest("a[href]")?.getAttribute("href") ?? "";
+        const href = TabTopHTMLLinks.reference(e.target.closest("a[href]")?.getAttribute("href"));
         if (e.button === 1 && /^(https?:|mailto:)/i.test(href)) {
             e.preventDefault();
             page.postMessage({ type: "external", href }, "*");
@@ -168,9 +176,9 @@
     // never become active. Images are handed to the normal tunnel loader.
     const HTML_TAGS = new Set(("a abbr address article aside b bdi bdo blockquote br caption cite code col colgroup dd del details dfn div dl dt em " +
         "figcaption figure footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li main mark nav ol p pre q rp rt ruby s samp section small " +
-        "span strong sub summary sup table tbody td tfoot th thead time tr u ul var wbr").split(" "));
+        "span strong sub summary sup table tbody td tfoot th thead time tr u ul var wbr audio video").split(" "));
     const DROP_TAGS = new Set(("script style link meta base iframe frame frameset object embed applet form input textarea select button option " +
-        "audio video source track canvas svg math noscript template title").split(" "));
+        "source track canvas svg math noscript template title").split(" "));
     const HTML_STYLES = new Set(("color background-color font-family font-size font-style font-weight font-variant line-height letter-spacing " +
         "text-align text-decoration text-indent text-transform vertical-align white-space word-break overflow-wrap " +
         "width max-width min-width height max-height margin margin-top margin-right margin-bottom margin-left " +
@@ -181,6 +189,7 @@
     function cleanHTML(html) {
         const template = document.createElement("template");
         template.innerHTML = html;
+        const source = TabTopHTMLLinks.sourceURL(template.content, html);
         const out = document.createDocumentFragment();
         const work = [{ node: template.content.firstChild, parent: out, depth: 0 }];
         let count = 0;
@@ -196,7 +205,21 @@
             }
             if (node.nodeType !== Node.ELEMENT_NODE) continue;
             const tag = node.localName;
-            if (node.namespaceURI !== "http://www.w3.org/1999/xhtml" || DROP_TAGS.has(tag)) continue;
+            if (node.namespaceURI !== "http://www.w3.org/1999/xhtml") continue;
+            if (tag === "style" || tag === "link" && node.getAttribute("rel")?.toLowerCase().split(/\s+/).includes("stylesheet")) {
+                const marker = document.createElement("span");
+                marker.hidden = true;
+                const media = node.getAttribute("media");
+                if (media !== null) marker.dataset.previewStyleMedia = media;
+                const type = (node.getAttribute("type") ?? "").trim().toLowerCase();
+                const alternate = tag === "link" && node.getAttribute("rel")?.toLowerCase().split(/\s+/).includes("alternate");
+                if (node.hasAttribute("disabled") || alternate || type && type !== "text/css") marker.dataset.previewDisabled = "true";
+                if (tag === "style") marker.dataset.previewCss = node.textContent;
+                else if (node.hasAttribute("href")) marker.dataset.previewStylesheet = TabTopHTMLLinks.reference(node.getAttribute("href"));
+                parent.append(marker);
+                continue;
+            }
+            if (DROP_TAGS.has(tag)) continue;
             if (depth > 128) { truncated = true; continue; }
             let target = parent;
             if (HTML_TAGS.has(tag)) {
@@ -206,17 +229,26 @@
                     const value = node.getAttribute(attr);
                     if (value !== null && value.length <= 1000) target.setAttribute(attr, value);
                 }
+                const classes = node.getAttribute("class");
+                if (classes && classes.length <= 2000) target.className = classes;
+                const inline = node.getAttribute("style");
+                if (inline && inline.length <= 8192) target.dataset.previewInlineCss = inline;
+                if (tag === "audio" || tag === "video") {
+                    const candidates = [{ src: node.getAttribute("src"), type: "" }, ...[...node.querySelectorAll("source[src]")].map(source => ({ src: source.getAttribute("src"), type: source.getAttribute("type") }))];
+                    const selected = candidates.find(source => source.src && (!source.type || target.canPlayType(source.type)));
+                    if (selected) target.dataset.previewMedia = TabTopHTMLLinks.reference(selected.src);
+                    target.controls = true; target.preload = "none";
+                    if (tag === "video") target.playsInline = true;
+                }
                 if (tag === "a") {
-                    const href = node.getAttribute("href");
-                    try {
-                        if (href !== null && ["http:", "https:", "mailto:"].includes(new URL(href, "https://preview.invalid/").protocol)) {
-                            target.setAttribute("href", href.startsWith("//") ? "https:" + href : href);
-                        }
-                    } catch { /* An invalid link remains plain text. */ }
+                    const href = TabTopHTMLLinks.anchorHref(node, source);
+                    if (href !== null) target.setAttribute("href", href);
+                    // Named anchors in saved pages remain usable as headings.
+                    if (!target.id && node.getAttribute("name")?.length <= 1000) target.id = node.getAttribute("name");
                 }
                 if (tag === "img") {
                     for (const attr of ["src", "alt"]) {
-                        if (node.hasAttribute(attr)) if (attr === "src") target.dataset.previewSrc = node.getAttribute(attr);
+                        if (node.hasAttribute(attr)) if (attr === "src") target.dataset.previewSrc = TabTopHTMLLinks.reference(node.getAttribute(attr));
                         else target.setAttribute(attr, node.getAttribute(attr));
                     }
                 }
@@ -263,7 +295,13 @@
         if (htmlMode) {
             doc.append(cleanHTML(html));
         } else {
-            doc.innerHTML = html;
+            const template = document.createElement("template");
+            template.innerHTML = html;
+            for (const img of template.content.querySelectorAll("img[src]")) {
+                img.dataset.previewSrc = img.getAttribute("src");
+                img.removeAttribute("src");
+            }
+            doc.append(template.content);
         }
         const report = { math: 0, diagrams: 0, code: 0, images: 0, remote: 0, contents: 0, errors: [] };
         for (const a of doc.querySelectorAll("a[href]")) {
@@ -276,16 +314,24 @@
         report.contents = doc.querySelectorAll(".toc li").length;
         report.frontMatter = !!doc.querySelector(":scope > details.front-matter");
 
+        const remoteCount = [...doc.querySelectorAll("img")].filter(img => /^(https?:|\/\/)/i.test(img.dataset.previewSrc ?? img.getAttribute("src") ?? "")).length;
+        page.postMessage({ type: "external-resources", count: remoteCount }, "*");
+        const resources = htmlMode ? await TabTopHTMLResources.process(doc, {
+            mode: externalMode, ask, render: me, alive: () => me === renders, report,
+        }) : null;
+        if (resources) urls.push(...resources.urls);
+        if (me !== renders) { for (const url of urls) URL.revokeObjectURL(url); return; }
+
         // Pictures: beside the file, through the page; data: as they are;
-        // from the web, not at all.
+        // from the web, only with an explicitly chosen resource mode.
         for (const img of doc.querySelectorAll("img")) {
-            const src = img.dataset.previewSrc ?? img.getAttribute("src") ?? "";
+            const src = TabTopHTMLLinks.reference(img.dataset.previewSrc ?? img.getAttribute("src"));
             delete img.dataset.previewSrc;
             if (/^data:image\//i.test(src)) {
                 img.src = src;
                 continue;
             }
-            if (/^([a-z][a-z0-9+.-]*:|\/\/)/i.test(src)) {
+            if (/^([a-z][a-z0-9+.-]*:|\/\/)/i.test(src) && (externalMode === "none" || !/^(https?:|\/\/)/i.test(src))) {
                 img.replaceWith(note(`Picture from the web, not loaded: ${img.alt || src}`));
                 report.remote++;
                 continue;
@@ -296,9 +342,15 @@
                 for (const url of urls) URL.revokeObjectURL(url);
                 return;
             }
-            if (got.bytes) {
+            if (got.url && externalMode === "direct") {
+                img.referrerPolicy = "no-referrer";
+                img.src = got.url;
+                report.images++;
+            } else if (got.bytes) {
                 img.src = URL.createObjectURL(new Blob([got.bytes], { type: got.mime }));
                 urls.push(img.src);
+                // Resolve local/blob image dimensions before restoring scroll.
+                await img.decode().catch(() => {});
                 report.images++;
             } else {
                 img.replaceWith(note(`${img.alt || src}: ${got.error ?? "not found"}`, true));
@@ -360,6 +412,8 @@
             }
         }
 
+        // Let the parent finish sizing its conditional toolbar before restoring scroll.
+        await new Promise(requestAnimationFrame);
         if (me !== renders) {
             for (const u of urls) {
                 URL.revokeObjectURL(u);
@@ -379,10 +433,14 @@
         } else {
             scrollTo(scrolled.left, scrolled.top);
         }
+        resources?.mounted().then(() => {
+            if (me === renders) page.postMessage({ type: "rendered", report }, "*");
+        }).catch(err => report.errors.push(err.message));
         rendering = false;
         report.scrolled = Math.round(scrollY);
         page.postMessage({ type: "rendered", report }, "*");
     }
 
-    page.postMessage({ type: "ready" }, "*");
+    // Its CSP's mode, as its address chose it, for the page to check.
+    page.postMessage({ type: "ready", external: new URLSearchParams(location.search).get("external") === "direct" ? "direct" : "" }, "*");
 })();

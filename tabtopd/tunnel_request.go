@@ -34,7 +34,7 @@ const (
 type tunnelRequest struct {
 	Entries []int `json:"entries,omitempty"` // zip-extract, zip-download: entry ordinals from the preview
 
-	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, seen, tty, list, file, zip, upload, mkdir, create, rename, move, delete, watch, changes, audio, mic, share, share-again, reshare, unshare, cleanup, name-session, reshare-many, zip-preview, zip-extract, zip-download, markdown, epub, epub-edit, fetch, fetches, activity or activity-clear
+	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, seen, tty, list, file, zip, upload, mkdir, create, rename, move, delete, watch, changes, audio, mic, share, share-again, reshare, unshare, cleanup, name-session, reshare-many, zip-preview, zip-extract, zip-download, markdown, epub, epub-edit, fetch, fetches, preview-resource, activity or activity-clear
 	Path  string   `json:"path,omitempty"`
 	Name  string   `json:"name,omitempty"`  // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
 	Size  int64    `json:"size,omitempty"`  // upload: its size
@@ -73,6 +73,8 @@ type tunnelRequest struct {
 	// fetch: the address to fetch into the folder at Path (or, with Name,
 	// the id of a fetch to follow)
 	URL string `json:"url,omitempty"`
+	// preview-resource: image (default), css, font or ranged media.
+	Resource string `json:"resource,omitempty"`
 	// share, reshare: the link's label
 	Label string `json:"label,omitempty"`
 	// share: for downloading the file now, from this page, over HTTPS (a
@@ -179,7 +181,7 @@ func (g *server) serveRequest(t *tunnel, session, ip string, authenticated func(
 		switch req.Type {
 		case "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes",
 			"zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "cleanup",
-			"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches":
+			"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches", "preview-resource":
 			r.fail("File support is turned off (WEB_FS=0).")
 			return
 		}
@@ -244,6 +246,8 @@ func (g *server) serveRequest(t *tunnel, session, ip string, authenticated func(
 	case "share":
 		g.tunnelShare(req, session, ip, r)
 
+	case "preview-resource":
+		g.tunnelPreviewResource(t, req, r)
 	case "fetch":
 		g.tunnelFetch(t, req, session, ip, r)
 	case "activity":

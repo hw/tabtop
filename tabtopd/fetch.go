@@ -114,8 +114,12 @@ func (j *fetchJob) set(f func(*fetchJob)) {
 type fetchManager struct {
 	downloadsDir string
 	client       *http.Client
-	transfers    *uploadManager
-	activity     *activityLog
+	// resourceClient loads previews' external resources. The URLs come
+	// from the document being previewed, not the user, so it only ever
+	// reaches public addresses, whatever -fetch-private says.
+	resourceClient *http.Client
+	transfers      *uploadManager
+	activity       *activityLog
 
 	mu       sync.Mutex
 	jobs     map[string]*fetchJob

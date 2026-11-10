@@ -22,6 +22,7 @@
 (async () => {
     const { glyphs } = await import(new URL("./glyphs.js", document.currentScript.src).href);
     const page = window.parent;
+    let externalMode = "none";
     // A chapter's links and pictures are paths in the book, as relative
     // URLs; read against this, they're its path.
     const BOOK = "https://book.invalid/";
@@ -48,6 +49,7 @@
             waiting.get(m.id)(m);
             waiting.delete(m.id);
         } else if (m.type === "open" && m.book && Array.isArray(m.book.spine) && m.book.spine.length && !book) {
+            externalMode = ["proxy", "direct"].includes(m.externalMode) ? m.externalMode : "none";
             open(m.book, m.start && typeof m.start === "object" ? m.start : {});
         } else if (m.type === "restore" && book && m.location) {
             const at = m.location;
@@ -232,6 +234,7 @@
         // Pictures in the chapter itself, as data: URIs, are shown as they
         // are; the others are fetched.
         const pictures = [...t.content.querySelectorAll("img")].filter((img) => !/^data:image\//.test(img.getAttribute("src") ?? ""));
+        page.postMessage({ type: "external-resources", count: pictures.filter(img => /^(https?:|\/\/)/i.test(img.getAttribute("src") ?? "")).length }, "*");
         for (const img of pictures) {
             img.dataset.src = img.getAttribute("src") ?? "";
             img.removeAttribute("src");
@@ -283,12 +286,18 @@
                     img.replaceWith(note(`${img.alt || "A picture"}: not shown, as this part has so many`));
                     continue;
                 }
-                const src = itemOf(img.dataset.src);
-                const got = src ? await ask({ type: "image", src, render: me }) : { error: "not in the book" };
+                const remote = /^(https?:|\/\/)/i.test(img.dataset.src);
+                const src = remote ? img.dataset.src : itemOf(img.dataset.src);
+                const got = remote && externalMode === "none" ? { error: "External resources are blocked." } : src ? await ask({ type: "image", src, render: me }) : { error: "not in the book" };
                 if (me !== going) {
                     return;
                 }
-                if (got.bytes instanceof ArrayBuffer) {
+                if (got.url && externalMode === "direct") {
+                    img.referrerPolicy = "no-referrer";
+                    img.src = got.url;
+                    img.classList.remove("waiting");
+                    report.pictures++;
+                } else if (got.bytes instanceof ArrayBuffer) {
                     const u = URL.createObjectURL(new Blob([got.bytes], { type: got.mime }));
                     urls.push(u);
                     img.src = u;
@@ -417,5 +426,6 @@
         showEnds();
     });
 
-    page.postMessage({ type: "ready" }, "*");
+    // Its CSP's mode, as its address chose it, for the page to check.
+    page.postMessage({ type: "ready", external: new URLSearchParams(location.search).get("external") === "direct" ? "direct" : "" }, "*");
 })();

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"net/netip"
 	"testing"
 	"time"
@@ -80,5 +83,22 @@ func TestNewServerRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatal("invalid configuration accepted")
 			}
 		})
+	}
+}
+
+// Previews' external resources come from the document, not the user, so
+// they never reach private networks, even with -fetch-private.
+func TestPreviewResourcesStayPublicWithFetchPrivate(t *testing.T) {
+	c := validTestConfig()
+	c.fetchOn, c.fetchPrivate = true, true
+	g, err := newServer(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://10.255.255.1/", nil)
+	if _, err := g.fetches.resourceClient.Do(req); !errors.Is(err, errFetchAddress) {
+		t.Fatalf("private address not refused: %v", err)
 	}
 }

@@ -100,7 +100,8 @@ func TestFetchRefusesLoopback(t *testing.T) {
 func newFetchServer(t *testing.T) (*server, string, testSession) {
 	t.Helper()
 	g, srv := newE2EServer(t)
-	g.fetches = &fetchManager{downloadsDir: g.downloadsDir, transfers: &g.transfers, client: newFetchClient(func(netip.Addr) bool { return true })}
+	g.fetches = &fetchManager{downloadsDir: g.downloadsDir, transfers: &g.transfers,
+		client: newFetchClient(func(netip.Addr) bool { return true }), resourceClient: newFetchClient(func(netip.Addr) bool { return true })}
 	t.Cleanup(func() { g.fetches.stop(context.Background()) })
 	return g, srv.URL, login(t, testCtx(t), srv.URL, code(0))
 }

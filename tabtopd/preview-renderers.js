@@ -13,7 +13,7 @@ import { markdownFrame, epubFrame, pdfFrame } from "./preview-frames.js";
 async function documentView(options) {
     const { file, path, blob, url, kind, location, fragment, open, navigate } = options;
     try {
-        const opts = { fragment, location, open, navigate };
+        const opts = { fragment, location, open, navigate, externalMode: options.externalMode, externalFound: options.externalFound };
         return kind === "html"
             ? await markdownFrame("", file.dir, { ...opts, format: "html", html: await blob.text() })
             : await markdownFrame(path, file.dir, opts);
@@ -37,7 +37,7 @@ const renderers = {
         },
         download: (entries) => fetchZipEntries(path, entries, file.mtime, file.size),
     }),
-    epub: ({ path, file, location, navigate }) => epubFrame(path, file, { location, navigate }),
+    epub: ({ path, file, location, navigate, externalMode, externalFound }) => epubFrame(path, file, { location, navigate, externalMode, externalFound }),
     pdf: ({ path, file, location, navigate }) => pdfFrame(path, file, { location, navigate }),
     audio: mediaView,
     video: mediaView,

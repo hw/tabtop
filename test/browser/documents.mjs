@@ -1,6 +1,93 @@
+import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { writeFileSync, readFileSync, rmSync } from "node:fs";
 import { zipFile, pngSquare } from "./fixtures.mjs";
+
+export async function checkExternalResources(checks) {
+    const { work, container, inContainer, step, ev, waitFor, click, open, listed, inFrame, sleep, press } = checks;
+    await step("files: external preview resources stay blocked, proxy, or load directly", async () => {
+        const hits = [];
+        const server = http.createServer((req, res) => {
+            hits.push((req.headers["user-agent"] ?? "").includes("Mozilla") ? "direct" : "proxy");
+            res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+            res.end(pngSquare(20));
+        });
+        await new Promise(resolve => server.listen(0, "0.0.0.0", resolve));
+        const gateway = execFileSync("docker", ["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}", container], { encoding: "utf8" }).trim();
+        const url = `http://${gateway}:${server.address().port}/picture.png`;
+        try {
+            const chapter = `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>External</title></head><body><img src="${url}" alt="Remote"/></body></html>`;
+            const book = zipFile([
+                ["mimetype", "application/epub+zip"],
+                ["META-INF/container.xml", '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>'],
+                ["book.opf", '<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata/><manifest><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/></spine></package>'],
+                ["one.xhtml", chapter],
+            ]);
+            const fixtures = { "external.html": `<img src=" \n${url} \t"><a href=" \n${url}\t ">Link</a>`, "external.md": `![Remote](${url})`, "external.epub": book,
+                "links-only.html": `<a href="${url}">Clickable link only</a>` };
+            for (const [name, data] of Object.entries(fixtures)) {
+                writeFileSync(`${work}/${name}`, data);
+                execFileSync("docker", ["cp", "-q", `${work}/${name}`, `${container}:/home/user/Downloads/media/${name}`]);
+                execFileSync("docker", ["exec", container, "chown", "user", `/home/user/Downloads/media/${name}`]);
+            }
+            await ev(`localStorage.setItem("tabtop.html-view", "rendered"); localStorage.setItem("tabtop.markdown-view", "rendered")`);
+            const control = 'document.querySelector("dialog.preview button.external-resources")';
+            const close = async () => {
+                await ev('document.querySelector("dialog.preview button.close").click()');
+                await waitFor('!document.querySelector("dialog.preview")', "external preview closed");
+            };
+            for (const [name, frame] of [["external.html", "md-frame.html"], ["external.md", "md-frame.html"], ["external.epub", "epub-frame.html"]]) {
+                hits.length = 0;
+                await open("fs/#/media/", `${listed}.includes(${JSON.stringify(name)})`, name);
+                await ev(`[...document.querySelectorAll("td.name a")].find(a => a.textContent === ${JSON.stringify(name)}).click()`);
+                await waitFor(`!${control}?.hidden && ${control}.dataset.mode === "none"`, "external resources blocked by default");
+                await sleep(150);
+                if (hits.length || !await ev(`${control}.closest(".external-group").nextElementSibling.classList.contains("download-group")`)) throw new Error("default made an external request or control was misplaced");
+                await click('document.querySelector("dialog.preview .external-more")');
+                await waitFor('!document.querySelector("dialog.preview .external-menu").hidden', "resource dropdown opens");
+                await press("Escape");
+                if (!await ev(`document.querySelector("dialog.preview .external-menu").hidden && !!document.querySelector("dialog.preview[open]") && ${control}.dataset.mode === "none"`)) throw new Error("resource dropdown Escape closed the preview or changed modes");
+                for (const mode of ["proxy", "direct"]) {
+                    if (mode === "proxy") {
+                        await click('document.querySelector("dialog.preview .external-more")');
+                        await press("ArrowDown");
+                        await press("Enter");
+                    } else {
+                        await click(control);
+                        await click(`document.querySelector('dialog.preview .external-option[data-mode="${mode}"]')`);
+                    }
+                    await waitFor(`!${control}.hidden && ${control}.dataset.mode === ${JSON.stringify(mode)}`, mode + " resource mode");
+                    if (!await ev(`${control}.querySelector("svg").innerHTML === document.querySelector('.external-option[data-mode="${mode}"] svg').innerHTML && document.querySelector('.external-option[data-mode="${mode}"]').getAttribute("aria-checked") === "true"`)) throw new Error("resource glyph or selected dropdown item did not follow the mode");
+                    let loaded = false;
+                    for (let i = 0; i < 60; i++) {
+                        loaded = await inFrame(frame, `!!document.querySelector("#doc img")?.naturalWidth`);
+                        if (loaded) break;
+                        await sleep(100);
+                    }
+                    if (!loaded || !hits.includes(mode)) throw new Error(`${name}: ${mode} picture did not load: ${JSON.stringify(hits)}`);
+                    if (mode === "proxy" && hits.includes("direct")) throw new Error("proxy mode leaked a browser request");
+                }
+                const count = hits.length;
+                await click(control);
+                await click('document.querySelector("dialog.preview .external-none")');
+                await waitFor(`!${control}.hidden && ${control}.dataset.mode === "none"`, "back to No external");
+                await sleep(150);
+                if (hits.length !== count) throw new Error("blocking resources still fetched an image");
+                await close();
+            }
+            await open("fs/#/media/", `${listed}.includes("links-only.html")`, "links-only HTML");
+            await ev('[...document.querySelectorAll("td.name a")].find(a => a.textContent === "links-only.html").click()');
+            await waitFor('!!document.querySelector("dialog.preview iframe.html")?.dataset.rendered', "links-only rendered");
+            if (!await ev(`${control}.hidden`)) throw new Error("clickable link showed the external resources control");
+            await close();
+            for (const name of Object.keys(fixtures)) inContainer("rm", `/home/user/Downloads/media/${name}`);
+        } finally {
+            server.closeAllConnections();
+            await new Promise(resolve => server.close(resolve));
+        }
+        return "HTML, Markdown and EPUB; no network by default, encrypted proxy, native browser images, links excluded";
+    });
+}
 
 export async function checkText(checks) {
     const { inContainer, step, ev, waitFor, click, open, listed } = checks;
@@ -96,7 +183,7 @@ export async function checkHTML(checks) {
         await waitFor(`document.querySelector("dialog.preview .head strong").textContent === "next.htm" && !!document.querySelector("dialog.preview iframe.html")?.dataset.rendered`, "linked HTM file");
         await ev(`document.querySelector("dialog.preview button.back").click()`);
         await waitFor(`document.querySelector("dialog.preview .head strong").textContent === "demo.html" && !!document.querySelector("dialog.preview iframe.html")?.dataset.rendered`, "Back to the HTML file");
-        if (Math.abs((await inFrame("md-frame.html", `scrollY`)) - at) > 3) throw new Error("HTML Back lost the file position");
+        if (Math.abs((await inFrame("md-frame.html", `scrollY`)) - at) > 3) throw new Error(`HTML Back lost the file position: expected ${at}, got ${await inFrame("md-frame.html", "scrollY")}`);
         await ev(`document.querySelector('dialog.preview button[aria-label="Source: the HTML as written"]').click()`);
         await waitFor(`document.querySelector("dialog.preview pre")?.textContent.includes("<script>")`, "HTML source");
         await ev(`document.querySelector('dialog.preview button[aria-label="Rendered: the HTML as it reads"]').click()`);

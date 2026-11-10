@@ -240,13 +240,30 @@ downloaded at `http://<host>:6080/fs/`:
 - **Light or dark:** rendered HTML, Markdown and books have **◐** in the preview,
   which goes from following your system (◐) to light (☀) to dark (☾). The
   choice is remembered in your browser.
+- **External resources:** a glyph immediately before Download appears for
+  embedded web resources. Its glyph shows the current mode; open the dropdown
+  to select **No external** (default), **Proxy** (through the E2E tunnel), or
+  **Direct** (through your browser). Each newly
+  opened file starts blocked. Proxy follows `WEB_FETCH` address restrictions.
+  Clickable links retain their confirmation dialog and do not show the glyph.
 - **HTML** (`.html`, `.htm`) has **Rendered / Source** views. Rendered HTML
   shows document text, tables, basic inline formatting, and local images.
   It removes scripts, event handlers, forms, embedded pages, SVG/MathML and
-  automatic redirects. Stylesheets, fonts and other external resources aren't
-  loaded; remote images appear as notes. Local image limits match Markdown.
+  automatic redirects. Stylesheets and inline CSS are parsed and restricted
+  to document formatting in Proxy mode; imports, font files and CSS background
+  images also use the E2E tunnel. Direct mode uses native browser stylesheet
+  loading. Local image limits match Markdown. Ordinary external audio/video
+  sources have native controls and stream through bounded byte ranges in Proxy
+  mode; this requires HTTPS (or localhost), service worker support, and an
+  upstream server supporting byte ranges. HLS/DASH playlists and embedded
+  scripted players are not handled. None of these enable document scripts.
   Internal links support **Back** history, and web links show the URL confirmation
   lightbox. The view choice is remembered separately from Markdown.
+  Saved web pages need their companion resource folder (for example,
+  `Article_files/`) beside the HTML file to display locally saved images.
+  Proxy mode cannot reconstruct a missing local asset from its filename.
+  Links declared in `data-href` or `data-ga-content-link` are restored without
+  running scripts when their destination can be resolved safely.
 - **Markdown** (`.md`, `.markdown`) is shown rendered, as GitHub does:
   headings, lists and task lists, tables, links, pictures, code blocks in
   colour, math and [Mermaid](https://mermaid.js.org/) diagrams.
@@ -261,8 +278,8 @@ downloaded at `http://<host>:6080/fs/`:
   - **Pictures** beside the file, or elsewhere in `~/Downloads` by a
     relative path (`![](img/plot.png)`), are fetched through the tunnel,
     up to 100 per render, 20 MB each and 64 MiB in total. Repeated pictures
-    count toward the render limits too. Pictures from the web aren't
-    loaded, so a document can't tell anyone it was opened: a note says
+    count toward the render limits too. Pictures from the web are blocked
+    by default; the resource glyph enables Proxy or Direct. A note says
     which.
   - **Links** to the web show a lightbox with the destination URL: **Copy URL**,
     **Open in browser** (a new tab), or **Cancel**. PDF and EPUB web links use

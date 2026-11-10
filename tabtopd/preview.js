@@ -46,6 +46,7 @@ export function preview(dir, files, index, download, opts = {}) {
     downloads.setAttribute("role", "menu");
     const showDownloads = (show) => {
         downloads.hidden = !show;
+        if (show) showExternalMenu(false);
         more.setAttribute("aria-expanded", String(show));
         if (show) {
             downloads.querySelector("button")?.focus();
@@ -73,6 +74,79 @@ export function preview(dir, files, index, download, opts = {}) {
         }
     });
     const saveGroup = el("span", { className: "download-group" }, save, more, downloads);
+    // Resource permissions belong to this file and start blocked.
+    let externalMode = "none", externalCount = 0;
+    const externalResources = button("", "", "external-resources glyph");
+    const externalMore = button(glyphs.chevronDown, "External resource modes", "external-more");
+    const externalMenu = el("div", { className: "external-menu", hidden: true, role: "menu" });
+    externalMenu.setAttribute("aria-label", "External resources");
+    const externalGroup = el("span", { className: "external-group", hidden: true }, externalResources, externalMore, externalMenu);
+    const externalStates = ["none", "proxy", "direct"];
+    const externalLabels = { none: "No external", proxy: "Proxy", direct: "Direct" };
+    let externalOpener = externalResources;
+    const showExternalMenu = (show, opener = externalOpener) => {
+        externalMenu.hidden = !show;
+        externalOpener = opener;
+        for (const control of [externalResources, externalMore]) control.setAttribute("aria-expanded", String(show));
+        if (show) {
+            showDownloads(false);
+            externalMenu.querySelector('[aria-checked="true"]')?.focus();
+        }
+    };
+    const showExternal = () => {
+        externalGroup.hidden = externalResources.hidden = !externalCount || !!editing;
+        if (externalGroup.hidden) showExternalMenu(false);
+        externalResources.dataset.mode = externalMode;
+        externalResources.innerHTML = iconSVG(`external-${externalMode}`);
+        externalResources.title = `External resources: ${externalLabels[externalMode]}`;
+        externalResources.setAttribute("aria-label", externalResources.title);
+        for (const item of externalMenu.querySelectorAll("button")) item.setAttribute("aria-checked", String(item.dataset.mode === externalMode));
+    };
+    const selectExternal = mode => {
+        showExternalMenu(false);
+        externalResources.focus({ preventScroll: true });
+        if (mode === externalMode) return;
+        externalMode = mode;
+        showExternal();
+        const location = frame?.element.previewLocation ?? null;
+        // Remove a Direct frame immediately, cancelling its native requests.
+        frame?.stop();
+        frame?.element.remove();
+        frame = null;
+        draw(shown, "", location);
+    };
+    for (const mode of externalStates) {
+        const item = button("", externalLabels[mode], `external-option external-${mode} glyph`);
+        item.innerHTML = iconSVG(`external-${mode}`);
+        item.append(el("span", { textContent: externalLabels[mode] }));
+        item.dataset.mode = mode;
+        item.setAttribute("role", "menuitemradio");
+        item.setAttribute("aria-checked", String(mode === externalMode));
+        item.tabIndex = -1;
+        item.addEventListener("click", () => selectExternal(mode));
+        externalMenu.append(item);
+    }
+    for (const control of [externalResources, externalMore]) {
+        control.setAttribute("aria-haspopup", "menu");
+        control.setAttribute("aria-expanded", "false");
+        control.addEventListener("click", () => showExternalMenu(externalMenu.hidden, control));
+    }
+    externalResources.hidden = true;
+    externalMenu.addEventListener("keydown", event => {
+        const items = [...externalMenu.querySelectorAll("button")];
+        const at = items.indexOf(document.activeElement);
+        if (event.key === "Escape") {
+            event.preventDefault(); event.stopPropagation();
+            showExternalMenu(false); externalOpener.focus();
+        } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+            event.preventDefault(); event.stopPropagation();
+            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+            items[next]?.focus();
+        } else if (event.key === "Tab") { showExternalMenu(false); externalMore.focus(); }
+    });
+    externalGroup.addEventListener("focusout", event => {
+        if (!externalGroup.contains(event.relatedTarget)) showExternalMenu(false);
+    });
     // Markdown is shown rendered, CSV as a table and JSON as a tree, or
     // each raw, as its text, as last chosen (see VIEWS): two buttons, the
     // one for the way it's shown pressed.
@@ -164,7 +238,7 @@ export function preview(dir, files, index, download, opts = {}) {
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
             el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, saveStatus, store, done),
             el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle),
-            saveGroup, widen, close), previewNotice, body);
+            externalGroup, saveGroup, widen, close), previewNotice, body);
     showWide();
 
     // What's shown: counted, so a file that arrives after the next was
@@ -250,6 +324,10 @@ export function preview(dir, files, index, download, opts = {}) {
     // fragment if it's Markdown.
     const display = async (d, fname, fragment = "", location = null) => {
         const me = ++shown;
+        externalMode = "none";
+        externalCount = 0;
+        externalGroup.hidden = externalResources.hidden = true;
+        showExternalMenu(false);
         stop();
         const path = join(d, fname);
         // An override belongs to this file, not to the next file or followed link.
@@ -296,6 +374,8 @@ export function preview(dir, files, index, download, opts = {}) {
     let drawing = 0;
     const draw = async (me, fragment = "", location = null) => {
         const mine = ++drawing;
+        externalCount = 0;
+        showExternal();
         const stale = () => me !== shown || mine !== drawing || !!editing;
         const { kind } = current;
         modeToggle.hidden = !!typeOf(current.name);
@@ -327,7 +407,8 @@ export function preview(dir, files, index, download, opts = {}) {
         rendererAbort = new AbortController();
         const shownAs = await renderPreview({ file: current, path: join(current.dir, current.name), blob, url,
             kind: kind === "text" && format && viewShown(format) ? format : kind,
-            fragment, location, open: follow, navigate: remember, signal: rendererAbort.signal });
+            fragment, location, open: follow, navigate: remember, signal: rendererAbort.signal, externalMode,
+            externalFound: count => { if (!stale()) { externalCount = count; showExternal(); } } });
         const rendered = previewView(shownAs);
         if (stale()) {
             rendered.stop();
@@ -414,6 +495,8 @@ export function preview(dir, files, index, download, opts = {}) {
         });
         frame?.stop();
         frame = null;
+        externalGroup.hidden = externalResources.hidden = true;
+        showExternalMenu(false);
         if (editing.cursorLocation) saveStatus.before(editing.cursorLocation);
         if (editing.syntaxToggle) widen.before(editing.syntaxToggle);
         if (editing.formatButton) store.before(editing.formatButton);
@@ -472,6 +555,7 @@ export function preview(dir, files, index, download, opts = {}) {
     }
     // A click elsewhere closes the menu.
     dialog.addEventListener("click", (e) => {
+        if (!externalMenu.hidden && !externalGroup.contains(e.target)) showExternalMenu(false);
         if (!downloads.hidden && !saveGroup.contains(e.target)) {
             showDownloads(false);
         }

@@ -6,23 +6,66 @@ import { typeOf, resolvePath } from "./preview-model.js";
 import { readingTheme, bookPlace, setBookPlace } from "./preview-settings.js";
 import { previewLink } from "./preview-links.js";
 import { pictureLoader } from "./preview-pictures.js";
+import { frameResources, resourceAddress } from "./preview-resources.js";
+import { frameMedia } from "./preview-media.js";
 
 const readRange = createRangedFileReader({ call, collect });
 
+// Canonical HTTP(S) picture URLs; other schemes never reach the network.
+function externalPictureURL(src) {
+    src = src.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\r\n]/g, "");
+    if (!/^(https?:|\/\/)/i.test(src)) return null;
+    try {
+        const url = new URL(src.startsWith("//") ? "https:" + src : src);
+        if (url.username || url.password) return null;
+        url.hash = "";
+        return url.href;
+    } catch { return null; }
+}
+async function frameExternalPicture(url, mode, reserve, signal) {
+    if (mode === "direct") return { url };
+    if (mode !== "proxy") return { error: "External resources are blocked." };
+    let tunnel;
+    const cancel = () => tunnel?.close();
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+        signal.throwIfAborted();
+        tunnel = await call({ type: "preview-resource", url });
+        signal.throwIfAborted();
+        const { size, mime } = tunnel.reply;
+        if (!mime?.startsWith("image/") || !Number.isSafeInteger(size) || size < 0 || size > 20 * 1024 * 1024) throw new Error("not a supported picture");
+        if (!reserve(size)) return { error: "Pictures exceed the 64 MiB preview budget." };
+        const blob = await collect(tunnel, size, () => {}, mime);
+        signal.throwIfAborted();
+        return { bytes: await blob.arrayBuffer(), mime };
+    } finally {
+        signal.removeEventListener("abort", cancel);
+        tunnel?.close();
+    }
+}
+
 // All frame formats share the same sandbox and message lifecycle.
-function sandboxFrame(className, title, source) {
+function sandboxFrame(className, title, source, externalMode = "none") {
     const frame = el("iframe", { className, title });
     frame.setAttribute("sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox");
     frame.setAttribute("referrerpolicy", "no-referrer");
-    frame.src = new URL(source, import.meta.url).href;
+    const url = new URL(source, import.meta.url);
+    if (externalMode === "direct") url.searchParams.set("external", "direct");
+    frame.src = url.href;
+    frame.external = externalMode === "direct" ? "direct" : "";
     return frame;
 }
 function bindFrame(frame, answer, opts, ready, themed = false) {
     const message = (event) => {
         if (event.source !== frame.contentWindow || !event.data || typeof event.data !== "object") return;
         const m = event.data;
+        // A frame that navigated itself to another CSP mode than the one
+        // asked for is sent back, not answered.
+        if (m.type === "ready" && (m.external ?? "") !== (frame.external ?? "")) { frame.src = frame.src; return; }
+        if (m.type === "external-resources" && Number.isSafeInteger(m.count) && m.count >= 0) { opts.externalFound?.(m.count); return; }
         if (m.type === "external") return previewLink(frame, m.href);
         if (m.type === "navigate") return opts.navigate?.(m.location);
+        if (m.type === "position" && m.location && Number.isFinite(m.location.top) && Number.isFinite(m.location.left)) { frame.previewLocation = m.location; return; }
         if (m.type === "rendered") { frame.dataset.rendered = JSON.stringify(m.report); return; }
         if (m.type === "ready" && themed) frame.contentWindow?.postMessage({ type: "theme", theme: readingTheme() }, "*");
         return answer(m);
@@ -56,14 +99,15 @@ export async function markdownFrame(path, dir, opts = {}) {
         html = t.reply.html;
     }
     const htmlMode = opts.format === "html";
-    const frame = sandboxFrame(htmlMode ? "html" : "markdown", htmlMode ? "HTML, rendered" : "Markdown, rendered", "md-frame.html");
+    const frame = sandboxFrame(htmlMode ? "html" : "markdown", htmlMode ? "HTML, rendered" : "Markdown, rendered", "md-frame.html", opts.externalMode);
     let ready = false;
-    let pictures = null, render = 0;
+    let pictures = null, render = 0, resources = null, media = null;
     const newPictures = () => pictureLoader({
-        resolve: src => resolvePath(dir, src.split("#")[0]),
-        load: framePicture,
+        resolve: src => externalPictureURL(src) ?? resolvePath(dir, src.split("#")[0]),
+        load: (src, reserve, signal) => externalPictureURL(src)
+            ? frameExternalPicture(src, opts.externalMode, reserve, signal) : framePicture(src, reserve, signal),
     });
-    const send = (fragment = "", location = null) => frame.contentWindow?.postMessage({ type: "render", html, fragment, location, format: htmlMode ? "html" : "markdown" }, "*");
+    const send = (fragment = "", location = null) => frame.contentWindow?.postMessage({ type: "render", html, fragment, location, format: htmlMode ? "html" : "markdown", externalMode: opts.externalMode ?? "none" }, "*");
     const answer = async (m) => {
         if (m.type === "ready") {
             ready = true;
@@ -72,6 +116,24 @@ export async function markdownFrame(path, dir, opts = {}) {
             render = m.render;
             pictures?.stop();
             pictures = newPictures();
+            resources?.stop(); media?.stop();
+            resources = frameResources(dir, opts.externalMode ?? "none");
+            media = frameMedia(frame, dir, opts.externalMode ?? "none");
+        } else if (m.type === "resource" && m.render === render && resources) {
+            const loader = resources;
+            let got = await loader.read({ src: m.src, base: m.base ?? "", kind: m.kind });
+            if (loader !== resources) got = { error: "Preview replaced." };
+            const bytes = got.bytes?.slice(0);
+            frame.contentWindow?.postMessage({ id: m.id, ...got, ...(bytes ? { bytes } : {}) }, "*", bytes ? [bytes] : []);
+        } else if (m.type === "media" && m.render === render && media) {
+            const owner = media;
+            const got = await owner.open({ ...m, id: m.mediaId });
+            if (owner === media) frame.contentWindow?.postMessage({ id: m.id, ...got }, "*");
+        } else if (m.type === "media-positions" && m.render === render && Array.isArray(m.positions)) {
+            for (const at of m.positions.slice(0, 8)) media?.place(at.id, at.rect);
+        } else if (m.type === "media-direct" && m.render === render) {
+            const at = resourceAddress(m.src, "", dir);
+            frame.contentWindow?.postMessage({ id: m.id, ...(opts.externalMode === "direct" && at?.remote ? { url: at.url } : { error: "External media is blocked." }) }, "*");
         } else if (m.type === "image" && typeof m.src === "string") {
             const loader = pictures;
             let got = loader && m.render === render ? await loader.read(m.src) : { error: "Preview replaced." };
@@ -86,7 +148,7 @@ export async function markdownFrame(path, dir, opts = {}) {
     };
     bindFrame(frame, answer, opts, () => ready, true);
     const unbind = frame.stop;
-    frame.stop = () => { pictures?.stop(); pictures = null; unbind(); };
+    frame.stop = () => { pictures?.stop(); resources?.stop(); media?.stop(); resources = media = pictures = null; unbind(); };
     frame.update = (newHTML) => {
         html = newHTML;
         if (ready) {
@@ -102,7 +164,7 @@ export async function markdownFrame(path, dir, opts = {}) {
 // was opened, and remembering where it's read to.
 export function epubFrame(path, file, opts = {}) {
     let ready = false;
-    const frame = sandboxFrame("epub", file.book.title || file.name, "epub-frame.html");
+    const frame = sandboxFrame("epub", file.book.title || file.name, "epub-frame.html", opts.externalMode);
     let render = 0, pictures = null, chapterAbort = null;
     const ask = async (item, signal, consume) => {
         let tunnel;
@@ -122,8 +184,8 @@ export function epubFrame(path, file, opts = {}) {
         // The child resolves book URLs to decoded ZIP-entry paths (itemOf).
         // Preserve literal '%' and '#' in those filenames rather than decoding
         // or splitting them a second time.
-        resolve: src => src,
-        load: (src, reserve, signal) => ask(src, signal, async t => {
+        resolve: src => externalPictureURL(src) ?? src,
+        load: (src, reserve, signal) => externalPictureURL(src) ? frameExternalPicture(src, opts.externalMode, reserve, signal) : ask(src, signal, async t => {
             if (typeOf(src.split("/").pop() ?? "")?.kind !== "image" ||
                 !t.reply.mime?.startsWith("image/") || !Number.isSafeInteger(t.reply.size) || t.reply.size < 0 ||
                 t.reply.size > 20 * 1024 * 1024) throw new Error("not a supported picture");
@@ -137,7 +199,7 @@ export function epubFrame(path, file, opts = {}) {
     const answer = async (m) => {
         if (m.type === "ready") {
             ready = true;
-            reply({ type: "open", book: file.book, start: opts.location ?? bookPlace(path, file.size) });
+            reply({ type: "open", book: file.book, start: opts.location ?? bookPlace(path, file.size), externalMode: opts.externalMode ?? "none" });
         } else if (m.type === "chapter" && typeof m.item === "string" && Number.isSafeInteger(m.render) && m.render > render) {
             render = m.render;
             chapterAbort?.abort();
@@ -151,7 +213,7 @@ export function epubFrame(path, file, opts = {}) {
                 reply({ id: m.id, error: err.message });
             }
         } else if (m.type === "image" && typeof m.src === "string") {
-            if (typeOf(m.src.split("/").pop() ?? "")?.kind !== "image") {
+            if (!externalPictureURL(m.src) && typeOf(m.src.split("/").pop() ?? "")?.kind !== "image") {
                 reply({ id: m.id, error: "not a picture" });
                 return;
             }
@@ -161,6 +223,7 @@ export function epubFrame(path, file, opts = {}) {
             const bytes = got.bytes?.slice(0);
             reply({ id: m.id, ...got, ...(bytes ? { bytes } : {}) });
         } else if (m.type === "at" && typeof m.item === "string" && m.item.length < 1000 && Number.isFinite(m.fraction)) {
+            frame.previewLocation = { item: m.item, fraction: m.fraction, size: Number.isInteger(m.size) ? m.size : undefined };
             setBookPlace(path, file.size, { item: m.item, fraction: m.fraction, size: Number.isInteger(m.size) ? m.size : undefined });
 
         }
@@ -196,7 +259,9 @@ async function framePicture(path, reserve, signal) {
         signal.throwIfAborted();
         return { bytes: await blob.arrayBuffer(), mime: t.type };
     } catch (err) {
-        return { error: err.message };
+        return { error: /^not found\.?$/i.test(err.message)
+            ? `Local image not found: ${path}. Saved web pages need their companion resource folder beside the HTML file.`
+            : err.message };
     } finally {
         signal.removeEventListener("abort", cancel);
         tt?.close();

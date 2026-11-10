@@ -27,7 +27,7 @@ const (
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed third-party/* preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var e2eFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -86,7 +86,18 @@ func (g *server) previewAssets() assets { return assets{"preview", g.previewDir,
 // Its own sandbox too, as the files page frames it: opened as a page of its
 // own, or a popup, it's still at an origin of its own, not the site's.
 const mdFrameCSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob: data:; " +
-	"base-uri 'none'; form-action 'none'; frame-ancestors 'self'; " + frameSandbox
+	"media-src blob:; font-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; " + frameSandbox
+
+// Only a frame explicitly opened in Direct mode may load remote images.
+func previewFrameCSP(r *http.Request) string {
+	if r.URL.Query().Get("external") == "direct" {
+		policy := strings.Replace(mdFrameCSP, "img-src blob: data:;", "img-src blob: data: http: https:;", 1)
+		policy = strings.Replace(policy, "style-src 'unsafe-inline';", "style-src 'unsafe-inline' http: https:;", 1)
+		policy = strings.Replace(policy, "font-src blob:;", "font-src blob: http: https:;", 1)
+		return strings.Replace(policy, "media-src blob:;", "media-src blob: http: https:;", 1)
+	}
+	return mdFrameCSP
+}
 
 // frameSandbox is the frames' sandbox, as the files page gives it them.
 const frameSandbox = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"
@@ -94,7 +105,7 @@ const frameSandbox = "sandbox allow-scripts allow-popups allow-popups-to-escape-
 // mdFrameHTML is the frame's page.
 var mdFrameHTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n" +
 	"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Markdown</title>\n<style>" +
-	mdFrameCSS + highlightCSS + "</style>\n<main id=\"doc\"></main>\n<script src=\"md-frame.js\"></script>\n"
+	mdFrameCSS + highlightCSS + "</style>\n<main id=\"doc\"></main>\n<script src=\"third-party/css-tree.js\"></script><script src=\"preview-css.js\"></script><script src=\"preview-html-links.js\"></script><script src=\"preview-html-resources.js\"></script><script src=\"md-frame.js\"></script>\n"
 
 // highlightPath is where they're served, under /tabtop/; preview.js is
 // served with its "./highlight/" imports pointing there. Without
@@ -132,7 +143,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		w.Write(micWorkletJS)
 	case name == "md-frame.html":
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		h.Set("Content-Security-Policy", mdFrameCSP)
+		h.Set("Content-Security-Policy", previewFrameCSP(r))
 		h.Set("Referrer-Policy", "no-referrer")
 		io.WriteString(w, mdFrameHTML)
 	case name == "pdf-frame.html":
@@ -142,7 +153,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, pdfFrameHTML)
 	case name == "epub-frame.html":
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		h.Set("Content-Security-Policy", mdFrameCSP)
+		h.Set("Content-Security-Policy", previewFrameCSP(r))
 		h.Set("Referrer-Policy", "no-referrer")
 		io.WriteString(w, epubFrameHTML)
 	case name == "pdf-frame.js":
@@ -166,7 +177,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case name == "tunnel-crypto.js":
 		js, _ := e2eFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "preview-pictures.js" || name == "kaitai-errors.js" || name == "format-combobox.js" || name == "kaitai-view.js" || name == "kaitai-worker.js" || name == "hex-view.js" || name == "files-actions.js" || name == "preview-loaders.js" || name == "preview-renderers.js" || name == "ranged-file.js" || name == "file-types.js" || name == "file-types-worker.js" || name == "preview-dom.js" || name == "preview-editor.js" || name == "preview-frames.js" || name == "preview-links.js" || name == "preview-model.js" || name == "preview-settings.js" || name == "preview-view.js" || name == "stream-worker.js" || name == "media-source.js" || name == "media-stream.js" || name == "video-stream.js" || name == "epub-frame.js" || name == "json-view.js" || name == "table-view.js" || name == "transfer.js" || name == "folder-model.js" || name == "osc.js" || name == "tunnel.js" || name == "tunnel-protocol.js" || name == "session-state.js" || name == "session.js" || name == "login-ui.js" || name == "file-format.js" || name == "sessions-view.js" || name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
+	case name == "third-party/css-tree.js" || name == "third-party/css-tree.LICENSE" || name == "third-party/source-map-js.LICENSE" || name == "third-party/mdn-data.LICENSE" || name == "preview-html-links.js" || name == "preview-css.js" || name == "preview-html-resources.js" || name == "preview-resources.js" || name == "preview-media.js" || name == "preview-pictures.js" || name == "kaitai-errors.js" || name == "format-combobox.js" || name == "kaitai-view.js" || name == "kaitai-worker.js" || name == "hex-view.js" || name == "files-actions.js" || name == "preview-loaders.js" || name == "preview-renderers.js" || name == "ranged-file.js" || name == "file-types.js" || name == "file-types-worker.js" || name == "preview-dom.js" || name == "preview-editor.js" || name == "preview-frames.js" || name == "preview-links.js" || name == "preview-model.js" || name == "preview-settings.js" || name == "preview-view.js" || name == "stream-worker.js" || name == "media-source.js" || name == "media-stream.js" || name == "video-stream.js" || name == "epub-frame.js" || name == "json-view.js" || name == "table-view.js" || name == "transfer.js" || name == "folder-model.js" || name == "osc.js" || name == "tunnel.js" || name == "tunnel-protocol.js" || name == "session-state.js" || name == "session.js" || name == "login-ui.js" || name == "file-format.js" || name == "sessions-view.js" || name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
 		name == "requests.js" || name == "reconnect.js" || name == "download.js" || name == "expiry.js":
 		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "desktop.css":

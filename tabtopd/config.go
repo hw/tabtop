@@ -103,7 +103,7 @@ func newServer(c serverConfig) (*server, error) {
 	if c.fetchOn {
 		private := c.fetchPrivate
 		g.fetches = &fetchManager{downloadsDir: c.downloadsDir, transfers: &g.transfers, activity: g.activity,
-			client: newFetchClient(fetchPolicy(private))}
+			client: newFetchClient(fetchPolicy(private)), resourceClient: newFetchClient(fetchPolicy(false))}
 	}
 	if c.audioSink != "" {
 		var devices *micDevices

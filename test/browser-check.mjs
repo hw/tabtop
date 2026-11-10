@@ -34,8 +34,11 @@ import { createBrowserHarness, sleep } from "./browser/harness.mjs";
 import { checkBinary } from "./browser/binary.mjs";
 import { checkZIP } from "./browser/zip.mjs";
 import { checkAudio, checkVideo, checkMKV } from "./browser/media.mjs";
-import { checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget } from "./browser/documents.mjs";
+import { checkText, checkHTML, checkExternalResources, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget } from "./browser/documents.mjs";
 import { checkCells, checkStructured } from "./browser/tables.mjs";
+import { checkStylesheetConditions } from "./browser/stylesheet-conditions.mjs";
+import { checkSavedHTML } from "./browser/saved-html.mjs";
+import { checkStylesAndMedia } from "./browser/styles-media.mjs";
 import { checkServices } from "./browser/services.mjs";
 
 const [port, base, downloads, work, container, group = "all"] = process.argv.slice(2);
@@ -93,10 +96,10 @@ const checks = { port, base, downloads, work, container, inContainer, sleep, ste
 const groups = {
     services: [checkServices],
     binary: [checkBinary], zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
-    media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkHTML],
+    media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkHTML],
     markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit], pdf: [checkPDF],
     epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured],
-    previews: [checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured],
+    previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured],
 };
 if (group !== "all" && !groups[group]) throw new Error(`Unknown group ${group}; choose all, ${Object.keys(groups).join(", ")}`);
 
@@ -310,7 +313,11 @@ try {
     await checkBinary(checks);
     await checkText(checks);
 
+    await checkStylesheetConditions(checks);
+    await checkSavedHTML(checks);
     await checkHTML(checks);
+    await checkExternalResources(checks);
+    await checkStylesAndMedia(checks);
 
     await checkMarkdownRender(checks);
 

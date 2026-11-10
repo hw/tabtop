@@ -113,6 +113,7 @@ export function createMediaSource({ call, collect, getWorker,
             media.dataset.streamed = "true";
             media.src = new URL(`./stream/media/${id}`, baseURL).href;
         } else {
+            if (file.remote) throw new Error("Proxied media streaming requires HTTPS and service worker support.");
             if (file.size > BUFFER_LIMIT) throw new Error(`streaming requires HTTPS and service worker support; download this ${kind} instead`);
             const t = await call({ type: "file", path, if_mtime: file.mtime, if_size: file.size });
             try {

@@ -672,6 +672,20 @@ var epubPolicy = func() *bluemonday.Policy {
 	return p
 }()
 
+// Preserve remote image addresses as inert chapter markup. The preview's
+// resource mode decides whether to fetch them; never fetch during parsing.
+func epubRemotePicture(src string) (string, bool) {
+	src = strings.TrimSpace(src)
+	if strings.HasPrefix(src, "//") {
+		src = "https:" + src
+	}
+	u, err := url.Parse(src)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", false
+	}
+	return u.String(), true
+}
+
 // epubDataPicture is src, a picture in the chapter itself as a data: URI
 // (base64 GIF, JPEG, PNG, SVG or WebP), as the chapter is given it: its
 // type in lower case, and without the line breaks books wrap it with; ok is
@@ -742,6 +756,8 @@ func (z *epubZip) renderChapter(chapter string) (string, error) {
 				if name == "image" {
 					if d, ok := epubDataPicture(attr(tok, "href")); ok {
 						out.WriteString(`<img src="` + html.EscapeString(d) + `" alt="">`)
+					} else if remote, ok := epubRemotePicture(attr(tok, "href")); ok {
+						out.WriteString(`<img src="` + html.EscapeString(remote) + `" alt="">`)
 					} else if item, _, ok := epubResolve(chapter, attr(tok, "href")); ok {
 						out.WriteString(`<img src="` + html.EscapeString(epubItemURL(item, "")) + `" alt="">`)
 					}
@@ -769,6 +785,10 @@ func (z *epubZip) renderChapter(chapter string) (string, error) {
 				case local == "src" && name == "img":
 					if d, ok := epubDataPicture(v); ok {
 						v = d
+						break
+					}
+					if remote, ok := epubRemotePicture(v); ok {
+						v = remote
 						break
 					}
 					item, _, ok := epubResolve(chapter, v)

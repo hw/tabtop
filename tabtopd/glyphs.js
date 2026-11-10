@@ -27,6 +27,9 @@ const icons = {
     "bell-off": '<path d="M6.5 17.5v-6.5a6 6 0 0 1 12 0v6.5l1.5 1.5h-15z"/><path d="M10.5 21.5h4M4 4l17 17"/>',
     security: '<path d="M12.5 3l7.5 3v5.5c0 4.6-3.2 8.6-7.5 10-4.3-1.4-7.5-5.4-7.5-10v-5.5z"/><path d="M9.5 12.5l2.2 2.2 4-4"/>',
     share: '<path d="M10.5 15l-1.8 1.8a4 4 0 0 1-5.7-5.6l4-4a4 4 0 0 1 5.7 0m1.8 2.8l1.8-1.8a4 4 0 0 1 5.7 5.6l-4 4a4 4 0 0 1-5.7 0M9 16l7-7"/>',
+    "external-none": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c-5 5-5 13 0 18M12 3c5 5 5 13 0 18"/><path d="M3 3l18 18"/>',
+    "external-proxy": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c-5 5-5 13 0 18M12 3c5 5 5 13 0 18"/><path d="M15 15h7v4l-3.5 3-3.5-3z"/>',
+    "external-direct": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c-5 5-5 13 0 18M12 3c5 5 5 13 0 18"/><path d="M16 2h6v6m0-6-7 7"/>',
     syntax: '<path d="M8 6l-6 6 6 6m8-12l6 6-6 6M14 3l-4 18"/>',
     binary: '<rect x="4" y="4" width="5" height="7" rx="1"/><path d="M15 4h2v7m-2 0h4M4 15h2v7m-2 0h4"/><rect x="14" y="15" width="5" height="7" rx="1"/>',
     preview: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
@@ -52,6 +55,7 @@ const icons = {
 // Most navigation/desktop icons use the original 25px noVNC-style grid.
 // Preview icons retain their own grids, sizes, and stroke weights.
 const metrics = {
+    "external-none": [18, 24, 1.8], "external-proxy": [18, 24, 1.8], "external-direct": [18, 24, 1.8],
     download: [18, 24, 1.8], "download-direct": [18, 24, 1.8], extract: [18, 24, 1.8],
     syntax: [18, 24, 1.8], binary: [18, 24, 1.8], preview: [18, 24, 1.8], back: [18, 24, 1.8], "fold-all": [18, 24, 1.8], "fit-page": [18, 24, 1.8],
     "fit-width": [18, 24, 1.8], "actual-size": [28, 24, 1.8],

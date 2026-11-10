@@ -261,14 +261,14 @@ dialog.preview .head .views button[aria-pressed="true"] { background: var(--hove
 /* The preview's Edit and Download, as glyphs, and Download's menu. */
 dialog.preview .head button.glyph { min-width: 2.2rem; font-size: 1.1rem; line-height: 1.2; padding: .1rem .5rem; }
 dialog.preview .head button.back:not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
-dialog.preview .head .download-group { position: relative; display: inline-flex; }
-dialog.preview .head .download-group[hidden] { display: none; }
-dialog.preview .head .download-group button.glyph { display: inline-flex; align-items: center; justify-content: center; }
-dialog.preview .head .download-group > button.download { border-radius: 5px 0 0 5px; }
-dialog.preview .head .download-group > button.download-more { border-radius: 0 5px 5px 0; margin-left: -1px; padding: .2rem .4rem; }
-dialog.preview .head .download-menu { position: absolute; z-index: 5; top: calc(100% + 4px); right: 0; display: flex; gap: .3rem;
+dialog.preview .head :is(.download-group, .external-group) { position: relative; display: inline-flex; }
+dialog.preview .head :is(.download-group, .external-group)[hidden] { display: none; }
+dialog.preview .head :is(.download-group, .external-group) button.glyph { display: inline-flex; align-items: center; justify-content: center; }
+dialog.preview .head :is(.download-group, .external-group) > button.download { border-radius: 5px 0 0 5px; }
+dialog.preview .head :is(.download-group, .external-group) > button:is(.download-more, .external-more) { border-radius: 0 5px 5px 0; margin-left: -1px; padding: .2rem .4rem; }
+dialog.preview .head :is(.download-menu, .external-menu) { position: absolute; z-index: 5; top: calc(100% + 4px); right: 0; display: flex; gap: .3rem;
        padding: .3rem; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
-dialog.preview .head .download-menu[hidden] { display: none; }
+dialog.preview .head :is(.download-menu, .external-menu)[hidden] { display: none; }
 /* The view and theme glyphs; the book's cover dropped on; the picture
    picker. */
 dialog.preview .head .views button.glyph { min-width: 2rem; padding: .1rem .45rem; }
@@ -393,14 +393,14 @@ dialog.preview .body > .zip-listing { align-self: stretch; flex: 1; display: fle
 .selection > span { flex: 1; }
 dialog.preview .preview-navigation, dialog.preview .preview-edit-actions, dialog.preview .preview-appearance { display: inline-flex; align-items: center; gap: .35rem; }
 dialog.preview .head .save-status { max-width: 16rem; font-size: .8rem; }
-dialog.preview .download-menu button { display: flex; align-items: center; gap: .5rem; text-align: left; white-space: normal; }
-dialog.preview .download-menu { min-width: 17rem; }
-dialog.preview .download-menu svg { flex-shrink: 0; }
+dialog.preview :is(.download-menu, .external-menu) button { display: flex; align-items: center; gap: .5rem; text-align: left; white-space: normal; }
+dialog.preview :is(.download-menu, .external-menu) { min-width: 17rem; }
+dialog.preview :is(.download-menu, .external-menu) svg { flex-shrink: 0; }
 dialog.preview .preview-failure { padding: 1rem; overflow-wrap: anywhere; }
 dialog.preview .preview-failure button { margin-right: .5rem; }
 dialog.preview .download-changes { align-self: flex-start; margin: .25rem .75rem; }
 
-dialog.preview .head .download-menu { flex-direction: column; max-width: calc(100vw - 2rem); }
+dialog.preview .head :is(.download-menu, .external-menu) { flex-direction: column; max-width: calc(100vw - 2rem); }
 
 /* Keep bytes and ASCII aligned; scroll horizontally on narrow screens. */
 dialog.preview .body > .hex-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -450,3 +450,12 @@ dialog.preview .preview-limit[hidden] { display: none; }
 .kaitai-type { font-size: .8rem; }
 .kaitai-diagnostics { margin: .5rem 0; }
 dialog.preview .kaitai-diagnostics pre { padding: .5rem; font-size: .8rem; }
+
+/* Players are siblings of the opaque document frame, clipped to its body. */
+dialog.preview .body { position: relative; }
+dialog.preview .preview-media-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+dialog.preview .preview-media-layer > .preview-embedded-media { position: absolute; pointer-events: auto; margin: 0; background: #111; }
+
+dialog.preview .head .external-group > .external-resources { border-radius: 5px 0 0 5px; }
+dialog.preview .head .external-menu { min-width: 10rem; }
+dialog.preview .head .external-menu [aria-checked="true"] { box-shadow: inset 0 0 0 1px var(--accent); }
