@@ -240,6 +240,7 @@ dialog.preview .body > .table-view, dialog.preview .body > .json-view, dialog.pr
 .json-tree .hit { background: rgba(255, 200, 0, .45); border-radius: 2px; }
 @media (prefers-color-scheme: dark) { .json-key { color: #d2a8ff; } .json-string { color: #7ee787; } .json-number { color: #79c0ff; }
        .json-bool, .json-null { color: #ff7b72; } .json-error { color: #f28b82; } }
+dialog.preview .editor-position { white-space: nowrap; font-variant-numeric: tabular-nums; }
 dialog.preview .editing .edit-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0 1rem; padding-right: .75rem; }
 dialog.preview .editing .edit-bar:not(:has(> :not([hidden]))) { display: none; }
 dialog.preview .editing .edit-bar .json-status { margin: .4rem 0; } dialog.preview .editing .edit-bar .json-status[hidden] { display: none; }

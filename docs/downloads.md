@@ -283,8 +283,10 @@ downloaded at `http://<host>:6080/fs/`:
     handed to it.
 - **Editing:** **Edit** in the preview of a text file (UTF-8, up to
   2 MB) opens it in a plain editor; for Markdown, it's rendered beside it
-  as you type. Ctrl G (⌘ G) opens **Go to line**; Enter jumps to the
-  chosen line and Escape cancels. **Save** (or Ctrl S, ⌘ S) writes it back through the
+  as you type. The top bar shows the cursor’s line and column. Click it or press
+  Ctrl G (⌘ G) to open **Go to line**. Enter a line or `line:column`
+  (both start at 1); Enter jumps there and Escape cancels. Columns past
+  the end of a line move to its end. **Save** (or Ctrl S, ⌘ S) writes it back through the
   encrypted tunnel, replacing the file in one step and keeping its
   permissions (a script stays one that runs), its line endings (Windows'
   `\r\n` stay so) and any byte order mark. If the file has changed since

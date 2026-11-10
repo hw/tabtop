@@ -240,7 +240,7 @@ export async function checkMarkdownLinks(checks) {
 }
 
 export async function checkTextEdit(checks) {
-    const { downloads, waitForFile, inContainer, sleep, step, ev, waitFor, click, type, open, listed, answer, status, rendered } = checks;
+    const { downloads, waitForFile, inContainer, sleep, step, ev, waitFor, click, type, open, listed, answer, status, rendered, press, cdp } = checks;
     await step("files: edit a file and save it", async () => {
         inContainer("sh", "-c", "mkdir -p ~/Downloads/media/more; printf '# Index\\n' > ~/Downloads/media/index.md");
         inContainer("sh", "-c", "printf '#!/bin/sh\\r\\necho one\\r\\n' > ~/Downloads/media/edit.sh && chmod 755 ~/Downloads/media/edit.sh");
@@ -263,6 +263,12 @@ export async function checkTextEdit(checks) {
         const highlighted = `document.querySelector("dialog.preview .syntax-editor.highlighted")`;
         await waitFor(`!!${highlighted}?.querySelector(".hljs-meta")`, "shell syntax highlighted in the editor");
         const syntaxToggle = `document.querySelector("dialog.preview button.syntax-toggle")`;
+        const cursorLocation = `document.querySelector("dialog.preview .head .editor-position")`;
+        await waitFor(`!!${cursorLocation}`, "cursor location in the editor toolbar");
+        await ev(`(() => { const b = document.querySelector("textarea.editor"); b.setSelectionRange(0, b.value.indexOf("\\n") + 1, "backward"); })()`);
+        await waitFor(`${cursorLocation}.textContent === "1:1"`, "backward selection shows its active endpoint");
+        await ev(`(() => { const b = document.querySelector("textarea.editor"); b.setSelectionRange(0, b.value.indexOf("\\n") + 1, "forward"); })()`);
+        await waitFor(`${cursorLocation}.textContent === "2:1"`, "forward selection shows its active endpoint");
         if (!await ev(`${syntaxToggle}.nextElementSibling?.classList.contains("widen")
             && getComputedStyle(document.querySelector(".edit-bar")).display === "none"
             && document.querySelector(".save-edit").title.includes("Ctrl S")`)) {
@@ -317,18 +323,47 @@ export async function checkTextEdit(checks) {
         };
         await goto();
         if (!await ev(`(() => { const input = document.querySelector('input[aria-label="Line number"]');
-            input.value = "0"; const invalid = !input.checkValidity();
-            input.value = "99999"; const pastEnd = !input.checkValidity();
-            input.value = "100"; input.form.requestSubmit(input.form.querySelector("button.primary"));
-            return invalid && pastEnd; })()`)) throw new Error("Go to line accepted an invalid line");
+            let invalid = true;
+            for (const value of ["0", "99999", "100:0", "-1", "1.5", "1:2:3"]) {
+                input.value = value; input.dispatchEvent(new Event("input"));
+                invalid &&= !input.checkValidity();
+            }
+            input.value = "100"; input.dispatchEvent(new Event("input"));
+            return invalid && input.checkValidity(); })()`)) throw new Error("Go to line accepted an invalid location");
+        await press("Enter");
         await waitFor(`document.activeElement === document.querySelector("textarea.editor") &&
             document.querySelector("textarea.editor").selectionStart === document.querySelector("textarea.editor").value.split("\\n").slice(0, 99).join("\\n").length + 1`, "caret on line 100");
         if (!await ev(`document.querySelector("textarea.editor").scrollTop > 0 && document.querySelector("textarea.editor").value.startsWith("#!/bin/sh")`)) throw new Error("Go to line did not scroll or changed the source");
+        await waitFor(`${cursorLocation}.textContent === "100:1"`, "cursor location follows Go to line");
+        await cdp("Input.insertText", { text: "goto-focus-check" });
+        await waitFor(`${cursorLocation}.textContent === "100:17"`, "cursor location follows typing");
+        await press("ArrowLeft");
+        await waitFor(`${cursorLocation}.textContent === "100:16"`, "cursor location follows arrow keys");
+        if (!await ev(`document.querySelector("textarea.editor").value.split("\\n")[99].startsWith("goto-focus-check")`)) {
+            throw new Error("typing immediately after Go to line did not reach the target line");
+        }
         await goto(syntaxToggle);
         await ev(`(() => { const input = document.querySelector('input[aria-label="Line number"]');
-            if (input.value !== "100") throw new Error("current line was not offered");
-            input.form.closest("dialog").close(); })()`);
+            if (input.value !== "100:16") throw new Error("current line and column were not offered");
+            })()`);
+        await press("Escape");
         await waitFor(`!document.querySelector('input[aria-label="Line number"]')`, "Go to line cancelled");
+        await waitFor(`document.activeElement === document.querySelector("textarea.editor")`, "editor focused after cancelling Go to line");
+        // Clicking the compact toolbar location opens the same dialog.
+        await click(cursorLocation);
+        await waitFor(`!!document.querySelector('input[aria-label="Line number"]')`, "Go to line from the toolbar location");
+        await ev(`(() => { const input = document.querySelector('input[aria-label="Line number"]');
+            input.value = "100:4"; input.dispatchEvent(new Event("input")); })()`);
+        await press("Enter");
+        await waitFor(`${cursorLocation}.textContent === "100:4" && document.activeElement === document.querySelector("textarea.editor")`, "jump to a line and column");
+        await cdp("Input.insertText", { text: "column-check" });
+        if (!await ev(`document.querySelector("textarea.editor").value.split("\\n")[99].startsWith("gotcolumn-checko-focus-check")`)) throw new Error("typing after a column jump went to the wrong position");
+        await click(cursorLocation);
+        await waitFor(`!!document.querySelector('input[aria-label="Line number"]')`, "Go to line again");
+        await ev(`(() => { const input = document.querySelector('input[aria-label="Line number"]');
+            input.value = "2:9999"; input.dispatchEvent(new Event("input")); })()`);
+        await press("Enter");
+        await waitFor(`${cursorLocation}.textContent === "2:" + (document.querySelector("textarea.editor").value.split("\\n")[1].length + 1)`, "column past the line clamps to its end");
         await type("x".repeat(512 * 1024 + 1));
         await sleep(250);
         if (await ev(`!!${highlighted}`)) throw new Error("large text was highlighted past the preview's cap");
@@ -370,6 +405,7 @@ export async function checkTextEdit(checks) {
         await waitFor(`(document.querySelectorAll("dialog[open]")[1]?.textContent ?? "").includes("aren't saved")`, "the question");
         await answer();
         await waitFor(`!document.querySelector("dialog.preview textarea.editor")`, "editing ended");
+        if (await ev(`!!${cursorLocation}`)) throw new Error("cursor location remained after leaving edit mode");
         if (await ev(`!!document.querySelector("dialog.preview .syntax-toggle")`)) throw new Error("the edit syntax toggle remained after Done");
         await ev(`document.querySelector("dialog.preview button.close").click()`);
         await waitFor(`!document.querySelector("dialog.preview")`, "the preview to close");

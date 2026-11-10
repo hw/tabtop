@@ -248,6 +248,7 @@ RUN apt-get update \
         ca-certificates \
         tzdata \
         procps \
+        htop \
         libpam-oath \
         oathtool \
         qrencode \
@@ -259,6 +260,9 @@ RUN apt-get update \
         less \
         curl \
         wget \
+        iputils-ping \
+        bind9-dnsutils \
+        iproute2 \
         gzip \
         zip \
         unzip \

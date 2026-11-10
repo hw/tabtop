@@ -103,6 +103,36 @@ function syntaxEditor(box, name) {
     } };
 }
 
+// Cache logical line starts so moving the caret doesn't rescan large files.
+function editorPosition(box) {
+    const location = el("button", { type: "button", className: "hint editor-position", title: "Go to line (Ctrl G; Line:Column)" });
+    location.setAttribute("aria-label", "Go to line and column");
+    let text, starts;
+    const update = () => {
+        if (text !== box.value) {
+            text = box.value;
+            starts = [0];
+            for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) starts.push(at + 1);
+        }
+        const offset = box.selectionDirection === "backward" ? box.selectionStart : box.selectionEnd;
+        let low = 0, high = starts.length;
+        while (low + 1 < high) {
+            const mid = Math.floor((low + high) / 2);
+            if (starts[mid] <= offset) low = mid;
+            else high = mid;
+        }
+        const label = `${low + 1}:${offset - starts[low] + 1}`;
+        if (location.textContent !== label) location.textContent = label;
+    };
+    const events = ["input", "select", "selectionchange", "keyup", "click", "focus"];
+    for (const event of events) box.addEventListener(event, update);
+    update();
+    return { element: location, stop() {
+        for (const event of events) box.removeEventListener(event, update);
+        location.remove();
+    } };
+}
+
 function recoveryDownload(name, snapshot) {
     const button = el("button", { type: "button", className: "download-changes", textContent: "Download my changes", hidden: true });
     button.addEventListener("click", () => saveBlob(snapshot(), name));
@@ -219,6 +249,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     const box = el("textarea", { className: "editor", value: text, spellcheck: false, autocomplete: "off" });
     box.setAttribute("aria-label", `The text of ${current.name}`);
     let savedText = box.value;  // as the box has it: line endings made \n
+    const position = editorPosition(box);
     const note = el("p", { className: "hint edit-status", hidden: true });
     const syntax = syntaxEditor(box, current.name);
     const parts = [syntax.element];
@@ -399,14 +430,21 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
         if (askingLine || stopped) return;
         askingLine = true;
         try {
-            const line = box.value.slice(0, box.selectionStart).split("\n").length;
+            const offset = box.selectionDirection === "backward" ? box.selectionStart : box.selectionEnd;
+            const prefix = box.value.slice(0, offset);
+            const line = prefix.split("\n").length;
+            const column = prefix.length - prefix.lastIndexOf("\n");
             const total = box.value.split("\n").length;
-            const chosen = await askLine(line, total);
-            if (!stopped && chosen !== null) goToEditorLine(box, chosen);
+            const chosen = await askLine(`${line}:${column}`, total);
+            if (!stopped) {
+                if (chosen !== null) goToEditorLine(box, chosen.line, chosen.column);
+                else box.focus({ preventScroll: true });
+            }
         } finally {
             askingLine = false;
         }
     };
+    position.element.addEventListener("click", goToLine);
     const onKey = (e) => {
         if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "g") {
             e.preventDefault();
@@ -421,6 +459,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     editor.addEventListener("keydown", onKey);
     return {
         goToLine,
+        cursorLocation: position.element,
         syntaxToggle: syntax.toggle,
         formatButton: format,
         saving: () => saving,
@@ -428,6 +467,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
         save,
         stop() {
             stopped = true;
+            position.stop();
             clearTimeout(renderTimer);
             clearTimeout(checking);
             syntax.stop();

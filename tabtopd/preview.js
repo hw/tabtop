@@ -414,6 +414,7 @@ export function preview(dir, files, index, download, opts = {}) {
         });
         frame?.stop();
         frame = null;
+        if (editing.cursorLocation) saveStatus.before(editing.cursorLocation);
         if (editing.syntaxToggle) widen.before(editing.syntaxToggle);
         if (editing.formatButton) store.before(editing.formatButton);
         edit.hidden = view.hidden = saveGroup.hidden = prev.hidden = next.hidden = true;

@@ -445,13 +445,34 @@ export async function askName(message, ok, value = "", stem = false) {
     return (await ask(message, ok, input)) ? input.value : null;
 }
 
-// askLine accepts a one-based line number within the current text.
+// Accept a one-based line, optionally followed by a one-based column.
+// The editor clamps columns beyond the chosen line to its end.
 export async function askLine(current, total) {
-    const input = el("input", { type: "number", min: "1", max: String(total), step: "1",
-        value: String(current), required: true });
+    const input = el("input", { type: "text", value: String(current), required: true,
+        placeholder: "Line or Line:Column", autocomplete: "off", spellcheck: false });
     input.setAttribute("aria-label", "Line number");
+    const position = () => {
+        const match = /^(\d+)(?::(\d+))?$/.exec(input.value.trim());
+        return match ? { line: Number(match[1]), column: Number(match[2] ?? 1) } : null;
+    };
+    const validate = () => {
+        const at = position();
+        input.setCustomValidity(!at || !Number.isSafeInteger(at.line) || at.line < 1 || at.line > total ||
+            !Number.isSafeInteger(at.column) || at.column < 1
+            ? `Enter a line from 1 to ${total}, optionally followed by :column (starting at 1).` : "");
+    };
+    input.addEventListener("input", validate);
+    validate();
+    // The form's first submit button is Cancel. Enter explicitly chooses Go.
+    input.addEventListener("keydown", event => {
+        if (event.key === "Enter" && !event.isComposing) {
+            event.preventDefault();
+            validate();
+            input.form.requestSubmit(input.form.querySelector("button.primary"));
+        }
+    });
     requestAnimationFrame(() => input.select());
-    return (await ask(`Go to line (1–${total})`, "Go", input)) ? Number(input.value) : null;
+    return (await ask(`Go to line (1–${total}), optionally :column`, "Go", input)) ? position() : null;
 }
 
 // askBookDetails asks for a book's title and author, starting with those

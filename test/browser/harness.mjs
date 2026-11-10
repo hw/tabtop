@@ -69,7 +69,7 @@ export async function createBrowserHarness({ port, base }) {
         }
     }
     // press sends a key, as the keyboard does, to the focused element.
-    const keyCodes = { ArrowDown: 40, ArrowUp: 38, Enter: 13, Backspace: 8, Escape: 27, " ": 32, "=": 187, "0": 48, f: 70 };
+    const keyCodes = { ArrowLeft: 37, ArrowRight: 39, ArrowDown: 40, ArrowUp: 38, Enter: 13, Backspace: 8, Escape: 27, " ": 32, "=": 187, "0": 48, f: 70 };
     async function press(key, modifiers = 0) {
         const code = { " ": "Space", "=": "Equal", "0": "Digit0", f: "KeyF" }[key] ?? key;
         const text = key === "Enter" ? "\r" : key.length === 1 && !modifiers ? key : undefined;
