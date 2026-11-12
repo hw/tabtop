@@ -263,7 +263,7 @@ func TestAudioHubStartFails(t *testing.T) {
 }
 
 // TestMicOfferedLine: the gateway turns the microphone off by replacing
-// this line of audio.js as it serves it (see scripts in e2e.go); changed,
+// this line of audio.js as it serves it (see scripts in page_assets.go); changed,
 // that would silently do nothing.
 func TestMicOfferedLine(t *testing.T) {
 	if n := bytes.Count(audioJS, []byte("const micOffered = true;")); n != 1 {

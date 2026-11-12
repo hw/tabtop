@@ -14,6 +14,10 @@ export const FILE_TYPES = Object.freeze({
     "kind": "image",
     "mime": "image/bmp"
   },
+  "db3": {
+    "kind": "sqlite",
+    "mime": "application/vnd.sqlite3"
+  },
   "epub": {
     "kind": "epub",
     "mime": "application/epub+zip"
@@ -89,6 +93,14 @@ export const FILE_TYPES = Object.freeze({
     "epubPicture": true,
     "kind": "image",
     "mime": "image/png"
+  },
+  "sqlite": {
+    "kind": "sqlite",
+    "mime": "application/vnd.sqlite3"
+  },
+  "sqlite3": {
+    "kind": "sqlite",
+    "mime": "application/vnd.sqlite3"
   },
   "svg": {
     "epubPicture": true,

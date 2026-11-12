@@ -28,12 +28,16 @@ type serverConfig struct {
 	previewDir                            string // KaTeX and Mermaid, for Markdown previews; "" for none
 	kaitaiDir                             string // compiled Kaitai formats; "" for none
 	pdfjsDir                              string // pdf.js, for PDF previews; "" for none
+	inpaintDir                            string // MI-GAN ONNX model for image repairs; "" for none
+	backgroundDir                         string // ONNX Runtime Web and U2NetP for image background removal; "" for none
+	disasmDir                             string // iced-x86 for the browser, for disassembly in hex previews; "" for none
 	sessionMax, sessionIdle               time.Duration
 	audioSink, micSink                    string
 	micCreate                             bool   // make micSink and its source on the audio server
 	shareOn                               bool   // share links
 	sharesFile                            string // where they're kept; "" for in memory
 	fetchOn, fetchPrivate                 bool   // fetching from URLs, and from private networks
+	previewFetchPrivate                   bool   // previews' external resources from private networks too
 	activityFile                          string // where the activity log is kept; "" for in memory
 	shareKeyFile                          string // what share links' tokens are sealed with; "" for a key in memory
 	audioBitrate                          int
@@ -103,7 +107,7 @@ func newServer(c serverConfig) (*server, error) {
 	if c.fetchOn {
 		private := c.fetchPrivate
 		g.fetches = &fetchManager{downloadsDir: c.downloadsDir, transfers: &g.transfers, activity: g.activity,
-			client: newFetchClient(fetchPolicy(private)), resourceClient: newFetchClient(fetchPolicy(false))}
+			client: newFetchClient(fetchPolicy(private)), resourceClient: newFetchClient(fetchPolicy(c.previewFetchPrivate))}
 	}
 	if c.audioSink != "" {
 		var devices *micDevices

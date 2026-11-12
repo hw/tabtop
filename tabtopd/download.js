@@ -11,8 +11,11 @@ import { call, collect, complete, saveBlob } from "./requests.js";
 import { runTransfer } from "./transfer.js";
 import { statusRow } from "./ui.js";
 import { streamWorker } from "./stream-worker.js";
+import { humanBytes } from "./file-format.js";
 // Compatibility for pages loaded before worker registration was extracted.
 export { streamWorker, mediaWorker } from "./stream-worker.js";
+// And before humanBytes moved to file-format.js.
+export { humanBytes };
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -85,16 +88,6 @@ async function fetchDownload(req, label, starting, retry) {
     row.finish(result.retry);
 }
 
-// humanBytes is a size as the listing shows it (see humanSize in main.go):
-// in units of 1024, so the two agree.
-export function humanBytes(n) {
-    const units = ["B", "KB", "MB", "GB", "TB"];
-    let i = 0;
-    for (; n >= 1024 && i < units.length - 1; i++) {
-        n /= 1024;
-    }
-    return `${i ? n.toFixed(1) : n} ${units[i]}`;
-}
 
 // How long the download may go without asking for more before it's given
 // up, as when the browser stops the service worker or the download is

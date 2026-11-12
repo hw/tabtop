@@ -10,7 +10,9 @@ html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 
 #bar button { font: inherit; min-width: 2.2rem; padding: .2rem .6rem; color: inherit; background: none; border: 1px solid var(--line);
        border-radius: 5px; cursor: pointer; }
 #bar .group { display: flex; align-items: center; gap: .4rem; }
-#bar button.fit-page, #bar button.fit-width, #bar button.actual-size { display: inline-flex; align-items: center; justify-content: center; }
+#bar button.fit-page, #bar button.fit-width, #bar button.actual-size,
+#bar button.zoom-in, #bar button.zoom-out, #bar button.edit-images { display: inline-flex; align-items: center; justify-content: center; }
+#bar button.zoom-in svg, #bar button.zoom-out svg { display: block; }
 #bar button[aria-pressed=true] { background: var(--line); }
 #bar input.find { font: inherit; width: 11rem; padding: .2rem .45rem; color: inherit; background: none; border: 1px solid var(--line);
        border-radius: 5px; }

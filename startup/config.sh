@@ -20,6 +20,7 @@ WEB_MIC="${WEB_MIC:-1}"
 WEB_SHARE="${WEB_SHARE:-1}"
 WEB_FETCH="${WEB_FETCH:-1}"
 WEB_FETCH_PRIVATE="${WEB_FETCH_PRIVATE:-0}"
+WEB_PREVIEW_FETCH_PRIVATE="${WEB_PREVIEW_FETCH_PRIVATE:-0}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
 WEB_AUDIO_SINK="${WEB_AUDIO_SINK:-}"
@@ -150,6 +151,10 @@ esac
 case "$WEB_FETCH_PRIVATE" in
     0|1) ;;
     *) echo "WEB_FETCH_PRIVATE must be 0 or 1 (got '${WEB_FETCH_PRIVATE}')." >&2; exit 1 ;;
+esac
+case "$WEB_PREVIEW_FETCH_PRIVATE" in
+    0|1) ;;
+    *) echo "WEB_PREVIEW_FETCH_PRIVATE must be 0 or 1 (got '${WEB_PREVIEW_FETCH_PRIVATE}')." >&2; exit 1 ;;
 esac
 if ! [[ "$WEB_AUDIO_BITRATE" =~ ^[0-9]{1,3}$ ]] || [ "$WEB_AUDIO_BITRATE" -lt 32 ] \
         || [ "$WEB_AUDIO_BITRATE" -gt 256 ]; then

@@ -101,11 +101,50 @@ func TestPreviewResourceCancellation(t *testing.T) {
 	}
 }
 
+// With every slot taken, a resource waits for one rather than failing at
+// once; it fails only if none comes in time.
+func TestPreviewResourceWaitsForSlot(t *testing.T) {
+	data := []byte("\x89PNG\r\n\x1a\nwaited")
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(data)
+	}))
+	defer remote.Close()
+	_, address, session := newFetchServer(t)
+	ctx := testCtx(t)
+	for range cap(previewResourceSlots.slots) {
+		previewResourceSlots.slots <- struct{}{}
+	}
+	freed := false
+	free := func() {
+		if !freed {
+			freed = true
+			for range cap(previewResourceSlots.slots) {
+				<-previewResourceSlots.slots
+			}
+		}
+	}
+	defer free()
+	time.AfterFunc(300*time.Millisecond, func() { <-previewResourceSlots.slots })
+	reply := openSession(t, ctx, address, session).request(t, ctx, tunnelRequest{Type: "preview-resource", URL: remote.URL})
+	if reply["error"] != nil || reply["size"] != float64(len(data)) {
+		t.Fatalf("a resource waiting for a slot: %v", reply)
+	}
+	previewResourceSlots.slots <- struct{}{} // (taken again: all busy)
+	defer func(d time.Duration) { previewResourceSlots.wait = d }(previewResourceSlots.wait)
+	previewResourceSlots.wait = 200 * time.Millisecond
+	if reply := openSession(t, ctx, address, session).request(t, ctx, tunnelRequest{Type: "preview-resource", URL: remote.URL}); reply["error"] == nil {
+		t.Fatalf("no slot came, yet: %v", reply)
+	}
+}
+
 func TestPreviewFrameResourcePolicy(t *testing.T) {
 	for _, mode := range []string{"", "none", "proxy", "direct", "unknown"} {
 		policy := previewFrameCSP(httptest.NewRequest("GET", "/tabtop/md-frame.html?external="+mode, nil))
-		if strings.Contains(policy, "img-src blob: data: http: https:;") != (mode == "direct") {
-			t.Fatalf("mode %s: %s", mode, policy)
+		for _, from := range []string{"style-src 'unsafe-inline' http: https:;", "img-src blob: data: http: https:;", "media-src blob: http: https:;", "font-src blob: http: https:;"} {
+			if strings.Contains(policy, from) != (mode == "direct") {
+				t.Fatalf("mode %s, %s: %s", mode, from, policy)
+			}
 		}
 		if !strings.Contains(policy, "default-src 'none'") || !strings.Contains(policy, frameSandbox) {
 			t.Fatalf("weakened sandbox for %s", mode)
@@ -211,5 +250,11 @@ func TestPreviewStylesFontsAndMediaRanges(t *testing.T) {
 		if reply, _ := read(req); reply["error"] == nil {
 			t.Fatalf("invalid resource accepted: %+v", req)
 		}
+	}
+	// Changed since it was opened: the server sends it whole (If-Range
+	// didn't match), which is said as that, not as no range support.
+	stale, _ := read(tunnelRequest{Type: "preview-resource", Resource: "media", URL: remote.URL + "/test.mp4", Offset: 100, Length: 100, IfSize: int64(len(media)), IfMtime: `"stale"`})
+	if msg, _ := stale["error"].(string); !strings.Contains(msg, "changed") {
+		t.Errorf("stale: %v", stale)
 	}
 }

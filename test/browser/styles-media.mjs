@@ -76,7 +76,7 @@ export async function checkStylesAndMedia(checks) {
                 const frame = await ev('(() => { const r = document.querySelector("iframe.html").getBoundingClientRect(); return {x:r.x,y:r.y}; })()');
                 for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: frame.x + at.x, y: frame.y + at.y, button: "left", clickCount: 1 });
                 await waitFor('!!document.querySelector("dialog.preview-link[open]")', "real pointer click on " + id);
-                await ev('[...document.querySelectorAll("dialog.preview-link button")].find(b => b.textContent === "Cancel").click()');
+                await ev('document.querySelector("dialog.preview-link button.close").click()');
                 await waitFor('!document.querySelector("dialog.preview-link")', "link dialog closes");
             }
             if (!await inFrame("md-frame.html", 'document.querySelector("#image-link img").naturalWidth === 20')) throw new Error("external inline image is not displayed");

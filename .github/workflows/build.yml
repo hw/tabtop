@@ -31,7 +31,7 @@ jobs:
       # Installs the Go version pinned in mise.toml.
       - uses: jdx/mise-action@v5
       # tabtopd uses libopus (audio) and liboath (logins) through cgo.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopus-dev liboath-dev
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopus-dev liboath-dev libsqlite3-dev
       - run: test -z "$(gofmt -l tabtopd)" || { gofmt -l tabtopd; exit 1; }
       - run: mise run vet
       - run: mise run test

@@ -116,6 +116,11 @@ export function formatCombobox(onSelect) {
             input.disabled = toggle.disabled = false;
             render("");
         },
+        // choose selects the format with this id, as if it were picked.
+        choose(formatId) {
+            const entry = entries.find(e => e.id === formatId);
+            if (entry) commit(entry);
+        },
         stop() { document.removeEventListener("pointerdown", outside); close(); },
     };
 }

@@ -83,15 +83,26 @@
             if (layer !== null) text = `@layer${layer ? " " + layer : ""}{${text}}`;
             return text;
         }
-        async function rules(children, base, chain, depth) {
-            let out = "";
+        // rules is the CSS for children, as pieces: in Direct mode, each
+        // web stylesheet imported starts a piece of its own, as an @import
+        // must start a sheet, so each becomes a <style> of its own, in
+        // order. One imported where it'd need wrapping (under conditions,
+        // or in @media and the like: wrapped) can't be, and isn't loaded.
+        async function rules(children, base, chain, depth, wrapped = false) {
+            const out = [""];
+            let size = 0;
+            const add = text => {
+                out[out.length - 1] += text;
+                size += text.length;
+                if (size > 2 * 1024 * 1024) throw new Error("Generated stylesheet exceeds the preview limit.");
+            };
             for (const rule of children) {
-                if (!alive()) return "";
+                if (!alive()) return [""];
                 if (++nodes > 50000 || depth > 8) throw new Error("CSS nesting limit reached.");
                 if (rule.type === "Rule") {
                     const scoped = selector(rule.prelude);
                     const body = await declarations(rule.block, base);
-                    if (scoped && body) out += `${scoped}{${body}}`;
+                    if (scoped && body) add(`${scoped}{${body}}`);
                 } else if (rule.type === "Atrule") {
                     const name = rule.name.toLowerCase();
                     if (name === "import") {
@@ -109,40 +120,47 @@
                         try {
                             const got = await load(src, base, "css", true);
                             if (got.direct) {
-                                out += `@import ${css.generate({ type: "Url", value: got.base })}${tail ? " " + tail : ""};`;
+                                if (wrapped) throw new Error("A web stylesheet imported under conditions isn't loaded in Direct mode.");
+                                out.push("");
+                                add(`@import ${css.generate({ type: "Url", value: got.base })}${tail ? " " + tail : ""};`);
                                 continue;
                             }
                             if (chain.includes(got.base)) continue;
-                            const imported = await stylesheet(got.text, got.base, [...chain, got.base], depth + 1, true);
-                            out += wrapImport(imported, conditions);
+                            const conditional = conditions.layer !== null || !!conditions.supports || !!conditions.media;
+                            const imported = await stylesheet(got.text, got.base, [...chain, got.base], depth + 1, true, wrapped || conditional);
+                            if (conditional) add(wrapImport(imported[0], conditions));
+                            else {
+                                add(imported[0]);
+                                for (const piece of imported.slice(1)) { out.push(""); add(piece); }
+                            }
                         } catch (err) { error(err.message); }
                     } else if (name === "layer" && !rule.block && rule.prelude?.children?.size === 1 && rule.prelude.children.first.type === "LayerList") {
-                        out += `@layer ${css.generate(rule.prelude)};`;
+                        add(`@layer ${css.generate(rule.prelude)};`);
                     } else if (name === "font-face" && rule.block) {
                         const body = await declarations(rule.block, base, true);
-                        if (body) out += `@font-face{${body}}`;
+                        if (body) add(`@font-face{${body}}`);
                     } else if (["media", "supports", "layer"].includes(name) && rule.block) {
                         const prelude = rule.prelude ? css.generate(rule.prelude) : "";
                         // Never preserve opaque fallback text from parser recovery.
                         let valid = true;
                         if (rule.prelude) css.walk(rule.prelude, node => { if (node.type === "Raw" || node.type === "Url") valid = false; });
-                        if (valid) out += `@${name} ${prelude}{${await rules(rule.block.children, base, chain, depth + 1)}}`;
+                        if (valid) add(`@${name} ${prelude}{${(await rules(rule.block.children, base, chain, depth + 1, true))[0]}}`);
                     }
                 }
-                if (out.length > 2 * 1024 * 1024) throw new Error("Generated stylesheet exceeds the preview limit.");
             }
-            return out;
+            return out.filter((piece, i) => i === 0 || piece);
         }
         function charge(text) {
             bytes += text.length;
             if (bytes > 2 * 1024 * 1024 || text.length > 512 * 1024) throw new Error("Stylesheet preview limit reached.");
         }
-        async function stylesheet(text, base = "", chain = [], depth = 0, fetched = false) {
+        // stylesheet is the CSS text (at base) as pieces (see rules).
+        async function stylesheet(text, base = "", chain = [], depth = 0, fetched = false, wrapped = false) {
             charge(text);
             if (fetched && ++sheets > 16) throw new Error("Stylesheet import limit reached.");
-            if (!text.trim()) return "";
+            if (!text.trim()) return [""];
             const ast = css.parse(text, { positions: false, parseCustomProperty: true });
-            return rules(ast.children, base, chain, depth);
+            return rules(ast.children, base, chain, depth, wrapped);
         }
         return {
             stylesheet,

@@ -2,27 +2,16 @@ import * as tunnel from "./tunnel.js";
 import { call, saveBlob, shareURL } from "./requests.js";
 import { askChangeLink, askChangeLinks, askSessionName, askYes, copyText, showLink, statusRow } from "./ui.js";
 import { logOut } from "./nav.js";
-import { humanBytes } from "./download.js";
+import { humanBytes } from "./file-format.js";
+import { store, stored } from "./stored.js";
 
 const SECURITY_TITLE = "Sessions and Activity";
 
 // This browser's name for its session (see nameSession), kept in
 // localStorage, which may refuse.
 const SESSION_NAME = "tabtop.session-name";
-function savedSessionName() {
-    try {
-        return localStorage.getItem(SESSION_NAME) ?? "";
-    } catch {
-        return "";
-    }
-}
-function saveSessionName(name) {
-    try {
-        name ? localStorage.setItem(SESSION_NAME, name) : localStorage.removeItem(SESSION_NAME);
-    } catch {
-        // Only this login is named, then.
-    }
-}
+const savedSessionName = () => stored(SESSION_NAME, "");
+const saveSessionName = (name) => store(SESSION_NAME, name || null);
 
 // untilText says how long ms is, roughly: "45 minutes", "3 hours".
 function untilText(ms) {

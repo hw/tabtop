@@ -6,12 +6,14 @@ import { registerHooks } from "node:module";
 // Load the real module at different deployment URLs without network access.
 // Keeping import.meta.url intact exercises its production namespace rule.
 const source = readFileSync(new URL("../tabtopd/session-state.js", import.meta.url), "utf8");
+const storedSource = readFileSync(new URL("../tabtopd/stored.js", import.meta.url), "utf8");
 const hooks = registerHooks({
     resolve(specifier, context, next) {
         return specifier.startsWith("https://tabtop.test/") ? { shortCircuit: true, url: specifier } : next(specifier, context);
     },
     load(url, context, next) {
-        return url.startsWith("https://tabtop.test/") ? { shortCircuit: true, format: "module", source } : next(url, context);
+        if (!url.startsWith("https://tabtop.test/")) return next(url, context);
+        return { shortCircuit: true, format: "module", source: url.endsWith("/stored.js") ? storedSource : source };
     },
 });
 let root, a, b;

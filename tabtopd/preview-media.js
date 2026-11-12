@@ -5,6 +5,7 @@ import { call, collect } from "./requests.js";
 import { mediaStream } from "./media-stream.js";
 import { resourceAddress } from "./preview-resources.js";
 import { el } from "./preview-dom.js";
+import { typeOf } from "./preview-model.js";
 
 export function frameMedia(frame, dir, mode) {
     const players = new Map();
@@ -25,24 +26,43 @@ export function frameMedia(frame, dir, mode) {
     }
     return {
         async open({ src, base = "", kind, id, rect }) {
-            if (mode !== "proxy" || !["audio", "video"].includes(kind) || !Number.isSafeInteger(id) || players.has(id) || players.size >= 8 || abort.signal.aborted) return { error: "Media preview is unavailable." };
+            if (!["audio", "video"].includes(kind) || !Number.isSafeInteger(id) || players.has(id) || players.size >= 8 || abort.signal.aborted) return { error: "Media preview is unavailable." };
+            // From the web, only in Proxy mode; beside the file, in any.
             const at = resourceAddress(src, base, dir);
-            if (!at?.remote) return { error: "This media preview needs an HTTP or HTTPS source." };
+            if (!at) return { error: "Media source not supported." };
+            if (at.remote && mode !== "proxy") return { error: "External media is blocked." };
+            if (!at.remote && typeOf(at.url.split("/").pop() ?? "")?.kind !== kind) return { error: `Not ${kind === "audio" ? "audio" : "a video"}: ${at.url}` };
             const entry = {};
             players.set(id, entry);
             let tunnel;
             const cancel = () => tunnel?.close();
             abort.signal.addEventListener("abort", cancel, { once: true });
             try {
-                tunnel = await call({ type: "preview-resource", resource: "media", url: at.url });
-                abort.signal.throwIfAborted();
-                const info = tunnel.reply;
-                await collect(tunnel, 1, () => {});
-                if (!info.mime?.startsWith(kind + "/") || !Number.isSafeInteger(info.total_size) || info.total_size < 1) throw new Error("Not a supported media source.");
-                const media = await mediaStream(info.url, { size: info.total_size, type: info.mime, mtime: info.validator, remote: true }, abort.signal);
+                let path, file;
+                if (at.remote) {
+                    tunnel = await call({ type: "preview-resource", resource: "media", url: at.url });
+                    abort.signal.throwIfAborted();
+                    const info = tunnel.reply;
+                    await collect(tunnel, 1, () => {});
+                    if (!info.mime?.startsWith(kind + "/") || !Number.isSafeInteger(info.total_size) || info.total_size < 1) throw new Error("Not a supported media source.");
+                    path = info.url;
+                    file = { size: info.total_size, type: info.mime, mtime: info.validator, remote: true };
+                } else {
+                    // Only its size and version asked for; it's read in
+                    // parts as it plays.
+                    tunnel = await call({ type: "file", path: at.url, offset: 0, length: 1 });
+                    abort.signal.throwIfAborted();
+                    const { size, mtime } = tunnel.reply;
+                    if (!Number.isSafeInteger(size) || size < 1) throw new Error("Not a supported media source.");
+                    path = at.url;
+                    file = { size, type: typeOf(at.url.split("/").pop()).type, mtime };
+                }
+                tunnel.close();
+                const media = await mediaStream(path, file, abort.signal);
+                // Kept before anything else can throw, so it's stopped if so.
+                entry.element = media;
                 abort.signal.throwIfAborted();
                 media.classList.add("preview-embedded-media");
-                entry.element = media;
                 layer ??= el("div", { className: "preview-media-layer" });
                 frame.parentElement.append(layer);
                 layer.append(media);
@@ -51,7 +71,7 @@ export function frameMedia(frame, dir, mode) {
             } catch (error) {
                 entry.element?.stop();
                 if (players.get(id) === entry) players.delete(id);
-                return { error: error.message };
+                return { error: /^not found\.?$/i.test(error.message) ? `Local media not found: ${at.url}` : error.message };
             } finally {
                 abort.signal.removeEventListener("abort", cancel);
                 tunnel?.close();

@@ -113,7 +113,29 @@ dialog.book-details .cover-actions button { font: inherit; font-size: .9rem; }
 dialog.book-details .cover-clear[hidden] { display: none; }
 dialog.book-details .cover-name:empty { display: none; }
 dialog.book-details .cover-note { margin: .35rem 0 0; }
-dialog.book-details .buttons .rebuild-toc { margin-right: auto; }
+dialog.book-details .remove-old-cover-row { align-items: flex-start; margin: .5rem 0 0; font-size: .9rem; }
+dialog.book-details .remove-old-cover-row[hidden] { display: none; }
+dialog.book-details .remove-old-cover-row input { margin-top: .2rem; }
+dialog.book-details .trim-summary { margin: .55rem 0 0; }
+dialog.book-details .trim-summary:empty { display: none; }
+dialog.book-pictures { width: min(40rem, calc(100vw - 2rem)); }
+dialog.book-pictures .pictures-list { list-style: none; margin: 0 0 .5rem; padding: 0; max-height: 55vh; overflow: auto;
+       border: 1px solid var(--line); border-radius: 6px; }
+dialog.book-pictures .pictures-list li { border-bottom: 1px solid var(--line); }
+dialog.book-pictures .pictures-list li:last-child { border-bottom: 0; }
+dialog.book-pictures .pictures-list li.used { opacity: .65; }
+dialog.book-pictures .pictures-list label { display: grid; grid-template-columns: auto 3rem minmax(0, 1fr) auto; grid-template-rows: auto auto;
+       align-items: center; column-gap: .6rem; padding: .4rem .6rem; }
+dialog.book-pictures .pictures-list input { grid-row: 1 / 3; width: auto; }
+dialog.book-pictures .picture-thumb { grid-row: 1 / 3; width: 3rem; height: 3rem; object-fit: contain; border-radius: 4px;
+       background: var(--bg); border: 1px solid var(--line); }
+dialog.book-pictures .picture-thumb:not([src]) { visibility: hidden; }
+dialog.book-pictures .picture-thumb.none { visibility: visible; }
+dialog.book-pictures .picture-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+dialog.book-pictures .picture-size { text-align: right; white-space: nowrap; }
+dialog.book-pictures .picture-why { grid-column: 3 / 5; overflow-wrap: anywhere; }
+dialog.book-pictures .pictures-summary { margin: 0; }
+dialog.book-details .buttons .book-pictures { margin-right: auto; }
 dialog.book-details .cover-field { display: flex; flex-direction: column; align-items: center; gap: .35rem; flex: none; margin: 0;
        padding: .35rem; border-radius: 8px; }
 dialog.book-details .cover-field img.cover, dialog.book-details .cover-field .no-cover {
@@ -124,7 +146,9 @@ dialog.book-details .cover-field .no-cover { display: grid; place-items: center;
        border: 1px dashed var(--line); }
 dialog.book-details .cover-field .no-cover[hidden], dialog.book-details .cover-field img[hidden] { display: none; }
 dialog.book-details .cover-field .cover-drop-hint { margin: 0; text-align: center; }
-dialog.book-details .cover-field:not(.locked):hover { background: var(--hover); }
+dialog.book-details .cover-field { cursor: pointer; }
+dialog.book-details .cover-field:hover { background: var(--hover); }
+dialog.book-details .cover-field:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 28rem) { dialog.book-details .book-edit { flex-direction: column; align-items: center; }
        dialog.book-details .book-meta { width: 100%; } }
 dialog .buttons { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
@@ -208,6 +232,169 @@ dialog.preview .body > .table-view, dialog.preview .body > .json-view, dialog.pr
 .table-bar label.check, .table-stats-choice label.check { display: flex; align-items: center; gap: .35rem; }
 .table-summary { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem .75rem; }
 .table-summary .table-count, .table-summary label.check { white-space: nowrap; }
+/* A picture: zoomed and panned in its stage, over a checkerboard where it
+   can be seen through (see image-view.js). */
+dialog.preview .body > .image-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.image-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; padding: .4rem .75rem; border-bottom: 1px solid var(--line); }
+.image-bar button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; padding: .15rem .35rem; }
+.image-zoom-group { display: inline-flex; align-items: center; gap: .25rem; }
+.image-zoom { min-width: 3.2rem; text-align: center; font-variant-numeric: tabular-nums; }
+.image-info { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.image-edit { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem; padding-left: .6rem; border-left: 1px solid var(--line); }
+.image-edit[hidden] { display: none; }
+.image-edit > :is(.image-edit-default, .image-crop-tools, .image-inpaint-tools, .image-background-spatial, .image-draw-tools, .image-place-tools):not([hidden]) { display: contents; }
+.image-edit-default[hidden], .image-crop-tools[hidden], .image-draw-tools[hidden], .image-place-tools[hidden] { display: none; }
+.image-bar :is(.image-draw-tools, .image-place-tools) [hidden] { display: none; }
+.image-edit button:not(.glyph) { padding: .15rem .6rem; }
+.image-edit button[aria-pressed="true"] { background: var(--hover); border-color: var(--fg); }
+.image-edit .edit-status { font-size: .85rem; }
+.image-view button.glyph-caption-button { display: inline-flex; flex-direction: column; align-items: center; gap: .05rem; }
+.glyph-caption { font-size: .58rem; line-height: 1; font-weight: 400; }
+.mask-paint-group { display: inline-flex; align-items: stretch; }
+.mask-paint-group > button.glyph { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.image-view button.mask-size-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 1.1rem;
+    width: 1.1rem; padding: 0 .15rem; border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; font-size: .75rem; }
+.mask-brush-options, .mask-shape-options { position: fixed; inset: auto; margin: 0; box-sizing: border-box; max-width: calc(100vw - 16px); padding: .65rem;
+    border: 1px solid var(--line); border-radius: .4rem; background: var(--raised); color: var(--fg); box-shadow: 0 .3rem 1rem #0003; }
+.mask-brush-options label { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; }
+.mask-brush-options input[type="range"] { width: 7rem; accent-color: var(--accent); }
+.mask-brush-options output { min-width: 3rem; font-variant-numeric: tabular-nums; }
+.image-view .mask-shape-options button.glyph { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; width: 100%; padding: .4rem .6rem; border: 0; }
+.mask-shape-options button[aria-checked="true"] { background: var(--hover); color: var(--accent); }
+.image-background-panel { position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: min(23rem, calc(100vw - 16px));
+    max-height: calc(100dvh - 16px); overflow: auto; padding: .85rem; border: 1px solid var(--line); border-radius: .5rem;
+    background: var(--raised); color: var(--fg); box-shadow: 0 .4rem 1.5rem #0003; font-size: .9rem; }
+.image-background-panel > strong { display: block; margin-bottom: .75rem; }
+.image-background-panel label { display: grid; grid-template-columns: 1fr 3.5rem; gap: .3rem .5rem; margin-top: .8rem; }
+.image-background-panel label > span { grid-column: 1; }
+.image-background-panel input { grid-row: 2; grid-column: 1; min-width: 0; width: 100%; margin: 0; accent-color: var(--accent); }
+.image-background-value { grid-row: 2; grid-column: 2; text-align: right; font-variant-numeric: tabular-nums; }
+.image-background-panel small { grid-column: 1 / -1; line-height: 1.4; }
+.image-background-note { margin: .8rem 0; line-height: 1.4; }
+.image-background-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.image-background-actions button { padding: .25rem .7rem; }
+.image-background-actions button:first-child { margin-right: auto; }
+.image-background-tools { display: flex; flex-wrap: wrap; gap: .4rem; }
+.image-background-tools button { padding: .2rem .5rem; }
+.image-background-apply { border-color: var(--accent); }
+.image-remove-background[aria-expanded="true"] { background: var(--hover); border-color: var(--fg); }
+.image-background-spatial { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .5rem; padding: .4rem .75rem;
+    border-bottom: 1px solid var(--line); font-size: .85rem; }
+.image-background-spatial[hidden] { display: none; }
+.image-background-spatial button { padding: .2rem .5rem; }
+.image-background-spatial button.glyph, .image-background-panel button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; padding: .15rem .35rem; }
+.image-background-spatial button[aria-pressed="true"] { background: var(--hover); border-color: var(--fg); }
+.image-background-brush-label { display: inline-flex; align-items: center; gap: .4rem; }
+.image-background-brush-size { width: 6rem; accent-color: var(--accent); }
+.image-background-brush-label output { min-width: 3rem; font-variant-numeric: tabular-nums; }
+.image-background-selection { position: absolute; box-sizing: border-box; border: 2px dashed #ffd34d; outline: 1px solid #222; pointer-events: none; }
+.image-background-selection::after { content: attr(data-size); position: absolute; top: 100%; left: 0; margin-top: 3px; padding: .05rem .3rem;
+    background: #222; color: #fff; font-size: .75rem; white-space: nowrap; }
+.image-background-cursor { position: absolute; box-sizing: border-box; border: 1px solid #fff; outline: 1px solid #222; border-radius: 50%; pointer-events: none; }
+.image-background-selection[hidden], .image-background-cursor[hidden] { display: none; }
+.image-stage.background-selecting, .image-stage.background-brushing { cursor: crosshair; }
+.image-inpaint-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .5rem; padding: .4rem .75rem;
+    border-bottom: 1px solid var(--line); font-size: .85rem; }
+.image-inpaint-tools[hidden] { display: none; }
+.image-inpaint-tools button { padding: .2rem .5rem; }
+.image-inpaint-tools button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; padding: .15rem .35rem; }
+.image-inpaint-tools button[aria-pressed="true"], .image-inpaint-start[aria-pressed="true"] { background: var(--hover); border-color: var(--fg); }
+.image-inpaint-tools label { display: inline-flex; align-items: center; gap: .4rem; }
+.image-inpaint-size { width: 6rem; accent-color: var(--accent); }
+.image-inpaint-tools output { min-width: 3rem; font-variant-numeric: tabular-nums; }
+.image-tool-hints { padding: .2rem .75rem; border-bottom: 1px solid var(--line); font-size: .8rem; }
+.image-tool-hints[hidden] { display: none; }
+.image-inpaint-overlay { position: absolute; pointer-events: none; max-width: none; max-height: none; }
+.image-stage.inpaint-marking { cursor: crosshair; }
+.image-save-options { width: min(24rem, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow: auto; font-size: .85rem; }
+.image-save-options:popover-open { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+.image-save-options-toggle[aria-expanded="true"] { background: var(--hover); border-color: var(--fg); }
+.image-save-options select { font: inherit; padding: .15rem .3rem; }
+.image-history { position: fixed; inset: auto; margin: 0; width: min(18rem, calc(100vw - 16px)); max-height: min(24rem, calc(100dvh - 16px)); overflow: auto;
+    padding: .4rem; font-size: .85rem; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); box-shadow: 0 4px 16px rgb(0 0 0 / .2); }
+.image-history > strong { display: block; padding: .1rem .3rem .3rem; }
+.image-history-list { margin: 0; padding: 0; list-style: none; counter-reset: step -1; }
+.image-history-step { display: block; width: 100%; text-align: left; padding: .2rem .4rem; border: 1px solid transparent; background: none; font: inherit; color: inherit; overflow-wrap: anywhere; }
+.image-history-step:hover { background: var(--hover); }
+.image-history-step[aria-current="step"] { border-color: var(--accent); background: var(--hover); font-weight: 600; }
+.image-history-list li.undone .image-history-step { opacity: .55; font-style: italic; }
+.image-history-toggle[aria-expanded="true"] { background: var(--hover); border-color: var(--fg); }
+.image-quality-label { display: inline-flex; align-items: center; gap: .35rem; }
+.image-quality-label[hidden], .image-keep-meta-label[hidden] { display: none; }
+.image-quality { width: 7rem; }
+.image-quality-value { min-width: 2.6rem; font-variant-numeric: tabular-nums; }
+.image-plan { flex-basis: 100%; }
+.image-plan:empty { display: none; }
+.image-resize { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .3rem; }
+.image-resize[hidden] { display: none; }
+.image-resize input { font: inherit; width: 5.5rem; padding: .15rem .3rem; }
+.image-resize input.image-resize-percent { width: 4.5rem; }
+.image-resize button { padding: .15rem .6rem; }
+.image-stage { --check: #e6e6e6; position: relative; flex: 1; min-height: 0; overflow: hidden; outline: none; touch-action: none;
+    background-color: #fff; background-image: conic-gradient(var(--check) 25%, transparent 0 50%, var(--check) 0 75%, transparent 0);
+    background-size: 16px 16px; }
+.image-stage:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.image-stage.pannable { cursor: grab; }
+.image-stage.pannable:active { cursor: grabbing; }
+.image-stage.cropping { cursor: crosshair; }
+.image-stage.drawing { cursor: crosshair; }
+.image-stage.picking-colour { cursor: cell; }
+/* A shape being drawn: as it'll be, with a dashed edge to find it by. */
+.image-draw-shape { position: absolute; box-sizing: border-box; border-style: solid; outline: 1px dashed rgb(0 0 0 / .6); outline-offset: 1px; pointer-events: none; }
+.image-draw-shape[hidden] { display: none; }
+.image-draw-strokes { position: absolute; overflow: visible; pointer-events: none; }
+.image-draw-filled { position: absolute; pointer-events: none; }
+.image-stage .image-draw-filled[hidden], .image-draw-selection[hidden] { display: none; }
+.image-draw-selection { position: absolute; box-sizing: border-box; border: 2px dashed #ffd34d; outline: 1px solid #222; pointer-events: none; }
+.image-draw-selection::after { content: attr(data-size); position: absolute; left: 0; top: 100%; margin-top: 3px; padding: .05rem .3rem; border-radius: 3px;
+    font-size: .75rem; font-variant-numeric: tabular-nums; color: #fff; background: rgb(0 0 0 / .7); white-space: nowrap; }
+.image-draw-tolerance-label { display: inline-flex; align-items: center; gap: .3rem; }
+.image-draw-tolerance { width: 3.6rem; height: 1.8rem; box-sizing: border-box; padding: 0 .3rem; }
+.image-stage.placing { cursor: crosshair; }
+/* A picture being placed: as it'll be, framed, with a handle to resize it. */
+.image-place-preview { position: absolute; max-width: none; max-height: none; pointer-events: none; user-select: none; }
+.image-place-frame { position: absolute; box-sizing: border-box; border: 1px dashed #fff; outline: 1px dashed #000; pointer-events: none; }
+.image-place-preview[hidden], .image-place-frame[hidden] { display: none; }
+.image-place-handle { position: absolute; right: -6px; bottom: -6px; width: 12px; height: 12px; box-sizing: border-box; background: #fff; border: 2px solid var(--accent); border-radius: 2px; }
+.image-place-frame::after { content: attr(data-size); position: absolute; left: 0; top: 100%; margin-top: 8px; padding: .05rem .35rem; border-radius: 3px;
+    font-size: .75rem; font-variant-numeric: tabular-nums; color: #fff; background: rgb(0 0 0 / .7); white-space: nowrap; }
+.image-place-opacity-label { display: inline-flex; align-items: center; gap: .3rem; }
+.image-place-opacity { width: 6rem; accent-color: var(--accent); }
+.image-draw-shape::after { content: attr(data-size); position: absolute; left: 0; top: 100%; margin-top: 4px; padding: .05rem .35rem; border-radius: 3px;
+    font-size: .75rem; font-variant-numeric: tabular-nums; color: #fff; background: rgb(0 0 0 / .7); white-space: nowrap; }
+.image-draw-line-label { display: inline-flex; align-items: center; gap: .3rem; }
+.image-draw-line-label[hidden] { display: none; }
+.image-draw-line { width: 4rem; height: 1.8rem; box-sizing: border-box; padding: 0 .3rem; }
+.image-draw-color { width: 2.2rem; height: 1.8rem; padding: 0 .1rem; }
+.image-stage .image-content { position: absolute; top: 0; left: 0; max-width: none; max-height: none; transform-origin: 0 0; user-select: none; -webkit-user-drag: none; }
+.image-stage .image-content.pixelated { image-rendering: pixelated; }
+.image-crop { position: absolute; box-sizing: border-box; border: 2px dashed #fff; outline: 1px solid #000; box-shadow: 0 0 0 100vmax rgb(0 0 0 / .45); pointer-events: none; }
+.image-crop[hidden] { display: none; }
+.image-crop::after { content: attr(data-size); position: absolute; left: 0; top: 100%; margin-top: 4px; padding: .05rem .35rem; border-radius: 3px;
+    font-size: .75rem; font-variant-numeric: tabular-nums; color: #fff; background: rgb(0 0 0 / .7); white-space: nowrap; }
+@media (prefers-color-scheme: dark) { .image-stage { --check: #3a3a3a; background-color: #2a2a2a; } }
+
+/* SQLite: a table or view chosen, its rows below (see sqlite-view.js). */
+dialog.preview .body > .sqlite-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.sqlite-bar select.sqlite-table { max-width: min(24rem, 100%); }
+.sqlite-bar button.sqlite-schema-toggle { padding: .15rem .55rem; }
+.sqlite-bar button.sqlite-schema-toggle[aria-pressed="true"] { background: var(--hover); border-color: var(--fg); }
+.sqlite-bar .sqlite-facts { margin-left: auto; }
+.sqlite-notes > p { margin: .4rem .75rem; }
+.sqlite-notes:empty { display: none; }
+.sqlite-sql { flex: 0 1 auto; max-height: 35%; overflow: auto; margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--line);
+       font-size: .85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sqlite-sql[hidden] { display: none; }
+/* (Plain, so a width dragged, the more particular rule, wins.) */
+.sqlite-view { position: relative; }
+.sqlite-view td { white-space: pre-wrap; max-width: 32rem; overflow-wrap: anywhere; }
+.sqlite-view .table-scroll td.null { color: #888; font-style: italic; }
+.sqlite-view .table-scroll td.blob { color: #888; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; }
+.sqlite-view .table-scroll td.cut { cursor: help; }
+.sqlite-view .table-scroll th[aria-sort] button.col-name { color: var(--accent); }
+.sqlite-more { margin: .5rem .75rem; }
+.sqlite-more:empty { display: none; }
+.sqlite-more .error { margin-right: .5rem; }
 .json-bar button { padding: .15rem .55rem; }
 .json-bar button.json-fold-all { display: inline-flex; align-items: center; justify-content: center; }
 .table-view > p.error, .json-view > p.error { margin: .5rem .75rem 0; }
@@ -260,6 +447,8 @@ dialog.preview .head .views button[aria-pressed="true"] { background: var(--hove
 .table-notes > p { margin: .5rem .75rem 0; }
 /* The preview's Edit and Download, as glyphs, and Download's menu. */
 dialog.preview .head button.glyph { min-width: 2.2rem; font-size: 1.1rem; line-height: 1.2; padding: .1rem .5rem; }
+/* ✎ leans right in every font; mirrored so the pencil leans left. */
+dialog.preview .head button.edit.glyph { transform: scaleX(-1); }
 dialog.preview .head button.back:not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
 dialog.preview .head :is(.download-group, .external-group) { position: relative; display: inline-flex; }
 dialog.preview .head :is(.download-group, .external-group)[hidden] { display: none; }
@@ -274,15 +463,26 @@ dialog.preview .head :is(.download-menu, .external-menu)[hidden] { display: none
 dialog.preview .head .views button.glyph { min-width: 2rem; padding: .1rem .45rem; }
 dialog.book-details .cover-field.dropping { outline: 2px dashed var(--accent); outline-offset: 2px; background: var(--hover); }
 dialog.book-details .cover-name { overflow-wrap: anywhere; }
-dialog.picker { width: min(30rem, calc(100vw - 2rem)); }
+dialog.picker { width: min(48rem, calc(100vw - 2rem)); }
+/* The list, and the preview beside it; one above the other when narrow. */
+dialog.picker .picker-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .75rem; align-items: start; margin: 0 0 .5rem; }
+@media (max-width: 36rem) { dialog.picker .picker-body { grid-template-columns: minmax(0, 1fr); } }
 dialog.picker .picker-where { font-weight: 600; overflow-wrap: anywhere; }
-dialog.picker .picker-list { list-style: none; margin: 0 0 .5rem; padding: 0; max-height: 50vh; overflow: auto;
+dialog.picker .picker-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto;
        border: 1px solid var(--line); border-radius: 6px; }
 dialog.picker .picker-list li { display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--line); }
 dialog.picker .picker-list li:last-child { border-bottom: 0; }
 dialog.picker .picker-list button { flex: 1; min-width: 0; text-align: left; border: 0; border-radius: 0; background: none;
        padding: .45rem .7rem; overflow-wrap: anywhere; }
 dialog.picker .picker-list .hint { padding-right: .7rem; white-space: nowrap; }
+dialog.picker .picker-list button.chosen { background: var(--hover); font-weight: 600; }
+dialog.picker .picker-preview { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .3rem;
+       min-height: 12rem; margin: 0; padding: .5rem; text-align: center; border: 1px dashed var(--line); border-radius: 6px; }
+dialog.picker .picker-image { display: block; max-width: 100%; max-height: 45vh; object-fit: contain;
+       border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+dialog.picker .picker-image[hidden] { display: none; }
+@media (max-width: 36rem) { dialog.picker .picker-list { max-height: 30vh; } dialog.picker .picker-image { max-height: 30vh; } }
+dialog.picker .picker-caption { margin: 0; overflow-wrap: anywhere; }
 
 /* The table's bar, centred (not as a dialog's checkbox, which it's in);
    its headings' sort and filter glyphs, the filter, and statistics. */
@@ -294,6 +494,8 @@ dialog.picker .picker-list .hint { padding-right: .7rem; white-space: nowrap; }
 .table-scroll thead th .col-head button.col-name { flex: 1; min-width: 0; }
 .table-scroll thead th .col-head button.glyph { width: auto; flex: none; padding: .3rem .25rem; font-weight: normal; color: #888; font-size: .85rem; }
 .table-scroll thead th .col-head button.glyph:hover, .table-scroll thead th .col-head button.col-filter.active { color: var(--accent); }
+.table-scroll button.col-filter svg { display: block; }
+.table-scroll button.col-filter.active svg { fill: currentColor; }
 .table-scroll thead th.type-number button.col-name, .table-scroll td.type-number { text-align: right; }
 .table-scroll thead tr.stats th.row-number { font-weight: 600; text-align: left; white-space: nowrap; font-size: .8rem; }
 .table-scroll thead tr.stats td { font-size: .85rem; color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -302,7 +504,10 @@ dialog.picker .picker-list .hint { padding-right: .7rem; white-space: nowrap; }
 .table-filter-pop { position: absolute; z-index: 3; width: 20rem; max-width: calc(100% - 16px); box-sizing: border-box; padding: .6rem .7rem;
        background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
 .table-filter-pop[hidden] { display: none; }
-.table-filter-pop .filter-title { margin: 0 0 .5rem; font-weight: 600; overflow-wrap: anywhere; }
+.table-filter-pop .filter-title { margin: 0 0 .5rem; padding-right: 1.6rem; font-weight: 600; overflow-wrap: anywhere; }
+.table-filter-pop button.filter-close { position: absolute; top: .35rem; right: .35rem; display: inline-flex; align-items: center;
+    justify-content: center; padding: .15rem; border: 0; border-radius: 50%; background: none; color: var(--fg); opacity: .65; }
+.table-filter-pop button.filter-close:hover, .table-filter-pop button.filter-close:focus-visible { opacity: 1; background: var(--hover); }
 .table-filter-pop .filter-list { display: flex; flex-direction: column; gap: .35rem; }
 .table-filter-pop .filter-row { display: flex; gap: .4rem; align-items: center; }
 .table-filter-pop .filter-row select, .table-filter-pop .filter-row input { font: inherit; padding: .25rem .35rem; }
@@ -347,6 +552,10 @@ dialog.preview.wide { inset: 0; width: auto; height: auto; max-width: none; max-
 
 /* External destinations are confirmed above the current preview. */
 dialog.preview-link .buttons { flex-wrap: wrap; }
+dialog.preview-link > p:first-of-type { padding-right: 1.5rem; }
+dialog.preview-link button.close { position: absolute; top: .5rem; right: .5rem; display: grid; place-items: center; padding: .15rem;
+       color: var(--fg); opacity: .6; background: none; border: 0; border-radius: 50%; cursor: pointer; }
+dialog.preview-link button.close:hover, dialog.preview-link button.close:focus-visible { opacity: 1; background: var(--hover); }
 dialog.preview-link .link-url { user-select: text; }
 
 /* ZIP names remain inert text; extraction actions are explicit. */
@@ -402,16 +611,64 @@ dialog.preview .download-changes { align-self: flex-start; margin: .25rem .75rem
 
 dialog.preview .head :is(.download-menu, .external-menu) { flex-direction: column; max-width: calc(100vw - 2rem); }
 
-/* Keep bytes and ASCII aligned; scroll horizontally on narrow screens. */
+/* Keep address, bytes and ASCII in separate columns; scroll on narrow screens. */
 dialog.preview .body > .hex-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 dialog.preview .hex-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
-dialog.preview .body .hex-dump { min-height: 0; overflow: auto; white-space: pre; overflow-wrap: normal; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* The status takes what room there is, on one line, cut short if need be:
+   what it says (a selection, as it's dragged) never wraps the controls,
+   which would move the dump under the pointer. */
+dialog.preview .hex-controls > [role=status] { flex: 1 1 14rem; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* On a phone: < > −1 MB +1 MB and Go to on one row; then what's to say
+   (not which bytes are shown), a line always kept for it, so it coming and
+   going never moves the bytes; then Find, the row's width. */
+@media (max-width: 40rem) {
+    dialog.preview .hex-controls { gap: .4rem; padding: .5rem .75rem; }
+    dialog.preview .hex-controls > button { order: 1; flex: none; padding-inline: .6rem; }
+    dialog.preview .hex-controls :is(.hex-range, .hex-sep) { display: none; }
+    dialog.preview .hex-controls > [role=status] { order: 2; flex: 1 1 100%; min-height: 1.3em; }
+    /* Go to on the buttons' row, taking what's left of it; Find on a row
+       of its own, all of it. */
+    dialog.preview .hex-controls > .hex-jump { order: 1; flex: 1 1 0; min-width: 0; gap: .25rem; }
+    dialog.preview .hex-controls > .hex-find { order: 3; flex: 1 1 100%; min-width: 0; gap: .25rem; }
+    dialog.preview .hex-controls :is(.hex-jump, .hex-find) input { flex: 1; width: auto; min-width: 0; }
+    dialog.preview .hex-controls :is(.hex-jump, .hex-find) button:not(.hex-find-mode) { flex: none; min-width: 1.7rem; padding-inline: .3rem; }
+}
+dialog.preview .body .hex-dump, .kaitai-panes .hex-dump {
+    min-height: 0; overflow: auto; overflow-wrap: normal; user-select: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: .25rem 1rem .5rem;
+}
+.hex-dump:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The column header: lined up with the rows, scrolled sideways with them
+   (see hexHead), and the columns parted by rules. */
+.hex-head { flex: none; overflow: hidden; padding: .3rem 1rem .2rem; border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #888; user-select: none; }
+.hex-head .hex-row { width: max-content; }
+.hex-head .hex-ascii { width: 16ch; }
+.hex-row { display: grid; grid-template-columns: 8ch max-content max-content; column-gap: 0; align-items: baseline; }
+.hex-row > .hex-bytes, .hex-row > .hex-ascii { border-left: 1px solid var(--line); padding-left: 1.25ch; margin-left: 1.25ch; }
+.hex-addr { color: #888; cursor: pointer; }
+.hex-dump .hex-addr:hover { color: var(--fg); }
+.hex-dump :is(.hex-byte, .hex-char):not(.is-pad) { cursor: text; }
+.hex-head .hex-addr { cursor: default; }
+.hex-bytes, .hex-ascii { display: flex; }
+.hex-byte { width: 2ch; margin-right: .5ch; text-align: center; }
+.hex-byte:nth-child(8) { margin-right: 1.5ch; }
+.hex-char { width: 1ch; text-align: center; }
+.hex-row :is(.hex-byte, .hex-char).is-pad { visibility: hidden; pointer-events: none; }
 
 /* Binary structure and byte views share the lightbox, with bounded scrolling. */
 dialog.preview .body > .kaitai-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .kaitai-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
 .kaitai-controls label { flex: 0 0 auto; }
 .kaitai-format-combo { position: relative; display: flex; flex: 1; min-width: 10rem; max-width: 40rem; }
+/* On a phone: one row, Interpret as, the format, and the inspector's
+   toggle; the format box gives way. */
+@media (max-width: 40rem) {
+    .kaitai-controls { flex-wrap: nowrap; padding-inline: .75rem; }
+    .kaitai-format-combo { min-width: 0; }
+    .kaitai-controls > .hex-inspector-toggle { flex: none; }
+}
 .kaitai-format-combo input { flex: 1; min-width: 0; width: 100%; border-radius: .35rem 0 0 .35rem; }
 .kaitai-format-toggle { flex: 0 0 2rem; border-radius: 0 .35rem .35rem 0; }
 .kaitai-format-popup { position: absolute; top: 100%; left: 0; right: 0; z-index: 10; max-height: min(18rem, 40vh); overflow-y: auto; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: .35rem; box-shadow: 0 .4rem 1rem #0003; }
@@ -420,8 +677,11 @@ dialog.preview .body > .kaitai-view { align-self: stretch; flex: 1; display: fle
 .kaitai-format-option:hover, .kaitai-format-option[aria-selected="true"] { background: var(--raised); outline: 1px solid var(--line); outline-offset: -1px; }
 .kaitai-format-popup > p { margin: .5rem .7rem; }
 .kaitai-panes { display: flex; flex: 1; min-width: 0; min-height: 0; }
-.kaitai-panes > .hex-view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-.kaitai-structure { flex: 0 0 42%; min-width: 12rem; overflow: auto; border-right: 1px solid var(--line); padding: .5rem; }
+/* Beside the structure, the bytes keep the width a row of them needs (see
+   --hex-row-width), so choosing a format never has them scrolled sideways:
+   the structure gives way, down to 12rem, and below that they're stacked. */
+.kaitai-panes > .hex-view { display: flex; flex-direction: column; flex: 1 0 var(--hex-row-width); min-width: var(--hex-row-width); min-height: 0; }
+.kaitai-structure { flex: 0 1 42%; min-width: 12rem; overflow: auto; border-right: 1px solid var(--line); padding: .5rem; }
 .kaitai-structure[hidden] { display: none; }
 .kaitai-status { margin: 0 0 .5rem; }
 .kaitai-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem; padding: .15rem 0; }
@@ -434,12 +694,106 @@ dialog.preview .body > .kaitai-view { align-self: stretch; flex: 1; display: fle
 .kaitai-params { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
 .kaitai-params[hidden] { display: none; }
 .kaitai-params label { display: flex; flex-direction: column; }
-.hex-row mark { background: #e9bd45; color: #171717; }
-@media (max-width: 55rem) { .kaitai-panes { flex-direction: column; } .kaitai-structure { flex: 0 1 40%; min-height: 5rem; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); } }
+.hex-row :is(.hex-byte, .hex-char).selected { background: #e9bd45; color: #171717; }
+/* The column a selection was made in, strongest; its mirror, plainer. */
+.hex-dump[data-selecting="hex"] .hex-char.selected, .hex-dump[data-selecting="ascii"] .hex-byte.selected { background: #f3dc9b; }
+@media (max-width: 60rem) { .kaitai-panes { flex-direction: column; } .kaitai-panes > .hex-view { flex: 1 1 0; min-width: 0; } .kaitai-structure { flex: 0 1 40%; min-height: 5rem; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); } }
 
 dialog.preview .preview-limit { margin: 0; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
 dialog.preview .preview-limit[hidden] { display: none; }
 .hex-jump { display: flex; gap: .3rem; }
+/* The bytes, and the data inspector beside them (below them, when the hex
+   view is narrow: in the Kaitai view, or on a phone). Its width is fixed
+   and its values kept to a line, so what it says never moves the bytes. */
+/* In the bytes' font, so a ch is a column of them: a row is 70 (8 for
+   the offset, 16 bytes of 2 with their gaps, 16 characters, and the space
+   between), its two rules, the dump's padding, and room for a scroll bar.
+   The bar and the inspector are in the page's font. */
+.hex-view { container-type: inline-size; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --hex-row-width: calc(70ch + 2px + 2rem + 1rem); }
+.hex-view :is(.hex-controls, .hex-inspector) { font-family: system-ui, sans-serif; }
+.hex-main { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.hex-pane { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.hex-inspector { flex: 0 0 23rem; min-height: 0; overflow: auto; padding: .5rem .75rem; border-left: 1px solid var(--line); font-size: .85rem; }
+.hex-inspector[hidden] { display: none; }
+.hex-inspector-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: 0 0 .4rem; }
+.hex-inspector-at { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+/* LE | BE, one pressed. */
+.hex-endian { display: inline-flex; flex: none; }
+.hex-endian button { font: inherit; font-size: .8rem; padding: .1rem .5rem; border: 1px solid var(--line); background: none; color: inherit; cursor: pointer; }
+.hex-endian button:first-child { border-radius: 4px 0 0 4px; }
+.hex-endian button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
+.hex-endian button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.hex-inspector-values { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.hex-inspector-values th, .hex-inspector-values td { padding: .15rem .3rem; text-align: left; white-space: nowrap; }
+.hex-inspector-values tbody th { width: 4.5rem; font-weight: normal; color: #888; }
+.hex-inspector-values td { overflow: hidden; }
+.hex-inspector-cell { display: flex; align-items: center; gap: .2rem; min-width: 0; }
+.hex-inspector-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* Editing, each value's a box to type a new one in. */
+.hex-inspector-input { display: none; flex: 1; min-width: 0; width: 100%; padding: .05rem .25rem; font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); color: inherit; }
+.hex-inspector.editing .hex-inspector-input:not(:disabled) { display: block; }
+.hex-inspector.editing .hex-inspector-cell:has(.hex-inspector-input:not(:disabled)) .hex-inspector-value { display: none; }
+.hex-inspector-input:invalid, .hex-inspector-input:user-invalid { border-color: #d0461d; }
+/* An unsigned value the same as the signed one above it. */
+.hex-inspector-value.same { opacity: .45; }
+.hex-inspector-copy { flex: none; display: grid; place-items: center; padding: .1rem; border: 0; background: none; color: inherit; opacity: .55; cursor: pointer; }
+.hex-inspector-copy:hover, .hex-inspector-copy:focus-visible { opacity: 1; }
+.hex-inspector-copy[hidden] { display: none; }
+.hex-inspector-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin-top: .6rem; }
+.hex-inspector-actions button { padding-inline: .5rem; }
+dialog.hex-copy-format { width: min(22rem, calc(100vw - 2rem)); }
+dialog.hex-copy-format label.field span { min-width: 5rem; }
+dialog.hex-copy-format .hex-copy-sample { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap;
+       overflow-wrap: anywhere; }
+/* Find, as hex or ASCII; and, editing, the bytes changed and the caret
+   (its second half shaded once the first hex digit's typed). */
+.hex-find { display: inline-flex; align-items: center; gap: .25rem; }
+.hex-find[hidden] { display: none; }
+.hex-find-input { width: 11rem; min-width: 6rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.hex-find button { min-width: 1.8rem; padding-inline: .35rem; }
+/* 0x or Aa: one width, either way. */
+.hex-find .hex-find-mode { flex: none; width: 2.4rem; min-width: 0; padding-inline: 0; display: inline-flex; align-items: center; justify-content: center; }
+.hex-find .hex-find-mode svg { display: block; }
+.hex-row :is(.hex-byte, .hex-char).edited { color: #d0461d; font-weight: 700; }
+.hex-row :is(.hex-byte, .hex-char).edited.selected { color: #8a1f00; }
+.hex-dump.editing :is(.hex-byte, .hex-char).caret { outline: 2px solid var(--accent); outline-offset: -1px; border-radius: 2px; }
+.hex-dump.editing .hex-byte.caret-low { background-image: linear-gradient(90deg, transparent 50%, rgba(26, 115, 232, .25) 50%); }
+@media (prefers-color-scheme: dark) { .hex-row :is(.hex-byte, .hex-char).edited:not(.selected) { color: #ff8a65; } }
+.hex-disasm-lines { list-style: none; margin: 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; }
+.hex-disasm-lines li { display: grid; grid-template-columns: 8ch 9rem minmax(0, 1fr); column-gap: .6rem; padding: .05rem 0; white-space: nowrap; }
+.hex-disasm-lines li > span { overflow: hidden; text-overflow: ellipsis; }
+.hex-disasm-at, .hex-disasm-bytes { color: #888; }
+.hex-disasm-lines .hex-disasm-target { font: inherit; padding: 0; border: 0; border-radius: 0; background: none; color: var(--accent);
+       text-decoration: underline; text-underline-offset: 2px; }
+.hex-disasm-lines li.bad .hex-disasm-text { color: #888; font-style: italic; }
+.hex-disasm.editable .hex-disasm-lines li { cursor: text; }
+.hex-disasm.editable .hex-disasm-lines li:hover, .hex-disasm-lines li.changing { background: var(--hover); }
+.hex-disasm-lines li.changing .hex-disasm-input { grid-column: 2 / -1; }
+.hex-disasm-input { min-width: 0; width: 100%; padding: 0 .25rem; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--accent); border-radius: .2rem; }
+.hex-disasm-input:invalid { border-color: #d0461d; }
+.hex-disasm-note { margin: .3rem 0 0; }
+.hex-disasm-note:empty { display: none; }
+.hex-inspector-toggle { margin-left: auto; display: inline-grid; place-items: center; padding: .2rem .4rem; }
+.hex-inspector-toggle[aria-pressed="true"] { background: var(--hover); }
+/* Values | Disassembly, and at their right, on Disassembly, the instruction set. */
+.hex-inspector-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin: 0 0 .5rem; }
+.hex-inspector-tab-group { display: flex; gap: .3rem; flex: 1 1 auto; }
+.hex-inspector-tab-group button { flex: 1; padding: .25rem .5rem; white-space: nowrap; }
+.hex-inspector-tab-group button[aria-pressed="true"] { background: var(--hover); font-weight: 600; }
+/* As tall as the tabs beside it. */
+.hex-inspector-tabs .hex-disasm-bitness { margin-left: auto; align-self: stretch; box-sizing: border-box; font: inherit; padding: 0 .4rem;
+       color: inherit; background: var(--raised); border: 1px solid var(--line); border-radius: 5px; }
+.hex-inspector[data-tab="values"] .hex-disasm-bitness,
+.hex-inspector[data-tab="values"] .hex-disasm,
+.hex-inspector[data-tab="disasm"] > :not(.hex-inspector-tabs, .hex-disasm) { display: none; }
+/* The inspector beside the bytes only where both fit (a row's 70ch, as
+   above, and its 23rem); otherwise below them. */
+@container (max-width: calc(70ch + 2px + 3rem + 23rem)) {
+    .hex-main { flex-direction: column; }
+    .hex-inspector { flex: 0 0 auto; max-height: 45%; border-left: 0; border-top: 1px solid var(--line); }
+}
 .hex-jump input { width: 11rem; min-width: 5rem; }
 .kaitai-field-details { margin: .5rem 0; padding: .6rem; border: 1px solid var(--line); border-radius: .35rem; }
 .kaitai-field-details[hidden], .kaitai-diagnostics[hidden], .kaitai-required-bytes[hidden] { display: none; }
@@ -459,3 +813,47 @@ dialog.preview .preview-media-layer > .preview-embedded-media { position: absolu
 dialog.preview .head .external-group > .external-resources { border-radius: 5px 0 0 5px; }
 dialog.preview .head .external-menu { min-width: 10rem; }
 dialog.preview .head .external-menu [aria-checked="true"] { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* PDF pages use the regular image editor, in a separate local batch session. */
+dialog.pdf-image-editor { width: calc(100vw - 2rem); max-width: 100rem; height: calc(100dvh - 2rem); max-height: none; padding: 0; }
+dialog.pdf-image-editor[open] { display: flex; flex-direction: column; overflow: hidden; }
+dialog.pdf-image-editor.wide { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border-radius: 0; }
+.pdf-batch-heading, .pdf-batch-settings, .pdf-batch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .7rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
+.pdf-batch-heading > strong { flex: 1; overflow-wrap: anywhere; }
+.pdf-batch-settings label, .pdf-batch-exports label { display: inline-flex; align-items: center; gap: .4rem; }
+.pdf-image-editor :is(input, select, button) { font: inherit; }
+.pdf-batch-range { width: 9rem; }
+.pdf-batch-quality { width: 3.5rem; }
+.pdf-batch-quality-label[hidden] { display: none; }
+.pdf-batch-workspace { display: flex; flex: 1; min-height: 0; }
+.pdf-batch-sidebar { display: flex; flex-direction: column; flex: 0 0 10rem; min-height: 0; border-right: 1px solid var(--line); }
+.pdf-batch-selection { display: flex; gap: .4rem; padding: .4rem; }
+.pdf-batch-pages { overflow: auto; flex: 1; padding: .25rem; }
+.pdf-batch-card { display: flex; align-items: flex-start; gap: .2rem; margin-bottom: .5rem; }
+.pdf-batch-open-page { display: flex; flex-direction: column; align-items: center; gap: .2rem; padding: .3rem; flex: 1; min-width: 0; }
+.pdf-batch-open-page[aria-current="true"] { border-color: var(--accent); background: var(--hover); }
+.pdf-batch-open-page img { width: 100%; height: 7rem; object-fit: contain; }
+.pdf-batch-open-page small { overflow-wrap: anywhere; width: 100%; }
+.pdf-batch-editor, .pdf-batch-image { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.pdf-batch-image > .image-view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.pdf-batch-actions { font-size: .85rem; }
+.pdf-batch-note { margin: 0; padding: .3rem .75rem; font-size: .8rem; border-top: 1px solid var(--line); }
+.pdf-batch-exports { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem .7rem; margin-left: auto; }
+.pdf-batch-export-hint { padding: .25rem .75rem; font-size: .75rem; }
+.pdf-batch-cancel[hidden] { display: none; }
+.pdf-batch-ops { max-height: 9rem; overflow: auto; padding: .3rem .75rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
+.pdf-batch-ops[hidden], .pdf-batch-ops-empty[hidden] { display: none; }
+.pdf-batch-ops-empty { margin: .2rem 0; }
+.pdf-batch-ops-list { margin: 0; padding-left: 1.6rem; }
+.pdf-batch-ops-list li { padding: .1rem 0; }
+.pdf-batch-ops-list li small { margin-left: .5rem; }
+.pdf-batch-ops-list li.pending .pdf-batch-op-name { font-style: italic; }
+.pdf-batch-ops-toggle[aria-expanded="true"] { border-color: var(--accent); background: var(--hover); }
+@media (max-width: 650px) {
+    dialog.pdf-image-editor { width: 100vw; height: 100dvh; border-radius: 0; }
+    .pdf-batch-sidebar { flex-basis: 6rem; }
+    .pdf-batch-open-page img { height: 4rem; }
+    .pdf-batch-settings, .pdf-batch-actions { font-size: .75rem; padding: .3rem; gap: .3rem; }
+}
+.pdf-image-editor .image-save-options-group { display: none; }
+.pdf-batch-card > input[type="checkbox"] { width: auto; flex: 0 0 auto; }

@@ -9,7 +9,7 @@ The three HTML sanitizers serve different inputs and should stay separate.
 | Raw HTML | `cleanHTML` in `tabtopd/md-frame.js` | An inert template is read and a fresh allowlisted DOM is constructed. Formatting attributes survive; stylesheet/style/media nodes become inert descriptors for the resource brokers. CSS Tree parses CSS before scoped, restricted rules and rewritten URLs enter the document. The original nodes are never inserted into the displayed document. |
 
 All three render inside an opaque sandbox with a restrictive CSP; see the frame
-headers in `tabtopd/e2e.go`. The parent checks message sources, brokers local
+headers in `tabtopd/page_assets.go`. The parent checks message sources, brokers local
 pictures, and prompts before opening external links. These controls supplement
 the sanitizers.
 
@@ -28,6 +28,11 @@ before Download appears for web images in HTML, Markdown and EPUB, and for HTML
 stylesheets, CSS references and ordinary audio/video sources. Clickable links
 retain their confirmation flow and do not reveal this control. PDF links are
 also excluded; the PDF renderer does not fetch embedded remote image streams.
+PDF batch image editing keeps parsing in that same opaque sandbox. Its parent
+requests only bounded page rasters; replies contain PNG blobs and validated
+dimensions. The batch editor receives no original PDF objects or executable
+markup. Rebuilt PDFs contain raster image pages, and this workflow does not
+write to the source PDF or widen the frame's CSP.
 EPUB's original styles and media remain outside its XML sanitizer's allowlist;
 Markdown continues to omit raw HTML.
 
@@ -62,8 +67,8 @@ all reads, removes native players and releases object URLs. Proxy media requires
 HTTPS/localhost and service workers; there is no whole-file remote fallback.
 
 All proxy resource types need WEB_FETCH and use its DNS, dial and redirect
-policy, but only ever reach public addresses: the document picks these URLs,
-so WEB_FETCH_PRIVATE never applies to them. They omit credentials, and have a 30-second request deadline and
+policy, but reach only public addresses unless WEB_PREVIEW_FETCH_PRIVATE=1:
+the document picks these URLs, so WEB_FETCH_PRIVATE never applies to them. They omit credentials, and have a 30-second request deadline and
 four concurrent responses across the gateway. Static response caps are 20 MiB
 for images, 512 KiB for CSS and 8 MiB for fonts; font signatures are checked.
 Direct frames alone allow native HTTP(S) styles, fonts, images and media; browser

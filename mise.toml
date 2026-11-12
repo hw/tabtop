@@ -1,6 +1,6 @@
 [tools]
 # Keep in sync with the golang image in the Dockerfile's tabtopd build stage.
-go = "1.27.3"
+go = "1.27"
 # For test/browser-check.sh and TestTunnelInteropWithJS, which need 22 or later.
 node = "26"
 

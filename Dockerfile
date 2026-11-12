@@ -197,6 +197,44 @@ RUN mkdir -p /src /pdfjs/wasm \
  && ! find /pdfjs -name '*sandbox*' -o -name '*quickjs*' | grep -q . \
  && chmod -R u=rwX,go=rX /pdfjs
 
+# iced-x86, for the x86 disassembly in the hex preview's data inspector (see
+# disasm-worker.js in tabtopd): its npm build, which is for Node, made
+# loadable in a browser worker, without its documentation comments, and
+# checked by disassembling a few instructions (scripts/disasm/build.mjs).
+# From npm; bump the version together with its checksum.
+FROM node:24-trixie-slim AS disasm
+ARG ICED_X86_VERSION=1.22.0
+ARG ICED_X86_SHA256=be77147b3c91531da378d103b4e3e5a45e9ddc29392fe01e6c214e799da125c3
+ADD --checksum=sha256:${ICED_X86_SHA256} https://registry.npmjs.org/iced-x86/-/iced-x86-${ICED_X86_VERSION}.tgz /iced.tgz
+COPY scripts/disasm/build.mjs /build.mjs
+COPY tabtopd/x86-asm.js /x86-asm.js
+RUN mkdir -p /src && tar -xzf /iced.tgz -C /src --no-same-owner \
+ && node /build.mjs /src/package /disasm /x86-asm.js \
+ && chmod -R u=rwX,go=rX /disasm
+
+# U2NetP background removal runs in the browser, with ONNX Runtime Web's
+# WASM backend. Bundle all assets so no model or script is fetched remotely.
+FROM debian:trixie-slim AS background
+ARG ONNX_WEB_VERSION=1.22.0
+ARG ONNX_WEB_SHA256=e293551f9d36d003e293d0f2937fee7b3dfdcef76d71d1449b55e2d4157c7aea
+ARG U2NETP_SHA256=309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8
+ADD --checksum=sha256:${ONNX_WEB_SHA256} https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-${ONNX_WEB_VERSION}.tgz /ort.tgz
+ADD --checksum=sha256:${U2NETP_SHA256} https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx /background/u2netp.onnx
+ADD --checksum=sha256:2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c https://raw.githubusercontent.com/microsoft/onnxruntime/v${ONNX_WEB_VERSION}/LICENSE /background/LICENSE.onnxruntime
+ADD --checksum=sha256:e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc https://raw.githubusercontent.com/microsoft/onnxruntime/v${ONNX_WEB_VERSION}/ThirdPartyNotices.txt /background/ThirdPartyNotices.onnxruntime
+ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/xuebinqin/U-2-Net/ac7e1c817ecab7c7dff5ce6b1abba61cd213ff29/LICENSE /background/LICENSE.u2net
+RUN mkdir /src && tar -xzf /ort.tgz -C /src --no-same-owner \
+ && cp /src/package/dist/ort.wasm.min.js /src/package/dist/ort-wasm-simd-threaded.mjs /src/package/dist/ort-wasm-simd-threaded.wasm /background/ \
+ && chmod -R u=rwX,go=rX /background
+
+# Official MI-GAN ONNX pipeline and its explicit MIT weights license.
+FROM debian:trixie-slim AS inpaint
+ARG MIGAN_REVISION=406830d0fa60666da0071c342ad2fbc8f30c5c64
+ARG MIGAN_SHA256=6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b
+ADD --checksum=sha256:${MIGAN_SHA256} https://huggingface.co/andraniksargsyan/migan/resolve/${MIGAN_REVISION}/migan_pipeline_v2.onnx /inpaint/migan.onnx
+ADD --checksum=sha256:13348eaaebc0b07b0faf3a92db04e0858737713a917d064b599c87cac05b571f https://huggingface.co/andraniksargsyan/migan/resolve/${MIGAN_REVISION}/LICENSE /inpaint/LICENSE.migan
+RUN chmod -R u=rwX,go=rX /inpaint
+
 # All Kaitai gallery schemas are compiled with byte-position metadata at build
 # time. The final image contains parsers and notices, without Node or the compiler.
 FROM node:24-trixie-slim AS kaitai
@@ -221,7 +259,7 @@ RUN mkdir /formats \
 # same Debian release, where libpam-oath brings liboath.
 FROM golang:1.27.3-trixie AS tabtopd
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libopus-dev liboath-dev \
+ && apt-get install -y --no-install-recommends libopus-dev liboath-dev libsqlite3-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
@@ -254,6 +292,7 @@ RUN apt-get update \
         oathtool \
         qrencode \
         libopus0 \
+        libsqlite3-0 \
         pulseaudio-utils \
         tmux \
         openssh-client \
@@ -343,6 +382,9 @@ COPY --from=highlight /highlight /opt/highlight
 COPY --from=preview /preview /opt/preview
 COPY --from=pdfjs /pdfjs /opt/pdfjs
 COPY --from=kaitai /kaitai /opt/kaitai
+COPY --from=disasm /disasm /opt/disasm
+COPY --from=background /background /opt/background
+COPY --from=inpaint /inpaint /opt/inpaint
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck

@@ -1,37 +1,14 @@
 import { glyphs } from "./glyphs.js";
+import { store, stored, storeJSON, storedJSON } from "./stored.js";
 
 const EDIT_HIGHLIGHT = "tabtop.edit-highlight";
-export function editHighlight() {
-    try {
-        return localStorage.getItem(EDIT_HIGHLIGHT) !== "0";
-    } catch {
-        return true;
-    }
-}
-export function setEditHighlight(enabled) {
-    try {
-        localStorage.setItem(EDIT_HIGHLIGHT, enabled ? "1" : "0");
-    } catch {
-        // The current editor still keeps the choice.
-    }
-}
+export const editHighlight = () => stored(EDIT_HIGHLIGHT) !== "0";
+export const setEditHighlight = (enabled) => store(EDIT_HIGHLIGHT, enabled ? "1" : "0");
 
 // Whether previews fill the window, as last chosen in this browser.
 const PREVIEW_WIDE = "tabtop.preview-wide";
-export function previewWide() {
-    try {
-        return localStorage.getItem(PREVIEW_WIDE) === "1";
-    } catch {
-        return false;
-    }
-}
-export function setPreviewWide(wide) {
-    try {
-        localStorage.setItem(PREVIEW_WIDE, wide ? "1" : "0");
-    } catch {
-        // Only for now, then.
-    }
-}
+export const previewWide = () => stored(PREVIEW_WIDE) === "1";
+export const setPreviewWide = (wide) => store(PREVIEW_WIDE, wide ? "1" : "0");
 
 // The themes for what's shown in a frame (rendered Markdown, a book), in
 // the order the button goes through them: as the system is, light, dark;
@@ -39,20 +16,10 @@ export function setPreviewWide(wide) {
 export const THEMES = { "": [glyphs.themeAuto, "Light or dark as the system is"], light: [glyphs.themeLight, "Light"], dark: [glyphs.themeDark, "Dark"] };
 const READING_THEME = "tabtop.reading-theme";
 export function readingTheme() {
-    try {
-        const t = localStorage.getItem(READING_THEME) ?? "";
-        return Object.hasOwn(THEMES, t) ? t : "";
-    } catch {
-        return "";
-    }
+    const t = stored(READING_THEME, "");
+    return Object.hasOwn(THEMES, t) ? t : "";
 }
-export function setReadingTheme(t) {
-    try {
-        localStorage.setItem(READING_THEME, t);
-    } catch {
-        // Only for now, then.
-    }
-}
+export const setReadingTheme = (t) => store(READING_THEME, t);
 
 // The ways text files are shown other than as text, by format: whether
 // they are is kept in this browser, under key, as shown or text (the
@@ -69,32 +36,16 @@ export const VIEWS = {
         toText: [glyphs.source, "Raw: the JSON as it is, as text"], toShown: [glyphs.json, "Tree: the JSON as a tree"] },
 };
 
-export function viewShown(format) {
-    try {
-        return localStorage.getItem(VIEWS[format].key) !== VIEWS[format].text;
-    } catch {
-        return true;
-    }
-}
-export function setViewShown(format, shown) {
-    try {
-        localStorage.setItem(VIEWS[format].key, shown ? VIEWS[format].shown : VIEWS[format].text);
-    } catch {
-        // Only for now, then.
-    }
-}
+export const viewShown = (format) => stored(VIEWS[format].key) !== VIEWS[format].text;
+export const setViewShown = (format, shown) => store(VIEWS[format].key, shown ? VIEWS[format].shown : VIEWS[format].text);
 
 // Where each book was read to, in this browser, by its path and size: the
 // most recent BOOK_PLACES of them.
-const BOOK_PLACES = 50;
+const BOOK_PLACES = 50, BOOK_PLACES_KEY = "tabtop.bookPlaces";
 const placeKey = (path, size) => `${path}\n${size}`;
 function bookPlaces() {
-    try {
-        const all = JSON.parse(localStorage.getItem("tabtop.bookPlaces") ?? "{}");
-        return all && typeof all === "object" ? all : {};
-    } catch {
-        return {};
-    }
+    const all = storedJSON(BOOK_PLACES_KEY, {});
+    return typeof all === "object" ? all : {};
 }
 export function bookPlace(path, size) {
     return bookPlaces()[placeKey(path, size)] ?? null;
@@ -115,10 +66,6 @@ export function setBookPlace(path, size, place) {
     for (const k of keys.slice(0, Math.max(0, keys.length - BOOK_PLACES))) {
         delete all[k];
     }
-    try {
-        localStorage.setItem("tabtop.bookPlaces", JSON.stringify(all));
-    } catch {
-        // Not remembered, then.
-    }
+    storeJSON(BOOK_PLACES_KEY, all);
 }
 

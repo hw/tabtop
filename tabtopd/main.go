@@ -4,7 +4,7 @@
 // ~/Downloads at /fs/, and a browser terminal at /tty/ (tty.go),
 // and streams the desktop's audio (audio.go). Everything private goes
 // through one encrypted tunnel between the page's JavaScript and tabtopd
-// (tunnel.go, e2e.go), so a proxy that terminates TLS on the way sees
+// (tunnel.go, tunnel_request.go), so a proxy that terminates TLS on the way sees
 // neither logins nor content. With -base-path, all of it is served under
 // that URL path instead of /, for a reverse proxy that puts the site in a
 // subdirectory.
@@ -71,6 +71,9 @@ type server struct {
 	noble, ttyFiles assetSet
 	highlight       assetSet
 	preview         assetSet
+	inpaint         assetSet // MI-GAN for browser inpainting
+	background      assetSet // U2NetP and its browser runtime
+	disasm          assetSet // iced-x86, for the hex view's disassembly
 	pdfjs           assetSet
 	pdfjsNames      []string // pdf.js's files, in pdfjsDir (see pdfjsFiles)
 	handshakes      handshakes
@@ -97,6 +100,9 @@ func main() {
 	}
 	if len(os.Args) >= 2 && os.Args[1] == epubChildArg {
 		os.Exit(renderEpubChild(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == sqliteChildArg {
+		os.Exit(readSQLiteChild(os.Args[2:]))
 	}
 	c := defaultServerConfig()
 	flag.BoolVar(&c.vncOff, "disable-vnc", false, "disable the desktop page and VNC tunnel")
@@ -132,9 +138,14 @@ func main() {
 	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
+	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,
+		"let previews in Proxy mode load a document's external resources from private networks too; the document picks those URLs")
 	flag.BoolVar(&c.doctorOn, "doctor", c.doctorOn, "serve a troubleshooting report at doctor, without a login")
 	flag.StringVar(&c.kaitaiDir, "kaitai-dir", c.kaitaiDir, "compiled Kaitai formats for binary previews; empty for none")
 	flag.StringVar(&c.pdfjsDir, "pdfjs-dir", c.pdfjsDir, "pdf.js, for PDF previews; empty for none, and PDFs download instead")
+	flag.StringVar(&c.inpaintDir, "inpaint-dir", c.inpaintDir, "MI-GAN model for image inpainting; empty for none")
+	flag.StringVar(&c.backgroundDir, "background-dir", c.backgroundDir, "background removal model and browser runtime; empty for none")
+	flag.StringVar(&c.disasmDir, "disasm-dir", c.disasmDir, "iced-x86, made loadable in a browser worker, for x86 disassembly in hex previews; empty for none")
 	flag.StringVar(&c.previewDir, "preview-dir", c.previewDir, "KaTeX and Mermaid, for math and diagrams in Markdown previews; empty for none")
 	flag.StringVar(&c.highlightDir, "highlight-dir", c.highlightDir, "highlight.js files for the colours of text previews; empty for none")
 	flag.StringVar(&c.nobleDir, "noble-dir", c.nobleDir, "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
@@ -174,6 +185,9 @@ func main() {
 	}
 	if g.fetches != nil && c.fetchPrivate {
 		log.Print("fetching from URLs on, private networks included")
+	}
+	if g.fetches != nil && c.previewFetchPrivate {
+		log.Print("previews' external resources may come from private networks")
 	}
 	if g.shares != nil {
 		log.Printf("share links on: %d kept in %s", len(g.shares.list("")), c.sharesFile)

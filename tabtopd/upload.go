@@ -446,6 +446,24 @@ func fileVersion(st fs.FileInfo) string {
 	return v
 }
 
+// changed reports whether st isn't the file as the page read it:
+// req.IfMtime and req.IfSize, which a change must give.
+func (req tunnelRequest) changed(st fs.FileInfo) bool {
+	return fileVersion(st) != req.IfMtime || st.Size() != req.IfSize
+}
+
+// changedSinceRead is changed, for reading: only if the page gave the
+// version it read (a first read gives none).
+func (req tunnelRequest) changedSinceRead(st fs.FileInfo) bool {
+	return req.IfMtime != "" && req.changed(st)
+}
+
+// errReopen is the file changed since it was opened, said with what to do:
+// "Reopen it" and then.
+func errReopen(then string) error {
+	return errors.New("The file has changed since it was opened. Reopen it" + then + ".")
+}
+
 var errChangedSince = errors.New("It's been changed since it was opened (by someone or something else). Reload it, or save your text as another file.")
 
 // unchangedSince reports, with an error to show, whether the file at p is

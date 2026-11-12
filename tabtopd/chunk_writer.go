@@ -42,8 +42,7 @@ func newChunkWriter(t chunkTransport) *chunkWriter {
 }
 
 func newChunkWriterWithStall(t chunkTransport, stallDuration time.Duration) *chunkWriter {
-	w := &chunkWriter{t: t, credits: make(chan struct{}, fileWindow), stall: time.NewTimer(stallDuration), stallDuration: stallDuration,
-		buf: make([]byte, 0, fileChunk)}
+	w := &chunkWriter{t: t, credits: make(chan struct{}, fileWindow), stall: time.NewTimer(stallDuration), stallDuration: stallDuration}
 	w.stall.Stop() // runs only while waiting for room
 	for range fileWindow {
 		w.credits <- struct{}{}
@@ -68,6 +67,11 @@ func newChunkWriterWithStall(t chunkTransport, stallDuration time.Duration) *chu
 }
 
 func (w *chunkWriter) Write(p []byte) (int, error) {
+	// Made when first written to: a writer made to wait (for a slot, say)
+	// holds none.
+	if w.buf == nil {
+		w.buf = make([]byte, 0, fileChunk)
+	}
 	n := 0
 	for len(p) > 0 {
 		k := min(len(p), fileChunk-len(w.buf))

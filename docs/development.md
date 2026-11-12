@@ -21,6 +21,13 @@
 | `HIGHLIGHT_SHA256` | *(checksum of 11.12.0)* | SHA-256 of `https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-<version>.tgz`. |
 | `PDFJS_VERSION` | `6.4.299` | pdf.js release from npm (`pdfjs-dist`), its legacy build, which shows PDFs in the files page's previews. |
 | `PDFJS_SHA256` | *(checksum of 6.4.299)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
+| `ICED_X86_VERSION` | `1.22.0` | iced-x86 release from npm (`iced-x86`), which disassembles x86 code in the hex preview's data inspector. `scripts/disasm/build.mjs` makes its Node build loadable in a browser worker, without its documentation comments, and checks it at build time. |
+| `ICED_X86_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/iced-x86/-/iced-x86-<version>.tgz`. |
+| `ONNX_WEB_VERSION` | `1.22.0` | ONNX Runtime Web, WASM backend only, for U2NetP background removal in the image editor. |
+| `ONNX_WEB_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-<version>.tgz`. Update the pinned runtime license and third-party notice checksums with the version. |
+| `U2NETP_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the U2NetP ONNX weights from rembg's `v0.0.0` release. |
+| `MIGAN_REVISION` | `406830d0fa60666da0071c342ad2fbc8f30c5c64` | Hugging Face revision of the authors' `andraniksargsyan/migan` repository, for the ONNX pipeline and its MIT weights license. |
+| `MIGAN_SHA256` | *(checksum in Dockerfile)* | SHA-256 of `migan_pipeline_v2.onnx`. The bundled model is the official 28.1 MB export, without additional quantization. |
 | `KATEX_VERSION` | `0.19.0` | KaTeX release from npm (`katex`), which draws math in Markdown previews. |
 | `KATEX_SHA256` | *(checksum of 0.19.0)* | SHA-256 of `https://registry.npmjs.org/katex/-/katex-<version>.tgz`. |
 | `MERMAID_VERSION` | `12.2.0` | Mermaid release from npm (`mermaid`), which draws diagrams in Markdown previews. |
@@ -47,9 +54,10 @@ curl -sL https://registry.npmjs.org/ghostty-web/-/ghostty-web-0.4.0.tgz | sha256
 The Go version for the gateway is pinned in `mise.toml`. Keep it in sync with
 the `golang` image in the Dockerfile's tabtopd build stage.
 
-The gateway uses libopus (audio) and liboath (logins) through cgo, so
+The gateway uses libopus (audio), liboath (logins) and libsqlite3 (database
+previews) through cgo, so
 building it needs a C compiler and their headers
-(`apt install gcc libopus-dev liboath-dev` on Debian).
+(`apt install gcc libopus-dev liboath-dev libsqlite3-dev` on Debian).
 
 mise installs that Go version, and the Node version the browser check
 uses, and runs the tasks defined in `mise.toml`:
@@ -202,7 +210,8 @@ fixture for range-based playback and seeking tests.
 `files.js` owns folder listing, selection and keyboard navigation;
 `files-actions.js` owns mutations, share links and transfer tracking. Actions
 receive the refresh callback and formatting helpers without importing the page.
-`e2e.go` serves page assets and headers; `tunnel_request.go` owns tunnel routing.
+`page_assets.go` serves page assets and headers; `tunnel_routes.go` lists every tunnel request, with whether it needs file
+support (WEB_FS), and routes it; `tunnel_request.go` reads requests and holds the file handlers.
 
 `preview.js` owns the lightbox, navigation and cancellation. `preview-loaders.js`
 selects transport loaders; `preview-renderers.js` selects format adapters. Frame
@@ -255,7 +264,10 @@ Unknown files offer a single **Preview** action, choosing Text for readable
 UTF-8 and Binary for other data. The lightbox has a glyph button
 to switch between Text and Binary for unknown files using the same loaded bytes.
 Its tooltip names the view it will switch to. Known file types use their native
-previews and do not offer Binary view. Inside the binary preview, **Interpret as**
+previews and do not offer Binary view, and data that isn't text has no
+Text view, so neither shows the button. A file named as text (`.txt`, `.json`,
+`.csv` and the like) with a NUL byte in its first 8000 opens in the binary
+view instead. Inside the binary preview, **Interpret as**
 is an autocomplete dropdown: open the arrow to browse all formats, or type to
 filter by name, ID or category. Use Up/Down and Enter to select a format; Escape
 closes the dropdown. You can also enter its exact format ID and press Enter.
@@ -275,9 +287,119 @@ Byte offsets are never inferred for decompressed or parameter buffers.
 Unknown files are classified using their first 1 MB. Readable text previews load
 up to the first 10 MB, with a notice when the rest is omitted; truncated text
 cannot be edited. Binary previews fetch aligned 1 MB ranges through the encrypted
-tunnel and render 4 KB pages. Previous/Next 1 MB and the byte-offset field browse
-the whole file. Reads use the original size/mtime and fail if the file changes.
+tunnel and render 4 KB pages: **<** and **>** step a page, **−1 MB** and
+**+1 MB** a range, and the byte-offset field jumps; together they browse the
+whole file. On a phone, the four buttons and the offset field share a row, the
+status line below leaves out which bytes are shown, keeping what's to say (a
+selection, a search's result), and Find takes the row below that. Reads use the original size/mtime and fail if the file changes.
 One fetched range is cached; the first range remains available for Kaitai.
+
+The hex view shows Offset, hex and ASCII as separate columns under a header
+that scrolls sideways with them. Drag across bytes in either the hex or the
+ASCII column to select them; the same bytes are highlighted in the other
+column, more lightly. A drag keeps to the column it started in, so it follows
+the pointer past a row's end or between bytes, and held above or below the
+pane it scrolls and keeps selecting. Click an offset to select its row (drag
+down or up the offsets to select whole rows), Shift-click to extend a selection, and Escape to clear it (a second Escape
+closes the preview). The status line shows how many bytes are selected, and
+where. Ctrl C (Cmd C) copies the selection as it appears in the column it was
+made in: space-separated hex from the hex column, characters (with `.` for
+unprintable bytes) from the ASCII column. Only bytes in the loaded 1 MB range
+are copied, and the status line says when a longer selection was cut short.
+The **data inspector**, beside the bytes (below them when the hex view is
+narrow, as beside the Kaitai field tree), shows what the bytes from the
+selection's start read as: **raw**, the 8 bytes there (fewer at the file's
+end) as one hex number, in the byte order chosen (`0x0807060504030201` for
+01 02 … 08, little-endian); int8, int16, int32 and int64, signed and unsigned, and
+IEEE 754 float32 and float64, little-endian (as x86, ARM and most files
+are) or, with **LE | BE** at its top, big-endian (as network protocols and
+some formats, such as PNG, are; the choice is remembered). An unsigned value
+the same as the signed one above it (its top bit clear) is dimmed, so the
+rows never move. "—" shows where there
+aren't bytes enough. Each value has a copy glyph. Under them, **Copy as**
+**Hex**, **ASCII**, **Offset** (`0x10`, or `0x10-0x2f` for a range) or
+**Base64** copies the selection, whichever column it was made in, and **…**
+opens a box to copy it as hex as you choose: in lower or upper case, with a
+space, nothing, a comma, a comma and a space, a colon, a dash or a new line
+between the bytes, and a prefix before each, such as `0x` (`0x4D, 0x5A`); a
+sample shows how it will look, and the choice is remembered in your browser. The glyph
+at the right end of the **Interpret as** row shows or hides it; the choice is
+remembered in your browser.
+
+At the inspector's top, **Values** and **Disassembly** tabs pick what it
+shows, the one given the whole panel (on a wide screen, all its height; on a
+phone, or in a narrow window, the panel sits under the bytes); the tab is
+remembered in your browser. **Disassembly** shows the selected bytes as x86
+instructions, a line each: its offset, its bytes and the instruction, in Intel
+syntax, as **x86-64**, **x86 (32-bit)** or **x86 (16-bit)** code, as chosen at
+the right of the tabs (remembered too); bytes that aren't an instruction show
+as `(bad)`. An address an instruction goes to or names (`jmp short 018Ch`,
+`call`, or memory read by its address alone, `[rip+…]` shown as where that is)
+is a link when it's within the file: click it to select that byte and see its
+code. With one byte selected, it's the 64 bytes from it; at most 4 KB, or
+512 instructions, are shown at a time. It uses iced-x86, WebAssembly run in a
+worker of its own (the page itself isn't allowed to run WebAssembly), fetched
+the first time it's shown: about 360 KB, once. On **Values**, or with the
+inspector hidden, it fetches and does nothing.
+
+**Find**, in the bar above the bytes, looks for a run of bytes in the whole
+file, as hex or, with the mode button beside it (its glyph a drawn 0x) switched to Aa, as ASCII text
+(matched as UTF-8). In hex, bytes are pairs of
+digits, spaced or not, and `?` matches any digit: `4?` is any of 0x40–0x4f, and
+`??` (or `?` alone) any byte, as in `4d 5a ?? 00`. Enter (or **›**) finds the
+next match after the selection, Shift Enter (or **‹**) the one before it; the
+match is selected. The server reads the file a stretch at a time, so a search
+of a large file shows its progress. It looks in the file as saved, so not at
+changes not yet saved.
+
+**Edit** changes bytes where they are: none is ever inserted or removed, so the
+file keeps its size. Click a byte (or select one), then type: hex digits in
+the hex column change it a digit at a time (the second half of the caret is
+shaded once the first is typed), and characters in the ASCII column the whole
+byte; the caret moves on. Arrows move it (up and down by a row, across pages),
+Tab switches column, Backspace moves back, and Ctrl Z undoes. Changed bytes
+show in orange, and the inspector reads them. Editing, each of the
+inspector's values is a box: type a new one (integers in decimal, within
+the type's range, or in `0x` hex, as the bytes' value, signed or not: `0xff`
+in int8 is -1, and `0x80` -128; or, with a sign, in hex as the number itself,
+`-0x7F` in int8 being -127, and `+0xff` too big for one; floats as numbers, `NaN` or `Infinity`; raw as hex digits, `0x` or not, zeros put before them to fill its bytes) and
+press Enter, or leave the box, and its bytes, as that type and byte order,
+are written at the selection's start; Escape puts the box back. Ctrl Z, back
+at the bytes, undoes such a value whole.
+
+Editing, a click on an instruction in **Disassembly** opens a box with it, to
+type another over it in Intel syntax, as the list shows them (`mov rbp,rsp`,
+`jmp short 1012h`, `mov eax,dword ptr fs:[28h]`, `vaddps zmm0{k1}{z},zmm1,[rax]{1to16}`)
+or as other assemblers take them (`0x1f`, `jz`, `qword [rax]`, `'A'`, `rep stosb`),
+in the instruction set chosen. Enter writes its bytes there, as one change:
+one shorter than what was there is followed by `nop`s (`90`) up to the next
+instruction, and one longer goes over the next, the last of those it ends
+inside filled out with `nop`s, so the code after it still reads as it did
+(the status says how many). Branch targets are addresses as listed, file
+offsets; so is `[addr]`, which in 64-bit code is RIP-relative, as most are,
+unless it's through `fs` or `gs` (thread-local, as the stack guard at
+`fs:[28h]`), or the instruction there before had an absolute address, or it's
+`[abs addr]`, or it's too far for RIP-relative; `[rel addr]` is always
+RIP-relative. (The disassembly shows both kinds the same way.) Memory with no register to give its
+size needs one (`inc dword ptr [rax]`). A line that can't be assembled says
+why, and the box stays to put right; Escape puts it back. `x86-asm.js`
+assembles it, in the disassembler's worker: it reads the line, tries each of
+iced-x86's encodings of that name whose operands fit, encodes them with
+iced-x86, and keeps the shortest that decodes back to the same instruction.
+The image build checks it on lines as typed and on random bytes, as each
+instruction set decodes them, assembled back to the same, RIP-relative or not. The disassembly shows the
+instructions themselves rather than pseudo-ops (`cmpss xmm0,xmm1,4`, not
+`cmpneqss`), so each can be typed back as shown. **Save** (or Ctrl S) writes them
+into the file where they are, rather than writing a new copy, as a text save
+does, since a binary file may be large: only if the file is as it was when
+opened (its version and size, and, checked by a SHA-256 of them, the bytes
+being replaced: written in place, the file keeps its inode, so its version
+alone wouldn't show a change made within the same tick of the clock), not
+through a link, not a file with other names (a hard link, whose
+other names may be outside Downloads), and at most 256 KB of changes at a time. The whole
+change reaches the server before any of it is written, so a lost connection
+writes nothing; a crash while writing could leave some of it written.
+**Done** waits for a save going to finish, then asks before discarding changes not saved.
 Already buffered text bytes can also be reused without another transfer.
 
 Kaitai decodes only the first 1 MB, regardless of the range being viewed in hex.
@@ -319,3 +441,103 @@ actual encrypted file preview. The Docker Kaitai stage also runs the allocation/
 tests against its generated parser bundles. Build dependencies are pinned in
 `scripts/kaitai/package-lock.json`. Update the library commit and checksum in
 both `Dockerfile` and `scripts/kaitai/sources.json` when refreshing the gallery.
+
+## Image background removal
+
+The image editor's **Remove background** tool runs U2NetP in a dedicated
+browser worker with ONNX Runtime Web, using one WASM thread. Both images
+bundle the model and runtime in `/opt/background`; no Python, GPU or remote
+inference service is needed. The browser fetches them from TabTop only on
+first use, under a content-hashed asset path. The worker may run WebAssembly;
+the files page's CSP remains unchanged. The model sees a 320×320 RGB sample
+of the current edit; its soft foreground mask is scaled to the current
+picture and multiplied with existing alpha. The glyph activates the main
+toolbar; its Adjustments button opens a popover with Threshold, Edge softness
+and Shrink / grow controls. Each previews from the
+original mask. Reset uses threshold 50%, softness 100% (the original soft
+mask), and no growth. Growth is a separable max/min filter with a radius
+relative to the mask dimensions. Apply adds an undo checkpoint; dismissal
+discards the preview. Each new activation analyzes the current image and adds
+a separate operation, preserving earlier removals. Cancel and leaving the editor
+terminate the worker.
+
+Selected-area removal clips alpha changes to a rectangle; pixels outside it
+are drawn unchanged. Erase/restore strokes use round paths at image resolution,
+without reducing them to the 320×320 model mask. Restore copies the pixels
+from before the background operation, preserving existing alpha. Selection
+and stroke coordinates belong to that operation's input image; pointer
+coordinates are mapped back through later crops, flips, rotations and resizes.
+All of this remains a preview until Apply. Pointer cancellation discards the
+active gesture; Undo stroke removes the latest brush stroke. Reset clears
+selection and brush strokes along with slider adjustments. The settings use
+a manual popover so interacting with the image and spatial toolbar doesn't
+light-dismiss the editing session; clicking elsewhere still cancels it.
+
+For a standalone gateway, pass `-background-dir` with `ort.wasm.min.js`,
+`ort-wasm-simd-threaded.mjs`, `ort-wasm-simd-threaded.wasm`, and `u2netp.onnx`.
+Without these assets, the tool reports an error and leaves the image intact.
+The Docker build pins downloaded bytes by SHA-256 and retains the model's
+Apache-2.0 license and the runtime's MIT license and third-party notices.
+
+## Image inpainting
+
+Both images bundle the authors' MI-GAN ONNX pipeline as `/opt/inpaint/migan.onnx`
+with its MIT license. `-inpaint-dir` locates the model; `-background-dir` supplies
+its shared ONNX Runtime Web assets. MI-GAN uses a separate content-hashed asset
+set, so opening background removal doesn't read the inpainting model. The
+inpainting worker has the same WASM-only CSP as background removal; no change
+to the files page's CSP is needed.
+
+Marks are image-coordinate rectangles and round brush paths, drawn as an SVG
+mask overlay. Only a bounded crop around additive marks is rasterized. The crop
+includes 32–128 pixels of context and is capped at 16 megapixels; the worker input
+is downsampled to a maximum side of 1024. The official pipeline then handles its
+512×512 internal inference and returns the crop at the submitted resolution.
+Inputs are uint8 RGB `[1,3,H,W]` and a binary uint8 `[1,1,H,W]` mask with 255 to
+keep and 0 to repair. Repaired RGB is scaled back and blended only through the
+original full-resolution mask; input alpha and every unmasked pixel are kept.
+The resulting patch is an ordinary undoable image operation, so later rotations,
+crops and resizing also work. Cancel terminates the worker; asynchronous results
+from a previous session are ignored. Leaving the editor frees masks and workers.
+
+Mask shapes, brush dropdowns and enclosed-region flood fill are shared in
+`image-mask.js`. Both tools support round brush strokes, rectangles and circles.
+Circle gestures measure a radius from their initial point. Bucket fill rasterizes
+only the existing marks' bounded area, then performs a scanline flood fill through
+unmasked pixels. Touching the crop boundary rejects an open outline without
+changing the marks. Fills are stored as row spans, so Undo removes a fill as a
+single operation, without retaining a full-size bitmap. The same vector shapes
+and spans drive the SVG mask overlay and the actual canvas mask.
+
+## PDF pages as images
+
+`pdf-image-editor.js` manages a local batch session opened from the PDF frame's
+toolbar. PDF parsing stays inside the existing opaque sandbox. Its narrow
+`image-render`/`image-rendered` bridge returns a PNG and page dimensions for one
+requested page; `image-cancel` cancels outstanding rendering. Requests and replies
+validate page numbers, resolution, dimensions and blob sizes. Raster requests
+are capped at 16 megapixels and 8192 pixels per side; thumbnail requests render
+only to 144 pixels. At most two raster requests are active (an editor page and
+one visible thumbnail). The sandbox and CSP permissions do not change.
+
+The ordinary image editor supplies pending tool recipes and PNG snapshots.
+`image-batch.js` scales complete masks, including brush geometry and flood-fill
+spans, with a canvas transform. It uses the same `inpaintPatch` function and
+background compositing as single-image editing. Models process one page at a
+time; cancellation aborts the frame request and terminates model workers. Each
+page error is recorded independently. The session retains PNG blobs, one decoded
+editor page, lazy thumbnails, and a single previous batch for Undo. Selections
+are limited to 200 pages and edited/output image blobs to 256 MiB per set.
+
+`image-export.js` writes stored ZIPs with CRC-32 and UTF-8 names, or raster PDFs
+with JPEG XObjects and byte-counted xref offsets. PDF page sizes follow the
+source geometry, adjusted for page crops/resizes. JPEG and PDF exports flatten
+alpha on white; PNG and WebP preserve it. Downloads use the topmost open dialog
+so nested PDF editing sessions can download while their source preview is inert.
+The source file is never uploaded or overwritten by this workflow.
+
+`test/image-batch.test.mjs` covers ranges, mask scaling, ZIP records/CRC and PDF
+offsets. `test/browser-check.sh IMAGE --group pdf-images` exercises real models,
+different page sizes, excluded pages, per-page errors, cancellation, batch Undo,
+all export formats and reopening the rebuilt PDF. It also runs with the `pdf`,
+`previews` and full browser suites.

@@ -212,7 +212,7 @@ export async function checkCells(checks) {
 }
 
 export async function checkStructured(checks) {
-    const { work, container, inContainer, step, cdp, ev, waitFor, click, type, open, listed, status } = checks;
+    const { work, container, inContainer, step, cdp, ev, waitFor, click, type, open, listed, status, sleep } = checks;
     await step("files: CSV as a table, JSON as a tree", async () => {
         writeFileSync(`${work}/people.csv`, 'name,city,score\r\n"Smith, J","Paris\r\nFR",10\r\nDoe,Rome,9\r\nLee,Oslo,100\r\n');
         const items = Array.from({ length: 1200 }, (_, i) => ({ id: i, name: `item ${i}` }));
@@ -225,7 +225,12 @@ export async function checkStructured(checks) {
         // 500 lists of 500, opened; and 20,000 items, the last found.
         writeFileSync(`${work}/wide.json`, JSON.stringify(Array.from({ length: 500 }, () => Array(500).fill(0))));
         writeFileSync(`${work}/long.json`, JSON.stringify(Array.from({ length: 20000 }, (_, i) => `entry ${i}`)));
-        for (const f of ["people.csv", "data.json", "config.json", "many.csv", "bad.jsonl", "wide.json", "long.json"]) {
+        // A graph as Python's json.dump(indent=2) writes one: about 1 MB,
+        // 46,000 lines, laid out already.
+        writeFileSync(`${work}/graph.json`, JSON.stringify({ directed: true, multigraph: true, graph: {},
+            nodes: Array.from({ length: 4000 }, (_, i) => ({ type: "speaker", label: `SPEAKER_${i}`, talk_seconds: i * 1.5, id: `sp:SPEAKER_${i}` })),
+            links: Array.from({ length: 4000 }, (_, i) => ({ source: `sp:SPEAKER_${i}`, target: `sp:SPEAKER_${(i * 7) % 4000}`, key: 0, weight: i % 13 })) }, null, 2));
+        for (const f of ["people.csv", "data.json", "config.json", "many.csv", "bad.jsonl", "wide.json", "long.json", "graph.json"]) {
             execFileSync("docker", ["cp", "-q", `${work}/${f}`, `${container}:/home/user/Downloads/media/${f}`]);
             execFileSync("docker", ["exec", container, "chown", "user", `/home/user/Downloads/media/${f}`]);
         }
@@ -261,6 +266,12 @@ export async function checkStructured(checks) {
         await waitFor(`!!document.querySelector("dialog.preview .table-view")`, "the table again");
         // Each column filtered by value, as its type is; then all cleared.
         const column = (heading) => `[...document.querySelectorAll("dialog.preview thead tr.heads th")].find((th) => th.querySelector(".col-name")?.textContent === ${JSON.stringify(heading)})`;
+        if (!(await ev(`${column("score")}.querySelector("button.col-filter svg") !== null`))) throw new Error("CSV filter funnel missing");
+        const beforeFilterClose = await ev(tableCount);
+        await ev(`${column("score")}.querySelector("button.col-filter").click()`);
+        await ev(`(p=>{p.querySelector("input.filter-value").value="99999";p.querySelector("button.filter-close").click();})(document.querySelector("dialog.preview .table-filter-pop"))`);
+        await waitFor(`document.querySelector("dialog.preview .table-filter-pop").hidden`, "CSV filter popup closed");
+        if (await ev(tableCount) !== beforeFilterClose) throw new Error("closing CSV filters applied the draft");
         const filterBy = async (heading, op, value) => {
             await ev(`${column(heading)}.querySelector("button.col-filter").click()`);
             await waitFor(`!document.querySelector("dialog.preview .table-filter-pop").hidden`, `${heading}'s filter`);
@@ -272,7 +283,7 @@ export async function checkStructured(checks) {
         await waitFor(`${tableCount} === "2 of 3 rows × 3 columns" && ${scores} === "10,100"`, "scores over 9");
         await filterBy("name", "starts", "s");
         await waitFor(`${tableCount} === "1 of 3 rows × 3 columns" && ${cells}[0][0] === "Smith, J" &&
-            ${column("name")}.querySelector("button.col-filter").textContent === "▼"`, "names starting s, scores over 9");
+            ${column("name")}.querySelector("button.col-filter").classList.contains("active") && !!${column("name")}.querySelector("button.col-filter svg")`, "names starting s, scores over 9");
         await ev(`document.querySelector("dialog.preview button.table-clear-filters").click()`);
         await waitFor(`${tableCount} === "3 rows × 3 columns"`, "the filters cleared");
         // Several conditions on one column (a range).
@@ -431,7 +442,49 @@ export async function checkStructured(checks) {
             throw new Error(`config.json holds ${JSON.stringify(saved)}`);
         }
         await closePreview();
-        inContainer("sh", "-c", "cd ~/Downloads/media && rm people.csv data.json config.json many.csv bad.jsonl wide.json long.json");
+        // A large JSON file, laid out already: Format leaves it, quickly,
+        // and the page still answers after.
+        await openFile("graph.json", `!!document.querySelector("dialog.preview button.edit:not([hidden])")`, "graph.json, with Edit");
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`!!${box} && (${status}) === "It's JSON."`, "graph.json in the editor, checking", 30000);
+        const graphLength = await ev(`${box}.value.length`);
+        const formatStarted = Date.now();
+        await ev(`document.querySelector("dialog.preview button.format").click()`);
+        const formatTook = Date.now() - formatStarted;
+        const answered = Date.now();
+        await ev(`1`);
+        await sleep(500);
+        await ev(`1`);
+        if (formatTook > 3000 || Date.now() - answered > 3000 || await ev(`${box}.value.length`) !== graphLength) {
+            throw new Error(`Format on graph.json: ${formatTook} ms, then ${Date.now() - answered} ms to answer`);
+        }
+        // Squeezed onto one line, as an edit might leave it: Format lays
+        // it out again, in one undoable step, without holding the page up.
+        await ev(`(() => { const b = ${box}; b.value = JSON.stringify(JSON.parse(b.value)); b.dispatchEvent(new Event("input")); })()`);
+        await waitFor(`${box}.value.length < ${graphLength} && (${status}) === "It's JSON."`, "graph.json squeezed", 30000);
+        const relaidStarted = Date.now();
+        await ev(`document.querySelector("dialog.preview button.format").click()`);
+        const relaidTook = Date.now() - relaidStarted;
+        const relaidAnswered = Date.now();
+        await ev(`1`);
+        await sleep(500);
+        await ev(`1`);
+        const relaid = await ev(`${box}.value.length`);
+        if (relaidTook > 3000 || Date.now() - relaidAnswered > 3000 || relaid !== graphLength) {
+            throw new Error(`Format on squeezed graph.json: ${relaidTook} ms, then ${Date.now() - relaidAnswered} ms to answer; ${relaid} characters, want ${graphLength}`);
+        }
+        // Ctrl+Z undoes that Format, and Ctrl+Shift+Z does it again.
+        const keys = (shiftKey) => ev(`${box}.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: ${shiftKey}, bubbles: true, cancelable: true }))`);
+        await keys(false);
+        if (await ev(`${box}.value.length`) >= graphLength) {
+            throw new Error("Ctrl+Z didn't undo Format");
+        }
+        await keys(true);
+        if (await ev(`${box}.value.length`) !== graphLength) {
+            throw new Error("Ctrl+Shift+Z didn't lay it out again");
+        }
+        await closePreview();
+        inContainer("sh", "-c", "cd ~/Downloads/media && rm people.csv data.json config.json many.csv bad.jsonl wide.json long.json graph.json");
         await open("fs/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
         return `a CSV sorted, filtered by column and value, with statistics, and split another way, quotes and all; 150,000 rows; 500 lists of 500 opened in ${wide} rows; ` +
             `the last of 20,000 found in ${took} ms, ${around.rows} rows made; JSON searched past what's shown, and folded; JSON laid out, and asked about saving broken`;

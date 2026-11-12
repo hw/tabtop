@@ -68,6 +68,11 @@
         } else if (m.type === "find" && doc) {
             findBox.focus();
             findBox.select();
+        } else if (m.type === "image-render" && typeof m.id === "string") {
+            renderImagePage(m);
+        } else if (m.type === "image-cancel" && typeof m.id === "string") {
+            const request = imageRenders.get(m.id);
+            if (request) { request.cancelled = true; request.task?.cancel(); }
         }
     });
 
@@ -133,6 +138,34 @@
     const ACTUAL_SCALE = 96 / 72;
     let pdfjs = null;
     let doc = null;
+    const imageRenders = new Map();
+    async function renderImagePage(message) {
+        const { id, number, dpi, thumbnail } = message;
+        const request = { cancelled: false, task: null };
+        let canvas;
+        try {
+            if (!doc || !Number.isSafeInteger(number) || number < 1 || number > doc.numPages ||
+                !Number.isFinite(dpi) || dpi < 36 || dpi > 300 || imageRenders.size >= 2 || imageRenders.has(id)) throw new Error("Invalid or busy page render request.");
+            imageRenders.set(id, request);
+            const pdfPage = await doc.getPage(number), pointSize = pdfPage.getViewport({ scale: 1 });
+            const scale = thumbnail ? Math.min(1, 144 / Math.max(pointSize.width, pointSize.height)) : dpi / 72;
+            const viewport = pdfPage.getViewport({ scale });
+            const width = Math.ceil(viewport.width), height = Math.ceil(viewport.height);
+            if (width * height > 16e6 || Math.max(width,height) > 8192) throw new Error("This page exceeds 16 megapixels. Choose a lower resolution.");
+            if (request.cancelled) throw new Error("Page rendering cancelled.");
+            canvas = Object.assign(document.createElement("canvas"), { width, height });
+            request.task = pdfPage.render({ canvasContext: canvas.getContext("2d"), viewport, background: "rgb(255,255,255)" });
+            await request.task.promise;
+            const blob = await new Promise(resolve => canvas.toBlob(resolve,"image/png"));
+            if (!blob || request.cancelled) throw new Error("Page rendering cancelled.");
+            page.postMessage({ type: "image-rendered", id, blob, width, height, widthPt: pointSize.width, heightPt: pointSize.height }, "*");
+        } catch (err) {
+            page.postMessage({ type: "image-rendered", id, error: err.message }, "*");
+        } finally {
+            if (imageRenders.get(id) === request) imageRenders.delete(id);
+            if (canvas) canvas.width = canvas.height = 0;
+        }
+    }
     let received = 0;  // bytes of the file fetched for pdf.js
     // Each layout is numbered: a page being drawn for one before it is
     // dropped, as its box is gone.
@@ -550,11 +583,19 @@
         actual.setAttribute("aria-pressed", String(zoomMode === "actual" && zoom === 1));
         actual.innerHTML = iconSVG("actual-size");
         const zooming = Object.assign(document.createElement("span"), { className: "group" });
-        zooming.append(button(glyphs.minus, "Zoom out", () => rezoom(zoom / 1.25)), where, pageBox,
-            button(glyphs.plus, "Zoom in", () => rezoom(zoom * 1.25)), width, fit, actual);
+        const zoomOut = button("", "Zoom out", () => rezoom(zoom / 1.25));
+        zoomOut.className = "zoom-out";
+        zoomOut.innerHTML = iconSVG("zoom-out");
+        const zoomIn = button("", "Zoom in", () => rezoom(zoom * 1.25));
+        zoomIn.className = "zoom-in";
+        zoomIn.innerHTML = iconSVG("zoom-in");
+        zooming.append(zoomOut, where, pageBox, zoomIn, width, fit, actual);
         const finding = Object.assign(document.createElement("span"), { className: "group" });
         finding.append(findBox, button(glyphs.up, "Previous match", () => step(-1)), button(glyphs.down, "Next match", () => step(1)), found, keepLooking);
-        bar.replaceChildren(zooming, finding);
+        const images = button("", "Edit or export pages as images", () => page.postMessage({ type: "edit-images", pages: doc.numPages, current: currentPage() }, "*"));
+        images.className = "edit-images";
+        images.innerHTML = iconSVG("inpaint");
+        bar.replaceChildren(zooming, finding, images);
         showWhere();
     }
 

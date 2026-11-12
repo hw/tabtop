@@ -13,6 +13,7 @@
 
 import { TunnelSocket } from "./tunnel.js";
 import { iconDataURL } from "./glyphs.js";
+import { store, stored } from "./stored.js";
 
 const PREF_KEY = "tabtop_audio";
 const supported = window.isSecureContext && "AudioDecoder" in window;
@@ -21,21 +22,8 @@ const states = ["off", "connecting", "on", "error"];
 const ICONS = Object.fromEntries(states.map((state) => [state, iconDataURL(`audio-${state}`)]));
 const MIC_ICONS = Object.fromEntries(states.map((state) => [state, iconDataURL(`mic-${state}`)]));
 
-function savedPref() {
-    try {
-        return localStorage.getItem(PREF_KEY) === "on";
-    } catch {
-        return false;
-    }
-}
-
-function savePref(on) {
-    try {
-        localStorage.setItem(PREF_KEY, on ? "on" : "off");
-    } catch {
-        // Not remembered: fine.
-    }
-}
+const savedPref = () => stored(PREF_KEY) === "on";
+const savePref = (on) => store(PREF_KEY, on ? "on" : "off");
 
 // Browsers only start audio after the user has interacted with the page.
 function notAllowed() {

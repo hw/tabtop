@@ -5,7 +5,7 @@
 // How each goes shows in the transfers panel (see ui.js).
 
 import { runTransfer } from "./transfer.js";
-import { humanBytes } from "./download.js";
+import { humanBytes } from "./file-format.js";
 import { askChoice, askYes, statusRow } from "./ui.js";
 
 // dropUploads makes the page take dropped and pasted files and folders,

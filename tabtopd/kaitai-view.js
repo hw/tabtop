@@ -32,8 +32,10 @@ export function parameterValues(parameters, inputs) {
     });
 }
 
-export function kaitaiView(bytes, { signal, size = bytes.length, readRange = null } = {}) {
-    const hex = hexView(bytes, { size, readRange });
+// format, if given, is the format to interpret it as to begin with (one
+// known from what the file is: a database's, say).
+export function kaitaiView(bytes, { signal, size = bytes.length, readRange = null, search = null, format = "" } = {}) {
+    const hex = hexView(bytes, { size, readRange, search });
     const combo = formatCombobox(entry => { selected = entry?.id ?? ""; choose(); });
     const message = el("p", { className: "hint kaitai-status", role: "status", textContent: "Loading binary formats…" });
     const requiredBytes = el("button", { type: "button", className: "kaitai-required-bytes", hidden: true });
@@ -45,7 +47,9 @@ export function kaitaiView(bytes, { signal, size = bytes.length, readRange = nul
     const params = el("form", { className: "kaitai-params", hidden: true });
     const structure = el("section", { className: "kaitai-structure", hidden: true }, message, requiredBytes, diagnostics, params, fieldDetails, tree);
     const root = el("div", { className: "kaitai-view" },
-        el("div", { className: "kaitai-controls" }, el("label", { htmlFor: combo.input.id, textContent: "Interpret as" }), combo.element, el("span", { className: "hint", textContent: "Kaitai: first 1 MB" })),
+        // The hex view's data inspector toggle, at this row's right end.
+        el("div", { className: "kaitai-controls" }, el("label", { htmlFor: combo.input.id, textContent: "Interpret as" }), combo.element,
+            ...(hex.inspectorToggle ? [hex.inspectorToggle] : [])),
         el("div", { className: "kaitai-panes" }, structure, hex));
     let entries = [], worker = null, serial = 0, stopped = false, selected = "", selectedField = null, requiredOffset = null;
     const showStatus = state => {
@@ -193,6 +197,7 @@ export function kaitaiView(bytes, { signal, size = bytes.length, readRange = nul
         entries = data.formats;
         combo.setFormats(entries);
         message.textContent = `${entries.length} binary formats available.`;
+        if (format && !selected) combo.choose(format);
     }).catch(err => {
         if (!stopped) { structure.hidden = false; showError(err); }
     });

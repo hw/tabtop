@@ -13,11 +13,12 @@ export function setLoginTitle(t) {
 }
 
 // call runs a request with the session, logging in again if it's over.
-export async function call(req) {
+// Aborting signal before the reply ends it (see Tunnel.open).
+export async function call(req, { signal } = {}) {
     for (;;) {
         const session = await tunnel.session(title);
         try {
-            return await tunnel.Tunnel.open(req, session);
+            return await tunnel.Tunnel.open(req, session, undefined, { signal });
         } catch (err) {
             if (!err.login) {
                 throw err;
@@ -236,7 +237,8 @@ export async function collect(t, size, progress, type = "application/octet-strea
 export function saveBlob(blob, name) {
     const url = URL.createObjectURL(blob.type === "application/octet-stream" ? blob : blob.slice(0, blob.size, "application/octet-stream"));
     const a = Object.assign(document.createElement("a"), { href: url, download: name, hidden: true });
-    (document.querySelector("dialog[open]") ?? document.body).append(a);
+    const dialogs = document.querySelectorAll("dialog[open]");
+    (dialogs[dialogs.length - 1] ?? document.body).append(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);

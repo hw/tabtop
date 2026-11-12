@@ -6,42 +6,16 @@ import { typeOf, resolvePath } from "./preview-model.js";
 import { readingTheme, bookPlace, setBookPlace } from "./preview-settings.js";
 import { previewLink } from "./preview-links.js";
 import { pictureLoader } from "./preview-pictures.js";
-import { frameResources, resourceAddress } from "./preview-resources.js";
+import { frameResources, remoteResource, resourceAddress, webAddress } from "./preview-resources.js";
 import { frameMedia } from "./preview-media.js";
 
 const readRange = createRangedFileReader({ call, collect });
 
-// Canonical HTTP(S) picture URLs; other schemes never reach the network.
-function externalPictureURL(src) {
-    src = src.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\r\n]/g, "");
-    if (!/^(https?:|\/\/)/i.test(src)) return null;
-    try {
-        const url = new URL(src.startsWith("//") ? "https:" + src : src);
-        if (url.username || url.password) return null;
-        url.hash = "";
-        return url.href;
-    } catch { return null; }
-}
-async function frameExternalPicture(url, mode, reserve, signal) {
+// A picture from the web (at url, from webAddress), as mode allows.
+function frameExternalPicture(url, mode, reserve, signal) {
     if (mode === "direct") return { url };
     if (mode !== "proxy") return { error: "External resources are blocked." };
-    let tunnel;
-    const cancel = () => tunnel?.close();
-    signal.addEventListener("abort", cancel, { once: true });
-    try {
-        signal.throwIfAborted();
-        tunnel = await call({ type: "preview-resource", url });
-        signal.throwIfAborted();
-        const { size, mime } = tunnel.reply;
-        if (!mime?.startsWith("image/") || !Number.isSafeInteger(size) || size < 0 || size > 20 * 1024 * 1024) throw new Error("not a supported picture");
-        if (!reserve(size)) return { error: "Pictures exceed the 64 MiB preview budget." };
-        const blob = await collect(tunnel, size, () => {}, mime);
-        signal.throwIfAborted();
-        return { bytes: await blob.arrayBuffer(), mime };
-    } finally {
-        signal.removeEventListener("abort", cancel);
-        tunnel?.close();
-    }
+    return remoteResource(url, "image", reserve, signal);
 }
 
 // All frame formats share the same sandbox and message lifecycle.
@@ -103,8 +77,8 @@ export async function markdownFrame(path, dir, opts = {}) {
     let ready = false;
     let pictures = null, render = 0, resources = null, media = null;
     const newPictures = () => pictureLoader({
-        resolve: src => externalPictureURL(src) ?? resolvePath(dir, src.split("#")[0]),
-        load: (src, reserve, signal) => externalPictureURL(src)
+        resolve: src => webAddress(src) ?? resolvePath(dir, src.split("#")[0]),
+        load: (src, reserve, signal) => webAddress(src)
             ? frameExternalPicture(src, opts.externalMode, reserve, signal) : framePicture(src, reserve, signal),
     });
     const send = (fragment = "", location = null) => frame.contentWindow?.postMessage({ type: "render", html, fragment, location, format: htmlMode ? "html" : "markdown", externalMode: opts.externalMode ?? "none" }, "*");
@@ -184,8 +158,8 @@ export function epubFrame(path, file, opts = {}) {
         // The child resolves book URLs to decoded ZIP-entry paths (itemOf).
         // Preserve literal '%' and '#' in those filenames rather than decoding
         // or splitting them a second time.
-        resolve: src => externalPictureURL(src) ?? src,
-        load: (src, reserve, signal) => externalPictureURL(src) ? frameExternalPicture(src, opts.externalMode, reserve, signal) : ask(src, signal, async t => {
+        resolve: src => webAddress(src) ?? src,
+        load: (src, reserve, signal) => webAddress(src) ? frameExternalPicture(src, opts.externalMode, reserve, signal) : ask(src, signal, async t => {
             if (typeOf(src.split("/").pop() ?? "")?.kind !== "image" ||
                 !t.reply.mime?.startsWith("image/") || !Number.isSafeInteger(t.reply.size) || t.reply.size < 0 ||
                 t.reply.size > 20 * 1024 * 1024) throw new Error("not a supported picture");
@@ -213,7 +187,7 @@ export function epubFrame(path, file, opts = {}) {
                 reply({ id: m.id, error: err.message });
             }
         } else if (m.type === "image" && typeof m.src === "string") {
-            if (!externalPictureURL(m.src) && typeOf(m.src.split("/").pop() ?? "")?.kind !== "image") {
+            if (!webAddress(m.src) && typeOf(m.src.split("/").pop() ?? "")?.kind !== "image") {
                 reply({ id: m.id, error: "not a picture" });
                 return;
             }
@@ -259,9 +233,7 @@ async function framePicture(path, reserve, signal) {
         signal.throwIfAborted();
         return { bytes: await blob.arrayBuffer(), mime: t.type };
     } catch (err) {
-        return { error: /^not found\.?$/i.test(err.message)
-            ? `Local image not found: ${path}. Saved web pages need their companion resource folder beside the HTML file.`
-            : err.message };
+        return { error: /^not found\.?$/i.test(err.message) ? `Local image not found: ${path}` : err.message };
     } finally {
         signal.removeEventListener("abort", cancel);
         tt?.close();
@@ -285,6 +257,21 @@ const PDF_PARTS_AT_ONCE = 4;
 export function pdfFrame(path, file, opts = {}) {
     let ready = false;
     const frame = sandboxFrame("pdf", "PDF", "pdf-frame.html");
+    const renders = new Map();
+    let renderID = 0, imageEditor = null, openingImages = false, stopped = false;
+    const renderPage = (number, dpi, signal, thumbnail = false) => new Promise((resolve, reject) => {
+        if (stopped || signal.aborted) { reject(new Error("Page rendering cancelled.")); return; }
+        const id = `pdf-image-${++renderID}`;
+        const finish = (error, result) => {
+            clearTimeout(timer); signal.removeEventListener("abort", abort); renders.delete(id);
+            if (error) reject(new Error(error)); else resolve(result);
+        };
+        const abort = () => { frame.contentWindow?.postMessage({ type: "image-cancel", id }, "*"); finish("Page rendering cancelled."); };
+        const timer = setTimeout(abort, 120000);
+        signal.addEventListener("abort", abort, { once: true });
+        renders.set(id, finish);
+        frame.contentWindow?.postMessage({ type: "image-render", id, number, dpi, thumbnail }, "*");
+    });
     let fetched = file.start.byteLength;
     frame.dataset.bytes = String(fetched);
     let going = 0;
@@ -317,9 +304,27 @@ export function pdfFrame(path, file, opts = {}) {
         } else if (m.type === "range") {
             const got = await part(m.begin, m.end);
             frame.contentWindow?.postMessage({ id: m.id, ...got }, "*", got.bytes ? [got.bytes] : []);
-
+        } else if (m.type === "image-rendered" && renders.has(m.id)) {
+            const valid = m.blob instanceof Blob && m.blob.type === "image/png" && m.blob.size <= 64 * 1024 * 1024 &&
+                [m.width,m.height].every(n => Number.isSafeInteger(n) && n > 0 && n <= 8192) && m.width*m.height <= 16e6 &&
+                [m.widthPt,m.heightPt].every(n => Number.isFinite(n) && n > 0 && n <= 100000);
+            renders.get(m.id)(m.error || (!valid ? "Invalid rendered PDF page." : null), m);
+        } else if (m.type === "edit-images" && Number.isSafeInteger(m.pages) && m.pages > 0 && m.pages <= 100000 && !stopped && !openingImages) {
+            if (imageEditor) { imageEditor.focus(); return; }
+            openingImages = true;
+            try {
+                const { pdfImageEditor } = await import("./pdf-image-editor.js");
+                if (!stopped) imageEditor = pdfImageEditor({ name: path.split("/").pop(), count: m.pages,
+                    current: Number.isSafeInteger(m.current) && m.current >= 1 && m.current <= m.pages ? m.current : 1,
+                    renderPage, closed: () => { imageEditor = null; } });
+            } finally { openingImages = false; }
         }
     };
     bindFrame(frame, answer, opts, () => ready);
+    const stop = frame.stop;
+    frame.stop = () => {
+        stopped = true; imageEditor?.stop(); stop();
+        for (const finish of [...renders.values()]) finish("PDF preview closed.");
+    };
     return frame;
 }

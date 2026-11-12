@@ -45,14 +45,35 @@ const renderers = {
     html: documentView,
     table: ({ file, blob, url }) => structured("table", blob, url, file.name, file.tableOptions),
     json: ({ file, blob, url }) => structured("json", blob, url, file.name),
-    image: ({ file, blob, url }) => render("image", blob, url, file.name),
+    // Zoomed and panned, and edited (see image-view.js).
+    image: async ({ file, blob, url }) => {
+        const { imageView } = await import("./image-view.js");
+        return imageView({ file, blob, url });
+    },
     hex: async ({ file, path, blob, signal }) => kaitaiView(new Uint8Array(await blob.slice(0, binaryChunkSize).arrayBuffer()), {
-        signal, size: file.size,
+        signal, size: file.size, format: file.sqlite ? "sqlite3" : "",
         readRange: (begin, end, { signal: rangeSignal } = {}) => end <= blob.size
             ? blob.slice(begin, end).arrayBuffer()
             : readBinaryRange(path, file, begin, end, { maxBytes: binaryChunkSize, signal: rangeSignal }),
+        // In the file as it is now (file's version changes with a save).
+        // A search given up on (another begun) is ended on the server too.
+        search: async ({ pattern, mask, offset, backward, signal: searchSignal }) => {
+            const t = await call({ type: "file-search", path, if_mtime: file.mtime, if_size: file.size, pattern, mask, offset, backward: backward || undefined },
+                { signal: searchSignal });
+            t.close();
+            return t.reply;
+        },
     }),
     text: ({ file, blob, url }) => render("text", blob, url, file.name, { truncated: file.truncated }),
+    // Asked of the server as it's looked at, of the file as it was opened.
+    sqlite: async ({ file, path }) => {
+        const { sqliteView } = await import("./sqlite-view.js");
+        return sqliteView({ name: file.name, schema: file.schema ?? {}, wal: file.wal, ask: async (q, signal) => {
+            const t = await call({ type: "sqlite", path, if_mtime: file.mtime, if_size: file.size, sqlite: q }, { signal });
+            t.close();
+            return t.reply.answer;
+        } });
+    },
 };
 export function renderPreview(options) {
     if (!Object.hasOwn(renderers, options.kind)) throw new Error("this file can't be rendered");

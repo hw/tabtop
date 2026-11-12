@@ -87,7 +87,7 @@ func TestDisabledFeatureTunnels(t *testing.T) {
 	g.vncOff, g.fsOff, g.termDir = true, true, ""
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
-	for _, kind := range []string{"vnc", "tty", "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes", "zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "cleanup", "share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches"} {
+	for _, kind := range []string{"vnc", "tty", "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes", "zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "sqlite", "cleanup", "share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches"} {
 		r := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: kind})
 		message, _ := r["error"].(string)
 		if r["ok"] == true || !strings.Contains(message, "turned off") {

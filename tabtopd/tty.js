@@ -17,6 +17,7 @@
 
 import { glyphs, iconSVG } from "../tabtop/glyphs.js";
 import { Osc } from "../tabtop/osc.js";
+import { store, stored } from "../tabtop/stored.js";
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
 import { nameTab, navBar, pages } from "../tabtop/nav.js";
@@ -147,13 +148,9 @@ class MouseReporter {
 const FONT_KEY = "tabtop-tty-font-size";
 const defaultFontSize = 14;
 let fontSize = defaultFontSize;
-try {
-    const saved = Number(localStorage.getItem(FONT_KEY));
-    if (saved >= 8 && saved <= 32) {
-        fontSize = saved;
-    }
-} catch {
-    // The default, then.
+const savedSize = Number(stored(FONT_KEY));
+if (savedSize >= 8 && savedSize <= 32) {
+    fontSize = savedSize;
 }
 // The font: TabTop's own, JetBrains Mono Nerd Font, served with the page
 // (see tty.html), or one on this computer picked from the font menu (see
@@ -162,12 +159,7 @@ try {
 // show whatever the font.
 const OWN_FONT = "TabTop JetBrains Mono";
 const FAMILY_KEY = "tabtop-tty-font-family";
-let fontName = "";  // "" for TabTop's own
-try {
-    fontName = cleanFontName(localStorage.getItem(FAMILY_KEY) ?? "");
-} catch {
-    // TabTop's, then.
-}
+let fontName = cleanFontName(stored(FAMILY_KEY, ""));  // "" for TabTop's own
 
 // cleanFontName keeps a font's name to what can go in quotes in CSS.
 function cleanFontName(name) {
@@ -209,11 +201,7 @@ function setFontSize(n) {
     fontSize = Math.min(Math.max(n, 8), 32);
     term.options.fontSize = fontSize;
     fit.fit();
-    try {
-        fontSize === defaultFontSize ? localStorage.removeItem(FONT_KEY) : localStorage.setItem(FONT_KEY, String(fontSize));
-    } catch {
-        // Only for this visit, then.
-    }
+    store(FONT_KEY, fontSize === defaultFontSize ? null : fontSize);
     fontChanged.forEach((f) => f());
 }
 
@@ -223,11 +211,7 @@ async function setFont(name) {
     await loadFonts(fontName);
     term.options.fontFamily = fontFamily(fontName);
     fit.fit();
-    try {
-        fontName ? localStorage.setItem(FAMILY_KEY, fontName) : localStorage.removeItem(FAMILY_KEY);
-    } catch {
-        // Only for this visit, then.
-    }
+    store(FAMILY_KEY, fontName || null);
     fontChanged.forEach((f) => f());
 }
 
@@ -514,12 +498,7 @@ const notices = (() => {
     let base = "Terminal";
     let marked = false;
     let lastBell = 0;
-    let on = false;
-    try {
-        on = supported && localStorage.getItem(KEY) === "1";
-    } catch {
-        // Off, then.
-    }
+    let on = supported && stored(KEY) === "1";
     const away = () => document.visibilityState !== "visible" || !document.hasFocus();
     const draw = () => {
         document.title = marked ? `${glyphs.notification} ${base}` : base;
@@ -567,11 +546,7 @@ const notices = (() => {
             await Notification.requestPermission().catch(() => {});
         }
         on = !on && Notification.permission === "granted";
-        try {
-            localStorage.setItem(KEY, on ? "1" : "0");
-        } catch {
-            // Just for this visit, then.
-        }
+        store(KEY, on ? "1" : "0");
         look();
     });
     if (supported) {

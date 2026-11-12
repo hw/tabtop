@@ -17,6 +17,10 @@ files, except Ghostty's, which comes compiled into ghostty-web.
 | [Ghostty](https://github.com/ghostty-org/ghostty) | The terminal emulation in ghostty-web, compiled to WebAssembly | MIT |
 | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), patched by [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) | The terminal's font, with its icons and status-line arrows (regular and bold, as WOFF2) | OFL 1.1 (the font); the Nerd Fonts patcher is MIT |
 | [Kaitai Struct](https://kaitai.io/) and its [format gallery](https://formats.kaitai.io/) | Binary structure previews with links to source bytes | Runtime: Apache-2.0; each format has its own license, retained in `/opt/kaitai/sources`; compiler used only during the build |
+| [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) | Running image background removal in a browser worker | MIT; license and third-party notices in `/opt/background` |
+| [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) | Filling painted image regions to remove logos and objects, in a browser worker | MIT code and model weights; `/opt/inpaint/LICENSE.migan` |
+| [U²-Net](https://github.com/xuebinqin/U-2-Net) (U2NetP) | Foreground masks for image background removal, using the ONNX weights distributed by [rembg](https://github.com/danielgatis/rembg) | Apache-2.0; license in `/opt/background/LICENSE.u2net` |
+| [iced-x86](https://github.com/icedland/iced) | x86, x86-64 and 16-bit disassembly in the hex preview's data inspector, and the encoding behind assembling an edited line there (its WebAssembly decoder, formatter and encoder, run in a worker) | MIT (its licence in `/opt/disasm/LICENSE.iced`) |
 | [pako](https://github.com/nodeca/pako) | Bounded zlib decompression in binary previews | MIT |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | The colours of text previews, and of code in Markdown previews, on the files page | BSD-3-Clause |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | Math in Markdown previews | MIT |
@@ -40,6 +44,7 @@ Go modules (see `tabtopd/go.mod`), and the C libraries it links.
 | [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) | Linux system calls (watching and renaming files) | BSD 3-Clause |
 | [Opus](https://opus-codec.org/) (libopus) | Encoding the sound for the browser | BSD 3-Clause |
 | [OATH Toolkit](https://www.nongnu.org/oath-toolkit/) (liboath) | Checking TOTP codes | LGPL 2.1 or later |
+| [SQLite](https://sqlite.org/) (libsqlite3) | Reading databases for their previews | Public domain |
 
 ## In the image
 

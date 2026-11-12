@@ -115,8 +115,9 @@ type fetchManager struct {
 	downloadsDir string
 	client       *http.Client
 	// resourceClient loads previews' external resources. The URLs come
-	// from the document being previewed, not the user, so it only ever
-	// reaches public addresses, whatever -fetch-private says.
+	// from the document being previewed, not the user, so -fetch-private
+	// doesn't apply: only -preview-fetch-private lets it reach private
+	// networks.
 	resourceClient *http.Client
 	transfers      *uploadManager
 	activity       *activityLog

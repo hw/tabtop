@@ -595,6 +595,8 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/noble/ciphers/chacha.js", http.StatusNotFound},
 		{"GET", "/tabtop/noble-000000000000/ciphers/chacha.js", http.StatusNotFound},
 		{"GET", "/tabtop/nope.js", http.StatusNotFound},
+		{"GET", "/tabtop/third-party/README.md", http.StatusNotFound},
+		{"GET", "/tabtop/third-party/css-tree.LICENSE", http.StatusOK},
 	} {
 		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader("password=123456"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -984,7 +986,7 @@ func TestTunnelInteropWithJS(t *testing.T) {
 		os.MkdirAll(filepath.Dir(to), 0o755)
 		os.WriteFile(to, data, 0o644)
 	}
-	for _, name := range []string{"tunnel.js", "tunnel-protocol.js", "tunnel-crypto.js", "session.js", "session-state.js", "login-ui.js"} {
+	for _, name := range []string{"tunnel.js", "tunnel-protocol.js", "tunnel-crypto.js", "session.js", "session-state.js", "stored.js", "login-ui.js"} {
 		copyFile(name, filepath.Join(dir, name))
 	}
 	copyFile("testdata/tunnel_interop.mjs", filepath.Join(dir, "interop.mjs"))

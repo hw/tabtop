@@ -37,10 +37,11 @@ export function tunnelURL() {
 // The connection -----------------------------------------------------
 
 export class TunnelError extends Error {
-    constructor(message, login = false, lost = false) {
+    constructor(message, login = false, lost = false, code = "") {
         super(message);
         this.login = login;  // the session is missing or over: log in again
         this.lost = lost;    // the server couldn't be reached, or went, without saying why: try again later
+        this.code = code;    // what kind of failure, if the server says (as "not-database"), to act on
     }
 }
 
@@ -152,23 +153,38 @@ export async function login(credential, url = tunnelURL(), { signal } = {}) {
 
 // Tunnel is one session tunnel. open() makes it and sends the request; then
 // next() returns each message from the server in order, as { text } or
-// { data } (an ArrayBuffer), or null once it's closed.
+// { data } (an ArrayBuffer), or null once it's closed. Aborting signal,
+// before the reply comes, closes it (so the server stops) and open() throws
+// the abort's reason.
 export class Tunnel {
-    static async open(request, sess = storedSession(), url = tunnelURL()) {
+    static async open(request, sess = storedSession(), url = tunnelURL(), { signal } = {}) {
         if (!sess) {
             throw new TunnelError("Log in first.", true);
         }
+        signal?.throwIfAborted();
         const t = new Tunnel();
         await t._connect(url, sess);
-        t.sendText(JSON.stringify(request));
-        const first = await t.next();
+        const abort = () => t.close();
+        signal?.addEventListener("abort", abort, { once: true });
+        let first;
+        try {
+            signal?.throwIfAborted();
+            t.sendText(JSON.stringify(request));
+            first = await t.next();
+            signal?.throwIfAborted();
+        } catch (err) {
+            t.close();
+            throw err;
+        } finally {
+            signal?.removeEventListener("abort", abort);
+        }
         if (!first || first.text === undefined) {
             throw new TunnelError(t.closeReason || "The connection closed.", t.closeLogin, !t.closeReason && !t.closeLogin);
         }
         const reply = JSON.parse(first.text);
         if (reply.error) {
             t.close();
-            throw new TunnelError(reply.error);
+            throw new TunnelError(reply.error, false, false, typeof reply.code === "string" ? reply.code : "");
         }
         t.reply = reply;
         return t;

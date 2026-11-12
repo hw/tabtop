@@ -17,7 +17,36 @@ const loaders = {
     image: loadBuffered,
     text: loadBuffered,
     hex: loadBuffered,
+    // Its schema, asked of the server (see sqlite.go); rows come as shown.
+    sqlite: async (open) => open({ type: "sqlite" }, (t) => ({ schema: { ...t.reply.answer, wal_mode: !!t.reply.wal_mode }, wal: !!t.reply.wal })),
 };
+const sqliteType = { kind: "sqlite", type: "application/vnd.sqlite3" };
+// What every SQLite database starts with.
+const SQLITE_MAGIC = [..."SQLite format 3\0"].map((c) => c.charCodeAt(0));
+async function isSQLite(blob) {
+    const head = new Uint8Array(await blob.slice(0, SQLITE_MAGIC.length).arrayBuffer());
+    return head.length === SQLITE_MAGIC.length && SQLITE_MAGIC.every((b, i) => head[i] === b);
+}
+// startsAsDatabase reports whether the file at path starts as an SQLite
+// database does: its first bytes only, asked for. (Not if they can't be
+// read: what's shown instead says why.)
+async function startsAsDatabase(path, signal) {
+    signal?.throwIfAborted();
+    let t;
+    try {
+        t = await call({ type: "file", path, offset: 0, length: SQLITE_MAGIC.length }, { signal });
+        return await isSQLite(await collect(t, t.reply.length, () => {}, "application/octet-stream"));
+    } catch {
+        return false;
+    } finally {
+        t?.close();
+        signal?.throwIfAborted();
+    }
+}
+
+// What the server says of a file that isn't a database it can read (not
+// one, or damaged): shown in hex instead.
+const notDatabase = (err) => err?.code === "not-database";
 function loadMedia(open) {
     return open({ type: "file", offset: 0, length: 1 }, async (t, type) => {
         await collect(t, t.reply.length, () => {}, type);
@@ -41,8 +70,44 @@ async function identifyText(file, blob) {
     }
 }
 
+// Thrown by open, below, for a file too big for its own preview.
+const tooBig = new Error("it's too big to preview that way");
+
+// loadPreview loads the file name in dir to preview, as mode says (null:
+// as its name says). A file too big for its own preview, or for the text
+// view, is shown in hex instead: the first part, the rest read as it's
+// looked at, however big it is; so is one named as a database that isn't
+// (by its first bytes, or as SQLite finds it).
+// One of no known type that starts as a database does is shown as one.
 export async function loadPreview(dir, name, { signal, progress = () => {}, mode = null } = {}) {
-    const type = mode === "text" || mode === "hex" ? { kind: mode, type: mode === "text" ? "text/plain" : "application/octet-stream" } : typeOf(name) ?? (mode === "auto" ? { kind: "text", type: "text/plain" } : null);
+    // Named as a database: one only if it starts as one, else its bytes.
+    if (mode === null && typeOf(name)?.kind === "sqlite" && !(await startsAsDatabase(join(dir, name), signal))) {
+        return loadAs(dir, name, { signal, progress, mode: "hex" });
+    }
+    let loaded;
+    try {
+        loaded = await loadAs(dir, name, { signal, progress, mode });
+    } catch (err) {
+        const asDatabase = mode === "sqlite" || mode === null && typeOf(name)?.kind === "sqlite";
+        if (err !== tooBig && !(asDatabase && notDatabase(err))) throw err;
+        return loadAs(dir, name, { signal, progress, mode: "hex" });
+    }
+    if (mode === "auto" && loaded.file.sqlite) {
+        // Its tables, if they can be read; if not (not a database after
+        // all, or busy, or slow), the bytes already loaded, from which its
+        // tables can be asked for again.
+        try {
+            return await loadAs(dir, name, { signal, progress, mode: "sqlite" });
+        } catch (err) {
+            if (err?.name === "AbortError" || signal?.aborted) throw err;
+        }
+    }
+    return loaded;
+}
+
+async function loadAs(dir, name, { signal, progress, mode }) {
+    const type = mode === "text" || mode === "hex" ? { kind: mode, type: mode === "text" ? "text/plain" : "application/octet-stream" }
+        : mode === "sqlite" ? sqliteType : typeOf(name) ?? (mode === "auto" ? { kind: "text", type: "text/plain" } : null);
     if (!type || !Object.hasOwn(loaders, type.kind)) throw new Error("this file isn't supported for preview");
     const unknown = !typeOf(name);
     const prefix = mode === "hex" || unknown && ["auto", "text"].includes(mode);
@@ -57,7 +122,7 @@ export async function loadPreview(dir, name, { signal, progress = () => {}, mode
         try {
             signal?.throwIfAborted();
             const { size, mtime } = t.reply;
-            if (!prefix && size > limits[type.kind]) throw new Error("it's grown too big to preview; download it instead");
+            if (!prefix && size > limits[type.kind]) throw tooBig;
             const previewSize = prefix ? (request.offset ?? 0) + t.reply.length : size;
             file = { dir, name, size, mtime, ...type, prefix, previewSize, truncated: prefix && previewSize < size };
             progress(0, ["text", "hex", "image"].includes(type.kind) ? previewSize : null);
@@ -72,10 +137,18 @@ export async function loadPreview(dir, name, { signal, progress = () => {}, mode
             ({ blob: await collect(t, t.reply.length, progress, type) }))
         : loaders[type.kind];
     let { blob = null, ...metadata } = await load(open, (n) => progress(n, file.previewSize));
+    // A database, whatever it's called: its tables can be shown too.
+    if (type.kind === "sqlite" || blob && await isSQLite(blob)) file.sqlite = true;
     if (blob && unknown) {
         // Unknown files share one preview: readable UTF-8 starts as text,
         // while binary/control bytes start in the hex and structure view.
         await identifyText(file, blob);
+    }
+    if (blob && !unknown && file.kind === "text" && new Uint8Array(await blob.slice(0, 8000).arrayBuffer()).includes(0)) {
+        // Named as text, but not (a NUL, as render tells): its bytes, in hex.
+        file.kind = "hex";
+        file.type = "application/octet-stream";
+        file.textAvailable = false;
     }
     if (mode === "auto" && unknown && file.kind === "text" && file.previewSize < Math.min(file.size, UNKNOWN_FIRST)) {
         const head = blob, begin = file.previewSize, end = Math.min(file.size, UNKNOWN_FIRST);

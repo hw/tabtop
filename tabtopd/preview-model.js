@@ -35,7 +35,7 @@ export function languageOf(name) {
 // (see epubFrame), so these have no whole-file buffer limit.
 export const binaryChunkSize = 1_000_000;
 
-export const limits = { image: 50e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, hex: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER };
+export const limits = { image: 50e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, hex: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER, sqlite: Number.MAX_SAFE_INTEGER };
 
 export function typeOf(name) {
     const dot = name.lastIndexOf(".");
@@ -47,6 +47,19 @@ export function typeOf(name) {
     // Names without an extension, as README and Makefile, are mostly text;
     // a file that isn't says so when it's shown.
     return !ext || textExtensions.has(ext) ? { kind: "text", type: "text/plain" } : null;
+}
+
+// binaryNamed reports whether name is a binary's (.bin, .dll, .exe, .so,
+// or a versioned .so such as libc.so.6): shown in hex when clicked.
+export function binaryNamed(name) {
+    return /\.(?:bin|dll|exe|so(?:\.\d+)*)$/i.test(name);
+}
+
+// probablyDatabase reports whether name may well be an SQLite database
+// though its type isn't known (.db): previewed when clicked, as one if it
+// starts as one does.
+export function probablyDatabase(name) {
+    return /\.db$/i.test(name);
 }
 
 // previewable reports whether a file named name, of size bytes, is

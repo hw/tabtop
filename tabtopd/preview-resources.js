@@ -23,6 +23,44 @@ export function resourceAddress(src, base, dir) {
         return path === null ? null : { url: path, remote: false };
     } catch { return null; }
 }
+// webAddress is src as the web address it's fetched from (see
+// resourceAddress), or null if it isn't one.
+export function webAddress(src) {
+    const at = resourceAddress(src, "", "");
+    return at?.remote ? at.url : null;
+}
+
+// fetched runs open (a tunnel), then read with it, closing it once done or
+// once signal aborts.
+async function fetched(signal, open, read) {
+    let tunnel;
+    const cancel = () => tunnel?.close();
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+        signal.throwIfAborted();
+        tunnel = await open();
+        signal.throwIfAborted();
+        return await read(tunnel);
+    } finally {
+        signal.removeEventListener("abort", cancel);
+        tunnel?.close();
+    }
+}
+
+// remoteResource fetches the kind of resource at url (from webAddress)
+// through the server, after reserving its size: {bytes, mime, base}, or
+// {error} if there isn't room for it.
+export function remoteResource(url, kind, reserve, signal) {
+    return fetched(signal, () => call({ type: "preview-resource", resource: kind, url }), async (tunnel) => {
+        const { size, mime } = tunnel.reply;
+        if (!Number.isSafeInteger(size) || size < 0 || size > limits[kind] || kind === "image" && !mime?.startsWith("image/")) throw new Error(`Not a supported ${kind === "css" ? "stylesheet" : kind}.`);
+        if (!reserve(size)) return { error: "Resources exceed the preview budget." };
+        const blob = await collect(tunnel, size, () => {}, mime);
+        signal.throwIfAborted();
+        return { bytes: await blob.arrayBuffer(), mime, base: tunnel.reply.url };
+    });
+}
+
 export function frameResources(dir, mode) {
     const loader = pictureLoader({
         resolve: input => {
@@ -35,23 +73,15 @@ export function frameResources(dir, mode) {
             if (remote && mode === "none") return { error: "External resources are blocked." };
             if (remote && mode === "direct") return { url, base: url };
             if (!remote && (kind === "css" && !/\.css$/i.test(url) || kind === "font" && !/\.(woff2?|ttf|otf)$/i.test(url) || kind === "image" && typeOf(url.split("/").pop())?.kind !== "image")) return { error: "Not a supported resource." };
-            let tunnel;
-            const cancel = () => tunnel?.close();
-            signal.addEventListener("abort", cancel, { once: true });
-            try {
-                signal.throwIfAborted();
-                tunnel = await call(remote ? { type: "preview-resource", resource: kind, url } : { type: "file", path: url });
-                signal.throwIfAborted();
+            if (remote) return remoteResource(url, kind, reserve, signal);
+            return fetched(signal, () => call({ type: "file", path: url }), async (tunnel) => {
                 const { size } = tunnel.reply;
                 if (!Number.isSafeInteger(size) || size < 0 || size > limits[kind] || !reserve(size)) throw new Error("Resource exceeds the preview budget.");
-                const mime = remote ? tunnel.reply.mime : kind === "css" ? "text/css" : kind === "font" ? (/\.woff2$/i.test(url) ? "font/woff2" : /\.woff$/i.test(url) ? "font/woff" : "font/ttf") : typeOf(url.split("/").pop()).type;
+                const mime = kind === "css" ? "text/css" : kind === "font" ? (/\.woff2$/i.test(url) ? "font/woff2" : /\.woff$/i.test(url) ? "font/woff" : "font/ttf") : typeOf(url.split("/").pop()).type;
                 const blob = await collect(tunnel, size, () => {}, mime);
                 signal.throwIfAborted();
-                return { bytes: await blob.arrayBuffer(), mime, base: remote ? tunnel.reply.url : "local:" + url };
-            } finally {
-                signal.removeEventListener("abort", cancel);
-                tunnel?.close();
-            }
+                return { bytes: await blob.arrayBuffer(), mime, base: "local:" + url };
+            });
         },
     });
     return { read: request => loader.read(JSON.stringify(request)), stop: () => loader.stop() };

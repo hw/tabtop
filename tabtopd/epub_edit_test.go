@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -211,33 +213,55 @@ func TestEpubEditRefused(t *testing.T) {
 	}
 }
 
+// coverOf reads back the edited book's cover, checking the picture there
+// is want.
+func coverOf(t *testing.T, z *epubZip, want []byte) string {
+	t.Helper()
+	b, err := z.readBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := z.read(b.Cover, maxEpubPicture); want != nil && !bytes.Equal(got, want) {
+		t.Errorf("%s isn't the new picture", b.Cover)
+	}
+	return b.Cover
+}
+
+// TestEpubEditCover: a picture from outside the book is added to it, as
+// images/cover.jpg or .png beside the OPF, whatever the old cover's type;
+// the old cover stays as it was.
 func TestEpubEditCover(t *testing.T) {
 	pngBytes, jpegBytes := testPicture(t, "png"), testPicture(t, "jpeg")
-	t.Run("replaced", func(t *testing.T) {
+	t.Run("added beside the old one", func(t *testing.T) {
 		opf := editOPF("3.0", `<dc:title>T</dc:title>`,
 			`<item id="img" href="images/cover.png" media-type="image/png" properties="cover-image"/>`)
-		z, got := edited(t, makeEpub(t, editBookFiles(opf, "OEBPS/images/cover.png", "old")...),
-			epubEdit{Title: "T", Cover: true}, pngBytes, "OEBPS/images/cover.png")
-		if b, _ := z.read("OEBPS/images/cover.png", maxEpubPicture); !bytes.Equal(b, pngBytes) {
-			t.Error("the cover wasn't replaced")
+		book := makeEpub(t, editBookFiles(opf, "OEBPS/images/cover.png", "old")...)
+		z, got := edited(t, book, epubEdit{Title: "T", Cover: true}, pngBytes)
+		if c := coverOf(t, z, pngBytes); c != "OEBPS/images/cover-2.png" {
+			t.Errorf("the cover: %s", c)
 		}
-		if got != opf {
-			t.Errorf("the OPF changed:\n%s", got)
+		if b, _ := z.read("OEBPS/images/cover.png", maxEpubPicture); string(b) != "old" {
+			t.Error("the old cover was written over")
 		}
-		var out bytes.Buffer
-		err := openTestEpub(t, makeEpub(t, editBookFiles(opf, "OEBPS/images/cover.png", "old")...)).
-			editBook(epubEdit{Title: "T", Cover: true}, jpegBytes, &out, editNow)
-		if err == nil || !strings.Contains(err.Error(), "must be a PNG picture") {
-			t.Errorf("a JPEG for a PNG cover: %v", err)
+		if strings.Count(got, `properties="cover-image"`) != 1 || !strings.Contains(got, `<item id="img" href="images/cover.png" media-type="image/png"/>`) {
+			t.Errorf("the old cover is still marked:\n%s", got)
+		}
+		// A JPEG for a PNG cover: fine, as it's a new file.
+		z, _ = edited(t, book, epubEdit{Title: "T", Cover: true}, jpegBytes)
+		if c := coverOf(t, z, jpegBytes); c != "OEBPS/images/cover.jpg" {
+			t.Errorf("the JPEG cover: %s", c)
 		}
 	})
 	t.Run("named by EPUB 2's meta", func(t *testing.T) {
 		opf := editOPF("2.0", `<dc:title>T</dc:title><meta name="cover" content="img"/>`,
 			`<item id="img" href="images/c.jpg" media-type="image/jpeg"/>`)
-		z, _ := edited(t, makeEpub(t, editBookFiles(opf, "OEBPS/images/c.jpg", "old")...),
-			epubEdit{Title: "T", Cover: true}, jpegBytes, "OEBPS/images/c.jpg")
-		if b, _ := z.read("OEBPS/images/c.jpg", maxEpubPicture); !bytes.Equal(b, jpegBytes) {
-			t.Error("the cover wasn't replaced")
+		z, got := edited(t, makeEpub(t, editBookFiles(opf, "OEBPS/images/c.jpg", "old")...),
+			epubEdit{Title: "T", Cover: true}, jpegBytes)
+		if c := coverOf(t, z, jpegBytes); c != "OEBPS/images/cover.jpg" {
+			t.Errorf("the cover: %s", c)
+		}
+		if strings.Count(got, `name="cover"`) != 1 || !strings.Contains(got, `<meta name="cover" content="cover-image"/>`) {
+			t.Errorf("the meta:\n%s", got)
 		}
 	})
 	for _, version := range []string{"3.0", "2.0"} {
@@ -248,31 +272,90 @@ func TestEpubEditCover(t *testing.T) {
 				`<item id="cover-image" href="cover.png" media-type="image/png"/>`)
 			z, got := edited(t, makeEpub(t, editBookFiles(opf, "OEBPS/cover.png", "another picture")...),
 				epubEdit{Title: "T", Cover: true}, pngBytes)
-			book, err := z.readBook()
-			if err != nil || book.Cover != "OEBPS/cover-2.png" {
-				t.Fatalf("%+v, %v\n%s", book, err, got)
-			}
-			if b, _ := z.read("OEBPS/cover-2.png", maxEpubPicture); !bytes.Equal(b, pngBytes) {
-				t.Error("the cover isn't in it")
-			}
-			if b, _ := z.read("OEBPS/cover.png", maxEpubPicture); string(b) != "another picture" {
-				t.Error("the other cover.png changed")
+			if c := coverOf(t, z, pngBytes); c != "OEBPS/images/cover.png" {
+				t.Fatalf("the cover: %s\n%s", c, got)
 			}
 			hasProperties := strings.Contains(got, `properties="cover-image"`)
 			if hasProperties != (version == "3.0") || strings.Contains(got, `content="gone"`) ||
-				!strings.Contains(got, `<meta name="cover" content="cover-image-2"/>`) {
+				!strings.Contains(got, `<meta name="cover" content="cover-image-2"/>`) ||
+				!strings.Contains(got, `href="images/cover.png" media-type="image/png"`) {
 				t.Errorf("EPUB %s:\n%s", version, got)
 			}
 		})
 	}
-	t.Run("added, not a picture that can be", func(t *testing.T) {
+	t.Run("an OPF at the book's root", func(t *testing.T) {
+		container := strings.Replace(testContainer, "OEBPS/content.opf", "content.opf", 1)
+		book := makeEpub(t, "META-INF/container.xml", container, "content.opf", editOPF("3.0", `<dc:title>T</dc:title>`, ""),
+			"text/ch1.xhtml", "<html><body><p>1</p></body></html>")
 		var out bytes.Buffer
-		err := openTestEpub(t, makeEpub(t, editBookFiles(editOPF("3.0", `<dc:title>T</dc:title>`, ""))...)).
-			editBook(epubEdit{Title: "T", Cover: true}, []byte("GIF89a......"), &out, editNow)
-		if err == nil || !strings.Contains(err.Error(), "JPEG, PNG or WebP") {
-			t.Errorf("a GIF: %v", err)
+		if err := openTestEpub(t, book).editBook(epubEdit{Title: "T", Cover: true}, jpegBytes, &out, editNow); err != nil {
+			t.Fatal(err)
+		}
+		if c := coverOf(t, openTestEpub(t, out.Bytes()), jpegBytes); c != "images/cover.jpg" {
+			t.Errorf("the cover: %s", c)
 		}
 	})
+	for _, kind := range []string{"GIF89a......", "RIFF....WEBPVP8 "} {
+		var out bytes.Buffer
+		err := openTestEpub(t, makeEpub(t, editBookFiles(editOPF("3.0", `<dc:title>T</dc:title>`, ""))...)).
+			editBook(epubEdit{Title: "T", Cover: true}, []byte(kind), &out, editNow)
+		if err == nil || !strings.Contains(err.Error(), "JPEG or PNG") {
+			t.Errorf("%.4s: %v", kind, err)
+		}
+	}
+}
+
+// TestEpubEditCoverItem: a picture already in the book is named its cover
+// where it is: no file is added or changed, and the old cover stays.
+func TestEpubEditCoverItem(t *testing.T) {
+	for _, version := range []string{"3.0", "2.0"} {
+		t.Run("EPUB "+version, func(t *testing.T) {
+			opf := editOPF(version, `<dc:title>T</dc:title><meta name="cover" content="a"/>`,
+				`<item id="a" href="a.png" media-type="image/png" properties="cover-image"/>`+
+					`<item id="b" href="pics/b.png" media-type="image/png"/>`)
+			if version == "2.0" {
+				opf = strings.ReplaceAll(opf, ` properties="cover-image"`, "")
+			}
+			book := makeEpub(t, editBookFiles(opf, "OEBPS/a.png", "A", "OEBPS/pics/b.png", "B")...)
+			z, got := edited(t, book, epubEdit{Title: "T", CoverItem: "OEBPS/pics/b.png"}, nil)
+			if c := coverOf(t, z, []byte("B")); c != "OEBPS/pics/b.png" {
+				t.Fatalf("the cover: %s\n%s", c, got)
+			}
+			if n, was := len(z.all), len(openTestEpub(t, book).all); n != was {
+				t.Errorf("%d files, from %d", n, was)
+			}
+			wantMarked := map[string]int{"3.0": 1, "2.0": 0}[version]
+			if strings.Count(got, "cover-image") != wantMarked ||
+				version == "3.0" && !strings.Contains(got, `href="pics/b.png" media-type="image/png" properties="cover-image"`) {
+				t.Errorf("marked:\n%s", got)
+			}
+			if strings.Count(got, `name="cover"`) != 1 || !strings.Contains(got, `<meta name="cover" content="b"/>`) {
+				t.Errorf("the meta:\n%s", got)
+			}
+		})
+	}
+	opf := editOPF("3.0", `<dc:title>T</dc:title>`,
+		`<item id="a" href="a.png" media-type="image/png" properties="cover-image"/>`+
+			`<item href="noid.png" media-type="image/png"/><item id="x" href="x.png" media-type="text/plain"/>`)
+	book := makeEpub(t, editBookFiles(opf, "OEBPS/a.png", "A", "OEBPS/noid.png", "N", "OEBPS/x.png", "X")...)
+	for item, want := range map[string]string{
+		"OEBPS/missing.png":    "isn't a picture in the book",
+		"OEBPS/text/ch1.xhtml": "isn't a picture in the book",
+		"OEBPS/x.png":          "isn't a picture in the book",
+		"OEBPS/noid.png":       "has no ID",
+	} {
+		var out bytes.Buffer
+		if err := openTestEpub(t, book).editBook(epubEdit{Title: "T", CoverItem: item}, nil, &out, editNow); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", item, err)
+		}
+	}
+	var out bytes.Buffer
+	if err := openTestEpub(t, book).editBook(epubEdit{Title: "T", CoverItem: "OEBPS/a.png"}, nil, &out, editNow); err != errEpubNoChange {
+		t.Errorf("the cover it has: %v", err)
+	}
+	if err := openTestEpub(t, book).editBook(epubEdit{Title: "T", Cover: true, CoverItem: "OEBPS/a.png"}, testPicture(t, "png"), &out, editNow); err == nil {
+		t.Error("a picture sent and one named, both")
+	}
 }
 
 // TestEpubEditTunnel edits a book as the page does, through the tunnel and
@@ -339,7 +422,7 @@ func TestEpubEditTunnel(t *testing.T) {
 	b, _ := json.Marshal(r["book"])
 	var got epubBook
 	json.Unmarshal(b, &got)
-	if got.Title != "New" || got.Creator != "Bea" || got.Cover != "OEBPS/cover.jpg" {
+	if got.Title != "New" || got.Creator != "Bea" || got.Cover != "OEBPS/images/cover.jpg" {
 		t.Fatalf("%v", r)
 	}
 	st2, _ := os.Stat(file)
@@ -349,14 +432,14 @@ func TestEpubEditTunnel(t *testing.T) {
 	leftovers()
 	// Read again, its new cover's there.
 	tc := openSession(t, ctx, srv.URL, s)
-	if r := tc.request(t, ctx, tunnelRequest{Type: "epub", Path: "book.epub", Item: "OEBPS/cover.jpg"}); r["mime"] != "image/jpeg" {
+	if r := tc.request(t, ctx, tunnelRequest{Type: "epub", Path: "book.epub", Item: "OEBPS/images/cover.jpg"}); r["mime"] != "image/jpeg" {
 		t.Errorf("the cover: %v", r)
 	}
 }
 
 // TestEpubEditCoverNamedMissing: a book whose manifest names a cover that
-// isn't in it is given one there, not another named beside it, which
-// readers, taking the first, wouldn't see.
+// isn't in it is given a new one beside where it's named, under a name the
+// manifest doesn't use, and it's the cover readers find.
 func TestEpubEditCoverNamedMissing(t *testing.T) {
 	opf := editOPF("3.0", `<dc:title>T</dc:title>`, `<item id="img" href="images/cover.png" media-type="image/png" properties="cover-image"/>`)
 	book := makeEpub(t, editBookFiles(opf)...)
@@ -365,20 +448,16 @@ func TestEpubEditCoverNamedMissing(t *testing.T) {
 	}
 	png := testPicture(t, "png")
 	z, got := edited(t, book, epubEdit{Title: "T", Cover: true}, png)
-	if b, _ := z.read("OEBPS/images/cover.png", maxEpubPicture); !bytes.Equal(b, png) {
-		t.Error("not put where it's named")
+	if c := coverOf(t, z, png); c != "OEBPS/images/cover-2.png" {
+		t.Errorf("the cover: %s\n%s", c, got)
 	}
-	if got != opf {
-		t.Errorf("the OPF changed:\n%s", got)
-	}
-	var out bytes.Buffer
-	if err := openTestEpub(t, book).editBook(epubEdit{Title: "T", Cover: true}, testPicture(t, "jpeg"), &out, editNow); err == nil {
-		t.Error("a JPEG put where a PNG is named")
+	if strings.Count(got, `href="images/cover.png"`) != 1 {
+		t.Errorf("named twice:\n%s", got)
 	}
 }
 
-// TestEpubCoverFirstNamed: with two <meta name="cover">, the book is read,
-// and its cover changed, as the first names it.
+// TestEpubCoverFirstNamed: with two <meta name="cover">, the book is read
+// as the first names it, and given a new cover, has one meta, naming it.
 func TestEpubCoverFirstNamed(t *testing.T) {
 	opf := editOPF("2.0", `<dc:title>T</dc:title><meta name="cover" content="one"/><meta name="cover" content="two"/>`,
 		`<item id="one" href="one.png" media-type="image/png"/><item id="two" href="two.png" media-type="image/png"/>`)
@@ -387,11 +466,12 @@ func TestEpubCoverFirstNamed(t *testing.T) {
 		t.Errorf("read as %q", b.Cover)
 	}
 	png := testPicture(t, "png")
-	z, _ := edited(t, book, epubEdit{Title: "T", Cover: true}, png, "OEBPS/one.png")
-	one, _ := z.read("OEBPS/one.png", maxEpubPicture)
-	two, _ := z.read("OEBPS/two.png", maxEpubPicture)
-	if !bytes.Equal(one, png) || string(two) != "2" {
-		t.Errorf("one %d bytes, two %q", len(one), two)
+	z, got := edited(t, book, epubEdit{Title: "T", Cover: true}, png)
+	if c := coverOf(t, z, png); c != "OEBPS/images/cover.png" {
+		t.Errorf("the cover: %s", c)
+	}
+	if strings.Count(got, `name="cover"`) != 1 {
+		t.Errorf("the metas:\n%s", got)
 	}
 }
 
@@ -435,8 +515,8 @@ func TestEditSymlinkRefused(t *testing.T) {
 }
 
 // TestEpubEditOneCover: a book marking more than one picture as its cover,
-// given a new one, has one cover: the new picture, where the first was;
-// the others not marked (but kept, as the book may show them).
+// given a new one, has one cover: the new picture; the others not marked
+// (but kept as they were, as the book may show them).
 func TestEpubEditOneCover(t *testing.T) {
 	for _, version := range []string{"3.0", "2.0"} {
 		t.Run("EPUB "+version, func(t *testing.T) {
@@ -448,36 +528,112 @@ func TestEpubEditOneCover(t *testing.T) {
 				opf = strings.ReplaceAll(strings.ReplaceAll(opf, ` properties="scripted cover-image"`, ""), ` properties="cover-image"`, "")
 			}
 			book := makeEpub(t, editBookFiles(opf, "OEBPS/a.png", "A", "OEBPS/b.png", "B", "OEBPS/c.png", "C")...)
-			first := "OEBPS/a.png" // EPUB 3: the first marked; EPUB 2: the first meta's
-			if version == "2.0" {
-				first = "OEBPS/b.png"
-			}
 			png := testPicture(t, "png")
-			z, got := edited(t, book, epubEdit{Title: "T", Cover: true}, png, first)
-			b, err := z.readBook()
-			if err != nil || b.Cover != first {
-				t.Fatalf("the cover: %+v %v\n%s", b, err, got)
+			z, got := edited(t, book, epubEdit{Title: "T", Cover: true}, png)
+			if c := coverOf(t, z, png); c != "OEBPS/images/cover.png" {
+				t.Fatalf("the cover: %s\n%s", c, got)
 			}
-			if c, _ := z.read(first, maxEpubPicture); !bytes.Equal(c, png) {
-				t.Error("the new picture isn't where the cover was")
-			}
-			for _, name := range []string{"a", "b", "c"} {
-				if "OEBPS/"+name+".png" != first {
-					if c, _ := z.read("OEBPS/"+name+".png", maxEpubPicture); string(c) != strings.ToUpper(name) {
-						t.Errorf("%s.png: %q", name, c)
-					}
-				}
-			}
-			if n := strings.Count(got, "cover-image"); version == "3.0" && n != 1 || version == "2.0" && n != 0 {
+			if n := strings.Count(got, `properties="cover-image"`); version == "3.0" && n != 1 || version == "2.0" && n != 0 {
 				t.Errorf("%d marked as the cover:\n%s", n, got)
 			}
-			id := strings.TrimSuffix(strings.TrimPrefix(first, "OEBPS/"), ".png")
-			if strings.Count(got, `name="cover"`) != 1 || !strings.Contains(got, `<meta name="cover" content="`+id+`"/>`) {
+			if strings.Count(got, `name="cover"`) != 1 || !strings.Contains(got, `<meta name="cover" content="cover-image"/>`) {
 				t.Errorf("the meta:\n%s", got)
 			}
 			if version == "3.0" && !strings.Contains(got, `<item id="b" href="b.png" media-type="image/png" properties="scripted"/>`) {
 				t.Errorf("b's other properties:\n%s", got)
 			}
 		})
+	}
+}
+
+// TestEpubEditTunnelCoverItem: through the tunnel, a picture the book lists
+// is named its cover, with nothing sent; one it doesn't list, or one named
+// with a picture sent as well, is refused before anything's read.
+func TestEpubEditTunnelCoverItem(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	file := filepath.Join(g.downloadsDir, "book.epub")
+	png := testPicture(t, "png")
+	book := makeEpub(t, editBookFiles(editOPF("3.0", `<dc:title>T</dc:title>`,
+		`<item id="p" href="p.png" media-type="image/png"/>`), "OEBPS/p.png", string(png))...)
+	os.WriteFile(file, book, 0o644)
+	st, _ := os.Stat(file)
+	request := func(item string, size int64) map[string]any {
+		return openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "epub-edit", Path: "book.epub",
+			IfMtime: fileVersion(st), IfSize: st.Size(), Title: "T", CoverItem: item, Size: size})
+	}
+	for _, refused := range []struct {
+		item string
+		size int64
+	}{{"OEBPS/nope.png", 0}, {"OEBPS/text/ch1.xhtml", 0}, {"OEBPS/p.png", int64(len(png))}} {
+		if r := request(refused.item, refused.size); r["error"] == nil {
+			t.Errorf("%s with %d bytes: %v", refused.item, refused.size, r)
+		}
+	}
+	// Pictures to remove named with &, < and >, each escaped to six bytes
+	// as it's sent to the child: refused as too much, measured as sent,
+	// though their names alone are well inside the limit.
+	var heavy []string
+	for i := range 400 { // about 56 KiB of names; some 290 KiB escaped
+		heavy = append(heavy, fmt.Sprintf("OEBPS/%d%s.png", i, strings.Repeat("&<>", 40)))
+	}
+	if r := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "epub-edit", Path: "book.epub",
+		IfMtime: fileVersion(st), IfSize: st.Size(), Title: "T", RemoveItems: heavy}); r["error"] != "That's not a change that can be made." {
+		t.Errorf("escaped past the argument limit: %v", r)
+	}
+	// Refused before the book's read: so said even of a file that isn't one.
+	junk := filepath.Join(g.downloadsDir, "junk.epub")
+	os.WriteFile(junk, []byte("not a book"), 0o644)
+	jst, _ := os.Stat(junk)
+	if r := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: "epub-edit", Path: "junk.epub",
+		IfMtime: fileVersion(jst), IfSize: jst.Size(), Title: "T", RemoveItems: heavy}); r["error"] != "That's not a change that can be made." {
+		t.Errorf("too much, of a file that isn't a book: %v", r)
+	}
+	tc := openSession(t, ctx, srv.URL, s)
+	if r := tc.request(t, ctx, tunnelRequest{Type: "epub-edit", Path: "book.epub", IfMtime: fileVersion(st), IfSize: st.Size(),
+		Title: "T", CoverItem: "OEBPS/p.png"}); r["ok"] != true {
+		t.Fatalf("accepted: %v", r)
+	}
+	_, p, err := tc.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct{ Book epubBook }
+	if json.Unmarshal(p, &r) != nil || r.Book.Cover != "OEBPS/p.png" {
+		t.Errorf("the reply: %s", p)
+	}
+}
+
+// TestEpubEditTunnelRemove: through the tunnel, a picture nothing uses is
+// removed, and the book read back without it before it's saved.
+func TestEpubEditTunnelRemove(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	s := login(t, ctx, srv.URL, code(0))
+	file := filepath.Join(g.downloadsDir, "book.epub")
+	png := testPicture(t, "png")
+	book := makeEpub(t, editBookFiles(editOPF("3.0", `<dc:title>T</dc:title>`,
+		`<item id="p" href="p.png" media-type="image/png"/>`), "OEBPS/p.png", string(png))...)
+	os.WriteFile(file, book, 0o644)
+	st, _ := os.Stat(file)
+	tc := openSession(t, ctx, srv.URL, s)
+	if r := tc.request(t, ctx, tunnelRequest{Type: "epub-edit", Path: "book.epub", IfMtime: fileVersion(st), IfSize: st.Size(),
+		Title: "T", RemoveItems: []string{"OEBPS/p.png"}}); r["ok"] != true {
+		t.Fatalf("accepted: %v", r)
+	}
+	_, p, err := tc.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Book  epubBook
+		Error string
+	}
+	if json.Unmarshal(p, &r) != nil || r.Error != "" || slices.Contains(r.Book.Pictures, "OEBPS/p.png") {
+		t.Fatalf("the reply: %s", p)
+	}
+	if b, _ := os.ReadFile(file); bytes.Contains(b, []byte("p.png")) {
+		t.Error("the picture is still in the book")
 	}
 }

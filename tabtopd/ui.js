@@ -5,6 +5,10 @@
 // and download.js.
 
 import { glyphs } from "./glyphs.js";
+import { copyText } from "./preview-dom.js";
+import { storeJSON, storedJSON } from "./stored.js";
+
+export { copyText };
 
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
@@ -246,20 +250,8 @@ function labelField(value = "") {
 
 // The choices last made in the Share and Upload link dialogs, which they
 // start with next time, kept in localStorage, which may refuse.
-function lastChoices(key) {
-    try {
-        return JSON.parse(localStorage.getItem(key) ?? "{}") ?? {};
-    } catch {
-        return {};
-    }
-}
-function keepChoices(key, choices) {
-    try {
-        localStorage.setItem(key, JSON.stringify(choices));
-    } catch {
-        // They start as they always do, then.
-    }
-}
+const lastChoices = (key) => storedJSON(key, {});
+const keepChoices = (key, choices) => storeJSON(key, choices);
 // choose sets the select s to value, if it offers it.
 function pick(s, value) {
     if (value !== undefined && [...s.options].some((o) => o.value === String(value))) {
@@ -476,16 +468,23 @@ export async function askLine(current, total) {
 }
 
 // askBookDetails asks for a book's title and author, starting with those
-// it has, and a new cover picture, showing its cover (coverURL, if it has
-// one, hasCover, and it could be fetched), or why it can't be changed
-// (coverNote). The picture is one in Downloads, chosen with pick() (which
-// resolves to it, as a File, or null), one already in the book, chosen with
-// pickEpub() the same way, or one dropped on the dialog or pasted into it,
-// from this computer. Rebuild contents closes this dialog and resolves to
+// it has, and a new cover, showing its cover (coverURL, if it has one,
+// hasCover, and it could be fetched). The new cover is a picture from
+// outside the book, added to it: one in Downloads, chosen with pick()
+// (which resolves to it, as a File, or null), or one from this computer,
+// dropped on the dialog, pasted into it, or chosen by clicking the cover;
+// or a picture already in the book, chosen with pickEpub() (which resolves
+// to {item, file}, its path in the book and, to show it, its bytes, or
+// null). Rebuild TOC closes this dialog and resolves to
 // {rebuildTOC: true} (after a confirm when hasTOC). Else it resolves to
-// {title, creator, picture}, picture null if none was chosen, or null for
-// Cancel.
-export async function askBookDetails({ title, creator, hasCover, coverURL, coverNote, pick, pickEpub, hasTOC }) {
+// {title, creator, picture, coverItem, removeItems}: picture,
+// the File to add, or coverItem, the path of the book's picture, if either
+// was chosen; and removeItems, the pictures to remove from the book (any
+// cover pages showing one are made to show the cover); or null for Cancel. uses resolves to what uses each of
+// the book's pictures (see epubPictureUse in epub_trim.go), or null;
+// thumb(path, signal) to a picture's bytes, to show it (aborting signal
+// gives up on it); size(bytes) says a size.
+export async function askBookDetails({ title, creator, hasCover, coverURL, pick, pickEpub, hasTOC, uses, thumb, size }) {
     const field = (label, input) => el("label", { className: "field" }, el("span", { textContent: label }), input);
     const titleBox = el("input", { type: "text", value: title, required: true, maxLength: 500, spellcheck: false, autocomplete: "off" });
     const creatorBox = el("input", { type: "text", value: creator, maxLength: 500, spellcheck: false, autocomplete: "off",
@@ -497,7 +496,10 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
     const none = el("span", { className: "hint no-cover", textContent: hasCover ? "Not shown" : "No cover", hidden: !!coverURL });
     const which = el("span", { className: "hint cover-name" });
     const clear = el("button", { type: "button", className: "cover-clear", textContent: "Clear new picture", hidden: true });
+    // What's chosen: a picture to add (picked), or one in the book
+    // (pickedItem), never both; pickedURL shows either.
     let picked = null;
+    let pickedItem = null;
     let pickedURL = null;
     const showCover = (src) => {
         if (src) {
@@ -510,22 +512,28 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
             none.hidden = false;
         }
     };
-    const take = (file) => {
-        if (coverNote || !file || !file.type.startsWith("image/")) {
-            return false;
-        }
-        picked = file;
+    const setPicture = (file, item) => {
+        picked = item ? null : file;
+        pickedItem = item;
         if (pickedURL) {
             URL.revokeObjectURL(pickedURL);
         }
         pickedURL = URL.createObjectURL(file);
         showCover(pickedURL);
-        which.textContent = file.name ? `New: ${file.name}` : "New: a picture pasted";
+        which.textContent = item ? `From the book: ${item}` : file.name ? `New: ${file.name}` : "New: a picture pasted";
         clear.hidden = false;
+        updateTrim();
+    };
+    const take = (file) => {
+        if (!file || !file.type.startsWith("image/")) {
+            return false;
+        }
+        setPicture(file, null);
         return true;
     };
     clear.addEventListener("click", () => {
         picked = null;
+        pickedItem = null;
         if (pickedURL) {
             URL.revokeObjectURL(pickedURL);
             pickedURL = null;
@@ -533,32 +541,121 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
         showCover(coverURL || "");
         which.textContent = "";
         clear.hidden = true;
+        updateTrim();
     });
-    const fromDownloads = el("button", { type: "button", className: "cover-pick", textContent: "From Downloads…", disabled: !!coverNote });
+    const fromDownloads = el("button", { type: "button", className: "cover-pick", textContent: "From Downloads…" });
     fromDownloads.addEventListener("click", async () => take(await pick()));
-    const fromEpub = el("button", { type: "button", className: "cover-pick-epub", textContent: "From EPUB Content…", disabled: !!coverNote });
-    fromEpub.addEventListener("click", async () => take(await pickEpub()));
-    const cover = el("div", { className: "cover-field" + (coverNote ? " locked" : "") }, shown, none,
-        ...(coverNote ? [] : [el("span", { className: "hint cover-drop-hint", textContent: "Drop or paste" })]));
-    const note = el("p", { className: "hint cover-note", textContent: coverNote || (hasCover
-        ? "A new picture replaces the cover, as the same type."
-        : "A picture chosen is added as the cover.") });
+    const fromEpub = el("button", { type: "button", className: "cover-pick-epub", textContent: "From EPUB Content…" });
+    fromEpub.addEventListener("click", async () => {
+        const got = await pickEpub();
+        if (got?.item && got.file) {
+            setPicture(got.file, got.item);
+        }
+    });
+    // Clicked (or Enter or Space on it), the cover asks for a picture
+    // from this computer, as one dropped or pasted would be.
+    const chooser = el("input", { type: "file", accept: "image/*", hidden: true, className: "cover-file" });
+    chooser.addEventListener("change", () => {
+        take(chooser.files?.[0] ?? null);
+        chooser.value = "";
+    });
+    const cover = el("div", { className: "cover-field", tabIndex: 0,
+        title: "Choose a picture from this computer" }, shown, none,
+        el("span", { className: "hint cover-drop-hint", textContent: "Drop, paste or click" }), chooser);
+    cover.setAttribute("role", "button");
+    cover.setAttribute("aria-label", "The cover: choose a picture from this computer, or drop or paste one");
+    cover.addEventListener("click", (e) => {
+        if (e.target !== chooser) {
+            chooser.click();
+        }
+    });
+    cover.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            chooser.click();
+        }
+    });
+    const note = el("p", { className: "hint cover-note", textContent: hasCover
+        ? "A picture from the book becomes the cover where it is; any other is added to the book. The old cover stays in it."
+        : "A picture from the book becomes the cover where it is; any other is added to the book as its cover." });
+    // Trimming: the old cover, once a new one's chosen and only its cover
+    // pages use it, and pictures nothing uses, chosen with Cleanup Pics…: all
+    // removed on Save. Known once uses resolves.
+    let report = null;
+    let removing = new Set();
+    // Whether Cleanup Pics… has been through: if so, removing is what was
+    // chosen, even if that's nothing, and isn't ticked afresh.
+    let picturesChosen = false;
+    const oldCover = el("input", { type: "checkbox", checked: true, className: "remove-old-cover" });
+    const oldCoverText = el("span");
+    const oldCoverRow = el("label", { className: "check remove-old-cover-row", hidden: true }, oldCover, oldCoverText);
+    const picturesButton = el("button", { type: "button", className: "book-pictures", textContent: "Cleanup Pics…", disabled: true,
+        title: "Remove pictures nothing in the book uses" });
+    const trimText = el("span", { className: "hint trim-summary" });
+    const oldCoverUse = () => report?.find((u) => u.cover) ?? null;
+    const removable = (u) => (u.users ?? []).every((f) => (u.cover_pages ?? []).includes(f));
+    // A cover to show on cover pages instead: the book's, or a new one.
+    const coverToShow = () => !!picked || !!pickedItem || !!report?.some((u) => u.cover);
+    const removingOldCover = () => !oldCoverRow.hidden && oldCover.checked;
+    function updateTrim() {
+        // Ticked to go, but used by cover pages, with no cover now for
+        // them to show instead (the new one cleared): kept after all, or
+        // the save would refuse to remove it, and fail.
+        if (report) {
+            removing = new Set([...removing].filter((p) => {
+                const u = report.find((x) => x.path === p);
+                return u && canGo(u, coverToShow());
+            }));
+        }
+        const old = oldCoverUse();
+        const newCover = !!picked || !!pickedItem && pickedItem !== old?.path;
+        oldCoverRow.hidden = !(old && newCover && removable(old));
+        if (!oldCoverRow.hidden) {
+            const pages = old.cover_pages?.length ?? 0;
+            oldCoverText.textContent = `Remove the old cover from the book (${size(old.bytes)})` +
+                (pages ? `; ${pages === 1 ? "its cover page shows" : "its cover pages show"} the new one` : "");
+        }
+        const chosen = [...removing].filter((p) => p !== pickedItem);
+        const total = chosen.reduce((n, p) => n + (report?.find((u) => u.path === p)?.bytes ?? 0), 0);
+        trimText.textContent = chosen.length ? `${chosen.length} picture${chosen.length === 1 ? "" : "s"} removed on Save (${size(total)})` : "";
+        if (report) {
+            picturesButton.disabled = !report.some((u) => canGo(u, coverToShow()) && u.path !== pickedItem);
+            picturesButton.title = picturesButton.disabled ? "Every picture in the book is used" : "Remove pictures nothing in the book uses";
+        }
+    }
+    Promise.resolve(uses).then((r) => {
+        report = Array.isArray(r) ? r : null;
+        if (!report) {
+            picturesButton.title = "The book's pictures couldn't be read";
+        }
+        updateTrim();
+    }, () => (picturesButton.title = "The book's pictures couldn't be read"));
+    picturesButton.addEventListener("click", async () => {
+        const got = await askPictures(report, picturesChosen ? removing : null, pickedItem, coverToShow(), thumb, size);
+        if (got) {
+            removing = got;
+            picturesChosen = true;
+            updateTrim();
+        }
+    });
     const body = el("div", { className: "book-edit" }, cover,
         el("div", { className: "book-meta" }, field("Title", titleBox), field("Author", creatorBox),
-            el("div", { className: "cover-actions" }, fromDownloads, fromEpub, clear), which, note));
+            el("div", { className: "cover-actions" }, fromDownloads, fromEpub, clear), which, note, oldCoverRow,
+            trimText));
     const asking = choose("The book's details", [["", "Cancel"], ["ok", "Save"]], body);
     // A picture dropped on the dialog, or pasted into it, is the new cover,
     // not an upload into the folder, as one dropped on the page is.
     const dialog = body.closest("dialog");
     dialog.classList.add("book-details");
-    const rebuild = el("button", { type: "button", className: "rebuild-toc", textContent: "Rebuild contents" });
+    const rebuild = el("button", { type: "button", className: "rebuild-toc", textContent: "Rebuild TOC",
+        title: "Remake the contents list from the chapters' headings" });
     rebuild.addEventListener("click", async () => {
         if (rebuild.disabled || dialog.returnValue) {
             return;
         }
         rebuild.disabled = true;
         try {
-            const dirty = titleBox.value !== title || creatorBox.value !== creator || !!picked;
+            const dirty = titleBox.value !== title || creatorBox.value !== creator || !!picked || !!pickedItem || removing.size > 0;
             const parts = [];
             if (hasTOC) {
                 parts.push("Replace the book's contents list with one made from its headings?");
@@ -576,7 +673,9 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
             }
         }
     });
-    dialog.querySelector(".buttons")?.prepend(rebuild);
+    // The book-wide tools, left of Cancel and Save: Rebuild TOC, and
+    // Cleanup Pics… beside it.
+    dialog.querySelector(".buttons")?.prepend(rebuild, picturesButton);
     titleBox.focus();
     titleBox.select();
     const pictureIn = (list) => [...(list ?? [])].find((f) => f.type.startsWith("image/")) ?? null;
@@ -585,10 +684,8 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
             e.stopPropagation();
             if (type === "dragover" && e.dataTransfer?.types.includes("Files")) {
                 e.preventDefault();
-                e.dataTransfer.dropEffect = coverNote ? "none" : "copy";
-                if (!coverNote) {
-                    cover.classList.add("dropping");
-                }
+                e.dataTransfer.dropEffect = "copy";
+                cover.classList.add("dropping");
             } else if (type === "dragleave" && !dialog.contains(e.relatedTarget)) {
                 cover.classList.remove("dropping");
             }
@@ -621,7 +718,103 @@ export async function askBookDetails({ title, creator, hasCover, coverURL, cover
     if (result === "rebuild") {
         return { rebuildTOC: true };
     }
-    return result === "ok" ? { title: titleBox.value, creator: creatorBox.value, picture: picked } : null;
+    if (result !== "ok") {
+        return null;
+    }
+    const removeItems = [...removing].filter((p) => p !== pickedItem);
+    if (removingOldCover()) {
+        removeItems.push(oldCoverUse().path);
+    }
+    return { title: titleBox.value, creator: creatorBox.value, picture: picked, coverItem: pickedItem, removeItems };
+}
+
+// canGo reports whether the picture u (as epubPictureUse has it) can be
+// removed: not the cover, and used by nothing but cover pages, which show
+// the cover instead, if there's one (hasCover).
+function canGo(u, hasCover) {
+    const users = u.users ?? [], pages = u.cover_pages ?? [];
+    return !u.cover && users.every((f) => pages.includes(f)) && (!users.length || hasCover);
+}
+
+// askPictures lists the book's pictures (report, as askBookDetails has
+// it), those that can go ticked to be removed (or as chosen, a set, if
+// they were, even if none; null if not yet), and resolves to the set of those ticked, or null for Cancel.
+// Those in use, and the cover (and coverItem, the new one), can't be.
+async function askPictures(report, chosen, coverItem, hasCover, thumb, size) {
+    const free = (u) => u.path !== coverItem && canGo(u, hasCover);
+    const sorted = [...report].sort((a, b) => Number(free(b)) - Number(free(a)) || b.bytes - a.bytes);
+    const tick = new Set(chosen ?? sorted.filter(free).map((u) => u.path));
+    const summary = el("p", { className: "hint pictures-summary" });
+    const update = () => {
+        const total = sorted.filter((u) => tick.has(u.path)).reduce((n, u) => n + u.bytes, 0);
+        summary.textContent = tick.size ? `Remove ${tick.size} picture${tick.size === 1 ? "" : "s"}, saving about ${size(total)}.` : "Nothing ticked to remove.";
+    };
+    // Each thumbnail fetched when its row comes into view, a few at a time;
+    // once the dialog's closed, no more, and those coming given up on.
+    const urls = [];
+    const waiting = [];
+    const closing = new AbortController();
+    let fetching = 0;
+    const next = () => {
+        while (fetching < 3 && waiting.length && !closing.signal.aborted) {
+            const [img, path] = waiting.shift();
+            fetching++;
+            thumb(path, closing.signal).then((blob) => {
+                if (img.isConnected && !closing.signal.aborted) {
+                    const url = URL.createObjectURL(blob);
+                    urls.push(url);
+                    img.src = url;
+                }
+            }, () => img.classList.add("none")).finally(() => {
+                fetching--;
+                next();
+            });
+        }
+    };
+    const seen = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+            if (e.isIntersecting) {
+                seen.unobserve(e.target);
+                waiting.push([e.target, e.target.dataset.path]);
+            }
+        }
+        next();
+    });
+    const users = (u) => {
+        const list = u.users ?? [];
+        const names = list.slice(0, 2).map((f) => f.split("/").pop()).join(", ");
+        return list.length > 2 ? `Used by ${names} and ${list.length - 2} more` : `Used by ${names}`;
+    };
+    const rows = sorted.map((u) => {
+        const box = el("input", { type: "checkbox", checked: tick.has(u.path), disabled: !free(u) });
+        box.addEventListener("change", () => {
+            box.checked ? tick.add(u.path) : tick.delete(u.path);
+            update();
+        });
+        const img = el("img", { className: "picture-thumb", alt: "" });
+        img.dataset.path = u.path;
+        seen.observe(img);
+        const pages = u.cover_pages?.length ?? 0;
+        const why = u.cover ? "The cover" : u.path === coverItem ? "The new cover"
+            : free(u) && pages ? `Only on ${pages === 1 ? "its cover page, which will show" : "its cover pages, which will show"} the cover instead`
+            : free(u) ? "Not used" : users(u);
+        return el("li", { className: free(u) ? "free" : "used" }, el("label", {}, box, img,
+            el("span", { className: "picture-name", textContent: u.path, title: u.path }),
+            el("span", { className: "hint picture-size", textContent: size(u.bytes) }),
+            el("span", { className: "hint picture-why", textContent: why })));
+    });
+    update();
+    const list = el("ul", { className: "pictures-list" }, ...rows);
+    const asking = choose("The book's pictures: those nothing uses (but a cover page) can be removed", [["", "Cancel"], ["ok", "Done"]], list, summary);
+    list.closest("dialog").classList.add("book-pictures");
+    const result = await asking;
+    seen.disconnect();
+    waiting.length = 0;
+    closing.abort();
+    for (const url of urls) {
+        URL.revokeObjectURL(url);
+    }
+    return result === "ok" ? tick : null;
 }
 
 // askFolder asks for a folder in ~/Downloads, by its path there,
@@ -681,23 +874,3 @@ document.addEventListener("keydown", (e) => {
     }
 });
 
-// copyText puts text on the clipboard: with the clipboard API where the
-// browser has it (over HTTPS or on localhost) and allows it, else the old
-// way.
-export async function copyText(text) {
-    try {
-        await navigator.clipboard.writeText(text);
-        return;
-    } catch {
-        // No clipboard API here, or not allowed.
-    }
-    const area = el("textarea", { value: text, readOnly: true });
-    Object.assign(area.style, { position: "fixed", opacity: "0" });
-    ([...document.querySelectorAll("dialog[open]")].at(-1) ?? document.body).append(area);
-    area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    if (!ok) {
-        throw new Error("not copied");
-    }
-}

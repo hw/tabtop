@@ -60,11 +60,12 @@ export async function checkExternalResources(checks) {
                     if (!await ev(`${control}.querySelector("svg").innerHTML === document.querySelector('.external-option[data-mode="${mode}"] svg').innerHTML && document.querySelector('.external-option[data-mode="${mode}"]').getAttribute("aria-checked") === "true"`)) throw new Error("resource glyph or selected dropdown item did not follow the mode");
                     let loaded = false;
                     for (let i = 0; i < 60; i++) {
-                        loaded = await inFrame(frame, `!!document.querySelector("#doc img")?.naturalWidth`);
+                        // The frame's rebuilt as the mode changes: briefly, none.
+                        loaded = await inFrame(frame, `!!document.querySelector("#doc img")?.naturalWidth`).catch(() => false);
                         if (loaded) break;
                         await sleep(100);
                     }
-                    if (!loaded || !hits.includes(mode)) throw new Error(`${name}: ${mode} picture did not load: ${JSON.stringify(hits)}`);
+                    if (!loaded || !hits.includes(mode)) throw new Error(`${name}: ${mode} picture did not load: ${JSON.stringify(hits)}; preview: ${await ev('document.querySelector("dialog.preview")?.innerText.slice(0, 500)')}`);
                     if (mode === "proxy" && hits.includes("direct")) throw new Error("proxy mode leaked a browser request");
                 }
                 const count = hits.length;
@@ -563,6 +564,9 @@ export async function checkPDF(checks) {
         const report = `JSON.parse(document.querySelector("dialog.preview iframe.pdf")?.dataset.rendered ?? "null")`;
         const fetched = `Number(document.querySelector("dialog.preview iframe.pdf")?.dataset.bytes ?? 0)`;
         await waitFor(`${report}?.pages === 40 && ${report}.drawn.includes(1)`, "big.pdf's first page", 60000);
+        if (!(await inFrame("pdf-frame.html", `!!document.querySelector("#bar button.zoom-in svg") && !!document.querySelector("#bar button.zoom-out svg") && document.querySelector("#bar button.zoom-in").getAttribute("aria-label") === "Zoom in" && document.querySelector("#bar button.zoom-out").getAttribute("aria-label") === "Zoom out"`))) throw new Error("PDF zoom glyphs or labels missing");
+        if (!(await inFrame("pdf-frame.html", `["zoom-in","zoom-out"].every(cls => { const button=document.querySelector("#bar button."+cls), b=button.getBoundingClientRect(), s=button.querySelector("svg").getBoundingClientRect(); return Math.abs((b.left+b.right-s.left-s.right)/2)<1 && Math.abs((b.top+b.bottom-s.top-s.bottom)/2)<1; })`))) throw new Error("PDF zoom glyphs are not centred");
+
         const first = await ev(fetched);
         const r1 = await ev(report);
         if (r1.errors.length || r1.links < 1) {
@@ -836,7 +840,7 @@ export async function checkEPUB(checks) {
                 `<item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>` +
                 `<item id="c1" href="text/one.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="text/two.xhtml" media-type="application/xhtml+xml"/>` +
                 `<item id="c3" href="text/three.xhtml" media-type="application/xhtml+xml"/><item id="p" href="images/square.png" media-type="image/png"/>` +
-                `</manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>`],
+                `<item id="spare" href="images/spare.png" media-type="image/png"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>`],
             ["OEBPS/nav.xhtml", `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>` +
                 `<nav epub:type="toc"><ol><li><a href="text/one.xhtml">Chapter One</a></li><li><a href="text/two.xhtml">Chapter Two</a></li>` +
                 `<li><a href="text/three.xhtml">Chapter Three</a></li></ol></nav></body></html>`],
@@ -846,6 +850,8 @@ export async function checkEPUB(checks) {
             ["OEBPS/text/two.xhtml", chapter("Two", filler)],
             ["OEBPS/text/three.xhtml", chapter("Three", `${filler.replaceAll("second", "third")}<p id="later">Later on.</p>${filler}`)],
             ["OEBPS/images/square.png", pngSquare(40)],
+            // Listed, but shown nowhere: for Cleanup Pics… to remove.
+            ["OEBPS/images/spare.png", pngSquare(30)],
         ]);
         writeFileSync(`${work}/book.epub`, book);
         execFileSync("docker", ["cp", "-q", `${work}/book.epub`, `${container}:/home/user/Downloads/media/book.epub`]);
@@ -938,7 +944,29 @@ export async function checkEPUB(checks) {
         await ev(`${top}.querySelector("button.cover-pick-epub").click()`);
         await waitFor(`document.querySelector("dialog.picker .picker-where")?.textContent === "book.epub" && !!${picture("OEBPS/images/square.png")}`,
             "the book's pictures, for the cover");
+        // Clicked, a picture is only previewed; Select takes it.
+        const select = async (what) => {
+            await waitFor(`document.querySelector("dialog.picker .picker-image")?.naturalWidth > 0 && ` +
+                `!document.querySelector("dialog.picker .picker-select").disabled`, `${what}, previewed`);
+            if (await ev(`!!document.querySelector("dialog.picker") && !document.querySelector("dialog.book-details .cover-name").textContent`) !== true) {
+                throw new Error(`${what} was taken before Select`);
+            }
+            // The preview beside the list, to its right, not below it.
+            if (await ev(`(() => { const list = document.querySelector("dialog.picker .picker-list").getBoundingClientRect();
+                const shown = document.querySelector("dialog.picker .picker-preview").getBoundingClientRect();
+                return shown.left >= list.right && shown.top < list.bottom && list.top < shown.bottom; })()`) !== true) {
+                throw new Error(`${what}: the preview isn't to the right of the list`);
+            }
+            // The preview beside the list, to its right, not below it.
+            if (await ev(`(() => { const list = document.querySelector("dialog.picker .picker-list").getBoundingClientRect();
+                const shown = document.querySelector("dialog.picker .picker-preview").getBoundingClientRect();
+                return shown.left >= list.right && shown.top < list.bottom && list.top < shown.bottom; })()`) !== true) {
+                throw new Error(`${what}: the preview isn't to the right of the list`);
+            }
+            await ev(`document.querySelector("dialog.picker .picker-select").click()`);
+        };
         await ev(`${picture("OEBPS/images/square.png")}.click()`);
+        await select("the book's picture");
         await waitFor(`!document.querySelector("dialog.picker") && ${top}.querySelector("img.cover:not([hidden])")?.naturalWidth === 40`,
             "the book's picture, shown as the cover");
         await ev(`${top}.querySelector("button.cover-clear").click()`);
@@ -947,7 +975,15 @@ export async function checkEPUB(checks) {
         await waitFor(`document.querySelector("dialog.picker .picker-where")?.textContent === "Downloads / media" && !!${picture("cover.png")}`,
             "the picker, in the book's folder");
         await ev(`${picture("cover.png")}.click()`);
+        await select("the picture in Downloads");
         await waitFor(`!document.querySelector("dialog.picker") && ${top}.querySelector("img.cover:not([hidden])")?.naturalWidth === 60`, "the new cover, shown");
+        // Clicked, the cover asks for a picture from this computer: its
+        // file input, clicked (a native chooser can't be driven here), and
+        // what it's given, taken.
+        if (await ev(`(() => { const input = ${top}.querySelector("input.cover-file"); let asked = false;
+            input.click = () => (asked = true); ${top}.querySelector(".cover-field").click(); delete input.click; return asked; })()`) !== true) {
+            throw new Error("clicking the cover didn't ask for a file");
+        }
         // Saved, it's shown again, in a new frame.
         const savedAndShown = async () => {
             await ev(`document.querySelector("dialog.preview iframe.epub").dataset.old = "1"`);
@@ -1003,8 +1039,88 @@ export async function checkEPUB(checks) {
         await ev(`(async () => { const dt = await ${picked(20, 20, "image.png")};
             ${top}.querySelector(".cover-field").dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt })); })()`);
         await waitFor(`${top}.querySelector("img.cover:not([hidden])")?.naturalWidth === 20`, "a picture pasted, shown");
+        // Chosen with the file input: shown as the new one too.
+        await ev(`(async () => { const dt = await ${picked(30, 30, "chosen.png")}; const input = ${top}.querySelector("input.cover-file");
+            input.files = dt.files; input.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+        await waitFor(`${top}.querySelector("img.cover:not([hidden])")?.naturalWidth === 30`, "a picture chosen from this computer, shown");
         await ev(`[...${top}.querySelectorAll(".buttons button")].find((b) => b.textContent === "Cancel").click()`);
         await waitFor(`!document.querySelector("dialog:not(.preview)")`, "the details to close after paste cancel");
+        // A picture in the book, made the cover where it is: saved, it's the
+        // one shown, with nothing sent.
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`${top}?.querySelector("img.cover:not([hidden])")?.naturalWidth === 3000`, "the cover, before the book's picture");
+        await ev(`${top}.querySelector("button.cover-pick-epub").click()`);
+        await waitFor(`!!${picture("OEBPS/images/square.png")}`, "the book's pictures, again");
+        await ev(`${picture("OEBPS/images/square.png")}.click()`);
+        await select("the book's picture, again");
+        await waitFor(`${top}.querySelector(".cover-name")?.textContent === "From the book: OEBPS/images/square.png"`, "the book's picture, chosen");
+        await savedAndShown();
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`${top}?.querySelector("img.cover:not([hidden])")?.naturalWidth === 40`, "the book's picture, read back as the cover");
+        await ev(`[...${top}.querySelectorAll(".buttons button")].find((b) => b.textContent === "Cancel").click()`);
+        await waitFor(`!document.querySelector("dialog:not(.preview)")`, "the details to close after the book's picture");
+        // (Each old cover went as the next was chosen: removing it is
+        // ticked by default, when nothing else uses it.) The picture nothing
+        // uses, removed with Cleanup Pics…: ticked already, and gone once saved.
+        const details = `document.querySelector("dialog.book-details")`;
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`!!${details}?.querySelector("button.book-pictures:not(:disabled)")`, "Cleanup Pics…, once what uses them is known", 30000);
+        if (await ev(`(() => { const rebuild = ${details}.querySelector(".buttons > button.rebuild-toc");
+            return rebuild?.textContent === "Rebuild TOC" && rebuild.nextElementSibling === ${details}.querySelector("button.book-pictures") &&
+            rebuild.nextElementSibling.textContent === "Cleanup Pics…"; })()`) !== true) {
+            throw new Error("Cleanup Pics… isn't beside Rebuild TOC");
+        }
+        await ev(`${details}.querySelector("button.book-pictures").click()`);
+        await waitFor(`!!document.querySelector("dialog.book-pictures .pictures-list li")`, "the book's pictures, listed");
+        const ticked = await ev(`[...document.querySelectorAll("dialog.book-pictures li")].filter((li) => li.querySelector("input").checked)
+            .map((li) => li.querySelector(".picture-name").textContent).sort().join()`);
+        const locked = await ev(`[...document.querySelectorAll("dialog.book-pictures li")].filter((li) => li.querySelector("input").disabled)
+            .map((li) => li.querySelector(".picture-name").textContent + ": " + li.querySelector(".picture-why").textContent).join()`);
+        if (ticked !== "OEBPS/images/spare.png" || locked !== "OEBPS/images/square.png: The cover") {
+            throw new Error(`pictures ticked: ${ticked}; locked: ${locked}`);
+        }
+        await waitFor(`[...document.querySelectorAll("dialog.book-pictures img.picture-thumb")].every((i) => i.naturalWidth > 0)`, "the pictures' thumbnails");
+        await ev(`document.querySelector("dialog.book-pictures .buttons button.primary").click()`);
+        await waitFor(`${details}?.querySelector(".trim-summary")?.textContent.startsWith("1 picture removed on Save")`, "the spare picture to remove");
+        const bookBytes = () => Number(inContainer("stat", "-c", "%s", "/home/user/Downloads/media/book.epub"));
+        const untrimmed = bookBytes();
+        await savedAndShown();
+        if (bookBytes() >= untrimmed) {
+            throw new Error(`the book is ${bookBytes()} bytes, from ${untrimmed}`);
+        }
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`${details}?.querySelector("button.book-pictures")?.title === "Every picture in the book is used"`, "nothing left to remove", 30000);
+        // A new cover where the old one's used: it stays, and isn't offered.
+        await ev(`${details}.querySelector("button.cover-pick").click()`);
+        await waitFor(`!!${picture("cover.png")}`, "the picker, again");
+        await ev(`${picture("cover.png")}.click()`);
+        await select("the picture in Downloads, again");
+        await waitFor(`${details}.querySelector("img.cover:not([hidden])")?.naturalWidth === 60`, "the new cover, again");
+        await sleep(300);
+        if (!(await ev(`${details}.querySelector(".remove-old-cover-row").hidden`))) {
+            throw new Error("removing the old cover was offered, though a chapter shows it");
+        }
+        await savedAndShown();
+        // The book's picture again: the cover just added, used by nothing
+        // else, is offered to go, and goes.
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`${details}?.querySelector("img.cover:not([hidden])")?.naturalWidth === 60`, "the added cover");
+        await ev(`${details}.querySelector("button.cover-pick-epub").click()`);
+        await waitFor(`!!${picture("OEBPS/images/square.png")}`, "the book's pictures, once more");
+        await ev(`${picture("OEBPS/images/square.png")}.click()`);
+        await select("the book's picture, once more");
+        await waitFor(`!${details}.querySelector(".remove-old-cover-row").hidden && ${details}.querySelector("input.remove-old-cover").checked && ` +
+            `${details}.querySelector(".remove-old-cover-row").textContent.startsWith("Remove the old cover from the book")`, "removing the old cover, offered", 30000);
+        const withAdded = bookBytes();
+        await savedAndShown();
+        if (bookBytes() >= withAdded) {
+            throw new Error(`the old cover wasn't removed: ${bookBytes()} bytes, from ${withAdded}`);
+        }
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`${details}?.querySelector("img.cover:not([hidden])")?.naturalWidth === 40 && ` +
+            `${details}.querySelector("button.book-pictures")?.title === "Every picture in the book is used"`, "the book's picture, the cover, nothing spare", 30000);
+        await ev(`[...${details}.querySelectorAll(".buttons button")].find((b) => b.textContent === "Cancel").click()`);
+        await waitFor(`!document.querySelector("dialog:not(.preview)")`, "the details to close after trimming");
         // Rebuild contents from the chapters' headings (h1 One/Two/Three),
         // replacing the nav that said Chapter One/Two/Three.
         await ev(`document.querySelector("dialog.preview button.edit").click()`);

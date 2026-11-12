@@ -6,16 +6,22 @@ import { runInNewContext } from "node:vm";
 const env = {};
 runInNewContext(readFileSync(new URL("../tabtopd/third-party/css-tree.js", import.meta.url), "utf8"), env);
 runInNewContext(readFileSync(new URL("../tabtopd/preview-css.js", import.meta.url), "utf8"), env);
-function processor(files = {}) {
+// files: CSS by URL, fetched; direct: URLs of CSS left to the browser,
+// as in Direct mode. Its stylesheet is the pieces, as one string, each
+// after the first marked; pieces, the pieces.
+function processor(files = {}, direct = []) {
     const loads = [], errors = [], external = [];
-    return { loads, errors, external, css: env.TabTopCSS.cssProcessor({
+    const css = env.TabTopCSS.cssProcessor({
         load: async (src, base, kind, text) => {
             const url = new URL(src, base || "https://example.test/").href;
             loads.push({ url, kind });
+            if (text && direct.includes(url)) return { text: "", base: url, direct: true };
             if (text) { if (!(url in files)) throw new Error("missing CSS"); return { text: files[url], base: url }; }
             return "blob:rewritten-" + loads.length;
         }, external: (...args) => external.push(args), error: message => errors.push(message),
-    }) };
+    });
+    return { loads, errors, external, css: { ...css, pieces: css.stylesheet,
+        stylesheet: async (...args) => (await css.stylesheet(...args)).join("\n/* piece */\n") } };
 }
 test("CSS imports, font files and backgrounds resolve through the broker", async () => {
     const p = processor({ "https://example.test/css/nested.css": '@font-face{font-family:Remote;src:url(../fonts/test.woff2) format("woff2")} .copy{color:rgb(1,2,3)}' });
@@ -92,4 +98,17 @@ test("inline styles retain cumulative byte and work limits", async () => {
     const sheet = " ".repeat(512 * 1024 - 20) + "p{color:red}";
     for (let i = 0; i < 4; i++) await p.css.stylesheet(sheet);
     await assert.rejects(p.css.inline("color:red;".repeat(30)), /preview limit/);
+});
+
+test("Direct-mode web imports each start a sheet, in order, and aren't wrapped", async () => {
+    const p = processor({ "https://example.test/base.css": ".base{color:red}", "https://example.test/print.css": "@import url(https://cdn.test/p.css); .print{color:blue}" },
+        ["https://cdn.test/x.css", "https://cdn.test/p.css"]);
+    const pieces = await p.css.pieces('@import "base.css"; @import url(https://cdn.test/x.css) screen; @import "print.css" print; .after{color:green}');
+    assert.equal(pieces.length, 2);
+    assert.match(pieces[0], /\.base\{color:red;\}/);
+    assert.doesNotMatch(pieces[0], /@import/);
+    assert.match(pieces[1], /^@import url\(https:\/\/cdn\.test\/x\.css\) screen;/);
+    assert.match(pieces[1], /@media print\{.*\.print\{color:blue;\}\}.*\.after\{color:green;\}/);
+    assert.doesNotMatch(pieces[1], /cdn\.test\/p\.css/);
+    assert.deepEqual(p.errors, ["A web stylesheet imported under conditions isn't loaded in Direct mode."]);
 });

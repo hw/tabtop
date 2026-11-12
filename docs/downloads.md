@@ -56,7 +56,12 @@ downloaded at `http://<host>:6080/fs/`:
   Coloured or not, it's only ever text: a web page's source can't run.
   The whole file is fetched first, so previews are for pictures up to
   50 MB and text up to 2 MB; bigger ones, and every other kind, download
-  when clicked. Audio and video, including MKV (`.mkv`), stream in ranges
+  when clicked, except binaries (`.bin`, `.dll`, `.exe` and `.so`, or a
+  versioned `.so` such as `libc.so.6`), which open in hex whatever their
+  size. Any file can still be previewed from its row's menu
+  (**Preview**): one too big for its own preview, or for text, is shown in
+  hex, its first 1 MB fetched and the rest read as you move through it,
+  however big it is. Audio and video, including MKV (`.mkv`), stream in ranges
   over HTTPS (or localhost), without the 200 MB preview limit. MP3, M4A/AAC,
   Ogg/Opus, WAV and FLAC audio use the same range transport. The browser fetches only
   what it needs for metadata, playback and seeking, through the encrypted
@@ -74,6 +79,102 @@ downloaded at `http://<host>:6080/fs/`:
   by a link made for that one download, which is counted as it's made,
   and removed once the file has all come. What a browser can play varies: MP4,
   WebM, MP3 and the like play everywhere, others may not.
+- **Pictures** are fitted to the window (never enlarged), over a
+  checkerboard where they can be seen through, with what they are above:
+  `1920×1080 · JPEG · 2.1 MB`, "animated" for a GIF, APNG or WebP that
+  moves, and what metadata it has (`EXIF, XMP`). Phone photos stand as their EXIF orientation says.
+  - **Zoom:** the mouse wheel (or a trackpad's pinch) zooms at the
+    pointer, as do the **+** and **−** buttons (and + and − keys); drag to
+    move about a picture bigger than the window. **Fit** (0) fits it again,
+    **100%** (1) shows a pixel for a pixel, and a double-click goes between
+    the two.
+  - **Editing** a picture that doesn't move (**✎**): turn it left or right
+    (L, R), flip it (H, V), crop it (C: drag over what to keep, then
+    **Apply**, or Enter; Escape stops cropping), or resize it (**Resize…**, S:
+    a width and height, kept in proportion, or a percentage). **Undo**
+    (Ctrl+Z) takes back the last change. Crop and resize replace the normal
+    editing tools in the main toolbar with **Apply** and **Cancel**; resize
+    also shows width, height and percentage. Other editing tools return after
+    you apply or cancel. Each change is made again from the
+    picture as it was, so nothing is lost by changes undone.
+  - The **Remove background** glyph starts a live preview
+    using U2NetP, running locally in your browser. The first use loads the bundled model
+    and runtime from TabTop. **Threshold** removes more at higher values;
+    **Edge softness** blends the cutoff (zero makes a hard edge);
+    **Shrink / grow** contracts or expands the foreground, as a percentage
+    of the picture size. The main image toolbar replaces the regular editing
+    controls with background-removal tools; **Adjustments…** opens the settings
+    on request. Hints appear in a small row below the toolbar. Choose
+    **Select area** and drag a rectangle: only pixels inside it change, while
+    U2NetP still analyzes the whole image. **Whole image** removes that limit.
+    **Erase** paints transparency; **Restore** paints back the original pixels,
+    including their original transparency. Both brushes stay inside the
+    selected area, if any. The small arrow next to **Erase** opens the brush
+    size selector, hidden by default. The small arrow beside **Select area**
+    chooses **Rectangle** or **Circle** (drag from the centre to the edge).
+    Removal stays inside that selection. **Erase** and **Restore** paint with
+    the brush. The bucket
+    glyph fills a closed freehand outline: draw it with **Erase**, choose
+    **Flood fill**, then click inside. Open outlines leave the mask unchanged.
+    The **Undo** glyph, labelled underneath, takes back the last stroke or fill.
+    **Pan** lets you move around a zoomed picture. **Adjustments…** reopens the sliders while working on the image.
+    **Reset** clears the selection and brush strokes and restores the original
+    soft mask. Adjustments reuse the prediction within the active pass.
+    **Apply** commits the preview; reopening background removal starts a new
+    pass on the current image and preserves earlier removals, including after
+    a crop or rotation. You can apply several passes before saving.
+    **Cancel**, Escape or clicking outside the image, toolbar and settings
+    discards it. **Undo** restores the previous applied edit. Results vary
+    with the picture; fine hair and busy backgrounds can need brush work.
+    For a JPEG, the tool
+    selects a PNG copy so transparency is preserved. Choose PNG or WebP
+    when saving a transparent result.
+  - The **Inpaint** glyph removes a logo or object by filling the marked area
+    with MI-GAN. Its controls replace the regular editing tools in the main
+    image toolbar until you apply or cancel; zoom remains available. Save
+    options return when you leave the tool. Choose **Select area** to draw a rectangle, or **Paint mask**
+    to brush over it; yellow shows the mask. The arrow beside **Paint mask**
+    opens the brush size selector, hidden by default. The small arrow beside
+    **Select area** chooses **Rectangle** or **Circle**; circles drag from
+    their centre to their edge. The main Select area glyph uses that shape. To fill a freehand region, draw a closed
+    outline with the brush, choose the bucket glyph, and click inside.
+    Open outlines leave the mask unchanged. Rectangles can start outside
+    the picture and are clipped to its edges; endpoints near an edge snap to
+    it, including when the image is fitted or zoomed. The **Mask entire image** glyph
+    (Ctrl+A or ⌘A while inpainting) covers every pixel; use **Subtract mask**
+    to keep areas for context. **Subtract mask** protects parts
+    of that area, the **Undo** glyph removes the last mark or fill, and **Clear mask**
+    starts over. Use **Pan** and the zoom controls to work on details.
+    Press **Inpaint** to generate a preview, then **Apply** to keep it.
+    Editing the mask discards the preview so you can try again. **Cancel**
+    or Escape leaves the image unchanged; **Undo** takes back an applied repair.
+    The model and runtime load from TabTop on first use and run locally in
+    the browser. Only masked RGB pixels change; existing transparency stays
+    intact. Small repairs with surrounding context usually work best. A repair
+    crop, including context, may contain at most 16 megapixels; it is sampled
+    to at most 1024 pixels on its longest side before the model processes it.
+  - **Saving:** the **Save options** glyph and its attached dropdown arrow open
+    format, quality and metadata controls in a popover, with a description of
+    what Save will do. They are hidden by default; click again, click outside,
+    or press Escape to close them.
+    A JPEG, PNG or WebP is written over the file in its own format
+    (JPEG and WebP at the **Quality** chosen, 92% at first: lower makes it
+    smaller), unless the file has changed since it was opened. **Keep
+    metadata** (when it has any: EXIF, XMP, IPTC, comments, text) keeps it,
+    for a JPEG or PNG, said to stand upright, as its pixels now do, and
+    giving its new size; but not the thumbnails and previews it may hold
+    of the picture as it was (EXIF's thumbnail, a camera's maker's note,
+    Photoshop's thumbnail, a picture in XMP), which would show what was
+    cropped away, nor EXIF it can't read well enough to be sure of that.
+    A WebP's is kept only if it isn't written again. Unticked, with nothing else
+    changed, Save removes the metadata losslessly, the picture's own bytes
+    as they were (and, for a photo turned by its EXIF, that alone kept, so
+    it still stands as it did). Choosing another format saves a copy beside
+    it (`photo.png` as `photo.jpg`, or under a free name), without
+    metadata, and leaves it as it is; that's how a GIF, AVIF, BMP or ICO
+    picture is converted, as those can't be written over. **Done** asks
+    before discarding changes not saved. Pictures of more than 100
+    megapixels, animated ones, and SVG aren't editable here.
 - **ZIP archives** (`.zip`) show a searchable, collapsible folder tree with
   entry type, original and packed sizes, modification times, and encrypted
   entry markers. **Show more** adds rows after the first 500. Only directory
@@ -96,8 +197,9 @@ downloaded at `http://<host>:6080/fs/`:
   aren't supported. The preview's main **Download** still saves the original
   ZIP.
 - **PDFs** are shown by [pdf.js](https://mozilla.github.io/pdf.js/), a page
-  at a time as you scroll to it, initially fitted to the width. **−** and
-  **+** zoom; the **Fit width** icon fills the preview's width. The adjacent
+  at a time as you scroll to it, initially fitted to the width. The
+  **Zoom out** and **Zoom in** magnifier glyphs adjust the zoom; the
+  **Fit width** icon fills the preview's width. The adjacent
   **Fit page** icon fits the whole page within the available window,
   including after resizing. The rectangle marked **100%** uses a fixed
   scale that stays the same when the window is resized. The page you're on
@@ -118,6 +220,28 @@ downloaded at `http://<host>:6080/fs/`:
   8 pages have no text at all, as in a scan without recognised text. Not
   yet: printing (**⤓** downloads the file). Scripts in a PDF never
   run.
+  The **Edit or export pages as images** glyph opens a batch editor. Enter page
+  ranges such as `1-3, 5`, choose a resolution, and tick the pages to process.
+  Thumbnails let you open any page for the regular crop, resize, inpainting,
+  and background-removal tools. Draw a mask or configure background removal,
+  then choose **Apply current tool to selected** to reuse it across those pages;
+  mask coordinates scale with each page's dimensions. Activate **Remove
+  background** on a page and use **Apply current tool to selected** to reuse
+  its settings across the checked pages. **Repeat last tool** reuses the last
+  batch operation. The maximize/restore glyph fills the window or restores the
+  editor's size. Export format, quality and **Export selected** sit beside the
+  page actions in the top toolbar.
+  **Keep page** retains individual refinements in the session; switching pages
+  also keeps applied edits. Apply or cancel an active tool before switching.
+  You can apply several passes before exporting. **Cancel processing** keeps
+  completed pages; **Undo batch** restores the state before the latest batch.
+  Failed pages are marked for review and don't stop the other pages.
+  **Export selected** downloads PNG, JPEG or WebP images in a ZIP, or a new PDF
+  made from image pages, in source page order. JPEG and PDF flatten transparency
+  onto white; the new PDF has no selectable text or original links. The source
+  PDF is never overwritten. A batch allows up to 200 pages, 16 megapixels per
+  page and 256 MiB of edited images or exported image data. Export copies before
+  leaving the session to retain your work.
 - **EPUB books** (`.epub`) are shown a chapter at a time, set for
   reading, light or dark as your browser is: **☰** lists the contents,
   **‹** and **›** (or ← and →) go to the previous and next chapter (as
@@ -138,7 +262,7 @@ downloaded at `http://<host>:6080/fs/`:
 
   **Edit** changes a book's title, its author and its cover. The author
   is the book's first; any others stay as they are, and an empty author
-  removes it. **Rebuild contents** remakes the contents list from each
+  removes it. **Rebuild TOC** remakes the contents list from each
   chapter's headings (`h1`–`h3`) that have usable IDs. Chapters without
   anchored headings get one entry from their filename. Chapter files stay
   unchanged: written as EPUB 3's nav, and as the NCX too when the book
@@ -146,16 +270,42 @@ downloaded at `http://<host>:6080/fs/`:
   they are. If the book already has a contents list, it asks before
   replacing it.
   - **Choosing it:** **From Downloads…** picks a picture in Downloads,
-    starting in the book's folder. A picture from your computer can be
-    dropped on the dialog, or pasted into it; it isn't uploaded into the
-    folder, as one dropped on the page is.
-  - **A new cover** takes the old one's place, as the same type of
-    picture (JPEG, PNG or WebP): your browser converts the picture you
-    choose, at most 3000 pixels on its longer side. So a cover page in the
-    book shows the new one too. A book has one cover after: if it marked
-    more than one picture as its cover, the first is replaced and the
-    others are no longer marked, though they stay in the book, which may
-    show them elsewhere.
+    starting in the book's folder, and **From EPUB Content…** one already
+    in the book. Clicking a picture in either list shows it; **Select**
+    takes it. A picture from your computer can be dropped on the dialog,
+    pasted into it, or chosen by clicking the cover; it isn't uploaded into
+    the folder, as one dropped on the page is.
+  - **A picture from the book** becomes the cover where it is: nothing is
+    added or copied.
+  - **Any other picture** is added to the book as `images/cover.jpg` or
+    `images/cover.png`, beside its package file (`OEBPS/images/` in most
+    books; `cover-2.jpg` and so on if the name is taken). Your browser
+    makes it at most 3000 pixels on its longer side. A JPEG or PNG keeps
+    its type; another photo (WebP, AVIF, BMP) becomes a JPEG, and a GIF or
+    SVG a PNG.
+  - **The old cover** isn't written over. It stays in the book, no longer
+    marked as the cover, unless it's removed (below). A book has one cover
+    after: if it marked more than one picture as its cover, only the new
+    one is marked.
+  - **Cover pages:** a page with one picture that the book marks as its
+    cover page (its guide's `type="cover"`, or `epub:type="cover"` in the
+    page), or, if its picture is the cover, that has at most 20 characters
+    of text. A chapter that shows the cover beside its text isn't one, nor
+    is a page that's only an illustration. When a picture only cover pages
+    show is removed, they're made to show the cover instead.
+  - **Removing the old cover:** when nothing in the book but its cover
+    pages shows the old cover, **Remove the old cover from the book** is
+    offered, ticked, and on **Save** the cover pages show the new cover and
+    the old picture is removed.
+  - **Removing pictures:** **Cleanup Pics…** (beside **Rebuild TOC**, at the
+    foot of the dialog) lists the book's pictures, with their sizes and
+    what uses them. Those nothing uses, or nothing but cover pages (a
+    former cover a cover page was left showing, say), are ticked; **Done**,
+    then **Save**, removes those ticked. A picture is used if a page, a
+    stylesheet, the contents or the package file refers to it, or if its
+    name appears anywhere in such a file (in a script, say): one kept that
+    could have gone is better than a page broken. The cover, and pictures
+    in use, can't be removed here; the save is refused if one would be.
   - **A book without a cover** is given one, named as EPUB 2 and EPUB 3
     readers look for it. A cover page isn't added, so it shows in library
     views rather than as the first page.
@@ -163,14 +313,13 @@ downloaded at `http://<host>:6080/fs/`:
     Sort keys that went with the old title or author (`file-as`) are
     removed, since they'd be stale. The NCX's own title and author are
     left as they are (its contents list is rewritten only when **Rebuild
-    contents** is used).
+    TOC** is used).
   - **Saving:** the book is saved as a new copy, read back to check it,
     then put in place of the old one in one step, keeping its permissions.
     If anything goes wrong, or the book changed since you opened it, it's
     left as it was.
-  - **Not possible here:** books with DRM, books whose package file (the
-    OPF) isn't UTF-8, and replacing a cover that isn't JPEG, PNG or WebP.
-    Safari can't make WebP pictures, so it can't replace a WebP cover.
+  - **Not possible here:** books with DRM, and books whose package file
+    (the OPF) isn't UTF-8.
 - **CSV and TSV** (`.csv`, `.tsv`) are shown as a table.
   **Edit** lets you change existing cells: double-click a cell or focus it
   and press Enter. Enter commits, Shift Enter adds a line, Escape cancels
@@ -216,6 +365,43 @@ downloaded at `http://<host>:6080/fs/`:
   - **Large files:** rows are shown 1,000 at a time, and at most 500
     columns.
   - A quote that's never closed is pointed out by its line.
+- **SQLite databases** (`.sqlite`, `.sqlite3`, `.db3`, and `.db` or any
+  other file, if it starts with SQLite's header: a file only named as one
+  is shown in hex) show their tables, read by SQLite on
+  the server, so anything SQLite reads shows as it would: values on
+  overflow pages, UTF-16 text, `WITHOUT ROWID` tables, views.
+  - **Tables and views:** choose one; its row count (or "many", if
+    counting would take too long) is beside it. **Schema** shows the SQL
+    that made it, with its indexes and triggers.
+  - **Rows** come 200 at a time as you scroll, up to 50,000. Click a
+    column's name to sort by it (ascending, descending, then not): the
+    server sorts, so it's of every row, not only those loaded. Drag the
+    edge of a column's name to make it wider or narrower (or, focused, use
+    ← and →); double-click it to fit the column again.
+  - **Filters**, as the CSV table has, done by the server, so they're of
+    every row: **▽** by a column's name filters by it, with one or more
+    conditions that must all match, by the column's declared type
+    (numbers: =, ≠, <, >, ≤, ≥, which text in the column never matches;
+    dates, `YYYY-MM-DD` with a time if you like: before, on, after, of
+    dates kept as text, Julian days, or Unix time in seconds or
+    milliseconds, as apps keep them; text,
+    ignoring case: contains, starts with, ends with, or not). **Filter
+    rows** shows only rows with what's typed in them, in any column or
+    the one chosen. The count says how many match, of how many;
+    **Clear filters** shows them all again. (Text is matched ignoring the
+    case of A to Z only, as SQLite does.)
+  - **Values:** NULL is shown as such; integers exactly, even past what
+    JavaScript can count; text past 2,000 characters is cut short (its
+    size is in its tooltip); a blob shows its size and first 32 bytes.
+  - **The bytes:** the binary view switch shows the file in hex, with the
+    `sqlite3` structure decoder; switch back for its tables.
+  - **Read-only:** the database is opened read-only and as unchanging, in
+    a separate process with time and memory limits: nothing is written
+    beside it, no lock is taken, and a slow query (a count, a view, a sort
+    on an unindexed column) is stopped. So changes still in a `-wal` file
+    beside it aren't seen; the preview says when there is one.
+  - A file named as a database that doesn't start as one, or that SQLite
+    can't read (damaged, or encrypted), is shown in hex.
 - **JSON** (`.json`; `.jsonl` and `.ndjson` as a value per line) is shown as
   a tree.
   - **Folding:** the first two levels start open; long lists show 500
@@ -227,7 +413,11 @@ downloaded at `http://<host>:6080/fs/`:
   - **Not JSON:** a file that isn't JSON (comments, say) is shown as text,
     saying what's wrong and where.
   - **Editing:** checks it's still JSON as you type. **Format** lays it out,
-    changing only whitespace. Saving a file that was JSON and no longer is
+    changing only whitespace, and Ctrl Z undoes it. Laid out to more than
+    400 lines, it's put in at once rather than as typing (which browsers
+    are slow at, with many lines): Ctrl Z (and Ctrl Shift Z or Ctrl Y)
+    then undoes (and redoes) the Format alone, and edits from before it
+    may not undo past it. Saving a file that was JSON and no longer is
     asks first.
 - **Raw:** **▦ | ≡** (Table, Raw) and **{ } | ≡** (Tree, Raw) switch between
   those views and the file as it is, as **¶ | ≡** (Rendered, Source) does

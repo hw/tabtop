@@ -2,7 +2,9 @@
 // and fetches files through the encrypted tunnel; the folder shown is the
 // path after "#". Files download (see download.js), never shown as a page
 // on this site; pictures, video, sound and text open in a preview instead,
-// where they're small enough (see preview.js). A folder, or several files
+// where they're small enough (see preview.js), SQLite databases as their
+// tables, and binaries (.bin, .dll, .exe, .so) in hex; any other file can
+// be previewed from its menu, in hex if nothing else. A folder, or several files
 // and folders picked with their checkboxes, download as one zip. Files and
 // folders dropped or pasted on the page are uploaded into the folder shown,
 // as are those picked with its buttons (see drop.js, uploadFile and
@@ -20,17 +22,18 @@
 import { createFileActions, MOVE_TYPE } from "./files-actions.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { FolderModel } from "./folder-model.js";
-import { createTimeFormatter } from "./file-format.js";
+import { createTimeFormatter, humanBytes } from "./file-format.js";
 import { createSessionView } from "./sessions-view.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askName, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
 import { call, createFile, folderInfo, makeFolder, uploadFile } from "./requests.js";
-import { fetchFile, fetchZip, humanBytes } from "./download.js";
+import { fetchFile, fetchZip } from "./download.js";
 import { preview, previewable } from "./preview.js";
-import { typeOf } from "./preview-model.js";
+import { binaryNamed, probablyDatabase, typeOf } from "./preview-model.js";
 import { reconnect, reconnected } from "./reconnect.js";
 import { warnExpiry } from "./expiry.js";
+import { storeJSON, storedJSON } from "./stored.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -259,9 +262,10 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         const sorted = folder.sorted;
         // Previewing one steps through the rest shown that can be.
         const previews = sorted.filter((e) => !e.dir && previewable(e.name, e.bytes ?? 0));
-        const open = (e, mode = null) => {
+        // alone: just it, not stepping through the rest.
+        const open = (e, mode = null, alone = !!mode) => {
             const position = { x: scrollX, y: scrollY };
-            preview(dir, mode ? [e] : previews, mode ? 0 : previews.indexOf(e), fetchFile, { mode, direct: reply.share ? directDownload : null,
+            preview(dir, alone ? [e] : previews, alone ? 0 : previews.indexOf(e), fetchFile, { mode, direct: reply.share ? directDownload : null,
                 restoreFocus: () => {
                     if (onSecurity() || onShares() || currentDir() !== dir) return;
                     const row = [...page.querySelectorAll(".file-table tbody tr")].find(tr => tr.dataset.name === e.name);
@@ -278,7 +282,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
             if (!e.dir) {
                 link.addEventListener("click", (ev) => {
                     ev.preventDefault();
-                    canPreview ? open(e) : fetchFile(path);
+                    canPreview ? open(e) : binaryNamed(e.name) ? open(e, "hex", true) : probablyDatabase(e.name) ? open(e, "auto", true) : fetchFile(path);
                 });
             }
             const box = el("input", { type: "checkbox", title: `Select ${e.name}`, checked: selected.has(e.name) });
@@ -287,8 +291,12 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
                 updateSelection();
             });
             const menu = rowMenu(`Actions for ${e.name}`, [
-                ...(canPreview ? [["preview", "Preview", () => open(e)]] : []),
-                ...(!e.dir && !typeOf(e.name) ? [["preview", "Preview", () => open(e, "auto")]] : []),
+                // Every file: its own preview, or text, where it has one
+                // and isn't too big for it; otherwise, an unknown type as
+                // text or hex as its bytes are, a known one in hex (see
+                // loadPreview).
+                ...(canPreview ? [["preview", "Preview", () => open(e)]]
+                    : !e.dir ? [["preview", "Preview", () => open(e, typeOf(e.name) ? null : binaryNamed(e.name) ? "hex" : "auto", true)]] : []),
                 ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
                 ["rename", "Rename…", () => rename(dir, e)],
                 ["move", "Move to…", () => askMove(dir, [e.name])],
@@ -513,11 +521,7 @@ function savePlace() {
     if (folder.dir === null) {
         return;
     }
-    try {
-        localStorage.setItem(PLACE_KEY, JSON.stringify({ dir: folder.dir, y: Math.round(scrolls.get(folder.dir) ?? 0) }));
-    } catch {
-        // Not kept, then.
-    }
+    storeJSON(PLACE_KEY, { dir: folder.dir, y: Math.round(scrolls.get(folder.dir) ?? 0) });
 }
 
 // restorePlace goes to the folder last shown, if the page was opened
@@ -526,17 +530,13 @@ function restorePlace() {
     if (location.hash) {
         return;
     }
-    try {
-        const place = JSON.parse(localStorage.getItem(PLACE_KEY));
-        if (typeof place?.dir === "string" && place.dir) {
-            history.replaceState(null, "", dirHash(place.dir));
-            restoring = true;
-        }
-        if (typeof place?.dir === "string" && Number.isFinite(place.y)) {
-            scrolls.set(place.dir, place.y);
-        }
-    } catch {
-        // The top, then.
+    const place = storedJSON(PLACE_KEY);
+    if (typeof place?.dir === "string" && place.dir) {
+        history.replaceState(null, "", dirHash(place.dir));
+        restoring = true;
+    }
+    if (typeof place?.dir === "string" && Number.isFinite(place.y)) {
+        scrolls.set(place.dir, place.y);
     }
 }
 
@@ -574,22 +574,13 @@ function breadcrumbs(dir) {
 // first either way, and those with the same size or time by name. It's
 // kept for the next visit, where the browser allows.
 
-try {
-    const saved = JSON.parse(localStorage.getItem("tabtop-files-sort"));
-    if (["name", "size", "time"].includes(saved?.key)) {
-        folder.sort = { key: saved.key, desc: !!saved.desc };
-    }
-} catch {
-    // The default, then.
+const SORT_KEY = "tabtop-files-sort";
+const savedSort = storedJSON(SORT_KEY);
+if (["name", "size", "time"].includes(savedSort?.key)) {
+    folder.sort = { key: savedSort.key, desc: !!savedSort.desc };
 }
 
-function saveSort() {
-    try {
-        localStorage.setItem("tabtop-files-sort", JSON.stringify(folder.sort));
-    } catch {
-        // Only for this visit, then.
-    }
-}
+const saveSort = () => storeJSON(SORT_KEY, folder.sort);
 
 // The keyboard -----------------------------------------------------------
 

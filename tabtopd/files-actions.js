@@ -1,7 +1,7 @@
 // File actions and transfer tracking. Folder rendering stays in files.js.
 import { askFolder, askName, askShare, askUploadLink, askURL, copyText, showLink, statusRow } from "./ui.js";
 import { call, shareURL, shellPath } from "./requests.js";
-import { humanBytes } from "./download.js";
+import { humanBytes } from "./file-format.js";
 export const MOVE_TYPE = "application/x-tabtop-move";
 export function createFileActions({ show, exactTime, el, join }) {
     // deletion is how deleteFiles (see drop.js) deletes the entry e in dir.

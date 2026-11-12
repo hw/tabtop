@@ -20,7 +20,8 @@ import { TunnelSocket } from "./tunnel.js";
 import { logOut, nameTab, openPage, terminalOn, pages } from "./nav.js";
 import { dropUploads } from "./drop.js";
 import { call, folderInfo, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
-import { fetchFile, humanBytes } from "./download.js";
+import { fetchFile } from "./download.js";
+import { humanBytes } from "./file-format.js";
 import { warnExpiry } from "./expiry.js";
 
 window.tabtopChannel = () => new TunnelSocket({ type: "vnc" }, { title: "Desktop" });

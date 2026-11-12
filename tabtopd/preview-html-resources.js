@@ -19,13 +19,43 @@
     const resize = new ResizeObserver(schedule);
     resize.observe(document.documentElement);
 
+    // An embedded (data:) picture or font in CSS, used as it is: a picture
+    // as its data: URL (the frame allows those), a font as a blob: URL
+    // (the frame allows only those). Nothing's fetched, so it isn't
+    // external. Not a stylesheet: @import data: isn't followed.
+    const pictureTypes = /^image\/(png|jpeg|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/;
+    function dataBytes(payload, base64) {
+        if (base64) {
+            const binary = atob(decodeURIComponent(payload).replace(/\s+/g, ""));
+            return Uint8Array.from(binary, c => c.charCodeAt(0));
+        }
+        const out = [], encoder = new TextEncoder();
+        for (let i = 0; i < payload.length; i++) {
+            if (payload[i] === "%" && /^[0-9a-f]{2}$/i.test(payload.slice(i + 1, i + 3))) { out.push(parseInt(payload.slice(i + 1, i + 3), 16)); i += 2; }
+            else out.push(...encoder.encode(payload[i]));
+        }
+        return Uint8Array.from(out);
+    }
+    function dataResource(src, kind, text) {
+        const m = /^data:([^,;]*)((?:;[^,;]*)*),(.*)$/is.exec(src.trim());
+        if (!m || text || !["image", "font"].includes(kind)) throw new Error("Embedded resource not supported.");
+        const mime = m[1].trim().toLowerCase(), base64 = /;base64\s*$/i.test(m[2]);
+        if (kind === "image") {
+            if (!pictureTypes.test(mime)) throw new Error("Embedded picture type not supported.");
+            return { url: src.trim() };
+        }
+        let bytes;
+        try { bytes = dataBytes(m[3], base64); } catch { throw new Error("Embedded font could not be read."); }
+        return { bytes, mime: /^font\/[a-z0-9.+-]+$/.test(mime) ? mime : "application/octet-stream" };
+    }
+
     async function process(doc, { mode, ask, render, alive, report }) {
         activeGeneration = render;
         mediaElements = [];
         let externalCount = 0;
         const seen = new Set();
         const external = (src, base = "") => {
-            if (!web(src) && !web(base)) return;
+            if (/^\s*data:/i.test(src ?? "") || !web(src) && !web(base)) return;
             const key = base + "|" + src;
             if (!seen.has(key)) {
                 seen.add(key); externalCount++;
@@ -37,6 +67,13 @@
         const loaded = new Map(), fonts = new Set();
         let stylesheets = 0;
         const loadOnce = async (src, base, kind, text = false) => {
+            if (/^\s*data:/i.test(src)) {
+                const got = dataResource(src, kind, text);
+                if (got.url) return got.url;
+                const url = URL.createObjectURL(new Blob([got.bytes], { type: got.mime }));
+                urls.push(url);
+                return url;
+            }
             const got = await ask({ type: "resource", src, base, kind, render });
             if (!alive()) throw new Error("Preview replaced.");
             if (got.error) throw new Error(got.error);
@@ -68,13 +105,16 @@
         for (const item of styles) if (item.dataset.previewStylesheet) external(item.dataset.previewStylesheet);
         for (const media of doc.querySelectorAll("audio[data-preview-media], video[data-preview-media]")) external(media.dataset.previewMedia);
         for (const img of doc.querySelectorAll("img")) external(img.dataset.previewSrc ?? img.getAttribute("src"));
-        const addStyle = (text, before) => {
-            if (!text) return;
-            const style = document.createElement("style");
-            style.dataset.previewProcessed = "true";
-            style.media = before.dataset.previewStyleMedia ?? "";
-            style.textContent = text;
-            before.before(style);
+        // A stylesheet's pieces (see cssProcessor's rules), a <style> each.
+        const addStyle = (pieces, before) => {
+            for (const text of pieces) {
+                if (!text) continue;
+                const style = document.createElement("style");
+                style.dataset.previewProcessed = "true";
+                style.media = before.dataset.previewStyleMedia ?? "";
+                style.textContent = text;
+                before.before(style);
+            }
         };
         for (const item of styles) {
             try {
@@ -106,17 +146,26 @@
         }
         let mediaId = 0;
         const pendingMedia = [];
+        const mediaNote = (media, text) => {
+            const note = document.createElement("span");
+            note.className = "note"; note.textContent = text;
+            media.replaceWith(note);
+        };
+        // A player with nothing it can play isn't left empty.
+        for (const media of doc.querySelectorAll("audio:not([data-preview-media]), video:not([data-preview-media])")) mediaNote(media, "Media with no source that can be played.");
         for (const media of doc.querySelectorAll("audio[data-preview-media], video[data-preview-media]")) {
             const src = media.dataset.previewMedia;
             delete media.dataset.previewMedia;
-            if (!web(src) || mode === "none") {
-                const note = document.createElement("span");
-                note.className = "note"; note.textContent = "External media, not loaded.";
-                media.replaceWith(note); continue;
-            }
-            if (mode === "direct") {
+            // From the web, as the mode says; beside the file, played by
+            // the page in any mode (as Proxy's are); anything else, not.
+            const remote = web(src), local = !remote && !!src && !/^[a-z][a-z0-9+.-]*:/i.test(src);
+            if (!remote && !local) { mediaNote(media, "Media source not supported."); continue; }
+            if (remote && mode === "none") { mediaNote(media, "External media, not loaded."); continue; }
+            if (remote && mode === "direct") {
                 const got = await ask({ type: "media-direct", src, render });
-                if (got.url && alive()) { media.controls = true; media.preload = "metadata"; media.src = got.url; media.setAttribute("referrerpolicy", "no-referrer"); }
+                if (!alive()) return { urls, mounted() {} };
+                if (got.url) { media.controls = true; media.preload = "metadata"; media.src = got.url; media.setAttribute("referrerpolicy", "no-referrer"); }
+                else { const text = got.error ?? "External media couldn't be loaded."; errors(text); mediaNote(media, text); }
                 continue;
             }
             if (mediaId >= 8) { media.replaceWith(document.createTextNode("Media preview limit reached.")); continue; }

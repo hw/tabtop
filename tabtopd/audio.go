@@ -7,7 +7,7 @@ package main
 // audio.js (WebCodecs, so HTTPS or localhost only).
 //
 // An audio tunnel's session must have the desktop open from the same IP
-// (see e2e.go): audio follows the desktop, and never takes a TOTP code, so
+// (see routeAudio in tunnel_routes.go): audio follows the desktop, and never takes a TOTP code, so
 // it's no way around the login limit.
 
 import (

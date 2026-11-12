@@ -14,6 +14,7 @@ function epubFixture({ collect: customCollect } = {}) {
     const env = { URL, Number, Map, Blob, ArrayBuffer, AbortController, typeOf, resolvePath,
         el: () => frame, createRangedFileReader: () => () => {}, validFileRange: () => true,
         readingTheme: () => "", bookPlace: () => null, setBookPlace() {}, previewLink() {},
+        webAddress: src => /^(https?:|\/\/)/i.test(src) ? src : null,
         pictureLoader: options => pictureLoader({ ...options, maxBytes: 64 }),
         window: { addEventListener: (_, fn) => { listener = fn; }, removeEventListener() { listener = null; } },
         call: async request => {

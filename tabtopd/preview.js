@@ -8,6 +8,8 @@ import { typeOf, languageOf, formatOf, previewLocation, resolvePath } from "./pr
 import { previewWide, setPreviewWide, THEMES, readingTheme, setReadingTheme, VIEWS, viewShown, setViewShown } from "./preview-settings.js";
 import { loadPreview } from "./preview-loaders.js";
 import { renderPreview } from "./preview-renderers.js";
+import { call, uploadFile } from "./requests.js";
+import { cryptoBackend } from "./tunnel-crypto.js";
 import { editableText, startEditing, startTableEditing, editBookDetails } from "./preview-editor.js";
 export { previewable, previewLocation, resolvePath, previewWebURL } from "./preview-model.js";
 
@@ -94,7 +96,10 @@ export function preview(dir, files, index, download, opts = {}) {
         }
     };
     const showExternal = () => {
-        externalGroup.hidden = externalResources.hidden = !externalCount || !!editing;
+        // Shown while there's something external to load, or while a mode
+        // other than the default is on: a book counts chapter by chapter,
+        // and one with none mustn't hide a mode that's still on.
+        externalGroup.hidden = externalResources.hidden = !externalCount && externalMode === "none" || !!editing;
         if (externalGroup.hidden) showExternalMenu(false);
         externalResources.dataset.mode = externalMode;
         externalResources.innerHTML = iconSVG(`external-${externalMode}`);
@@ -215,7 +220,7 @@ export function preview(dir, files, index, download, opts = {}) {
     });
     const setMode = async mode => {
         if (mode === "text" && current?.textAvailable === false) return;
-        if (!current || typeOf(current.name) || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
+        if (!current || typeOf(current.name) && !current.sqlite || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
         previewMode = mode;
         if (blob && ["text", "hex"].includes(current.kind) && ["text", "hex"].includes(mode) &&
                 (mode !== "text" || blob.size >= Math.min(current.size, 10_000_000))) {
@@ -228,7 +233,10 @@ export function preview(dir, files, index, download, opts = {}) {
     };
     const modeToggle = button("", "Show binary view", "preview-mode-toggle glyph");
     modeToggle.addEventListener("click", () => {
-        if (!current || typeOf(current.name)) return;
+        if (!current) return;
+        // A database: its tables, or its bytes.
+        if (current.sqlite) return setMode(current.kind === "sqlite" ? "hex" : "sqlite");
+        if (typeOf(current.name)) return;
         setMode(current.kind === "hex" ? "text" : "hex");
     });
     const previewNotice = el("p", { className: "hint preview-limit", role: "status", hidden: true });
@@ -294,6 +302,11 @@ export function preview(dir, files, index, download, opts = {}) {
     // leaveEditing stops editing, asking first if there are changes not
     // saved, and resolves to whether it did.
     const leaveEditing = async () => {
+        // Editing bytes, a save going is waited for: the file's drawn again
+        // from what's held of it, which the save brings up to date, and
+        // what's asked about is only what's still unsaved. (A text editor
+        // leaves at once: a save from an older copy is refused.)
+        await editing?.settled?.();
         if (!editing) {
             return true;
         }
@@ -330,9 +343,9 @@ export function preview(dir, files, index, download, opts = {}) {
         showExternalMenu(false);
         stop();
         const path = join(d, fname);
-        // An override belongs to this file, not to the next file or followed link.
-        if (typeOf(fname)) previewMode = null;
-        else if (selectedPath !== null && selectedPath !== path) previewMode = "auto";
+        // An override belongs to this file (shown again, as another view
+        // asked for), not to the next file or followed link.
+        if (selectedPath !== null && selectedPath !== path) previewMode = typeOf(fname) ? null : "auto";
         selectedPath = path;
         name.textContent = d === dir ? fname : path;
         dialog.setAttribute("aria-label", fname);
@@ -378,20 +391,23 @@ export function preview(dir, files, index, download, opts = {}) {
         showExternal();
         const stale = () => me !== shown || mine !== drawing || !!editing;
         const { kind } = current;
-        modeToggle.hidden = !!typeOf(current.name);
         const binary = kind === "hex";
+        // Not offered where there's no other view: a known type, or bytes
+        // that aren't text; but a database has its tables.
+        modeToggle.hidden = current.sqlite ? false : !!typeOf(current.name) || (binary && current.textAvailable === false);
         modeToggle.innerHTML = iconSVG(binary ? "preview" : "binary");
-        modeToggle.title = binary && current.textAvailable === false ? "Text view unavailable for this binary file" : binary ? "Show text view" : "Show binary view";
+        modeToggle.title = binary ? (current.sqlite ? "Show tables" : "Show text view") : "Show binary view";
         modeToggle.setAttribute("aria-label", modeToggle.title);
         modeToggle.setAttribute("aria-pressed", String(binary));
-        modeToggle.disabled = binary && current.textAvailable === false;
         previewNotice.hidden = binary || !current.truncated;
         previewNotice.textContent = current.truncated ? `Showing the first 10 MB (${current.previewSize.toLocaleString()} bytes) of ${current.size.toLocaleString()} bytes.` : "";
         const format = kind === "text" ? formatOf(current.name) : "";
         if (format === "table") {
             current.tableOptions = body.querySelector(".table-view")?.options() ?? current.tableOptions;
         }
-        const editable = !current.truncated && (kind === "epub" || kind === "text" && await editableText(blob));
+        // Bytes can be changed (never added or removed) in the whole file,
+        // however much of it was read to show it.
+        const editable = kind === "hex" || !current.truncated && (kind === "epub" || kind === "text" && await editableText(blob));
         if (stale()) {
             return;
         }
@@ -399,7 +415,7 @@ export function preview(dir, files, index, download, opts = {}) {
         setView(format);
         theme.hidden = !(kind === "epub" || (format === "markdown" || format === "html") && viewShown(format));
         edit.hidden = !editable;
-        edit.title = kind === "epub" ? "Edit the book's title, author and cover" : "Edit this file";
+        edit.title = kind === "epub" ? "Edit the book's title, author and cover" : kind === "hex" ? "Edit bytes: type over them" : "Edit this file";
         edit.setAttribute("aria-label", edit.title);
         frame?.stop();
         frame = null;
@@ -416,6 +432,12 @@ export function preview(dir, files, index, download, opts = {}) {
         }
         frame = rendered;
         body.replaceChildren(rendered.element);
+        // A picture: editable if it can be written again as it is.
+        if (kind === "image") {
+            edit.hidden = !rendered.element.editable;
+            edit.title = "Edit the picture: rotate, flip, crop, resize; save it smaller, without its metadata, or as another format";
+            edit.setAttribute("aria-label", edit.title);
+        }
     };
 
     // follow opens what a link in the Markdown shown, href, points at, by a
@@ -466,6 +488,14 @@ export function preview(dir, files, index, download, opts = {}) {
             editBook();
             return;
         }
+        if (current?.kind === "hex") {
+            editBytes();
+            return;
+        }
+        if (current?.kind === "image") {
+            editPicture();
+            return;
+        }
         if (!blob || editing || current?.truncated) {
             return;
         }
@@ -500,17 +530,106 @@ export function preview(dir, files, index, download, opts = {}) {
         if (editing.cursorLocation) saveStatus.before(editing.cursorLocation);
         if (editing.syntaxToggle) widen.before(editing.syntaxToggle);
         if (editing.formatButton) store.before(editing.formatButton);
-        edit.hidden = view.hidden = saveGroup.hidden = prev.hidden = next.hidden = true;
+        showEditing([view]);
         // Editing Markdown, it's rendered beside, in a frame.
         theme.hidden = languageOf(file.name) !== "markdown";
+    });
+    // showEditing shows the controls for editing what's shown (editing):
+    // Save, Done and how saving stands; not Edit, the save-as group, the
+    // arrows to the others, nor what else is given (the view toggle, say).
+    const showEditing = (alsoHidden = []) => {
+        for (const control of [edit, saveGroup, prev, next, ...alsoHidden]) control.hidden = true;
         store.disabled = editing.canSave?.() === false;
         store.hidden = done.hidden = false;
         saveStatus.hidden = false;
         saveStatus.textContent = "No unsaved changes";
         saveStatus.classList.remove("error");
         editObserver.observe(body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
-    });
+    };
     store.addEventListener("click", () => editing?.save());
+
+    // editPicture edits the picture shown, in its view: turned, flipped,
+    // cropped, resized, and on Save, written over the file (as it was read,
+    // or not at all), in its format; or as a copy, in another (see
+    // image-view.js).
+    const editPicture = async () => {
+        const picture = body.querySelector(".image-view");
+        if (!picture?.startEditing || editing) {
+            return;
+        }
+        const file = current;
+        const started = await picture.startEditing({
+            save: async (newBlob) => {
+                const reply = await uploadFile(new File([newBlob], file.name, { type: newBlob.type }), () => {}, file.dir,
+                    new AbortController().signal, true, { expect: { mtime: file.mtime, size: file.size } });
+                file.mtime = reply.mtime;
+                file.size = reply.size;
+                if (current === file) {
+                    URL.revokeObjectURL(url);
+                    blob = newBlob;
+                    url = URL.createObjectURL(blob);
+                }
+                return reply;
+            },
+            // In another format: beside it, under a name not taken.
+            saveCopy: (newBlob, name) => uploadFile(new File([newBlob], name, { type: newBlob.type }), () => {}, file.dir,
+                new AbortController().signal, false),
+        });
+        if (!started || editing || current !== file) {
+            started?.stop();
+            return;
+        }
+        editing = started;
+        showEditing([modeToggle]);
+    };
+
+    // editBytes edits the binary file shown, in its hex view: bytes typed
+    // over, written into the file where they are on Save (see file-patch).
+    const editBytes = () => {
+        const hex = body.querySelector(".hex-view");
+        if (!hex?.startEditing || editing) {
+            return;
+        }
+        const file = current;
+        const path = join(file.dir, file.name);
+        editing = hex.startEditing({
+            save: async (patches, before) => {
+                // The bytes where they go, hashed for the server to check, by
+                // the tunnel's backend: WebCrypto, or noble where the page
+                // isn't a secure context (plain HTTP on a LAN, say).
+                const sum = await (await cryptoBackend()).sha256(before);
+                const ifBytes = Array.from(sum, (b) => b.toString(16).padStart(2, "0")).join("");
+                const t = await call({ type: "file-patch", path, if_mtime: file.mtime, if_size: file.size, patches, if_bytes: ifBytes });
+                t.close();
+                return t.reply;
+            },
+            // The file's version, and the copy shown from, as they are now,
+            // so a search, a read, or Done drawing it again, sees the change.
+            saved: (patches, reply) => {
+                file.mtime = reply.mtime;
+                file.size = reply.size;
+                if (current !== file || !blob) {
+                    return;
+                }
+                // Pieced together from slices of the old one and the runs,
+                // in order (see patchRuns): nothing copied, nothing awaited.
+                const parts = [];
+                let at = 0;
+                for (const { offset, hex: run } of patches) {
+                    if (offset >= blob.size) break;
+                    const run8 = new Uint8Array(Math.min(run.length / 2, blob.size - offset));
+                    for (let i = 0; i < run8.length; i++) run8[i] = parseInt(run.slice(2 * i, 2 * i + 2), 16);
+                    parts.push(blob.slice(at, offset), run8);
+                    at = offset + run8.length;
+                }
+                parts.push(blob.slice(at));
+                URL.revokeObjectURL(url);
+                blob = new Blob(parts, { type: blob.type });
+                url = URL.createObjectURL(blob);
+            },
+        });
+        showEditing([modeToggle]);
+    };
 
     // editBook asks for the book's new title, author and cover, and saves
     // them, as the book was opened (or not, if it's changed since), then

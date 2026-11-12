@@ -887,6 +887,15 @@ func epubChildAnswer(f *os.File, args []string) ([]byte, error) {
 			return nil, err
 		}
 		return json.Marshal(map[string]string{"html": h})
+	case len(args) == 1 && args[0] == "pictures":
+		uses, err := z.pictureReport()
+		if err != nil {
+			return nil, err
+		}
+		if uses == nil {
+			uses = []epubPictureUse{}
+		}
+		return json.Marshal(uses)
 	case len(args) == 2 && args[0] == "edit":
 		return epubEditChild(z, args)
 	case len(args) == 2 && args[0] == "picture":
@@ -950,11 +959,23 @@ func (g *server) tunnelEpub(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	}
 	defer opened.Close()
 	f, st := opened.file, opened.info
-	if req.IfMtime != "" && (fileVersion(st) != req.IfMtime || st.Size() != req.IfSize) {
+	if req.changedSinceRead(st) {
 		r.fail(errEpubChanged.Error())
 		return
 	}
 	switch {
+	case req.Uses:
+		out, err := readEpubIsolated(f, "pictures")
+		if err != nil {
+			r.fail(err.Error())
+			return
+		}
+		var uses []epubPictureUse
+		if json.Unmarshal(out, &uses) != nil {
+			r.fail(errEpubNotBook.Error())
+			return
+		}
+		r.finish(map[string]any{"pictures": uses})
 	case req.Item == "":
 		out, err := readEpubIsolated(f, "book")
 		if err != nil {

@@ -83,3 +83,14 @@ export function createTimeFormatter({ timeZone: initialZone = "UTC", locale, now
     setTimeZone(initialZone);
     return { setTimeZone, friendlyTime, exactTime, shortTime };
 }
+
+// humanBytes is a size as the listing shows it (see humanSize in main.go):
+// in units of 1024, so the two agree.
+export function humanBytes(n) {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    for (; n >= 1024 && i < units.length - 1; i++) {
+        n /= 1024;
+    }
+    return `${i ? n.toFixed(1) : n} ${units[i]}`;
+}

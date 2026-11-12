@@ -87,18 +87,25 @@ func TestNewServerRejectsInvalidConfiguration(t *testing.T) {
 }
 
 // Previews' external resources come from the document, not the user, so
-// they never reach private networks, even with -fetch-private.
-func TestPreviewResourcesStayPublicWithFetchPrivate(t *testing.T) {
-	c := validTestConfig()
-	c.fetchOn, c.fetchPrivate = true, true
-	g, err := newServer(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://10.255.255.1/", nil)
-	if _, err := g.fetches.resourceClient.Do(req); !errors.Is(err, errFetchAddress) {
-		t.Fatalf("private address not refused: %v", err)
+// -fetch-private doesn't let them reach private networks; only
+// -preview-fetch-private does.
+func TestPreviewResourcesPrivateNetworks(t *testing.T) {
+	for _, tc := range []struct{ fetchPrivate, previewPrivate, refused bool }{
+		{false, false, true}, {true, false, true}, {false, true, false},
+	} {
+		c := validTestConfig()
+		c.fetchOn, c.fetchPrivate, c.previewFetchPrivate = true, tc.fetchPrivate, tc.previewPrivate
+		g, err := newServer(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Refused before connecting; allowed, it tries and times out.
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://10.255.255.1/", nil)
+		_, err = g.fetches.resourceClient.Do(req)
+		cancel()
+		if refused := errors.Is(err, errFetchAddress); refused != tc.refused {
+			t.Errorf("fetch-private=%t preview-fetch-private=%t: refused=%t, want %t (%v)", tc.fetchPrivate, tc.previewPrivate, refused, tc.refused, err)
+		}
 	}
 }

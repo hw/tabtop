@@ -64,6 +64,9 @@ as_user /usr/local/bin/tabtopd \
     -preview-dir /opt/preview \
     -pdfjs-dir /opt/pdfjs \
     -kaitai-dir /opt/kaitai \
+    -inpaint-dir /opt/inpaint \
+    -background-dir /opt/background \
+    -disasm-dir /opt/disasm \
     -users-file "$TOTP_USERS_FILE" \
     -vnc-password-file "$VNC_UPSTREAM_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
@@ -73,6 +76,7 @@ as_user /usr/local/bin/tabtopd \
     -activity-file "$USER_HOME/.config/tabtop/activity.jsonl" \
     -fetch="$WEB_FETCH" \
     -fetch-private="$WEB_FETCH_PRIVATE" \
+    -preview-fetch-private="$WEB_PREVIEW_FETCH_PRIVATE" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
     -session-max "$WEB_SESSION_MAX" \

@@ -14,6 +14,9 @@ import (
 )
 
 type isolatedChild struct {
+	// Context, if set, ends the child (killed) when it ends: the page gave
+	// up on what it asked.
+	Context     context.Context
 	Args        []string
 	Input       io.Reader
 	ExtraFiles  []*os.File
@@ -32,7 +35,11 @@ func runIsolatedChild(spec isolatedChild) childResult {
 	if err != nil {
 		return childResult{Err: err, ExitCode: -1}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), spec.Timeout)
+	parent := spec.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, spec.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, spec.Args...)
 	cmd.Stdin = spec.Input

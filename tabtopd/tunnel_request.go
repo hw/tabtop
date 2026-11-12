@@ -15,7 +15,6 @@ import (
 	"log"
 	"net/http"
 	"path"
-	"slices"
 	"strings"
 	"time"
 )
@@ -32,9 +31,10 @@ const (
 )
 
 type tunnelRequest struct {
-	Entries []int `json:"entries,omitempty"` // zip-extract, zip-download: entry ordinals from the preview
+	// Type is the request (see tunnelRoutes for them all).
+	Type string `json:"type"`
 
-	Type  string   `json:"type"` // vnc, logout, logout-all, end-session, sessions, seen, tty, list, file, zip, upload, mkdir, create, rename, move, delete, watch, changes, audio, mic, share, share-again, reshare, unshare, cleanup, name-session, reshare-many, zip-preview, zip-extract, zip-download, markdown, epub, epub-edit, fetch, fetches, preview-resource, activity or activity-clear
+	// --- Files ---
 	Path  string   `json:"path,omitempty"`
 	Name  string   `json:"name,omitempty"`  // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
 	Size  int64    `json:"size,omitempty"`  // upload: its size
@@ -43,24 +43,66 @@ type tunnelRequest struct {
 	// upload: replace a file that has the name, rather than save under a
 	// free one
 	Replace bool `json:"replace,omitempty"`
-	// upload, with Replace: only if the file there is still as the page
-	// read it, with this version (see fileVersion) and IfSize;
-	// file and epub: only of the file as it was
+	// upload: the id of one cut off, to carry on with (see keepPartial)
+	Resume string `json:"resume,omitempty"`
+	// upload with Replace, and the edits below: only if the file there is
+	// still as the page read it, with this version (see fileVersion) and
+	// IfSize (see changed); reads: only of the file as it was, if given
+	// (see changedSinceRead)
 	IfMtime string `json:"if_mtime,omitempty"`
 	IfSize  int64  `json:"if_size,omitempty"`
+	// file: only Length bytes of it, from Offset (see maxFileRange); also
+	// file-search's start, and preview-resource's media range
+	Offset int64 `json:"offset,omitempty"`
+	Length int64 `json:"length,omitempty"`
+	// cleanup: only say what it would delete
+	DryRun bool `json:"dry_run,omitempty"`
+
+	// --- ZIP archives ---
+	Entries []int `json:"entries,omitempty"` // zip-extract, zip-download: entry ordinals from the preview
+
+	// --- EPUB books ---
 	// epub: a chapter or picture of the book at Path, by its path in the
 	// book, rather than the book (see epub.go)
 	Item string `json:"item,omitempty"`
+	// epub: what uses each of the book's pictures, rather than the book
+	Uses bool `json:"uses,omitempty"`
 	// epub-edit: the book's new title and author (see epub_edit.go);
 	// RegenerateTOC rebuilds the contents list from chapter headings
 	Title         string `json:"title,omitempty"`
 	Creator       string `json:"creator,omitempty"`
 	RegenerateTOC bool   `json:"regenerate_toc,omitempty"`
-	// file: only Length bytes of it, from Offset (see maxFileRange)
-	Offset int64 `json:"offset,omitempty"`
-	Length int64 `json:"length,omitempty"`
-	// upload: the id of one cut off, to carry on with (see keepPartial)
-	Resume string `json:"resume,omitempty"`
+	// epub-edit: a picture already in the book, by its path in it, to name
+	// the cover, rather than one sent
+	CoverItem string `json:"cover_item,omitempty"`
+	// epub-edit: pictures in the book to remove from it, by their paths in
+	// it (cover pages showing one are made to show the cover instead)
+	RemoveItems []string `json:"remove_items,omitempty"`
+
+	// --- Bytes (the hex view; see hex_edit.go) ---
+	// file-patch: runs of bytes to write over the file's
+	Patches []bytePatch `json:"patches,omitempty"`
+	// file-patch: the SHA-256, as hex, of the bytes the page saw where the
+	// runs go, one run's after another's: they must be there still
+	IfBytes string `json:"if_bytes,omitempty"`
+	// file-search: the bytes to look for, and which bits of them matter, as
+	// hex; from Offset, backwards with Backward
+	Pattern  string `json:"pattern,omitempty"`
+	Mask     string `json:"mask,omitempty"`
+	Backward bool   `json:"backward,omitempty"`
+
+	// --- SQLite ---
+	// sqlite: what to ask of the database at Path (see sqlite.go)
+	SQLite *sqliteQuery `json:"sqlite,omitempty"`
+
+	// --- The web: fetching, and previews' external resources ---
+	// fetch: the address to fetch into the folder at Path (or, with Name,
+	// the id of a fetch to follow); preview-resource: the resource's
+	URL string `json:"url,omitempty"`
+	// preview-resource: image (default), css, font or ranged media.
+	Resource string `json:"resource,omitempty"`
+
+	// --- Share links ---
 	// share: how long the link lasts, in seconds, and how many downloads
 	// it allows (0 for no limit)
 	Expires int64 `json:"expires,omitempty"`
@@ -70,11 +112,6 @@ type tunnelRequest struct {
 	// in all
 	Upload   bool  `json:"upload,omitempty"`
 	MaxBytes int64 `json:"max_bytes,omitempty"`
-	// fetch: the address to fetch into the folder at Path (or, with Name,
-	// the id of a fetch to follow)
-	URL string `json:"url,omitempty"`
-	// preview-resource: image (default), css, font or ranged media.
-	Resource string `json:"resource,omitempty"`
 	// share, reshare: the link's label
 	Label string `json:"label,omitempty"`
 	// share: for downloading the file now, from this page, over HTTPS (a
@@ -83,8 +120,6 @@ type tunnelRequest struct {
 	Direct bool `json:"direct,omitempty"`
 	// reshare-many: set the label too
 	Relabel bool `json:"relabel,omitempty"`
-	// cleanup: only say what it would delete
-	DryRun bool `json:"dry_run,omitempty"`
 }
 
 type fileEntry struct {
@@ -176,338 +211,41 @@ func (g *server) serveRequest(t *tunnel, session, ip string, authenticated func(
 	authenticated()
 	r := &tunnelResponder{t: t}
 	// Gate access before dispatch, including requests from cached pages or
-	// clients that bypass navigation. Keep session management available.
-	if g.fsOff {
-		switch req.Type {
-		case "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes",
-			"zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "cleanup",
-			"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches", "preview-resource":
-			r.fail("File support is turned off (WEB_FS=0).")
-			return
-		}
-	}
-
-	switch req.Type {
-	case "vnc":
-		if g.vncOff {
-			r.fail("The desktop is turned off (WEB_VNC=0).")
-			return
-		}
-		t.c.SetReadLimit(maxClientMessage + tunnelOverhead)
-		if r.accept(nil) {
-			g.bridgeDesktop(t, session, ip)
-		}
-
-	case "logout":
-		g.act(session, "logout", ip, "logged out")
-		g.endSession(session, "Logged out.", t)
-		r.finish(nil)
-
-	case "end-session":
-		// Another of the sessions listed, by its handle (see sessionsReport).
-		if !g.endSessionByHandle(req.Name, session, ip) {
-			r.fail("That session is over already, or it's this one.")
-			return
-		}
-		g.act(session, "end-session", ip, "ended another session")
-		// And the links it made, so it keeps no access through them.
-		if g.fetches != nil {
-			g.fetches.cancelMatching(func(j *fetchJob) bool { return j.by == req.Name })
-		}
-		if n := g.revokeShares(func(l *shareLink) bool { return l.By == req.Name }); n > 0 {
-			log.Printf("%d share links revoked with the session ended from %s", n, ip)
-			g.act(session, "share", ip, "revoked %d link%s the ended session made", n, plural(n))
-		}
-		r.finish(nil)
-
-	case "logout-all":
-		log.Printf("all sessions logged out from %s", ip)
-		g.act(session, "logout-all", ip, "logged out everywhere")
-		g.endAllSessions("Logged out everywhere.", t)
-		if g.fetches != nil {
-			g.fetches.cancelMatching(func(*fetchJob) bool { return true })
-		}
-		if n := g.revokeShares(func(*shareLink) bool { return true }); n > 0 {
-			log.Printf("%d share links revoked with every session", n)
-			g.act(session, "share", ip, "revoked every link (%d) with logging out everywhere", n)
-		}
-		r.finish(nil)
-
-	case "sessions":
-		report := g.sessionsReport(session, t)
-		if w := g.ipWarningOf(t); w != "" {
-			report["ip_warning"] = w
-		}
-		if g.shares != nil {
-			report["shares"] = g.shares.list(sessionHandle(session))
-		}
-		r.finish(report)
-
-	case "share":
-		g.tunnelShare(req, session, ip, r)
-
-	case "preview-resource":
-		g.tunnelPreviewResource(t, req, r)
-	case "fetch":
-		g.tunnelFetch(t, req, session, ip, r)
-	case "activity":
-		// The newest req.Max entries of the activity log (all for 0).
-		entries, total := g.activity.list(req.Max)
-		r.finish(map[string]any{"entries": entries, "total": total, "max": maxActivity})
-	case "activity-clear":
-		g.activity.clear(ip, g.sessionName(session))
-		log.Printf("activity log cleared from %s", ip)
-		r.finish(nil)
-	case "fetches":
-		if g.fetches == nil {
-			r.fail("Fetching from URLs is turned off (WEB_FETCH=0).")
-			return
-		}
-		r.finish(map[string]any{"fetches": g.fetches.list()})
-	case "reshare":
-		// A link listed, by its handle, changed: req.Expires seconds from
-		// now (0 keeps when it ends), req.Max, and req.MaxBytes.
-		life := time.Duration(req.Expires) * time.Second
-		if g.shares == nil || req.Expires != 0 && (life < time.Minute || life > maxShareLife) || req.Max < 0 || req.Max > 1000 {
-			r.fail("That's not a lifetime or limit a link can have.")
-			return
-		}
-		label, ok := shareLabel(req.Label)
-		if !ok {
-			r.fail(fmt.Sprintf("A label is one line of at most %d characters.", maxLabel))
-			return
-		}
-		l, err := g.shares.change(req.Name, life, req.Max, req.MaxBytes, label)
-		if err != nil {
-			r.fail(err.Error())
-			return
-		}
-		n := g.shares.now(l)
-		log.Printf("share link to %q changed from %s: until %s, %s", l.Path, ip, n.Expires.Format(time.RFC3339), maxText(n.Max))
-		// (What it was changed to, as sent and as now() read it under the
-		// lock: another change can come meanwhile.)
-		g.act(session, "share", ip, "changed the %s to %s%s: until %s, %s", linkKind(l), linkTarget(l), labelQuote(label), n.Expires.UTC().Format("2006-01-02 15:04 UTC"),
-			countText(n.Max, map[bool]string{true: "file", false: "download"}[l.Upload]))
-		r.finish(map[string]any{"expires": n.Expires})
-	case "share-again":
-		// A link listed, by its handle, to show again.
-		if g.shares == nil {
-			r.fail("Share links are turned off (WEB_SHARE=0).")
-			return
-		}
-		reply, err := g.shares.shareLinkAgain(req.Name)
-		if err != nil {
-			r.fail(err.Error())
-			return
-		}
-		g.act(session, "share", ip, "showed the link to %s again", folderOrPath(reply))
-		r.finish(reply)
-	case "unshare":
-		// Links listed, by their handles (see shareInfo): req.Name, or
-		// req.Names.
-		handles := map[string]bool{req.Name: req.Name != ""}
-		for _, h := range req.Names {
-			handles[h] = true
-		}
-		var revoked []string
-		n := g.revokeShares(func(l *shareLink) bool {
-			if handles[l.handle()] {
-				revoked = append(revoked, linkTarget(l)+labelText(l))
-				return true
-			}
-			return false
-		})
-		if n == 0 {
-			r.fail("That link has ended already.")
-			return
-		}
-		slices.Sort(revoked)
-		log.Printf("%d share links revoked from %s", n, ip)
-		g.act(session, "share", ip, "revoked the link%s to %s", plural(n), strings.Join(revoked, ", "))
-		r.finish(map[string]any{"revoked": n})
-
-	case "name-session":
-		// A session listed, by its handle (this one for ""), named
-		// req.Label ("" for none).
-		label, ok := shareLabel(req.Label)
-		if !ok || len([]rune(label)) > 50 {
-			r.fail("A session's name is one line of at most 50 characters.")
-			return
-		}
-		before := g.sessionName(session)
-		found, own := g.nameSession(req.Name, session, label)
-		if !found {
-			r.fail("That session is over already.")
-			return
-		}
-		switch {
-		case own && label != before:
-			g.act(session, "session", ip, "named this session %q", label)
-		case !own:
-			g.act(session, "session", ip, "named another session %q", label)
-		}
-		r.finish(nil)
-	case "reshare-many":
-		// Links listed, by their handles in req.Names: each made to end
-		// req.Expires seconds from now (0 keeps when it ends), and with
-		// req.Relabel, labelled req.Label.
-		life := time.Duration(req.Expires) * time.Second
-		label, ok := shareLabel(req.Label)
-		if g.shares == nil || req.Expires != 0 && (life < time.Minute || life > maxShareLife) || !ok {
-			r.fail("That's not a lifetime or label a link can have.")
-			return
-		}
-		changed := g.shares.changeMany(req.Names, life, label, req.Relabel)
-		if len(changed) == 0 {
-			r.fail("Those links have ended already.")
-			return
-		}
-		what := []string{}
-		if life > 0 {
-			what = append(what, "to end "+lifeText(life)+" from now")
-		}
-		if req.Relabel {
-			what = append(what, fmt.Sprintf("labelled %q", label))
-		}
-		slices.Sort(changed)
-		g.act(session, "share", ip, "changed %d link%s (%s): %s", len(changed), plural(len(changed)), strings.Join(changed, ", "), strings.Join(what, ", "))
-		r.finish(map[string]any{"changed": len(changed)})
-	case "cleanup":
-		// Uploads cut off and temporary files, deleted (see cleanup.go),
-		// or with req.DryRun, counted.
-		rep := g.cleanup(req.DryRun)
-		if !req.DryRun && (rep.Kept > 0 || rep.Temps > 0) {
-			log.Printf("cleaned up from %s: %d uploads kept to carry on, %d temporary files, %s", ip, rep.Kept, rep.Temps, humanSize(rep.Bytes))
-			g.act(session, "cleanup", ip, "cleaned up %s: %d upload%s kept to carry on, and %d leftover temporary file%s",
-				humanSize(rep.Bytes), rep.Kept, plural(rep.Kept), rep.Temps, plural(rep.Temps))
-		}
-		r.finish(map[string]any{"cleanup": rep})
-	case "seen":
-		// The files page's security warnings, marked as seen: what's
-		// listed now no longer marks it (see sessionsReport).
-		g.mu.Lock()
-		g.seen = time.Now()
-		g.mu.Unlock()
-		log.Printf("security warnings marked as seen from %s", ip)
-		r.finish(nil)
-
-	case "tty":
-		if g.termDir == "" {
-			r.fail("The terminal is turned off.")
-			return
-		}
-		if !g.openTTY(session) {
-			r.fail("Too many open terminals.")
-			return
-		}
-		defer g.closeTTY(session)
-		t.c.SetReadLimit(maxTTYMessage + tunnelOverhead)
-		// search: whether there's tmux's history to search (see tty.go).
-		if r.accept(map[string]any{"search": g.ttyCommand == ""}) {
-			g.serveTTY(t, session, ip)
-		}
-
-	case "list", "file":
-		g.tunnelFiles(t, req, r)
-
-	case "zip-extract":
-		g.tunnelZipExtract(req, session, ip, r)
-
-	case "zip-download":
-		g.tunnelZipDownload(t, req, session, ip, r)
-
-	case "zip-preview":
-		g.tunnelZipPreview(t, req, r)
-
-	case "markdown":
-		g.tunnelMarkdown(t, req, r)
-
-	case "epub":
-		g.tunnelEpub(t, req, r)
-
-	case "epub-edit":
-		g.tunnelEpubEdit(t, req, r)
-
-	case "upload":
-		g.tunnelUpload(t, req, r)
-
-	case "mkdir":
-		g.tunnelMkdir(t, req, r)
-
-	case "create":
-		g.tunnelCreate(t, req, r)
-
-	case "zip":
-		g.tunnelZip(t, req, ip, r)
-
-	case "rename":
-		g.tunnelRename(t, req, ip, r)
-
-	case "move":
-		g.tunnelMove(t, req, ip, r)
-
-	case "watch":
-		g.tunnelWatch(t, r)
-
-	case "changes":
-		g.tunnelChanges(t, req, r)
-
-	case "delete":
-		g.tunnelDelete(t, req, ip, r)
-
-	case "audio":
-		if g.audio == nil {
-			r.fail("Desktop audio is turned off.")
-			return
-		}
-		// Only while this session has the desktop open, from the same IP.
-		l, err := g.audio.join(session, ip)
-		switch {
-		case errors.Is(err, errAudioDenied):
-			r.fail("Connect to the desktop first.")
-			return
-		case err != nil:
-			log.Printf("audio: %v", err)
-			r.fail("Audio is unavailable.")
-			return
-		}
-		log.Printf("audio tunnel listener from %s joined", ip)
-		defer log.Printf("audio tunnel listener from %s left", ip)
-		defer g.audio.leave(l)
-		if r.accept(nil) {
-			streamAudio(t, l)
-		}
-
-	case "mic":
-		if g.audio == nil {
-			r.fail("Desktop audio is turned off.")
-			return
-		}
-		// As for audio: only while this session has the desktop open, from
-		// the same IP.
-		l, buf, stop, err := g.audio.joinMic(session, ip)
-		switch {
-		case errors.Is(err, errNoMic):
-			r.fail(noMicMsg)
-			return
-		case errors.Is(err, errAudioDenied):
-			r.fail("Connect to the desktop first.")
-			return
-		case err != nil:
-			log.Printf("microphone: %v", err)
-			r.fail("The microphone is unavailable.")
-			return
-		}
-		defer stop()
-		log.Printf("microphone from %s on", ip)
-		defer log.Printf("microphone from %s off", ip)
-		if r.accept(map[string]any{"codec": "opus", "sampleRate": micRate, "channels": 1}) {
-			receiveMic(t, l, buf)
-		}
-
-	default:
+	// clients that bypass navigation (see tunnelRoutes).
+	route, ok := tunnelRoutes[req.Type]
+	switch {
+	case !ok:
 		r.fail("Unknown request.")
+	case route.files && g.fsOff:
+		r.fail("File support is turned off (WEB_FS=0).")
+	default:
+		route.serve(g, &tunnelCall{t: t, req: req, session: session, ip: ip, r: r})
 	}
+}
+
+// receiveData is size bytes the page sends after its request (once it's
+// accepted), as data messages, held in memory: for what's small enough
+// (see maxMarkdown and maxEpubPicture). Not ok if the tunnel went, or sent
+// something else or too much, when it's closed, saying why.
+func receiveData(t *tunnel, size int64, why string) ([]byte, bool) {
+	data := make([]byte, 0, size)
+	if size > 0 {
+		t.c.SetReadLimit(fileChunk + tunnelOverhead)
+	}
+	for int64(len(data)) < size {
+		ctx, cancel := context.WithTimeout(context.Background(), fileStall)
+		typ, p, err := t.Read(ctx)
+		cancel()
+		if err != nil {
+			return nil, false
+		}
+		if typ != websocket.MessageBinary || int64(len(data)+len(p)) > size {
+			t.Close(websocket.StatusPolicyViolation, why)
+			return nil, false
+		}
+		data = append(data, p...)
+	}
+	return data, true
 }
 
 // tunnelMarkdown answers a markdown request: the file at req.Path, as
@@ -524,20 +262,9 @@ func (g *server) tunnelMarkdown(t *tunnel, req tunnelRequest, r *tunnelResponder
 		if !r.accept(nil) {
 			return
 		}
-		t.c.SetReadLimit(fileChunk + tunnelOverhead)
-		text := make([]byte, 0, req.Size)
-		for int64(len(text)) < req.Size {
-			ctx, cancel := context.WithTimeout(context.Background(), fileStall)
-			typ, p, err := t.Read(ctx)
-			cancel()
-			if err != nil {
-				return
-			}
-			if typ != websocket.MessageBinary || int64(len(text)+len(p)) > req.Size {
-				t.Close(websocket.StatusPolicyViolation, "bad text")
-				return
-			}
-			text = append(text, p...)
+		text, ok := receiveData(t, req.Size, "bad text")
+		if !ok {
+			return
 		}
 		html, err := renderMarkdownIsolated(bytes.NewReader(text))
 		if err != nil {
@@ -803,7 +530,7 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 		}
 		from, n = req.Offset, min(req.Length, st.Size()-req.Offset)
 	}
-	if req.IfMtime != "" && (fileVersion(st) != req.IfMtime || st.Size() != req.IfSize) {
+	if req.changedSinceRead(st) {
 		r.fail(errChangedSince.Error())
 		return
 	}

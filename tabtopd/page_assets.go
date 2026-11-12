@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
@@ -27,8 +28,8 @@ const (
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed third-party/* preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
-var e2eFiles embed.FS
+//go:embed image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js third-party/* image-meta.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+var pageFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
 // through each other, from -noble-dir: @noble/ciphers for
@@ -85,16 +86,23 @@ func (g *server) previewAssets() assets { return assets{"preview", g.previewDir,
 //
 // Its own sandbox too, as the files page frames it: opened as a page of its
 // own, or a popup, it's still at an origin of its own, not the site's.
-const mdFrameCSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob: data:; " +
-	"media-src blob:; font-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; " + frameSandbox
+var mdFrameCSP = frameCSP("")
 
-// Only a frame explicitly opened in Direct mode may load remote images.
+// directFrameCSP is the same frame's in Direct mode, which may also load
+// pictures, stylesheets, fonts and media from the web itself.
+var directFrameCSP = frameCSP(" http: https:")
+
+// frameCSP is the preview frames' policy, with web, if not "", added to
+// what pictures, styles, fonts and media may load from.
+func frameCSP(web string) string {
+	return "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'" + web + "; img-src blob: data:" + web + "; " +
+		"media-src blob:" + web + "; font-src blob:" + web + "; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; " + frameSandbox
+}
+
+// Only a frame explicitly opened in Direct mode may load from the web.
 func previewFrameCSP(r *http.Request) string {
 	if r.URL.Query().Get("external") == "direct" {
-		policy := strings.Replace(mdFrameCSP, "img-src blob: data:;", "img-src blob: data: http: https:;", 1)
-		policy = strings.Replace(policy, "style-src 'unsafe-inline';", "style-src 'unsafe-inline' http: https:;", 1)
-		policy = strings.Replace(policy, "font-src blob:;", "font-src blob: http: https:;", 1)
-		return strings.Replace(policy, "media-src blob:;", "media-src blob: http: https:;", 1)
+		return directFrameCSP
 	}
 	return mdFrameCSP
 }
@@ -119,6 +127,56 @@ func (g *server) highlightPath() string {
 }
 
 func (g *server) highlightAssets() assets { return assets{"highlight", g.highlightDir, highlightFiles} }
+
+// The disassembler the hex view's worker loads (see disasm-worker.js), from
+// -disasm-dir: iced-x86, made loadable in a worker by the Dockerfile's
+// disasm stage. Read when a page first asks for them.
+var disasmFiles = []string{"iced.js", "iced_x86_bg.wasm"}
+
+func (g *server) disasmAssets() assets { return assets{"disasm", g.disasmDir, disasmFiles} }
+
+func (g *server) disasmPath() string {
+	if g.disasmDir == "" {
+		return "disasm-missing"
+	}
+	return g.disasm.path(g.disasmAssets())
+}
+
+// MI-GAN has its own asset set so opening background removal doesn't load it.
+var inpaintFiles = []string{"migan.onnx"}
+
+func (g *server) inpaintAssets() assets { return assets{"inpaint", g.inpaintDir, inpaintFiles} }
+func (g *server) inpaintPath() string {
+	if g.inpaintDir == "" {
+		return "inpaint-missing"
+	}
+	return g.inpaint.path(g.inpaintAssets())
+}
+
+// Background removal uses only ONNX Runtime's WASM backend, in a worker.
+var backgroundFiles = []string{"ort.wasm.min.js", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm", "u2netp.onnx"}
+
+func (g *server) backgroundAssets() assets {
+	return assets{"background", g.backgroundDir, backgroundFiles}
+}
+
+func (g *server) backgroundPath() string {
+	if g.backgroundDir == "" {
+		return "background-missing"
+	}
+	return g.background.path(g.backgroundAssets())
+}
+
+// disasmWorkerCSP is the disassembly worker's: its own scripts, fetching
+// its WebAssembly, and running it; nothing else. The page itself isn't
+// allowed WebAssembly.
+const disasmWorkerCSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'"
+
+// backgroundWorkerCSP is the background-removal worker's: its own scripts
+// (ONNX Runtime), fetching its WebAssembly and model, and running them;
+// nothing else. The same as the disassembler's for now, but its own, so
+// either can change without the other.
+const backgroundWorkerCSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'"
 
 // scripts serves the page scripts under /tabtop/, and the desktop's
 // stylesheet for them.
@@ -157,39 +215,54 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		h.Set("Referrer-Policy", "no-referrer")
 		io.WriteString(w, epubFrameHTML)
 	case name == "pdf-frame.js":
-		js, _ := e2eFiles.ReadFile(name)
+		js, _ := pageFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./pdfjs/`), []byte(`"./`+g.pdfjsPath()+`/`)))
 	case name == "glyphs.js":
 		// Static UI artwork, also imported by frames with opaque origins.
 		h.Set("Access-Control-Allow-Origin", "*")
-		http.ServeFileFS(w, r, e2eFiles, name)
+		http.ServeFileFS(w, r, pageFiles, name)
 	case name == "md-frame.js":
-		js, _ := e2eFiles.ReadFile(name)
+		js, _ := pageFiles.ReadFile(name)
 		js = bytes.ReplaceAll(js, []byte(`"./preview/`), []byte(`"./`+g.previewPath()+`/`))
 		w.Write(bytes.ReplaceAll(js, []byte(`"./highlight/`), []byte(`"./`+g.highlightPath()+`/`)))
 	case name == "nav.js":
-		js, _ := e2eFiles.ReadFile(name)
+		js, _ := pageFiles.ReadFile(name)
 		pages, _ := json.Marshal(map[string]bool{"desktop": !g.vncOff, "terminal": g.termDir != "", "files": !g.fsOff})
 		w.Write(bytes.Replace(js, []byte(`{ desktop: true, terminal: true, files: true }`), pages, 1))
 	case name == "preview.js" || name == "preview-content.js":
-		js, _ := e2eFiles.ReadFile(name)
+		js, _ := pageFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./highlight/`), []byte(`"./`+g.highlightPath()+`/`)))
+	case name == "image-inpaint-worker.js":
+		h.Set("Content-Security-Policy", backgroundWorkerCSP)
+		js, _ := pageFiles.ReadFile(name)
+		js = bytes.ReplaceAll(js, []byte(`"./background/`), []byte(`"./`+g.backgroundPath()+`/`))
+		w.Write(bytes.ReplaceAll(js, []byte(`"./inpaint/`), []byte(`"./`+g.inpaintPath()+`/`)))
+	case name == "image-background-worker.js":
+		h.Set("Content-Security-Policy", backgroundWorkerCSP)
+		js, _ := pageFiles.ReadFile(name)
+		w.Write(bytes.ReplaceAll(js, []byte(`"./background/`), []byte(`"./`+g.backgroundPath()+`/`)))
+	case name == "disasm-worker.js":
+		h.Set("Content-Security-Policy", disasmWorkerCSP)
+		js, _ := pageFiles.ReadFile(name)
+		w.Write(bytes.ReplaceAll(js, []byte(`"./disasm/`), []byte(`"./`+g.disasmPath()+`/`)))
 	case name == "tunnel-crypto.js":
-		js, _ := e2eFiles.ReadFile(name)
+		js, _ := pageFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./noble/`), []byte(`"./`+g.noblePath()+`/`)))
-	case name == "third-party/css-tree.js" || name == "third-party/css-tree.LICENSE" || name == "third-party/source-map-js.LICENSE" || name == "third-party/mdn-data.LICENSE" || name == "preview-html-links.js" || name == "preview-css.js" || name == "preview-html-resources.js" || name == "preview-resources.js" || name == "preview-media.js" || name == "preview-pictures.js" || name == "kaitai-errors.js" || name == "format-combobox.js" || name == "kaitai-view.js" || name == "kaitai-worker.js" || name == "hex-view.js" || name == "files-actions.js" || name == "preview-loaders.js" || name == "preview-renderers.js" || name == "ranged-file.js" || name == "file-types.js" || name == "file-types-worker.js" || name == "preview-dom.js" || name == "preview-editor.js" || name == "preview-frames.js" || name == "preview-links.js" || name == "preview-model.js" || name == "preview-settings.js" || name == "preview-view.js" || name == "stream-worker.js" || name == "media-source.js" || name == "media-stream.js" || name == "video-stream.js" || name == "epub-frame.js" || name == "json-view.js" || name == "table-view.js" || name == "transfer.js" || name == "folder-model.js" || name == "osc.js" || name == "tunnel.js" || name == "tunnel-protocol.js" || name == "session-state.js" || name == "session.js" || name == "login-ui.js" || name == "file-format.js" || name == "sessions-view.js" || name == "novnc.js" || name == "files.js" || name == "drop.js" || name == "ui.js" || name == "nav.js" ||
-		name == "requests.js" || name == "reconnect.js" || name == "download.js" || name == "expiry.js":
-		http.ServeFileFS(w, r, e2eFiles, name)
 	case name == "desktop.css":
 		h.Set("Content-Type", "text/css; charset=utf-8")
 		io.WriteString(w, desktopCSS)
 	case name == "download-sw.js":
 		h.Set("Service-Worker-Allowed", "../")
 		h.Set("Content-Security-Policy", downloadSWCSP)
-		http.ServeFileFS(w, r, e2eFiles, name)
+		http.ServeFileFS(w, r, pageFiles, name)
+	case servedAsIs(name):
+		http.ServeFileFS(w, r, pageFiles, name)
 	case g.noble.serve(w, r, g.nobleAssets(), name):
 	case g.highlightDir != "" && g.highlight.serve(w, r, g.highlightAssets(), name):
 	case g.previewDir != "" && g.preview.serve(w, r, g.previewAssets(), name):
+	case g.inpaintDir != "" && g.inpaint.serve(w, r, g.inpaintAssets(), name):
+	case g.backgroundDir != "" && g.background.serve(w, r, g.backgroundAssets(), name):
+	case g.disasmDir != "" && g.disasm.serve(w, r, g.disasmAssets(), name):
 	case g.servePDFJS(w, r, name):
 	case g.serveKaitai(w, r, name):
 	default:
@@ -237,4 +310,13 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// tunnelRequest is a session tunnel's first message: what it's for.
+// servedAsIs reports whether name is one of the page's own scripts (or a
+// third-party one's licence), embedded above, served as it is: any not
+// served some other way first.
+func servedAsIs(name string) bool {
+	if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".LICENSE") {
+		return false
+	}
+	st, err := fs.Stat(pageFiles, name)
+	return err == nil && st.Mode().IsRegular()
+}

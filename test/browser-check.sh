@@ -6,7 +6,7 @@
 # later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
-# Usage: test/browser-check.sh <image> [--group all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|epub|tables|previews]
+# Usage: test/browser-check.sh <image> [--group all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|epub|tables|sqlite|images|previews]
 set -euo pipefail
 
 image=${1:?usage: $0 <image> [--group group]}
@@ -19,7 +19,7 @@ while (($#)); do
     esac
 done
 case "$group" in
-    all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|epub|tables|previews) ;;
+    all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|epub|tables|sqlite|images|previews) ;;
     *) echo "Unknown browser test group: $group" >&2; exit 1 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
@@ -47,7 +47,7 @@ trap cleanup EXIT
 # WEB_FETCH_PRIVATE=1: the check fetches from the container's own address.
 service_args=()
 if [[ "$group" == services ]]; then service_args=(-e WEB_VNC=0 -e WEB_FS=0); fi
-docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 "${service_args[@]}" \
+docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 -e WEB_PREVIEW_FETCH_PRIVATE=1 "${service_args[@]}" \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"
 for ((i = 0; ; i++)); do

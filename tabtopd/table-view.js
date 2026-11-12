@@ -7,7 +7,8 @@
 // records most evenly (or what an Excel "sep=" first line says). What's in
 // the file is only ever shown as text.
 
-import { glyphs } from "./glyphs.js";
+import { glyphs, iconSVG } from "./glyphs.js";
+import { storeJSON, storedJSON } from "./stored.js";
 
 // How many rows are shown at once, then more (fewer, with many columns),
 // and the most columns shown.
@@ -260,11 +261,102 @@ export const FILTER_OPS = {
     },
 };
 
+// What a column of each type holds, said.
+export const FILTER_KIND_NAMES = { number: "numbers", date: "dates", text: "text" };
+
 // filterValueOK reports whether value can filter a column of type: a
 // number, or a date, for those.
 export function filterValueOK(type, value) {
     const v = value.trim();
     return type === "number" ? NUMERIC.test(v) : type === "date" ? isDate(v) : v !== "";
+}
+
+// openFilterPopup shows pop, in view, under at (a column's ▽ button): the
+// conditions on a column of kind ("number", "date" or "text") named title,
+// from current ([{op, value}]), to change, add to and remove. Filter
+// checks them and gives onApply what's asked ([] for nothing), Clear gives
+// it []; either closes it, as Escape does (back to at).
+export function openFilterPopup({ pop, view, at, title, kind, current = [], onApply }) {
+    const ops = FILTER_OPS[kind];
+    const firstOp = Object.keys(ops)[0];
+    const draft = current.map((f) => ({ ...f }));
+    if (!draft.length) draft.push({ op: firstOp, value: "" });
+    const list = el("div", { className: "filter-list" });
+    const why = el("p", { className: "hint filter-why" });
+    const apply = el("button", { type: "button", className: "primary", textContent: "Filter" });
+    const clear = el("button", { type: "button", textContent: "Clear", disabled: !current.length });
+    const add = el("button", { type: "button", className: "filter-add", textContent: "Add condition" });
+    const read = () => [...list.querySelectorAll(".filter-row")].map((row) => ({
+        op: row.querySelector("select.filter-op").value, value: row.querySelector("input.filter-value").value }));
+    const close = (next) => {
+        pop.hidden = true;
+        if (next) onApply(next);
+        else if (at.isConnected) at.focus();
+    };
+    const dismiss = el("button", { type: "button", className: "filter-close glyph", title: "Close filters", ariaLabel: "Close filters" });
+    dismiss.innerHTML = iconSVG("close-circle");
+    dismiss.addEventListener("click", () => close(null));
+    const paint = () => {
+        list.replaceChildren(...draft.map((f, i) => {
+            const op = el("select", { className: "filter-op" });
+            op.setAttribute("aria-label", `How ${title} is to be`);
+            for (const [k, label] of Object.entries(ops)) op.append(el("option", { value: k, textContent: label }));
+            op.value = f.op in ops ? f.op : firstOp;
+            const value = el("input", { type: "text", className: "filter-value", value: f.value, spellcheck: false, autocomplete: "off",
+                placeholder: kind === "number" ? "a number" : kind === "date" ? "YYYY-MM-DD" : "text" });
+            value.setAttribute("aria-label", "What it's compared with");
+            const remove = el("button", { type: "button", className: "filter-remove", textContent: "×", title: "Remove this condition",
+                disabled: draft.length === 1 });
+            remove.setAttribute("aria-label", "Remove this condition");
+            remove.addEventListener("click", () => {
+                draft.splice(0, draft.length, ...read());
+                draft.splice(i, 1);
+                if (!draft.length) draft.push({ op: firstOp, value: "" });
+                paint();
+            });
+            return el("div", { className: "filter-row" }, op, value, remove);
+        }));
+    };
+    add.addEventListener("click", () => {
+        draft.splice(0, draft.length, ...read(), { op: firstOp, value: "" });
+        paint();
+        list.querySelector(".filter-row:last-child input.filter-value")?.focus();
+    });
+    apply.addEventListener("click", () => {
+        const next = [];
+        for (const [i, f] of read().entries()) {
+            if (kind === "text" ? f.value === "" : f.value.trim() === "") continue;
+            if (!filterValueOK(kind, f.value)) {
+                why.textContent = kind === "number" ? "That's not a number." : kind === "date"
+                    ? "A date is written YYYY-MM-DD (and a time, if you like)." : "Give some text.";
+                list.querySelectorAll("input.filter-value")[i]?.focus();
+                return;
+            }
+            // (Text as typed, spaces and all; a number or date, trimmed.)
+            next.push({ op: f.op, value: kind === "text" ? f.value : f.value.trim() });
+        }
+        close(next);
+    });
+    clear.addEventListener("click", () => close([]));
+    paint();
+    pop.replaceChildren(dismiss, el("p", { className: "filter-title", textContent: `${title} (${FILTER_KIND_NAMES[kind]})` }),
+        list, add, why, el("div", { className: "buttons" }, clear, apply));
+    pop.onkeydown = (e) => {
+        if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            close(null);
+        } else if (e.key === "Enter" && e.target.classList?.contains("filter-value")) {
+            e.preventDefault();
+            apply.click();
+        }
+    };
+    pop.hidden = false;
+    const box = view.getBoundingClientRect();
+    const r = at.getBoundingClientRect();
+    pop.style.top = `${r.bottom - box.top + 4}px`;
+    pop.style.left = `${Math.max(8, Math.min(r.left - box.left, box.width - pop.offsetWidth - 8))}px`;
+    list.querySelector("input.filter-value")?.focus();
 }
 
 // cellMatches reports whether cell, in a column of type, is as filter
@@ -508,8 +600,7 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
     const canEdit = () => editable && !unclosed && !malformed;
     view.canEdit = canEdit;
     const showWidths = () => {
-        widthRules.textContent = [...widths].map(([c, w]) =>
-            `[data-table="${id}"] tr > :nth-child(${c + 2}) { box-sizing: border-box; width: ${w}px; min-width: ${w}px; max-width: ${w}px; }`).join("\n");
+        widthRules.textContent = [...widths].map(([c, w]) => widthRule(id, c, w)).join("\n");
     };
 
     // load splits the file by delimiter, and shows it from the start.
@@ -566,54 +657,13 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
         update();
     };
 
-    // resizer is the handle at the right of column c's heading: dragged, it
-    // sets the column's width; ← and →, with it focused, too; a double
-    // click, and the column fits what's in it again.
-    const resizer = (c) => {
-        const handle = el("span", { className: "col-resize", tabIndex: 0 });
-        handle.setAttribute("role", "separator");
-        handle.setAttribute("aria-orientation", "vertical");
-        handle.setAttribute("aria-label", `Width of ${name(c)}: drag, or ← and →; double-click to fit`);
-        handle.title = "Drag to change the column's width; double-click to fit it";
-        const set = (w) => {
-            widths.set(c, Math.round(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w))));
-            showWidths();
-        };
-        handle.addEventListener("pointerdown", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const th = handle.closest("th");
-            const start = e.clientX;
-            const was = th.getBoundingClientRect().width;
-            handle.setPointerCapture(e.pointerId);
-            handle.classList.add("dragging");
-            const move = (m) => set(was + m.clientX - start);
-            const up = () => {
-                handle.classList.remove("dragging");
-                handle.removeEventListener("pointermove", move);
-                handle.removeEventListener("pointerup", up);
-                handle.removeEventListener("pointercancel", up);
-            };
-            handle.addEventListener("pointermove", move);
-            handle.addEventListener("pointerup", up);
-            handle.addEventListener("pointercancel", up);
-        });
-        handle.addEventListener("click", (e) => e.stopPropagation());
-        handle.addEventListener("dblclick", (e) => {
-            e.stopPropagation();
-            widths.delete(c);
-            showWidths();
-        });
-        handle.addEventListener("keydown", (e) => {
-            if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-                e.preventDefault();
-                e.stopPropagation();
-                const now = widths.get(c) ?? handle.closest("th").getBoundingClientRect().width;
-                set(now + (e.key === "ArrowLeft" ? -20 : 20));
-            }
-        });
-        return handle;
-    };
+    // resizer is the handle at the right of column c's heading (see
+    // resizeHandle).
+    const resizer = (c) => resizeHandle(name(c), {
+        width: (th) => widths.get(c) ?? th.getBoundingClientRect().width,
+        set: (w) => { widths.set(c, Math.round(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w)))); showWidths(); },
+        fit: () => { widths.delete(c); showWidths(); },
+    });
 
     // The rows, without the headings if the first is: made once for each
     // split and choice of headings, not each time they're shown.
@@ -624,7 +674,6 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
     let statsFor = null;
     let statsOf = null;
     const name = (c) => (headings && all[0][c]?.trim() ? all[0][c] : `Column ${c + 1}`);
-    const kindOf = { number: "numbers", date: "dates", text: "text" };
     const heads = () => {
         const chosen = which.value || "-1";
         which.replaceChildren(el("option", { value: "-1", textContent: "In any column" }),
@@ -639,7 +688,7 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
         const tr = el("tr", { className: "heads" }, corner);
         for (let c = 0; c < columns; c++) {
             const sorted = c === sortColumn;
-            const label = el("button", { type: "button", className: "col-name", textContent: name(c), title: `${name(c)} (${kindOf[types[c]]}): sort by it` });
+            const label = el("button", { type: "button", className: "col-name", textContent: name(c), title: `${name(c)} (${FILTER_KIND_NAMES[types[c]]}): sort by it` });
             label.addEventListener("click", () => sortBy(c));
             const sort = el("button", { type: "button", className: "col-sort glyph", textContent: sorted ? (sortDir > 0 ? glyphs.up : glyphs.down) : glyphs.sort,
                 title: sorted ? `Sorted by ${name(c)}, ${sortDir > 0 ? "up" : "down"}: click to change` : `Sort by ${name(c)}` });
@@ -648,8 +697,8 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
             const fs = filters.get(c);
             const how = fs?.length ? fs.map((f) => `${FILTER_OPS[types[c]][f.op]} ${f.value}`).join(" and ") : "";
             const funnel = el("button", { type: "button", className: `col-filter glyph${fs?.length ? " active" : ""}`,
-                textContent: fs?.length ? glyphs.triangleDown : glyphs.filter,
                 title: fs?.length ? `${name(c)} ${how}: click to change` : `Filter by ${name(c)}` });
+            funnel.innerHTML = iconSVG("filter");
             funnel.setAttribute("aria-label", funnel.title);
             funnel.addEventListener("click", () => openFilter(c, funnel));
             const th = el("th", { className: `type-${types[c]}` }, el("div", { className: "col-head" }, label, sort, funnel), resizer(c));
@@ -697,118 +746,12 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
 
     // openFilter shows, by the button at, the filters of column c, to
     // change: one or more conditions for its type (all must match).
-    const openFilter = (c, at) => {
-        const type = types[c];
-        const firstOp = Object.keys(FILTER_OPS[type])[0];
-        const draft = (filters.get(c) ?? []).map((f) => ({ ...f }));
-        if (!draft.length) {
-            draft.push({ op: firstOp, value: "" });
-        }
-        const list = el("div", { className: "filter-list" });
-        const why = el("p", { className: "hint filter-why" });
-        const apply = el("button", { type: "button", className: "primary", textContent: "Filter" });
-        const clear = el("button", { type: "button", textContent: "Clear", disabled: !filters.has(c) });
-        const add = el("button", { type: "button", className: "filter-add", textContent: "Add condition" });
-        const done = () => {
-            pop.hidden = true;
-            at.isConnected && at.focus();
-        };
-        const syncDraft = () => {
-            const rows = [...list.querySelectorAll(".filter-row")];
-            if (!rows.length) {
-                return;
-            }
-            draft.length = 0;
-            for (const row of rows) {
-                draft.push({
-                    op: row.querySelector("select.filter-op").value,
-                    value: row.querySelector("input.filter-value").value,
-                });
-            }
-        };
-        const paint = () => {
-            list.replaceChildren(...draft.map((f, i) => {
-                const op = el("select", { className: "filter-op" });
-                op.setAttribute("aria-label", `How ${name(c)} is to be`);
-                for (const [k, label] of Object.entries(FILTER_OPS[type])) {
-                    op.append(el("option", { value: k, textContent: label }));
-                }
-                op.value = f.op in FILTER_OPS[type] ? f.op : firstOp;
-                const value = el("input", { type: "text", className: "filter-value", value: f.value, spellcheck: false, autocomplete: "off",
-                    placeholder: type === "number" ? "a number" : type === "date" ? "YYYY-MM-DD" : "text" });
-                value.setAttribute("aria-label", "What it's compared with");
-                const remove = el("button", { type: "button", className: "filter-remove", textContent: "×", title: "Remove this condition",
-                    disabled: draft.length === 1 });
-                remove.setAttribute("aria-label", "Remove this condition");
-                remove.addEventListener("click", () => {
-                    syncDraft();
-                    draft.splice(i, 1);
-                    if (!draft.length) {
-                        draft.push({ op: firstOp, value: "" });
-                    }
-                    paint();
-                });
-                return el("div", { className: "filter-row" }, op, value, remove);
-            }));
-        };
-        add.addEventListener("click", () => {
-            syncDraft();
-            draft.push({ op: firstOp, value: "" });
-            paint();
-            list.querySelector(".filter-row:last-child input.filter-value")?.focus();
-        });
-        apply.addEventListener("click", () => {
-            const next = [];
-            const rows = [...list.querySelectorAll(".filter-row")];
-            for (const [i, row] of rows.entries()) {
-                const op = row.querySelector("select.filter-op").value;
-                const raw = row.querySelector("input.filter-value").value;
-                const empty = type === "text" ? raw === "" : raw.trim() === "";
-                if (empty) {
-                    continue;
-                }
-                if (!filterValueOK(type, raw)) {
-                    why.textContent = type === "number" ? "That's not a number." : type === "date"
-                        ? "A date is written YYYY-MM-DD (and a time, if you like)." : "Give some text.";
-                    row.querySelector("input")?.focus();
-                    return;
-                }
-                // (Text as typed, spaces and all; a number or date, trimmed.)
-                next.push({ op, value: type === "text" ? raw : raw.trim() });
-            }
-            if (next.length) {
-                filters.set(c, next);
-            } else {
-                filters.delete(c);
-            }
-            pop.hidden = true;
+    const openFilter = (c, at) => openFilterPopup({ pop, view, at, title: name(c), kind: types[c], current: filters.get(c),
+        onApply: (next) => {
+            if (next.length) filters.set(c, next);
+            else filters.delete(c);
             update();
-        });
-        clear.addEventListener("click", () => {
-            filters.delete(c);
-            pop.hidden = true;
-            update();
-        });
-        paint();
-        pop.replaceChildren(el("p", { className: "filter-title", textContent: `${name(c)} (${kindOf[type]})` }),
-            list, add, why, el("div", { className: "buttons" }, clear, apply));
-        pop.onkeydown = (e) => {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                done();
-            } else if (e.key === "Enter" && e.target.classList?.contains("filter-value")) {
-                e.preventDefault();
-                apply.click();
-            }
-        };
-        pop.hidden = false;
-        const box = view.getBoundingClientRect();
-        const r = at.getBoundingClientRect();
-        pop.style.top = `${r.bottom - box.top + 4}px`;
-        pop.style.left = `${Math.max(8, Math.min(r.left - box.left, box.width - pop.offsetWidth - 8))}px`;
-        list.querySelector("input.filter-value")?.focus();
-    };
+        } });
     // A click elsewhere closes it.
     view.addEventListener("click", (e) => {
         if (!pop.hidden && !pop.contains(e.target) && !e.target.closest("button.col-filter")) {
@@ -987,8 +930,58 @@ export function tableView(text, { tab = false, editable = false, changed = () =>
 // Tables made, to tell their columns' widths apart (see showWidths); and
 // how narrow and wide a column can be dragged, in pixels.
 let tables = 0;
-const MIN_WIDTH = 40;
-const MAX_WIDTH = 2000;
+// resizeHandle is the handle at the right of a column's heading, the
+// column called label: dragged, it sets the column's width (set); ← and →,
+// with it focused, too (from width(th), what it is now); a double click,
+// and the column fits what's in it again (fit).
+export function resizeHandle(label, { width, set, fit }) {
+    const handle = el("span", { className: "col-resize", tabIndex: 0 });
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "vertical");
+    handle.setAttribute("aria-label", `Width of ${label}: drag, or ← and →; double-click to fit`);
+    handle.title = "Drag to change the column's width; double-click to fit it";
+    handle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const th = handle.closest("th");
+        const start = e.clientX;
+        const was = th.getBoundingClientRect().width;
+        handle.setPointerCapture(e.pointerId);
+        handle.classList.add("dragging");
+        const move = (m) => set(was + m.clientX - start);
+        const up = () => {
+            handle.classList.remove("dragging");
+            handle.removeEventListener("pointermove", move);
+            handle.removeEventListener("pointerup", up);
+            handle.removeEventListener("pointercancel", up);
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+    });
+    handle.addEventListener("click", (e) => e.stopPropagation());
+    handle.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        fit();
+    });
+    handle.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            e.preventDefault();
+            e.stopPropagation();
+            set(width(handle.closest("th")) + (e.key === "ArrowLeft" ? -20 : 20));
+        }
+    });
+    return handle;
+}
+
+// widthRule is the CSS that gives column c (from 0, after the row
+// numbers; -1 targets the row-number column) of the table marked
+// data-table=id a width of w pixels.
+export const widthRule = (id, c, w) =>
+    `[data-table="${id}"] tr > :nth-child(${c + 2}) { box-sizing: border-box; width: ${w}px; min-width: ${w}px; max-width: ${w}px; }`;
+
+export const MIN_WIDTH = 40;
+export const MAX_WIDTH = 2000;
 
 // Statistics are shown for so many cells (rows shown × columns) at most:
 // past that, working them out each time the rows change would hold up the
@@ -999,20 +992,10 @@ const MAX_STATS_CELLS = 3e6;
 const STATS_CHOICE = "tabtop.table-stats";
 function statsChoice() {
     const all = STATS.map(([k]) => k);
-    try {
-        const c = JSON.parse(localStorage.getItem(STATS_CHOICE) ?? "null");
-        if (c && typeof c === "object" && Array.isArray(c.shown)) {
-            return { on: !!c.on, shown: all.filter((k) => c.shown.includes(k)) };
-        }
-    } catch {
-        // As they start, then.
+    const c = storedJSON(STATS_CHOICE);
+    if (c && typeof c === "object" && Array.isArray(c.shown)) {
+        return { on: !!c.on, shown: all.filter((k) => c.shown.includes(k)) };
     }
     return { on: false, shown: [] };
 }
-function keepStatsChoice(c) {
-    try {
-        localStorage.setItem(STATS_CHOICE, JSON.stringify(c));
-    } catch {
-        // Only for now, then.
-    }
-}
+const keepStatsChoice = (c) => storeJSON(STATS_CHOICE, c);

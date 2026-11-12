@@ -3,7 +3,7 @@ package main
 // Share links: plain HTTPS URLs for a file or folder in ~/Downloads, which
 // someone else, or wget and curl, can fetch without logging in or the
 // tunnel's JavaScript. A logged-in page makes one through the tunnel (see
-// the share requests in e2e.go); the URL is
+// tunnelShare in tunnel_request.go); the URL is
 //
 //	<base>fs/<token>/<name>
 //

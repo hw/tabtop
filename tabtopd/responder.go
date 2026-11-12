@@ -41,11 +41,19 @@ func (r *tunnelResponder) finish(v map[string]any) bool {
 	return ok
 }
 
-func (r *tunnelResponder) fail(message string) {
+func (r *tunnelResponder) fail(message string) { r.failCode(message, "") }
+
+// failCode fails with message, and code, if it's set: what the page may
+// act on (see TunnelError.code), not having to read the message.
+func (r *tunnelResponder) failCode(message, code string) {
 	if r.finished {
 		return
 	}
 	r.finished = true
-	writeJSON(r.t, map[string]any{"error": message})
+	reply := map[string]any{"error": message}
+	if code != "" {
+		reply["code"] = code
+	}
+	writeJSON(r.t, reply)
 	r.t.Close(websocket.StatusNormalClosure, "")
 }

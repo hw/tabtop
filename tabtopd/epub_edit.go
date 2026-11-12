@@ -13,10 +13,12 @@ package main
 // The OPF is changed in place, a few elements spliced, rather than
 // rewritten from what an XML parser makes of it, which would lose its
 // namespace prefixes and the rest of how it's written. A new cover is
-// written over the old one, at its path, so pages in the book that show it
-// show the new one; it must be the same type of picture, which the page
-// makes it (see coverBytes in preview.js). A book without a cover is given
-// one, beside its OPF, named in the manifest as EPUB 3 and EPUB 2 name one.
+// never written over the old one, which stays in the book: a picture from
+// outside it is added as images/cover.jpg or .png beside the OPF (a JPEG
+// or PNG, which the page makes it; see coverBytes in preview-editor.js),
+// and one already in it is named the cover where it is; either way named
+// in the manifest as EPUB 3 and EPUB 2 name one. A cover page (such as
+// cover.xhtml) keeps showing the picture it shows.
 // A book without a nav is given one beside its OPF when contents are rebuilt.
 //
 // As reading is, it's done in the child process (see readEpubIsolated),
@@ -33,6 +35,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"path"
@@ -44,16 +47,16 @@ import (
 	"unicode/utf8"
 
 	"archive/zip"
-	"context"
-
-	"github.com/coder/websocket"
 )
 
 // The longest title or author, in characters.
 const maxEpubDetail = 500
 
-// The pictures a cover may be given as, when it has none to match.
-var epubNewCoverTypes = []string{"image/jpeg", "image/png", "image/webp"}
+// The most pictures one edit removes.
+const (
+	maxEpubRemove  = 2000
+	maxEpubEditArg = 96 << 10 // the edit, as the child's argument (under MAX_ARG_STRLEN, 128 KiB)
+)
 
 var (
 	errEpubNoChange  = errors.New("nothing was changed")
@@ -66,13 +69,18 @@ var (
 )
 
 // epubEdit is what's changed, as the child is told it: the title and the
-// author, whether a new cover comes, on its file descriptor 3, and whether
-// to rebuild the contents list from the chapters' headings.
+// author, whether a new cover comes, on its file descriptor 3, or which
+// picture already in the book is to be the cover, and whether to rebuild
+// the contents list from the chapters' headings.
 type epubEdit struct {
-	Title         string `json:"title"`
-	Creator       string `json:"creator"`
-	Cover         bool   `json:"cover"`
-	RegenerateTOC bool   `json:"regenerate_toc,omitempty"`
+	Title     string `json:"title"`
+	Creator   string `json:"creator"`
+	Cover     bool   `json:"cover"`
+	CoverItem string `json:"cover_item,omitempty"` // a picture in the book to name the cover, by its path in it
+	// Pictures to remove, by their paths in the book; cover pages showing
+	// one are first made to show the cover.
+	RemoveItems   []string `json:"remove_items,omitempty"`
+	RegenerateTOC bool     `json:"regenerate_toc,omitempty"`
 }
 
 // epubEditTimeout is how long rewriting a book of size bytes may take: two
@@ -302,266 +310,467 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 	if z.protected() {
 		return errEpubProtected
 	}
+	b := &bookEdit{z: z, e: e, cover: cover, now: now, rewritten: map[string][]byte{}, before: map[string]epubPictureUse{}, removed: map[string]bool{}}
+	var err error
 	// Rebuild contents alone may leave the title empty (Untitled books);
 	// title/author edits still require a non-empty title.
-	title, err := epubDetail(e.Title, "title", !e.RegenerateTOC)
-	if err != nil {
+	if b.title, err = epubDetail(e.Title, "title", !e.RegenerateTOC); err != nil {
 		return err
 	}
-	creator, err := epubDetail(e.Creator, "author", false)
-	if err != nil {
+	if b.creator, err = epubDetail(e.Creator, "author", false); err != nil {
 		return err
 	}
-	opfPath, opf, err := z.packageFile()
-	if err != nil {
+	if b.opfPath, b.opf, err = z.packageFile(); err != nil {
 		return err
 	}
-	if m := epubXMLEncoding.FindSubmatch(opf); m != nil && !strings.EqualFold(string(m[1]), "utf-8") || !utf8.Valid(opf) {
+	if m := epubXMLEncoding.FindSubmatch(b.opf); m != nil && !strings.EqualFold(string(m[1]), "utf-8") || !utf8.Valid(b.opf) {
 		return errors.New("its package file (the OPF) isn't in UTF-8, so it can't be changed here")
 	}
-	sc, err := scanOPF(opf, opfPath)
+	if b.sc, err = scanOPF(b.opf, b.opfPath); err != nil {
+		return err
+	}
+	b.editDetails()
+	for _, stage := range []func() error{b.editCover, b.editCoverPages, b.editRemovals, b.editTOC} {
+		if err := stage(); err != nil {
+			return err
+		}
+	}
+	if !b.changed {
+		return errEpubNoChange
+	}
+	if err := b.makeOPF(); err != nil {
+		return err
+	}
+	if err := b.checkRemovals(); err != nil {
+		return err
+	}
+	return b.write(out)
+}
+
+// bookEdit is an edit of a book (see editBook) as it's made, a stage at a
+// time: the package file's changes, the files changed or added, and what
+// was asked.
+type bookEdit struct {
+	z       *epubZip
+	e       epubEdit
+	cover   []byte
+	now     time.Time
+	opfPath string
+	opf     []byte
+	sc      *opfScan
+
+	title, creator string
+	touchMeta      bool // the title and author: changed, or left alone
+	edits          []opfEdit
+	changed        bool
+
+	coverPath  string // the cover, as the book has it
+	newCover   string // a cover sent, where it's added
+	wantCover  string // the cover asked for, sent or in the book
+	finalCover string // the cover, as the book will have it
+
+	rewritten map[string][]byte         // cover pages made to show the new cover
+	pictures  []string                  // every picture, if any is to go
+	before    map[string]epubPictureUse // what uses them, as the book is
+	removed   map[string]bool
+
+	navPath, ncxPath   string
+	navBytes, ncxBytes []byte
+	newOPF             []byte
+}
+
+func (b *bookEdit) insert(at int, text string) { b.edits = append(b.edits, opfEdit{at, at, text}) }
+func (b *bookEdit) remove(e *opfElement)       { b.edits = append(b.edits, opfEdit{e.start, e.end, ""}) }
+
+// dropRefines drops the metadata refining the element e that goes stale
+// with its text: a sort key, or the text in another script; all of it, if
+// e goes.
+func (b *bookEdit) dropRefines(e *opfElement, all bool) {
+	if id := e.attrs["id"]; id != "" {
+		for _, m := range b.sc.metas {
+			if m.attrs["refines"] == "#"+id && (all || epubStaleRefines[m.attrs["property"]]) {
+				b.remove(m)
+			}
+		}
+	}
+}
+
+// Elements added are in Dublin Core's namespace, declared on each: where
+// the book declares it (on the package, the metadata, or only on the
+// element that uses it) can't be counted on.
+const dcPrefix, dcDeclare = "dc:", ` xmlns:dc="http://purl.org/dc/elements/1.1/"`
+
+// editDetails sets the title and author. Rebuilding the contents with no
+// title sent (Untitled books) leaves them alone; a non-empty title means
+// the client is also saving details.
+func (b *bookEdit) editDetails() {
+	sc, title, creator := b.sc, b.title, b.creator
+	b.touchMeta = !b.e.RegenerateTOC || title != ""
+	if !b.touchMeta {
+		return
+	}
+	if sc.title == nil {
+		b.insert(sc.metadata.endStart, "<"+dcPrefix+"title"+dcDeclare+">"+xmlText(title)+"</"+dcPrefix+"title>\n")
+		b.changed = true
+	} else if sc.title.value() != title {
+		b.edits = append(b.edits, opfEdit{sc.title.start, sc.title.end, withValue(b.opf, sc.title, title)})
+		b.dropRefines(sc.title, false)
+		for _, m := range sc.metas {
+			if m.attrs["name"] == "calibre:title_sort" {
+				b.remove(m)
+			}
+		}
+		b.changed = true
+	}
+	switch {
+	case sc.creator == nil && creator != "":
+		b.insert(sc.metadata.endStart, "<"+dcPrefix+"creator"+dcDeclare+">"+xmlText(creator)+"</"+dcPrefix+"creator>\n")
+		b.changed = true
+	case sc.creator != nil && creator == "":
+		b.remove(sc.creator)
+		b.dropRefines(sc.creator, true)
+		b.changed = true
+	case sc.creator != nil && sc.creator.value() != creator:
+		b.edits = append(b.edits, opfEdit{sc.creator.start, sc.creator.end, withValue(b.opf, sc.creator, creator)})
+		b.dropRefines(sc.creator, false)
+		b.changed = true
+	}
+}
+
+// editCover names the new cover. It's never written over the old one,
+// which stays in the book (its pages may show it). One from outside the
+// book is added, as images/cover.jpg or .png beside the OPF
+// (OEBPS/images/, as most books are laid out), under a name not taken;
+// one already in the book is named the cover where it is.
+func (b *bookEdit) editCover() error {
+	z, e, sc, opf := b.z, b.e, b.sc, b.opf
+	b.coverPath = epubCover(sc.items, b.opfPath, sc.coverImage, sc.coverRef)
+	b.finalCover = b.coverPath
+	if e.CoverItem != "" && e.Cover {
+		return errors.New("a cover comes from the book or from outside it, not both")
+	}
+	if !e.Cover && (e.CoverItem == "" || e.CoverItem == b.coverPath) {
+		return nil
+	}
+	v3 := strings.HasPrefix(sc.version, "3")
+	// The cover's item, and its ID: the one chosen, or one added.
+	var coverEl *opfElement
+	coverID := ""
+	if e.CoverItem != "" {
+		for _, it := range sc.itemEls {
+			if it.href == e.CoverItem {
+				coverEl, coverID = it, it.attrs["id"]
+				break
+			}
+		}
+		if coverEl == nil || z.files[e.CoverItem] == nil || epubPictureType(e.CoverItem) == "" ||
+			coverEl.attrs["media-type"] != "" && !strings.HasPrefix(coverEl.attrs["media-type"], "image/") {
+			return errors.New("that isn't a picture in the book")
+		}
+		if coverID == "" {
+			return errors.New("that picture has no ID in the book's package file, so it can't be named the cover")
+		}
+		b.wantCover = e.CoverItem
+	} else {
+		got := sniffPicture(b.cover)
+		ext := map[string]string{"image/jpeg": ".jpg", "image/png": ".png"}[got]
+		if ext == "" {
+			return errors.New("the new cover must be a JPEG or PNG picture")
+		}
+		// Not a name a file in the book has, or the manifest names.
+		dir := path.Dir(b.opfPath)
+		taken := map[string]bool{}
+		for _, f := range z.all {
+			taken[f.Name] = true
+		}
+		for _, it := range sc.itemEls {
+			taken[it.href] = true
+		}
+		name := "images/cover" + ext
+		for i := 2; taken[path.Join(dir, name)]; i++ {
+			name = fmt.Sprintf("images/cover-%d%s", i, ext)
+		}
+		b.newCover, b.wantCover = path.Join(dir, name), path.Join(dir, name)
+		coverID = freeManifestID(sc, "cover-image")
+		properties := ""
+		if v3 {
+			properties = ` properties="cover-image"`
+		}
+		b.insert(sc.manifest.endStart, fmt.Sprintf("<%sitem id=%q href=%q media-type=%q%s/>\n",
+			sc.manifest.prefix(), coverID, xmlText(name), got, properties))
+	}
+	b.finalCover = b.wantCover
+	// One cover, and only one: no other item marked as one (EPUB 3), and
+	// one <meta name="cover">, naming it (EPUB 2's way, which EPUB 3
+	// readers know too). The pictures that were marked stay, as the book
+	// may show them elsewhere.
+	for _, it := range sc.itemEls {
+		props := strings.Fields(it.attrs["properties"])
+		has := slices.Contains(props, "cover-image")
+		switch {
+		case it != coverEl && has:
+			b.edits = append(b.edits, opfEdit{it.start, it.startEnd, withProperties(opf, it, slices.DeleteFunc(props, func(p string) bool { return p == "cover-image" }))})
+		case it == coverEl && !has && v3:
+			b.edits = append(b.edits, opfEdit{it.start, it.startEnd, withProperties(opf, it, append(props, "cover-image"))})
+		}
+	}
+	// (An EPUB 3 book whose cover is marked so needs none; one added, or
+	// an EPUB 2 book, has one.)
+	needed := !v3 || b.newCover != "" || len(sc.coverMetas) > 0
+	right := len(sc.coverMetas) == 1 && sc.coverMetas[0].attrs["content"] == coverID && coverID != ""
+	if needed && !right {
+		for _, m := range sc.coverMetas {
+			b.remove(m)
+		}
+		if coverID != "" {
+			// Quoted as XML, not Go: the ID may be the book's own.
+			b.insert(sc.metadata.endStart, "<"+sc.metadata.prefix()+`meta name="cover" content="`+xmlText(coverID)+"\"/>\n")
+		}
+	}
+	b.changed = true
+	return nil
+}
+
+// editCoverPages makes the cover pages of pictures going show the cover
+// (as it'll be) instead. With no cover, they keep it, and it stays. It
+// notes what uses each picture, as the book is: the final check (see
+// checkRemovals) reads again only the files this changes.
+func (b *bookEdit) editCoverPages() error {
+	if len(b.e.RemoveItems) == 0 {
+		return nil
+	}
+	b.pictures, _ = b.z.allPictures(b.opfPath, b.sc)
+	uses, err := b.z.pictureUses(pictureScan{opfPath: b.opfPath, opf: b.opf, items: b.sc.items}, b.pictures, b.coverPath)
 	if err != nil {
 		return err
 	}
-
-	var edits []opfEdit
-	insert := func(at int, text string) { edits = append(edits, opfEdit{at, at, text}) }
-	remove := func(e *opfElement) { edits = append(edits, opfEdit{e.start, e.end, ""}) }
-	// dropRefines drops the metadata refining the element e that goes
-	// stale with its text: a sort key, or the text in another script; all
-	// of it, if e goes.
-	dropRefines := func(e *opfElement, all bool) {
-		if id := e.attrs["id"]; id != "" {
-			for _, m := range sc.metas {
-				if m.attrs["refines"] == "#"+id && (all || epubStaleRefines[m.attrs["property"]]) {
-					remove(m)
+	for _, u := range uses {
+		b.before[u.Path] = u
+	}
+	for _, u := range uses {
+		if b.finalCover == "" || u.Path == b.finalCover || !slices.Contains(b.e.RemoveItems, u.Path) {
+			continue
+		}
+		for _, page := range u.CoverPages {
+			data, ok := b.rewritten[page]
+			if !ok {
+				if data, err = b.z.read(page, maxEpubChapter); err != nil {
+					return err
 				}
+			}
+			if changedPage, n := repointCover(page, data, u.Path, b.finalCover); n > 0 {
+				b.rewritten[page] = changedPage
+				b.changed = true
 			}
 		}
 	}
-	// Elements added are in Dublin Core's namespace, declared on each:
-	// where the book declares it (on the package, the metadata, or only on
-	// the element that uses it) can't be counted on.
-	const dc, dcDeclare = "dc:", ` xmlns:dc="http://purl.org/dc/elements/1.1/"`
-	changed := false
-	// Rebuild with no title sent (Untitled books): leave title and author
-	// alone. A non-empty title means the client is also saving details.
-	touchMeta := !e.RegenerateTOC || title != ""
-	if touchMeta {
-		if sc.title == nil {
-			insert(sc.metadata.endStart, "<"+dc+"title"+dcDeclare+">"+xmlText(title)+"</"+dc+"title>\n")
-			changed = true
-		} else if sc.title.value() != title {
-			edits = append(edits, opfEdit{sc.title.start, sc.title.end, withValue(opf, sc.title, title)})
-			dropRefines(sc.title, false)
-			for _, m := range sc.metas {
-				if m.attrs["name"] == "calibre:title_sort" {
-					remove(m)
+	return nil
+}
+
+// editRemovals takes the pictures to remove out of the manifest (with
+// what refines them); they're left out of the book as it's written. Each
+// must be used by nothing after (see checkRemovals).
+func (b *bookEdit) editRemovals() error {
+	for _, p := range b.e.RemoveItems {
+		if !slices.Contains(b.pictures, p) {
+			return fmt.Errorf("%s isn't a picture in the book", p)
+		}
+		if p == b.finalCover {
+			return errors.New("the book's cover can't be removed")
+		}
+		if b.removed[p] {
+			continue
+		}
+		b.removed[p] = true
+		b.changed = true
+		for _, it := range b.sc.itemEls {
+			if it.href != p {
+				continue
+			}
+			// What refines it goes with it, and any other change to it
+			// (such as its cover-image mark) gives way to its going.
+			gone := []*opfElement{it}
+			if id := it.attrs["id"]; id != "" {
+				for _, m := range b.sc.metas {
+					if m.attrs["refines"] == "#"+id {
+						gone = append(gone, m)
+					}
 				}
 			}
-			changed = true
-		}
-		switch {
-		case sc.creator == nil && creator != "":
-			insert(sc.metadata.endStart, "<"+dc+"creator"+dcDeclare+">"+xmlText(creator)+"</"+dc+"creator>\n")
-			changed = true
-		case sc.creator != nil && creator == "":
-			remove(sc.creator)
-			dropRefines(sc.creator, true)
-			changed = true
-		case sc.creator != nil && sc.creator.value() != creator:
-			edits = append(edits, opfEdit{sc.creator.start, sc.creator.end, withValue(opf, sc.creator, creator)})
-			dropRefines(sc.creator, false)
-			changed = true
+			for _, g := range gone {
+				b.edits = slices.DeleteFunc(b.edits, func(ed opfEdit) bool {
+					return ed.start >= g.start && ed.end <= g.end && ed.end > ed.start || ed.start > g.start && ed.start < g.end
+				})
+				b.remove(g)
+			}
 		}
 	}
+	return nil
+}
 
-	// The cover the book names: written over, or, if the book names one
-	// it hasn't, put where it says, rather than named again (readers take
-	// the first named, so a second would go unseen).
-	coverPath := epubCover(sc.items, opfPath, sc.coverImage, sc.coverRef)
-	newCover := ""
-	if e.Cover {
-		got := sniffPicture(cover)
-		v3 := strings.HasPrefix(sc.version, "3")
-		// The cover's item, and its ID: the one there, or one added.
-		var coverEl *opfElement
-		coverID := ""
-		if coverPath != "" {
-			if want := epubPictureType(coverPath); got != want {
-				return fmt.Errorf("the new cover must be a %s picture, as the old one is", strings.ToUpper(strings.TrimPrefix(want, "image/")))
-			}
-			for _, it := range sc.itemEls {
-				if it.href == coverPath {
-					coverEl, coverID = it, it.attrs["id"]
-					break
-				}
-			}
-		} else {
-			if !slices.Contains(epubNewCoverTypes, got) {
-				return errors.New("the new cover must be a JPEG, PNG or WebP picture")
-			}
-			// Beside the OPF, by a name and ID not used.
-			ext := map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[got]
-			taken := map[string]bool{}
-			for _, f := range z.all {
-				taken[f.Name] = true
-			}
-			name := "cover" + ext
-			for i := 2; taken[path.Join(path.Dir(opfPath), name)]; i++ {
-				name = fmt.Sprintf("cover-%d%s", i, ext)
-			}
-			newCover = path.Join(path.Dir(opfPath), name)
-			coverID = "cover-image"
-			for i := 2; ; i++ {
-				if _, ok := sc.items[coverID]; !ok {
-					break
-				}
-				coverID = fmt.Sprintf("cover-image-%d", i)
-			}
-			properties := ""
-			if v3 {
-				properties = ` properties="cover-image"`
-			}
-			insert(sc.manifest.endStart, fmt.Sprintf("<%sitem id=%q href=%q media-type=%q%s/>\n",
-				sc.manifest.prefix(), coverID, xmlText(name), got, properties))
-		}
-		// One cover, and only one: no other item marked as one (EPUB 3),
-		// and one <meta name="cover">, naming it (EPUB 2's way, which EPUB
-		// 3 readers know too). The pictures that were marked stay, as the
-		// book may show them elsewhere.
-		for _, it := range sc.itemEls {
-			props := strings.Fields(it.attrs["properties"])
-			has := slices.Contains(props, "cover-image")
-			switch {
-			case it != coverEl && has:
-				edits = append(edits, opfEdit{it.start, it.startEnd, withProperties(opf, it, slices.DeleteFunc(props, func(p string) bool { return p == "cover-image" }))})
-			case it == coverEl && !has && v3:
-				edits = append(edits, opfEdit{it.start, it.startEnd, withProperties(opf, it, append(props, "cover-image"))})
-			}
-		}
-		// (An EPUB 3 book whose cover is marked so needs none; one added,
-		// or an EPUB 2 book, has one.)
-		needed := !v3 || newCover != "" || len(sc.coverMetas) > 0
-		right := len(sc.coverMetas) == 1 && sc.coverMetas[0].attrs["content"] == coverID && coverID != ""
-		if needed && !right {
-			for _, m := range sc.coverMetas {
-				remove(m)
-			}
-			if coverID != "" {
-				insert(sc.metadata.endStart, fmt.Sprintf("<%smeta name=\"cover\" content=%q/>\n", sc.metadata.prefix(), xmlText(coverID)))
-			}
-		}
-		changed = true
+// editTOC rebuilds the contents, as asked: the navigation document
+// (added, if the book has none) and the NCX, if it has one.
+func (b *bookEdit) editTOC() error {
+	if !b.e.RegenerateTOC {
+		return nil
 	}
-
-	var navBytes, ncxBytes []byte
-	navPath, ncxPath := "", ""
-	if e.RegenerateTOC {
-		items, err := z.buildTOCFromSpine()
+	z, sc := b.z, b.sc
+	items, err := z.buildTOCFromSpine()
+	if err != nil {
+		return err
+	}
+	var navID string
+	navID, b.navPath = findNavItem(sc)
+	if b.navPath == "" {
+		name := z.freeOPFName(b.opfPath, "nav.xhtml")
+		b.navPath = path.Join(path.Dir(b.opfPath), name)
+		navID = freeManifestID(sc, "nav")
+		b.insert(sc.manifest.endStart, fmt.Sprintf("<%sitem id=%q href=%q media-type=%q properties=%q/>\n",
+			sc.manifest.prefix(), navID, xmlText(name), "application/xhtml+xml", "nav"))
+		b.navBytes = writeNavDocument(items, b.navPath)
+	} else if old, err := z.read(b.navPath, maxEpubMeta); errors.Is(err, errEpubMissing) {
+		b.navBytes = writeNavDocument(items, b.navPath)
+	} else if err != nil {
+		return err
+	} else {
+		b.navBytes = rewriteNavDocument(old, items, b.navPath)
+	}
+	if b.ncxPath = findNCXItem(sc); b.ncxPath != "" {
+		old, err := z.read(b.ncxPath, maxEpubMeta)
 		if err != nil {
 			return err
 		}
-		var navID string
-		navID, navPath = findNavItem(sc)
-		if navPath == "" {
-			name := z.freeOPFName(opfPath, "nav.xhtml")
-			navPath = path.Join(path.Dir(opfPath), name)
-			navID = freeManifestID(sc, "nav")
-			insert(sc.manifest.endStart, fmt.Sprintf("<%sitem id=%q href=%q media-type=%q properties=%q/>\n",
-				sc.manifest.prefix(), navID, xmlText(name), "application/xhtml+xml", "nav"))
-			navBytes = writeNavDocument(items, navPath)
-		} else if old, err := z.read(navPath, maxEpubMeta); errors.Is(err, errEpubMissing) {
-			navBytes = writeNavDocument(items, navPath)
-		} else if err != nil {
-			return err
-		} else {
-			navBytes = rewriteNavDocument(old, items, navPath)
-		}
-		ncxPath = findNCXItem(sc)
-		if ncxPath != "" {
-			old, err := z.read(ncxPath, maxEpubMeta)
-			if err != nil {
-				return err
-			}
-			ncxBytes = rewriteNCXNavMap(old, items, ncxPath)
-		}
-		changed = true
+		b.ncxBytes = rewriteNCXNavMap(old, items, b.ncxPath)
 	}
+	b.changed = true
+	return nil
+}
 
-	if !changed {
-		return errEpubNoChange
-	}
-	// EPUB 3's last-changed date, if it has one, now.
-	for _, m := range sc.metas {
+// makeOPF makes the package file, with EPUB 3's last-changed date (if it
+// has one) now, and checks it reads back as meant: with a new cover, it's
+// the one cover.
+func (b *bookEdit) makeOPF() error {
+	for _, m := range b.sc.metas {
 		if m.attrs["property"] == "dcterms:modified" && !m.self {
-			edits = append(edits, opfEdit{m.startEnd, m.endStart, now.UTC().Format("2006-01-02T15:04:05Z")})
+			b.edits = append(b.edits, opfEdit{m.startEnd, m.endStart, b.now.UTC().Format("2006-01-02T15:04:05Z")})
 			break
 		}
 	}
-	newOPF, err := applyOPFEdits(opf, edits)
-	if err != nil {
+	var err error
+	if b.newOPF, err = applyOPFEdits(b.opf, b.edits); err != nil {
 		return err
 	}
-	// It reads back as meant: and with a new cover, it's the one cover.
-	check, err := scanOPF(newOPF, opfPath)
+	check, err := scanOPF(b.newOPF, b.opfPath)
 	if err != nil {
 		return errEpubBadOPF
 	}
-	if touchMeta {
-		if check.title == nil || check.title.value() != title ||
-			creator != "" && (check.creator == nil || check.creator.value() != creator) {
+	if b.touchMeta {
+		if check.title == nil || check.title.value() != b.title ||
+			b.creator != "" && (check.creator == nil || check.creator.value() != b.creator) {
 			return errEpubBadOPF
 		}
 	}
-	if e.Cover {
-		want := coverPath
-		if newCover != "" {
-			want = newCover
-		}
+	if b.wantCover != "" {
 		marked := 0
 		for _, it := range check.itemEls {
 			if slices.Contains(strings.Fields(it.attrs["properties"]), "cover-image") {
 				marked++
 			}
 		}
-		if marked > 1 || len(check.coverMetas) > 1 || epubCover(check.items, opfPath, check.coverImage, check.coverRef) != want {
+		if marked > 1 || len(check.coverMetas) > 1 || epubCover(check.items, b.opfPath, check.coverImage, check.coverRef) != b.wantCover {
 			return errEpubBadOPF
 		}
 	}
-	if e.RegenerateTOC {
+	if b.e.RegenerateTOC {
 		id, href := findNavItem(check)
-		if href != navPath || id == "" {
+		if href != b.navPath || id == "" {
 			return errEpubBadOPF
 		}
 	}
+	for _, it := range check.itemEls {
+		if b.removed[it.href] {
+			return errEpubBadOPF
+		}
+	}
+	return nil
+}
 
+// checkRemovals checks the pictures removed are used by nothing, as the
+// book will be: no file (as changed) referring to one, or naming it. The
+// package file is read with the manifest as it was, so a spine entry or
+// fallback naming a removed item by its ID still counts.
+func (b *bookEdit) checkRemovals() error {
+	if len(b.removed) == 0 {
+		return nil
+	}
+	after := map[string][]byte{}
+	maps.Copy(after, b.rewritten)
+	if b.navBytes != nil {
+		after[b.navPath] = b.navBytes
+	}
+	if b.ncxBytes != nil {
+		after[b.ncxPath] = b.ncxBytes
+	}
+	// Cover pages made to show the new cover count only by what they
+	// refer to: a name left in alt text, say, isn't a use.
+	refsOnly := map[string]bool{}
+	for page := range b.rewritten {
+		refsOnly[page] = true
+	}
+	gone := slices.Sorted(maps.Keys(b.removed))
+	uses, err := b.z.pictureUses(pictureScan{opfPath: b.opfPath, opf: b.newOPF, items: b.sc.items, override: after, only: true, refsOnly: refsOnly}, gone, b.finalCover)
+	if err != nil {
+		return err
+	}
+	for _, u := range uses {
+		// As changed, the files changed; as they are, the rest.
+		users := slices.Clone(u.Users)
+		for _, f := range b.before[u.Path].Users {
+			if _, changed := after[f]; !changed && f != b.opfPath && !slices.Contains(users, f) {
+				users = append(users, f)
+			}
+		}
+		if users = slices.DeleteFunc(users, func(f string) bool { return b.removed[f] }); len(users) > 0 {
+			slices.Sort(users)
+			return fmt.Errorf("%s can't be removed: %s uses it", path.Base(u.Path), strings.Join(users, ", "))
+		}
+	}
+	return nil
+}
+
+// write writes the book, as changed, to out: each file as it was, but
+// those changed, those removed left out, and those added.
+func (b *bookEdit) write(out io.Writer) error {
+	z := b.z
 	w := zip.NewWriter(out)
 	if err := w.SetComment(z.comment); err != nil {
 		return err
 	}
-	wrote := func(name string, method uint16, b []byte) error {
-		fw, err := w.CreateHeader(&zip.FileHeader{Name: name, Method: method, Modified: now})
+	wrote := func(name string, method uint16, data []byte) error {
+		fw, err := w.CreateHeader(&zip.FileHeader{Name: name, Method: method, Modified: b.now})
 		if err == nil {
-			_, err = fw.Write(b)
+			_, err = fw.Write(data)
 		}
 		return err
 	}
-	opfDone, coverDone, navDone, ncxDone := false, false, false, false
+	toc := b.e.RegenerateTOC
+	opfDone, navDone, ncxDone := false, false, false
 	for _, f := range z.all {
+		var err error
 		switch {
-		case f.Name == opfPath && !opfDone:
-			err = wrote(f.Name, zip.Deflate, newOPF)
+		case f.Name == b.opfPath && !opfDone:
+			err = wrote(f.Name, zip.Deflate, b.newOPF)
 			opfDone = true
-		case e.Cover && f.Name == coverPath && !coverDone:
-			err = wrote(f.Name, zip.Store, cover)
-			coverDone = true
-		case e.RegenerateTOC && f.Name == navPath && !navDone:
-			err = wrote(f.Name, zip.Deflate, navBytes)
+		case toc && f.Name == b.navPath && !navDone:
+			err = wrote(f.Name, zip.Deflate, b.navBytes)
 			navDone = true
-		case e.RegenerateTOC && ncxPath != "" && f.Name == ncxPath && !ncxDone:
-			err = wrote(f.Name, zip.Deflate, ncxBytes)
+		case toc && b.ncxPath != "" && f.Name == b.ncxPath && !ncxDone:
+			err = wrote(f.Name, zip.Deflate, b.ncxBytes)
 			ncxDone = true
+		case b.removed[f.Name]:
+			// Removed: left out.
+		case b.rewritten[f.Name] != nil && z.files[f.Name] == f:
+			err = wrote(f.Name, zip.Deflate, b.rewritten[f.Name])
 		default:
 			err = w.Copy(f)
 		}
@@ -569,16 +778,13 @@ func (z *epubZip) editBook(e epubEdit, cover []byte, out io.Writer, now time.Tim
 			return err
 		}
 	}
-	if newCover == "" && e.Cover && !coverDone {
-		newCover = coverPath // named, but not in the book
-	}
-	if newCover != "" {
-		if err := wrote(newCover, zip.Store, cover); err != nil {
+	if b.newCover != "" {
+		if err := wrote(b.newCover, zip.Store, b.cover); err != nil {
 			return err
 		}
 	}
-	if e.RegenerateTOC && !navDone {
-		if err := wrote(navPath, zip.Deflate, navBytes); err != nil {
+	if toc && !navDone {
+		if err := wrote(b.navPath, zip.Deflate, b.navBytes); err != nil {
 			return err
 		}
 	}
@@ -635,7 +841,7 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 	defer opened.Close()
 	f, st := opened.file, opened.info
 	store := opened.store
-	if fileVersion(st) != req.IfMtime || st.Size() != req.IfSize {
+	if req.changed(st) {
 		r.fail(errEpubChanged.Error())
 		return
 	}
@@ -654,6 +860,15 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 			return
 		}
 	}
+	// The edit goes to the child as one argument, which the kernel keeps
+	// under 128 KiB (MAX_ARG_STRLEN): measured as it's sent, escapes and
+	// all, it's bounded well inside that. (Checked before the book's read.)
+	edit, _ := json.Marshal(epubEdit{Title: req.Title, Creator: req.Creator, Cover: req.Size > 0, CoverItem: req.CoverItem,
+		RemoveItems: req.RemoveItems, RegenerateTOC: req.RegenerateTOC})
+	if len(req.RemoveItems) > maxEpubRemove || len(edit) > maxEpubEditArg {
+		r.fail("That's not a change that can be made.")
+		return
+	}
 	// The book read first, before its cover is sent: one that can't be
 	// changed (damaged, or with DRM) is refused without it.
 	got, err := readEpubIsolated(f, "book")
@@ -665,28 +880,17 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 		r.fail(err.Error())
 		return
 	}
+	if req.CoverItem != "" && (req.Size > 0 || !slices.Contains(before.Pictures, req.CoverItem)) {
+		r.fail("That picture can't be made the cover.")
+		return
+	}
 	if !r.accept(nil) {
 		return
 	}
-	cover := make([]byte, 0, req.Size)
-	if req.Size > 0 {
-		t.c.SetReadLimit(fileChunk + tunnelOverhead)
-		for int64(len(cover)) < req.Size {
-			ctx, cancel := context.WithTimeout(context.Background(), fileStall)
-			typ, b, err := t.Read(ctx)
-			cancel()
-			if err != nil {
-				return
-			}
-			if typ != websocket.MessageBinary || int64(len(cover)+len(b)) > req.Size {
-				t.Close(websocket.StatusPolicyViolation, "bad cover")
-				return
-			}
-			cover = append(cover, b...)
-		}
+	cover, ok := receiveData(t, req.Size, "bad cover")
+	if !ok {
+		return
 	}
-	edit, _ := json.Marshal(epubEdit{Title: req.Title, Creator: req.Creator, Cover: req.Size > 0, RegenerateTOC: req.RegenerateTOC})
-
 	u, err := store.startUpload(dir)
 	if err != nil {
 		r.fail(uploadError(err))
@@ -721,8 +925,12 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 	if req.RegenerateTOC && title == "" {
 		metaOK = after.Title == before.Title && after.Creator == before.Creator
 	}
+	// And the cover named, and the pictures removed, as asked: checked here
+	// too, not only by the child that made it.
+	removedLeft := slices.ContainsFunc(req.RemoveItems, func(p string) bool { return slices.Contains(after.Pictures, p) })
 	if err != nil || !metaOK || len(after.Spine) != len(before.Spine) ||
-		req.Size > 0 && after.Cover == "" || req.RegenerateTOC && len(after.TOC) == 0 {
+		req.Size > 0 && after.Cover == "" || req.CoverItem != "" && after.Cover != req.CoverItem ||
+		removedLeft || req.RegenerateTOC && len(after.TOC) == 0 {
 		log.Printf("editing %q: the changed book didn't read back as it should (%v)", p, err)
 		fail("The changed book didn't read back as it should, so the book was left as it was.")
 		return

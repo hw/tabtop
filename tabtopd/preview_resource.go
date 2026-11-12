@@ -20,8 +20,10 @@ const (
 	maxPreviewMediaRange = 1 << 20
 )
 
-// Each reservation includes all buffering and flow-controlled writes.
-var previewResourceSlots = make(chan struct{}, 4)
+// Each reservation includes all buffering and flow-controlled writes. A
+// request waits a while for one (a video's range reads come several at a
+// time, and pictures alongside them) rather than failing at once.
+var previewResourceSlots = newBoundedWork(4, 15*time.Second)
 
 func previewResourceLimit(kind string) int64 {
 	switch kind {
@@ -107,15 +109,16 @@ func (g *server) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tunnelRe
 		r.fail("Invalid media range.")
 		return
 	}
-	select {
-	case previewResourceSlots <- struct{}{}:
-		defer func() { <-previewResourceSlots }()
-	default:
+	w := newChunkWriter(t)
+	defer w.stop()
+	release, ok := previewResourceSlots.acquireContext(w.ctx)
+	if !ok && w.ctx.Err() != nil {
+		return // the page stopped waiting
+	} else if !ok {
 		r.fail("Too many external resources are loading; try again.")
 		return
 	}
-	w := newChunkWriter(t)
-	defer w.stop()
+	defer release()
 	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -167,6 +170,12 @@ func (g *server) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tunnelRe
 	var total int64
 	validator := previewValidator(response.Header)
 	if req.Resource == "media" {
+		// A whole body for a later part, asked for If-Range: the media's
+		// changed since it was opened (the validator no longer matches).
+		if response.StatusCode == http.StatusOK && !probe && req.IfMtime != "" && validator != req.IfMtime {
+			r.fail("The remote media changed; reopen the preview.")
+			return
+		}
 		if response.StatusCode != http.StatusPartialContent {
 			r.fail("Media streaming requires a server with byte-range support.")
 			return

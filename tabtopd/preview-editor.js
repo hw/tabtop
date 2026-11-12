@@ -2,6 +2,7 @@
 // the current-file checks; editors own their save snapshots and UI resources.
 import { glyphs, iconSVG } from "./glyphs.js";
 import { call, collect, uploadFile, saveBlob } from "./requests.js";
+import { humanBytes } from "./file-format.js";
 import { askBookDetails, askYes, askLine, statusRow } from "./ui.js";
 import { checkJSON, formatJSON, FormatTooBig, parseJSON } from "./json-view.js";
 import { tableView } from "./table-view.js";
@@ -272,6 +273,22 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     }
     const format = el("button", { type: "button", className: "format", textContent: "Format",
         title: "Lay the JSON out, a value to a line, indented", hidden: !json || lines });
+    // Chrome's insertText takes time growing with the square of the lines
+    // it puts in: 1,500 lines take two seconds, and a 48,000-line file,
+    // most of an hour, the page frozen meanwhile. So only a small result
+    // goes in as typing would, undoable with the rest; a larger one is set
+    // at once, and that Format alone undone with Ctrl+Z (and redone with
+    // Ctrl+Shift+Z or Ctrl+Y) while the text is as it left it.
+    const FORMAT_TYPED_LINES = 400;
+    let formatUndo = null; // {before, after, start, end, undone}
+    const linesOver = (text, max) => {
+        for (let at = 0, n = 1; (at = text.indexOf("\n", at) + 1) > 0;) {
+            if (++n > max) {
+                return true;
+            }
+        }
+        return false;
+    };
     format.addEventListener("click", () => {
         let laid;
         try {
@@ -287,12 +304,48 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
             return;
         }
         if (laid !== box.value) {
-            box.select();
-            // As typing would, so it can be undone.
-            if (!document.execCommand?.("insertText", false, laid)) {
+            if (linesOver(laid, FORMAT_TYPED_LINES)) {
+                formatUndo = { before: box.value, after: laid, start: box.selectionStart, end: box.selectionEnd, undone: false };
                 box.value = laid;
+                box.setSelectionRange(0, 0);
+                box.scrollTop = 0;
+            } else {
+                formatUndo = null;
+                box.select();
+                // As typing would, so it can be undone.
+                if (!document.execCommand?.("insertText", false, laid)) {
+                    box.value = laid;
+                }
             }
             box.dispatchEvent(new Event("input"));
+        }
+    });
+    box.addEventListener("keydown", (e) => {
+        if (!formatUndo || !(e.ctrlKey || e.metaKey) || e.altKey) {
+            return;
+        }
+        const key = e.key.toLowerCase();
+        const undo = key === "z" && !e.shiftKey;
+        const redo = key === "z" && e.shiftKey || key === "y" && !e.shiftKey;
+        const f = formatUndo;
+        if (undo && !f.undone && box.value === f.after) {
+            e.preventDefault();
+            box.value = f.before;
+            box.setSelectionRange(f.start, f.end);
+            f.undone = true;
+            box.dispatchEvent(new Event("input"));
+        } else if (redo && f.undone && box.value === f.before) {
+            e.preventDefault();
+            box.value = f.after;
+            box.setSelectionRange(0, 0);
+            f.undone = false;
+            box.dispatchEvent(new Event("input"));
+        }
+    });
+    // Edited since: that Format can no longer be undone on its own.
+    box.addEventListener("input", () => {
+        if (formatUndo && box.value !== (formatUndo.undone ? formatUndo.before : formatUndo.after)) {
+            formatUndo = null;
         }
     });
     let preview = null;
@@ -476,135 +529,212 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     };
 }
 
-// pickPicture asks for a picture in Downloads, starting in the folder
-// start, going into its folders and up, and resolves to it, fetched through
-// the tunnel, as a File, or null if none is chosen.
-function pickPicture(start) {
-    return new Promise((resolve) => {
-        const where = el("p", { className: "picker-where" });
-        const list = el("ul", { className: "picker-list" });
-        const status = el("p", { className: "hint picker-status" });
-        status.setAttribute("aria-live", "polite");
-        const cancel = el("button", { type: "button", textContent: "Cancel" });
-        const dialog = el("dialog", { className: "picker" }, el("p", { textContent: "A picture in Downloads, for the cover" }), where, list, status,
-            el("div", { className: "buttons" }, cancel));
-        let chosen = null;
-        let shownDir = null;
-        cancel.addEventListener("click", () => dialog.close());
-        dialog.addEventListener("close", () => {
-            dialog.remove();
-            resolve(chosen);
-        });
-        const entry = (text, className, onClick, note = "") => {
-            const b = el("button", { type: "button", className, textContent: text });
-            b.addEventListener("click", onClick);
-            return el("li", {}, b, ...(note ? [el("span", { className: "hint", textContent: note })] : []));
-        };
-        const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-        const show = async (dir) => {
-            shownDir = dir;
-            where.textContent = ["Downloads", ...dir.split("/").filter(Boolean)].join(" / ");
-            list.replaceChildren();
-            status.textContent = "Loading…";
-            let entries;
-            try {
-                const t = await call({ type: "list", path: dir });
-                t.close();
-                entries = t.reply.entries.filter((e) => !e.name.startsWith("."));
-            } catch (err) {
-                status.textContent = `It can't be listed: ${err.message}`;
+// pictureChooser is a picker's dialog: a heading, where it's looking
+// (where), a list of entries, and beside it (below, on a narrow screen),
+// once one is clicked, a preview of the picture, with Select (and Cancel)
+// to take it. fetch(entry, progress)
+// resolves to the picture's File; it resolves, once the dialog's closed, to
+// what select(entry, file) made of the one selected, or null.
+function pictureChooser(heading, fetch, select) {
+    const where = el("p", { className: "picker-where" });
+    const list = el("ul", { className: "picker-list" });
+    const status = el("p", { className: "hint picker-status" });
+    status.setAttribute("aria-live", "polite");
+    const image = el("img", { className: "picker-image", alt: "", hidden: true });
+    const empty = "Click a picture to preview it.";
+    const caption = el("p", { className: "hint picker-caption", textContent: empty });
+    // Always there, so the list beside it keeps its width.
+    const preview = el("figure", { className: "picker-preview" }, image, caption);
+    const unshow = () => {
+        image.hidden = true;
+        image.removeAttribute("src");
+        caption.textContent = empty;
+    };
+    const cancel = el("button", { type: "button", textContent: "Cancel" });
+    const choose = el("button", { type: "button", className: "primary picker-select", textContent: "Select", disabled: true });
+    const dialog = el("dialog", { className: "picker" }, el("p", { textContent: heading }), where,
+        el("div", { className: "picker-body" }, list, preview), status, el("div", { className: "buttons" }, cancel, choose));
+    let resolve;
+    const done = new Promise((r) => (resolve = r));
+    let shown = null; // {entry, file, url}: the picture previewed
+    let asked = 0; // which click's fetch is the one wanted
+    let chosen = null;
+    const forget = () => {
+        if (shown) {
+            URL.revokeObjectURL(shown.url);
+            shown = null;
+        }
+        choose.disabled = true;
+    };
+    cancel.addEventListener("click", () => dialog.close());
+    choose.addEventListener("click", () => {
+        if (shown) {
+            chosen = select(shown.entry, shown.file);
+            dialog.close();
+        }
+    });
+    dialog.addEventListener("close", () => {
+        asked++;
+        forget();
+        dialog.remove();
+        resolve(chosen);
+    });
+    // Clicked: fetched and shown, for Select; another clicked meanwhile,
+    // that one's shown instead.
+    const look = async (entry, name, button) => {
+        const mine = ++asked;
+        forget();
+        for (const b of list.querySelectorAll("button.chosen")) {
+            b.classList.remove("chosen");
+            b.removeAttribute("aria-current");
+        }
+        button.classList.add("chosen");
+        button.setAttribute("aria-current", "true");
+        unshow();
+        status.textContent = `${name}: fetching…`;
+        try {
+            const file = await fetch(entry, (text) => mine === asked && (status.textContent = `${name}: ${text}`));
+            if (mine !== asked) {
                 return;
             }
-            if (shownDir !== dir) {
+            const url = URL.createObjectURL(file);
+            image.src = url;
+            try {
+                await image.decode();
+            } catch {
+                URL.revokeObjectURL(url);
+                if (mine === asked) {
+                    status.textContent = `${name} can't be shown as a picture.`;
+                }
                 return;
             }
-            const byName = (a, b) => collator.compare(a.name, b.name);
-            const folders = entries.filter((e) => e.dir).sort(byName);
-            const pictures = entries.filter((e) => !e.dir && typeOf(e.name)?.kind === "image" && (e.bytes ?? 0) <= limits.image).sort(byName);
-            list.replaceChildren(
-                ...(dir ? [entry(`${glyphs.upFolder} Up`, "picker-up", () => show(dir.split("/").slice(0, -1).join("/")))] : []),
-                ...folders.map((e) => entry(`${glyphs.folder} ${e.name}/`, "picker-folder", () => show(join(dir, e.name)))),
-                ...pictures.map((e) => entry(e.name, "picker-picture", () => take(join(dir, e.name), e.name), e.size ?? "")));
-            status.textContent = pictures.length ? "" : "No pictures here.";
-            list.querySelector("button")?.focus();
-        };
-        const take = async (path, name) => {
-            const type = typeOf(name).type;
-            status.textContent = `${name}: fetching…`;
-            try {
-                const t = await call({ type: "file", path });
-                const blob = await collect(t, t.reply.size, (n) => (status.textContent = `${name}: ${t.reply.size ? Math.floor(n * 100 / t.reply.size) : 100}%`), type);
-                chosen = new File([blob], name, { type });
-                dialog.close();
-            } catch (err) {
+            if (mine !== asked) {
+                URL.revokeObjectURL(url);
+                return;
+            }
+            shown = { entry, file, url };
+            caption.textContent = `${name}, ${image.naturalWidth} × ${image.naturalHeight}`;
+            image.hidden = false;
+            status.textContent = "";
+            choose.disabled = false;
+        } catch (err) {
+            if (mine === asked) {
                 status.textContent = `${name} can't be fetched: ${err.message}`;
             }
-        };
+        }
+    };
+    const entry = (text, className, onClick, note = "") => {
+        const b = el("button", { type: "button", className, textContent: text });
+        b.addEventListener("click", () => onClick(b));
+        return el("li", {}, b, ...(note ? [el("span", { className: "hint", textContent: note })] : []));
+    };
+    // A picture entry: clicked, previewed; double-clicked, selected once
+    // it's shown.
+    const picture = (text, value, name, note = "") => {
+        const li = entry(text, "picker-picture", (b) => look(value, name, b), note);
+        li.querySelector("button").addEventListener("dblclick", async () => {
+            for (let i = 0; i < 100 && !shown && dialog.open; i++) {
+                await new Promise((r) => setTimeout(r, 50));
+            }
+            if (shown?.entry === value) {
+                choose.click();
+            }
+        });
+        return li;
+    };
+    const show = () => {
         document.body.append(dialog);
         dialog.showModal();
-        show(start);
-    });
+    };
+    // A new list: nothing previewed from the last.
+    const listed = (items) => {
+        asked++;
+        forget();
+        unshow();
+        list.replaceChildren(...items);
+    };
+    return { dialog, where, list, status, cancel, entry, picture, listed, show, done };
+}
+
+// pickPicture asks for a picture in Downloads, starting in the folder
+// start, going into its folders and up, and resolves to it, fetched through
+// the tunnel, as a File, or null if none is selected.
+function pickPicture(start) {
+    const p = pictureChooser("A picture in Downloads, for the cover", async (path, progress) => {
+        const name = path.split("/").pop();
+        const type = typeOf(name).type;
+        const t = await call({ type: "file", path });
+        const blob = await collect(t, t.reply.size, (n) => progress(`${t.reply.size ? Math.floor(n * 100 / t.reply.size) : 100}%`), type);
+        return new File([blob], name, { type });
+    }, (path, file) => file);
+    let shownDir = null;
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    const show = async (dir) => {
+        shownDir = dir;
+        p.where.textContent = ["Downloads", ...dir.split("/").filter(Boolean)].join(" / ");
+        p.listed([]);
+        p.status.textContent = "Loading…";
+        let entries;
+        try {
+            const t = await call({ type: "list", path: dir });
+            t.close();
+            entries = t.reply.entries.filter((e) => !e.name.startsWith("."));
+        } catch (err) {
+            p.status.textContent = `It can't be listed: ${err.message}`;
+            return;
+        }
+        if (shownDir !== dir) {
+            return;
+        }
+        const byName = (a, b) => collator.compare(a.name, b.name);
+        const folders = entries.filter((e) => e.dir).sort(byName);
+        const pictures = entries.filter((e) => !e.dir && typeOf(e.name)?.kind === "image" && (e.bytes ?? 0) <= limits.image).sort(byName);
+        p.listed([
+            ...(dir ? [p.entry(`${glyphs.upFolder} Up`, "picker-up", () => show(dir.split("/").slice(0, -1).join("/")))] : []),
+            ...folders.map((e) => p.entry(`${glyphs.folder} ${e.name}/`, "picker-folder", () => show(join(dir, e.name)))),
+            ...pictures.map((e) => p.picture(e.name, join(dir, e.name), e.name, e.size ?? ""))]);
+        p.status.textContent = pictures.length ? "" : "No pictures here.";
+        p.list.querySelector("button")?.focus();
+    };
+    p.show();
+    show(start);
+    return p.done;
 }
 
 // pickEpubPicture asks for a picture already in the book at path (opened as
-// file), listed from its pictures, and resolves to it, fetched through the
-// tunnel, as a File, or null if none is chosen.
+// file), listed from its pictures, and resolves to {item, file}: its path
+// in the book, and its bytes, to show it; or null if none is selected.
 function pickEpubPicture(file) {
-    return new Promise((resolve) => {
-        const where = el("p", { className: "picker-where", textContent: file.name });
-        const list = el("ul", { className: "picker-list" });
-        const status = el("p", { className: "hint picker-status" });
-        status.setAttribute("aria-live", "polite");
-        const cancel = el("button", { type: "button", textContent: "Cancel" });
-        const dialog = el("dialog", { className: "picker" }, el("p", { textContent: "A picture in the book, for the cover" }), where, list, status,
-            el("div", { className: "buttons" }, cancel));
-        let chosen = null;
-        cancel.addEventListener("click", () => dialog.close());
-        dialog.addEventListener("close", () => {
-            dialog.remove();
-            resolve(chosen);
-        });
-        const entry = (text, className, onClick) => {
-            const b = el("button", { type: "button", className, textContent: text });
-            b.addEventListener("click", onClick);
-            return el("li", {}, b);
-        };
-        const take = async (item) => {
-            const name = item.split("/").pop();
-            const type = typeOf(name)?.type ?? "";
-            status.textContent = `${name}: fetching…`;
-            try {
-                const path = join(file.dir, file.name);
-                const t = await call({ type: "epub", path, item, if_mtime: file.mtime, if_size: file.size });
-                const blob = await collect(t, t.reply.size, (n) => (status.textContent = `${name}: ${t.reply.size ? Math.floor(n * 100 / t.reply.size) : 100}%`), t.reply.mime || type);
-                chosen = new File([blob], name, { type: t.reply.mime || type });
-                dialog.close();
-            } catch (err) {
-                status.textContent = `${name} can't be fetched: ${err.message}`;
-            }
-        };
-        const pictures = Array.isArray(file.book?.pictures) ? file.book.pictures : [];
-        list.replaceChildren(...pictures.map((item) => entry(item, "picker-picture", () => take(item))));
-        status.textContent = pictures.length ? "" : "No pictures in the book.";
-        document.body.append(dialog);
-        dialog.showModal();
-        (list.querySelector("button") ?? cancel).focus();
-    });
+    const path = join(file.dir, file.name);
+    const p = pictureChooser("A picture in the book, for the cover", async (item, progress) => {
+        const name = item.split("/").pop();
+        const type = typeOf(name)?.type ?? "";
+        const t = await call({ type: "epub", path, item, if_mtime: file.mtime, if_size: file.size });
+        const blob = await collect(t, t.reply.size, (n) => progress(`${t.reply.size ? Math.floor(n * 100 / t.reply.size) : 100}%`), t.reply.mime || type);
+        return new File([blob], name, { type: t.reply.mime || type });
+    }, (item, picture) => ({ item, file: picture }));
+    p.where.textContent = file.name;
+    const pictures = Array.isArray(file.book?.pictures) ? file.book.pictures : [];
+    p.listed(pictures.map((item) => p.picture(item, item, item.split("/").pop())));
+    p.status.textContent = pictures.length ? "" : "No pictures in the book.";
+    p.show();
+    (p.list.querySelector("button") ?? p.cancel).focus();
+    return p.done;
 }
 
-// The types a cover can be replaced as: those a browser can make.
-const COVER_TYPES = ["image/jpeg", "image/png", "image/webp"];
 // The longest side a new cover is given, in pixels.
 const COVER_SIDE = 3000;
 
-// newCoverType is the type a book without a cover is given one as, for a
-// picture of type: as it is, if it can be, else JPEG.
-const newCoverType = (type) => (COVER_TYPES.includes(type) ? type : "image/jpeg");
-
-// pictureName names the type of picture type is, as a cover's said to be.
-function pictureName(type) {
-    const name = { "image/svg+xml": "SVG", "image/gif": "GIF", "image/avif": "AVIF", "image/bmp": "BMP" }[type];
-    return name ? `${name === "AVIF" ? "an" : "a"} ${name} picture` : "a picture of another kind";
+// coverType is the type a picture from outside the book is added to it as:
+// JPEG or PNG (images/cover.jpg or .png; see epub_edit.go). A JPEG or PNG
+// stays as it is; a photo of another kind (WebP, AVIF, BMP) is made a
+// JPEG, and a drawing (GIF, SVG), which may be see-through, a PNG.
+async function coverType(file) {
+    const sniffed = await pictureType(file);
+    if (sniffed === "image/jpeg" || sniffed === "image/png") {
+        return sniffed;
+    }
+    return ["image/gif", "image/svg+xml"].includes(file.type) ? "image/png" : "image/jpeg";
 }
 
 // pictureType is the type of picture file is, by its first bytes (not its
@@ -662,7 +792,8 @@ async function coverBytes(file, type) {
 
 // saveBookEdit sends an epub-edit for path with the given fields, updates
 // file from the reply, and refreshes the preview when still shown.
-async function saveBookEdit({ file, body, isCurrent, isEditing, refresh, title, creator, bytes = null, regenerateTOC = false, busy }) {
+async function saveBookEdit({ file, body, isCurrent, isEditing, refresh, title, creator, bytes = null, coverItem = "",
+    removeItems = [], regenerateTOC = false, busy }) {
     const path = join(file.dir, file.name);
     const expect = { if_mtime: file.mtime, if_size: file.size };
     const shownHere = isCurrent();
@@ -673,7 +804,8 @@ async function saveBookEdit({ file, body, isCurrent, isEditing, refresh, title, 
     }
     try {
         const t = await call({ type: "epub-edit", path, ...expect, title, creator,
-            size: bytes?.byteLength ?? 0, regenerate_toc: regenerateTOC || undefined });
+            size: bytes?.byteLength ?? 0, cover_item: coverItem || undefined, remove_items: removeItems.length ? removeItems : undefined,
+            regenerate_toc: regenerateTOC || undefined });
         for (let at = 0; bytes && at < bytes.byteLength; at += MARKDOWN_PIECE) {
             t.sendData(bytes.subarray(at, at + MARKDOWN_PIECE));
         }
@@ -690,7 +822,16 @@ async function saveBookEdit({ file, body, isCurrent, isEditing, refresh, title, 
             ({ size, mtime, book } = again.reply);
         }
         moveBookPlace(path, file.size, size);
+        const before = file.size;
         Object.assign(file, { size, mtime, book });
+        if (removeItems.length) {
+            // (Smaller, unless a new cover added more than went.)
+            const said = `${file.name}: ${removeItems.length} picture${removeItems.length === 1 ? "" : "s"} removed` +
+                (before > size ? `; ${humanBytes(before - size)} smaller` : "");
+            const done = statusRow(said);
+            done.set(said);
+            done.finish();
+        }
         if (res.warning) {
             const w = statusRow(`${file.name}: ${res.warning}`);
             w.set(`${file.name}: ${res.warning}`, true);
@@ -717,7 +858,6 @@ export async function editBookDetails({ file, body, isCurrent, isEditing, refres
     const path = join(file.dir, file.name);
     const expect = { if_mtime: file.mtime, if_size: file.size };
     const coverPath = file.book.cover ?? "";
-    const coverType = coverPath ? (typeOf(coverPath.split("/").pop())?.type ?? "") : "";
     let coverURL = null;
     if (coverPath) {
         try {
@@ -734,10 +874,28 @@ export async function editBookDetails({ file, body, isCurrent, isEditing, refres
         }
         return;
     }
-    const canMake = !coverPath || COVER_TYPES.includes(coverType);
     const tidy = (v) => v.trim().split(/\s+/).filter(Boolean).join(" ");
+    // What uses each picture, for removing those nothing does: asked now,
+    // known when it's known.
+    const uses = call({ type: "epub", path, uses: true, ...expect }).then((t) => {
+        t.close();
+        return t.reply.pictures;
+    }).catch(() => null);
+    const thumb = async (item, signal) => {
+        const t = await call({ type: "epub", path, item, ...expect }, { signal });
+        const stop = () => t.close();
+        signal?.addEventListener("abort", stop, { once: true });
+        try {
+            const blob = await collect(t, t.reply.size, () => {}, t.reply.mime);
+            signal?.throwIfAborted();
+            return blob;
+        } finally {
+            signal?.removeEventListener("abort", stop);
+            t.close();
+        }
+    };
     const got = await askBookDetails({ title: file.book.title ?? "", creator: file.book.creator ?? "", hasCover: !!coverPath, coverURL,
-        coverNote: canMake ? "" : `Its cover is ${pictureName(coverType)}, and only JPEG, PNG and WebP covers can be replaced here.`,
+        uses, thumb, size: humanBytes,
         pick: () => pickPicture(file.dir), pickEpub: () => pickEpubPicture(file), hasTOC: (file.book.toc?.length ?? 0) > 0 });
     if (coverURL) {
         URL.revokeObjectURL(coverURL);
@@ -751,13 +909,26 @@ export async function editBookDetails({ file, body, isCurrent, isEditing, refres
             regenerateTOC: true, busy: "Rebuilding the book's contents…" });
         return;
     }
+    // The book's own cover, chosen from its pictures: no change.
+    const coverItem = got.coverItem && got.coverItem !== coverPath ? got.coverItem : "";
     if (tidy(got.title) === tidy(file.book.title ?? "") &&
-        tidy(got.creator) === tidy(file.book.creator ?? "") && !got.picture) {
+        tidy(got.creator) === tidy(file.book.creator ?? "") && !got.picture && !coverItem && !got.removeItems.length) {
         return;
     }
     // Saved, if asked to, though another file's been shown since; said
     // where it's shown, or, if it isn't, in the transfers.
-    const bytes = got.picture ? await coverBytes(got.picture, coverType || newCoverType(await pictureType(got.picture))) : null;
+    let bytes = null;
+    if (got.picture) {
+        try {
+            bytes = await coverBytes(got.picture, await coverType(got.picture));
+        } catch (err) {
+            const w = statusRow(`${file.name}: the cover wasn't changed: ${err.message}`);
+            w.set(`${file.name}: the cover wasn't changed: ${err.message}`, true);
+            w.finish();
+            return;
+        }
+    }
     await saveBookEdit({ file, body, isCurrent, isEditing, refresh,
-        title: tidy(got.title), creator: tidy(got.creator), bytes, busy: "Saving the book…" });
+        title: tidy(got.title), creator: tidy(got.creator), bytes, coverItem,
+        removeItems: got.removeItems, busy: "Saving the book…" });
 }

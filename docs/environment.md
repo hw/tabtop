@@ -33,6 +33,7 @@
 | [WEB_SHARE](#web_share) | `1` | `1` lets the files page make [share links](downloads.md#share-links) and [upload links](downloads.md#upload-links): plain URLs for downloading files and folders, or uploading into a folder, for `wget`, `curl` or someone without a login, outside the encrypted tunnel. `0` turns them off. |
 | [WEB_FETCH](#web_fetch-and-web_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
 | [WEB_FETCH_PRIVATE](#web_fetch-and-web_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
+| [WEB_PREVIEW_FETCH_PRIVATE](#web_preview_fetch_private) | `0` | `1` lets previews in Proxy mode load a document's images, styles, fonts and media from private networks too. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 | [TZ](#tz) | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
@@ -45,7 +46,7 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_VNC`, `WEB_FS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_VNC`, `WEB_FS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
@@ -597,6 +598,18 @@ the container's network, which is private too. The container's own
 addresses (loopback, 127.0.0.1 and ::1, and its address on each of its
 networks, public or private) and link-local ones (169.254.x.x, fe80::/10)
 are never fetched from. Fetches don't use a proxy.
+
+## `WEB_PREVIEW_FETCH_PRIVATE`
+
+A preview in **Proxy** mode has the server load the images, stylesheets,
+fonts and media an HTML, Markdown or EPUB file refers to (see
+[preview security](preview-security.md)). It needs `WEB_FETCH=1` and uses
+the same rules, except for private networks: the file being previewed, not
+you, picks those addresses, so `WEB_FETCH_PRIVATE` doesn't apply to them.
+With `WEB_PREVIEW_FETCH_PRIVATE=1` (default `0`), they may come from private
+networks too, for documents that use pictures on your intranet. Any file
+you preview in Proxy mode can then make the server request addresses on
+those networks.
 
 ## `WEB_DOCTOR_ENDPOINT`
 
