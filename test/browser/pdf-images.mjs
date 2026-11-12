@@ -137,7 +137,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 
 
 export async function checkPDFAssembly(checks){
-    const{ev,step,work,container,open,listed,waitFor,inFrame,downloads,waitForFile}=checks;
+    const{ev,step,work,container,inContainer,open,listed,waitFor,inFrame,downloads,waitForFile}=checks;
     await step("files: merge PDFs, insert image pages, reorder thumbnails, undo and export",async()=>{
         const base64=await ev(`(async()=>{
             const{rasterPDF}=await import('/tabtop/image-export.js');
@@ -229,6 +229,11 @@ export async function checkPDFAssembly(checks){
         await waitFor(`!${d}`,"assembly editor closed");
         await ev(`delete window.pdfAssemblyImage;delete window.pdfAssemblyPDF;document.querySelector('dialog.preview button.close').click()`);
         await waitFor(`!document.querySelector('dialog.preview')`,"rebuilt preview closed");
+        // Reordering rebuilds the source card before dragend can bubble.
+        // The drop itself must release the file page's paused change watcher.
+        inContainer("touch","/home/user/Downloads/media/after-reorder.txt");
+        await waitFor(`${listed}.includes('after-reorder.txt')`,"folder refresh resumes after thumbnail drop");
+        inContainer("rm","/home/user/Downloads/media/after-reorder.txt");
         rmSync(`${downloads}/assembly-edited.pdf`);
 
         if(!fixture.equals(execFileSync("docker",["exec",container,"cat","/home/user/Downloads/media/assembly.pdf"])))throw new Error("assembly modified the source PDF");

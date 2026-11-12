@@ -487,7 +487,9 @@ function refreshSoon() {
     }, 300);
 }
 document.addEventListener("dragstart", () => (dragging = true));
-document.addEventListener("dragend", () => (dragging = false));
+// A drop can remove the dragged node (for example, reordered PDF thumbnails),
+// so its later dragend may no longer bubble to the document.
+for (const event of ["drop", "dragend"]) document.addEventListener(event, () => (dragging = false));
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
         stopChanges();
