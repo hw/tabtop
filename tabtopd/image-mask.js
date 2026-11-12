@@ -242,10 +242,12 @@ export function brushControls(paintButton, { prefix, sizeClass, selectionButton,
 // as the selection shape's is (see brushControls): a button showing the
 // one chosen, and an arrow beside it, either opening a menu of them all.
 // onChoose(key) is told of a choice made there.
-export function choiceMenu({ className, label, choices, onChoose }) {
-    const current = el("button", { type: "button", className: `glyph ${className}-current` });
+// An optional button keeps its own primary action; only the arrow opens the menu.
+export function choiceMenu({ className, label, choices, onChoose, button: actionButton = null }) {
+    const current = actionButton ?? el("button", { type: "button", className: `glyph ${className}-current` });
     const arrow = el("button", { type: "button", className: `mask-size-toggle ${className}-toggle`, textContent: glyphs.chevronDown, title: label, ariaLabel: label });
-    for (const trigger of [current, arrow]) { trigger.setAttribute("aria-haspopup", "menu"); trigger.setAttribute("aria-expanded", "false"); }
+    const triggers = actionButton ? [arrow] : [current, arrow];
+    for (const trigger of triggers) { trigger.setAttribute("aria-haspopup", "menu"); trigger.setAttribute("aria-expanded", "false"); }
     const panel = el("div", { className: `mask-shape-options ${className}-options`, role: "menu", ariaLabel: label });
     panel.setAttribute("popover", "auto");
     let value = choices[0].key;
@@ -264,11 +266,11 @@ export function choiceMenu({ className, label, choices, onChoose }) {
         panel.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - box.height - 8))}px`;
     };
     const enabled = () => items.filter(({ button }) => !button.disabled);
-    for (const trigger of [current, arrow]) trigger.addEventListener("click", () => {
+    for (const trigger of triggers) trigger.addEventListener("click", () => {
         panel.togglePopover(); position();
         if (panel.matches(":popover-open")) (items.find(({ key }) => key === value)?.button ?? enabled()[0]?.button)?.focus();
     });
-    panel.addEventListener("toggle", (event) => { for (const trigger of [current, arrow]) trigger.setAttribute("aria-expanded", String(event.newState === "open")); });
+    panel.addEventListener("toggle", (event) => { for (const trigger of triggers) trigger.setAttribute("aria-expanded", String(event.newState === "open")); });
     panel.addEventListener("keydown", (event) => {
         if (event.key === "Escape") { event.preventDefault(); panel.hidePopover(); arrow.focus(); }
         if (["ArrowDown", "ArrowUp"].includes(event.key)) {
@@ -289,9 +291,11 @@ export function choiceMenu({ className, label, choices, onChoose }) {
             if (!chosen) return;
             value = key;
             for (const { key: k, button } of items) button.setAttribute("aria-checked", String(k === key));
-            current.innerHTML = iconSVG(chosen.icon);
-            current.title = `${label}: ${chosen.title}`;
-            current.setAttribute("aria-label", current.title);
+            if (!actionButton) {
+                current.innerHTML = iconSVG(chosen.icon);
+                current.title = `${label}: ${chosen.title}`;
+                current.setAttribute("aria-label", current.title);
+            }
         },
         // item is a choice's button (to disable).
         item: (key) => items.find((it) => it.key === key)?.button ?? null,

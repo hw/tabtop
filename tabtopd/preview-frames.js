@@ -40,7 +40,7 @@ function bindFrame(frame, answer, opts, ready, themed = false) {
         if (m.type === "external") return previewLink(frame, m.href);
         if (m.type === "navigate") return opts.navigate?.(m.location);
         if (m.type === "position" && m.location && Number.isFinite(m.location.top) && Number.isFinite(m.location.left)) { frame.previewLocation = m.location; return; }
-        if (m.type === "rendered") { frame.dataset.rendered = JSON.stringify(m.report); return; }
+        if (m.type === "rendered") { frame.dataset.rendered = JSON.stringify(m.report); opts.rendered?.(m.report); return; }
         if (m.type === "ready" && themed) frame.contentWindow?.postMessage({ type: "theme", theme: readingTheme() }, "*");
         return answer(m);
     };
@@ -285,7 +285,7 @@ export function pdfFrame(path, file, opts = {}) {
         }
         going++;
         try {
-            const bytes = await readRange(path, file, begin, end, { maxBytes: PDF_PART });
+            const bytes = file.local ? file.start.slice(begin, end) : await readRange(path, file, begin, end, { maxBytes: PDF_PART });
             fetched += bytes.byteLength;
             frame.dataset.bytes = String(fetched);
             return { bytes };
@@ -321,6 +321,7 @@ export function pdfFrame(path, file, opts = {}) {
         }
     };
     bindFrame(frame, answer, opts, () => ready);
+    frame.renderPage = renderPage;
     const stop = frame.stop;
     frame.stop = () => {
         stopped = true; imageEditor?.stop(); stop();

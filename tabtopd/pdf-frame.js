@@ -154,7 +154,9 @@
             if (width * height > 16e6 || Math.max(width,height) > 8192) throw new Error("This page exceeds 16 megapixels. Choose a lower resolution.");
             if (request.cancelled) throw new Error("Page rendering cancelled.");
             canvas = Object.assign(document.createElement("canvas"), { width, height });
-            request.task = pdfPage.render({ canvasContext: canvas.getContext("2d"), viewport, background: "rgb(255,255,255)" });
+            // Print rendering does not wait for animation frames, which are
+            // suspended in the hidden frames used for imported documents.
+            request.task = pdfPage.render({ canvasContext: canvas.getContext("2d"), viewport, background: "rgb(255,255,255)", intent: "print" });
             await request.task.promise;
             const blob = await new Promise(resolve => canvas.toBlob(resolve,"image/png"));
             if (!blob || request.cancelled) throw new Error("Page rendering cancelled.");

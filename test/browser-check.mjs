@@ -37,7 +37,7 @@ import { checkAudio, checkVideo, checkMKV } from "./browser/media.mjs";
 import { checkText, checkHTML, checkExternalResources, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkEPUB, checkEPUBPictureBudget } from "./browser/documents.mjs";
 import { checkCells, checkStructured } from "./browser/tables.mjs";
 import { checkSQLite } from "./browser/sqlite.mjs";
-import { checkPDFImages } from "./browser/pdf-images.mjs";
+import { checkPDFImages, checkPDFAssembly } from "./browser/pdf-images.mjs";
 import { checkImages } from "./browser/images.mjs";
 import { checkStylesheetConditions } from "./browser/stylesheet-conditions.mjs";
 import { checkSavedHTML } from "./browser/saved-html.mjs";
@@ -100,7 +100,7 @@ const groups = {
     services: [checkServices],
     binary: [checkBinary], zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
     media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkHTML],
-    markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit], pdf: [checkPDF, checkPDFImages], "pdf-images": [checkPDFImages],
+    markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit], pdf: [checkPDF, checkPDFImages], "pdf-images": [checkPDFImages], "pdf-assembly": [checkPDFAssembly],
     epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured], sqlite: [checkSQLite], images: [checkImages],
     previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages],
 };

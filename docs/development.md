@@ -490,8 +490,41 @@ adjustments popover provides Color, Grayscale, and Black & white finishes,
 Paper whitening, and Ink strength. Apply adds one history entry; Cancel
 preserves the original image. Undo and Redo work normally.
 
-`image-scan.js` validates a convex, uncrossed outline, computes a projective
-mapping and resamples with premultiplied-alpha bilinear interpolation. Paper
+New scans start in **Curved paper** mode. The arrow beside Preview chooses
+Curved paper or Sharp folds. Four extra side points shape the
+left and right paper edges; each left/right pair also locates an interior
+guide. Drag the guide's blue middle diamond onto a bowed table rule or text
+baseline. The guide passes through that point, and the resulting scan
+straightens the entire curve. Focus any point and use the arrow keys for
+fine adjustments. A point outside the image turns red, announces itself as
+invalid, and disables Apply until it is moved back inside.
+
+`image-scan.js` first removes the corners' perspective. It interpolates the
+side boundaries and interior guides in that rectified plane with
+shape-preserving cubic Hermite curves. Adjacent regions share derivatives
+so there are no hard joins. Guide tangents are limited against the inverse-
+projected picture bounds to prevent overshoot without moving the control
+points. Interior guides are resampled by arc
+length in page-pixel coordinates to reduce stretching around a bow. Profiles
+are fitted once per output column; full-resolution and preview use the same
+normalized mapping. Vertical Jacobian polynomials are checked with Bernstein
+bounds and recursive subdivision; horizontal checks cover arc-length lookup
+boundaries and their midpoints, with adaptive horizontal subdivision where
+the Jacobian changes nonlinearly. The mesh check also rejects collapsed regions.
+These checks reject crossed guides and folded-over regions before
+Apply. The controls define a manual two-dimensional correction, not an
+inferred three-dimensional paper surface.
+
+**Sharp folds** retains the continuous bilinear strip mapping, with a change
+in slope at each fold. Switching modes retains the curve adjustments. All
+regions use a shared camera transform, preserving complete boundary
+alignment. Output dimensions stay fixed to the four-corner scan, and default
+guides give exactly the same pixels as four corners alone. Older recipes
+without a surface mode retain sharp-fold behavior. Scan recipes include the
+surface mode and curve points, which scale with other controls for PDF batches.
+
+`image-scan.js` validates a convex, uncrossed outline and resamples with
+premultiplied-alpha bilinear interpolation. Paper
 cleanup estimates illumination separately for each color channel on a field
 up to 192 pixels per side, enlarges bright paper regions to bridge ink, and
 smooths the field. The image's lettering stays in its original pixels; there
@@ -654,6 +687,18 @@ page error is recorded independently. The session retains PNG blobs, one decoded
 editor page, lazy thumbnails, and a single previous batch for Undo. Selections
 are limited to 200 pages and edited/output image blobs to 256 MiB per set.
 
+**Merge PDF** appends pages from one or more local PDFs through additional
+opaque PDF frames. **Add image** decodes local images into new image pages;
+image dimensions use 96 DPI for the initial physical page size. Imports are
+atomic, cancellable, and bounded by the existing page, pixel, and byte limits.
+The thumbnail sidebar supports dragging pages before or after another page.
+Stable page identities retain edits and operation history
+when order changes; ranges and page labels refer to the current document order.
+Exports follow that order. **Undo page change** restores the last import or
+reorder, independently of batch undo. Removing an imported PDF releases its
+sandbox. These features
+use the editor's existing raster PDF output; text and links are not retained.
+
 `image-export.js` writes stored ZIPs with CRC-32 and UTF-8 names, or raster PDFs
 with JPEG XObjects and byte-counted xref offsets. PDF page sizes follow the
 source geometry, adjusted for page crops/resizes. JPEG and PDF exports flatten
@@ -664,5 +709,8 @@ The source file is never uploaded or overwritten by this workflow.
 `test/image-batch.test.mjs` covers ranges, mask scaling, ZIP records/CRC and PDF
 offsets. `test/browser-check.sh IMAGE --group pdf-images` exercises real models,
 different page sizes, excluded pages, per-page errors, cancellation, batch Undo,
-all export formats and reopening the rebuilt PDF. It also runs with the `pdf`,
+all export formats and reopening the rebuilt PDF. `--group pdf-assembly`
+checks PDF/image insertion, thumbnail reordering, page-change undo, failed
+imports, resolution changes, and assembled export order independently. The
+full PDF image group also runs these assembly checks. It also runs with the `pdf`,
 `previews` and full browser suites.

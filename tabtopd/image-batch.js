@@ -35,6 +35,7 @@ export function scaleRecipe(recipe, width, height) {
         const fit = ([x, y]) => [x * sx, y * sy];
         out.settings = { ...recipe.settings, corners: recipe.settings.corners.map(fit) };
         if (recipe.settings.folds) out.settings.folds = recipe.settings.folds.map(f => f.map(fit));
+        if (recipe.settings.curves) out.settings.curves = recipe.settings.curves.map(p => p ? fit(p) : null);
         scanGeometry(width, height, out.settings);
     } else if (recipe.kind === "inpaint") out.marks = recipe.marks.map(scale);
     else if (recipe.kind === "background") {

@@ -1083,11 +1083,16 @@ export async function checkImages(checks) {
         await waitFor(`${dimensions}==="300x400"`,"the photo loaded");
         await click(".image-scan-start");
         await waitFor(`!${view}.querySelector(".image-scan-tools").hidden&&${view}.querySelectorAll(".image-scan-corner:not([hidden])").length===8`,"four corners and four fold points");
-        const moveCorner=async(i,point)=>{
-            const points=await ev(`(()=>{const b=${view}.querySelectorAll(".image-scan-corner")[${i}].getBoundingClientRect(),c=${view}.querySelector("canvas.image-content"),r=c.getBoundingClientRect();return [{x:b.x+b.width/2,y:b.y+b.height/2},{x:r.x+${point[0]}*r.width/c.width,y:r.y+${point[1]}*r.height/c.height}];})()`);
+        const moveCorner=async(i,point,curve=false)=>{
+            const points=await ev(`(()=>{const b=${view}.querySelectorAll(${JSON.stringify(curve ? ".image-scan-curve-point" : ".image-scan-corner")})[${i}].getBoundingClientRect(),c=${view}.querySelector("canvas.image-content"),r=c.getBoundingClientRect();return [{x:b.x+b.width/2,y:b.y+b.height/2},{x:r.x+${point[0]}*r.width/c.width,y:r.y+${point[1]}*r.height/c.height}];})()`);
             for(const [type,at] of [["mousePressed",points[0]],["mouseMoved",points[1]],["mouseReleased",points[1]]])await checks.cdp("Input.dispatchMouseEvent",{type,...at,button:"left",buttons:type==="mouseReleased"?0:1,clickCount:1});
         };
+        await moveCorner(0, [-12, 20]);
+        await waitFor(`${view}.querySelector(".image-scan-corner").classList.contains("outside") && ${view}.querySelector(".image-scan-corner").getAttribute("aria-invalid") === "true" && ${view}.querySelector(".image-scan-apply").disabled`, "outside corner marked invalid");
+        const invalidColor = await ev(`getComputedStyle(${view}.querySelector(".image-scan-corner")).backgroundColor`);
+        if (invalidColor !== "rgb(165, 29, 37)") throw new Error(`the outside corner is not red: ${invalidColor}`);
         for(let i=0;i<4;i++)await moveCorner(i,corners[i]);
+        if (await ev(`${view}.querySelector(".image-scan-corner").classList.contains("outside")`)) throw new Error("the repaired corner stays red");
         // Fold points follow the corners: a third and two thirds down each side.
         const foldAt=await ev(`(()=>{const c=${view}.querySelector("canvas.image-content"),r=c.getBoundingClientRect(),b=${view}.querySelectorAll(".image-scan-corner")[4].getBoundingClientRect();return [(b.x+b.width/2-r.x)*c.width/r.width,(b.y+b.height/2-r.y)*c.height/r.height];})()`);
         if(Math.abs(foldAt[0]-25)>4||Math.abs(foldAt[1]-133)>4)throw new Error(`the upper left fold point didn't follow the corners: ${foldAt}`);
@@ -1121,17 +1126,60 @@ export async function checkImages(checks) {
         // A folded paper: its fold points dragged onto the folds, then cancelled.
         await click(".image-scan-start");
         await waitFor(`${view}.querySelectorAll(".image-scan-corner:not([hidden])").length===8`,"eight points again");
+        await click(".image-scan-preview");
+        await waitFor(`!${view}.querySelector(".image-scan-result").hidden`, "the baseline eight-point preview");
+        const foldPreviewSize = await ev(`(() => { const c = ${view}.querySelector(".image-scan-result"); return [c.width, c.height].join("x"); })()`);
+        await click(".image-scan-corners");
         const outline=()=>ev(`[${view}.querySelector(".image-scan-outline polygon").getAttribute("points"),${view}.querySelector(".image-scan-fold-lines").getAttribute("d")]`);
         const [before,lines]=await outline();
-        if(before.split(" ").length!==8||(lines.match(/M/g)??[]).length!==2)throw new Error(`the outline doesn't run through the fold points: ${before} ${lines}`);
-        if(!(await ev(`${view}.querySelectorAll(".image-scan-corner")[4].getAttribute("aria-label")==="Upper fold, left side"`)))throw new Error("fold point unlabelled");
+        if(before.split(" ").length<8||(lines.match(/M/g)??[]).length!==2)throw new Error(`the outline doesn't run through the guide points: ${before} ${lines}`);
+        if(!(await ev(`${view}.querySelectorAll(".image-scan-corner")[4].getAttribute("aria-label")==="Upper guide, left side"`)))throw new Error("guide point unlabelled");
         const scannedSize=scanned.split("x").map(Number);
         await moveCorner(4,[30,scannedSize[1]/3]); await moveCorner(5,[scannedSize[0]-30,scannedSize[1]/3]);
         const [after,foldedLines]=await outline();
         if(after===before||foldedLines===lines)throw new Error("dragging the fold points didn't move the fold");
         if(await ev(`${view}.querySelector(".image-scan-apply").disabled`))throw new Error("a fold drawn in was refused");
+        await click(".image-scan-preview");
+        await waitFor(`!${view}.querySelector(".image-scan-result").hidden`, "the moved-fold preview");
+        const movedPreviewSize = await ev(`(() => { const c = ${view}.querySelector(".image-scan-result"); return [c.width, c.height].join("x"); })()`);
+        if (movedPreviewSize !== foldPreviewSize) throw new Error(`moving fold handles changed the page dimensions: ${foldPreviewSize} to ${movedPreviewSize}`);
+        const previewHash = () => ev(`(() => {const c=${view}.querySelector(".image-scan-result"),d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;let hash=0;for(const v of d)hash=(Math.imul(hash,33)+v)>>>0;return hash;})()`);
+        const straightHash = await previewHash();
+        await click(".image-scan-corners");
+        await waitFor(`${view}.querySelectorAll(".image-scan-curve-point:not([hidden])").length===2`, "two curvature diamonds");
+        const bendPoint = [scannedSize[0] / 2, scannedSize[1] * .43];
+        await moveCorner(0, [-12, bendPoint[1]], true);
+        await waitFor(`${view}.querySelector(".image-scan-curve-point").classList.contains("outside") && ${view}.querySelector(".image-scan-apply").disabled`, "outside curvature diamond marked invalid");
+        await moveCorner(0, bendPoint, true);
+        if (await ev(`${view}.querySelector(".image-scan-curve-point").classList.contains("outside")`)) throw new Error("the repaired diamond stays red");
+        if (await ev(`${view}.querySelector(".image-scan-apply").disabled`)) throw new Error("a gently bowed guide was refused");
+        const bentLines = (await outline())[1];
+        if (bentLines === foldedLines) throw new Error("curvature diamond did not bend its guide");
+        await click(".image-scan-preview");
+        await waitFor(`!${view}.querySelector(".image-scan-result").hidden`, "curved guide scan preview");
+        if (await previewHash() === straightHash) throw new Error("the bowed guide did not affect scanned pixels");
+        await click(".image-scan-corners");
+        await moveCorner(0, [scannedSize[0] / 2, scannedSize[1] * .9], true);
+        await waitFor(`${view}.querySelector(".image-scan-apply").disabled`, "crossing curves rejected before Apply");
+        await moveCorner(0, bendPoint, true);
+        await waitFor(`!${view}.querySelector(".image-scan-apply").disabled`, "curvature repaired");
+        const enter = async selector => {
+            await ev(`${view}.querySelector(${JSON.stringify(selector)}).focus()`);
+            await checks.press("Enter");
+        };
+        await enter(".image-scan-surface-toggle");
+        await waitFor(`${view}.querySelector(".image-scan-surface-options").matches(":popover-open") && !${view}.querySelector(".image-scan-tools").hidden`, "Enter opens paper-shape choices without applying the scan");
+        await enter(".image-scan-surface-crease");
+        if (await ev(`${view}.querySelectorAll(".image-scan-curve-point:not([hidden])").length`)) throw new Error("curve handles remain in sharp-fold mode");
+        await click(".image-scan-surface-toggle");
+        await click(".image-scan-surface-smooth");
+        if ((await outline())[1] !== bentLines) throw new Error("switching back to Curved paper lost the bend");
+        await enter(".image-scan-preview");
+        await waitFor(`!${view}.querySelector(".image-scan-result").hidden && !${view}.querySelector(".image-scan-tools").hidden`, "Enter previews without applying");
+        await enter(".image-scan-corners");
+        await waitFor(`${view}.querySelector(".image-scan-result").hidden && !${view}.querySelector(".image-scan-tools").hidden`, "Enter returns to corner adjustments");
         if (process.env.SCAN_SCREENSHOT) { const shot = await checks.cdp("Page.captureScreenshot", { format: "png" }); writeFileSync(process.env.SCAN_SCREENSHOT, Buffer.from(shot.data, "base64")); }
-        await click(".image-scan-cancel");
+        await enter(".image-scan-cancel");
         if(await ev(dimensions)!==scanned)throw new Error("cancel changed the committed scan");
         await ev(`document.querySelector("dialog.preview button.save-edit").click()`);
         await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Saved:")`,"scanned PNG saved");
@@ -1143,7 +1191,7 @@ export async function checkImages(checks) {
         if(`${savedWidth}x${savedHeight}`!==scanned)throw new Error("saved scan dimensions differ from the preview");
         execFileSync("docker",["exec",container,"rm","/home/user/Downloads/media/scan.png","/home/user/Downloads/media/scan.pdf"]);
         await open("fs/#/",`document.title==="Downloads /"&&!!document.querySelector("table")`,"the listing");
-        return "four draggable corners and four fold points, grayscale and paper cleanup, black-and-white preview, invalid outline guard, undo/redo, Cancel, PDF copy and PNG Save";
+        return "corners and curved side guides, bowed interior guides, sharp-fold mode, invalid curve guard, grayscale and paper cleanup, undo/redo, Cancel, PDF copy and PNG Save";
     });
 
 }

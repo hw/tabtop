@@ -132,4 +132,107 @@ with zipfile.ZipFile(sys.argv[1]) as z:
         execFileSync("docker",["exec",container,"rm","/home/user/Downloads/media/batch.pdf","/home/user/Downloads/media/batch-edited.pdf"]);rmSync(`${downloads}/batch-edited.pdf`);
         await open('fs/#/',`document.title==='Downloads /'&&!!document.querySelector('table')`,"listing restored");
     });
+    await checkPDFAssembly(checks);
+}
+
+
+export async function checkPDFAssembly(checks){
+    const{ev,step,work,container,open,listed,waitFor,inFrame,downloads,waitForFile}=checks;
+    await step("files: merge PDFs, insert image pages, reorder thumbnails, undo and export",async()=>{
+        const base64=await ev(`(async()=>{
+            const{rasterPDF}=await import('/tabtop/image-export.js');
+            const c=Object.assign(document.createElement('canvas'),{width:200,height:300}),x=c.getContext('2d');
+            x.fillStyle='rgb(140,160,180)';x.fillRect(0,0,200,300);
+            const blob=await new Promise(r=>c.toBlob(r,'image/jpeg'));
+            const bytes=new Uint8Array(await rasterPDF([{blob,width:200,height:300,widthPt:100,heightPt:150},{blob,width:200,height:300,widthPt:100,heightPt:150}]).arrayBuffer());
+            let text='';for(const b of bytes)text+=String.fromCharCode(b);return btoa(text);
+        })()`);
+        const fixture=Buffer.from(base64,"base64");writeFileSync(`${work}/assembly.pdf`,fixture);
+        execFileSync("docker",["cp","-q",`${work}/assembly.pdf`,`${container}:/home/user/Downloads/media/assembly.pdf`]);
+        execFileSync("docker",["exec",container,"chown","user","/home/user/Downloads/media/assembly.pdf"]);
+        await open("fs/#/media/",`${listed}.includes("assembly.pdf")`,"assembly PDF listed");
+        await ev(`[...document.querySelectorAll('td.name a')].find(a=>a.textContent==='assembly.pdf').click()`);
+        await waitFor(`JSON.parse(document.querySelector('iframe.pdf')?.dataset.rendered??'null')?.pages===2`,"assembly source shown");
+        const d=`document.querySelector('dialog.pdf-image-editor')`,v=`${d}.querySelector('.image-view')`;
+        const click=async selector=>{
+            await ev(`${d}.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',inline:'nearest'})`);
+            await checks.click(`${d}.querySelector(${JSON.stringify(selector)})`);
+        };
+        const canvas=`${v}?.querySelector('canvas.image-content')`,note=`${d}.querySelector('.pdf-batch-note').textContent`;
+        const ready=`!!${canvas}&&!${d}.querySelector('.pdf-batch-keep').disabled`;
+        // Add image pages and another PDF, retain edits by identity, reorder,
+        // undo page changes, and export in the sidebar's displayed order.
+        await inFrame("pdf-frame.html",`document.querySelector('.edit-images').click()`);
+        await waitFor(`${d}&&${ready}`,"assembly editor ready");
+        await ev(`(async()=>{
+            const {rasterPDF}=await import('/tabtop/image-export.js');
+            const c=Object.assign(document.createElement('canvas'),{width:120,height:80}),x=c.getContext('2d');
+            x.fillStyle='rgb(20,210,40)';x.fillRect(0,0,120,80);
+            window.pdfAssemblyImage=new File([await new Promise(r=>c.toBlob(r,'image/png'))],'insert.png',{type:'image/png'});
+            c.width=100;c.height=160;x.fillStyle='rgb(30,50,220)';x.fillRect(0,0,100,160);
+            const blob=await new Promise(r=>c.toBlob(r,'image/jpeg'));
+            window.pdfAssemblyPDF=new File([rasterPDF([{blob,width:100,height:160,widthPt:50,heightPt:80}])],'merge.pdf',{type:'application/pdf'});
+        })()`);
+        const importFile=async(selector,expression)=>{
+            await ev(`(()=>{const dt=new DataTransfer();dt.items.add(${expression});const input=${d}.querySelector(${JSON.stringify(selector)});input.files=dt.files;input.dispatchEvent(new Event('change'));})()`);
+        };
+        const dragPage=async(from,to)=>ev(`(()=>{
+            const source=${d}.querySelector('.pdf-batch-card[data-page="${from}"]');
+            const target=${d}.querySelector('.pdf-batch-card[data-page="${to}"]');
+            const dataTransfer=new DataTransfer(),clientY=target.getBoundingClientRect().top+1;
+            source.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer}));
+            for(const type of ['dragover','drop'])target.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer,clientY}));
+        })()`);
+        const cardOrder=`[...${d}.querySelectorAll('.pdf-batch-card')].map(c=>Number(c.dataset.page))`;
+        await importFile('.pdf-batch-pdf-input','window.pdfAssemblyPDF');
+        await waitFor(`${note}.startsWith('Added 1 page')&&${ready}&&${cardOrder}.length===3`,"PDF appended",120000);
+        await click('.pdf-batch-card[data-page="3"] .pdf-batch-open-page');
+        await waitFor(`${ready}&&${canvas}.width===100&&${canvas}.height===160`,"merged PDF page rendered through its sandbox");
+        await ev(`(s=>{s.value='72';s.dispatchEvent(new Event('change'));})(${d}.querySelector('.pdf-batch-dpi'))`);
+        await waitFor(`${ready}&&${canvas}.width===50&&${canvas}.height===80`,"merged PDF resolution changed");
+        await ev(`(s=>{s.value='144';s.dispatchEvent(new Event('change'));})(${d}.querySelector('.pdf-batch-dpi'))`);
+        await waitFor(`${ready}&&${canvas}.width===100&&${canvas}.height===160`,"merged PDF resolution restored");
+        // PDF source points remain 50x80 even though the current render is 144 DPI.
+        await importFile('.pdf-batch-image-input','window.pdfAssemblyImage');
+        await waitFor(`${note}.startsWith('Added 1 page')&&${ready}&&${cardOrder}.length===4`,"image appended");
+        await click('.pdf-batch-card[data-page="4"] .pdf-batch-open-page');
+        await waitFor(`${ready}&&${canvas}.width===120&&${canvas}.height===80`,"image opened");
+        await click('.pdf-batch-undo-pages');
+        await waitFor(`${ready}&&${cardOrder}.length===3&&${note}==='Last page change undone.'`,"image insertion undone while that page was open");
+        await importFile('.pdf-batch-image-input','window.pdfAssemblyImage');
+        await waitFor(`${note}.startsWith('Added 1 page')&&${ready}&&${cardOrder}.length===4`,"image reinserted");
+        const imageID=await ev(`${cardOrder}.at(-1)`);
+        await click(`.pdf-batch-card[data-page="${imageID}"] .pdf-batch-open-page`);
+        await waitFor(`${ready}&&${canvas}.width===120`,"reinserted image opened");
+        await click('.image-rotate-right');
+        await waitFor(`${canvas}.width===80&&${canvas}.height===120`,"image-page edit");
+        await dragPage(imageID,3);
+        await waitFor(`JSON.stringify(${cardOrder})===${JSON.stringify(JSON.stringify([1,2,imageID,3]))}`,"drag reorders pages");
+        await click('.pdf-batch-undo-pages');
+        await waitFor(`JSON.stringify(${cardOrder})===${JSON.stringify(JSON.stringify([1,2,3,imageID]))}&&${ready}`,"page reorder undone");
+        await dragPage(imageID,1);
+        await waitFor(`JSON.stringify(${cardOrder})===${JSON.stringify(JSON.stringify([imageID,1,2,3]))}&&${d}.querySelector('.pdf-batch-page-title').textContent==='Page 1'`,"thumbnail drag reorders while retaining the active image-page edit");
+        if(!(await ev(`${canvas}.width===80&&${canvas}.height===120`)))throw new Error('reordering lost the active image edit');
+        // A malformed second image rolls the entire import back.
+        await ev(`(()=>{const dt=new DataTransfer();dt.items.add(window.pdfAssemblyImage);dt.items.add(new File(['invalid'],'bad.png',{type:'image/png'}));const input=${d}.querySelector('.pdf-batch-image-input');input.files=dt.files;input.dispatchEvent(new Event('change'));})()`);
+        await waitFor(`${d}.querySelector('.pdf-batch-note').classList.contains('error')&&${ready}`,"failed image import reported");
+        if(await ev(`${cardOrder}.length`)!==4)throw new Error('failed import left partial image pages');
+        await ev(`(s=>{s.value='pdf';s.dispatchEvent(new Event('change'));})(${d}.querySelector('.pdf-batch-format'))`);
+        await click('.pdf-batch-export');await waitForFile(`${downloads}/assembly-edited.pdf`,"assembled PDF exported");
+        await waitFor(`${note}.startsWith('Exported 4 pages')&&${ready}`,"assembled PDF export completed");
+        const assembled=readFileSync(`${downloads}/assembly-edited.pdf`);
+        const boxes=[...assembled.toString('latin1').matchAll(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/g)].map(m=>m.slice(1).map(Number));
+        if(!assembled.includes(Buffer.from('/Count 4'))||boxes.length!==4||boxes[0][0]!==60||boxes[0][1]!==90||boxes[3][0]!==50||boxes[3][1]!==80)throw new Error(`assembled PDF lost page order, dimensions or image edit: ${JSON.stringify(boxes)}`);
+        await click('.pdf-batch-close');
+        await waitFor(`!!document.querySelector('dialog:not(.preview):not(.pdf-image-editor)')`,"assembly discard prompt");
+        await ev(`[...document.querySelectorAll('dialog[open] button')].find(b=>b.textContent==='Leave').click()`);
+        await waitFor(`!${d}`,"assembly editor closed");
+        await ev(`delete window.pdfAssemblyImage;delete window.pdfAssemblyPDF;document.querySelector('dialog.preview button.close').click()`);
+        await waitFor(`!document.querySelector('dialog.preview')`,"rebuilt preview closed");
+        rmSync(`${downloads}/assembly-edited.pdf`);
+
+        if(!fixture.equals(execFileSync("docker",["exec",container,"cat","/home/user/Downloads/media/assembly.pdf"])))throw new Error("assembly modified the source PDF");
+        execFileSync("docker",["exec",container,"rm","/home/user/Downloads/media/assembly.pdf"]);
+        await open('fs/#/',`document.title==='Downloads /'&&!!document.querySelector('table')`,"assembly listing restored");
+    });
 }
