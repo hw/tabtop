@@ -5,6 +5,7 @@ import { transform } from "./image-view.js";
 import { validShape } from "./image-draw.js";
 import { validPlacement } from "./image-place.js";
 import { validFill } from "./image-fill.js";
+import { scanGeometry } from "./image-scan.js";
 
 export const MAX_BATCH_PAGES = 200, MAX_BATCH_BYTES = 256 * 1024 * 1024;
 export function pageRange(text, count) {
@@ -30,7 +31,12 @@ export function scaleRecipe(recipe, width, height) {
     const sx = width / recipe.width, sy = height / recipe.height;
     const scale = mark => ({ ...structuredClone(mark), scale: [(mark.scale?.[0] ?? 1) * sx, (mark.scale?.[1] ?? 1) * sy] });
     const out = { ...recipe, width, height };
-    if (recipe.kind === "inpaint") out.marks = recipe.marks.map(scale);
+    if (recipe.kind === "scan") {
+        const fit = ([x, y]) => [x * sx, y * sy];
+        out.settings = { ...recipe.settings, corners: recipe.settings.corners.map(fit) };
+        if (recipe.settings.edges) out.settings.edges = recipe.settings.edges.map(fit);
+        scanGeometry(width, height, out.settings);
+    } else if (recipe.kind === "inpaint") out.marks = recipe.marks.map(scale);
     else if (recipe.kind === "background") {
         out.strokes = (recipe.strokes ?? []).map(scale);
         out.selection = recipe.selection ? { ...recipe.selection, x: recipe.selection.x * sx, y: recipe.selection.y * sy,
@@ -64,6 +70,8 @@ export function scaleRecipe(recipe, width, height) {
 export function describeStep(step) {
     const percent = (part, whole) => `${Math.round(part / whole * 100)}%`;
     switch (step?.kind) {
+    case "scan":
+        return "Scan document";
     case "transform":
         return { left: "Rotate left", right: "Rotate right", h: "Flip horizontally", v: "Flip vertically" }[step.operation] ?? "Transform";
     case "crop":
@@ -134,7 +142,8 @@ export function batchProcessor() {
                 signal.throwIfAborted();
                 const scaled = scaleRecipe(step, current.width, current.height);
                 let op;
-                if (scaled.kind === "inpaint") op = { inpaint: await inpaintPatch(current, scaled.marks, painter) };
+                if (scaled.kind === "scan") op = { scan: scaled.settings };
+                else if (scaled.kind === "inpaint") op = { inpaint: await inpaintPatch(current, scaled.marks, painter) };
                 else if (scaled.kind === "background") op = { background: adjustedMask(await background.remove(current), scaled.settings), selection: scaled.selection, strokes: scaled.strokes };
                 else if (scaled.kind === "crop") op = scaled.rect;
                 else if (scaled.kind === "fill") op = { fill: validFill({ points: scaled.points, color: scaled.color, tolerance: scaled.tolerance, selection: scaled.selection ?? null }) };

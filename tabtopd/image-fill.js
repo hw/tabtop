@@ -16,7 +16,8 @@ export function validFill(fill) {
     if (!Array.isArray(points) || !points.length || points.length > MAX_FILL_POINTS ||
         !points.every((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))) bad();
     if (!COLOR.test(fill.color ?? "") || !(Number.isFinite(fill.tolerance) && fill.tolerance >= 0 && fill.tolerance <= 100)) bad();
-    if (s != null && (!["rect", "circle"].includes(s.shape) || ![s.x, s.y, s.width, s.height].every(Number.isFinite) || s.width < 0 || s.height < 0)) bad();
+    if (s != null && (!["rect", "circle"].includes(s.shape) || ![s.x, s.y, s.width, s.height].every(Number.isFinite) || s.width < 0 || s.height < 0
+        || s.inverted != null && typeof s.inverted !== "boolean")) bad();
     return fill;
 }
 
@@ -27,10 +28,10 @@ export function inSelection(selection) {
     const { shape, x, y, width, height } = selection;
     if (shape === "circle") {
         const rx = width / 2, ry = height / 2, cx = x + rx, cy = y + ry;
-        if (rx <= 0 || ry <= 0) return () => false;
-        return (px, py) => ((px + 0.5 - cx) / rx) ** 2 + ((py + 0.5 - cy) / ry) ** 2 <= 1;
+        if (rx <= 0 || ry <= 0) return () => !!selection.inverted;
+        return (px, py) => (((px + 0.5 - cx) / rx) ** 2 + ((py + 0.5 - cy) / ry) ** 2 <= 1) !== !!selection.inverted;
     }
-    return (px, py) => px + 0.5 >= x && px + 0.5 < x + width && py + 0.5 >= y && py + 0.5 < y + height;
+    return (px, py) => (px + 0.5 >= x && px + 0.5 < x + width && py + 0.5 >= y && py + 0.5 < y + height) !== !!selection.inverted;
 }
 
 const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));

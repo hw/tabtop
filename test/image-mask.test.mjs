@@ -43,3 +43,10 @@ test("rectangle endpoints snap to fitted image edges while brushes keep pixel pr
     assert.deepEqual(imageMaskPoint(100,100,g,6),[300,280]);
     assert.deepEqual(imageMaskPoint(800,600,g,6),[2400,1600]);
 });
+
+
+test("inverting an inpainting mask expands its repair bounds to the image, including scaled batch marks", () => {
+    const rect = { rect: { x: 20, y: 30, width: 10, height: 10 } };
+    assert.deepEqual(maskBounds([rect, { invert: true, width: 100, height: 200 }], 100, 200), { left: 0, top: 0, right: 100, bottom: 200 });
+    assert.deepEqual(maskBounds([{ invert: true, width: 100, height: 200, scale: [2, 3] }], 200, 600), { left: 0, top: 0, right: 200, bottom: 600 });
+});

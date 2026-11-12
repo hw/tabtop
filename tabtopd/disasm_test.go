@@ -18,6 +18,8 @@ func TestDisasmAssets(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iced.js"), []byte("self.icedInit = 1;"), 0o644)
 	os.WriteFile(filepath.Join(dir, "iced_x86_bg.wasm"), []byte("\x00asm\x01\x00\x00\x00"), 0o644)
+	os.WriteFile(filepath.Join(dir, "capstone.js"), []byte("self.MCapstone = 1;"), 0o644)
+	os.WriteFile(filepath.Join(dir, "capstone.wasm"), []byte("\x00asm\x01\x00\x00\x00"), 0o644)
 	get := func(g *server, p string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		g.scripts(w, httptest.NewRequest("GET", "/tabtop/"+p, nil))
@@ -45,6 +47,17 @@ func TestDisasmAssets(t *testing.T) {
 	}
 	if w := get(g, m[1]+"/LICENSE.iced"); w.Code != http.StatusNotFound {
 		t.Errorf("a file not listed: %d", w.Code)
+	}
+	// Both backends use the hashed asset path and the same restricted CSP.
+	if !strings.Contains(w.Body.String(), `"./`+m[1]+`/capstone.js"`) || !strings.Contains(w.Body.String(), `"./`+m[1]+`/capstone.wasm"`) {
+		t.Error("the ARM/MIPS backend doesn't use the versioned asset path")
+	}
+	for _, file := range []string{"capstone.js", "capstone.wasm"} {
+		if w := get(g, m[1]+"/"+file); w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
+			t.Errorf("%s: %d, %q", file, w.Code, w.Header().Get("Cache-Control"))
+		} else if strings.HasSuffix(file, ".wasm") && w.Header().Get("Content-Type") != "application/wasm" {
+			t.Errorf("%s: %q", file, w.Header().Get("Content-Type"))
+		}
 	}
 	// The assembler it imports, beside it.
 	if !strings.Contains(w.Body.String(), `"./x86-asm.js"`) {

@@ -411,9 +411,9 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         if (heights.split(",")[0] !== heights.split(",")[1]) throw new Error(`the instruction set and the tabs, in height: ${heights}`);
         const disassembled = `[...document.querySelectorAll(".hex-disasm-lines li")].map((li) => li.querySelector(".hex-disasm-at").textContent + " " + li.querySelector(".hex-disasm-text")?.textContent).join("|")`;
         await waitFor(`${disassembled} === "00000020 push rbp|00000021 mov rbp,rsp|00000024 ret"`, "the x86-64 disassembly", 30000);
-        await ev(`(() => { const b = document.querySelector(".hex-disasm-bitness"); b.value = "32"; b.dispatchEvent(new Event("change")); })()`);
+        await ev(`(() => { const b = document.querySelector(".hex-disasm-bitness"); b.value = "x86-32"; b.dispatchEvent(new Event("change")); })()`);
         await waitFor(`${disassembled} === "00000020 push ebp|00000021 dec eax|00000022 mov ebp,esp|00000024 ret"`, "the 32-bit disassembly");
-        await ev(`(() => { const b = document.querySelector(".hex-disasm-bitness"); b.value = "64"; b.dispatchEvent(new Event("change")); })()`);
+        await ev(`(() => { const b = document.querySelector(".hex-disasm-bitness"); b.value = "x86-64"; b.dispatchEvent(new Event("change")); })()`);
         // A jump, eb 4e at 0x30, to 0x80: its address a link, there.
         await find("hex", "eb 4e");
         await waitFor(`${status}.endsWith("Found at 0x30.") && ${disassembled} === "00000030 jmp short 0000000000000080h" && !!document.querySelector(".hex-disasm-target")`, "a jump, its target a link");
@@ -510,4 +510,94 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         sh(`rm ${file}`);
         return "?? and half-byte wildcards, ASCII, both ways; x86-64 and 32-bit disassembly; a uint16 typed in the inspector and undone; nop typed over an instruction, padded with nops; two bytes typed over and saved in place (same inode and size); Done redraws them; unsaved changes asked about";
     });
+    await step("files: ARM, Thumb-2 and MIPS disassembly in the browser worker", async () => {
+        const bytes = Buffer.alloc(96);
+        bytes.set([0x04, 0, 0, 0x14], 0);
+        bytes.set([0x02, 0, 0, 0xea], 16);
+        bytes.set([0x08, 0xbf, 0x01, 0x20, 0, 0xf0, 0, 0xf8], 32);
+        bytes.set([0x03, 0, 0, 0x10], 48);
+        bytes.set([0x10, 0, 0, 0x03], 64);
+        bytes.set([0xfd, 0x7b, 0xbf, 0xa9], 80);
+        inContainer("sh", "-c", `printf '%s' '${bytes.toString("base64")}' | base64 -d > ~/Downloads/media/arm-mips.bin`);
+        await open("fs/#/media/", `${listed}.includes("arm-mips.bin")`, "the ARM/MIPS fixture");
+        const preview = async () => {
+            await ev(`${row("arm-mips.bin")}.querySelector("summary").click()`);
+            await ev(`[...${row("arm-mips.bin")}.querySelectorAll("button")].find(b => b.textContent === "Preview").click()`);
+            await waitFor(`!!document.querySelector(".hex-dump .hex-byte")`, "the ARM/MIPS bytes");
+        };
+        await preview();
+        await ev(`if (document.querySelector(".hex-inspector").hidden) document.querySelector(".hex-inspector-toggle").click();
+            document.querySelector(".hex-inspector-tab-disasm").click()`);
+        const shown = `[...document.querySelectorAll(".hex-disasm-text")].map(e => e.textContent).join("|")`;
+        const choose = (mode) => ev(`(() => { const e = document.querySelector(".hex-disasm-bitness"); e.value = ${JSON.stringify(mode)}; e.dispatchEvent(new Event("change")); })()`);
+        const panelSize = (axis) => ev(`document.querySelector(".hex-inspector").getBoundingClientRect().${axis}`);
+        const dragInspector = async (dx, dy) => {
+            const at = await ev(`(() => { const r = document.querySelector(".hex-inspector-resize").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+            for (const [type, x, y] of [["mousePressed", at.x, at.y], ["mouseMoved", at.x + dx, at.y + dy], ["mouseReleased", at.x + dx, at.y + dy]]) {
+                await cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1 });
+            }
+        };
+        let resizedWidth;
+        for (const [mode, pattern, text] of [
+            ["arm64", "04 00 00 14", "b #0x10"],
+            ["arm32", "02 00 00 ea", "b #0x20"],
+            ["thumb", "08 bf 01 20 00 f0 00 f8", "it eq|moveq r0, #1|bl #0x28"],
+            ["mips32-le", "03 00 00 10", "b 0x40"],
+            ["mips64-le", "03 00 00 10", "b 0x40"],
+            ["mips32-be", "10 00 00 03", "b 0x50"],
+            ["mips64-be", "10 00 00 03", "b 0x50"],
+        ]) {
+            await choose(mode);
+            // Find starts after the current selection; branch navigation
+            // or another mode may already have selected this fixture.
+            if (await ev(`!!document.querySelector(".hex-byte.selected")`)) {
+                await ev(`document.querySelector(".hex-dump").focus()`);
+                await press("Escape");
+            }
+            await ev(`(() => { const e = document.querySelector(".hex-find-mode"); if (e.dataset.mode !== "hex") e.click();
+                document.querySelector(".hex-find-input").value = ${JSON.stringify(pattern)}; document.querySelector(".hex-find").requestSubmit(); })()`);
+            await waitFor(`${shown} === ${JSON.stringify(text)} && !!document.querySelector(".hex-disasm-target")`, mode + " instructions and target", 30000);
+            if (mode === "arm64") {
+                if (await ev(`document.querySelector(".hex-disasm-bytes").textContent`) !== "04 00 00 14") throw new Error("ARM instruction bytes changed order");
+                await ev(`document.querySelector(".hex-disasm-target").click()`);
+                await waitFor(`document.querySelector('.hex-byte[data-offset="16"]').classList.contains("selected")`, "ARM branch navigation");
+                await ev(`document.querySelector(".hex-find-input").value = "fd 7b bf a9"; document.querySelector(".hex-find").requestSubmit()`);
+                await waitFor(`${shown} === "stp x29, x30, [sp, #-0x10]!"`, "an ARM64 instruction with longer operands");
+                const initialWidth = await panelSize("width");
+                await dragInspector(-220, 0);
+                resizedWidth = await panelSize("width");
+                if (resizedWidth < initialWidth + 180) throw new Error(`the inspector did not widen: ${initialWidth} to ${resizedWidth}`);
+                if (!(await ev(`(() => { const e = document.querySelector(".hex-disasm-text"); return e.clientWidth >= e.scrollWidth; })()`))) throw new Error("ARM64 operands are still truncated");
+                await press("ArrowLeft");
+                if (await panelSize("width") < resizedWidth + 15) throw new Error("the inspector divider cannot be resized with the keyboard");
+                resizedWidth = await panelSize("width");
+                await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
+                try {
+                    await waitFor(`document.querySelector(".hex-inspector-resize").getAttribute("aria-orientation") === "horizontal"`, "the stacked inspector divider");
+                    const height = await panelSize("height");
+                    await dragInspector(0, -60);
+                    if (await panelSize("height") < height + 25) throw new Error("the stacked inspector did not grow taller");
+                    if (await ev(`document.querySelector(".hex-pane").getBoundingClientRect().height`) < 90) throw new Error("the inspector hid the bytes");
+                } finally {
+                    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+                }
+                await waitFor(`document.querySelector(".hex-inspector-resize").getAttribute("aria-orientation") === "vertical"`, "the side inspector divider restored");
+            }
+        }
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        await waitFor(`!!document.querySelector(".hex-dump.editing") && ${shown} === "b 0x50"`, "MIPS while editing bytes");
+        await ev(`document.querySelector(".hex-disasm-lines li").click()`);
+        if (await ev(`!!document.querySelector(".hex-disasm-input") || document.querySelector(".hex-disasm").classList.contains("editable")`)) throw new Error("MIPS entered the x86 instruction editor");
+        await ev(`document.querySelector("dialog.preview button.close").click()`);
+        await preview();
+        if (await ev(`document.querySelector(".hex-disasm-bitness").value`) !== "mips64-be") throw new Error("the MIPS instruction set wasn't remembered");
+        await waitFor(`Math.abs(document.querySelector(".hex-inspector").getBoundingClientRect().width - ${resizedWidth}) <= 2`, "the resized inspector width remembered after reopening");
+        await ev(`document.querySelector(".hex-inspector-resize").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
+        if (await panelSize("width") >= resizedWidth - 100) throw new Error("the inspector divider did not reset");
+        // Restore the default for other browser groups.
+        await choose("x86-64");
+        await ev(`document.querySelector("dialog.preview button.close").click()`);
+        return "ARM64/A32/Thumb-2, MIPS32/64 LE/BE, branch links, guarded instruction editing; inspector dragging, keyboard resizing, mobile height, saved width and reset";
+    });
+
 }

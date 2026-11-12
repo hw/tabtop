@@ -29,6 +29,8 @@ test("what Save will do, and says it will: copy, strip losslessly, write again (
     assert.equal(saveIntent(base).how, null);
     assert.equal(plan({}), "");
     assert.deepEqual(saveIntent({ ...base, target: "image/png" }), { how: "copy", target: "image/png", q: 92, name: "a.png" });
+    assert.deepEqual(saveIntent({ ...base, target: "application/pdf" }), { how: "copy", target: "application/pdf", q: 92, name: "a.pdf" });
+    assert.match(plan({ target: "application/pdf" }), /copy as a\.pdf \(PDF at 92%\)/);
     assert.match(plan({ target: "image/webp", quality: 80 }), /copy as a\.webp \(WebP at 80%\), without metadata/);
     // Only the metadata unticked: removed losslessly; with anything else, written again.
     assert.equal(saveIntent({ ...base, keep: false, dirty: true }).how, "strip");

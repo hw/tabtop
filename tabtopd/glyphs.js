@@ -18,6 +18,8 @@ const microphone = '<rect x="8" y="3" width="6" height="11" rx="3" fill="current
     + '<path d="M5 11.5a6 6 0 0 0 12 0M11 17.5v4m-3 0h6"/>';
 
 const icons = {
+    "scan-document": '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M7 6h7l3 3v9H7zM10 12h4m-4 3h4"/>',
+    "invert-selection": '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="2 2"/><path d="M12 4h8v16H4v-8h8z" fill="currentColor" opacity=".4"/><path d="M6 6h6v6H6z"/>',
     desktop: '<rect x="2.5" y="4" width="20" height="13.5" rx="1.5"/><path d="M8.5 21h8m-4-3.5v3.5"/>',
     terminal: '<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>',
     files: '<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>',
@@ -49,6 +51,8 @@ const icons = {
     crop: '<path d="M6 2v16h16"/><path d="M2 6h16v16"/>',
     resize: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 16l8-8M8 12v4h4M12 8h4v4"/>',
     inpaint: '<path d="M4 17l10-10 5 5-10 10H4zM12 9l5 5M18 2v4m-2-2h4M3 6v4M1 8h4"/>',
+    "scan-corners": '<path d="M6.5 5.5l11-1.5 2.5 15.5-15.5.5z"/><circle cx="6.5" cy="5.5" r="2" fill="currentColor"/><circle cx="17.5" cy="4" r="2" fill="currentColor"/><circle cx="20" cy="19.5" r="2" fill="currentColor"/><circle cx="4.5" cy="20" r="2" fill="currentColor"/>',
+    "scan-preview": '<path d="M11 21H5V3h8l4 4v4M13 3v4h4M8 10h6M8 14h3"/><circle cx="16" cy="16.5" r="3.5"/><path d="M18.5 19l2.5 2.5"/>',
     "select-area": '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 3"/>',
     "select-circle": '<circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/>',
     "draw-shape": '<rect x="3" y="3" width="11" height="11" rx="1"/><circle cx="15" cy="15" r="6"/>',
@@ -103,7 +107,7 @@ const metrics = {
     "zoom-in": [18, 24, 1.8], "zoom-out": [18, 24, 1.8], "rotate-left": [18, 24, 1.8], "rotate-right": [18, 24, 1.8],
     "flip-h": [18, 24, 1.8], "flip-v": [18, 24, 1.8], crop: [18, 24, 1.8], inpaint: [18, 24, 1.8], resize: [18, 24, 1.8], "remove-background": [18, 24, 1.8],
     "select-area": [18, 24, 1.8], "paint-brush": [18, 24, 1.8], erase: [18, 24, 1.8], pan: [18, 24, 1.8], undo: [18, 24, 1.8], "clear-mask": [18, 24, 1.8],
-    "save-options": [18, 24, 1.8],
+    "save-options": [18, 24, 1.8], "scan-document": [18, 24, 1.8], "scan-corners": [18, 24, 1.8], "scan-preview": [18, 24, 1.8],
     "select-circle": [18, 24, 1.8], "select-all": [18, 24, 1.8], "flood-fill": [18, 24, 1.8], restore: [18, 24, 1.8],
     pen: [18, 24, 1.8], highlighter: [18, 24, 1.8], redo: [18, 24, 1.8], history: [18, 24, 1.8], "paste-image": [18, 24, 1.8],
     "draw-shape": [18, 24, 1.8], "shape-rect": [18, 24, 1.8], "shape-circle": [18, 24, 1.8], "shape-fill": [18, 24, 1.8], "shape-outline": [18, 24, 1.8],

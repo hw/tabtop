@@ -111,6 +111,12 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         stage.focus({ preventScroll: true });
     };
     const all = makeButton("select-all", "Mask entire image (Ctrl+A / ⌘A)", "image-inpaint-all", selectAll);
+    const invert = makeButton("invert-selection", "Invert selection", "image-inpaint-invert", () => {
+        if (!active || busy || !marks.length) return;
+        gesture = null;
+        marks.push({ invert: true, width: base.width, height: base.height });
+        invalidate(); draw();
+    });
     const brushes = brushControls(tools.find(({ key }) => key === "paint").control, {
         prefix: "image-inpaint", sizeClass: "image-inpaint-size", selectionButton: tools.find(({ key }) => key === "select").control,
         onShape: () => { gesture = null; mode = "select"; invalidate(); stage.focus({ preventScroll: true }); },
@@ -127,7 +133,7 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
     });
     const cancel = makeButton("close-circle", "Cancel", "image-inpaint-cancel", () => close());
     const bar = el("div", { className: "image-inpaint-tools", hidden: true }, ...tools.map(({ key, control }) => key === "paint" ? brushes.group : key === "select" ? brushes.selectionGroup : control), all,
-        undo, reset, run, accept, cancel);
+        invert, undo, reset, run, accept, cancel);
     toolbar.append(bar);
     hints.append(note);
     const ns = "http://www.w3.org/2000/svg";
@@ -140,6 +146,10 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
     // SVG masks default to x/y=-10%. With an explicit image-sized width and
     // height, that clips the last 10% of the preview on the right and bottom.
     const defs = svg("defs"), mask = svg("mask", { id, x: 0, y: 0, maskUnits: "userSpaceOnUse", "mask-type": "luminance" });
+    const invertFilter = svg("filter", { id: `${id}-invert`, x: 0, y: 0, width: "100%", height: "100%", "color-interpolation-filters": "sRGB" });
+    const transfer = svg("feComponentTransfer");
+    for (const channel of ["R", "G", "B"]) transfer.append(svg(`feFunc${channel}`, { type: "linear", slope: -1, intercept: 1 }));
+    invertFilter.append(transfer); defs.append(invertFilter);
     const tint = svg("rect", { fill: "#facc15", opacity: ".5", mask: `url(#${id})` });
     defs.append(mask); overlay.append(defs, tint); stage.append(overlay);
     const update = () => {
@@ -151,6 +161,8 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         for (const { key, control } of tools) { control.disabled = busy; control.setAttribute("aria-pressed", String(mode === key)); }
         brushes.update(busy);
         all.disabled = busy;
+        invert.disabled = busy || !marks.length;
+        invert.setAttribute("aria-pressed", String(marks.filter(m => m.invert).length % 2 === 1));
         undo.disabled = reset.disabled = busy || !marks.length;
         run.disabled = busy || !marks.length || !!patch;
         accept.disabled = busy || !patch;
@@ -166,6 +178,10 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         tint.setAttribute("width", width); tint.setAttribute("height", height);
         mask.replaceChildren(svg("rect", { width, height, fill: "black" }));
         for (const mark of marks) {
+            if (mark.invert) {
+                const group = svg("g", { filter: `url(#${id}-invert)` });
+                group.append(...mask.childNodes); mask.append(group); continue;
+            }
             const fill = mark.erase ? "black" : "white";
             const [tag, props] = maskSVGShape(mark);
             mask.append(svg(tag, { fill, stroke: props.fill === "none" ? fill : "none", ...props }));

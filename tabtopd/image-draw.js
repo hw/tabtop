@@ -120,6 +120,10 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         { key: "rect", title: "Rectangle", icon: "select-area", className: "image-draw-select-rect" },
         { key: "circle", title: "Circle", icon: "select-circle", className: "image-draw-select-circle" },
     ], onChoose: (key) => choose(() => { if (selectShape !== key) selection = null; selectShape = key; refill(); })() });
+    const invertSelection = makeButton("invert-selection", "Invert selection", "image-draw-invert", choose(() => {
+        if (selection) selection = { ...selection, inverted: !selection.inverted };
+        refill();
+    }));
     const selectAll = makeButton("select-all", "Fill anywhere in the picture", "image-draw-select-all", choose(() => { selection = null; refill(); }));
     const styleMenu = choiceMenu({ className: "image-draw-style-menu", label: "Style", onChoose: (key) => choose(() => { mode = key; })(), choices: [
         { key: "fill", title: "Filled", icon: "shape-fill", className: "image-draw-fill" },
@@ -146,7 +150,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         e.stopPropagation();
     });
     const bar = el("div", { className: "image-draw-tools", hidden: true }, toolMenu.group, styleMenu.group,
-        lineLabel, selectMenu.group, selectAll, toleranceLabel, color, undoStroke, accept, cancel, note);
+        lineLabel, selectMenu.group, selectAll, invertSelection, toleranceLabel, color, undoStroke, accept, cancel, note);
     toolbar.append(bar);
     // What's being drawn, shown over the picture as it'll be: a shape as a
     // box, strokes as an SVG of them, in the picture's pixels.
@@ -198,8 +202,9 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         styleMenu.item("fill").disabled = shape === "pen";
         styleMenu.retitle("outline", shape === "pen" ? "Solid line" : "Outline");
         styleMenu.group.hidden = bucket;
-        for (const b of [selectMenu.group, selectAll, toleranceLabel]) b.hidden = !bucket;
-        selectAll.disabled = !selection;
+        for (const b of [selectMenu.group, selectAll, invertSelection, toleranceLabel]) b.hidden = !bucket;
+        selectAll.disabled = invertSelection.disabled = !selection || selection.width < 1 || selection.height < 1;
+        invertSelection.setAttribute("aria-pressed", String(!!selection?.inverted));
         lineLabel.hidden = bucket || !(shape === "pen" || mode === "outline");
         undoStroke.hidden = shape !== "pen" && !bucket;
         undoStroke.title = bucket ? "Undo fill" : "Undo stroke";
@@ -209,7 +214,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         stage.classList.toggle("drawing", active && !picking);
         stage.classList.toggle("picking-colour", active && picking);
         note.textContent = picking ? "Click the picture to take its colour."
-            : bucket ? (points.length && !filled ? "Nothing there to fill: is it outside the selection?"
+            : bucket ? (points.length && !filled ? "Nothing there to fill: is it outside the active selection?"
                 : points.length ? `${filled.toLocaleString()} pixels filled. Click to fill more, then Apply.`
                 : `Click to fill an area of a colour; drag a ${selectShape === "circle" ? "circle" : "rectangle"} to keep the fill within it.`)
             : shape === "pen" ? (mode === "highlight" ? "Highlight with the pointer, then Apply." : "Draw with the pointer, then Apply.")
@@ -226,7 +231,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         if (!selectionBox.hidden) {
             Object.assign(selectionBox.style, { left: `${g.x + selection.x * g.scale}px`, top: `${g.y + selection.y * g.scale}px`,
                 width: `${selection.width * g.scale}px`, height: `${selection.height * g.scale}px`, borderRadius: selectShape === "circle" ? "50%" : "0" });
-            selectionBox.dataset.size = `${Math.round(selection.width)}×${Math.round(selection.height)}`;
+            selectionBox.dataset.size = `${Math.round(selection.width)}×${Math.round(selection.height)}${selection.inverted ? " (outside)" : ""}`;
         }
         const showLines = active && shape === "pen" && strokes.length > 0;
         lines.style.display = showLines ? "" : "none";

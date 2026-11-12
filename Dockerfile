@@ -197,6 +197,31 @@ RUN mkdir -p /src /pdfjs/wasm \
  && ! find /pdfjs -name '*sandbox*' -o -name '*quickjs*' | grep -q . \
  && chmod -R u=rwX,go=rX /pdfjs
 
+# Capstone.js, with only ARM (including Thumb), ARM64 and MIPS. Keep the
+# wrapper and its Capstone submodule pinned together. The SDK stays in
+# this build stage; the final image gets only JS/WASM and licence notices.
+FROM emscripten/emsdk:4.0.23 AS capstone
+ARG CAPSTONE_JS_REV=75da2ab549729c50bc49842d07984c4ff2e33deb
+ARG CAPSTONE_JS_SHA256=0cec68b93ff7367238adb7b66c90dee398cc48467d1160741e79566548876433
+ARG CAPSTONE_REV=022575848782a4801fd150fdbc927effcbca0864
+ARG CAPSTONE_SHA256=1b0d7efa450e766c120a8dfcf9b539f1e120925fc1478fbe125d6d52bae0c506
+ADD --checksum=sha256:${CAPSTONE_JS_SHA256} https://codeload.github.com/AlexAltea/capstone.js/tar.gz/${CAPSTONE_JS_REV} /capstone-js.tgz
+ADD --checksum=sha256:${CAPSTONE_SHA256} https://codeload.github.com/capstone-engine/capstone/tar.gz/${CAPSTONE_REV} /capstone.tgz
+COPY scripts/disasm/capstone-layout.c scripts/disasm/capstone-detail.js /adapter/
+RUN mkdir -p /src/capstone /capstone-out \
+ && tar -xzf /capstone-js.tgz -C /src --strip-components=1 --no-same-owner \
+ && tar -xzf /capstone.tgz -C /src/capstone --strip-components=1 --no-same-owner \
+ && emcc -I/src/capstone/include /adapter/capstone-layout.c -o /tmp/layout.js \
+ && node /tmp/layout.js >> /src/src/capstone-wrapper.js \
+ && cat /adapter/capstone-detail.js >> /src/src/capstone-wrapper.js \
+ && cd /src && python3 build.py arm arm64 mips \
+ && cp dist/capstone_arm+arm64+mips.js /capstone-out/capstone.js \
+ && cp dist/capstone_arm+arm64+mips.wasm /capstone-out/capstone.wasm \
+ && cp LICENSE /capstone-out/LICENSE.capstone-js \
+ && cp capstone/LICENSE.TXT /capstone-out/LICENSE.capstone \
+ && cp capstone/LICENSE_LLVM.TXT /capstone-out/LICENSE.capstone-llvm \
+ && cp capstone/CREDITS.TXT /capstone-out/CREDITS.capstone
+
 # iced-x86, for the x86 disassembly in the hex preview's data inspector (see
 # disasm-worker.js in tabtopd): its npm build, which is for Node, made
 # loadable in a browser worker, without its documentation comments, and
@@ -208,8 +233,12 @@ ARG ICED_X86_SHA256=be77147b3c91531da378d103b4e3e5a45e9ddc29392fe01e6c214e799da1
 ADD --checksum=sha256:${ICED_X86_SHA256} https://registry.npmjs.org/iced-x86/-/iced-x86-${ICED_X86_VERSION}.tgz /iced.tgz
 COPY scripts/disasm/build.mjs /build.mjs
 COPY tabtopd/x86-asm.js /x86-asm.js
+COPY --from=capstone /capstone-out /disasm
+COPY scripts/disasm/check-capstone.mjs /check-capstone.mjs
+COPY tabtopd/disasm-worker.js /disasm-worker.js
 RUN mkdir -p /src && tar -xzf /iced.tgz -C /src --no-same-owner \
  && node /build.mjs /src/package /disasm /x86-asm.js \
+ && node /check-capstone.mjs /disasm /disasm-worker.js \
  && chmod -R u=rwX,go=rX /disasm
 
 # U2NetP background removal runs in the browser, with ONNX Runtime Web's

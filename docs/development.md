@@ -23,6 +23,8 @@
 | `PDFJS_SHA256` | *(checksum of 6.4.299)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
 | `ICED_X86_VERSION` | `1.22.0` | iced-x86 release from npm (`iced-x86`), which disassembles x86 code in the hex preview's data inspector. `scripts/disasm/build.mjs` makes its Node build loadable in a browser worker, without its documentation comments, and checks it at build time. |
 | `ICED_X86_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/iced-x86/-/iced-x86-<version>.tgz`. |
+| `CAPSTONE_JS_REV`, `CAPSTONE_JS_SHA256` | *(revision and checksum in Dockerfile)* | Capstone.js wrapper source, built with Emscripten 4.0.23 and only the ARM, ARM64 and MIPS backends. |
+| `CAPSTONE_REV`, `CAPSTONE_SHA256` | *(revision and checksum in Dockerfile)* | The Capstone submodule matching that wrapper revision. Update both source pins together. |
 | `ONNX_WEB_VERSION` | `1.22.0` | ONNX Runtime Web, WASM backend only, for U2NetP background removal in the image editor. |
 | `ONNX_WEB_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-<version>.tgz`. Update the pinned runtime license and third-party notice checksums with the version. |
 | `U2NETP_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the U2NetP ONNX weights from rembg's `v0.0.0` release. |
@@ -326,21 +328,52 @@ sample shows how it will look, and the choice is remembered in your browser. The
 at the right end of the **Interpret as** row shows or hides it; the choice is
 remembered in your browser.
 
+Drag the divider between the bytes and the inspector to resize the panel.
+It changes width beside the bytes, or height when the inspector sits below
+them. Width and height are remembered separately in your browser. Focus the
+divider and use the arrow keys to resize it (Shift makes larger steps);
+double-click it, or press Home, to reset the current dimension. The bytes
+retain space for navigation, and long instructions scroll horizontally
+instead of losing their operands to an ellipsis.
+
 At the inspector's top, **Values** and **Disassembly** tabs pick what it
 shows, the one given the whole panel (on a wide screen, all its height; on a
 phone, or in a narrow window, the panel sits under the bytes); the tab is
-remembered in your browser. **Disassembly** shows the selected bytes as x86
-instructions, a line each: its offset, its bytes and the instruction, in Intel
-syntax, as **x86-64**, **x86 (32-bit)** or **x86 (16-bit)** code, as chosen at
-the right of the tabs (remembered too); bytes that aren't an instruction show
+remembered in your browser. **Disassembly** shows the selected bytes as
+instructions, a line each: its offset, its bytes and the instruction. Choose
+**x86-64**, **x86 (32-bit)**, **x86 (16-bit)**, **ARM64**, **ARM32**,
+**ARM32-T (Thumb)**, or **MIPS32/64 LE/BE** at the right of the tabs; this
+choice is remembered too. x86 uses Intel syntax. ARM modes use little-endian
+instructions; Thumb includes both 16-bit and 32-bit instructions and tracks
+IT state within the selection. MIPS modes use standard 4-byte instructions;
+MIPS16, microMIPS and Release 6 modes are not offered. The Values tab's byte
+order does not change the instruction set. Bytes that aren't an instruction show
 as `(bad)`. An address an instruction goes to or names (`jmp short 018Ch`,
 `call`, or memory read by its address alone, `[rip+…]` shown as where that is)
 is a link when it's within the file: click it to select that byte and see its
 code. With one byte selected, it's the 64 bytes from it; at most 4 KB, or
-512 instructions, are shown at a time. It uses iced-x86, WebAssembly run in a
-worker of its own (the page itself isn't allowed to run WebAssembly), fetched
-the first time it's shown: about 360 KB, once. On **Values**, or with the
-inspector hidden, it fetches and does nothing.
+512 instructions, are shown at a time. Addresses are file offsets, with no
+executable load-address mapping. Decoding starts at the exact selected byte;
+unaligned ARM/MIPS starts are labelled rather than rounded. ARM/MIPS branch
+destinations, and ARM64 ADR/ADRP addresses, are links when within the file.
+Register-indirect destinations cannot be resolved statically.
+
+iced-x86 handles x86; Capstone.js handles ARM/MIPS. Each backend is fetched
+only when first used and runs as WebAssembly in the existing worker (the page
+itself isn't allowed to run WebAssembly). The Capstone subset adds 1,141,542
+bytes of JS/WASM, or 417,439 bytes with gzip, at the pinned versions. Browser
+assets have immutable content-hashed URLs. On **Values**, or with the inspector
+hidden, neither backend is requested.
+
+The `capstone` Docker stage builds from checksummed source with a pinned
+Emscripten version; the SDK is absent from the final image. The upstream JS
+detail reader has older C layout offsets, so `scripts/disasm/capstone-layout.c`
+generates offsets using the actual WASM ABI and headers. `capstone-detail.js`
+uses these to read instruction groups and immediate operands. The `disasm`
+stage runs `check-capstone.mjs` against the actual WASM through the worker,
+checking modes, Thumb IT state, branch targets, byte order, invalid words,
+truncated input and limits, and prints raw/gzip sizes. To run this check
+independently, build `docker build --target disasm -t tabtop:disasm-check .`.
 
 **Find**, in the bar above the bytes, looks for a run of bytes in the whole
 file, as hex or, with the mode button beside it (its glyph a drawn 0x) switched to Aa, as ASCII text
@@ -367,7 +400,7 @@ press Enter, or leave the box, and its bytes, as that type and byte order,
 are written at the selection's start; Escape puts the box back. Ctrl Z, back
 at the bytes, undoes such a value whole.
 
-Editing, a click on an instruction in **Disassembly** opens a box with it, to
+Editing x86 code, a click on an instruction in **Disassembly** opens a box with it, to
 type another over it in Intel syntax, as the list shows them (`mov rbp,rsp`,
 `jmp short 1012h`, `mov eax,dword ptr fs:[28h]`, `vaddps zmm0{k1}{z},zmm1,[rax]{1to16}`)
 or as other assemblers take them (`0x1f`, `jz`, `qword [rax]`, `'A'`, `rep stosb`),
@@ -386,6 +419,7 @@ why, and the box stays to put right; Escape puts it back. `x86-asm.js`
 assembles it, in the disassembler's worker: it reads the line, tries each of
 iced-x86's encodings of that name whose operands fit, encodes them with
 iced-x86, and keeps the shortest that decodes back to the same instruction.
+ARM/MIPS instructions remain view-only; their raw hex bytes can still be edited.
 The image build checks it on lines as typed and on random bytes, as each
 instruction set decodes them, assembled back to the same, RIP-relative or not. The disassembly shows the
 instructions themselves rather than pseudo-ops (`cmpss xmm0,xmm1,4`, not
@@ -444,6 +478,37 @@ both `Dockerfile` and `scripts/kaitai/sources.json` when refreshing the gallery.
 
 ## Image background removal
 
+**Scan document** turns a photographed receipt or page into a rectangular
+scan. Drag the numbered corners clockwise around the paper (top left, top
+right, bottom right, bottom left). Focus a corner and use the arrow keys for
+one-pixel adjustments, or Shift for ten pixels. **Preview** shows the flattened
+page; **Corners** returns to the original photo and outline. The compact
+adjustments popover provides Color, Grayscale, and Black & white finishes,
+Paper whitening, and Ink strength. Apply adds one history entry; Cancel
+preserves the original image. Undo and Redo work normally.
+
+`image-scan.js` validates a convex, uncrossed outline, computes a projective
+mapping and resamples with premultiplied-alpha bilinear interpolation. Paper
+cleanup estimates illumination separately for each color channel on a field
+up to 192 pixels per side, enlarges bright paper regions to bridge ink, and
+smooths the field. The image's lettering stays in its original pixels; there
+is no OCR or text generation. Preview uses an image up to 900 pixels per side;
+Apply processes the full resolution. Scan inputs and outputs are limited to
+16 megapixels, with output sides at most 8192 pixels. Scan recipes retain the
+corners and adjustments and scale them to other pages in PDF batch editing.
+
+**Save as → PDF** writes a single-page PDF copy beside the image, preserving
+its aspect ratio at 150 pixels per inch. Transparency is flattened onto white
+and the page is encoded as JPEG at the chosen quality. The source image stays
+unchanged when saving a PDF copy. PNG remains available for lossless output.
+
+**Invert selection** is available for background removal, inpainting masks,
+and paint-bucket selections. Background removal and the bucket act outside
+the outlined rectangle or circle when inverted. Inpainting inversion
+complements the complete current mask, including brush and subtracted marks;
+it is itself a mark that Undo can remove. Its SVG highlight and raster repair
+mask use the same complement, and inverted selections survive batch scaling.
+
 The image editor's **Remove background** tool runs U2NetP in a dedicated
 browser worker with ONNX Runtime Web, using one WASM thread. Both images
 bundle the model and runtime in `/opt/background`; no Python, GPU or remote
@@ -453,25 +518,28 @@ the files page's CSP remains unchanged. The model sees a 320×320 RGB sample
 of the current edit; its soft foreground mask is scaled to the current
 picture and multiplied with existing alpha. The glyph activates the main
 toolbar; its Adjustments button opens a popover with Threshold, Edge softness
-and Shrink / grow controls. Each previews from the
-original mask. Reset uses threshold 50%, softness 100% (the original soft
+and Shrink / grow controls, using the same style as Save options, without a
+heading, tool strip or action buttons. Each previews from the original mask.
+The initial settings are threshold 50%, softness 100% (the original soft
 mask), and no growth. Growth is a separable max/min filter with a radius
-relative to the mask dimensions. Apply adds an undo checkpoint; dismissal
-discards the preview. Each new activation analyzes the current image and adds
+relative to the mask dimensions. Apply in the main toolbar adds an undo
+checkpoint; Cancel discards the preview. Each new activation analyzes the current image and adds
 a separate operation, preserving earlier removals. Cancel and leaving the editor
 terminate the worker.
 
-Selected-area removal clips alpha changes to a rectangle; pixels outside it
-are drawn unchanged. Erase/restore strokes use round paths at image resolution,
+Selected-area removal clips alpha changes to a rectangle or circle; pixels
+outside it are unchanged, or inside it when the selection is inverted.
+Erase/restore strokes use round paths at image resolution,
 without reducing them to the 320×320 model mask. Restore copies the pixels
 from before the background operation, preserving existing alpha. Selection
 and stroke coordinates belong to that operation's input image; pointer
 coordinates are mapped back through later crops, flips, rotations and resizes.
 All of this remains a preview until Apply. Pointer cancellation discards the
-active gesture; Undo stroke removes the latest brush stroke. Reset clears
-selection and brush strokes along with slider adjustments. The settings use
-a manual popover so interacting with the image and spatial toolbar doesn't
-light-dismiss the editing session; clicking elsewhere still cancels it.
+active gesture; Undo stroke removes the latest brush stroke, and Whole image
+clears the selected area. The settings use an auto popover: its toggle, Escape
+or an outside click dismisses the popup while retaining the adjustment preview.
+The image and spatial toolbar remain part of the editing session; clicking
+outside that session still cancels it.
 
 For a standalone gateway, pass `-background-dir` with `ort.wasm.min.js`,
 `ort-wasm-simd-threaded.mjs`, `ort-wasm-simd-threaded.wasm`, and `u2netp.onnx`.

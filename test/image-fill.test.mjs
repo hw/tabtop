@@ -58,3 +58,16 @@ test("fills are checked", () => {
         assert.throws(() => validFill({ ...ok, ...bad }), /can be done/);
     }
 });
+
+
+test("inverted rectangle and circle selections fill the complement and retain excluded pixels", () => {
+    for (const shape of ["rect", "circle"]) {
+        const s = { shape, x: 2, y: 2, width: 4, height: 4 }, normal = inSelection(s), inverse = inSelection({ ...s, inverted: true });
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) assert.notEqual(normal(x, y), inverse(x, y));
+        const data = pixels(8, 8, () => [255, 255, 255, 255]);
+        const filled = floodFill(data, 8, 8, { points: [[0, 0]], color: "#000000", tolerance: 0, selection: { ...s, inverted: true } });
+        assert.ok(filled > 40);
+        assert.deepEqual([...data.slice((3 * 8 + 3) * 4, (3 * 8 + 3) * 4 + 4)], [255, 255, 255, 255]);
+        assert.deepEqual([...data.slice(0, 4)], [0, 0, 0, 255]);
+    }
+});

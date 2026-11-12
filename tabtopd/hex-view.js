@@ -171,6 +171,92 @@ const INSPECTOR_KEY = "tabtop.hex-inspector";
 const inspectorWanted = () => stored(INSPECTOR_KEY) !== "hidden";
 const rememberInspector = (shown) => store(INSPECTOR_KEY, shown ? "shown" : "hidden");
 
+// The inspector's divider follows the responsive layout: width beside the
+// bytes, height below them. Remember the two dimensions independently.
+function inspectorResize(main, inspector) {
+    const key = "tabtop.hex-inspector-size", saved = storedJSON(key, {}), sizes = {};
+    const handle = el("div", { className: "hex-inspector-resize", role: "separator", tabIndex: 0,
+        ariaLabel: "Resize data inspector", ariaOrientation: "vertical",
+        title: "Drag to resize the inspector; use arrow keys; double-click to reset" });
+    for (const axis of ["width", "height"]) {
+        if (Number.isFinite(saved[axis]) && saved[axis] > 0 && saved[axis] <= 10000) {
+            sizes[axis] = saved[axis];
+            main.style.setProperty(`--hex-inspector-${axis}`, `${sizes[axis]}px`);
+        }
+    }
+    const dimensions = () => {
+        const stacked = getComputedStyle(main).flexDirection === "column";
+        const axis = stacked ? "height" : "width";
+        const max = Math.max(0, main.getBoundingClientRect()[axis] - (stacked ? 104 : 200));
+        return { axis, stacked, min: Math.min(stacked ? 96 : 240, max), max };
+    };
+    const describe = () => {
+        if (typeof getComputedStyle !== "function" || !main.getBoundingClientRect) return;
+        const { axis, stacked, min, max } = dimensions();
+        handle.setAttribute("aria-orientation", stacked ? "horizontal" : "vertical");
+        handle.setAttribute("aria-valuemin", String(Math.round(min)));
+        handle.setAttribute("aria-valuemax", String(Math.round(max)));
+        handle.setAttribute("aria-valuenow", String(Math.round(inspector.getBoundingClientRect()[axis])));
+    };
+    const setSize = (axis, value) => {
+        const bounds = dimensions();
+        if (axis !== bounds.axis) return;
+        sizes[axis] = Math.round(Math.max(bounds.min, Math.min(value, bounds.max)));
+        main.style.setProperty(`--hex-inspector-${axis}`, `${sizes[axis]}px`);
+        describe();
+    };
+    let drag = null;
+    const finish = () => {
+        if (!drag) return;
+        drag = null;
+        handle.classList.remove("dragging");
+        storeJSON(key, sizes);
+    };
+    handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const { axis, stacked } = dimensions();
+        drag = { axis, coordinate: stacked ? "clientY" : "clientX", start: stacked ? event.clientY : event.clientX,
+            size: inspector.getBoundingClientRect()[axis], id: event.pointerId };
+        handle.focus({ preventScroll: true });
+        handle.setPointerCapture(event.pointerId);
+        handle.classList.add("dragging");
+        describe();
+    });
+    handle.addEventListener("pointermove", (event) => {
+        if (drag && event.pointerId === drag.id) setSize(drag.axis, drag.size + drag.start - event[drag.coordinate]);
+    });
+    for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) handle.addEventListener(name, finish);
+    const reset = () => {
+        finish();
+        const { axis } = dimensions();
+        delete sizes[axis];
+        main.style.removeProperty(`--hex-inspector-${axis}`);
+        storeJSON(key, sizes);
+        describe();
+    };
+    handle.addEventListener("dblclick", reset);
+    handle.addEventListener("keydown", (event) => {
+        const { axis, stacked, max } = dimensions();
+        const arrows = stacked ? ["ArrowUp", "ArrowDown"] : ["ArrowLeft", "ArrowRight"];
+        if (![...arrows, "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Home") reset();
+        else {
+            setSize(axis, event.key === "End" ? max : inspector.getBoundingClientRect()[axis] + (event.shiftKey ? 64 : 16) * (event.key === arrows[0] ? 1 : -1));
+            storeJSON(key, sizes);
+        }
+    });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(describe) : null;
+    observer?.observe(main);
+    observer?.observe(inspector);
+    describe();
+    main.append(handle);
+    return () => { finish(); observer?.disconnect(); };
+}
+
 // parseSearch is what to look for, as typed in mode "hex" or "ascii":
 // {value, mask}, bytes and which bits of them matter. In hex, bytes are
 // pairs of digits, spaced or not, and ? matches any digit: "4?" any of
@@ -218,11 +304,18 @@ export function patchRuns(changed) {
 // and instructions, or, with a byte selected, the bytes from it.
 const DISASM_BYTES = 4096, DISASM_WINDOW = 64, DISASM_LINES = 512;
 const DISASM_KEY = "tabtop.hex-disasm";
+const DISASM_MODES = [
+    ["x86-64", "x86-64"], ["x86-32", "x86 (32-bit)"], ["x86-16", "x86 (16-bit)"],
+    ["arm64", "ARM64"], ["arm32", "ARM32"], ["thumb", "ARM32-T (Thumb)"],
+    ["mips32-le", "MIPS32 LE"], ["mips32-be", "MIPS32 BE"], ["mips64-le", "MIPS64 LE"], ["mips64-be", "MIPS64 BE"],
+];
+const x86Bitness = (mode) => ({ "x86-16": 16, "x86-32": 32, "x86-64": 64 }[mode]);
 function disasmWanted() {
     const v = storedJSON(DISASM_KEY, {});
-    return { tab: v.tab === "disasm" ? "disasm" : "values", bitness: [16, 32, 64].includes(v.bitness) ? v.bitness : 64 };
+    const mode = DISASM_MODES.some(([mode]) => mode === v.mode) ? v.mode : `x86-${[16, 32, 64].includes(v.bitness) ? v.bitness : 64}`;
+    return { tab: v.tab === "disasm" ? "disasm" : "values", mode };
 }
-const rememberDisasm = (tab, bitness) => storeJSON(DISASM_KEY, { tab, bitness });
+const rememberDisasm = (tab, mode) => storeJSON(DISASM_KEY, { tab, mode });
 
 // workerCall asks disasm-worker.js, made when first asked, and shared by
 // every hex view on the page: message resolves to its answer, or rejects
@@ -261,8 +354,8 @@ function workerClient() {
     });
 }
 const workerCall = workerClient();
-// (bytes, address, bitness, max) resolves to [{offset, length, text}].
-const sharedDisassembler = (bytes, address, bitness, max) => workerCall({ bytes, address, bitness, max }, [bytes.buffer]).then(
+// (bytes, address, mode, max) resolves to [{offset, length, text}].
+const sharedDisassembler = (bytes, address, mode, max) => workerCall({ bytes, address, mode, max }, [bytes.buffer]).then(
     (data) => data.lines,
     (err) => { throw err.said ? new Error(`It couldn't be disassembled: ${err.message}.`) : err; });
 // (text, address, bitness, was) resolves to {bytes, text}: the line's bytes
@@ -521,11 +614,11 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         formatDialog.showModal?.();
         formatCopy.focus?.();
     });
-    // Disassembly: the selection's bytes as x86 instructions, a line each.
+    // Disassembly: the selection's bytes in the chosen instruction set.
     const disasmPrefs = disasmWanted();
     const disasmBitness = el("select", { className: "hex-disasm-bitness", ariaLabel: "Instruction set" },
-        ...[[64, "x86-64"], [32, "x86 (32-bit)"], [16, "x86 (16-bit)"]].map(([value, label]) => el("option", { value: String(value), textContent: label })));
-    disasmBitness.value = String(disasmPrefs.bitness);
+        ...DISASM_MODES.map(([value, label]) => el("option", { value: String(value), textContent: label })));
+    disasmBitness.value = disasmPrefs.mode;
     const disasmLines = el("ol", { className: "hex-disasm-lines" });
     const disasmNote = el("p", { className: "hint hex-disasm-note" });
     const disasm = el("div", { className: "hex-disasm" }, disasmLines, disasmNote);
@@ -562,34 +655,44 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             return;
         }
         const end = Math.min(n > 1 ? selected.end : begin + DISASM_WINDOW, begin + DISASM_BYTES, loaded, size);
-        const bitness = Number(disasmBitness.value);
-        const key = `${begin}-${end}-${bitness}#${changes}${editor ? "e" : ""}`;
-        if (key === disasmKey) return;
-        disasmKey = key;
+        const mode = disasmBitness.value, bitness = x86Bitness(mode);
+        const canAssemble = !!editor && !!bitness;
+        const key = `${begin}-${end}-${mode}#${changes}${editor ? "e" : ""}`;
+        if (key === disasmKey) {
+            disasm.classList.toggle("editable", canAssemble);
+            return;
+        }
         const mine = ++disasmAsked;
         const code = bytesFrom(lastRange, begin, end);
         const hexOfRun = (offset, length) => hexBytes(code.subarray(offset - begin, offset - begin + length), " ");
         try {
-            const lines = await disassemble(code.slice(), begin, bitness, DISASM_LINES);
+            const lines = await disassemble(code.slice(), begin, mode, DISASM_LINES);
             if (mine !== disasmAsked) return;
+            disasmKey = key;
             asmEdit = null;
             const rows = lines.map((line) => {
                 const { offset, length, text } = line;
                 const parts = [el("span", { className: "hex-disasm-at", textContent: offset.toString(16).padStart(8, "0") }),
                     el("span", { className: "hex-disasm-bytes", textContent: hexOfRun(offset, length), title: hexOfRun(offset, length) }),
                     el("span", { className: "hex-disasm-text", title: text }, ...withTargets(text, line.targets))];
-                const li = el("li", { className: text === "(bad)" ? "hex-disasm-line bad" : "hex-disasm-line", title: editor ? "Click to change this instruction" : "" }, ...parts);
+                const li = el("li", { className: text === "(bad)" ? "hex-disasm-line bad" : "hex-disasm-line", title: canAssemble ? "Click to change this instruction" : "" }, ...parts);
                 return { li, line, parts };
             });
-            disasmShown = { rows, lines, bitness };
-            disasm.classList.toggle("editable", !!editor);
+            disasmShown = { rows, lines, mode, bitness };
+            disasm.classList.toggle("editable", canAssemble);
             disasmLines.replaceChildren(...rows.map((r) => r.li));
             disasmNote.textContent = [lines.length >= DISASM_LINES ? `The first ${DISASM_LINES} instructions.`
                 : n <= 1 ? `The ${end - begin} bytes from 0x${begin.toString(16)}; select bytes to disassemble just those.`
                 : end < selected.end ? `The first ${(end - begin).toLocaleString()} bytes of the selection.` : "",
-                editor && lines.length ? "Click an instruction to change it." : ""].filter(Boolean).join(" ");
+                canAssemble && lines.length ? "Click an instruction to change it." : "",
+                !bitness ? "Addresses are file offsets; instruction editing is available for x86." : "",
+                ["arm64", "arm32", "thumb"].includes(mode) ? "Little-endian instructions." : "",
+                !bitness && begin % (mode === "thumb" ? 2 : 4) ? "The selection starts at an unaligned address." : ""].filter(Boolean).join(" ");
         } catch (err) {
             if (mine !== disasmAsked) return;
+            disasmKey = null;
+            disasmShown = null;
+            disasm.classList.remove("editable");
             disasmLines.replaceChildren();
             disasmNote.textContent = err.message;
         }
@@ -600,7 +703,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // nops to the next; one longer goes over the next (listed or not), the
     // last of those that it ends inside filled out with nops, so what's
     // after still reads as it did. Escape (or leaving it) puts it back.
-    let disasmShown = null; // {rows: [{li, line, parts}], lines, bitness}, as listed
+    let disasmShown = null; // {rows: [{li, line, parts}], lines, mode, bitness}, as listed
     let asmEdit = null; // {row, line, input, busy}
     const closeAsm = () => {
         if (!asmEdit) return;
@@ -611,7 +714,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     };
     const openAsm = (li) => {
         const row = disasmShown?.rows.find((r) => r.li === li);
-        if (!editor || !row || asmEdit?.row === row) return;
+        if (!editor || !row || !disasm.classList.contains("editable") || !disasmShown.bitness || disasmShown.mode !== disasmBitness.value || asmEdit?.row === row) return;
         closeAsm();
         const { line } = row;
         const input = el("input", { type: "text", className: "hex-disasm-input", value: line.text === "(bad)" ? "" : line.text,
@@ -639,14 +742,14 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     };
     const submitAsm = async () => {
         const edit = asmEdit;
-        if (!edit || edit.busy || !editor) return;
+        if (!edit || edit.busy || !editor || !disasmShown?.bitness || disasmShown.mode !== disasmBitness.value) return;
         const { line, input } = edit;
         const text = input.value.trim();
         if (!text || text === line.text) {
             closeAsm();
             return;
         }
-        const { lines, bitness } = disasmShown;
+        const { lines, bitness, mode } = disasmShown;
         const at = line.offset, was = changes;
         edit.busy = true;
         let result, following = lines;
@@ -659,7 +762,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             if (at + result.bytes.length > listedEnd) {
                 const loaded = Math.min(lastRange.begin + lastRange.bytes.length, size);
                 if (at + result.bytes.length > loaded) throw new Error("The bytes after it aren't loaded here, so it can't go over them.");
-                const more = await disassemble(bytesFrom(lastRange, listedEnd, Math.min(listedEnd + 64, loaded)), listedEnd, bitness, 16);
+                const more = await disassemble(bytesFrom(lastRange, listedEnd, Math.min(listedEnd + 64, loaded)), listedEnd, mode, 16);
                 following = [...lines, ...more];
             }
         } catch (err) {
@@ -721,10 +824,13 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // till new ones come.
     const updateDisasm = () => {
         clearTimeout(disasmTimer);
+        disasmAsked++;
+        closeAsm();
+        disasm.classList.remove("editable");
         if (inspector.hidden || inspector.dataset.tab !== "disasm") return;
         disasmTimer = setTimeout(runDisasm, 150);
     };
-    disasmBitness.addEventListener("change", () => { rememberDisasm(inspector.dataset.tab, Number(disasmBitness.value)); updateDisasm(); });
+    disasmBitness.addEventListener("change", () => { rememberDisasm(inspector.dataset.tab, disasmBitness.value); updateDisasm(); });
     // The panel shows the values or the disassembly, a tab each, the one
     // given all of its height (the instruction set chosen at the right of
     // the tabs); which, remembered.
@@ -738,7 +844,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     const showTab = (tab, remember = true) => {
         inspector.dataset.tab = tab;
         tabButtons.forEach((b, i) => b.setAttribute?.("aria-pressed", String((i === 0) === (tab === "values"))));
-        if (remember) rememberDisasm(tab, Number(disasmBitness.value));
+        if (remember) rememberDisasm(tab, disasmBitness.value);
         updateDisasm();
     };
     const inspector = el("aside", { className: "hex-inspector", ariaLabel: "Data inspector", hidden: !inspectorWanted() },
@@ -1247,6 +1353,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     const view = el("div", { className: "hex-view" },
         el("div", { className: "hex-controls", role: "group", ariaLabel: "Byte navigation" }, previous, status, next, previousRange, nextRange, jumpForm, findForm, editStatus, toggle),
         el("div", { className: "hex-main" }, el("div", { className: "hex-pane" }, head, content), inspector));
+    const stopResize = inspectorResize(view.children[1], inspector);
     view.inspectorToggle = toggle;
     view.jump = (begin, end = Math.min(begin + 1, size), from = selected?.from ?? "hex") => {
         if (!Number.isSafeInteger(begin) || !Number.isSafeInteger(end) || begin < 0 || begin >= size || end < begin || end > size) return Promise.resolve();
@@ -1348,7 +1455,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         offsetInput.setCustomValidity(""); view.jump(offset);
     });
     offsetInput.addEventListener("input", () => offsetInput.setCustomValidity(""));
-    view.stop = () => { stopped = true; revision++; controller?.abort(); finding?.abort(); clearTimeout(disasmTimer); disasmAsked++; formatDialog.close?.(); formatDialog.remove?.(); };
+    view.stop = () => { stopped = true; stopResize(); revision++; controller?.abort(); finding?.abort(); clearTimeout(disasmTimer); disasmAsked++; formatDialog.close?.(); formatDialog.remove?.(); };
     show(0);
     return view;
 }

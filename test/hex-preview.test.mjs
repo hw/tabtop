@@ -684,7 +684,7 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         content.listeners.pointerdown({ button: 0, pointerId: 1, shiftKey: true, target: hex(0)[6], preventDefault() {} });
         content.listeners.pointerup({});
         await settle();
-        assert.deepEqual(asked.at(-1), { bytes: [2, 3, 4, 5, 6], address: 2, bitness: 64, max: 512 });
+        assert.deepEqual(asked.at(-1), { bytes: [2, 3, 4, 5, 6], address: 2, bitness: "x86-64", max: 512 });
         assert.equal(lines.children.length, 3);
         const [at, raw, text] = lines.children[1].children;
         assert.deepEqual([at.textContent, raw.textContent, text.textContent], ["00000003", "03 04 05", "mov rbp,rsp"]);
@@ -699,11 +699,11 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         assert.match(note.textContent, /^The 64 bytes from 0x10; select bytes/);
         // 32-bit, asked again; the same, not.
         const count = asked.length;
-        bitness.value = "32";
+        bitness.value = "x86-32";
         bitness.listeners.change();
         await settle();
         assert.equal(asked.length, count + 1);
-        assert.equal(asked.at(-1).bitness, 32);
+        assert.equal(asked.at(-1).bitness, "x86-32");
         // On Values: not asked; failing: said.
         valuesTab.listeners.click();
         content.listeners.pointerdown({ button: 0, pointerId: 1, target: hex(2)[0], preventDefault() {} });
@@ -731,7 +731,7 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         // number that's not where it goes, or past the file's end, not.
         extra = [{ offset: 53, length: 2, text: "jmp short 0050h", targets: [0x50] }, { offset: 55, length: 2, text: "mov al,50h", targets: [] },
             { offset: 57, length: 5, text: "call 0000000000001000h", targets: [0x1000] }];
-        bitness.value = "16";
+        bitness.value = "x86-16";
         bitness.listeners.change();
         await settle();
         const texts = lines.children.slice(3).map((li) => li.children[2]);
@@ -948,6 +948,66 @@ test("editing, an instruction typed over one in the disassembly writes its bytes
         assert.equal(disasm.classList.contains("editable"), false);
     } finally {
         globalThis.document = oldDocument;
+    }
+});
+
+test("instruction sets migrate old preferences, persist ARM/MIPS choices, and guard pending mode changes", async () => {
+    const oldDocument = globalThis.document, oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const kept = new Map([["tabtop.hex-disasm", JSON.stringify({ tab: "values", bitness: 32 })]]);
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    Object.defineProperty(globalThis, "localStorage", { value: { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, v) }, configurable: true });
+    const pending = [];
+    let assembled = 0, view;
+    try {
+        view = hexView(new Uint8Array(32), {
+            disassemble: (bytes, address, mode) => new Promise((resolve) => pending.push({ mode, resolve })),
+            assemble: async () => { assembled++; throw new Error("ARM must not assemble"); },
+        });
+        const { content, inspector } = parts(view);
+        const [tabs, mode] = inspector.children[0].children;
+        const disasm = inspector.children.at(-1), lines = disasm.children[0];
+        assert.equal(mode.value, "x86-32");
+        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "arm32", "thumb", "mips32-le", "mips32-be", "mips64-le", "mips64-be"]);
+        view.startEditing({ save: async () => ({}) });
+        content.listeners.pointerdown({ button: 0, pointerId: 1, target: content.children[0].children[1].children[0], preventDefault() {} });
+        content.listeners.pointerup({});
+        tabs.children[1].listeners.click();
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        await settle();
+        assert.equal(pending[0].mode, "x86-32");
+        mode.value = "arm64";
+        mode.listeners.change();
+        // An old response arriving during the debounce must not appear.
+        pending[0].resolve([{ offset: 0, length: 1, text: "old x86" }]);
+        await Promise.resolve();
+        assert.equal(lines.children.length, 0);
+        await settle();
+        pending[1].resolve([{ offset: 0, length: 4, text: "b #0x10", targets: [16] }]);
+        await Promise.resolve();
+        assert.equal(lines.children[0].children[2].textContent, "b #0x10");
+        assert.equal(lines.children[0].children[2].children[1].className, "hex-disasm-target");
+        assert.equal(disasm.classList.contains("editable"), false);
+        lines.listeners.click({ target: lines.children[0] });
+        assert.equal(lines.children[0].children.length, 3);
+        assert.equal(assembled, 0);
+        for (const next of ["thumb", "mips64-be"]) {
+            mode.value = next;
+            mode.listeners.change();
+            await settle();
+            assert.equal(pending.at(-1).mode, next);
+            pending.at(-1).resolve([{ offset: 0, length: 4, text: "nop" }]);
+            await Promise.resolve();
+            assert.equal(disasm.classList.contains("editable"), false);
+        }
+        assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "mips64-be" });
+        const reopened = hexView(new Uint8Array(4), { disassemble: async () => [] });
+        assert.equal(parts(reopened).inspector.children[0].children[1].value, "mips64-be");
+        reopened.stop();
+    } finally {
+        view?.stop();
+        globalThis.document = oldDocument;
+        if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+        else delete globalThis.localStorage;
     }
 });
 

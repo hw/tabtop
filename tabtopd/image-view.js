@@ -13,17 +13,19 @@ import { el } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { humanBytes } from "./file-format.js";
 import { knownFrom, metadataOf, stripped, withMetadata } from "./image-meta.js";
-import { maskPath, newMaskMark, extendMaskMark, enclosedFill, glyphCaption, brushControls, imageMaskPoint } from "./image-mask.js";
+import { clipSelection, maskPath, newMaskMark, extendMaskMark, enclosedFill, glyphCaption, brushControls, imageMaskPoint } from "./image-mask.js";
 import { inpaintTool } from "./image-inpaint.js";
 import { drawTool, drawShape } from "./image-draw.js";
 import { placeTool, drawPlacement, pastedPicture } from "./image-place.js";
+import { scanCanvas, scanGeometry, scanTool } from "./image-scan.js";
+import { rasterPDF } from "./image-export.js";
 import { drawFill } from "./image-fill.js";
 import { describeStep } from "./image-batch.js";
 import { BackgroundRemover, adjustedMask, mapImagePoint } from "./image-background.js";
 
 const FORMATS = {
     "image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP", "image/gif": "GIF", "image/avif": "AVIF",
-    "image/bmp": "BMP", "image/x-icon": "ICO", "image/vnd.microsoft.icon": "ICO", "image/svg+xml": "SVG",
+    "image/bmp": "BMP", "image/x-icon": "ICO", "image/vnd.microsoft.icon": "ICO", "image/svg+xml": "SVG", "application/pdf": "PDF",
 };
 // What Save writes, in the format it was: what browsers' canvases encode.
 const WRITABLE = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -82,6 +84,10 @@ export function transform(source, width, height, ops) {
     };
     // (None: a copy, so it's a canvas all the same.)
     for (const op of ops.length ? ops : [{ x: 0, y: 0, width, height }]) {
+        if (op.scan) {
+            cur = scanCanvas(cur, op.scan); w = cur.width; h = cur.height;
+            continue;
+        }
         if (op.inpaint) {
             const [canvas, ctx] = canvasOf(w, h);
             ctx.drawImage(cur, 0, 0, w, h);
@@ -115,12 +121,7 @@ export function transform(source, width, height, ops) {
             const [canvas, ctx] = canvasOf(w, h);
             ctx.drawImage(cur, 0, 0, w, h);
             ctx.save();
-            if (op.selection) {
-                ctx.beginPath();
-                if (op.selection.shape === "circle") ctx.ellipse(op.selection.x + op.selection.width / 2, op.selection.y + op.selection.height / 2, op.selection.width / 2, op.selection.height / 2, 0, 0, Math.PI * 2);
-                else ctx.rect(op.selection.x, op.selection.y, op.selection.width, op.selection.height);
-                ctx.clip();
-            }
+            clipSelection(ctx, op.selection, w, h);
             ctx.globalCompositeOperation = "destination-in";
             ctx.drawImage(op.background, 0, 0, w, h);
             for (const stroke of op.strokes ?? []) {
@@ -181,6 +182,9 @@ export function editRecipe(width, height, ops, pending = null) {
         if (typeof op === "string") {
             step = { kind: "transform", operation: op, width, height };
             if (op === "left" || op === "right") [width, height] = [height, width];
+        } else if (op.scan) {
+            step = { kind: "scan", width, height, settings: structuredClone(op.scan) };
+            const size = scanGeometry(width, height, op.scan); width = size.width; height = size.height;
         } else if (op.inpaint) {
             if (!op.recipe) return null; // Don't substitute a broad repair for a missing mask.
             step = op.recipe;
@@ -209,7 +213,7 @@ export function editRecipe(width, height, ops, pending = null) {
 
 // copyName is name for a copy of it as type: its extension changed.
 export function copyName(name, type) {
-    const ext = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp" }[type];
+    const ext = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "application/pdf": ".pdf" }[type];
     const dot = name.lastIndexOf(".");
     return (dot > 0 ? name.slice(0, dot) : name) + ext;
 }
@@ -312,6 +316,7 @@ export async function imageView({ file, blob, url }) {
         inpainting?.place();
         drawing?.place();
         placing?.place();
+        scanning?.place();
     };
     const fit = () => {
         fitting = true;
@@ -342,7 +347,7 @@ export async function imageView({ file, blob, url }) {
         zoomTo(scale * Math.exp(-dy * 0.002), px, py);
     }, { passive: false });
     stage.addEventListener("dblclick", (e) => {
-        if (cropping || backgroundPointer?.painting() || inpainting?.painting() || drawing?.painting() || placing?.painting()) return;
+        if (cropping || backgroundPointer?.painting() || inpainting?.painting() || drawing?.painting() || placing?.painting() || scanning?.painting()) return;
         const [px, py] = at(e);
         if (fitting || Math.abs(scale - fitScale()) < 1e-3) zoomTo(1, px, py);
         else fit();
@@ -356,7 +361,7 @@ export async function imageView({ file, blob, url }) {
         }
     });
     // Dragged: moved (or, cropping, a rectangle drawn).
-    let drag = null, backgroundPointer = null, inpainting = null, drawing = null, placing = null;
+    let drag = null, backgroundPointer = null, inpainting = null, drawing = null, placing = null, scanning = null;
     stage.addEventListener("pointerdown", (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
@@ -464,6 +469,7 @@ export async function imageView({ file, blob, url }) {
         format.setAttribute("aria-label", "Save as");
         if (WRITABLE.has(type)) format.append(el("option", { value: type, textContent: `${FORMATS[type]} (as it is)` }));
         for (const t of WRITABLE) if (t !== type) format.append(el("option", { value: t, textContent: `${FORMATS[t]} (a copy)` }));
+        format.append(el("option", { value: "application/pdf", textContent: "PDF (a copy)" }));
         const quality = el("input", { type: "range", className: "image-quality", min: "10", max: "100", step: "1", value: String(Math.round(QUALITY * 100)) });
         quality.setAttribute("aria-label", "Quality");
         const qualityText = el("span", { className: "hint image-quality-value" });
@@ -537,7 +543,7 @@ export async function imageView({ file, blob, url }) {
             showOptions();
         };
         const change = (op) => {
-            if (saving || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || cropping || !resizePanel.hidden || stopped) return;
+            if (saving || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || scanning?.active() || cropping || !resizePanel.hidden || stopped) return;
             remember();
             ops.push(op);
             redraw();
@@ -555,6 +561,8 @@ export async function imageView({ file, blob, url }) {
         editBar.append(cropTools);
         // Resize: to a width and height (kept in proportion), or a share of it.
         const resizeButton = button("resize", "Resize: make it smaller or bigger (S)", "image-resize-start");
+        const scanButton = button("scan-document", "Scan document: flatten and clean a photographed page", "image-scan-start");
+        scanButton.setAttribute("aria-pressed", "false");
         const inpaintButton = button("inpaint", "Inpaint: remove a logo or object", "image-inpaint-start");
         const placeButton = button("paste-image", "Place a picture over this one, from a file (or paste one: Ctrl+V)", "image-place-start");
         placeButton.setAttribute("aria-pressed", "false");
@@ -564,8 +572,8 @@ export async function imageView({ file, blob, url }) {
         const removeBackground = button("remove-background", "Remove background", "image-remove-background");
         removeBackground.setAttribute("aria-haspopup", "dialog");
         removeBackground.setAttribute("aria-expanded", "false");
-        const backgroundPanel = el("div", { className: "image-background-panel", role: "dialog", ariaLabel: "Remove background" });
-        backgroundPanel.setAttribute("popover", "manual");
+        const backgroundPanel = el("div", { className: "mask-brush-options image-background-panel", role: "dialog", ariaLabel: "Background removal adjustments" });
+        backgroundPanel.setAttribute("popover", "auto");
         const backgroundNote = el("p", { className: "hint image-background-note", role: "status" });
         const sliders = [
             ["threshold", "Threshold", 0, 100, 1, 50, "Higher removes more; lower keeps more."],
@@ -578,12 +586,7 @@ export async function imageView({ file, blob, url }) {
             return { key, input, output, label, initial: value };
         });
         const backgroundSettings = () => Object.fromEntries(sliders.map(({ key, input }) => [key, Number(input.value)]));
-        const backgroundApply = button("check", "Apply background removal", "image-background-apply");
-        backgroundApply.disabled = true;
-        const backgroundReset = button("clear-mask", "Reset background removal", "image-background-reset");
-        const cancelBackground = button("close-circle", "Cancel background removal", "image-background-cancel");
-        backgroundPanel.append(el("strong", { textContent: "Remove background" }), ...sliders.map(({ label }) => label), backgroundNote,
-            el("div", { className: "image-background-actions" }, backgroundReset, cancelBackground, backgroundApply));
+        backgroundPanel.append(...sliders.map(({ label }) => label), backgroundNote);
         view.append(backgroundPanel);
         let backgroundMode = "pan", gesture = null;
         const selectionBox = el("div", { className: "image-background-selection", hidden: true, ariaHidden: "true" });
@@ -596,13 +599,8 @@ export async function imageView({ file, blob, url }) {
             control.addEventListener("click", () => setBackgroundMode(mode));
             return { mode, title, control };
         });
-        const spatialShortcuts = modes.filter(({ mode }) => mode !== "pan").map(({ mode, title }) => {
-            const icon = { select: "select-area", erase: "paint-brush", restore: "restore", fill: "flood-fill" }[mode];
-            const shortcut = button(icon, title, `image-background-start-${mode}`);
-            shortcut.addEventListener("click", () => setBackgroundMode(mode));
-            return shortcut;
-        });
-        backgroundPanel.querySelector("strong").after(el("div", { className: "image-background-tools" }, ...spatialShortcuts));
+        const invertSelection = button("invert-selection", "Invert selection", "image-background-invert");
+        invertSelection.setAttribute("aria-pressed", "false");
         const wholeImage = button("select-all", "Apply removal to the whole image", "image-background-whole");
         const brushes = brushControls(modes.find(({ mode }) => mode === "erase").control, {
             prefix: "image-background", sizeClass: "image-background-brush-size", selectionButton: modes.find(({ mode }) => mode === "select").control, onShape: () => setBackgroundMode("select"),
@@ -615,7 +613,7 @@ export async function imageView({ file, blob, url }) {
         const spatialHint = el("span", { className: "hint image-background-spatial-hint", role: "status" });
         const spatialBar = el("div", { className: "image-background-spatial", hidden: true },
             ...modes.map(({ mode, control }) => mode === "erase" ? brushes.group : mode === "select" ? brushes.selectionGroup : control), wholeImage,
-            undoStroke,
+            invertSelection, undoStroke,
             settingsButton, spatialApply, spatialCancel);
         editBar.append(spatialBar);
         hintBar.append(spatialHint);
@@ -640,7 +638,7 @@ export async function imageView({ file, blob, url }) {
                 Object.assign(selectionBox.style, { left: `${x + rect.x * scale}px`, top: `${y + rect.y * scale}px`, width: `${rect.width * scale}px`, height: `${rect.height * scale}px`,
                     clipPath: `inset(${Math.max(0, -rect.y) * scale}px ${Math.max(0, rect.x + rect.width - width) * scale}px ${Math.max(0, rect.y + rect.height - height) * scale}px ${Math.max(0, -rect.x) * scale}px)` });
             }
-            selectionBox.dataset.size = `${Math.round(right - left)}×${Math.round(bottom - top)}`;
+            selectionBox.dataset.size = `${Math.round(right - left)}×${Math.round(bottom - top)}${selection.inverted ? " (outside)" : ""}`;
         };
         const showSpatial = () => {
             spatialBar.hidden = !backgroundEdit;
@@ -649,11 +647,11 @@ export async function imageView({ file, blob, url }) {
                 control.disabled = !backgroundEdit?.rawMask || removing;
                 control.setAttribute("aria-pressed", String(mode === backgroundMode));
             }
-            for (const control of spatialShortcuts) control.disabled = !backgroundEdit?.rawMask || removing;
             wholeImage.disabled = !backgroundEdit?.rawMask || removing;
+            invertSelection.disabled = wholeImage.disabled || !backgroundEdit?.selection || backgroundEdit.selection.width < 1 || backgroundEdit.selection.height < 1;
+            invertSelection.setAttribute("aria-pressed", String(!!backgroundEdit?.selection?.inverted));
             brushes.update(!backgroundEdit?.rawMask || removing);
             undoStroke.disabled = !backgroundEdit?.strokes.length || removing;
-            spatialApply.disabled = backgroundApply.disabled;
             stage.classList.toggle("background-selecting", !!backgroundEdit && backgroundMode === "select");
             stage.classList.toggle("background-brushing", !!backgroundEdit && ["erase", "restore"].includes(backgroundMode));
             spatialHint.classList.toggle("error", backgroundNote.classList.contains("error"));
@@ -662,9 +660,9 @@ export async function imageView({ file, blob, url }) {
                 : backgroundMode === "fill" ? "Draw a closed outline with Erase, then click inside to fill it."
                 : backgroundMode === "select" && brushes.shape.value === "circle" ? "Circle: drag from its centre to its edge."
                 : backgroundMode === "select" ? "Drag a rectangle: only this area changes."
-                : backgroundMode === "erase" ? `Paint to make pixels transparent ${backgroundEdit?.selection ? "inside the selected area" : "in the image"}.`
-                : backgroundMode === "restore" ? `Paint to restore the original pixels ${backgroundEdit?.selection ? "inside the selected area" : "in the image"}.`
-                : backgroundEdit?.selection ? "Background removal is limited to the outlined area." : "Background removal affects the whole image.";
+                : backgroundMode === "erase" ? `Paint to make pixels transparent ${backgroundEdit?.selection ? (backgroundEdit.selection.inverted ? "outside the outlined area" : "inside the selected area") : "in the image"}.`
+                : backgroundMode === "restore" ? `Paint to restore the original pixels ${backgroundEdit?.selection ? (backgroundEdit.selection.inverted ? "outside the outlined area" : "inside the selected area") : "in the image"}.`
+                : backgroundEdit?.selection ? (backgroundEdit.selection.inverted ? "Background removal affects everything outside the outlined area." : "Background removal is limited to the outlined area.") : "Background removal affects the whole image.";
             showSelection();
         };
         const hideBackgroundControls = () => {
@@ -692,6 +690,11 @@ export async function imageView({ file, blob, url }) {
             previewBackground();
             stage.focus({ preventScroll: true });
         }
+        invertSelection.addEventListener("click", () => {
+            if (invertSelection.disabled) return;
+            backgroundEdit.selection = { ...backgroundEdit.selection, inverted: !backgroundEdit.selection.inverted };
+            previewBackground();
+        });
         wholeImage.addEventListener("click", () => {
             if (!backgroundEdit?.rawMask) return;
             backgroundEdit.selection = null;
@@ -699,7 +702,17 @@ export async function imageView({ file, blob, url }) {
         });
         brushSize.addEventListener("input", () => { brushCursor.hidden = true; });
         undoStroke.addEventListener("click", () => { backgroundEdit?.strokes.pop(); previewBackground(); });
-        settingsButton.addEventListener("click", showBackgroundControls);
+        settingsButton.setAttribute("aria-haspopup", "dialog");
+        settingsButton.setAttribute("aria-expanded", "false");
+        settingsButton.popoverTargetElement = backgroundPanel;
+        settingsButton.popoverTargetAction = "toggle";
+        const syncBackgroundControls = () => {
+            const expanded = String(backgroundPanel.matches(":popover-open"));
+            settingsButton.setAttribute("aria-expanded", expanded);
+            removeBackground.setAttribute("aria-expanded", expanded);
+        };
+        settingsButton.addEventListener("click", () => queueMicrotask(() => { syncBackgroundControls(); positionBackground(); }));
+        backgroundPanel.addEventListener("toggle", () => { syncBackgroundControls(); positionBackground(); });
         spatialApply.addEventListener("click", () => closeBackground(true));
         spatialCancel.addEventListener("click", () => closeBackground());
         spatialBar.addEventListener("keydown", (event) => {
@@ -780,7 +793,8 @@ export async function imageView({ file, blob, url }) {
         document.addEventListener("pointerdown", outsideBackground, true);
 
         const positionBackground = () => {
-            const rect = removeBackground.getBoundingClientRect();
+            if (!backgroundPanel.matches(":popover-open")) return;
+            const rect = settingsButton.getBoundingClientRect();
             const panel = backgroundPanel.getBoundingClientRect();
             backgroundPanel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - panel.width - 8))}px`;
             backgroundPanel.style.top = `${Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - panel.height - 8))}px`;
@@ -823,32 +837,22 @@ export async function imageView({ file, blob, url }) {
             say(apply ? "Background removed. Undo to restore it." : "Background removal cancelled.");
             if (focus) removeBackground.focus({ preventScroll: true });
         };
-        backgroundApply.addEventListener("click", () => closeBackground(true));
-        cancelBackground.addEventListener("click", () => closeBackground());
-        backgroundReset.addEventListener("click", () => {
-            for (const { input, initial } of sliders) input.value = initial;
-            backgroundEdit.selection = null;
-            backgroundEdit.strokes = [];
-            brushes.shape.value = "rectangle";
-            backgroundMode = "pan";
-            previewBackground();
-        });
         for (const { input } of sliders) input.addEventListener("input", () => {
             cancelAnimationFrame(backgroundFrame);
             backgroundFrame = requestAnimationFrame(previewBackground);
         });
         backgroundPanel.addEventListener("keydown", (event) => {
             // Editing shortcuts and the preview dialog must not consume slider keys.
-            if (event.key === "Escape") { event.preventDefault(); closeBackground(); }
+            if (event.key === "Escape") { event.preventDefault(); hideBackgroundControls(); settingsButton.focus(); }
             event.stopPropagation();
         });
         removeBackground.addEventListener("click", async () => {
             if (backgroundEdit) {
-                if (backgroundPanel.matches(":popover-open")) closeBackground();
+                if (backgroundPanel.matches(":popover-open")) hideBackgroundControls();
                 else showBackgroundControls();
                 return;
             }
-            if (saving || cropping || drawing?.active() || placing?.active() || !resizePanel.hidden || stopped) return;
+            if (saving || cropping || drawing?.active() || placing?.active() || scanning?.active() || !resizePanel.hidden || stopped) return;
             inpainting?.close();
             setCropping(false);
             setResizing(false);
@@ -916,7 +920,7 @@ export async function imageView({ file, blob, url }) {
         });
         percent.addEventListener("input", () => setSize(width * (Number(percent.value) || 0) / 100));
         const setResizing = (on) => {
-            if (on && (saving || cropping || drawing?.active() || placing?.active() || backgroundEdit || inpainting?.active())) return;
+            if (on && (saving || cropping || drawing?.active() || placing?.active() || scanning?.active() || backgroundEdit || inpainting?.active())) return;
             resizePanel.hidden = !on;
             resizeButton.setAttribute("aria-pressed", String(on));
             showButtons();
@@ -969,7 +973,7 @@ export async function imageView({ file, blob, url }) {
             if (event.key === "Escape") { event.preventDefault(); historyPanel.hidePopover(); historyButton.focus(); }
             event.stopPropagation();
         });
-        const toolOpen = () => saving || !!backgroundEdit || !!inpainting?.active() || !!(drawing?.active() || placing?.active()) || cropping || !resizePanel.hidden || stopped;
+        const toolOpen = () => saving || !!backgroundEdit || !!inpainting?.active() || !!(drawing?.active() || placing?.active() || scanning?.active()) || cropping || !resizePanel.hidden || stopped;
         // states: the original, each change since, and those undone.
         const states = () => [...history, ops.slice(), ...future.slice().reverse()];
         // stateName is what made state i of all, from the one before it.
@@ -1007,12 +1011,12 @@ export async function imageView({ file, blob, url }) {
         };
         function showButtons() {
             const masking = !!backgroundEdit || !!inpainting?.active();
-            const choosing = masking || cropping || !!(drawing?.active() || placing?.active()) || !resizePanel.hidden;
+            const choosing = masking || cropping || !!(drawing?.active() || placing?.active() || scanning?.active()) || !resizePanel.hidden;
             defaultTools.hidden = choosing;
-            hintBar.hidden = !masking;
+            hintBar.hidden = !masking && !scanning?.active();
             if (choosing) { options.hidePopover(); syncSaveOptions(); }
-            for (const control of [rotateLeft, rotateRight, flipH, flipV, cropButton, resizeButton, drawButton, placeButton, format, quality, keep, saveOptionsButton, saveOptionsArrow]) control.disabled = saving || choosing;
-            removeBackground.disabled = inpaintButton.disabled = saving || cropping || !!(drawing?.active() || placing?.active()) || !resizePanel.hidden;
+            for (const control of [rotateLeft, rotateRight, flipH, flipV, cropButton, resizeButton, drawButton, placeButton, scanButton, format, quality, keep, saveOptionsButton, saveOptionsArrow]) control.disabled = saving || choosing;
+            removeBackground.disabled = inpaintButton.disabled = saving || cropping || !!(drawing?.active() || placing?.active() || scanning?.active()) || !resizePanel.hidden;
             inpaintButton.setAttribute("aria-pressed", String(!!inpainting?.active()));
             undo.disabled = !history.length || saving || choosing;
             redo.disabled = !future.length || saving || choosing;
@@ -1020,9 +1024,8 @@ export async function imageView({ file, blob, url }) {
             if (historyButton.disabled) historyPanel.hidePopover();
             else if (historyPanel.matches(":popover-open")) { showHistory(); positionHistory(); }
             for (const { input } of sliders) input.disabled = !backgroundEdit?.rawMask || removing;
-            backgroundReset.disabled = !backgroundEdit?.rawMask || removing;
             const selected = backgroundEdit?.selection;
-            backgroundApply.disabled = backgroundReset.disabled || !!selected && (selected.width < 1 || selected.height < 1);
+            spatialApply.disabled = !backgroundEdit?.rawMask || removing || !!selected && (selected.width < 1 || selected.height < 1);
             showSpatial();
             applyCrop.disabled = saving || removing || !crop || crop.width < 1 || crop.height < 1;
             // Lay out toolbar changes before another pointer event can arrive.
@@ -1030,7 +1033,7 @@ export async function imageView({ file, blob, url }) {
             changed();
         }
         const setCropping = (on) => {
-            if (on && (saving || !resizePanel.hidden || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active())) return;
+            if (on && (saving || !resizePanel.hidden || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || scanning?.active())) return;
             cropping = on;
             crop = null;
             cropButton.setAttribute("aria-pressed", String(on));
@@ -1046,7 +1049,7 @@ export async function imageView({ file, blob, url }) {
             changed: showButtons,
         });
         inpaintButton.addEventListener("click", () => {
-            if (saving || cropping || drawing?.active() || placing?.active() || !resizePanel.hidden || stopped) return;
+            if (saving || cropping || drawing?.active() || placing?.active() || scanning?.active() || !resizePanel.hidden || stopped) return;
             closeBackground(false, false);
             setCropping(false); setResizing(false);
             inpainting.open(); showButtons();
@@ -1081,10 +1084,18 @@ export async function imageView({ file, blob, url }) {
         };
         view.addEventListener("paste", pasted);
         const openDrawing = () => {
-            if (saving || cropping || !resizePanel.hidden || backgroundEdit || inpainting?.active() || placing?.active() || stopped) return;
+            if (saving || cropping || !resizePanel.hidden || backgroundEdit || inpainting?.active() || placing?.active() || scanning?.active() || stopped) return;
             if (drawing.active()) drawing.close(); else drawing.open();
         };
         drawButton.addEventListener("click", openDrawing);
+        scanning = scanTool({ toolbar: editBar, hints: hintBar, stage, button: scanButton,
+            geometry: () => ({ width, height, x, y, scale }), source: () => content,
+            apply: (op) => { change(op); say("Document scanned. Undo to restore the photo."); }, changed: () => showButtons(),
+        });
+        scanButton.addEventListener("click", () => {
+            if (saving || cropping || !resizePanel.hidden || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || stopped) return;
+            try { scanning.open(); } catch (err) { say(err.message, true); }
+        });
         cropChanged = showButtons;
         rotateLeft.addEventListener("click", () => change("left"));
         rotateRight.addEventListener("click", () => change("right"));
@@ -1103,6 +1114,10 @@ export async function imageView({ file, blob, url }) {
         undo.addEventListener("click", undoLast);
         redo.addEventListener("click", redoNext);
         const keys = (e) => {
+            if (scanning?.active()) {
+                if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); e.stopPropagation(); if (e.key === "Escape") scanning.close(); else scanning.commit(); }
+                return;
+            }
             if (inpainting?.active()) {
                 if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a") {
                     e.preventDefault(); e.stopPropagation(); inpainting.selectAll();
@@ -1146,7 +1161,7 @@ export async function imageView({ file, blob, url }) {
             }
         };
         stage.addEventListener("keydown", keys);
-        defaultTools.replaceChildren(rotateLeft, rotateRight, flipH, flipV, cropButton, resizeButton, drawButton, placeButton, placeFile, removeBackground, inpaintButton, undo, redo, historyGroup, saveOptionsGroup, status);
+        defaultTools.replaceChildren(rotateLeft, rotateRight, flipH, flipV, cropButton, resizeButton, scanButton, drawButton, placeButton, placeFile, removeBackground, inpaintButton, undo, redo, historyGroup, saveOptionsGroup, status);
         editBar.hidden = false;
         view.classList.add("editing");
         if (!WRITABLE.has(type)) format.value = "image/png";
@@ -1157,14 +1172,16 @@ export async function imageView({ file, blob, url }) {
         const encode = (target, q) => new Promise((resolve) => content.toBlob(resolve, target, target === "image/png" ? undefined : q / 100));
         return {
             dirty,
-            pending: () => !!backgroundEdit || !!inpainting?.active() || !!(drawing?.active() || placing?.active()) || cropping || !resizePanel.hidden,
+            pending: () => !!backgroundEdit || !!inpainting?.active() || !!(drawing?.active() || placing?.active() || scanning?.active()) || cropping || !resizePanel.hidden,
             batchRecipe: () => {
                 let pending = null;
-                if (inpainting?.active()) {
+                if (scanning?.active()) {
+                    pending = scanning.recipe(); if (!pending) return null;
+                } else if (inpainting?.active()) {
                     pending = inpainting.recipe();
                     if (!pending) return null;
                 } else if (backgroundEdit) {
-                    if (!backgroundEdit.rawMask || removing || backgroundApply.disabled) return null;
+                    if (!backgroundEdit.rawMask || removing || spatialApply.disabled) return null;
                     pending = { kind: "background", width, height, settings: backgroundSettings(),
                         selection: backgroundEdit.selection, strokes: backgroundEdit.strokes };
                 } else if (drawing?.active()) {
@@ -1185,7 +1202,7 @@ export async function imageView({ file, blob, url }) {
             snapshot: async ({ beforeTool = false } = {}) => {
                 if (stopped) throw new Error("This image editor is closed.");
                 if (width * height > maxPixels) throw new Error("The edited page exceeds the pixel limit.");
-                if (!beforeTool && (backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || cropping || !resizePanel.hidden)) throw new Error("Apply or cancel the current tool first.");
+                if (!beforeTool && (backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || scanning?.active() || cropping || !resizePanel.hidden)) throw new Error("Apply or cancel the current tool first.");
                 const canvas = beforeTool ? transform(source, sourceSize[0], sourceSize[1], ops).canvas : content;
                 const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
                 if (beforeTool) canvas.width = canvas.height = 0;
@@ -1194,11 +1211,11 @@ export async function imageView({ file, blob, url }) {
             },
             saving: () => saving,
             // (A format that can't be written over: its copy can be, unchanged.)
-            canSave: () => !saving && !backgroundEdit && !inpainting?.active() && !drawing?.active() && !placing?.active() && !cropping && resizePanel.hidden && (intent().how !== null || !WRITABLE.has(type) && !copied),
+            canSave: () => !saving && !backgroundEdit && !inpainting?.active() && !drawing?.active() && !placing?.active() && !scanning?.active() && !cropping && resizePanel.hidden && (intent().how !== null || !WRITABLE.has(type) && !copied),
             save: async () => {
                 const it = intent();
                 const how = it.how ?? (!WRITABLE.has(type) && !copied ? "copy" : null);
-                if (saving || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || cropping || !resizePanel.hidden || stopped || !how) return;
+                if (saving || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || scanning?.active() || cropping || !resizePanel.hidden || stopped || !how) return;
                 saving = true;
                 showButtons();
                 say("Saving…");
@@ -1210,7 +1227,16 @@ export async function imageView({ file, blob, url }) {
                     }
                     if (!out) {
                         const target = how === "copy" ? format.value : type;
-                        const made = await encode(target, it.q);
+                        let made;
+                        if (target === "application/pdf") {
+                            // Flatten transparency onto paper before JPEG encoding.
+                            const page = Object.assign(document.createElement("canvas"), { width, height });
+                            const ctx = page.getContext("2d"); ctx.fillStyle = "white"; ctx.fillRect(0, 0, width, height); ctx.drawImage(content, 0, 0);
+                            const jpeg = await new Promise(resolve => page.toBlob(resolve, "image/jpeg", it.q / 100));
+                            page.width = page.height = 0;
+                            if (!jpeg) throw new Error("The scanned page couldn't be encoded.");
+                            made = rasterPDF([{ blob: jpeg, width, height, widthPt: width * 72 / 150, heightPt: height * 72 / 150 }]);
+                        } else made = await encode(target, it.q);
                         if (!made || made.type !== target) throw new Error(`this browser can't write ${FORMATS[target]} pictures`);
                         out = how === "encode" && it.kept ? new Blob([withMetadata(new Uint8Array(await made.arrayBuffer()), bytes, type, content.width, content.height)], { type }) : made;
                     }
@@ -1262,6 +1288,7 @@ export async function imageView({ file, blob, url }) {
                 historyPanel.hidePopover();
                 document.removeEventListener("pointerdown", outsideBackground, true);
                 backgroundPointer = null;
+                scanning?.stop(); scanning = null;
                 selectionBox.remove();
                 brushCursor.remove();
                 brushes.stop();

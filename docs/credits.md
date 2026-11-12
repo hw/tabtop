@@ -21,6 +21,7 @@ files, except Ghostty's, which comes compiled into ghostty-web.
 | [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) | Filling painted image regions to remove logos and objects, in a browser worker | MIT code and model weights; `/opt/inpaint/LICENSE.migan` |
 | [U²-Net](https://github.com/xuebinqin/U-2-Net) (U2NetP) | Foreground masks for image background removal, using the ONNX weights distributed by [rembg](https://github.com/danielgatis/rembg) | Apache-2.0; license in `/opt/background/LICENSE.u2net` |
 | [iced-x86](https://github.com/icedland/iced) | x86, x86-64 and 16-bit disassembly in the hex preview's data inspector, and the encoding behind assembling an edited line there (its WebAssembly decoder, formatter and encoder, run in a worker) | MIT (its licence in `/opt/disasm/LICENSE.iced`) |
+| [Capstone.js](https://github.com/AlexAltea/capstone.js) and [Capstone](https://www.capstone-engine.org/) | ARM64, ARM32, Thumb/Thumb-2 and MIPS32/64 disassembly in the hex inspector, run as WebAssembly in a worker | BSD-3-Clause and LLVM notices (`/opt/disasm/LICENSE.capstone-js`, `LICENSE.capstone`, `LICENSE.capstone-llvm` and `CREDITS.capstone`) |
 | [pako](https://github.com/nodeca/pako) | Bounded zlib decompression in binary previews | MIT |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | The colours of text previews, and of code in Markdown previews, on the files page | BSD-3-Clause |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | Math in Markdown previews | MIT |

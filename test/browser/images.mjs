@@ -289,6 +289,12 @@ export async function checkImages(checks) {
         if(await ev(`${view}.querySelector(".image-background-panel").matches(":popover-open")`))throw new Error("background adjustments opened after inference");
         await checks.click(`${view}.querySelector(".image-background-settings")`);
         await waitFor(`${view}.querySelector(".image-background-panel").matches(":popover-open")`,"background adjustments opened on request");
+        if (await ev(`${view}.querySelector(".image-background-panel").querySelector("strong, .image-background-tools, .image-background-actions, button") !== null`)) throw new Error("adjustments still contain a heading, toolbar or action buttons");
+        if (!(await ev(`${view}.querySelector(".image-background-panel").classList.contains("mask-brush-options")`))) throw new Error("adjustments do not share the save-options popover style");
+        await checks.click(`${view}.querySelector(".image-background-settings")`);
+        await waitFor(`!${view}.querySelector(".image-background-panel").matches(":popover-open") && ${view}.querySelector(".image-background-settings").getAttribute("aria-expanded") === "false"`, "adjustments toggled closed");
+        await checks.click(`${view}.querySelector(".image-background-settings")`);
+        await waitFor(`${view}.querySelector(".image-background-panel").matches(":popover-open")`, "adjustments toggled open");
         const initialRuns = await ev("window.backgroundRuns");
         const alphaSum = () => ev(`(() => {
             const c = ${view}.querySelector("canvas.image-content"), d = c.getContext("2d").getImageData(0,0,c.width,c.height).data;
@@ -332,13 +338,15 @@ export async function checkImages(checks) {
         const grown = await alphaSum();
         await set("grow", -2);
         if (await alphaSum() >= grown) throw new Error("shrink didn't contract the mask");
-        await click(".image-background-reset");
-        if (await alphaSum() !== originalSum || await ev("window.backgroundRuns") !== initialRuns) throw new Error("Reset changed the raw mask or reran inference");
+        await set("threshold", 50);
+        await set("softness", 100);
+        await set("grow", 0);
+        if (await alphaSum() !== originalSum || await ev("window.backgroundRuns") !== initialRuns) throw new Error("Restoring adjustments changed the raw mask or reran inference");
         // Use a real click: the dropdown must not cover its entry points.
         // Limit removal to the left half. The right half must retain every pixel.
         await checks.cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
         await waitFor(`(() => { const r = ${view}.querySelector(".image-background-panel").getBoundingClientRect(); return r.x >= 0 && r.right <= innerWidth && r.y >= 0 && r.bottom <= innerHeight; })()`, "the dropdown fits a narrow viewport");
-        await checks.click(`${view}.querySelector(".image-background-start-select")`);
+        await checks.click(`${view}.querySelector(".image-background-mode-select")`);
         await checks.cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         // Let ResizeObserver fit the picture after the viewport change before
         // taking the screen coordinates used by the real pointer gesture.
@@ -356,6 +364,10 @@ export async function checkImages(checks) {
         })()`);
         if (!(await ev(`!${view}.querySelector(".image-background-spatial").hidden && ${view}.querySelector(".image-zoom").textContent === "125%"`))) throw new Error("zooming dismissed the selection");
         if ((await rgbaAt(20, 20))[3] > 30 || JSON.stringify(await rgbaAt(280, 20)) !== "[255,255,255,255]") throw new Error("removal escaped its selection");
+        await click(".image-background-invert");
+        if ((await rgbaAt(20, 20))[3] !== 255 || (await rgbaAt(280, 20))[3] > 30) throw new Error("inverted background selection did not preserve the inside and remove the outside");
+        await click(".image-background-invert");
+        if ((await rgbaAt(20, 20))[3] > 30 || (await rgbaAt(280, 20))[3] !== 255) throw new Error("inverting twice changed the original background selection");
         // Background eraser shares compact brush settings, shapes, and bucket fill.
         await click(".image-background-mode-erase");
         if (await ev(`${view}.querySelector(".image-background-brush-options").matches(":popover-open")`)) throw new Error("background brush size is shown by default");
@@ -400,10 +412,10 @@ export async function checkImages(checks) {
         const beforeCancelledStroke = await alphaSum();
         await dragImage([[130, 100]], true);
         if (await alphaSum() !== beforeCancelledStroke) throw new Error("a cancelled pointer gesture changed the mask");
-        await click(".image-background-settings");
-        await click(".image-background-reset");
+        await ev(`(() => { const undo = ${view}.querySelector(".image-background-undo-stroke"); for (let i = 0; i < 100 && !undo.disabled; i++) undo.click(); })()`);
+        await click(".image-background-whole");
         if (await alphaSum() !== originalSum || await ev("window.backgroundRuns") !== initialRuns) throw new Error("selection and brushes changed the raw prediction");
-        await click(".image-background-apply");
+        await click(".image-background-spatial-apply");
         await waitFor(`${note}.startsWith("Background removed")`, "the preview applied");
         const alpha = await alphas();
         if (alpha[0] !== 0 || alpha[1] > 30 || alpha[2] < 230) throw new Error(`foreground mask: ${alpha}`);
@@ -444,9 +456,12 @@ export async function checkImages(checks) {
         await click(".image-background-settings");
         await set("grow", 2);
         if ((await rgbaAt(180,20))[3] !== previouslyRemoved || await ev("window.backgroundRuns") !== currentRuns) throw new Error("adjustments changed an earlier pass or reran inference");
+        const adjustedPreview = await alphaSum();
         await ev(`${view}.querySelector(".image-background-grow").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))`);
-        await waitFor(`!${view}.querySelector(".image-background-panel").matches(":popover-open")`, "Escape closes the dialog");
-        if (await alphaSum() !== beforeAdjusting) throw new Error("Escape didn't restore the committed cutout");
+        await waitFor(`!${view}.querySelector(".image-background-panel").matches(":popover-open")`, "Escape closes adjustments");
+        if (await alphaSum() !== adjustedPreview || await ev(`${view}.querySelector(".image-background-spatial").hidden`)) throw new Error("closing adjustments discarded the background preview");
+        await click(".image-background-spatial-cancel");
+        if (await alphaSum() !== beforeAdjusting) throw new Error("Cancel didn't restore the committed cutout");
         await click(".image-remove-background");
         await waitFor(ready, "the next removal pass",120000);
         await click(".image-background-mode-select");
@@ -515,6 +530,28 @@ export async function checkImages(checks) {
         await click(".image-inpaint-undo");
         await shape("rectangle"); await drag([20,20],[60,60]);
         if (!(await ev(`Number(${view}.querySelector(".image-inpaint-overlay mask rect:last-child").getAttribute("width"))===40`))) throw new Error("inpainting rectangle geometry");
+        await click(".image-inpaint-invert");
+        const invertedAlpha = await ev(`(async () => {
+            const svg=${view}.querySelector(".image-inpaint-overlay").cloneNode(true);
+            svg.removeAttribute("style"); svg.setAttribute("width",320); svg.setAttribute("height",240);
+            const url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)],{type:"image/svg+xml"}));
+            try { const image=new Image(); image.src=url; await image.decode();
+                const c=Object.assign(document.createElement("canvas"),{width:320,height:240}),ctx=c.getContext("2d");ctx.drawImage(image,0,0);
+                return [ctx.getImageData(30,30,1,1).data[3],ctx.getImageData(100,100,1,1).data[3]];
+            } finally {URL.revokeObjectURL(url);}
+        })()`);
+        if (invertedAlpha[0] !== 0 || invertedAlpha[1] < 120) throw new Error(`inverted inpainting highlight does not show the complement: ${invertedAlpha}`);
+        const maskPixels = await ev(`(async () => {
+            const url=performance.getEntriesByType("resource").find(e=>new URL(e.name).pathname.endsWith("/image-mask.js")).name;
+            const {drawMaskMarks}=await import(url);
+            const c=Object.assign(document.createElement("canvas"),{width:8,height:8}),ctx=c.getContext("2d");
+            const marks=[{rect:{x:2,y:2,width:4,height:4}},{invert:true,width:8,height:8}];
+            drawMaskMarks(ctx,marks); const first=[ctx.getImageData(3,3,1,1).data[3],ctx.getImageData(0,0,1,1).data[3]];
+            ctx.clearRect(0,0,8,8);drawMaskMarks(ctx,[...marks,{invert:true,width:8,height:8}]);
+            return [...first,ctx.getImageData(3,3,1,1).data[3],ctx.getImageData(0,0,1,1).data[3]];
+        })()`);
+        if (JSON.stringify(maskPixels) !== "[0,255,255,0]") throw new Error(`inpainting mask inversion pixels: ${maskPixels}`);
+        await click(".image-inpaint-undo");
         await click(".image-inpaint-reset"); await shape("brush");
         await drawLine([[50,50],[110,50],[110,110],[50,110],[50,50]]);
         await click(".image-inpaint-fill"); await drag([80,80]);
@@ -744,6 +781,14 @@ export async function checkImages(checks) {
         await pointer([[105, 5]]);
         await waitFor(`!${view}.querySelector(".image-draw-filled").hidden && !${view}.querySelector(".image-draw-apply").disabled`, "the fill previewed");
         if (!near(await pixel(105, 5), [255,255,255])) throw new Error("the fill changed the picture before it was applied");
+        await click(".image-draw-invert");
+        await pointer([[105, 60]]);
+        await waitFor(`!${view}.querySelector(".image-draw-filled").hidden && ${view}.querySelector(".image-draw-invert").getAttribute("aria-pressed") === "true"`, "the inverted bucket selection previewed");
+        const inverseFill = await ev(`(()=>{const c=${view}.querySelector(".image-draw-filled"),ctx=c.getContext("2d");return [[105,5],[105,60]].map(([x,y])=>[...ctx.getImageData(x,y,1,1).data].slice(0,3));})()`);
+        if (!near(inverseFill[0], [255,255,255]) || !near(inverseFill[1], [255,0,255])) throw new Error(`bucket inversion: ${JSON.stringify(inverseFill)}`);
+        await click(".image-draw-undo-stroke");
+        await click(".image-draw-invert");
+        await waitFor(`!${view}.querySelector(".image-draw-apply").disabled`, "the original bucket selection restored");
         await key("Enter");
         await waitFor(`${view}.querySelector(".image-draw-tools").hidden`, "the fill applied");
         if (!near(await pixel(105, 5), [255,0,255]) || !near(await pixel(195, 45), [255,0,255])) throw new Error("the white in the selection wasn't filled");
@@ -808,6 +853,86 @@ export async function checkImages(checks) {
         await waitFor(`!document.querySelector("dialog.preview")`,"the large image closed");
         execFileSync("docker",["exec",container,"rm","/home/user/Downloads/media/edges.png"]);
         await open("fs/#/",`document.title==="Downloads /"&&!!document.querySelector("table")`,"the listing");
+    });
+
+    await step("files: scan a photographed page with perspective correction, paper whitening, undo and save", async () => {
+        const corners = [[30,20],[280,40],[270,380],[15,360]];
+        const inside = (x,y) => corners.every((a,i) => {const b=corners[(i+1)%4];return (b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0])>=0;});
+        writeFileSync(`${work}/scan.png`,png(300,400,(x,y)=>{
+            if(!inside(x,y))return [25,95,40,255];
+            if(x>55&&x<240&&y>80&&y<320&&y%30<3)return [25,25,25,255];
+            const shade=165+Math.round(40*x/300);return [shade+15,shade+5,shade-10,255];
+        }));
+        execFileSync("docker",["cp","-q",`${work}/scan.png`,`${container}:/home/user/Downloads/media/scan.png`]);
+        execFileSync("docker",["exec",container,"chown","user","/home/user/Downloads/media/scan.png"]);
+        await open("fs/#/media/",`${listed}.includes("scan.png")`,"the scan fixture");
+        const view=`document.querySelector("dialog.preview .image-view")`;
+        // Use the shared listing helper: its row selector also handles escaped names.
+        const listedRow=checks.row("scan.png");
+        await ev(`${listedRow}.querySelector("summary").click();[...${listedRow}.querySelectorAll("button")].find(b=>b.textContent==="Preview").click()`);
+        await waitFor(`document.querySelector("dialog.preview button.edit")&&!document.querySelector("dialog.preview button.edit").hidden`,"the page editable");
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        const click=cls=>ev(`${view}.querySelector(${JSON.stringify(cls)}).click()`);
+        // Until editing has loaded the picture, it's an <img>, not a canvas.
+        const dimensions=`(()=>{const c=${view}.querySelector("canvas.image-content");return c?c.width+"x"+c.height:"";})()`;
+        await waitFor(`${dimensions}==="300x400"`,"the photo loaded");
+        await click(".image-scan-start");
+        await waitFor(`!${view}.querySelector(".image-scan-tools").hidden&&${view}.querySelectorAll(".image-scan-corner:not([hidden])").length===8`,"four document corners and four edge middles");
+        const moveCorner=async(i,point)=>{
+            const points=await ev(`(()=>{const b=${view}.querySelectorAll(".image-scan-corner")[${i}].getBoundingClientRect(),c=${view}.querySelector("canvas.image-content"),r=c.getBoundingClientRect();return [{x:b.x+b.width/2,y:b.y+b.height/2},{x:r.x+${point[0]}*r.width/c.width,y:r.y+${point[1]}*r.height/c.height}];})()`);
+            for(const [type,at] of [["mousePressed",points[0]],["mouseMoved",points[1]],["mouseReleased",points[1]]])await checks.cdp("Input.dispatchMouseEvent",{type,...at,button:"left",buttons:type==="mouseReleased"?0:1,clickCount:1});
+        };
+        for(let i=0;i<4;i++)await moveCorner(i,corners[i]);
+        // The top edge's middle point (handle 4) bends the outline, and back.
+        const outlinePoints=()=>ev(`${view}.querySelector(".image-scan-outline polygon").getAttribute("points").split(" ").length`);
+        const straightOutline=await ev(`${view}.querySelector(".image-scan-outline polygon").getAttribute("points")`);
+        if(await outlinePoints()!==64)throw new Error("the outline isn't drawn through the edges");
+        await moveCorner(4,[155,15]);
+        if(await ev(`${view}.querySelector(".image-scan-outline polygon").getAttribute("points")`)===straightOutline)throw new Error("the top edge's middle didn't bend it");
+        if (process.env.SCAN_SCREENSHOT) { const shot = await checks.cdp("Page.captureScreenshot", { format: "png" }); writeFileSync(process.env.SCAN_SCREENSHOT, Buffer.from(shot.data, "base64")); }
+        await moveCorner(4,[155,30]);
+        await ev(`(()=>{const b=${view}.querySelectorAll(".image-scan-corner")[4];b.focus();})()`);
+        if(!(await ev(`${view}.querySelectorAll(".image-scan-corner")[4].title.startsWith("Middle of the top edge")`)))throw new Error("edge middle unlabelled");
+        await click(".image-scan-preview");
+        await waitFor(`!${view}.querySelector(".image-scan-result").hidden`,"the flattened page preview");
+        const previewPixels=await ev(`(()=>{const c=${view}.querySelector(".image-scan-result"),d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;let gray=true,light=0,dark=0;for(let i=0;i<d.length;i+=4){gray&&=d[i]===d[i+1]&&d[i+1]===d[i+2];light+=d[i]>225;dark+=d[i]<60;}return {width:c.width,height:c.height,gray,light,dark};})()`);
+        if(Math.abs(previewPixels.width-253)>2||Math.abs(previewPixels.height-340)>2||!previewPixels.gray||previewPixels.light<50000||previewPixels.dark<1000)throw new Error(`scan preview: ${JSON.stringify(previewPixels)}`);
+        await click(".image-scan-settings");
+        await waitFor(`${view}.querySelector(".image-scan-options").matches(":popover-open")`,"scan adjustments popover");
+        await ev(`(()=>{const m=${view}.querySelector(".image-scan-mode");m.value="bw";m.dispatchEvent(new Event("input"));})()`);
+        await waitFor(`!${view}.querySelector(".image-scan-result").hidden&&(()=>{const c=${view}.querySelector(".image-scan-result"),d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;return d.every((v,i)=>i%4===3||v===0||v===255);})()`,"black-and-white finish");
+        await ev(`(()=>{const m=${view}.querySelector(".image-scan-mode");m.value="gray";m.dispatchEvent(new Event("input"));})()`);
+        await click(".image-scan-corners");
+        await moveCorner(0,[295,350]);
+        await waitFor(`${view}.querySelector(".image-scan-apply").disabled`,"crossed outline rejected");
+        await moveCorner(0,corners[0]);
+        await waitFor(`!${view}.querySelector(".image-scan-apply").disabled`,"outline repaired");
+        await click(".image-scan-apply");
+        await waitFor(`${dimensions}!=="300x400"&&${view}.querySelector(".image-scan-tools").hidden`,"scan applied");
+        const scanned=await ev(dimensions);
+        await click(".image-save-options-toggle");
+        await ev(`(f=>{f.value="application/pdf";f.dispatchEvent(new Event("change"));})(${view}.querySelector(".image-format"))`);
+        await ev(`document.querySelector("dialog.preview button.save-edit").click()`);
+        await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Saved a copy as scan.pdf")`,"scan saved as a PDF copy");
+        const pdfSignature=inContainer("sh","-c","head -c 8 ~/Downloads/media/scan.pdf");
+        if(!pdfSignature.startsWith("%PDF-1.7"))throw new Error("scan PDF signature missing");
+        await click(".image-save-options-toggle");
+        await ev(`(f=>{f.value="image/png";f.dispatchEvent(new Event("change"));})(${view}.querySelector(".image-format"))`);
+        await click(".image-undo"); await waitFor(`${dimensions}==="300x400"`,"scan undone to the original photo");
+        await click(".image-redo"); await waitFor(`${dimensions}===${JSON.stringify(scanned)}`,"scan redone");
+        await click(".image-scan-start"); await click(".image-scan-cancel");
+        if(await ev(dimensions)!==scanned)throw new Error("cancel changed the committed scan");
+        await ev(`document.querySelector("dialog.preview button.save-edit").click()`);
+        await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Saved:")`,"scanned PNG saved");
+        await ev(`document.querySelector("dialog.preview button.done-edit").click();document.querySelector("dialog.preview button.close").click()`);
+        await waitFor(`!document.querySelector("dialog.preview")`,"scan closed");
+        const signature=inContainer("sh","-c","od -An -tu1 -j16 -N8 ~/Downloads/media/scan.png");
+        const pngSize=signature.trim().split(/\s+/).map(Number);
+        const savedWidth=pngSize.slice(0,4).reduce((v,b)=>v*256+b,0),savedHeight=pngSize.slice(4).reduce((v,b)=>v*256+b,0);
+        if(`${savedWidth}x${savedHeight}`!==scanned)throw new Error("saved scan dimensions differ from the preview");
+        execFileSync("docker",["exec",container,"rm","/home/user/Downloads/media/scan.png","/home/user/Downloads/media/scan.pdf"]);
+        await open("fs/#/",`document.title==="Downloads /"&&!!document.querySelector("table")`,"the listing");
+        return "four draggable corners and edge middles that bend the outline, grayscale and paper cleanup, black-and-white preview, invalid outline guard, undo/redo, Cancel, PDF copy and PNG Save";
     });
 
 }

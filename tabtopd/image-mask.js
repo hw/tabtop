@@ -34,7 +34,8 @@ export function maskPath(ctx, mark) {
     }
     if (mark.points) { brushPath(ctx, mark); return; }
     ctx.beginPath();
-    if (mark.circle) ctx.arc(mark.circle.cx, mark.circle.cy, mark.circle.r, 0, Math.PI * 2);
+    if (mark.invert) ctx.rect(0, 0, mark.width, mark.height);
+    else if (mark.circle) ctx.arc(mark.circle.cx, mark.circle.cy, mark.circle.r, 0, Math.PI * 2);
     else if (mark.rect) ctx.rect(mark.rect.x, mark.rect.y, mark.rect.width, mark.rect.height);
     else for (const [y, left, right] of mark.fill.spans) ctx.rect(mark.fill.x + left, mark.fill.y + y, right - left + 1, 1);
 }
@@ -61,6 +62,7 @@ export function maskBounds(marks, width, height) {
             right = Math.max(right, bounds.right * sx); bottom = Math.max(bottom, bounds.bottom * sy);
             continue;
         }
+        if (mark.invert) { left = 0; top = 0; right = width; bottom = height; continue; }
         let points, radius = 0;
         if (mark.fill) {
             const b = mark.fill.bounds; points = [[b.x, b.y], [b.x + b.width, b.y + b.height]];
@@ -79,10 +81,19 @@ export function maskBounds(marks, width, height) {
 export function drawMaskMarks(ctx, marks) {
     ctx.fillStyle = "white";
     for (const mark of marks) {
-        ctx.globalCompositeOperation = mark.erase ? "destination-out" : "source-over";
+        ctx.globalCompositeOperation = mark.invert ? "xor" : mark.erase ? "destination-out" : "source-over";
         maskPath(ctx, mark); ctx.fill();
     }
     ctx.globalCompositeOperation = "source-over";
+}
+
+export function clipSelection(ctx, selection, width, height) {
+    if (!selection) return;
+    ctx.beginPath();
+    if (selection.inverted) ctx.rect(0, 0, width, height);
+    if (selection.shape === "circle") ctx.ellipse(selection.x + selection.width / 2, selection.y + selection.height / 2, selection.width / 2, selection.height / 2, 0, 0, Math.PI * 2);
+    else ctx.rect(selection.x, selection.y, selection.width, selection.height);
+    ctx.clip(selection.inverted ? "evenodd" : "nonzero");
 }
 
 // Scanline flood fill of an unmasked component. Reaching an edge means the
