@@ -51,7 +51,8 @@ export async function checkSavedHTML(checks) {
         inContainer("mkdir", "-p", "/home/user/Downloads/media/embedded_files");
         execFileSync("docker", ["cp", "-q", `${work}/embedded.html`, `${container}:/home/user/Downloads/media/embedded.html`]);
         execFileSync("docker", ["cp", "-q", `${work}/beep.wav`, `${container}:/home/user/Downloads/media/embedded_files/beep.wav`]);
-        inContainer("chown", "-R", "user", "/home/user/Downloads/media/embedded.html", "/home/user/Downloads/media/embedded_files");
+        // docker cp creates root-owned fixtures; changing their owner needs root.
+        execFileSync("docker", ["exec", "-u", "root", container, "chown", "-R", "user", "/home/user/Downloads/media/embedded.html", "/home/user/Downloads/media/embedded_files"]);
         await ev('localStorage.setItem("tabtop.html-view","rendered")');
         await open("fs/#/media/", `${listed}.includes("embedded.html")`, "embedded.html");
         await ev('[...document.querySelectorAll("td.name a")].find(a => a.textContent === "embedded.html").click()');
