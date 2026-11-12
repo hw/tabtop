@@ -221,13 +221,15 @@ const jpegSegment = (marker, payload) => concat([Uint8Array.of(0xff, marker, (pa
 const PNG_SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
 const PNG_META = { tEXt: "text", zTXt: "text", iTXt: "text", eXIf: "EXIF", tIME: "time" };
 let crcTable = null;
-function crc32(bytes) {
-    crcTable ??= Array.from({ length: 256 }, (_, n) => {
+// crc32 is the CRC-32 (as PNG and ZIP have it) of bytes; given the one of
+// what came before them, of all of it, so it can be had a part at a time.
+export function crc32(bytes, before = 0) {
+    crcTable ??= Uint32Array.from({ length: 256 }, (_, n) => {
         let c = n;
         for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
         return c >>> 0;
     });
-    let c = 0xffffffff;
+    let c = (before ^ 0xffffffff) >>> 0;
     for (const x of bytes) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
     return (c ^ 0xffffffff) >>> 0;
 }

@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
 )
@@ -55,10 +56,16 @@ const (
 	maxSQLitePage  = 4 << 20          // and about this much of them, encoded
 	maxSQLiteText  = 2000             // characters of a text value shown
 	maxSQLiteBlob  = 32               // bytes of a blob shown
+	maxSQLiteLoad  = 64 << 10         // bytes of a value read whole, if its start can be read alone
+	maxSQLiteWhole = 4 << 20          // and if it can't (a view's, a virtual table's, a generated column's)
 	maxSQLiteArg   = 96 << 10         // the question, as the child's argument (under MAX_ARG_STRLEN, 128 KiB)
 )
 
 var sqliteSlots = newPreviewWork(previewReadConcurrency)
+
+// sqliteOctetLength is whether the SQLite linked has octet_length(): 3.43
+// and later (see rows).
+var sqliteOctetLength = C.sqlite3_libversion_number() >= 3043000
 
 // sqliteQuery is a "sqlite" request's question (see tunnelRequest.SQLite):
 // Op "" (or "schema") for the tables and views, "rows" for a page of a
@@ -91,13 +98,15 @@ type sqliteObject struct {
 	Columns []sqliteColumn `json:"columns,omitempty"` // a table's or view's
 	Rowid   bool           `json:"rowid,omitempty"`   // a table with rowids: paged by them
 	Error   string         `json:"error,omitempty"`   // why its columns couldn't be read
+	virtual bool           // a virtual table (as source has it)
 }
 
 type sqliteColumn struct {
-	Name   string `json:"name"`
-	Type   string `json:"type,omitempty"`
-	PK     int    `json:"pk,omitempty"`
-	Hidden bool   `json:"hidden,omitempty"`
+	Name      string `json:"name"`
+	Type      string `json:"type,omitempty"`
+	PK        int    `json:"pk,omitempty"`
+	Hidden    bool   `json:"hidden,omitempty"`
+	Generated bool   `json:"-"` // a value computed, not kept: not one to read in part
 }
 
 // A value, as sent: nil for NULL, else one of these set. Integers are
@@ -112,7 +121,10 @@ type sqliteValue struct {
 	Cut  bool    `json:"cut,omitempty"`
 }
 
-type sqliteDB struct{ db *C.sqlite3 }
+type sqliteDB struct {
+	db       *C.sqlite3
+	encoding string // how its text is kept: "UTF-8", "UTF-16le" or "UTF-16be"
+}
 
 type sqliteError struct {
 	code int
@@ -173,6 +185,14 @@ func openSQLite(name string, writable bool) (*sqliteDB, error) {
 			d.close()
 			return nil, err
 		}
+	}
+	// (Fixed once the database's made: read the once.)
+	d.encoding = "UTF-8"
+	if st, err := d.prepare("PRAGMA encoding"); err == nil {
+		if ok, _ := st.next(); ok {
+			d.encoding = st.text(0)
+		}
+		st.close()
 	}
 	return d, nil
 }
@@ -292,9 +312,9 @@ func (st *sqliteStmt) value(i int) *sqliteValue {
 		}
 		return &sqliteValue{Real: f}
 	case C.SQLITE_TEXT:
-		// No more read than the characters shown could take (4 bytes
-		// each at most), however big the value: it can be bigger than
-		// the memory the child has.
+		// No more copied than the characters shown could take (4 bytes
+		// each at most). (SQLite has the value whole, here: rows reads
+		// only values no bigger than maxSQLiteLoad this way.)
 		p := C.sqlite3_column_text(st.s, ci)
 		n := int(C.sqlite3_column_bytes(st.s, ci))
 		s := ""
@@ -320,6 +340,87 @@ func (st *sqliteStmt) value(i int) *sqliteValue {
 		return &sqliteValue{Blob: &head, Len: n}
 	}
 	return nil
+}
+
+// cell is a value of the row st is on, as sent (nil for NULL), from the
+// columns at, at+1 and at+2: its type, its size in bytes, and the value,
+// if it's small enough to read whole (see rows). Bigger text or a bigger
+// blob is cut short: its start is read from table at rowid, in column (""
+// if it can't be: then it's shown as its size alone).
+func (d *sqliteDB) cell(st *sqliteStmt, at int, table, column string, rowid int64) *sqliteValue {
+	kind := st.text(at)
+	n := int(st.int(at + 1))
+	if kind != "text" && kind != "blob" || C.sqlite3_column_type(st.s, C.int(at+2)) != C.SQLITE_NULL {
+		v := st.value(at + 2)
+		// A size as the database keeps it, whether or not it was read
+		// whole (UTF-16's, not UTF-8's).
+		if v != nil && v.Cut {
+			v.Len = n
+		}
+		return v
+	}
+	if kind == "blob" {
+		head := hex.EncodeToString(d.head(table, column, rowid, maxSQLiteBlob))
+		return &sqliteValue{Blob: &head, Len: n}
+	}
+	text := ""
+	if encoding := d.encoding; encoding == "UTF-8" {
+		text = string(d.head(table, column, rowid, 4*maxSQLiteText))
+	} else if b := d.head(table, column, rowid, 4*maxSQLiteText); len(b) >= 2 {
+		// UTF-16, as the database keeps its text: two bytes a unit.
+		units := make([]uint16, len(b)/2)
+		for i := range units {
+			if d.encoding == "UTF-16be" {
+				units[i] = uint16(b[2*i])<<8 | uint16(b[2*i+1])
+			} else {
+				units[i] = uint16(b[2*i+1])<<8 | uint16(b[2*i])
+			}
+		}
+		text = string(utf16.Decode(units))
+	}
+	if k := runeOffset(text, maxSQLiteText); k >= 0 {
+		text = text[:k]
+	}
+	return &sqliteValue{Text: &text, Cut: true, Len: n}
+}
+
+// head is the first bytes (up to max) of the value in column of table at
+// rowid, read without reading it all; nil if it can't be read so.
+func (d *sqliteDB) head(table, column string, rowid int64, max int) []byte {
+	if table == "" {
+		return nil
+	}
+	cdb, ctable, ccolumn := C.CString("main"), C.CString(table), C.CString(column)
+	defer C.free(unsafe.Pointer(cdb))
+	defer C.free(unsafe.Pointer(ctable))
+	defer C.free(unsafe.Pointer(ccolumn))
+	var b *C.sqlite3_blob
+	if C.sqlite3_blob_open(d.db, cdb, ctable, ccolumn, C.sqlite3_int64(rowid), 0, &b) != C.SQLITE_OK {
+		if b != nil {
+			C.sqlite3_blob_close(b)
+		}
+		return nil
+	}
+	defer C.sqlite3_blob_close(b)
+	n := min(int(C.sqlite3_blob_bytes(b)), max)
+	if n <= 0 {
+		return nil
+	}
+	buf := make([]byte, n)
+	if C.sqlite3_blob_read(b, unsafe.Pointer(&buf[0]), C.int(n), 0) != C.SQLITE_OK {
+		return nil
+	}
+	return buf
+}
+
+// sqliteMemoryUsed is the most memory SQLite has had at once since it
+// was last asked (reset), for tests.
+func sqliteMemoryUsed(reset bool) int64 {
+	r := C.int(0)
+	if reset {
+		r = 1
+	}
+	return int64(C.sqlite3_memory_highwater(r))
 }
 
 // runeOffset is the byte offset in s of its nth character (as ranging
@@ -417,7 +518,7 @@ func (d *sqliteDB) columnsOf(name string) ([]sqliteColumn, error) {
 			}
 			// (1: a virtual table's hidden column; 2 and 3, generated
 			// ones, which * gives.)
-			cols = append(cols, sqliteColumn{Name: st.text(0), Type: st.text(1), PK: int(st.int(2)), Hidden: st.int(3) == 1})
+			cols = append(cols, sqliteColumn{Name: st.text(0), Type: st.text(1), PK: int(st.int(2)), Hidden: st.int(3) == 1, Generated: st.int(3) >= 2})
 		}
 	})
 	return cols, err
@@ -442,7 +543,7 @@ func (d *sqliteDB) rowidOf(table string, cols []sqliteColumn) string {
 
 // object is the table or view called name, as the schema has it.
 func (d *sqliteDB) object(name string) (sqliteObject, error) {
-	st, err := d.prepare("SELECT type FROM sqlite_schema WHERE name = ? AND type IN ('table', 'view')", name)
+	st, err := d.prepare("SELECT type, coalesce(sql, '') FROM sqlite_schema WHERE name = ? AND type IN ('table', 'view')", name)
 	if err != nil {
 		return sqliteObject{}, err
 	}
@@ -455,6 +556,7 @@ func (d *sqliteDB) object(name string) (sqliteObject, error) {
 		return sqliteObject{}, fmt.Errorf("There's no table or view called %s.", name)
 	}
 	o := sqliteObject{Type: st.text(0), Name: name}
+	o.virtual = strings.HasPrefix(strings.ToUpper(strings.TrimSpace(st.text(1))), "CREATE VIRTUAL")
 	if o.Columns, err = d.columnsOf(name); err != nil {
 		return o, err
 	}
@@ -495,6 +597,7 @@ type sqliteSource struct {
 	names []string // the columns' own names
 	types []string // as declared ("" for an expression's)
 	rowid bool
+	parts []string // for each column, the table its values' starts can be read from alone ("" if they can't)
 }
 
 // textOf is column c as text, lower case (ASCII), NULL as "", for matching.
@@ -507,27 +610,36 @@ func (d *sqliteDB) source(q sqliteQuery) (*sqliteSource, error) {
 	}
 	from := quoteIdent(o.Name)
 	src := &sqliteSource{}
-	err = d.within(sqliteQueryFor, func() error {
-		st, err := d.prepare("SELECT * FROM " + from + " LIMIT 0")
-		if err != nil {
-			return err
+	// The columns * gives, as the schema has them: not a virtual table's
+	// hidden ones. (A view's of the same name, renamed "name:1", as * has
+	// them too. Not asked of a SELECT * as well: for a view, that's
+	// compiling it once more, for every page.)
+	var shown []sqliteColumn
+	for _, c := range o.Columns {
+		if !c.Hidden {
+			shown = append(shown, c)
 		}
-		defer st.close()
-		for i := 0; i < st.columns(); i++ {
-			src.names = append(src.names, st.name(i))
-			src.types = append(src.types, st.decltype(i))
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	}
+	for _, c := range shown {
+		src.names = append(src.names, c.Name)
+		src.types = append(src.types, c.Type)
 	}
 	n := len(src.names)
+	src.parts = make([]string, n)
 	cols, sel := make([]string, 0, n+1), "*"
 	if o.Type == "table" {
 		if alias := d.rowidOf(o.Name, o.Columns); alias != "" {
 			src.rowid, sel = true, alias+", *"
 			cols = append(cols, "k")
+			// Read in part: an ordinary rowid table's own values, not a
+			// virtual table's, nor generated ones (SQLite won't).
+			if !o.virtual {
+				for i, c := range shown {
+					if !c.Generated {
+						src.parts[i] = o.Name
+					}
+				}
+			}
 		}
 	}
 	for i := range n {
@@ -693,7 +805,30 @@ func (d *sqliteDB) rows(q sqliteQuery) (map[string]any, error) {
 	if keyed || offset < 0 {
 		offset = 0
 	}
-	sql := src.with + "SELECT * FROM q" + where(conds...) + order + " LIMIT ? OFFSET ?"
+	// Each column as its type, its size, and its value only if that's
+	// small enough: typeof() and octet_length() don't need a value read,
+	// so one bigger than the child's memory doesn't stop the row being
+	// shown (see cell). Small enough is smaller where its start can be
+	// read alone. (Sorted by a column, SQLite may still read its values;
+	// and before 3.43, there's no octet_length(), nor this saving.)
+	sel := make([]string, 0, 3*n+1)
+	if src.rowid {
+		sel = append(sel, "k")
+	}
+	sizeOf := "octet_length(%s)"
+	if !sqliteOctetLength {
+		sizeOf = "length(CAST(%s AS BLOB))"
+	}
+	for i := range n {
+		c := fmt.Sprintf("c%d", i)
+		whole := maxSQLiteWhole
+		if src.parts[i] != "" {
+			whole = maxSQLiteLoad
+		}
+		bytes := fmt.Sprintf(sizeOf, c)
+		sel = append(sel, "typeof("+c+")", bytes, fmt.Sprintf("CASE WHEN %s <= %d THEN %s END", bytes, whole, c))
+	}
+	sql := src.with + "SELECT " + strings.Join(sel, ", ") + " FROM q" + where(conds...) + order + " LIMIT ? OFFSET ?"
 	args = append(args, int64(limit+1), offset)
 	lead := 0 // columns before the table's own: k
 	if src.rowid {
@@ -719,8 +854,12 @@ func (d *sqliteDB) rows(q sqliteQuery) (map[string]any, error) {
 				return nil
 			}
 			row := make([]*sqliteValue, 0, n)
-			for i := lead; i < st.columns(); i++ {
-				v := st.value(i)
+			var rowid int64
+			if lead == 1 {
+				rowid = st.int(0)
+			}
+			for i := range n {
+				v := d.cell(st, lead+3*i, src.parts[i], src.names[i], rowid)
 				row = append(row, v)
 				if v != nil {
 					switch {
@@ -737,7 +876,7 @@ func (d *sqliteDB) rows(q sqliteQuery) (map[string]any, error) {
 			}
 			rows = append(rows, row)
 			if lead == 1 {
-				keys = append(keys, strconv.FormatInt(st.int(0), 10))
+				keys = append(keys, strconv.FormatInt(rowid, 10))
 			}
 		}
 	})

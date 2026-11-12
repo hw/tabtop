@@ -171,3 +171,11 @@ test("what a picture's first bytes say of its metadata: a JPEG's, once they reac
     assert.equal(knownFrom(Uint8Array.of(1, 2), "image/png", 2), true);
     assert.equal(knownFrom(Uint8Array.of(1, 2), "image/gif", 10), true);
 });
+
+test("CRC-32 is the standard one, and the same had a part at a time", async () => {
+    const { crc32 } = await import("../tabtopd/image-meta.js");
+    const bytes = new TextEncoder().encode("123456789");
+    assert.equal(crc32(bytes), 0xcbf43926);
+    assert.equal(crc32(bytes.subarray(4), crc32(bytes.subarray(0, 4))), 0xcbf43926);
+    assert.equal(crc32(new Uint8Array()), 0);
+});

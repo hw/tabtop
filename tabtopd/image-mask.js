@@ -141,7 +141,10 @@ export function maskSVGShape(mark) {
     return ["path", { d: mark.points.map(([x, y], i) => `${i ? "L" : "M"}${x} ${y}`).join(" "), "stroke-width": mark.radius * 2, "stroke-linecap": "round", "stroke-linejoin": "round", fill: "none" }];
 }
 
-export function glyphCaption(button, text = "Undo") {
+// glyphCaption puts text, a caption (required: "Undo", "Redo"…), under
+// button's glyph.
+export function glyphCaption(button, text) {
+    if (!text) throw new Error("A caption is needed.");
     button.classList.add("glyph-caption-button");
     button.append(el("small", { className: "glyph-caption", textContent: text, ariaHidden: "true" }));
     return button;

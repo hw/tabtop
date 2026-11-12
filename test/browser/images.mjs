@@ -667,6 +667,7 @@ export async function checkImages(checks) {
         await waitFor(`(() => { const d = ${view}.querySelector("canvas.image-content").getContext("2d").getImageData(32,50,1,1).data; return d[0] < 40 && d[2] > 200; })()`, "Undo removes the circle");
         if (!near(await pixel(140, 40), [0,0,255])) throw new Error("Undo removed the rectangle too");
         // Redo, by button and keys; and History, to go back and forth.
+        if (await ev(`${view}.querySelector(".image-redo .glyph-caption").textContent`) !== "Redo") throw new Error("Redo's caption isn't Redo");
         await click(".image-redo");
         await waitFor(red, "Redo brings the circle back");
         await key("z", { ctrlKey: true });

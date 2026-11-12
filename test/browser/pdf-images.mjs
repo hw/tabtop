@@ -27,6 +27,10 @@ export async function checkPDFImages(checks){
         const canvas=`${v}?.querySelector('canvas.image-content')`,note=`${d}.querySelector('.pdf-batch-note').textContent`;
         const ready=`!!${canvas}&&!${d}.querySelector('.pdf-batch-keep').disabled`;
         await waitFor(`${d}&&${ready}`,"batch page editor ready",120000);
+        await ev(`(s=>{s.value='jpeg';s.dispatchEvent(new Event('change'));})(${d}.querySelector('.pdf-batch-format'))`);
+        const heights=await ev(`['.pdf-batch-range','.pdf-batch-dpi','.pdf-batch-format','.pdf-batch-quality'].map(s=>Math.round(${d}.querySelector(s).getBoundingClientRect().height))`);
+        if(new Set(heights).size!==1)throw new Error(`the page range, resolution, format and quality differ in height: ${JSON.stringify(heights)}`);
+        await ev(`(s=>{s.value='png';s.dispatchEvent(new Event('change'));})(${d}.querySelector('.pdf-batch-format'))`);
         if(!(await ev(`${d}.querySelector('.pdf-batch-export').closest('.pdf-batch-actions')===${d}.querySelector('.pdf-batch-keep').closest('.pdf-batch-actions') && !${d}.querySelector('footer,.pdf-batch-background')`)))throw new Error("export controls weren't merged or redundant removal button remains");
         const initial=await ev(`(()=>{const r=${d}.getBoundingClientRect();return{width:r.width,height:r.height};})()`);
         await click('.pdf-batch-widen');

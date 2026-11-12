@@ -525,35 +525,58 @@ func TestSQLiteControlCharacters(t *testing.T) {
 // A big text value: only its start read, cut at characters, not bytes,
 // with its whole size in bytes.
 func TestSQLiteBigText(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "big.sqlite")
-	err := sqliteExec(file, "CREATE TABLE big(t TEXT);\n"+
-		"INSERT INTO big VALUES (printf('%.*c', 3000, 'é')), (printf('%.*c', 20000000, 'x')), ('short é');")
-	if err != nil {
-		t.Fatal(err)
+	// big's values, and as a view's: a table's start is read; a view's can't be.
+	rows := func(t *testing.T, file, table string) [][]sqliteValue {
+		t.Helper()
+		d, err := openSQLite(file, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.close()
+		sqliteMemoryUsed(true)
+		got, err := d.rows(sqliteQuery{Op: "rows", Table: table})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The 20 MB values never read whole.
+		if used := sqliteMemoryUsed(false); used > 4<<20 {
+			t.Errorf("%s: SQLite used %d bytes at most", table, used)
+		}
+		b, _ := json.Marshal(got)
+		var page struct{ Rows [][]sqliteValue }
+		if err := json.Unmarshal(b, &page); err != nil {
+			t.Fatal(err)
+		}
+		return page.Rows
 	}
-	d, err := openSQLite(file, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.close()
-	got, err := d.rows(sqliteQuery{Op: "rows", Table: "big"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _ := json.Marshal(got)
-	var page struct{ Rows [][]sqliteValue }
-	if err := json.Unmarshal(b, &page); err != nil {
-		t.Fatal(err)
-	}
-	accents, xs, short := page.Rows[0][0], page.Rows[1][0], page.Rows[2][0]
-	if *accents.Text != strings.Repeat("é", maxSQLiteText) || !accents.Cut || accents.Len != 6000 {
-		t.Errorf("accents: %d characters, cut %v, %d bytes", utf8.RuneCountInString(*accents.Text), accents.Cut, accents.Len)
-	}
-	if *xs.Text != strings.Repeat("x", maxSQLiteText) || !xs.Cut || xs.Len != 20000000 {
-		t.Errorf("xs: %d characters, cut %v, %d bytes", len(*xs.Text), xs.Cut, xs.Len)
-	}
-	if *short.Text != "short é" || short.Cut || short.Len != 0 {
-		t.Errorf("short: %+v", short)
+	for _, encoding := range []string{"UTF-8", "UTF-16le", "UTF-16be"} {
+		t.Run(encoding, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "big.sqlite")
+			err := sqliteExec(file, "PRAGMA encoding = '"+encoding+"';\nCREATE TABLE big(t TEXT, b BLOB);\nCREATE VIEW seen AS SELECT * FROM big;\n"+
+				"INSERT INTO big VALUES (printf('%.*c', 3000, 'é'), x'01'), (printf('%.*c', 20000000, 'é'), zeroblob(20000000)), ('short é', NULL);")
+			if err != nil {
+				t.Fatal(err)
+			}
+			const wide = 2 // bytes an é takes, in UTF-8 and in UTF-16
+			page := rows(t, file, "big")
+			accents, huge, short := page[0][0], page[1][0], page[2][0]
+			if *accents.Text != strings.Repeat("é", maxSQLiteText) || !accents.Cut || accents.Len != 3000*wide {
+				t.Errorf("accents: %d characters, cut %v, %d bytes", utf8.RuneCountInString(*accents.Text), accents.Cut, accents.Len)
+			}
+			if *huge.Text != strings.Repeat("é", maxSQLiteText) || !huge.Cut || huge.Len != 20000000*wide {
+				t.Errorf("huge: %d characters, cut %v, %d bytes", utf8.RuneCountInString(*huge.Text), huge.Cut, huge.Len)
+			}
+			if blob := page[1][1]; *blob.Blob != strings.Repeat("00", maxSQLiteBlob) || blob.Len != 20000000 {
+				t.Errorf("huge blob: %+v", blob)
+			}
+			if *short.Text != "short é" || short.Cut || short.Len != 0 {
+				t.Errorf("short: %+v", short)
+			}
+			// A view's is cut short, with nothing of it shown, but its size.
+			if v := rows(t, file, "seen")[1][0]; v.Text == nil || *v.Text != "" || !v.Cut || v.Len != 20000000*wide {
+				t.Errorf("a view's huge value: %+v", v)
+			}
+		})
 	}
 }
 
@@ -591,5 +614,121 @@ func TestSQLiteWithinWaits(t *testing.T) {
 	}
 	if err := d.exec("CREATE TABLE t(a); INSERT INTO t VALUES (1);"); err != nil {
 		t.Errorf("interrupted afterwards: %v", err)
+	}
+}
+
+// The columns are those * gives, with their declared types: a view's,
+// expressions' too, and not a virtual table's hidden ones.
+func TestSQLiteColumnsAsSelectGives(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cols.sqlite")
+	err := sqliteExec(file, `CREATE TABLE p(id INTEGER PRIMARY KEY, name TEXT, born DATE, g AS (id * 2));
+CREATE VIEW v AS SELECT name, born, id + 1 AS next FROM p;
+CREATE VIRTUAL TABLE f USING fts5(a, b);
+INSERT INTO p(name, born) VALUES ('x', '2020-01-01');
+INSERT INTO f VALUES ('one', 'two');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := openSQLite(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.close()
+	for table, want := range map[string][2][]string{
+		"p": {{"id", "name", "born", "g"}, {"INTEGER", "TEXT", "DATE", ""}},
+		"v": {{"name", "born", "next"}, {"TEXT", "DATE", ""}},
+		"f": {{"a", "b"}, {"", ""}},
+	} {
+		got, err := d.rows(sqliteQuery{Op: "rows", Table: table})
+		if err != nil {
+			t.Fatalf("%s: %v", table, err)
+		}
+		if !slices.Equal(got["columns"].([]string), want[0]) || !slices.Equal(got["types"].([]string), want[1]) {
+			t.Errorf("%s: columns %q, types %q", table, got["columns"], got["types"])
+		}
+		if rows := got["rows"].([][]*sqliteValue); len(rows) != 1 || len(rows[0]) != len(want[0]) {
+			t.Errorf("%s: rows %v", table, rows)
+		}
+	}
+}
+
+// Values too big to read whole, where their starts can't be read alone (a
+// view's, a virtual table's, a generated column's), are read whole up to
+// maxSQLiteWhole: shown, cut short. Sizes are as the database keeps them,
+// either side of where they stop being read whole. Before octet_length()
+// (3.43), all the same, read whole.
+func TestSQLiteMidSizedValues(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "mid.sqlite")
+	err := sqliteExec(file, `CREATE TABLE p(a TEXT, g AS (a || 'y') VIRTUAL);
+CREATE VIEW v AS SELECT a FROM p;
+CREATE VIRTUAL TABLE f USING fts5(body);
+INSERT INTO p(a) VALUES (printf('%.*c', 100000, 'x'));
+INSERT INTO f VALUES (printf('%.*c', 100000, 'z'));`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, octet := range []bool{true, false} {
+		was := sqliteOctetLength
+		sqliteOctetLength = octet
+		d, err := openSQLite(file, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			table  string
+			column int
+			letter string
+			size   int
+		}{{"p", 0, "x", 100000}, {"p", 1, "x", 100001}, {"v", 0, "x", 100000}, {"f", 0, "z", 100000}} {
+			got, err := d.rows(sqliteQuery{Op: "rows", Table: c.table})
+			if err != nil {
+				t.Fatalf("%s: %v", c.table, err)
+			}
+			v := got["rows"].([][]*sqliteValue)[0][c.column]
+			if v == nil || v.Text == nil || *v.Text != strings.Repeat(c.letter, maxSQLiteText) || !v.Cut || v.Len != c.size {
+				t.Errorf("octet_length %v, %s column %d: %+v", octet, c.table, c.column, v)
+			}
+		}
+		d.close()
+		sqliteOctetLength = was
+	}
+	// UTF-16: a size is its bytes as kept, read whole or not.
+	wide := filepath.Join(t.TempDir(), "wide.sqlite")
+	if err := sqliteExec(wide, "PRAGMA encoding = 'UTF-16le';\nCREATE TABLE w(t TEXT);\nINSERT INTO w VALUES (printf('%.*c', 30000, 'a')), (printf('%.*c', 40000, 'a'));"); err != nil {
+		t.Fatal(err)
+	}
+	d, err := openSQLite(wide, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.close()
+	got, err := d.rows(sqliteQuery{Op: "rows", Table: "w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := got["rows"].([][]*sqliteValue)
+	if rows[0][0].Len != 60000 || rows[1][0].Len != 80000 || *rows[1][0].Text != strings.Repeat("a", maxSQLiteText) {
+		t.Errorf("UTF-16 sizes: %d and %d", rows[0][0].Len, rows[1][0].Len)
+	}
+}
+
+// A view's columns of the same name are shown as SELECT * names them:
+// the later renamed, "id:1".
+func TestSQLiteViewNamesAsGiven(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "names.sqlite")
+	if err := sqliteExec(file, "CREATE TABLE a(id, x);\nCREATE TABLE b(id);\nCREATE VIEW v AS SELECT a.id, b.id, a.x FROM a, b;\nINSERT INTO a VALUES (1, 2);\nINSERT INTO b VALUES (3);"); err != nil {
+		t.Fatal(err)
+	}
+	d, err := openSQLite(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.close()
+	got, err := d.rows(sqliteQuery{Op: "rows", Table: "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := got["columns"].([]string); !slices.Equal(names, []string{"id", "id:1", "x"}) {
+		t.Errorf("columns %q", names)
 	}
 }

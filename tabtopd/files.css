@@ -822,6 +822,8 @@ dialog.pdf-image-editor.wide { inset: 0; width: auto; height: auto; max-width: n
 .pdf-batch-heading > strong { flex: 1; overflow-wrap: anywhere; }
 .pdf-batch-settings label, .pdf-batch-exports label { display: inline-flex; align-items: center; gap: .4rem; }
 .pdf-image-editor :is(input, select, button) { font: inherit; }
+/* The page range, resolution, export format and quality: one height. */
+.pdf-image-editor :is(.pdf-batch-range, .pdf-batch-dpi, .pdf-batch-format, .pdf-batch-quality) { box-sizing: border-box; height: 2rem; padding: 0 .4rem; }
 .pdf-batch-range { width: 9rem; }
 .pdf-batch-quality { width: 3.5rem; }
 .pdf-batch-quality-label[hidden] { display: none; }

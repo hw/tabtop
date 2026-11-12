@@ -608,7 +608,7 @@ export async function imageView({ file, blob, url }) {
             prefix: "image-background", sizeClass: "image-background-brush-size", selectionButton: modes.find(({ mode }) => mode === "select").control, onShape: () => setBackgroundMode("select"),
         });
         const brushSize = brushes.size;
-        const undoStroke = glyphCaption(button("undo", "Undo stroke", "image-background-undo-stroke"));
+        const undoStroke = glyphCaption(button("undo", "Undo stroke", "image-background-undo-stroke"), "Undo");
         const settingsButton = button("save-options", "Background removal adjustments", "image-background-settings");
         const spatialApply = button("check", "Apply background removal", "image-background-spatial-apply");
         const spatialCancel = button("close-circle", "Cancel background removal", "image-background-spatial-cancel");
@@ -940,9 +940,9 @@ export async function imageView({ file, blob, url }) {
             else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setResizing(false); }
             e.stopPropagation();
         });
-        const undo = glyphCaption(button("undo", "Undo the last change (Ctrl+Z)", "image-undo"));
+        const undo = glyphCaption(button("undo", "Undo the last change (Ctrl+Z)", "image-undo"), "Undo");
         undo.disabled = true;
-        const redo = glyphCaption(button("redo", "Redo what was undone (Ctrl+Shift+Z)", "image-redo"));
+        const redo = glyphCaption(button("redo", "Redo what was undone (Ctrl+Shift+Z)", "image-redo"), "Redo");
         redo.disabled = true;
         // History: every state, from the original, to go back or forward to.
         const historyButton = button("history", "History: go back to any step", "image-history-toggle");

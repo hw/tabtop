@@ -116,7 +116,7 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         onShape: () => { gesture = null; mode = "select"; invalidate(); stage.focus({ preventScroll: true }); },
     });
     const size = brushes.size;
-    const undo = glyphCaption(makeButton("undo", "Undo mark", "image-inpaint-undo", () => { marks.pop(); invalidate(); }));
+    const undo = glyphCaption(makeButton("undo", "Undo mark", "image-inpaint-undo", () => { marks.pop(); invalidate(); }), "Undo");
     const reset = makeButton("clear-mask", "Clear mask", "image-inpaint-reset", () => { marks = []; invalidate(); });
     const run = makeButton("inpaint", "Inpaint", "image-inpaint-run", () => perform());
     const accept = makeButton("check", "Apply", "image-inpaint-apply", () => {

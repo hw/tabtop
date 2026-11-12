@@ -29,10 +29,12 @@
             const binary = atob(decodeURIComponent(payload).replace(/\s+/g, ""));
             return Uint8Array.from(binary, c => c.charCodeAt(0));
         }
+        // Escapes as their bytes; the text between, as UTF-8, a run at a
+        // time (so a character of two UTF-16 units stays one).
         const out = [], encoder = new TextEncoder();
-        for (let i = 0; i < payload.length; i++) {
-            if (payload[i] === "%" && /^[0-9a-f]{2}$/i.test(payload.slice(i + 1, i + 3))) { out.push(parseInt(payload.slice(i + 1, i + 3), 16)); i += 2; }
-            else out.push(...encoder.encode(payload[i]));
+        for (const part of payload.split(/(%[0-9a-f]{2})/i)) {
+            if (/^%[0-9a-f]{2}$/i.test(part)) out.push(parseInt(part.slice(1), 16));
+            else for (const byte of encoder.encode(part)) out.push(byte);
         }
         return Uint8Array.from(out);
     }
@@ -52,14 +54,23 @@
     async function process(doc, { mode, ask, render, alive, report }) {
         activeGeneration = render;
         mediaElements = [];
-        let externalCount = 0;
+        // How many resources from the web it has, told the page once as
+        // they're first all found (each found at once is told together),
+        // again only as more are (in stylesheets), and at the end, if
+        // never: none.
+        let externalCount = 0, told = -1;
+        const tell = () => {
+            if (externalCount === told || !alive()) return;
+            told = externalCount;
+            parent.postMessage({ type: "external-resources", count: externalCount }, "*");
+        };
         const seen = new Set();
         const external = (src, base = "") => {
             if (/^\s*data:/i.test(src ?? "") || !web(src) && !web(base)) return;
             const key = base + "|" + src;
             if (!seen.has(key)) {
                 seen.add(key); externalCount++;
-                parent.postMessage({ type: "external-resources", count: externalCount }, "*");
+                queueMicrotask(tell);
             }
         };
         const errors = message => { if (report.errors.length < 20) report.errors.push(message); };
@@ -181,6 +192,7 @@
             mediaElements.push(placeholder);
             pendingMedia.push({ src, kind, mediaId, placeholder });
         }
+        tell();
         return {
             urls,
             async mounted() {
@@ -197,5 +209,5 @@
             },
         };
     }
-    globalThis.TabTopHTMLResources = { process };
+    globalThis.TabTopHTMLResources = { process, dataBytes };
 })();

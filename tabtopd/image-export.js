@@ -1,17 +1,16 @@
 // Browser-native image archives and raster PDFs. No PDF scripts, links, or
 // original objects are copied into the new PDF; each page is a JPEG image.
+import { crc32 } from "./image-meta.js";
+
 const encoder = new TextEncoder();
-const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
-    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    return value >>> 0;
-});
-async function crc32(blob, signal) {
-    let crc = 0xffffffff;
+// blobCRC is blob's CRC-32, read a MiB at a time.
+async function blobCRC(blob, signal) {
+    let crc = 0;
     for (let offset = 0; offset < blob.size; offset += 1024 * 1024) {
         signal?.throwIfAborted();
-        for (const byte of new Uint8Array(await blob.slice(offset, offset + 1024 * 1024).arrayBuffer())) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
+        crc = crc32(new Uint8Array(await blob.slice(offset, offset + 1024 * 1024).arrayBuffer()), crc);
     }
-    return (crc ^ 0xffffffff) >>> 0;
+    return crc;
 }
 function record(length, fields) {
     const bytes = new Uint8Array(length), view = new DataView(bytes.buffer);
@@ -23,7 +22,7 @@ export async function imageZIP(entries, signal) {
     const data = [], central = [];
     let offset = 0, directorySize = 0;
     for (const { name, blob } of entries) {
-        const filename = encoder.encode(name), crc = await crc32(blob, signal);
+        const filename = encoder.encode(name), crc = await blobCRC(blob, signal);
         if (blob.size > 0xffffffff || offset + blob.size > 0xffffffff || filename.length > 65535) throw new Error("The image ZIP is too large.");
         const local = record(30, [[0,0x04034b50],[4,20,2],[6,0x800,2],[12,0x21,2],[14,crc],[18,blob.size],[22,blob.size],[26,filename.length,2]]);
         const header = record(46, [[0,0x02014b50],[4,20,2],[6,20,2],[8,0x800,2],[14,0x21,2],[16,crc],[20,blob.size],[24,blob.size],[28,filename.length,2],[42,offset]]);

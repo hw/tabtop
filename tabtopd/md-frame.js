@@ -314,8 +314,12 @@
         report.contents = doc.querySelectorAll(".toc li").length;
         report.frontMatter = !!doc.querySelector(":scope > details.front-matter");
 
-        const remoteCount = [...doc.querySelectorAll("img")].filter(img => /^(https?:|\/\/)/i.test(img.dataset.previewSrc ?? img.getAttribute("src") ?? "")).length;
-        page.postMessage({ type: "external-resources", count: remoteCount }, "*");
+        // Markdown's remote pictures, counted here; HTML's resources, all of
+        // them, as they're found (see TabTopHTMLResources.process).
+        if (!htmlMode) {
+            const remoteCount = [...doc.querySelectorAll("img")].filter(img => /^(https?:|\/\/)/i.test(img.dataset.previewSrc ?? img.getAttribute("src") ?? "")).length;
+            page.postMessage({ type: "external-resources", count: remoteCount }, "*");
+        }
         const resources = htmlMode ? await TabTopHTMLResources.process(doc, {
             mode: externalMode, ask, render: me, alive: () => me === renders, report,
         }) : null;
