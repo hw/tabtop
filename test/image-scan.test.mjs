@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scanGeometry, scanPixels, scanHandles, scanOutline } from "../tabtopd/image-scan.js";
+import { scanGeometry, scanPixels, scanFolds } from "../tabtopd/image-scan.js";
 import { editRecipe } from "../tabtopd/image-view.js";
 import { scaleRecipe, describeStep } from "../tabtopd/image-batch.js";
 
@@ -56,41 +56,49 @@ test("scan geometry is replayable and scales to PDF pages before later operation
     assert.deepEqual(recipe.steps[0].settings, scan);
 });
 
-test("edges left alone give exactly the four-corner scan", () => {
+test("no folds gives the four-corner scan; fold points start evenly spaced in perspective", () => {
     const w = 60, h = 80, data = new Uint8ClampedArray(w * h * 4).map((_, i) => (i * 37) % 251);
     const corners = [[5, 4], [55, 8], [58, 76], [2, 70]];
-    const four = scanPixels(data, w, h, settings(w, h, { corners })), eight = scanPixels(data, w, h, settings(w, h, { corners, edges: [[0, 0], [0, 0], [0, 0], [0, 0]] }));
-    assert.deepEqual(eight, four);
-    // The middles of the edges are halfway along them in perspective.
-    const handles = scanHandles([[0, 0], [40, 0], [40, 20], [0, 20]]);
-    assert.deepEqual(handles.slice(4), [[20, 0], [40, 10], [20, 20], [0, 10]]);
-});
-test("a bowed top edge, bent to follow it, comes out straight", () => {
-    // A page whose top edge bows up by 8 pixels in its middle, above a dark band.
-    const w = 100, h = 100, data = new Uint8ClampedArray(w * h * 4);
-    const top = x => 20 - 8 * 4 * ((x - 10) / 80) * (1 - (x - 10) / 80);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        const inPage = x >= 10 && x <= 90 && y >= top(x) && y <= 90, band = inPage && y < top(x) + 6;
-        data.set(band ? [0, 0, 0, 255] : inPage ? [255, 255, 255, 255] : [0, 160, 0, 255], (y * w + x) * 4);
-    }
-    const corners = [[10, 20], [90, 20], [90, 90], [10, 90]];
-    const straightened = scanPixels(data, w, h, settings(w, h, { corners, edges: [[0, -8], [0, 0], [0, 0], [0, 0]] }));
+    assert.deepEqual(scanPixels(data, w, h, settings(w, h, { corners, folds: [] })), scanPixels(data, w, h, settings(w, h, { corners })));
+    assert.deepEqual(scanFolds([[0, 0], [30, 0], [30, 90], [0, 90]]), [[[0, 30], [30, 30]], [[0, 60], [30, 60]]]);
+    // Folds where the corners' perspective puts them change next to nothing.
+    const folded = scanPixels(data, w, h, settings(w, h, { corners, folds: scanFolds(corners) }));
     const flat = scanPixels(data, w, h, settings(w, h, { corners }));
-    const darkRow = (img, y) => Array.from({ length: img.width - 8 }, (_, i) => img.data[(y * img.width + i + 4) * 4]).every(v => v < 60);
-    // Bent: the band runs straight along the top; four corners alone cut it off in the middle.
-    assert.ok(darkRow(straightened, 2), "the band follows the bent edge");
-    assert.ok(!darkRow(flat, 2), "four corners alone miss the bow");
-    assert.ok(straightened.width > flat.width && straightened.height === flat.height, "as wide as the bent edge is long");
+    assert.equal(folded.width, flat.width);
+    assert.ok(Math.abs(folded.height - flat.height) <= 1);
 });
-test("bent edges are checked, outlined, and scaled to other pages", () => {
+test("a letter folded in three comes out as one flat page", () => {
+    // Three panels, each its own shape: red narrowing to its fold, green
+    // widening from it, and blue; on black.
+    const w = 100, h = 130, data = new Uint8ClampedArray(w * h * 4);
+    const panels = [[[10, 10], [90, 10], [80, 50], [20, 50]], [[20, 50], [80, 50], [90, 90], [10, 90]], [[10, 90], [90, 90], [90, 120], [10, 120]]];
+    const inside = (q, x, y) => q.every((a, i) => { const b = q[(i + 1) % 4]; return (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]) >= 0; });
+    const colours = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const k = panels.findIndex(q => inside(q, x + .5, y + .5));
+        data.set(k < 0 ? [0, 0, 0, 255] : [...colours[k], 255], (y * w + x) * 4);
+    }
+    const corners = [[10, 10], [90, 10], [90, 120], [10, 120]], folds = [[[20, 50], [80, 50]], [[10, 90], [90, 90]]];
+    const page = scanPixels(data, w, h, settings(w, h, { corners, folds }));
+    // As tall as each panel's sides: 41, 41 and 30.
+    assert.deepEqual([page.width, page.height], [75, 112]);
+    const row = (img, y) => Array.from({ length: img.width - 4 }, (_, i) => [...img.data.slice((y * img.width + i + 2) * 4, (y * img.width + i + 2) * 4 + 3)]);
+    // Each panel's colour runs right across its rows: none of the black beside the narrow fold.
+    for (const [y, colour] of [[20, colours[0]], [38, colours[0]], [42, colours[1]], [60, colours[1]], [95, colours[2]]])
+        assert.ok(row(page, y).every(c => c.every((v, j) => Math.abs(v - colour[j]) < 40)), `row ${y}`);
+    // Four corners alone take in the black beside the folds.
+    const flat = scanPixels(data, w, h, settings(w, h, { corners }));
+    assert.ok(row(flat, 38).some(c => c.every(v => v < 40)));
+});
+test("folds are checked, and scaled to other pages", () => {
     const corners = [[10, 10], [90, 10], [90, 90], [10, 90]];
-    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, edges: [[0, -20], [0, 0], [0, 0], [0, 0]] })), /inside/);
-    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, edges: [[0, 79], [0, 0], [0, -79], [0, 0]] })), /cross/);
-    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, edges: [[0, 0]] })), /edges/);
-    const outline = scanOutline(corners, [[0, -8], [0, 0], [0, 0], [0, 0]], 4);
-    assert.equal(outline.length, 16);
-    assert.deepEqual(outline[2], [50, 2]);
-    const scan = settings(100, 100, { corners, edges: [[0, -8], [4, 0], [0, 0], [0, 0]] });
+    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, folds: [[[10, 40], [120, 40]]] })), /fold point inside/);
+    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, folds: [[[10, 60], [90, 60]], [[10, 30], [90, 30]]] })), /order/);
+    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, folds: [[[10, 40]]] })), /fold point/);
+    assert.throws(() => scanGeometry(100, 100, settings(100, 100, { corners, folds: Array(7).fill([[10, 40], [90, 40]]) })), /fold point/);
+    // A fold may bulge the outline out, as a folded paper's does.
+    assert.equal(scanGeometry(100, 100, settings(100, 100, { corners, folds: [[[2, 50], [98, 50]]] })).panels.length, 2);
+    const scan = settings(100, 100, { corners, folds: [[[10, 40], [90, 40]], [[10, 70], [90, 70]]] });
     const doubled = scaleRecipe({ kind: "scan", width: 100, height: 100, settings: scan }, 200, 300);
-    assert.deepEqual(doubled.settings.edges, [[0, -24], [8, 0], [0, 0], [0, 0]]);
+    assert.deepEqual(doubled.settings.folds, [[[20, 120], [180, 120]], [[20, 210], [180, 210]]]);
 });

@@ -92,7 +92,9 @@ downloaded at `http://<host>:6080/fs/`:
     (L, R), flip it (H, V), crop it (C: drag over what to keep, then
     **Apply**, or Enter; Escape stops cropping), or resize it (**Resize…**, S:
     a width and height, kept in proportion, or a percentage). **Undo**
-    (Ctrl+Z) takes back the last change. Crop and resize replace the normal
+    (Ctrl+Z) takes back the last change. While cropping, the wand crops to
+    an object: turn it on, then click the object or drag a box round it.
+    The glyph beside it crops to every object magic select finds. Crop and resize replace the normal
     editing tools in the main toolbar with **Apply** and **Cancel**; resize
     also shows width, height and percentage. Other editing tools return after
     you apply or cancel. Each change is made again from the
@@ -104,8 +106,9 @@ downloaded at `http://<host>:6080/fs/`:
     **Shrink / grow** contracts or expands the foreground, as a percentage
     of the picture size. The main image toolbar replaces the regular editing
     controls with background-removal tools; **Adjustments…** opens the settings
-    on request. Hints appear in a small row below the toolbar. Choose
-    **Select area** and drag a rectangle: only pixels inside it change, while
+    on request. Hints appear in a small row below the toolbar. It starts
+    with **Select area** (Rectangle) chosen but no area drawn, which means
+    the whole image; drag a rectangle and only pixels inside it change, while
     U2NetP still analyzes the whole image. **Whole image** removes that limit.
     **Erase** paints transparency; **Restore** paints back the original pixels,
     including their original transparency. Both brushes stay inside the
@@ -116,7 +119,14 @@ downloaded at `http://<host>:6080/fs/`:
     the brush. The bucket
     glyph fills a closed freehand outline: draw it with **Erase**, choose
     **Flood fill**, then click inside. Open outlines leave the mask unchanged.
-    The **Undo** glyph, labelled underneath, takes back the last stroke or fill.
+    **Object** (magic select), the third choice under the arrow beside
+    **Select area**, finds objects for you: click one, or drag a box round
+    it, to remove it from the cutout; Shift-click (or Shift-drag) one to add
+    it back. Each click edits the cutout as it is, in turn. **Keep all
+    objects**, beside it, keeps only the objects it finds, in place of the
+    cutout; click any of them to remove it. The first time
+    it's chosen it takes a few seconds to analyse the picture.
+    The **Undo** glyph, labelled underneath, takes back the last stroke, fill or object.
     **Pan** lets you move around a zoomed picture. **Adjustments…** reopens the sliders while working on the image.
     **Reset** clears the selection and brush strokes and restores the original
     soft mask. Adjustments reuse the prediction within the active pass.
@@ -132,13 +142,19 @@ downloaded at `http://<host>:6080/fs/`:
   - The **Inpaint** glyph removes a logo or object by filling the marked area
     with MI-GAN. Its controls replace the regular editing tools in the main
     image toolbar until you apply or cancel; zoom remains available. Save
-    options return when you leave the tool. Choose **Select area** to draw a rectangle, or **Paint mask**
+    options return when you leave the tool. It starts with **Select area** (Rectangle): drag a rectangle, or choose **Paint mask**
     to brush over it; yellow shows the mask. The arrow beside **Paint mask**
     opens the brush size selector, hidden by default. The small arrow beside
     **Select area** chooses **Rectangle** or **Circle**; circles drag from
     their centre to their edge. The main Select area glyph uses that shape. To fill a freehand region, draw a closed
     outline with the brush, choose the bucket glyph, and click inside.
-    Open outlines leave the mask unchanged. Rectangles can start outside
+    Open outlines leave the mask unchanged. **Object** (magic select), the
+    third choice under the arrow beside **Select area**, finds an object for
+    you: click it to mark it, or drag a box round it; Shift-click an object
+    to take it out of the mask. **Mark all objects**, shown beside it, marks
+    every object it finds at once. The first time it's
+    chosen, it takes a few seconds to analyse the picture; each click after
+    that is quick. Rectangles can start outside
     the picture and are clipped to its edges; endpoints near an edge snap to
     it, including when the image is fitted or zoomed. The **Mask entire image** glyph
     (Ctrl+A or ⌘A while inpainting) covers every pixel; use **Subtract mask**

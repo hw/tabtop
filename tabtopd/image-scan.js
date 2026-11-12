@@ -3,13 +3,8 @@
 import { el } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 
-const MAX_PIXELS = 16e6, MAX_SIDE = 8192;
+const MAX_PIXELS = 16e6, MAX_SIDE = 8192, MAX_FOLDS = 6;
 const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-const EDGE_SAMPLES = 16;
-// The middle of each edge, clockwise from the top, where (u, v) runs over
-// the page from (0, 0) at its top left to (1, 1) at its bottom right.
-export const SCAN_EDGES = [[.5, 0], [1, .5], [.5, 1], [0, .5]];
-const NO_EDGES = [[0, 0], [0, 0], [0, 0], [0, 0]];
 
 // Whether corners go clockwise round a convex outline: crossed or concave
 // ones would fold the projective transform.
@@ -31,86 +26,58 @@ function homography([a, b, c, d]) {
         b[1] - a[1] + g * b[1], d[1] - a[1] + k * d[1], a[1], g, k];
 }
 
-// scanMapper is where each point (u, v) of the scanned page comes from in
-// the photo: the corners' perspective, with each edge bent through its
-// middle point, which is edges[i] (an offset) from where the perspective
-// alone would put it. The bend fades towards the opposite edge and is none
-// at the corners, so an edge left alone stays straight.
-export function scanMapper(corners, edges = NO_EDGES) {
-    const m = homography(corners);
-    const flat = convex(corners) && m.every(Number.isFinite)
-        ? (u, v) => { const den = m[6] * u + m[7] * v + 1; return [(m[0] * u + m[1] * v + m[2]) / den, (m[3] * u + m[4] * v + m[5]) / den]; }
-        // Corners that fold it: no perspective, so (only to draw the outline) between them.
-        : (u, v) => [0, 1].map(i => (1 - u) * (1 - v) * corners[0][i] + u * (1 - v) * corners[1][i] + u * v * corners[2][i] + (1 - u) * v * corners[3][i]);
-    if (edges.every(([x, y]) => !x && !y)) return flat;
-    const [top, right, bottom, left] = edges;
-    return (u, v) => {
-        const [x, y] = flat(u, v), across = 4 * u * (1 - u), down = 4 * v * (1 - v);
-        return [0, 1].map(i => [x, y][i] + across * ((1 - v) * top[i] + v * bottom[i]) + down * ((1 - u) * left[i] + u * right[i]));
-    };
+// A folded paper (a letter folded to fit an envelope, say) lies in flat
+// panels, one above another, each in its own perspective. Each fold is a
+// straight line across it, from a point on its left side to one on its
+// right: [left, right], top to bottom. scanPanels is the panels' corners
+// (clockwise from top left), top to bottom.
+export function scanPanels(corners, folds = []) {
+    const lefts = [corners[0], ...folds.map(f => f[0]), corners[3]];
+    const rights = [corners[1], ...folds.map(f => f[1]), corners[2]];
+    return lefts.slice(1).map((left, i) => [lefts[i], rights[i], rights[i + 1], left]);
 }
 
-// scanOutline is the page's outline in the photo, clockwise from its top
-// left: n points along each edge.
-export function scanOutline(corners, edges, n = EDGE_SAMPLES) {
-    const at = scanMapper(corners, edges), out = [];
-    for (const [u0, v0, du, dv] of [[0, 0, 1, 0], [1, 0, 0, 1], [1, 1, -1, 0], [0, 1, 0, -1]])
-        for (let i = 0; i < n; i++) out.push(at(u0 + du * i / n, v0 + dv * i / n));
-    return out;
+// scanFolds is where n folds, evenly spaced down the paper in the corners'
+// perspective, would be: where their points start.
+export function scanFolds(corners, n = 2) {
+    const m = homography(corners), flat = convex(corners) && m.every(Number.isFinite);
+    const at = (u, v) => flat
+        ? [(m[0] * u + m[1] * v + m[2]) / (m[6] * u + m[7] * v + 1), (m[3] * u + m[4] * v + m[5]) / (m[6] * u + m[7] * v + 1)]
+        // Corners that fold it: (only to place the points) between them.
+        : [0, 1].map(i => (1 - v) * corners[u ? 1 : 0][i] + v * corners[u ? 2 : 3][i]);
+    return Array.from({ length: n }, (_, i) => [at(0, (i + 1) / (n + 1)), at(1, (i + 1) / (n + 1))]);
 }
 
-// scanHandles is where the eight points are drawn: the corners, then the
-// middle of each edge.
-export function scanHandles(corners, edges = NO_EDGES) {
-    const flat = scanMapper(corners);
-    return [...corners.map(p => [...p]), ...SCAN_EDGES.map(([u, v], i) => flat(u, v).map((c, j) => c + edges[i][j]))];
-}
-
-const turn = (a, b, c) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
-// Whether a closed outline's edges cross one another.
-function crosses(points) {
-    const n = points.length;
-    for (let i = 0; i < n; i++) for (let j = i + 2; j < n; j++) {
-        if (i === 0 && j === n - 1) continue;
-        const a = points[i], b = points[(i + 1) % n], c = points[j], d = points[(j + 1) % n];
-        if (turn(a, b, c) * turn(a, b, d) < 0 && turn(c, d, a) * turn(c, d, b) < 0) return true;
-    }
-    return false;
-}
-const length = (points) => points.reduce((sum, p, i) => i ? sum + distance(points[i - 1], p) : 0, 0);
-
+const isPoint = (a, width, height) => Array.isArray(a) && a.length === 2 && a.every(Number.isFinite) && a[0] >= 0 && a[0] <= width && a[1] >= 0 && a[1] <= height;
 export function scanGeometry(width, height, settings) {
-    const p = settings?.corners;
+    const p = settings?.corners, folds = settings?.folds ?? [];
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > MAX_PIXELS)
         throw new Error("Resize the picture to under 16 megapixels before scanning.");
-    if (!Array.isArray(p) || p.length !== 4 || p.some(a => !Array.isArray(a) || a.length !== 2 || !a.every(Number.isFinite)
-        || a[0] < 0 || a[0] > width || a[1] < 0 || a[1] > height)) throw new Error("Place all four corners inside the picture.");
+    if (!Array.isArray(p) || p.length !== 4 || p.some(a => !isPoint(a, width, height))) throw new Error("Place all four corners inside the picture.");
+    if (!Array.isArray(folds) || folds.length > MAX_FOLDS || folds.some(f => !Array.isArray(f) || f.length !== 2 || f.some(a => !isPoint(a, width, height))))
+        throw new Error("Place every fold point inside the picture.");
     // Clockwise on screen: top left, top right, bottom right, bottom left.
-    if (!convex(p)) throw new Error("Keep the corners in order around the paper without crossing the edges.");
+    const panels = scanPanels(p, folds);
+    if (!folds.length && !convex(p)) throw new Error("Keep the corners in order around the paper without crossing the edges.");
+    if (folds.length && !panels.every(convex)) throw new Error("Keep the corners and fold points in order down each side, without crossing.");
     let area = 0;
-    for (let i = 0; i < 4; i++) area += p[i][0] * p[(i + 1) % 4][1] - p[(i + 1) % 4][0] * p[i][1];
+    for (const q of panels) for (let i = 0; i < 4; i++) area += q[i][0] * q[(i + 1) % 4][1] - q[(i + 1) % 4][0] * q[i][1];
     if (area < 8) throw new Error("Select a larger document area.");
-    const edges = settings.edges ?? NO_EDGES;
-    if (!Array.isArray(edges) || edges.length !== 4 || edges.some(a => !Array.isArray(a) || a.length !== 2 || !a.every(Number.isFinite)))
-        throw new Error("Invalid document edges.");
-    const bent = edges.some(([x, y]) => x || y);
-    let w, h;
-    if (bent) {
-        if (scanHandles(p, edges).slice(4).some(([x, y]) => x < 0 || x > width || y < 0 || y > height))
-            throw new Error("Place the middle of each edge inside the picture.");
-        if (crosses(scanOutline(p, edges))) throw new Error("Bend the edges less: they mustn't cross each other.");
-        // As long as the bent edges are.
-        const at = scanMapper(p, edges), along = (f) => length(Array.from({ length: 33 }, (_, i) => at(...f(i / 32))));
-        w = Math.max(2, Math.round((along(t => [t, 0]) + along(t => [t, 1])) / 2));
-        h = Math.max(2, Math.round((along(t => [0, t]) + along(t => [1, t])) / 2));
-    } else {
-        w = Math.max(2, Math.round((distance(p[0], p[1]) + distance(p[3], p[2])) / 2));
-        h = Math.max(2, Math.round((distance(p[0], p[3]) + distance(p[1], p[2])) / 2));
-    }
+    // As wide as the paper is across, on average; each panel as tall as its sides.
+    const across = [[p[0], p[1]], ...folds, [p[3], p[2]]];
+    const w = Math.max(2, Math.round(across.reduce((sum, [a, b]) => sum + distance(a, b), 0) / across.length));
+    let top = 0;
+    const parts = panels.map(q => {
+        const tall = Math.max(panels.length > 1 ? 1 : 2, Math.round((distance(q[0], q[3]) + distance(q[1], q[2])) / 2));
+        const part = { matrix: homography(q), top, height: tall };
+        top += tall;
+        return part;
+    });
+    const h = top;
     if (w * h > MAX_PIXELS || Math.max(w, h) > MAX_SIDE) throw new Error("The scanned page exceeds 16 megapixels or 8192 pixels per side.");
     if (!["color", "gray", "bw"].includes(settings.mode) || !Number.isFinite(settings.whiten) || settings.whiten < 0 || settings.whiten > 100
         || !Number.isFinite(settings.ink) || settings.ink < 0 || settings.ink > 40) throw new Error("Invalid scan adjustments.");
-    return { width: w, height: h, matrix: homography(p), map: scanMapper(p, edges) };
+    return { width: w, height: h, matrix: parts[0].matrix, panels: parts };
 }
 
 // A small background field: enlarge bright paper regions to bridge ink,
@@ -147,10 +114,15 @@ function paperField(data, width, height) {
 export function scanPixels(rgba, width, height, settings) {
     const size = scanGeometry(width, height, settings);
     if (rgba.length !== width * height * 4) throw new Error("Invalid scan pixels.");
-    const out = new Uint8ClampedArray(size.width * size.height * 4), map = size.map;
+    const out = new Uint8ClampedArray(size.width * size.height * 4);
+    let panel = 0;
     for (let y = 0; y < size.height; y++) for (let x = 0; x < size.width; x++) {
-        const [px, py] = map((x + .5) / size.width, (y + .5) / size.height);
-        const sx = Math.max(0, Math.min(width - 1, px - .5)), sy = Math.max(0, Math.min(height - 1, py - .5));
+        // Each panel's rows from its own perspective.
+        while (y >= size.panels[panel].top + size.panels[panel].height) panel++;
+        const { matrix: m, top: start, height: tall } = size.panels[panel];
+        const u = (x + .5) / size.width, v = (y - start + .5) / tall, den = m[6] * u + m[7] * v + 1;
+        const sx = Math.max(0, Math.min(width - 1, (m[0] * u + m[1] * v + m[2]) / den - .5));
+        const sy = Math.max(0, Math.min(height - 1, (m[3] * u + m[4] * v + m[5]) / den - .5));
         const left = Math.floor(sx), top = Math.floor(sy), fx = sx - left, fy = sy - top, at = (y * size.width + x) * 4;
         let alpha = 0;
         const color = [0, 0, 0];
@@ -191,7 +163,7 @@ export function scanCanvas(source, settings) {
 }
 
 export function scanTool({ toolbar, hints, stage, button, geometry, source, apply, changed }) {
-    let active = false, corners = [], edges = [], base = null, frame = null, gesture = null, previewing = false;
+    let active = false, corners = [], moved = [], base = null, frame = null, gesture = null, previewing = false;
     const control = (icon, label, cls, action) => {
         const b = el("button", { type: "button", className: `glyph ${cls}`, title: label, ariaLabel: label });
         b.innerHTML = iconSVG(icon); b.addEventListener("click", action); return b;
@@ -225,26 +197,28 @@ export function scanTool({ toolbar, hints, stage, button, geometry, source, appl
     const bar = el("div", { className: "image-scan-tools", hidden: true }, cornerView, preview, adjust, accept, cancel, settings);
     const note = el("span", { className: "hint image-scan-note", role: "status", hidden: true });
     toolbar.append(bar); hints.append(note);
-    const ns = "http://www.w3.org/2000/svg", outline = document.createElementNS(ns, "svg"), polygon = document.createElementNS(ns, "polygon");
-    outline.setAttribute("class", "image-scan-outline"); outline.setAttribute("aria-hidden", "true"); outline.append(polygon); outline.style.display = "none";
+    const ns = "http://www.w3.org/2000/svg", outline = document.createElementNS(ns, "svg"), polygon = document.createElementNS(ns, "polygon"), foldLines = document.createElementNS(ns, "path");
+    outline.setAttribute("class", "image-scan-outline"); outline.setAttribute("aria-hidden", "true"); foldLines.setAttribute("class", "image-scan-fold-lines"); outline.append(polygon, foldLines); outline.style.display = "none";
     const output = el("canvas", { className: "image-scan-result", hidden: true, ariaLabel: "Scanned document preview", role: "img" });
-    const params = () => ({ corners: corners.map(p => [...p]), edges: edges.map(p => [...p]), mode: mode.value, whiten: Number(whiten.value), ink: Number(ink.value) });
-    // Eight points: the corners (0-3), then the middle of each edge (4-7).
+    // Four points down each side: the corners (0-3), then the two folds'
+    // left and right points (4-7). A fold point follows the corners, evenly
+    // spaced, until it's moved itself (moved[i - 4]).
+    const folds = () => scanFolds(corners).map((fold, f) => fold.map((p, side) => moved[f * 2 + side] ?? p));
+    const params = () => ({ corners: corners.map(p => [...p]), ...(moved.some(Boolean) ? { folds: folds() } : {}),
+        mode: mode.value, whiten: Number(whiten.value), ink: Number(ink.value) });
     const names = ["Top left document corner", "Top right document corner", "Bottom right document corner", "Bottom left document corner",
-        "Middle of the top edge", "Middle of the right edge", "Middle of the bottom edge", "Middle of the left edge"];
-    const pointOf = i => scanHandles(corners, edges)[i];
-    // Moves point i to x, y (kept inside the picture): a corner, or an edge's middle, which bends it.
+        "Upper fold, left side", "Upper fold, right side", "Lower fold, left side", "Lower fold, right side"];
+    const pointOf = i => i < 4 ? corners[i] : folds()[(i - 4) >> 1][(i - 4) & 1];
     const moveTo = (i, [x, y]) => {
         const p = [Math.max(0, Math.min(base.width, x)), Math.max(0, Math.min(base.height, y))];
-        if (i < 4) corners[i] = p;
-        else { const flat = scanHandles(corners)[i]; edges[i - 4] = [p[0] - flat[0], p[1] - flat[1]]; }
+        if (i < 4) corners[i] = p; else moved[i - 4] = p;
     };
     const handles = names.map((name, i) => {
-        const b = el("button", { type: "button", className: `image-scan-corner${i < 4 ? "" : " image-scan-edge"}`, textContent: i < 4 ? String(i + 1) : "", ariaLabel: name, hidden: true });
+        const b = el("button", { type: "button", className: `image-scan-corner${i < 4 ? "" : " image-scan-fold"}`, textContent: i < 4 ? String(i + 1) : "", ariaLabel: name, hidden: true });
         b.addEventListener("pointerdown", e => {
             if (e.button !== 0) return;
             e.preventDefault(); e.stopPropagation(); b.focus(); b.setPointerCapture(e.pointerId);
-            gesture = { i, corners: corners.map(p => [...p]), edges: edges.map(p => [...p]), id: e.pointerId };
+            gesture = { i, corners: corners.map(p => [...p]), moved: [...moved], id: e.pointerId };
         });
         b.addEventListener("pointermove", e => {
             if (!gesture || gesture.i !== i || gesture.id !== e.pointerId) return;
@@ -252,7 +226,7 @@ export function scanTool({ toolbar, hints, stage, button, geometry, source, appl
             moveTo(i, [(e.clientX - r.left - g.x) / g.scale, (e.clientY - r.top - g.y) / g.scale]);
             refresh();
         });
-        const end = e => { e.stopPropagation(); if (gesture?.i === i) { if (e.type === "pointercancel") ({ corners, edges } = gesture); gesture = null; refresh(); } };
+        const end = e => { e.stopPropagation(); if (gesture?.i === i) { if (e.type === "pointercancel") ({ corners, moved } = gesture); gesture = null; refresh(); } };
         b.addEventListener("pointerup", end); b.addEventListener("pointercancel", end);
         b.addEventListener("keydown", e => {
             const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
@@ -267,9 +241,10 @@ export function scanTool({ toolbar, hints, stage, button, geometry, source, appl
         if (!active) return;
         const g = geometry();
         Object.assign(outline.style, { left: `${g.x}px`, top: `${g.y}px`, width: `${g.width * g.scale}px`, height: `${g.height * g.scale}px` });
-        outline.setAttribute("viewBox", `0 0 ${g.width} ${g.height}`); polygon.setAttribute("points", scanOutline(corners, edges).map(p => p.join(",")).join(" "));
-        const points = scanHandles(corners, edges);
-        handles.forEach((b, i) => { const [x, y] = points[i]; Object.assign(b.style, { left: `${g.x + x * g.scale}px`, top: `${g.y + y * g.scale}px` }); b.title = `${names[i]}: ${Math.round(x)}, ${Math.round(y)}; drag or use arrow keys${i < 4 ? "" : " to bend the edge"}`; });
+        outline.setAttribute("viewBox", `0 0 ${g.width} ${g.height}`); const across = folds(), points = [...corners, ...across.flat()];
+        polygon.setAttribute("points", [corners[0], corners[1], ...across.map(f => f[1]), corners[2], corners[3], ...across.map(f => f[0]).reverse()].map(p => p.join(",")).join(" "));
+        foldLines.setAttribute("d", across.map(([a, b]) => `M${a.join(",")}L${b.join(",")}`).join(""));
+        handles.forEach((b, i) => { const [x, y] = points[i]; Object.assign(b.style, { left: `${g.x + x * g.scale}px`, top: `${g.y + y * g.scale}px` }); b.title = `${names[i]}: ${Math.round(x)}, ${Math.round(y)}; drag or use arrow keys${i < 4 ? "" : "; place it where the paper's folded, if it is"}`; });
         if (!output.hidden) {
             const s = Math.min(g.width * g.scale / output.width, g.height * g.scale / output.height);
             Object.assign(output.style, { left: `${g.x + (g.width * g.scale - output.width * s) / 2}px`, top: `${g.y + (g.height * g.scale - output.height * s) / 2}px`, width: `${output.width * s}px`, height: `${output.height * s}px` });
@@ -278,7 +253,7 @@ export function scanTool({ toolbar, hints, stage, button, geometry, source, appl
     function refresh() {
         if (!active) return;
         let valid = true;
-        try { scanGeometry(base.width, base.height, params()); note.textContent = previewing ? "Preview: adjust the finish, or return to Corners. Apply keeps the scan." : "Drag the four numbered corners onto the paper, and the middle of an edge to bend it along a curled page. Arrow keys move a focused point; Shift moves 10 pixels."; }
+        try { scanGeometry(base.width, base.height, params()); note.textContent = previewing ? "Preview: adjust the finish, or return to Corners. Apply keeps the scan." : "Drag the four numbered corners onto the paper. If it's folded, drag the points down each side onto the folds. Arrow keys move a focused point; Shift moves 10 pixels."; }
         catch (err) { valid = false; note.textContent = err.message; }
         accept.disabled = preview.disabled = !valid; note.classList.toggle("error", !valid);
         cornerView.setAttribute("aria-pressed", String(!previewing)); preview.setAttribute("aria-pressed", String(previewing));
@@ -292,7 +267,7 @@ export function scanTool({ toolbar, hints, stage, button, geometry, source, appl
                 const sample = Object.assign(document.createElement("canvas"), { width: Math.max(2, Math.round(base.width * s)), height: Math.max(2, Math.round(base.height * s)) });
                 sample.getContext("2d").drawImage(base, 0, 0, sample.width, sample.height);
                 const p = params(), fit = ([x, y]) => [x * sample.width / base.width, y * sample.height / base.height];
-                p.corners = p.corners.map(fit); p.edges = p.edges.map(fit);
+                p.corners = p.corners.map(fit); if (p.folds) p.folds = p.folds.map(f => f.map(fit));
                 const result = scanCanvas(sample, p); output.width = result.width; output.height = result.height; output.getContext("2d").drawImage(result, 0, 0); output.hidden = false; place();
             } catch (err) { note.textContent = err.message; accept.disabled = true; base.style.visibility = ""; }
         });
@@ -304,7 +279,7 @@ export function scanTool({ toolbar, hints, stage, button, geometry, source, appl
         open() {
             base = source(); scanGeometry(base.width, base.height, { corners: [[0, 0], [base.width, 0], [base.width, base.height], [0, base.height]], mode: "gray", whiten: 85, ink: 8 });
             corners = [[.03, .03], [.97, .03], [.97, .97], [.03, .97]].map(([x, y]) => [x * base.width, y * base.height]);
-            edges = NO_EDGES.map(p => [...p]);
+            moved = [];
             mode.value = "gray"; whiten.value = "85"; ink.value = "8";
             active = true; previewing = false; bar.hidden = note.hidden = false; button.setAttribute("aria-pressed", "true"); refresh(); handles[0].focus({ preventScroll: true });
         },

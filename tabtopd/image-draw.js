@@ -8,6 +8,7 @@ import { iconSVG } from "./glyphs.js";
 import { storedJSON, storeJSON } from "./stored.js";
 import { floodFill, MAX_FILL_POINTS } from "./image-fill.js";
 import { choiceMenu } from "./image-mask.js";
+import { Segmenter, objectSelection } from "./image-segment.js";
 
 export const SHAPES = new Set(["rect", "circle", "pen"]), SHAPE_MODES = new Set(["fill", "outline", "highlight"]);
 export const MAX_LINE = 1000, MAX_STROKES = 500, MAX_STROKE_POINTS = 10000;
@@ -87,7 +88,11 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
     const saved = storedJSON(SETTINGS, {});
     let active = false, picking = false, box = null, gesture = null, strokes = [];
     // The paint bucket's: points clicked, and the selection it's kept in.
-    let points = [], selection = null, selectShape = saved.selectShape === "circle" ? "circle" : "rect", filled = 0, fillFrame = 0;
+    let points = [], selection = null, selectShape = ["circle", "object"].includes(saved.selectShape) ? saved.selectShape : "rect", filled = 0, fillFrame = 0;
+    // Magic select, for an object as the selection: the picture's analysed
+    // once (analysed: the canvas it was), and each box or Shift-click asked.
+    const segmenter = new Segmenter();
+    let analysed = null, magicBusy = false, magicGeneration = 0, magicNote = null; // ({text, error}: what magic select last said)
     let shape = SHAPES.has(saved.shape) || saved.shape === "bucket" ? saved.shape : "rect";
     let mode = SHAPE_MODES.has(saved.mode) ? saved.mode : "fill";
     // A pen draws lines: Filled is for shapes.
@@ -107,7 +112,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         if (shape === "pen" && mode === "fill") mode = "outline";
     });
     // What's drawn with, and how, as menus as the selection shape's are.
-    const toolMenu = choiceMenu({ className: "image-draw-shape-menu", label: "Draw with", onChoose: (key) => setShape(key)(), choices: [
+    const toolMenu = choiceMenu({ className: "image-draw-shape-menu", label: "Draw with", onChoose: (key) => { setShape(key)(); analyse(); }, choices: [
         { key: "rect", title: "Rectangle", icon: "shape-rect", className: "image-draw-rect" },
         { key: "circle", title: "Circle", icon: "shape-circle", className: "image-draw-circle" },
         { key: "pen", title: "Pen (P)", icon: "pen", className: "image-draw-pen" },
@@ -119,7 +124,35 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
     const selectMenu = choiceMenu({ className: "image-draw-select-menu", label: "Selection shape", choices: [
         { key: "rect", title: "Rectangle", icon: "select-area", className: "image-draw-select-rect" },
         { key: "circle", title: "Circle", icon: "select-circle", className: "image-draw-select-circle" },
-    ], onChoose: (key) => choose(() => { if (selectShape !== key) selection = null; selectShape = key; refill(); })() });
+        { key: "object", title: "Object (magic select)", icon: "magic-select", className: "image-draw-select-object" },
+    ], onChoose: (key) => { choose(() => { if (selectShape !== key) selection = null; selectShape = key; refill(); })(); analyse(); } });
+    // magic runs task (a magic select step) while the tool's open on the same picture.
+    async function magic(task) {
+        const token = ++magicGeneration, canvas = source();
+        magicBusy = true; magicNote = null; update();
+        try {
+            await task(canvas, () => active && token === magicGeneration);
+        } catch (err) {
+            if (active && token === magicGeneration) magicNote = { text: err.message, error: true };
+        } finally { if (token === magicGeneration) { magicBusy = false; if (active) update(); } }
+    }
+    function analyse() {
+        if (!active || shape !== "bucket" || selectShape !== "object" || magicBusy || analysed === source()) return;
+        magic(async (canvas, current) => { await segmenter.analyse(canvas); if (current()) analysed = canvas; });
+    }
+    function pickObject(prompt) {
+        if (!active || magicBusy || analysed !== source()) return;
+        magic(async (canvas, current) => {
+            const mask = await segmenter.select(prompt);
+            // (Not if the bucket's, or its object selection, has been left meanwhile.)
+            if (!current() || shape !== "bucket" || selectShape !== "object") return;
+            const { width, height } = segmenter.size, g = geometry();
+            const found = objectSelection(mask, width, height, g.width, g.height);
+            if (!found) { magicNote = { text: "Nothing found there. Try a box round the object." }; return; }
+            selection = found;
+            refill();
+        });
+    }
     const invertSelection = makeButton("invert-selection", "Invert selection", "image-draw-invert", choose(() => {
         if (selection) selection = { ...selection, inverted: !selection.inverted };
         refill();
@@ -213,9 +246,13 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         accept.disabled = !shown();
         stage.classList.toggle("drawing", active && !picking);
         stage.classList.toggle("picking-colour", active && picking);
-        note.textContent = picking ? "Click the picture to take its colour."
+        const said = bucket && selectShape === "object" && !magicBusy ? magicNote : null;
+        note.classList.toggle("error", !!said?.error);
+        note.textContent = said ? said.text : picking ? "Click the picture to take its colour."
             : bucket ? (points.length && !filled ? "Nothing there to fill: is it outside the active selection?"
                 : points.length ? `${filled.toLocaleString()} pixels filled. Click to fill more, then Apply.`
+                : selectShape === "object" ? (magicBusy ? (analysed === source() ? "Finding the object…" : "Analysing the picture for magic select…")
+                    : "Click to fill an area of a colour; drag a box round an object, or Shift-click it, to keep the fill within it.")
                 : `Click to fill an area of a colour; drag a ${selectShape === "circle" ? "circle" : "rectangle"} to keep the fill within it.`)
             : shape === "pen" ? (mode === "highlight" ? "Highlight with the pointer, then Apply." : "Draw with the pointer, then Apply.")
             : shape === "circle" ? "Drag from the circle's centre to its edge." : "Drag a rectangle over the picture.";
@@ -228,6 +265,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         filling.hidden = !bucket || !points.length || !filled;
         if (!filling.hidden) Object.assign(filling.style, { left: `${g.x}px`, top: `${g.y}px`, width: `${g.width * g.scale}px`, height: `${g.height * g.scale}px` });
         selectionBox.hidden = !bucket || !selection || selection.width < 1 || selection.height < 1;
+        selectionBox.classList.toggle("object", selection?.shape === "object");
         if (!selectionBox.hidden) {
             Object.assign(selectionBox.style, { left: `${g.x + selection.x * g.scale}px`, top: `${g.y + selection.y * g.scale}px`,
                 width: `${selection.width * g.scale}px`, height: `${selection.height * g.scale}px`, borderRadius: selectShape === "circle" ? "50%" : "0" });
@@ -284,6 +322,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         button.setAttribute("aria-pressed", "true");
         update();
         stage.focus({ preventScroll: true });
+        analyse();
     }
     function close() {
         for (const menu of [toolMenu, styleMenu, selectMenu]) menu.close();
@@ -296,6 +335,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         filled = 0;
         cancelAnimationFrame(fillFrame);
         filling.width = filling.height = 0;
+        magicGeneration++; magicBusy = false; analysed = magicNote = null; segmenter.cancel();
         bar.hidden = true;
         button.setAttribute("aria-pressed", "false");
         update();
@@ -325,14 +365,14 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         open, close, commit,
         pick: () => setPicking(!picking),
         pen: () => setShape("pen")(),
-        bucket: () => setShape("bucket")(),
+        bucket: () => { setShape("bucket")(); analyse(); },
         place,
         // The shape as a recipe's pending step (see editRecipe), or null.
         recipe() {
             const made = draw(), g = geometry();
             return made ? { kind: shape === "bucket" ? "fill" : "draw", width: g.width, height: g.height, ...structuredClone(made) } : null;
         },
-        down(px, py) {
+        down(px, py, event) {
             if (!active) return false;
             if (picking) {
                 const p = pointOf(px, py, false), g = geometry();
@@ -342,7 +382,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
             const from = pointOf(px, py);
             if (shape === "bucket") {
                 // A click fills; a drag selects what may be.
-                gesture = { bucket: true, at: [px, py], from: pointOf(px, py, false), dragged: false };
+                gesture = { bucket: true, at: [px, py], from: pointOf(px, py, false), dragged: false, shift: !!(event?.shiftKey || event?.altKey), previous: selection };
                 return true;
             }
             if (shape === "pen") {
@@ -363,7 +403,11 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
                 if (!gesture.dragged && Math.hypot(px - gesture.at[0], py - gesture.at[1]) < 4) return true;
                 gesture.dragged = true;
                 const [fx, fy] = gesture.from, [cx, cy] = pointOf(px, py, false);
-                if (selectShape === "circle") {
+                if (selectShape === "object") {
+                    // The box round the object: found when it's let go.
+                    const [bx, by] = pointOf(px, py);
+                    selection = { x: Math.min(fx, bx), y: Math.min(fy, by), width: Math.abs(bx - fx), height: Math.abs(by - fy) };
+                } else if (selectShape === "circle") {
                     const r = Math.hypot(cx - fx, cy - fy);
                     selection = { x: fx - r, y: fy - r, width: 2 * r, height: 2 * r };
                 } else selection = { x: Math.min(fx, cx), y: Math.min(fy, cy), width: Math.abs(cx - fx), height: Math.abs(cy - fy) };
@@ -397,6 +441,15 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
                 gesture = null;
                 if (cancelled) return;
                 const g = geometry(), [x, y] = was.from;
+                if (selectShape === "object" && (was.dragged || was.shift)) {
+                    const box = selection;
+                    selection = was.previous;
+                    if (analysed !== source()) { analyse(); update(); return; }
+                    if (!was.dragged) { if (x >= 0 && y >= 0 && x < g.width && y < g.height) pickObject({ point: [x, y] }); }
+                    else if (box?.width >= 1 && box?.height >= 1) pickObject({ box: [box.x, box.y, box.width, box.height] });
+                    place();
+                    return;
+                }
                 if (was.dragged) {
                     if (selection && (selection.width < 1 || selection.height < 1)) selection = null;
                 } else if (x >= 0 && y >= 0 && x < g.width && y < g.height) {
@@ -414,6 +467,7 @@ export function drawTool({ toolbar, stage, button, geometry, source, apply, chan
         },
         stop() {
             close();
+            segmenter.cancel();
             bar.remove();
             overlay.remove();
             lines.remove();

@@ -1,4 +1,28 @@
+import { drawMaskMarks } from "./image-mask.js";
+import { samSize } from "./image-segment.js";
 export { brushPath } from "./image-mask.js";
+
+// needsFound is whether objects (marks picked with magic select) edit
+// U2NetP's cutout, rather than starting afresh ("keep all objects" does).
+export const needsFound = (objects) => !objects?.some((o) => o.only);
+
+// objectMask is the cutout as objects picked with magic select (marks over
+// a width × height picture) leave it: found (U2NetP's), then each in turn,
+// removing an object (erase) or adding it back; one marked only clears
+// what's kept before it. It's at most 1024 pixels across, as the
+// selections were made at, and scaled up as U2NetP's is.
+export function objectMask(objects, width, height, found = null) {
+    const size = samSize(width, height);
+    const canvas = Object.assign(document.createElement("canvas"), { width: size.width, height: size.height });
+    const ctx = canvas.getContext("2d");
+    if (found) ctx.drawImage(found, 0, 0, size.width, size.height);
+    ctx.scale(size.width / width, size.height / height);
+    for (const mark of objects) {
+        if (mark.only) { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, size.width, size.height); ctx.restore(); }
+        drawMaskMarks(ctx, [mark]);
+    }
+    return canvas;
+}
 
 // Adjust the original soft mask, rather than repeatedly processing a previous
 // adjustment. Grow/shrink uses a separable max/min filter; its radius is a

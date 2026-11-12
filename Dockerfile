@@ -264,6 +264,23 @@ ADD --checksum=sha256:${MIGAN_SHA256} https://huggingface.co/andraniksargsyan/mi
 ADD --checksum=sha256:13348eaaebc0b07b0faf3a92db04e0858737713a917d064b599c87cac05b571f https://huggingface.co/andraniksargsyan/migan/resolve/${MIGAN_REVISION}/LICENSE /inpaint/LICENSE.migan
 RUN chmod -R u=rwX,go=rX /inpaint
 
+# MobileSAM, for magic select: Acly's ONNX export of its image encoder (raw
+# 0-255 RGB in, normalized and padded inside) and the Segment Anything mask
+# decoder that picks the best of three masks for one click or a box. The
+# encoder's weights are MobileSAM's, the decoder's Segment Anything's: both
+# Apache-2.0.
+FROM debian:trixie-slim AS segment
+ARG MOBILESAM_ONNX_REVISION=0d3b403339b4674a82493d5e97964dd78089ddc8
+ARG MOBILESAM_ENCODER_SHA256=580f5fb648ea1062c0aabc26217aed56921985f03f0cbbd852bba81d760cc749
+ARG MOBILESAM_DECODER_SHA256=93915fc7c993ab9d59ab8c9ccd3bce37f7509c81ab4150a74abd4d2abbd8570d
+ARG MOBILESAM_REV=f706ad9c4eb7f219c00d9050e46328518ffb65d2
+ARG SAM_REV=dca509fe793f601edb92606367a655c15ac00fdf
+ADD --checksum=sha256:${MOBILESAM_ENCODER_SHA256} https://huggingface.co/Acly/MobileSAM/resolve/${MOBILESAM_ONNX_REVISION}/mobile_sam_image_encoder.onnx /segment/mobile_sam_encoder.onnx
+ADD --checksum=sha256:${MOBILESAM_DECODER_SHA256} https://huggingface.co/Acly/MobileSAM/resolve/${MOBILESAM_ONNX_REVISION}/sam_mask_decoder_single.onnx /segment/mobile_sam_decoder.onnx
+ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/ChaoningZhang/MobileSAM/${MOBILESAM_REV}/LICENSE /segment/LICENSE.mobilesam
+ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/facebookresearch/segment-anything/${SAM_REV}/LICENSE /segment/LICENSE.segment-anything
+RUN chmod -R u=rwX,go=rX /segment
+
 # All Kaitai gallery schemas are compiled with byte-position metadata at build
 # time. The final image contains parsers and notices, without Node or the compiler.
 FROM node:24-trixie-slim AS kaitai
@@ -414,6 +431,7 @@ COPY --from=kaitai /kaitai /opt/kaitai
 COPY --from=disasm /disasm /opt/disasm
 COPY --from=background /background /opt/background
 COPY --from=inpaint /inpaint /opt/inpaint
+COPY --from=segment /segment /opt/segment
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck

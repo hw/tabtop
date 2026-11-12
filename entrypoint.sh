@@ -66,6 +66,7 @@ as_user /usr/local/bin/tabtopd \
     -kaitai-dir /opt/kaitai \
     -inpaint-dir /opt/inpaint \
     -background-dir /opt/background \
+    -segment-dir /opt/segment \
     -disasm-dir /opt/disasm \
     -users-file "$TOTP_USERS_FILE" \
     -vnc-password-file "$VNC_UPSTREAM_FILE" \

@@ -73,6 +73,7 @@ type server struct {
 	preview         assetSet
 	inpaint         assetSet // MI-GAN for browser inpainting
 	background      assetSet // U2NetP and its browser runtime
+	segment         assetSet // MobileSAM, for magic select
 	disasm          assetSet // iced-x86, for the hex view's disassembly
 	pdfjs           assetSet
 	pdfjsNames      []string // pdf.js's files, in pdfjsDir (see pdfjsFiles)
@@ -145,6 +146,7 @@ func main() {
 	flag.StringVar(&c.pdfjsDir, "pdfjs-dir", c.pdfjsDir, "pdf.js, for PDF previews; empty for none, and PDFs download instead")
 	flag.StringVar(&c.inpaintDir, "inpaint-dir", c.inpaintDir, "MI-GAN model for image inpainting; empty for none")
 	flag.StringVar(&c.backgroundDir, "background-dir", c.backgroundDir, "background removal model and browser runtime; empty for none")
+	flag.StringVar(&c.segmentDir, "segment-dir", c.segmentDir, "MobileSAM models, for magic select in image editing; empty for none")
 	flag.StringVar(&c.disasmDir, "disasm-dir", c.disasmDir, "iced-x86, made loadable in a browser worker, for x86 disassembly in hex previews; empty for none")
 	flag.StringVar(&c.previewDir, "preview-dir", c.previewDir, "KaTeX and Mermaid, for math and diagrams in Markdown previews; empty for none")
 	flag.StringVar(&c.highlightDir, "highlight-dir", c.highlightDir, "highlight.js files for the colours of text previews; empty for none")

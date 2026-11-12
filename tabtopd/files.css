@@ -271,7 +271,8 @@ dialog.preview .body > .image-view { align-self: stretch; flex: 1; display: flex
 .image-scan-outline polygon { fill: #facc1520; stroke: #ffd34d; stroke-width: 2; vector-effect: non-scaling-stroke; }
 button.image-scan-corner, button.image-scan-corner:not(:disabled):hover { position: absolute; transform: translate(-50%, -50%); width: 2rem; height: 2rem; padding: 0; border: 2px solid #ffd34d;
     border-radius: 50%; background: #222; color: white; touch-action: none; cursor: move; }
-button.image-scan-edge, button.image-scan-edge:not(:disabled):hover { width: 1.25rem; height: 1.25rem; }
+button.image-scan-fold, button.image-scan-fold:not(:disabled):hover { width: 1.25rem; height: 1.25rem; }
+.image-scan-fold-lines { fill: none; stroke: #ffd34d; stroke-width: 1.5; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
 .image-scan-corner:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 .image-scan-tools button[aria-pressed="true"], .image-scan-settings[aria-expanded="true"] { background: var(--hover); border-color: var(--fg); }
 .image-background-panel { width: min(23rem, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow: auto; font-size: .85rem; }
@@ -293,6 +294,8 @@ button.image-scan-edge, button.image-scan-edge:not(:disabled):hover { width: 1.2
 .image-background-brush-size { width: 6rem; accent-color: var(--accent); }
 .image-background-brush-label output { min-width: 3rem; font-variant-numeric: tabular-nums; }
 .image-background-selection { position: absolute; box-sizing: border-box; border: 2px dashed #ffd34d; outline: 1px solid #222; pointer-events: none; }
+.image-background-magic-box { position: absolute; box-sizing: border-box; border: 2px dashed #ffd34d; outline: 1px solid #222; pointer-events: none; }
+.image-background-magic-box[hidden] { display: none; }
 .image-background-selection::after { content: attr(data-size); position: absolute; top: 100%; left: 0; margin-top: 3px; padding: .05rem .3rem;
     background: #222; color: #fff; font-size: .75rem; white-space: nowrap; }
 .image-background-cursor { position: absolute; box-sizing: border-box; border: 1px solid #fff; outline: 1px solid #222; border-radius: 50%; pointer-events: none; }
@@ -342,6 +345,9 @@ button.image-scan-edge, button.image-scan-edge:not(:disabled):hover { width: 1.2
 .image-stage.pannable { cursor: grab; }
 .image-stage.pannable:active { cursor: grabbing; }
 .image-stage.cropping { cursor: crosshair; }
+.image-stage.cropping.crop-magic { cursor: pointer; }
+.image-magic-group { display: contents; }
+.image-bar .image-magic-group [hidden] { display: none; }
 .image-stage.drawing { cursor: crosshair; }
 .image-stage.picking-colour { cursor: cell; }
 /* A shape being drawn: as it'll be, with a dashed edge to find it by. */
@@ -350,6 +356,7 @@ button.image-scan-edge, button.image-scan-edge:not(:disabled):hover { width: 1.2
 .image-draw-strokes { position: absolute; overflow: visible; pointer-events: none; }
 .image-draw-filled { position: absolute; pointer-events: none; }
 .image-stage .image-draw-filled[hidden], .image-draw-selection[hidden] { display: none; }
+.image-draw-selection.object { border-style: dotted; }
 .image-draw-selection { position: absolute; box-sizing: border-box; border: 2px dashed #ffd34d; outline: 1px solid #222; pointer-events: none; }
 .image-draw-selection::after { content: attr(data-size); position: absolute; left: 0; top: 100%; margin-top: 3px; padding: .05rem .3rem; border-radius: 3px;
     font-size: .75rem; font-variant-numeric: tabular-nums; color: #fff; background: rgb(0 0 0 / .7); white-space: nowrap; }

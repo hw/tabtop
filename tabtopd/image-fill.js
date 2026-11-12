@@ -1,11 +1,13 @@
 // Flood fill, as a paint bucket does: from each point clicked, the pixels
 // joined to it (side by side, not only corner to corner) whose colour is
 // within a tolerance of its colour, filled with one colour; within a
-// selection (a rectangle or circle), if there's one. What's filled is a
+// selection (a rectangle, a circle, or an object found with magic select:
+// its rows of pixels, over its bounds), if there's one. What's filled is a
 // step ({fill}): replayed by transform, against the colours of the picture
 // as it is by then, and as a recipe's "fill" step, on other pages too.
 
 export const MAX_FILL_POINTS = 100;
+const MAX_OBJECT_SIDE = 4096, MAX_OBJECT_SPANS = 1e6;
 const COLOR = /^#[0-9a-f]{6}$/i;
 
 // validFill is fill ({points, color, tolerance, selection}) if it can be
@@ -16,8 +18,13 @@ export function validFill(fill) {
     if (!Array.isArray(points) || !points.length || points.length > MAX_FILL_POINTS ||
         !points.every((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))) bad();
     if (!COLOR.test(fill.color ?? "") || !(Number.isFinite(fill.tolerance) && fill.tolerance >= 0 && fill.tolerance <= 100)) bad();
-    if (s != null && (!["rect", "circle"].includes(s.shape) || ![s.x, s.y, s.width, s.height].every(Number.isFinite) || s.width < 0 || s.height < 0
+    if (s != null && (!["rect", "circle", "object"].includes(s.shape) || ![s.x, s.y, s.width, s.height].every(Number.isFinite) || s.width < 0 || s.height < 0
         || s.inverted != null && typeof s.inverted !== "boolean")) bad();
+    if (s?.shape === "object") {
+        const m = s.mask;
+        if (!m || ![m.width, m.height].every((v) => Number.isInteger(v) && v >= 1 && v <= MAX_OBJECT_SIDE) || !Array.isArray(m.spans) || m.spans.length > MAX_OBJECT_SPANS
+            || !m.spans.every((r) => Array.isArray(r) && r.length === 3 && r.every(Number.isInteger) && r[0] >= 0 && r[0] < m.height && r[1] >= 0 && r[1] <= r[2] && r[2] < m.width)) bad();
+    }
     return fill;
 }
 
@@ -26,6 +33,16 @@ export function validFill(fill) {
 export function inSelection(selection) {
     if (!selection) return () => true;
     const { shape, x, y, width, height } = selection;
+    if (shape === "object") {
+        // Its pixels, as many across and down as were found, over its bounds.
+        const { width: mw, height: mh, spans } = selection.mask, bits = new Uint8Array(mw * mh);
+        for (const [row, left, right] of spans) bits.fill(1, row * mw + left, row * mw + right + 1);
+        if (width <= 0 || height <= 0) return () => !!selection.inverted;
+        return (px, py) => {
+            const u = Math.floor((px + 0.5 - x) / width * mw), v = Math.floor((py + 0.5 - y) / height * mh);
+            return (u >= 0 && v >= 0 && u < mw && v < mh && bits[v * mw + u] === 1) !== !!selection.inverted;
+        };
+    }
     if (shape === "circle") {
         const rx = width / 2, ry = height / 2, cx = x + rx, cy = y + ry;
         if (rx <= 0 || ry <= 0) return () => !!selection.inverted;

@@ -72,3 +72,9 @@ machine nobody else can reach.
   and continuous integration
 - [Credits](docs/credits.md): the projects TabTop is built on
 
+
+## License
+
+TabTop is licensed under the [Apache License, Version 2.0](LICENSE); see
+[NOTICE](NOTICE). The third-party components it bundles keep their own
+licences, listed in [Credits](docs/credits.md).

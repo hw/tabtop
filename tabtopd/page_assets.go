@@ -28,7 +28,7 @@ const (
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js third-party/* image-meta.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var pageFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -153,6 +153,18 @@ func (g *server) inpaintPath() string {
 	return g.inpaint.path(g.inpaintAssets())
 }
 
+// MobileSAM, for magic select: an encoder run once per picture, and a
+// decoder run for each click or box. It uses background removal's runtime.
+var segmentFiles = []string{"mobile_sam_encoder.onnx", "mobile_sam_decoder.onnx"}
+
+func (g *server) segmentAssets() assets { return assets{"segment", g.segmentDir, segmentFiles} }
+func (g *server) segmentPath() string {
+	if g.segmentDir == "" {
+		return "segment-missing"
+	}
+	return g.segment.path(g.segmentAssets())
+}
+
 // Background removal uses only ONNX Runtime's WASM backend, in a worker.
 var backgroundFiles = []string{"ort.wasm.min.js", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm", "u2netp.onnx"}
 
@@ -237,6 +249,11 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		js, _ := pageFiles.ReadFile(name)
 		js = bytes.ReplaceAll(js, []byte(`"./background/`), []byte(`"./`+g.backgroundPath()+`/`))
 		w.Write(bytes.ReplaceAll(js, []byte(`"./inpaint/`), []byte(`"./`+g.inpaintPath()+`/`)))
+	case name == "image-segment-worker.js":
+		h.Set("Content-Security-Policy", backgroundWorkerCSP)
+		js, _ := pageFiles.ReadFile(name)
+		js = bytes.ReplaceAll(js, []byte(`"./background/`), []byte(`"./`+g.backgroundPath()+`/`))
+		w.Write(bytes.ReplaceAll(js, []byte(`"./segment/`), []byte(`"./`+g.segmentPath()+`/`)))
 	case name == "image-background-worker.js":
 		h.Set("Content-Security-Policy", backgroundWorkerCSP)
 		js, _ := pageFiles.ReadFile(name)
@@ -262,6 +279,7 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case g.previewDir != "" && g.preview.serve(w, r, g.previewAssets(), name):
 	case g.inpaintDir != "" && g.inpaint.serve(w, r, g.inpaintAssets(), name):
 	case g.backgroundDir != "" && g.background.serve(w, r, g.backgroundAssets(), name):
+	case g.segmentDir != "" && g.segment.serve(w, r, g.segmentAssets(), name):
 	case g.disasmDir != "" && g.disasm.serve(w, r, g.disasmAssets(), name):
 	case g.servePDFJS(w, r, name):
 	case g.serveKaitai(w, r, name):

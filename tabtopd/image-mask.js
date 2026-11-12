@@ -161,7 +161,10 @@ export function glyphCaption(button, text) {
     return button;
 }
 
-export function brushControls(paintButton, { prefix, sizeClass, selectionButton, onShape }) {
+// brushControls is a brush's size, and a selection's shape: a rectangle, a
+// circle, and (magic) an object found with magic select: magic is how
+// Object's used, as its title says (true: clicked to mark it).
+export function brushControls(paintButton, { prefix, sizeClass, selectionButton, onShape, magic = false }) {
     const size = el("input", { type: "range", min: "1", max: "200", value: "30", className: sizeClass, ariaLabel: "Brush size in pixels" });
     const value = el("output", { textContent: "30 px" });
     size.addEventListener("input", () => { value.textContent = `${size.value} px`; });
@@ -177,7 +180,8 @@ export function brushControls(paintButton, { prefix, sizeClass, selectionButton,
     const shapePanel = el("div", { className: `mask-shape-options ${prefix}-shape-options`, role: "menu", ariaLabel: "Selection shape" });
     shapePanel.setAttribute("popover", "auto");
     let selected = "rectangle";
-    const choices = [ ["rectangle", "Rectangle", "select-area"], ["circle", "Circle", "select-circle"] ].map(([key, title, icon]) => {
+    const shapes = [["rectangle", "Rectangle", "select-area"], ["circle", "Circle", "select-circle"], ...(magic ? [["object", "Object (magic select)", "magic-select"]] : [])];
+    const choices = shapes.map(([key, title, icon]) => {
         const button = el("button", { type: "button", className: `glyph ${prefix}-shape-${key}`, role: "menuitemradio", title });
         button.innerHTML = iconSVG(icon);
         button.append(el("span", { textContent: title }));
@@ -188,10 +192,11 @@ export function brushControls(paintButton, { prefix, sizeClass, selectionButton,
     const shape = {
         get value() { return selected; },
         set value(value) {
-            selected = value === "circle" ? "circle" : "rectangle";
+            selected = choices.some(({ key }) => key === value) ? value : "rectangle";
             for (const { key, button } of choices) button.setAttribute("aria-checked", String(key === selected));
-            selectionButton.innerHTML = iconSVG(selected === "circle" ? "select-circle" : "select-area");
-            selectionButton.title = selected === "circle" ? "Select area: Circle (drag from centre to edge)" : "Select area: Rectangle";
+            selectionButton.innerHTML = iconSVG(shapes.find(([key]) => key === selected)[2]);
+            selectionButton.title = { circle: "Select area: Circle (drag from centre to edge)", object: `Select area: Object (magic select: ${typeof magic === "string" ? magic : "click an object, or drag a box round it; Shift-click takes one out"})` }[selected]
+                ?? "Select area: Rectangle";
             selectionButton.setAttribute("aria-label", selectionButton.title);
         },
     };

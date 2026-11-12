@@ -30,6 +30,9 @@
 | `U2NETP_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the U2NetP ONNX weights from rembg's `v0.0.0` release. |
 | `MIGAN_REVISION` | `406830d0fa60666da0071c342ad2fbc8f30c5c64` | Hugging Face revision of the authors' `andraniksargsyan/migan` repository, for the ONNX pipeline and its MIT weights license. |
 | `MIGAN_SHA256` | *(checksum in Dockerfile)* | SHA-256 of `migan_pipeline_v2.onnx`. The bundled model is the official 28.1 MB export, without additional quantization. |
+| `MOBILESAM_ONNX_REVISION` | `0d3b403339b4674a82493d5e97964dd78089ddc8` | Hugging Face revision of `Acly/MobileSAM`, for MobileSAM's ONNX image encoder and the Segment Anything single-mask decoder. |
+| `MOBILESAM_ENCODER_SHA256`, `MOBILESAM_DECODER_SHA256` | *(checksums in Dockerfile)* | SHA-256 of `mobile_sam_image_encoder.onnx` (28.2 MB) and `sam_mask_decoder_single.onnx` (16.5 MB). |
+| `MOBILESAM_REV`, `SAM_REV` | *(revisions in Dockerfile)* | MobileSAM's and Segment Anything's repositories, for their Apache-2.0 licence files. |
 | `KATEX_VERSION` | `0.19.0` | KaTeX release from npm (`katex`), which draws math in Markdown previews. |
 | `KATEX_SHA256` | *(checksum of 0.19.0)* | SHA-256 of `https://registry.npmjs.org/katex/-/katex-<version>.tgz`. |
 | `MERMAID_VERSION` | `12.2.0` | Mermaid release from npm (`mermaid`), which draws diagrams in Markdown previews. |
@@ -576,6 +579,60 @@ unmasked pixels. Touching the crop boundary rejects an open outline without
 changing the marks. Fills are stored as row spans, so Undo removes a fill as a
 single operation, without retaining a full-size bitmap. The same vector shapes
 and spans drive the SVG mask overlay and the actual canvas mask.
+
+## Magic select
+
+Both images bundle MobileSAM as `/opt/segment`: Acly's ONNX export of its
+image encoder and the Segment Anything mask decoder exported to return a
+single mask. Both are Apache-2.0 (`LICENSE.mobilesam`,
+`LICENSE.segment-anything`). `-segment-dir` locates them; `-background-dir`
+supplies the shared ONNX Runtime Web assets. The worker
+(`image-segment-worker.js`) has the same WASM-only CSP as background removal.
+
+Choosing **Object**, magic select, as the inpainting tools' selection shape
+(beside Rectangle and Circle) analyses the picture once:
+it's scaled so its longest side is 1024 pixels (larger or smaller), and the
+encoder takes raw 0–255 RGB `[H,W,3]`, normalizing and padding it itself. The
+256×64×64 embedding stays in the worker. Each click is then a decoder run
+with that point and a padding point (label −1); a dragged box is its two
+corners (labels 2 and 3). With one point or a box, the decoder picks the best
+of Segment Anything's three masks. Masks come back at the analysed size, not
+the picture's, and are thresholded at zero.
+
+The mask is grown by 3 analysed pixels, so a repair takes in the object's
+edge, and stored as a fill mark: row spans at the analysed size with a
+`scale` to the picture. The overlay, inpainting crop, Undo and PDF batches
+handle it like any other mark; on other pages it's replayed as the same
+area, not segmented again. Shift-click (or Alt-click) adds the object as a
+subtracting mark. Closing the tool terminates the worker.
+
+Background removal has the same **Object** selection shape, analysing the picture
+as it was when removal began. There a click removes the object (a
+subtracting mark) and Shift-click adds it back. The objects picked (marks, as above, without
+growing) edit U2NetP's mask in order, at the analysed size (`objectMask`):
+each removes its area or adds it back. **Keep all objects** makes one mark
+flagged `only`, which clears the mask before it, so what's found replaces
+the cutout. The sliders, selection and brushes apply on top as before. On
+other PDF pages the recipe's `objects` replay as the same areas, over
+U2NetP's mask for that page (not run when an `only` mark makes it
+unneeded).
+
+The draw tool's paint bucket offers **Object** as a selection shape: a
+dragged box or a Shift-click asks the decoder, and the result is a selection
+`{shape: "object", x, y, width, height, mask: {width, height, spans}}`, its
+spans relative to its bounds, so scaling the bounds (as `scaleRecipe` does)
+scales the outline. `image-fill.js` tests each pixel against those spans.
+Cropping has a wand too: the crop becomes the object's bounds, in whole
+pixels (`objectBounds`).
+
+**Select all objects** (Mark all objects, Keep all objects, and crop to every
+object) clicks an 8×8 grid over the picture, one decoder run each. A mask is
+kept if the decoder's own score is at least 0.8, it's stable (the area above
+a logit of +1 is at least 90% of that above −1), it's between 0.2% and 50%
+of the picture, and it doesn't reach three of its sides (the background).
+Of masks overlapping by more than 70%, the better (score × stability) is
+kept. The rest are combined into one mask, so one Undo takes them back, and
+Shift-click takes out any one of them.
 
 ## PDF pages as images
 

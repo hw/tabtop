@@ -53,7 +53,7 @@ export async function checkImages(checks) {
                 for(const selector of [".image-flip-h", ".image-crop-start", ".image-save-options-toggle"])
                     if(view.querySelector(selector).checkVisibility())return selector+" still shown";
                 const tools=view.querySelector(${JSON.stringify({inpaint:".image-inpaint-tools",background:".image-background-spatial",crop:".image-crop-tools",resize:".image-resize"}[mode])});
-                const control=tools.querySelector("button"), bounds=bar.getBoundingClientRect(), rect=control.getBoundingClientRect();
+                const control=tools.querySelector(${masking} ? "button" : "button:not(.glyph)"), bounds=bar.getBoundingClientRect(), rect=control.getBoundingClientRect();
                 if(control.closest(".image-bar")!==bar||!control.checkVisibility()||rect.top<bounds.top||rect.bottom>bounds.bottom)return "mask tools outside main toolbar";
                 if(${masking}) {
                     const hint=hints.querySelector(${JSON.stringify(mode === "inpaint" ? ".image-inpaint-note" : ".image-background-spatial-hint")});
@@ -351,7 +351,8 @@ export async function checkImages(checks) {
         // Let ResizeObserver fit the picture after the viewport change before
         // taking the screen coordinates used by the real pointer gesture.
         await ev("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-        if (!(await ev(`${view}.querySelector(".image-background-spatial-apply").disabled`))) throw new Error("empty selection can be applied");
+        // No area drawn yet is the whole image: Apply works, and nothing's outlined.
+        if (await ev(`${view}.querySelector(".image-background-spatial-apply").disabled || !${view}.querySelector(".image-background-selection").hidden`)) throw new Error("with no area drawn, Apply is blocked or an area shown");
         await dragImage([[0, 0], [150, 200]]);
         try {
             await waitFor(`(() => {const box=${view}.querySelector(".image-background-selection"),c=${view}.querySelector("canvas.image-content");return !box.hidden&&box.dataset.size==="150×200"&&c.getContext("2d").getImageData(20,20,1,1).data[3]<30;})()`,"selected-area preview rendered");
@@ -855,6 +856,210 @@ export async function checkImages(checks) {
         await open("fs/#/",`document.title==="Downloads /"&&!!document.querySelector("table")`,"the listing");
     });
 
+    await step("files: magic select (MobileSAM) marks an object at a click, takes it out with Shift, marks one in a box, keeps objects in background removal, and inpaints", async () => {
+        // A red disc and a blue square, on a busy striped ground.
+        writeFileSync(`${work}/magic.png`, png(320, 240, (x,y) => Math.hypot(x-110,y-120) < 40 ? [220,30,30,255]
+            : x >= 230 && x < 280 && y >= 40 && y < 90 ? [30,60,220,255]
+            : ((x >> 3) + (y >> 3)) % 2 ? [200,190,150,255] : [120,150,110,255]));
+        execFileSync("docker", ["cp", "-q", `${work}/magic.png`, `${container}:/home/user/Downloads/media/magic.png`]);
+        execFileSync("docker", ["exec", container, "chown", "user", "/home/user/Downloads/media/magic.png"]);
+        await open("fs/#/media/", `${listed}.includes("magic.png")`, "the magic select picture listed");
+        await ev(`[...document.querySelectorAll("td.name a")].find(a => a.textContent === "magic.png").click()`);
+        await waitFor(`!!document.querySelector("dialog.preview .image-view") && !document.querySelector("dialog.preview button.edit").hidden`, "the picture shown");
+        // Magic select's workers, counted as they're made and stopped.
+        await ev(`(() => {
+            window.segmentWorkers = { made: 0, stopped: 0 };
+            const Original = window.Worker;
+            window.Worker = class extends Original {
+                constructor(url, ...args) { super(url, ...args); this.segment = String(url).includes("image-segment-worker.js"); if (this.segment) window.segmentWorkers.made++; }
+                terminate() { if (this.segment) window.segmentWorkers.stopped++; return super.terminate(); }
+            };
+        })()`);
+        await ev(`document.querySelector("dialog.preview button.edit").click()`);
+        const view = `document.querySelector("dialog.preview .image-view")`;
+        const click = (cls) => ev(`${view}.querySelector(${JSON.stringify(cls)}).click()`);
+        await waitFor(`!!${view}.querySelector("canvas.image-content")`, "the picture loaded");
+        const pointer = async (from, to = from, modifiers = 0) => {
+            const r = await ev(`(() => { const c = ${view}.querySelector("canvas.image-content"), r = c.getBoundingClientRect(); return {x:r.x,y:r.y,sx:r.width/c.width,sy:r.height/c.height}; })()`);
+            const at = (type, [x,y], down) => checks.cdp("Input.dispatchMouseEvent", { type, x:r.x+x*r.sx, y:r.y+y*r.sy, button:"left", buttons:down?1:0, clickCount:1, modifiers });
+            await at("mousePressed", from, true);
+            if (to !== from) for (let i = 1; i <= 4; i++) await at("mouseMoved", [from[0]+(to[0]-from[0])*i/4, from[1]+(to[1]-from[1])*i/4], true);
+            await at("mouseReleased", to, false);
+        };
+        // What's marked, as the overlay shows it: its alpha at points.
+        const marked = (points) => ev(`(async () => {
+            const svg=${view}.querySelector(".image-inpaint-overlay").cloneNode(true);
+            svg.removeAttribute("style"); svg.setAttribute("width",320); svg.setAttribute("height",240);
+            const url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)],{type:"image/svg+xml"}));
+            try { const image=new Image(); image.src=url; await image.decode();
+                const c=Object.assign(document.createElement("canvas"),{width:320,height:240}),ctx=c.getContext("2d");ctx.drawImage(image,0,0);
+                return ${JSON.stringify(points)}.map(([x,y])=>ctx.getImageData(x,y,1,1).data[3]>0);
+            } finally {URL.revokeObjectURL(url);}
+        })()`);
+        const note = () => ev(`${view}.querySelector(".image-inpaint-note").textContent`);
+        const marks = () => ev(`${view}.querySelectorAll(".image-inpaint-overlay mask > :not(:first-child)").length`);
+        await click(".image-inpaint-start");
+        // Inpainting starts with Select area, a rectangle.
+        if (await ev(`${view}.querySelector(".image-inpaint-select").getAttribute("aria-pressed")`) !== "true" || await ev(`${view}.querySelector(".image-inpaint-shape-rectangle").getAttribute("aria-checked")`) !== "true") throw new Error("inpainting doesn't start with a rectangle selected");
+        // Magic select is a selection shape, as Rectangle and Circle are.
+        await checks.click(`${view}.querySelector(".image-inpaint-shape-toggle")`);
+        await waitFor(`${view}.querySelector(".image-inpaint-shape-options").matches(":popover-open")`, "the selection shapes");
+        await checks.click(`${view}.querySelector(".image-inpaint-shape-object")`);
+        if (await ev(`${view}.querySelector(".image-inpaint-select").getAttribute("aria-pressed")`) !== "true" || await ev(`${view}.querySelector(".image-inpaint-shape-object").getAttribute("aria-checked")`) !== "true"
+            || !(await ev(`${view}.querySelector(".image-inpaint-select").title.startsWith("Select area: Object")`))) throw new Error("magic select isn't the chosen selection shape");
+        await waitFor(`${view}.querySelector(".image-inpaint-note").textContent.startsWith("Click an object")||${view}.querySelector(".image-inpaint-note.error")`, "the picture analysed", 180000);
+        if (await ev(`!!${view}.querySelector(".image-inpaint-note.error")`)) throw new Error(`analysis: ${await note()}`);
+        // A click on the disc marks it, all of it, and nothing else.
+        await pointer([110,120]);
+        await waitFor(`${view}.querySelectorAll(".image-inpaint-overlay mask > :not(:first-child)").length===1||${view}.querySelector(".image-inpaint-note.error")`, "the disc selected", 60000);
+        if (await marks() !== 1) throw new Error(`click: ${await note()}`);
+        let seen = await marked([[110,120],[140,120],[110,92],[20,20],[255,65],[300,220]]);
+        if (JSON.stringify(seen) !== "[true,true,true,false,false,false]") throw new Error(`the disc's selection: ${seen}`);
+        if (process.env.MAGIC_SCREENSHOT) { const shot = await checks.cdp("Page.captureScreenshot", { format: "png" }); writeFileSync(process.env.MAGIC_SCREENSHOT, Buffer.from(shot.data, "base64")); }
+        // Shift-click takes it out again.
+        await pointer([110,120], [110,120], 8);
+        await waitFor(`${view}.querySelectorAll(".image-inpaint-overlay mask > :not(:first-child)").length===2||${view}.querySelector(".image-inpaint-note.error")`, "the disc taken out", 60000);
+        seen = await marked([[110,120],[140,120]]);
+        if (JSON.stringify(seen) !== "[false,false]") throw new Error(`Shift-click didn't take the disc out: ${seen}`);
+        await click(".image-inpaint-undo"); await click(".image-inpaint-undo");
+        // Every object at once: the disc and the square, not the ground.
+        if (!(await ev(`${view}.querySelector(".image-inpaint-magic-all").checkVisibility()`))) throw new Error("Mark all objects isn't shown with magic select");
+        await click(".image-inpaint-magic-all");
+        await waitFor(`${view}.querySelector(".image-inpaint-note").textContent.startsWith("Marked")||${view}.querySelector(".image-inpaint-note").textContent.startsWith("No objects")||${view}.querySelector(".image-inpaint-note.error")`, "every object found", 180000);
+        if (!(await note()).startsWith("Marked")) throw new Error(`mark all objects: ${await note()}`);
+        seen = await marked([[110,120],[255,65],[20,20],[300,220],[200,200]]);
+        if (JSON.stringify(seen) !== "[true,true,false,false,false]") throw new Error(`all objects: ${seen} (${await note()})`);
+        await click(".image-inpaint-undo");
+        await click(".image-inpaint-paint");
+        if (await ev(`${view}.querySelector(".image-inpaint-magic-all").checkVisibility()`)) throw new Error("Mark all objects is shown without magic select");
+        await click(".image-inpaint-shape-object");
+        // A box round the square marks it.
+        await pointer([222,32], [288,98]);
+        await waitFor(`${view}.querySelectorAll(".image-inpaint-overlay mask > :not(:first-child)").length===1||${view}.querySelector(".image-inpaint-note.error")`, "the square selected", 60000);
+        seen = await marked([[255,65],[233,43],[110,120],[20,20]]);
+        if (JSON.stringify(seen) !== "[true,true,false,false]") throw new Error(`the square's selection: ${seen}`);
+        if (await ev(`${view}.querySelector(".image-inpaint-magic-box").getAttribute("visibility")`) !== "hidden") throw new Error("the box stays drawn");
+        await click(".image-inpaint-cancel");
+        // Background removal: the disc picked is what's kept, then the square too, in a box; Undo drops the square.
+        await click(".image-remove-background");
+        const ready = `!${view}.querySelector(".image-background-spatial").hidden && !${view}.querySelector(".image-background-spatial-apply").disabled`;
+        await waitFor(`${ready} || ${view}.querySelector(".image-background-note.error")`, "U2NetP preview finishes", 120000);
+        if (!(await ev(ready))) throw new Error(await ev(`${view}.querySelector(".image-background-note").textContent`));
+        const hint = () => ev(`${view}.querySelector(".image-background-spatial-hint").textContent`);
+        const alphas = (points) => ev(`(() => { const ctx=${view}.querySelector("canvas.image-content").getContext("2d"); return ${JSON.stringify(points)}.map(([x,y])=>ctx.getImageData(x,y,1,1).data[3]); })()`);
+        // Background removal starts with Select area, a rectangle: none drawn, the whole image.
+        if (await ev(`${view}.querySelector(".image-background-mode-select").getAttribute("aria-pressed")`) !== "true" || await ev(`${view}.querySelector(".image-background-shape-rectangle").getAttribute("aria-checked")`) !== "true"
+            || !(await hint()).startsWith("Background removal affects the whole image")) throw new Error(`background removal doesn't start with a rectangle selected: ${await hint()}`);
+        // Object, magic select, is a selection shape here too: it picks what's kept, limiting nothing.
+        await checks.click(`${view}.querySelector(".image-background-shape-toggle")`);
+        await waitFor(`${view}.querySelector(".image-background-shape-options").matches(":popover-open")`, "the background selection shapes");
+        await checks.click(`${view}.querySelector(".image-background-shape-object")`);
+        // While it analyses, the shape can't be changed under it.
+        if (!(await ev(`!${view}.querySelector(".image-background-spatial-hint").textContent.startsWith("Analysing") || ${view}.querySelector(".image-background-shape-toggle").disabled`))) throw new Error("the selection shape can be changed while magic select is busy");
+        if (await ev(`${view}.querySelector(".image-background-mode-select").getAttribute("aria-pressed")`) !== "true" || !(await ev(`${view}.querySelector(".image-background-magic-all").checkVisibility()`))
+            || await ev(`${view}.querySelector(".image-background-spatial-apply").disabled`)) throw new Error("Object isn't the chosen selection shape, or it stops Apply");
+        await waitFor(`${view}.querySelector(".image-background-spatial-hint").textContent.startsWith("Click an object to remove it")||${view}.querySelector(".image-background-spatial-hint.error")`, "the picture analysed for keeping", 180000);
+        if (await ev(`!!${view}.querySelector(".image-background-spatial-hint.error")`)) throw new Error(`analysis: ${await hint()}`);
+        // Clicked, the disc is removed from what U2NetP kept: the square stays.
+        if (!(await ev(`${view}.querySelector(".image-background-mode-select").title.includes("click an object to remove it")`))) throw new Error("Object's title doesn't say a click removes");
+        const editStatus = () => ev(`document.querySelector("dialog.preview .edit-status").textContent`);
+        const said = (text, what) => waitFor(`document.querySelector("dialog.preview .edit-status").textContent.startsWith(${JSON.stringify(text)})||${view}.querySelector(".image-background-spatial-hint.error")`, what, 180000)
+            .then(async () => { if (!(await editStatus()).startsWith(text)) throw new Error(`${what}: ${await editStatus()} ${await hint()}`); });
+        const sayNothing = () => ev(`document.querySelector("dialog.preview .edit-status").textContent=""`);
+        const found = await alphas([[110,120],[255,65],[20,20]]);
+        await sayNothing(); await pointer([110,120]);
+        await said("Object removed", "the disc removed from the cutout");
+        let a = await alphas([[110,120],[255,65]]);
+        if (!(a[0] < 30 && Math.abs(a[1] - found[1]) < 10)) throw new Error(`removing the disc from U2NetP's cutout: ${found} → ${a}`);
+        // Shift-clicked, it's added back, and nothing else changes.
+        await sayNothing(); await pointer([110,120], [110,120], 8);
+        await said("Object added back", "the disc added back");
+        a = await alphas([[110,120],[140,120],[255,65],[20,20]]);
+        if (!(a[0] > 200 && a[1] > 200 && Math.abs(a[2] - found[1]) < 10 && Math.abs(a[3] - found[2]) < 10)) throw new Error(`adding the disc back: ${found} → ${a}`);
+        // Undone: removed again; and again: as U2NetP left it.
+        await click(".image-background-undo-stroke");
+        a = await alphas([[110,120]]);
+        if (!(a[0] < 30)) throw new Error(`Undo didn't take back the adding: ${a}`);
+        await click(".image-background-undo-stroke");
+        // A box removes the square.
+        await sayNothing(); await pointer([222,32], [288,98]);
+        await said("Object removed", "the square removed");
+        a = await alphas([[255,65],[233,43]]);
+        if (!(a[0] < 30 && a[1] < 30)) throw new Error(`removing the square: ${a}`);
+        if (!(await ev(`${view}.querySelector(".image-background-magic-box").hidden`))) throw new Error("the box stays drawn");
+        await click(".image-background-undo-stroke");
+        // Every object kept, in place of the cutout; then the square clicked away.
+        await sayNothing(); await click(".image-background-magic-all");
+        await said("Kept", "every object kept");
+        a = await alphas([[110,120],[255,65],[20,20],[200,200]]);
+        if (!(a[0] > 200 && a[1] > 200 && a[2] < 30 && a[3] < 30)) throw new Error(`keeping all objects: ${a} ${await hint()}`);
+        await sayNothing(); await pointer([255,65]);
+        await said("Object removed", "the square removed from the objects kept");
+        await click(".image-background-spatial-apply");
+        await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Background removed")`, "the background removed");
+        a = await alphas([[110,120],[255,65],[20,20]]);
+        if (!(a[0] > 200 && a[1] < 30 && a[2] < 30)) throw new Error(`applied: ${a}`);
+        await click(".image-undo");
+        // The paint bucket, kept within the disc: any colour (tolerance 100) at its middle.
+        await click(".image-draw-start");
+        await click(".image-draw-bucket");
+        await ev(`(t=>{t.value="100";t.dispatchEvent(new Event("input"));})(${view}.querySelector(".image-draw-tolerance"))`);
+        await ev(`(c=>{c.value="#00ff00";c.dispatchEvent(new Event("input"));})(${view}.querySelector(".image-draw-color"))`);
+        await click(".image-draw-select-object");
+        const drawNote = () => ev(`${view}.querySelector(".image-draw-note").textContent`);
+        await waitFor(`${view}.querySelector(".image-draw-note").textContent.startsWith("Click to fill an area of a colour; drag a box round an object")||${view}.querySelector(".image-draw-note.error")`, "the picture analysed for the bucket", 180000);
+        await pointer([110,120], [110,120], 8);
+        await waitFor(`${view}.querySelector(".image-draw-selection.object")&&!${view}.querySelector(".image-draw-selection").hidden||${view}.querySelector(".image-draw-note.error")`, "the disc as the bucket's selection", 60000);
+        if (!(await ev(`!!${view}.querySelector(".image-draw-selection.object")`))) throw new Error(`bucket selection: ${await drawNote()}`);
+        await pointer([110,120]);
+        await waitFor(`!${view}.querySelector(".image-draw-filled").hidden && !${view}.querySelector(".image-draw-apply").disabled`, "the fill within the disc previewed");
+        const filled = await ev(`(()=>{const ctx=${view}.querySelector(".image-draw-filled").getContext("2d");return [[110,120],[140,120],[20,20],[255,65],[160,120]].map(([x,y])=>[...ctx.getImageData(x,y,1,1).data].slice(0,3).join(","));})()`);
+        if (filled[0] !== "0,255,0" || filled[1] !== "0,255,0" || filled[2] === "0,255,0" || filled[3] === "0,255,0" || filled[4] === "0,255,0") throw new Error(`the fill went past the disc: ${filled}`);
+        await click(".image-draw-cancel");
+        // Cropping to the disc, then to every object.
+        await click(".image-crop-start");
+        await click(".image-crop-magic");
+        await waitFor(`document.querySelector("dialog.preview .edit-status").textContent.startsWith("Click an object to crop")||document.querySelector("dialog.preview .edit-status.error")`, "the picture analysed for cropping", 180000);
+        const status = () => ev(`document.querySelector("dialog.preview .edit-status").textContent`);
+        const cropSize = () => ev(`${view}.querySelector(".image-crop").dataset.size`);
+        await pointer([110,120]);
+        await waitFor(`document.querySelector("dialog.preview .edit-status").textContent.startsWith("Cropped to the object")||document.querySelector("dialog.preview .edit-status.error")`, "the crop to the disc", 60000);
+        const [cw, ch] = (await cropSize()).split("×").map(Number);
+        if (Math.abs(cw - 80) > 6 || Math.abs(ch - 80) > 6) throw new Error(`the crop to the disc: ${await cropSize()} ${await status()}`);
+        await click(".image-crop-magic-all");
+        await waitFor(`/^(Cropped to \\d+ objects?|No objects)/.test(document.querySelector("dialog.preview .edit-status").textContent)||document.querySelector("dialog.preview .edit-status.error")`, "the crop to every object", 180000)
+            .catch(async (e) => { throw new Error(`${e.message}: ${await status()}`); });
+        const [aw, ah] = (await cropSize()).split("×").map(Number);
+        if (Math.abs(aw - 210) > 8 || Math.abs(ah - 120) > 8) throw new Error(`the crop to every object: ${await cropSize()} ${await status()}`);
+        await click(".image-crop-cancel");
+        await click(".image-inpaint-start");
+        await click(".image-inpaint-shape-object");
+        await waitFor(`${view}.querySelector(".image-inpaint-note").textContent.startsWith("Click an object")||${view}.querySelector(".image-inpaint-note.error")`, "the picture analysed again", 180000);
+        await pointer([222,32], [288,98]);
+        await waitFor(`${view}.querySelectorAll(".image-inpaint-overlay mask > :not(:first-child)").length===1||${view}.querySelector(".image-inpaint-note.error")`, "the square selected again", 60000);
+        // And it's inpainted away.
+        await click(".image-inpaint-run");
+        await waitFor(`!${view}.querySelector(".image-inpaint-apply").disabled || ${view}.querySelector(".image-inpaint-note.error")`, "MI-GAN inference finishes", 120000);
+        if (await ev(`${view}.querySelector(".image-inpaint-apply").disabled`)) throw new Error(await note());
+        await click(".image-inpaint-apply");
+        await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Inpainting applied")`, "the square removed");
+        const centre = await ev(`[...${view}.querySelector("canvas.image-content").getContext("2d").getImageData(255,65,1,1).data]`);
+        if (centre[2] > 150 && centre[0] < 80) throw new Error(`the square is still there: ${centre}`);
+        await ev(`document.querySelector("dialog.preview button.save-edit").click()`);
+        await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Saved:")`, "the inpainted picture saved");
+        // Left mid-removal, with Object analysed: no magic select worker is left running.
+        await click(".image-remove-background");
+        await waitFor(`!${view}.querySelector(".image-background-spatial-apply").disabled || ${view}.querySelector(".image-background-note.error")`, "U2NetP again", 120000);
+        await click(".image-background-mode-select"); await click(".image-background-shape-object");
+        await waitFor(`${view}.querySelector(".image-background-spatial-hint").textContent.startsWith("Click an object")||${view}.querySelector(".image-background-spatial-hint.error")`, "the picture analysed again", 180000);
+        await ev(`document.querySelector("dialog.preview button.done-edit").click(); document.querySelector("dialog.preview button.close").click()`);
+        await waitFor(`!document.querySelector("dialog.preview")`, "the picture closed");
+        const workers = await ev("window.segmentWorkers");
+        if (!(workers.made >= 1 && workers.stopped === workers.made)) throw new Error(`magic select workers left running: ${JSON.stringify(workers)}`);
+        execFileSync("docker", ["exec", container, "rm", "/home/user/Downloads/media/magic.png"]);
+        await open("fs/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
+        return "the disc at a click, out with Shift-click, the square in a box; all objects marked; in background removal the disc removed and added back, undone, the square removed in a box, all objects kept and one removed, applied; the bucket kept within the disc; cropped to the disc and to every object; the square inpainted";
+    });
     await step("files: scan a photographed page with perspective correction, paper whitening, undo and save", async () => {
         const corners = [[30,20],[280,40],[270,380],[15,360]];
         const inside = (x,y) => corners.every((a,i) => {const b=corners[(i+1)%4];return (b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0])>=0;});
@@ -877,22 +1082,15 @@ export async function checkImages(checks) {
         const dimensions=`(()=>{const c=${view}.querySelector("canvas.image-content");return c?c.width+"x"+c.height:"";})()`;
         await waitFor(`${dimensions}==="300x400"`,"the photo loaded");
         await click(".image-scan-start");
-        await waitFor(`!${view}.querySelector(".image-scan-tools").hidden&&${view}.querySelectorAll(".image-scan-corner:not([hidden])").length===8`,"four document corners and four edge middles");
+        await waitFor(`!${view}.querySelector(".image-scan-tools").hidden&&${view}.querySelectorAll(".image-scan-corner:not([hidden])").length===8`,"four corners and four fold points");
         const moveCorner=async(i,point)=>{
             const points=await ev(`(()=>{const b=${view}.querySelectorAll(".image-scan-corner")[${i}].getBoundingClientRect(),c=${view}.querySelector("canvas.image-content"),r=c.getBoundingClientRect();return [{x:b.x+b.width/2,y:b.y+b.height/2},{x:r.x+${point[0]}*r.width/c.width,y:r.y+${point[1]}*r.height/c.height}];})()`);
             for(const [type,at] of [["mousePressed",points[0]],["mouseMoved",points[1]],["mouseReleased",points[1]]])await checks.cdp("Input.dispatchMouseEvent",{type,...at,button:"left",buttons:type==="mouseReleased"?0:1,clickCount:1});
         };
         for(let i=0;i<4;i++)await moveCorner(i,corners[i]);
-        // The top edge's middle point (handle 4) bends the outline, and back.
-        const outlinePoints=()=>ev(`${view}.querySelector(".image-scan-outline polygon").getAttribute("points").split(" ").length`);
-        const straightOutline=await ev(`${view}.querySelector(".image-scan-outline polygon").getAttribute("points")`);
-        if(await outlinePoints()!==64)throw new Error("the outline isn't drawn through the edges");
-        await moveCorner(4,[155,15]);
-        if(await ev(`${view}.querySelector(".image-scan-outline polygon").getAttribute("points")`)===straightOutline)throw new Error("the top edge's middle didn't bend it");
-        if (process.env.SCAN_SCREENSHOT) { const shot = await checks.cdp("Page.captureScreenshot", { format: "png" }); writeFileSync(process.env.SCAN_SCREENSHOT, Buffer.from(shot.data, "base64")); }
-        await moveCorner(4,[155,30]);
-        await ev(`(()=>{const b=${view}.querySelectorAll(".image-scan-corner")[4];b.focus();})()`);
-        if(!(await ev(`${view}.querySelectorAll(".image-scan-corner")[4].title.startsWith("Middle of the top edge")`)))throw new Error("edge middle unlabelled");
+        // Fold points follow the corners: a third and two thirds down each side.
+        const foldAt=await ev(`(()=>{const c=${view}.querySelector("canvas.image-content"),r=c.getBoundingClientRect(),b=${view}.querySelectorAll(".image-scan-corner")[4].getBoundingClientRect();return [(b.x+b.width/2-r.x)*c.width/r.width,(b.y+b.height/2-r.y)*c.height/r.height];})()`);
+        if(Math.abs(foldAt[0]-25)>4||Math.abs(foldAt[1]-133)>4)throw new Error(`the upper left fold point didn't follow the corners: ${foldAt}`);
         await click(".image-scan-preview");
         await waitFor(`!${view}.querySelector(".image-scan-result").hidden`,"the flattened page preview");
         const previewPixels=await ev(`(()=>{const c=${view}.querySelector(".image-scan-result"),d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;let gray=true,light=0,dark=0;for(let i=0;i<d.length;i+=4){gray&&=d[i]===d[i+1]&&d[i+1]===d[i+2];light+=d[i]>225;dark+=d[i]<60;}return {width:c.width,height:c.height,gray,light,dark};})()`);
@@ -920,7 +1118,20 @@ export async function checkImages(checks) {
         await ev(`(f=>{f.value="image/png";f.dispatchEvent(new Event("change"));})(${view}.querySelector(".image-format"))`);
         await click(".image-undo"); await waitFor(`${dimensions}==="300x400"`,"scan undone to the original photo");
         await click(".image-redo"); await waitFor(`${dimensions}===${JSON.stringify(scanned)}`,"scan redone");
-        await click(".image-scan-start"); await click(".image-scan-cancel");
+        // A folded paper: its fold points dragged onto the folds, then cancelled.
+        await click(".image-scan-start");
+        await waitFor(`${view}.querySelectorAll(".image-scan-corner:not([hidden])").length===8`,"eight points again");
+        const outline=()=>ev(`[${view}.querySelector(".image-scan-outline polygon").getAttribute("points"),${view}.querySelector(".image-scan-fold-lines").getAttribute("d")]`);
+        const [before,lines]=await outline();
+        if(before.split(" ").length!==8||(lines.match(/M/g)??[]).length!==2)throw new Error(`the outline doesn't run through the fold points: ${before} ${lines}`);
+        if(!(await ev(`${view}.querySelectorAll(".image-scan-corner")[4].getAttribute("aria-label")==="Upper fold, left side"`)))throw new Error("fold point unlabelled");
+        const scannedSize=scanned.split("x").map(Number);
+        await moveCorner(4,[30,scannedSize[1]/3]); await moveCorner(5,[scannedSize[0]-30,scannedSize[1]/3]);
+        const [after,foldedLines]=await outline();
+        if(after===before||foldedLines===lines)throw new Error("dragging the fold points didn't move the fold");
+        if(await ev(`${view}.querySelector(".image-scan-apply").disabled`))throw new Error("a fold drawn in was refused");
+        if (process.env.SCAN_SCREENSHOT) { const shot = await checks.cdp("Page.captureScreenshot", { format: "png" }); writeFileSync(process.env.SCAN_SCREENSHOT, Buffer.from(shot.data, "base64")); }
+        await click(".image-scan-cancel");
         if(await ev(dimensions)!==scanned)throw new Error("cancel changed the committed scan");
         await ev(`document.querySelector("dialog.preview button.save-edit").click()`);
         await waitFor(`${view}.querySelector(".edit-status").textContent.startsWith("Saved:")`,"scanned PNG saved");
@@ -932,7 +1143,7 @@ export async function checkImages(checks) {
         if(`${savedWidth}x${savedHeight}`!==scanned)throw new Error("saved scan dimensions differ from the preview");
         execFileSync("docker",["exec",container,"rm","/home/user/Downloads/media/scan.png","/home/user/Downloads/media/scan.pdf"]);
         await open("fs/#/",`document.title==="Downloads /"&&!!document.querySelector("table")`,"the listing");
-        return "four draggable corners and edge middles that bend the outline, grayscale and paper cleanup, black-and-white preview, invalid outline guard, undo/redo, Cancel, PDF copy and PNG Save";
+        return "four draggable corners and four fold points, grayscale and paper cleanup, black-and-white preview, invalid outline guard, undo/redo, Cancel, PDF copy and PNG Save";
     });
 
 }

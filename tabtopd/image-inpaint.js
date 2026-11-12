@@ -3,8 +3,12 @@
 import { el } from "./preview-dom.js";
 import { maskBounds, drawMaskMarks, newMaskMark, extendMaskMark, enclosedFill, maskSVGShape, glyphCaption, brushControls, imageMaskPoint } from "./image-mask.js";
 import { iconSVG } from "./glyphs.js";
+import { Segmenter, grow, selectionMark } from "./image-segment.js";
 
 const MAX_PATCH_PIXELS = 16e6, MAX_INPUT_SIDE = 1024;
+// How far (in analysed pixels, of 1024 across) a magic selection reaches
+// past the object's outline, so the repair takes in its edge too.
+const MAGIC_GROW = 3, MAGIC_CLICK = 5;
 let nextMask = 0;
 const canvasOf = (width, height) => Object.assign(document.createElement("canvas"), { width, height });
 
@@ -89,7 +93,8 @@ export async function inpaintPatch(base, marks, painter) {
 
 export function inpaintTool({ toolbar, hints, stage, button, geometry, source, preview, apply, changed }) {
     let active = false, busy = false, base = null, marks = [], mode = "paint", gesture = null, patch = null, generation = 0, frame = null;
-    const painter = new Inpainter();
+    let analysed = null; // the picture magic select has analysed (base), once it has
+    const painter = new Inpainter(), segmenter = new Segmenter();
     const makeButton = (icon, title, cls, fn) => {
         const b = el("button", { type: "button", className: `glyph ${cls}`, title, ariaLabel: title });
         b.innerHTML = iconSVG(icon);
@@ -99,7 +104,7 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
     const note = el("span", { className: "hint image-inpaint-note", role: "status", hidden: true });
     const tools = [ ["select", "Select area"], ["paint", "Paint mask"], ["erase", "Subtract mask"], ["fill", "Flood fill enclosed area"], ["pan", "Pan"] ].map(([key, title]) => {
         const icon = { select: "select-area", paint: "paint-brush", erase: "erase", fill: "flood-fill", pan: "pan" }[key];
-        const control = makeButton(icon, title, `image-inpaint-${key}`, () => { mode = key; brushes.close(); invalidate(); stage.focus({ preventScroll: true }); });
+        const control = makeButton(icon, title, `image-inpaint-${key}`, () => { mode = key; brushes.close(); invalidate(); stage.focus({ preventScroll: true }); analyse(); });
         return { key, control };
     });
     const selectAll = () => {
@@ -111,6 +116,7 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         stage.focus({ preventScroll: true });
     };
     const all = makeButton("select-all", "Mask entire image (Ctrl+A / ⌘A)", "image-inpaint-all", selectAll);
+    const allObjects = makeButton("magic-all", "Mark all objects: every object magic select finds", "image-inpaint-magic-all", () => markAllObjects());
     const invert = makeButton("invert-selection", "Invert selection", "image-inpaint-invert", () => {
         if (!active || busy || !marks.length) return;
         gesture = null;
@@ -119,8 +125,10 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
     });
     const brushes = brushControls(tools.find(({ key }) => key === "paint").control, {
         prefix: "image-inpaint", sizeClass: "image-inpaint-size", selectionButton: tools.find(({ key }) => key === "select").control,
-        onShape: () => { gesture = null; mode = "select"; invalidate(); stage.focus({ preventScroll: true }); },
+        onShape: () => { gesture = null; mode = "select"; invalidate(); stage.focus({ preventScroll: true }); analyse(); }, magic: true,
     });
+    // Magic select: Select area, its shape an object.
+    const magicMode = () => mode === "select" && brushes.shape.value === "object";
     const size = brushes.size;
     const undo = glyphCaption(makeButton("undo", "Undo mark", "image-inpaint-undo", () => { marks.pop(); invalidate(); }), "Undo");
     const reset = makeButton("clear-mask", "Clear mask", "image-inpaint-reset", () => { marks = []; invalidate(); });
@@ -132,7 +140,7 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         }
     });
     const cancel = makeButton("close-circle", "Cancel", "image-inpaint-cancel", () => close());
-    const bar = el("div", { className: "image-inpaint-tools", hidden: true }, ...tools.map(({ key, control }) => key === "paint" ? brushes.group : key === "select" ? brushes.selectionGroup : control), all,
+    const bar = el("div", { className: "image-inpaint-tools", hidden: true }, ...tools.flatMap(({ key, control }) => key === "paint" ? [brushes.group] : key === "select" ? [brushes.selectionGroup, el("span", { className: "image-magic-group" }, allObjects)] : [control]), all,
         invert, undo, reset, run, accept, cancel);
     toolbar.append(bar);
     hints.append(note);
@@ -151,7 +159,9 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
     for (const channel of ["R", "G", "B"]) transfer.append(svg(`feFunc${channel}`, { type: "linear", slope: -1, intercept: 1 }));
     invertFilter.append(transfer); defs.append(invertFilter);
     const tint = svg("rect", { fill: "#facc15", opacity: ".5", mask: `url(#${id})` });
-    defs.append(mask); overlay.append(defs, tint); stage.append(overlay);
+    // The box being dragged for magic select.
+    const magicBox = svg("rect", { class: "image-inpaint-magic-box", fill: "none", stroke: "#ffd34d", "stroke-width": 2, "stroke-dasharray": "6 4", "vector-effect": "non-scaling-stroke", visibility: "hidden" });
+    defs.append(mask); overlay.append(defs, tint, magicBox); stage.append(overlay);
     const update = () => {
         bar.hidden = !active;
         note.hidden = !active;
@@ -161,6 +171,8 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         for (const { key, control } of tools) { control.disabled = busy; control.setAttribute("aria-pressed", String(mode === key)); }
         brushes.update(busy);
         all.disabled = busy;
+        allObjects.hidden = !magicMode();
+        allObjects.disabled = busy || analysed !== base;
         invert.disabled = busy || !marks.length;
         invert.setAttribute("aria-pressed", String(marks.filter(m => m.invert).length % 2 === 1));
         undo.disabled = reset.disabled = busy || !marks.length;
@@ -189,7 +201,8 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
     };
     const invalidate = () => {
         if (patch) { patch = null; preview(null); }
-        note.textContent = mode === "fill" ? "Draw a closed outline with the brush, then click inside it to fill the mask."
+        note.textContent = magicMode() ? (analysed ? "Click an object to mark it, or drag a box round it; Shift-click one to take it out. Yellow shows what will change." : "Analysing the picture for magic select…")
+            : mode === "fill" ? "Draw a closed outline with the brush, then click inside it to fill the mask."
             : brushes.shape.value === "circle" && mode === "select" ? "Circle: drag from its centre to its edge. Yellow shows what will change."
             : "Mark the logo or object, then Inpaint. Yellow shows what will change.";
         note.classList.remove("error");
@@ -197,8 +210,8 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         update();
     };
     const close = () => {
-        generation++; active = busy = false; gesture = null; patch = null; marks = [];
-        painter.cancel(); brushes.close(); cancelAnimationFrame(frame); frame = null; preview(null); base = null; update();
+        generation++; active = busy = false; gesture = null; patch = null; marks = []; analysed = null;
+        painter.cancel(); segmenter.cancel(); magicBox.setAttribute("visibility", "hidden"); brushes.close(); cancelAnimationFrame(frame); frame = null; preview(null); base = null; update();
     };
     const perform = async () => {
         if (!active || busy || !marks.length) return;
@@ -213,19 +226,75 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
             if (active && generation === token) { note.textContent = err.message; note.classList.add("error"); }
         } finally { if (active && generation === token) { busy = false; update(); } }
     };
+    // Magic select analyses the picture once, when it's first chosen.
+    const analyse = async () => {
+        if (!active || busy || !magicMode() || analysed === base) return;
+        const token = ++generation;
+        try {
+            busy = true; update();
+            await segmenter.analyse(base);
+            if (!active || generation !== token) return;
+            analysed = base; invalidate();
+        } catch (err) {
+            if (active && generation === token) { note.textContent = err.message; note.classList.add("error"); }
+        } finally { if (active && generation === token) { busy = false; update(); } }
+    };
+    // magic marks (or, erasing, unmarks) the object at a click, or in a box.
+    const magic = async (prompt, erase) => {
+        if (!active || busy || analysed !== base) return;
+        const token = ++generation;
+        try {
+            busy = true; update(); note.textContent = "Selecting…";
+            const mask = await segmenter.select(prompt);
+            if (!active || generation !== token) return;
+            const { width, height } = segmenter.size;
+            const mark = selectionMark(grow(mask, width, height, MAGIC_GROW), width, height, base.width, base.height, erase);
+            busy = false;
+            if (mark) { marks.push(mark); invalidate(); draw(); }
+            else { invalidate(); note.textContent = "Nothing found there. Try a click nearer the object's middle, or a box round it."; }
+        } catch (err) {
+            if (active && generation === token) { note.textContent = err.message; note.classList.add("error"); }
+        } finally { if (active && generation === token) { busy = false; update(); } }
+    };
+    // Every object found, marked at once (one mark: Undo takes them all back).
+    const markAllObjects = async () => {
+        if (!active || busy || analysed !== base) return;
+        const token = ++generation;
+        try {
+            busy = true; update(); note.textContent = "Finding every object… (this takes a while)";
+            const { mask, count } = await segmenter.findAll();
+            if (!active || generation !== token) return;
+            const { width, height } = segmenter.size;
+            const mark = count ? selectionMark(grow(mask, width, height, MAGIC_GROW), width, height, base.width, base.height) : null;
+            busy = false;
+            if (mark) { marks.push(mark); invalidate(); draw(); note.textContent = `Marked ${count} ${count === 1 ? "object" : "objects"}. Shift-click any to take it out.`; }
+            else { invalidate(); note.textContent = "No objects found. Click one, or drag a box round it."; }
+        } catch (err) {
+            if (active && generation === token) { note.textContent = err.message; note.classList.add("error"); }
+        } finally { if (active && generation === token) { busy = false; update(); } }
+    };
+    const showBox = (box) => {
+        magicBox.setAttribute("visibility", box ? "visible" : "hidden");
+        if (box) for (const [key, value] of Object.entries(box)) magicBox.setAttribute(key, value);
+    };
     const pointAt = (px, py, rectangle = false) => imageMaskPoint(px, py, geometry(), rectangle ? 6 : 0);
     const tool = {
         active: () => active, busy: () => busy,
         recipe: () => active && !busy && marks.some(mark => !mark.erase)
             ? { kind: "inpaint", width: base.width, height: base.height, marks } : null,
         selectAll,
-        open() { if (active) { close(); return; } active = true; base = source(); mode = "paint"; brushes.shape.value = "rectangle"; invalidate(); draw(); stage.focus({ preventScroll: true }); },
+        open() { if (active) { close(); return; } active = true; base = source(); mode = "select"; brushes.shape.value = "rectangle"; invalidate(); draw(); stage.focus({ preventScroll: true }); },
         close,
         painting: () => active && mode !== "pan",
         place: () => { if (active) draw(); },
-        down(px, py) {
+        down(px, py, event) {
             if (!active || busy || mode === "pan") return false;
             const { x, y, width, height, scale } = geometry();
+            if (magicMode()) {
+                if (analysed !== base) analyse(); // (it failed: again)
+                else gesture = { magic: true, from: pointAt(px, py, true), at: [px, py], erase: !!(event?.shiftKey || event?.altKey) };
+                return true;
+            }
             const rectangle = mode === "select" && brushes.shape.value === "rectangle";
             // Rectangles may start in the surrounding stage and extend past
             // the image edges; pointAt clamps both ends to the image bounds.
@@ -244,7 +313,11 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
         },
         move(px, py) {
             if (!active || busy || mode === "pan") return false;
-            if (gesture) {
+            if (gesture?.magic) {
+                const [fx, fy] = gesture.from, [tx, ty] = pointAt(px, py, true);
+                gesture.dragged ||= Math.hypot(px - gesture.at[0], py - gesture.at[1]) >= MAGIC_CLICK;
+                showBox(gesture.dragged && { x: Math.min(fx, tx), y: Math.min(fy, ty), width: Math.abs(tx - fx), height: Math.abs(ty - fy) });
+            } else if (gesture) {
                 const { mark, from } = gesture, point = pointAt(px, py, !!mark.rect);
                 extendMaskMark(mark, from, point);
                 invalidate();
@@ -252,12 +325,22 @@ export function inpaintTool({ toolbar, hints, stage, button, geometry, source, p
             return true;
         },
         up(cancelled, px, py) {
+            if (gesture?.magic) {
+                const { from: [fx, fy], erase } = gesture;
+                if (!cancelled && Number.isFinite(px) && Number.isFinite(py)) this.move(px, py);
+                const dragged = gesture.dragged, [tx, ty] = Number.isFinite(px) ? pointAt(px, py, true) : [fx, fy];
+                gesture = null; showBox(null);
+                if (cancelled) return;
+                if (!dragged) magic({ point: [fx, fy] }, erase);
+                else if (Math.abs(tx - fx) >= 1 && Math.abs(ty - fy) >= 1) magic({ box: [Math.min(fx, tx), Math.min(fy, ty), Math.abs(tx - fx), Math.abs(ty - fy)] }, erase);
+                return;
+            }
             if (!gesture) return;
             if (cancelled) marks.pop();
             else if (Number.isFinite(px) && Number.isFinite(py)) extendMaskMark(gesture.mark, gesture.from, pointAt(px, py, !!gesture.mark.rect));
             gesture = null; invalidate(); draw();
         },
-        stop() { if (active) close(); painter.cancel(); brushes.stop(); cancelAnimationFrame(frame); bar.remove(); note.remove(); overlay.remove(); },
+        stop() { if (active) close(); painter.cancel(); segmenter.cancel(); brushes.stop(); cancelAnimationFrame(frame); bar.remove(); note.remove(); overlay.remove(); },
     };
     bar.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "a") {

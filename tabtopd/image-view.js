@@ -21,7 +21,8 @@ import { scanCanvas, scanGeometry, scanTool } from "./image-scan.js";
 import { rasterPDF } from "./image-export.js";
 import { drawFill } from "./image-fill.js";
 import { describeStep } from "./image-batch.js";
-import { BackgroundRemover, adjustedMask, mapImagePoint } from "./image-background.js";
+import { BackgroundRemover, adjustedMask, mapImagePoint, objectMask } from "./image-background.js";
+import { Segmenter, selectionMark, objectBounds } from "./image-segment.js";
 
 const FORMATS = {
     "image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP", "image/gif": "GIF", "image/avif": "AVIF",
@@ -189,7 +190,7 @@ export function editRecipe(width, height, ops, pending = null) {
             if (!op.recipe) return null; // Don't substitute a broad repair for a missing mask.
             step = op.recipe;
         } else if (op.background) {
-            step = { kind: "background", width, height, settings: op.settings, selection: op.selection, strokes: op.strokes ?? [] };
+            step = { kind: "background", width, height, settings: op.settings, selection: op.selection, strokes: op.strokes ?? [], ...(op.objects?.length ? { objects: op.objects } : {}) };
         } else if (op.draw) {
             step = { kind: "draw", width, height, ...structuredClone(op.draw) };
         } else if (op.fill) {
@@ -370,7 +371,8 @@ export async function imageView({ file, blob, url }) {
             stage.setPointerCapture(e.pointerId);
         } catch { /* (not a pointer the browser has: moves still come) */ }
         const [px, py] = at(e);
-        if (inpainting?.down(px, py) || backgroundPointer?.down(px, py) || drawing?.down(px, py) || placing?.down(px, py)) return;
+        if (inpainting?.down(px, py, e) || backgroundPointer?.down(px, py, e) || drawing?.down(px, py, e) || placing?.down(px, py)) return;
+        if (cropping && cropPick?.on()) { drag = { cropMagic: true, at: [px, py], from: toPicture(px, py), previous: crop }; return; }
         drag = cropping ? { crop: true, from: toPicture(px, py) } : { px, py, x, y };
         if (cropping) {
             crop = { ...drag.from, width: 0, height: 0 };
@@ -381,6 +383,15 @@ export async function imageView({ file, blob, url }) {
         const [px, py] = at(e);
         if (inpainting?.move(px, py) || backgroundPointer?.move(px, py) || drawing?.move(px, py) || placing?.move(px, py)) return;
         if (!drag) return;
+        if (drag.cropMagic) {
+            // A box round the object, shown as the crop is till it's found.
+            drag.dragged ||= Math.hypot(px - drag.at[0], py - drag.at[1]) >= 5;
+            if (!drag.dragged) return;
+            const [cx, cy] = toPicture(px, py), [fx, fy] = drag.from;
+            crop = { x: Math.min(fx, cx), y: Math.min(fy, cy), width: Math.abs(cx - fx), height: Math.abs(cy - fy) };
+            showCrop();
+            return;
+        }
         if (drag.crop) {
             const [cx, cy] = toPicture(px, py);
             const [fx, fy] = drag.from;
@@ -396,6 +407,7 @@ export async function imageView({ file, blob, url }) {
     });
     const endDrag = (e) => {
         const [px, py] = at(e), cancelled = e.type === "pointercancel";
+        if (drag?.cropMagic) cropPick?.up(drag, cancelled);
         drag = null; backgroundPointer?.up(cancelled, px, py); inpainting?.up(cancelled, px, py); drawing?.up(cancelled, px, py); placing?.up(cancelled, px, py);
     };
     stage.addEventListener("pointerleave", () => backgroundPointer?.leave());
@@ -412,6 +424,8 @@ export async function imageView({ file, blob, url }) {
 
     // Cropping: a rectangle, in the picture's pixels, drawn over it.
     let cropping = false, crop = null, cropChanged = null;
+    // Cropping to an object found with magic select (see startEditing).
+    let cropPick = null;
     const toPicture = (px, py) => [Math.round(Math.max(0, Math.min(width, (px - x) / scale))),
         Math.round(Math.max(0, Math.min(height, (py - y) / scale)))];
     function showCrop() {
@@ -557,7 +571,68 @@ export async function imageView({ file, blob, url }) {
         cropButton.setAttribute("aria-pressed", "false");
         const applyCrop = el("button", { type: "button", className: "image-crop-apply", textContent: "Apply", ariaLabel: "Apply crop", disabled: true });
         const cancelCrop = el("button", { type: "button", className: "image-crop-cancel", textContent: "Cancel" });
-        const cropTools = el("span", { className: "image-crop-tools", hidden: true }, applyCrop, cancelCrop);
+        const cropMagic = button("magic-select", "Crop to an object: click it, or drag a box round it", "image-crop-magic");
+        cropMagic.setAttribute("aria-pressed", "false");
+        const cropAll = button("magic-all", "Crop to all the objects magic select finds", "image-crop-magic-all");
+        const cropTools = el("span", { className: "image-crop-tools", hidden: true }, el("span", { className: "image-magic-group" }, cropMagic, cropAll), applyCrop, cancelCrop);
+        // Magic select, for cropping: the picture's analysed once (cropAnalysed:
+        // the canvas it was), when the wand's first used.
+        const cropSegmenter = new Segmenter();
+        let cropMagicOn = false, cropAnalysed = null, cropBusy = false, cropToken = 0;
+        const cropTask = async (doing, task) => {
+            const token = ++cropToken, canvas = content;
+            cropBusy = true; say(doing); showButtons();
+            try {
+                const current = () => cropping && token === cropToken;
+                if (cropAnalysed !== canvas) {
+                    await cropSegmenter.analyse(canvas);
+                    if (!current()) return;
+                    cropAnalysed = canvas;
+                }
+                await task(current);
+            } catch (err) {
+                if (cropping && token === cropToken) say(err.message, true);
+            } finally { if (token === cropToken) { cropBusy = false; showButtons(); } }
+        };
+        // cropTo crops to what mask selects, found as doing says.
+        const cropTo = (mask, what) => {
+            const { width: w, height: h } = cropSegmenter.size, found = mask && objectBounds(mask, w, h, width, height);
+            if (!found || found.width < 1 || found.height < 1) { say("Nothing found there. Try a box round the object."); return; }
+            crop = found; showCrop(); showButtons();
+            say(`Cropped to ${what}: Apply to keep it.`);
+        };
+        const pickCrop = (prompt) => cropTask("Finding the object…", async (current) => {
+            const mask = await cropSegmenter.select(prompt);
+            if (current()) cropTo(mask, "the object");
+        });
+        cropMagic.addEventListener("click", () => {
+            if (!cropping || cropBusy) return;
+            cropMagicOn = !cropMagicOn;
+            cropMagic.setAttribute("aria-pressed", String(cropMagicOn));
+            stage.classList.toggle("crop-magic", cropMagicOn);
+            if (cropMagicOn) cropTask("Analysing the picture for magic select…", async () => say("Click an object to crop to it, or drag a box round it."));
+            else say("");
+            stage.focus({ preventScroll: true });
+        });
+        cropAll.addEventListener("click", () => {
+            if (!cropping || cropBusy) return;
+            cropTask("Finding every object… (this takes a while)", async (current) => {
+                const { mask, count } = await cropSegmenter.findAll();
+                if (!current()) return;
+                if (!count) { say("No objects found. Click one with the wand, or drag a box round it."); return; }
+                cropTo(mask, `${count} ${count === 1 ? "object" : "objects"}`);
+            });
+        });
+        cropPick = {
+            on: () => cropMagicOn,
+            up(gesture, cancelled) {
+                const box = crop;
+                if (gesture.dragged || cancelled) { crop = gesture.previous; showCrop(); }
+                if (cancelled || cropBusy || cropAnalysed !== content) return;
+                if (!gesture.dragged) pickCrop({ point: gesture.from });
+                else if (box?.width >= 1 && box?.height >= 1) pickCrop({ box: [box.x, box.y, box.width, box.height] });
+            },
+        };
         editBar.append(cropTools);
         // Resize: to a width and height (kept in proportion), or a share of it.
         const resizeButton = button("resize", "Resize: make it smaller or bigger (S)", "image-resize-start");
@@ -590,6 +665,14 @@ export async function imageView({ file, blob, url }) {
         view.append(backgroundPanel);
         let backgroundMode = "pan", gesture = null;
         const selectionBox = el("div", { className: "image-background-selection", hidden: true, ariaHidden: "true" });
+        // Magic select: the objects clicked are what's kept, in place of
+        // U2NetP's foreground. The picture's analysed once, when it's chosen.
+        const segmenter = new Segmenter();
+        const magicBox = el("div", { className: "image-background-magic-box", hidden: true, ariaHidden: "true" });
+        stage.append(magicBox);
+        let magicBusy = false, magicDoing = "";
+        // Magic select: Select area, its shape an object.
+        const magicMode = () => backgroundMode === "select" && brushes.shape.value === "object";
         const brushCursor = el("div", { className: "image-background-cursor", hidden: true, ariaHidden: "true" });
         stage.append(selectionBox, brushCursor);
         const modes = [["pan", "Pan"], ["select", "Select area"], ["erase", "Erase"], ["restore", "Restore"], ["fill", "Flood fill enclosed area"]].map(([mode, title]) => {
@@ -602,8 +685,10 @@ export async function imageView({ file, blob, url }) {
         const invertSelection = button("invert-selection", "Invert selection", "image-background-invert");
         invertSelection.setAttribute("aria-pressed", "false");
         const wholeImage = button("select-all", "Apply removal to the whole image", "image-background-whole");
+        const allObjects = button("magic-all", "Keep all objects: only the objects magic select finds, in place of the cutout", "image-background-magic-all");
         const brushes = brushControls(modes.find(({ mode }) => mode === "erase").control, {
             prefix: "image-background", sizeClass: "image-background-brush-size", selectionButton: modes.find(({ mode }) => mode === "select").control, onShape: () => setBackgroundMode("select"),
+            magic: "click an object to remove it, or drag a box round it; Shift-click adds one back",
         });
         const brushSize = brushes.size;
         const undoStroke = glyphCaption(button("undo", "Undo stroke", "image-background-undo-stroke"), "Undo");
@@ -612,7 +697,7 @@ export async function imageView({ file, blob, url }) {
         const spatialCancel = button("close-circle", "Cancel background removal", "image-background-spatial-cancel");
         const spatialHint = el("span", { className: "hint image-background-spatial-hint", role: "status" });
         const spatialBar = el("div", { className: "image-background-spatial", hidden: true },
-            ...modes.map(({ mode, control }) => mode === "erase" ? brushes.group : mode === "select" ? brushes.selectionGroup : control), wholeImage,
+            ...modes.flatMap(({ mode, control }) => mode === "erase" ? [brushes.group] : mode === "select" ? [brushes.selectionGroup, el("span", { className: "image-magic-group" }, allObjects)] : [control]), wholeImage,
             invertSelection, undoStroke,
             settingsButton, spatialApply, spatialCancel);
         editBar.append(spatialBar);
@@ -644,22 +729,26 @@ export async function imageView({ file, blob, url }) {
             spatialBar.hidden = !backgroundEdit;
             spatialHint.hidden = !backgroundEdit;
             for (const { mode, control } of modes) {
-                control.disabled = !backgroundEdit?.rawMask || removing;
+                control.disabled = !backgroundEdit?.rawMask || removing || magicBusy;
                 control.setAttribute("aria-pressed", String(mode === backgroundMode));
             }
             wholeImage.disabled = !backgroundEdit?.rawMask || removing;
+            allObjects.hidden = !magicMode();
+            allObjects.disabled = !backgroundEdit?.analysed || removing || magicBusy;
             invertSelection.disabled = wholeImage.disabled || !backgroundEdit?.selection || backgroundEdit.selection.width < 1 || backgroundEdit.selection.height < 1;
             invertSelection.setAttribute("aria-pressed", String(!!backgroundEdit?.selection?.inverted));
-            brushes.update(!backgroundEdit?.rawMask || removing);
-            undoStroke.disabled = !backgroundEdit?.strokes.length || removing;
-            stage.classList.toggle("background-selecting", !!backgroundEdit && backgroundMode === "select");
+            brushes.update(!backgroundEdit?.rawMask || removing || magicBusy);
+            undoStroke.disabled = !backgroundEdit?.added.length || removing || magicBusy;
+            stage.classList.toggle("background-selecting", !!backgroundEdit && backgroundMode === "select" && !magicMode());
             stage.classList.toggle("background-brushing", !!backgroundEdit && ["erase", "restore"].includes(backgroundMode));
             spatialHint.classList.toggle("error", backgroundNote.classList.contains("error"));
             spatialHint.textContent = backgroundNote.classList.contains("error") ? backgroundNote.textContent
                 : removing ? "Removing background…"
+                : magicMode() ? (magicBusy ? (backgroundEdit?.analysed ? magicDoing : "Analysing the picture for magic select…")
+                    : "Click an object to remove it, or drag a box round it; Shift-click (or Shift-drag) one to add it back.")
                 : backgroundMode === "fill" ? "Draw a closed outline with Erase, then click inside to fill it."
                 : backgroundMode === "select" && brushes.shape.value === "circle" ? "Circle: drag from its centre to its edge."
-                : backgroundMode === "select" ? "Drag a rectangle: only this area changes."
+                : backgroundMode === "select" ? (backgroundEdit?.selection ? "Drag a rectangle: only this area changes." : "Background removal affects the whole image. Drag a rectangle to limit it to that area.")
                 : backgroundMode === "erase" ? `Paint to make pixels transparent ${backgroundEdit?.selection ? (backgroundEdit.selection.inverted ? "outside the outlined area" : "inside the selected area") : "in the image"}.`
                 : backgroundMode === "restore" ? `Paint to restore the original pixels ${backgroundEdit?.selection ? (backgroundEdit.selection.inverted ? "outside the outlined area" : "inside the selected area") : "in the image"}.`
                 : backgroundEdit?.selection ? (backgroundEdit.selection.inverted ? "Background removal affects everything outside the outlined area." : "Background removal is limited to the outlined area.") : "Background removal affects the whole image.";
@@ -681,15 +770,59 @@ export async function imageView({ file, blob, url }) {
             backgroundFrame = requestAnimationFrame(previewBackground);
         };
         function setBackgroundMode(mode) {
-            if (!backgroundEdit?.rawMask || removing) return;
+            if (!backgroundEdit?.rawMask || removing || magicBusy) return;
             backgroundPointer.up(true);
             backgroundMode = mode;
-            if (mode === "select" && !backgroundEdit.selection) backgroundEdit.selection = { x: 0, y: 0, width: 0, height: 0 };
+            // (An error here is magic select's: U2NetP's leaves no cutout to work on.)
+            backgroundNote.classList.remove("error");
+            backgroundNote.textContent = "Adjust the preview, then Apply.";
+            // (No area selected is the whole image: one's made only by dragging.)
             hideBackgroundControls();
             brushCursor.hidden = true;
             previewBackground();
             stage.focus({ preventScroll: true });
+            if (magicMode()) analyseForMagic();
         }
+        // The mask is the objects picked, if any; else U2NetP's.
+        const useObjects = () => {
+            const edit = backgroundEdit;
+            edit.rawMask = edit.objects.length ? objectMask(edit.objects, ...edit.imageSize, edit.found) : edit.found;
+        };
+        // magicTask runs one magic select step for edit, if it's still the one open.
+        const magicTask = async (edit, task, doing = "Selecting…") => {
+            magicBusy = true; magicDoing = doing; showSpatial(); showButtons();
+            try {
+                await task();
+            } catch (err) {
+                if (!stopped && backgroundEdit === edit) { backgroundNote.textContent = err.message; backgroundNote.classList.add("error"); say(err.message, true); }
+            } finally {
+                if (!stopped && backgroundEdit === edit) { magicBusy = false; showSpatial(); showButtons(); }
+            }
+        };
+        const analyseForMagic = () => {
+            const edit = backgroundEdit;
+            if (!edit || edit.analysed || magicBusy) return;
+            backgroundNote.classList.remove("error");
+            magicTask(edit, async () => {
+                await segmenter.analyse(edit.source);
+                if (backgroundEdit === edit) edit.analysed = true;
+            });
+        };
+        const pickObject = (prompt, erase) => {
+            const edit = backgroundEdit;
+            if (!edit?.analysed || magicBusy) return;
+            backgroundNote.classList.remove("error");
+            magicTask(edit, async () => {
+                const mask = await segmenter.select(prompt);
+                if (backgroundEdit !== edit) return;
+                const { width: w, height: h } = segmenter.size;
+                const mark = selectionMark(mask, w, h, ...edit.imageSize, erase);
+                if (!mark) { say("Nothing found there. Try a click nearer the object's middle, or a box round it."); return; }
+                edit.objects.push(mark); edit.added.push(mark);
+                useObjects(); previewBackground();
+                say(erase ? "Object removed. Apply to keep the change." : "Object added back. Apply to keep the change.");
+            });
+        };
         invertSelection.addEventListener("click", () => {
             if (invertSelection.disabled) return;
             backgroundEdit.selection = { ...backgroundEdit.selection, inverted: !backgroundEdit.selection.inverted };
@@ -701,7 +834,30 @@ export async function imageView({ file, blob, url }) {
             setBackgroundMode("pan");
         });
         brushSize.addEventListener("input", () => { brushCursor.hidden = true; });
-        undoStroke.addEventListener("click", () => { backgroundEdit?.strokes.pop(); previewBackground(); });
+        allObjects.addEventListener("click", () => {
+            const edit = backgroundEdit;
+            if (!edit?.analysed || magicBusy) return;
+            backgroundNote.classList.remove("error");
+            say("Finding every object… (this takes a while)");
+            magicTask(edit, async () => {
+                const { mask, count } = await segmenter.findAll();
+                if (backgroundEdit !== edit) return;
+                const { width: w, height: h } = segmenter.size;
+                const mark = count ? selectionMark(mask, w, h, ...edit.imageSize) : null;
+                if (!mark) { say("No objects found. Click one, or drag a box round it."); return; }
+                mark.only = true; // (only these kept: what's found replaces the cutout)
+                edit.objects.push(mark); edit.added.push(mark);
+                useObjects(); previewBackground();
+                say(`Kept ${count} ${count === 1 ? "object" : "objects"}. Click any to remove it.`);
+            }, "Finding every object… (this takes a while)");
+        });
+        // Undo takes back the last stroke, fill or object picked.
+        undoStroke.addEventListener("click", () => {
+            const edit = backgroundEdit, last = edit?.added.pop();
+            if (!last) return;
+            for (const list of [edit.strokes, edit.objects]) { const i = list.lastIndexOf(last); if (i >= 0) list.splice(i, 1); }
+            useObjects(); previewBackground();
+        });
         settingsButton.setAttribute("aria-haspopup", "dialog");
         settingsButton.setAttribute("aria-expanded", "false");
         settingsButton.popoverTargetElement = backgroundPanel;
@@ -721,9 +877,14 @@ export async function imageView({ file, blob, url }) {
         backgroundPointer = {
             painting: () => !!backgroundEdit && backgroundMode !== "pan",
             place: showSelection,
-            down(px, py) {
+            down(px, py, event) {
                 if (!backgroundEdit?.rawMask || removing || backgroundMode === "pan") return false;
                 const point = imagePoint(px, py);
+                if (magicMode()) {
+                    if (!backgroundEdit.analysed) analyseForMagic(); // (it failed: again)
+                    else if (!magicBusy) gesture = { magic: true, from: maskPoint(imageMaskPoint(px, py, { x, y, width, height, scale }, 6)), at: [px, py], erase: !(event?.shiftKey || event?.altKey) }; // (a click removes; Shift adds back)
+                    return true;
+                }
                 const rectangle = backgroundMode === "select" && brushes.shape.value === "rectangle";
                 if (!rectangle && !insideImage(point)) return true;
                 const mapped = maskPoint(rectangle ? imageMaskPoint(px, py, { x, y, width, height, scale }, 6) : point);
@@ -737,14 +898,14 @@ export async function imageView({ file, blob, url }) {
                         try {
                             const marks = backgroundEdit.strokes.map((stroke) => ({ ...stroke, erase: stroke.mode === "restore" }));
                             const fill = enclosedFill(marks, ...backgroundEdit.imageSize, mapped);
-                            if (fill) { backgroundEdit.strokes.push({ ...fill, mode: "erase" }); previewBackground(); say("Area filled. Apply to keep it."); }
+                            if (fill) { const stroke = { ...fill, mode: "erase" }; backgroundEdit.strokes.push(stroke); backgroundEdit.added.push(stroke); previewBackground(); say("Area filled. Apply to keep it."); }
                             else say("That area is already erased.");
                         } catch (err) { say(err.message, true); }
                         return true;
                     }
                     const stroke = newMaskMark("brush", mapped, Math.hypot(adjacent[0] - mapped[0], adjacent[1] - mapped[1]));
                     stroke.mode = backgroundMode;
-                    backgroundEdit.strokes.push(stroke);
+                    backgroundEdit.strokes.push(stroke); backgroundEdit.added.push(stroke);
                     gesture = { stroke, from: mapped };
                 }
                 scheduleBackground();
@@ -759,6 +920,13 @@ export async function imageView({ file, blob, url }) {
                     Object.assign(brushCursor.style, { left: `${px - diameter / 2}px`, top: `${py - diameter / 2}px`, width: `${diameter}px`, height: `${diameter}px` });
                 }
                 if (!gesture) return true;
+                if (gesture.magic) {
+                    gesture.dragged ||= Math.hypot(px - gesture.at[0], py - gesture.at[1]) >= 5;
+                    const [ax, ay] = gesture.at;
+                    magicBox.hidden = !gesture.dragged;
+                    Object.assign(magicBox.style, { left: `${Math.min(ax, px)}px`, top: `${Math.min(ay, py)}px`, width: `${Math.abs(px - ax)}px`, height: `${Math.abs(py - ay)}px` });
+                    return true;
+                }
                 const rectangle = !!gesture.selectionMark?.rect;
                 const mapped = maskPoint(imageMaskPoint(px, py, { x, y, width, height, scale }, rectangle ? 6 : 0));
                 if (gesture.stroke) extendMaskMark(gesture.stroke, gesture.from, mapped);
@@ -771,11 +939,26 @@ export async function imageView({ file, blob, url }) {
                 return true;
             },
             up(cancelled, px, py) {
+                if (gesture?.magic) {
+                    const { from, erase } = gesture;
+                    if (!cancelled && Number.isFinite(px) && Number.isFinite(py)) backgroundPointer.move(px, py);
+                    const dragged = gesture.dragged;
+                    gesture = null; magicBox.hidden = true;
+                    if (cancelled || !backgroundEdit) return;
+                    if (!dragged) { pickObject({ point: from }, erase); return; }
+                    const to = maskPoint(imageMaskPoint(px, py, { x, y, width, height, scale }, 6)), box = rectOf(from, to);
+                    if (box.width >= 1 && box.height >= 1) pickObject({ box: [box.x, box.y, box.width, box.height] }, erase);
+                    return;
+                }
                 if (!gesture) return;
                 if (!cancelled && Number.isFinite(px) && Number.isFinite(py)) backgroundPointer.move(px, py);
                 if (cancelled && backgroundEdit) {
-                    if (gesture.stroke) backgroundEdit.strokes.pop();
+                    if (gesture.stroke) { backgroundEdit.strokes.pop(); backgroundEdit.added.pop(); }
                     else backgroundEdit.selection = gesture.previous;
+                } else if (backgroundEdit && gesture.selectionMark) {
+                    // A click, not a drag, leaves the area as it was.
+                    const s = backgroundEdit.selection;
+                    if (!s || s.width < 1 || s.height < 1) backgroundEdit.selection = gesture.previous;
                 }
                 gesture = null;
                 if (backgroundEdit) {
@@ -805,7 +988,7 @@ export async function imageView({ file, blob, url }) {
             const { rawMask, index } = backgroundEdit;
             backgroundPreview = ops.slice();
             const op = { background: adjustedMask(rawMask, backgroundSettings()), rawMask, settings: backgroundSettings(), serial: maskSerial + 1,
-                imageSize: backgroundEdit.imageSize, selection: backgroundEdit.selection, strokes: backgroundEdit.strokes };
+                imageSize: backgroundEdit.imageSize, selection: backgroundEdit.selection, strokes: backgroundEdit.strokes, objects: backgroundEdit.objects.slice() };
             if (index < 0) backgroundPreview.push(op);
             else backgroundPreview[index] = op;
             redraw(false);
@@ -816,7 +999,7 @@ export async function imageView({ file, blob, url }) {
             if (apply && backgroundEdit.rawMask) {
                 previewBackground(); // include a slider event whose animation frame hasn't run yet
                 const previous = ops[backgroundEdit.index];
-                const details = (op) => JSON.stringify([op?.settings, op?.selection ?? null, op?.strokes ?? []]);
+                const details = (op) => JSON.stringify([op?.settings, op?.selection ?? null, op?.strokes ?? [], op?.objects ?? []]);
                 const candidate = backgroundPreview[backgroundEdit.index < 0 ? backgroundPreview.length - 1 : backgroundEdit.index];
                 if (!previous || details(previous) !== details(candidate)) {
                     remember();
@@ -830,8 +1013,8 @@ export async function imageView({ file, blob, url }) {
             brushes.close();
             brushCursor.hidden = selectionBox.hidden = true;
             backgroundEdit = backgroundPreview = null;
-            remover.cancel();
-            removing = false;
+            remover.cancel(); segmenter.cancel();
+            removing = magicBusy = false; magicBox.hidden = true;
             hideBackgroundControls();
             redraw(false);
             say(apply ? "Background removed. Undo to restore it." : "Background removal cancelled.");
@@ -858,8 +1041,12 @@ export async function imageView({ file, blob, url }) {
             setResizing(false);
             // Each activation edits the current image. Replacing an earlier
             // operation would restore its removed pixels outside a new selection.
-            const edit = backgroundEdit = { index: -1, rawMask: null,
-                imageSize: [width, height], trailing: [], selection: null, strokes: [] };
+            // (source: the picture as it is now, for magic select; found: U2NetP's mask;
+            // added: strokes, fills and objects, in order, for Undo.)
+            const edit = backgroundEdit = { index: -1, rawMask: null, found: null, source: content, analysed: false,
+                imageSize: [width, height], trailing: [], selection: null, strokes: [], objects: [], added: [] };
+            // It starts with Select area, a rectangle: none drawn yet, the whole image.
+            backgroundMode = "select"; brushes.shape.value = "rectangle";
             for (const { input, initial } of sliders) input.value = initial;
             removing = !edit.rawMask;
             backgroundNote.textContent = removing ? "Removing background…" : "Adjust the preview, then Apply.";
@@ -871,7 +1058,7 @@ export async function imageView({ file, blob, url }) {
             if (!removing) return;
             say("Removing background…");
             try {
-                edit.rawMask = await remover.remove(content);
+                edit.rawMask = edit.found = await remover.remove(content);
                 if (stopped || backgroundEdit !== edit) return;
                 previewBackground();
                 backgroundNote.textContent = "Adjust the preview, then Apply.";
@@ -1027,7 +1214,8 @@ export async function imageView({ file, blob, url }) {
             const selected = backgroundEdit?.selection;
             spatialApply.disabled = !backgroundEdit?.rawMask || removing || !!selected && (selected.width < 1 || selected.height < 1);
             showSpatial();
-            applyCrop.disabled = saving || removing || !crop || crop.width < 1 || crop.height < 1;
+            applyCrop.disabled = saving || removing || cropBusy || !crop || crop.width < 1 || crop.height < 1;
+            cropMagic.disabled = cropAll.disabled = saving || cropBusy;
             // Lay out toolbar changes before another pointer event can arrive.
             if (fitting) fit(); else place();
             changed();
@@ -1036,6 +1224,10 @@ export async function imageView({ file, blob, url }) {
             if (on && (saving || !resizePanel.hidden || backgroundEdit || inpainting?.active() || drawing?.active() || placing?.active() || scanning?.active())) return;
             cropping = on;
             crop = null;
+            if (!on) {
+                cropToken++; cropBusy = cropMagicOn = false; cropAnalysed = null; cropSegmenter.cancel();
+                cropMagic.setAttribute("aria-pressed", "false"); stage.classList.remove("crop-magic");
+            }
             cropButton.setAttribute("aria-pressed", String(on));
             cropTools.hidden = !on;
             stage.classList.toggle("cropping", on);
@@ -1183,7 +1375,7 @@ export async function imageView({ file, blob, url }) {
                 } else if (backgroundEdit) {
                     if (!backgroundEdit.rawMask || removing || spatialApply.disabled) return null;
                     pending = { kind: "background", width, height, settings: backgroundSettings(),
-                        selection: backgroundEdit.selection, strokes: backgroundEdit.strokes };
+                        selection: backgroundEdit.selection, strokes: backgroundEdit.strokes, ...(backgroundEdit.objects.length ? { objects: backgroundEdit.objects } : {}) };
                 } else if (drawing?.active()) {
                     pending = drawing.recipe();
                     if (!pending) return null;
@@ -1281,7 +1473,8 @@ export async function imageView({ file, blob, url }) {
                 view.removeEventListener("paste", pasted);
                 stopped = true;
                 cancelAnimationFrame(backgroundFrame);
-                remover.cancel();
+                remover.cancel(); segmenter.cancel();
+                magicBox.remove();
                 window.removeEventListener("resize", positionBackground);
                 window.removeEventListener("resize", positionSaveOptions);
                 options.hidePopover();
@@ -1296,7 +1489,7 @@ export async function imageView({ file, blob, url }) {
                 spatialHint.remove();
                 backgroundPanel.remove();
                 setCropping(false);
-                cropChanged = null;
+                cropChanged = cropPick = null; cropSegmenter.cancel();
                 stage.removeEventListener("keydown", keys);
                 editBar.hidden = true;
                 editBar.replaceChildren();

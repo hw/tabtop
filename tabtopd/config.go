@@ -30,6 +30,7 @@ type serverConfig struct {
 	pdfjsDir                              string // pdf.js, for PDF previews; "" for none
 	inpaintDir                            string // MI-GAN ONNX model for image repairs; "" for none
 	backgroundDir                         string // ONNX Runtime Web and U2NetP for image background removal; "" for none
+	segmentDir                            string // MobileSAM ONNX models, for magic select in image editing; "" for none
 	disasmDir                             string // iced-x86 for the browser, for disassembly in hex previews; "" for none
 	sessionMax, sessionIdle               time.Duration
 	audioSink, micSink                    string

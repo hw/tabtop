@@ -1,6 +1,6 @@
 // Shared batch operations use the same masks and local models as image editing.
 import { Inpainter, inpaintPatch } from "./image-inpaint.js";
-import { BackgroundRemover, adjustedMask } from "./image-background.js";
+import { BackgroundRemover, adjustedMask, objectMask, needsFound } from "./image-background.js";
 import { transform } from "./image-view.js";
 import { validShape } from "./image-draw.js";
 import { validPlacement } from "./image-place.js";
@@ -34,11 +34,12 @@ export function scaleRecipe(recipe, width, height) {
     if (recipe.kind === "scan") {
         const fit = ([x, y]) => [x * sx, y * sy];
         out.settings = { ...recipe.settings, corners: recipe.settings.corners.map(fit) };
-        if (recipe.settings.edges) out.settings.edges = recipe.settings.edges.map(fit);
+        if (recipe.settings.folds) out.settings.folds = recipe.settings.folds.map(f => f.map(fit));
         scanGeometry(width, height, out.settings);
     } else if (recipe.kind === "inpaint") out.marks = recipe.marks.map(scale);
     else if (recipe.kind === "background") {
         out.strokes = (recipe.strokes ?? []).map(scale);
+        if (recipe.objects?.length) out.objects = recipe.objects.map(scale);
         out.selection = recipe.selection ? { ...recipe.selection, x: recipe.selection.x * sx, y: recipe.selection.y * sy,
             width: recipe.selection.width * sx, height: recipe.selection.height * sy } : null;
     } else if (recipe.kind === "crop") {
@@ -84,11 +85,14 @@ export function describeStep(step) {
         const n = step.marks?.length ?? 0;
         return `Inpaint ${n} ${n === 1 ? "mark" : "marks"}`;
     }
-    case "background":
-        return "Remove background";
+    case "background": {
+        const n = step.objects?.filter(o => !o.erase).length ?? 0;
+        return n ? `Remove background, keeping ${n} ${n === 1 ? "object" : "objects"}` : "Remove background";
+    }
     case "fill": {
         const n = step.points?.length ?? 0;
-        return `Fill ${n} ${n === 1 ? "area" : "areas"} ${step.color}${step.selection ? ` within a ${step.selection.shape === "circle" ? "circle" : "rectangle"}` : ""}`;
+        const within = { circle: "a circle", object: "an object" }[step.selection?.shape] ?? "a rectangle";
+        return `Fill ${n} ${n === 1 ? "area" : "areas"} ${step.color}${step.selection ? ` within ${within}` : ""}`;
     }
     case "paste":
         return `Place a picture over ${percent(step.rect.width, step.width)} × ${percent(step.rect.height, step.height)}`;
@@ -144,7 +148,13 @@ export function batchProcessor() {
                 let op;
                 if (scaled.kind === "scan") op = { scan: scaled.settings };
                 else if (scaled.kind === "inpaint") op = { inpaint: await inpaintPatch(current, scaled.marks, painter) };
-                else if (scaled.kind === "background") op = { background: adjustedMask(await background.remove(current), scaled.settings), selection: scaled.selection, strokes: scaled.strokes };
+                else if (scaled.kind === "background") {
+                    // Objects picked with magic select are kept where they were; else U2NetP finds the foreground.
+                    // (Objects removed and added back: to and from what U2NetP finds there.)
+                    const found = needsFound(scaled.objects) ? await background.remove(current) : null;
+                    const mask = scaled.objects?.length ? objectMask(scaled.objects, current.width, current.height, found) : found;
+                    op = { background: adjustedMask(mask, scaled.settings), selection: scaled.selection, strokes: scaled.strokes };
+                }
                 else if (scaled.kind === "crop") op = scaled.rect;
                 else if (scaled.kind === "fill") op = { fill: validFill({ points: scaled.points, color: scaled.color, tolerance: scaled.tolerance, selection: scaled.selection ?? null }) };
                 else if (scaled.kind === "paste") {
