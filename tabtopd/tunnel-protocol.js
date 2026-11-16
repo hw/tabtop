@@ -449,7 +449,15 @@ export async function remoteLogin(url = tunnelURL(), { signal, ready } = {}) {
         approvalURL.hash = new URLSearchParams({ id: details.id, proof, secret: b64url(binding) }).toString();
         const finalKeys = await c.hkdf(concat(ee, binding), salt, label + " approved keys", 64);
         signal?.throwIfAborted();
-        await ready?.({ url: approvalURL.href, code: hex.slice(0, 4) + "-" + hex.slice(4), expires: details.expires });
+        // (And the approval page where this page reaches the server, <base>/
+        // auth/approve beside <base>/session, which the link's expected to
+        // be: the view warns where it isn't, as a proxy that rewrote the
+        // request's Host or path could have made it.)
+        const reached = new URL(url);
+        reached.protocol = reached.protocol === "wss:" ? "https:" : "http:";
+        reached.search = reached.hash = "";
+        const expectedApproval = new URL("auth/approve", reached).href;
+        await ready?.({ url: approvalURL.href, code: hex.slice(0, 4) + "-" + hex.slice(4), expires: details.expires, expectedApproval });
         let approved;
         try { approved = decode(finalKeys.slice(32), 0, await s.next()); }
         catch (err) { signal?.throwIfAborted(); if (err instanceof TunnelError) throw err; throw new TunnelError("Remote approval couldn't be authenticated. Start again and check the trusted approval address."); }

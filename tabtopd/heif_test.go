@@ -164,7 +164,12 @@ func TestHEIFChildSandbox(t *testing.T) {
 	if result.Err != nil || !strings.HasPrefix(said, "sandbox: <nil>;") {
 		t.Fatalf("not sandboxed: %q, %v", said, result.Err)
 	}
-	if strings.Count(said, "operation not permitted") != 2 {
-		t.Fatalf("a file opened, or the network reached: %q", said)
+	// Opening, the network, the parent's limits, signalling it, a new
+	// process, having it signalled by a descriptor, shared memory, a group
+	// of its own, and no parent-death signal: refused; a newer call, "not
+	// implemented"; its own limits, its output's flags, threads: as before.
+	if strings.Count(said, "operation not permitted") != 9 || !strings.Contains(said, "newer call: function not implemented;") ||
+		!strings.HasSuffix(said, "own limits: errno 0; its flags: errno 0") {
+		t.Fatalf("not as sandboxed as it should be: %q", said)
 	}
 }

@@ -27,7 +27,7 @@ const CORE = "3dmodel";
 // name on ("vertex x=…").
 function attributes(tag) {
     const out = {};
-    for (const m of tag.matchAll(/([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g)) out[m[1]] = m[3] ?? m[4];
+    for (const m of tag.matchAll(/(?<![\w:.-])([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g)) out[m[1]] = m[3] ?? m[4];
     return out;
 }
 
@@ -57,7 +57,9 @@ export function readModel(text) {
     const model = { unit: 1, objects: new Map(), properties: new Map(), build: [] };
     let object = null, group = null;
     let vertices = null, triangles = null;
-    const tag = /<\s*(\/?)([\w:.-]+)([^>]*?)(\/?)\s*>/g;
+    // (Its rest begins with what a name can't have, and none has "<": so
+    // no text, however made, is gone over more than about twice.)
+    const tag = /<\s*(\/?)([\w:.-]+)((?:[^\w:.<>-][^<>]*)?)>/g;
     for (let m; (m = tag.exec(text));) {
         const [, closing, rawName, rest] = m;
         const name = localName(rawName);
@@ -131,7 +133,7 @@ export function read3MF(files) {
     // The model file the package's relationships name, else the usual one.
     const rels = text("_rels/.rels") ?? "";
     let root = null;
-    for (const m of rels.matchAll(/<\s*Relationship\b([^>]*)>/g)) {
+    for (const m of rels.matchAll(/<\s*Relationship\b([^<>]*)>/g)) {
         const a = attributes(m[1]);
         if (String(a.Type ?? "").endsWith(CORE) && a.Target) root = a.Target.replace(/^\//, "");
     }

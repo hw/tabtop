@@ -118,10 +118,12 @@ export function gcodeContent(THREE, g) {
                 vec3 d = iEnd - iStart;
                 float len = length(d);
                 vec3 along = len > 1e-6 ? d / len : vec3(1.0, 0.0, 0.0);
-                vec3 side = cross(along, vec3(0.0, 0.0, 1.0));
+                // (A right-handed frame: along, side, up; else the boxes are
+                // inside out, their outsides culled, their insides lit.)
+                vec3 side = cross(vec3(0.0, 0.0, 1.0), along);
                 float sl = length(side);
-                side = sl > 1e-4 ? side / sl : vec3(1.0, 0.0, 0.0);
-                vec3 up = cross(side, along);
+                side = sl > 1e-4 ? side / sl : vec3(0.0, 1.0, 0.0);
+                vec3 up = cross(along, side);
                 float w = iSize.x, h = iSize.y;
                 // Along it, half its width past each end (so corners meet);
                 // across it, its width; down from the nozzle, its height.

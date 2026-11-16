@@ -47,7 +47,16 @@ func runIsolatedChild(spec isolatedChild) childResult {
 	out := &cappedBuffer{max: spec.OutputLimit}
 	cmd.Stdout = out
 	cmd.Env = []string{"GOMAXPROCS=1", "GOMEMLIMIT=512MiB"}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	// A group of its own: ended (timed out, or given up on), all it made
+	// goes with it; and waited for no more than childWaitDelay after, as
+	// anything left holding its output would otherwise keep Run waiting.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
+	// (The group, and the child itself: should it have left the group.)
+	cmd.Cancel = func() error {
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = childWaitDelay
 	err = cmd.Run()
 	exitCode := 0
 	if err != nil {
@@ -61,6 +70,10 @@ func runIsolatedChild(spec isolatedChild) childResult {
 }
 
 var errChildOutputLimit = errors.New("child output limit exceeded")
+
+// childWaitDelay is how long a child's output is waited for after it's
+// ended (see runIsolatedChild).
+const childWaitDelay = 2 * time.Second
 
 type cappedBuffer struct {
 	// Do not embed Buffer: its promoted ReadFrom lets io.Copy bypass Write.

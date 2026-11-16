@@ -24,8 +24,26 @@ self.onmessage = async ({ data }) => {
         const { format, bytes, name = "" } = data;
         if (format === "gcode" || format === "gco") return gcodeReply(new Uint8Array(bytes));
         if (format === "bgcode") {
-            const { unzlibSync } = await import("./three/fflate.module.js");
-            const { gcode, truncated } = readBGCode(new Uint8Array(bytes), unzlibSync);
+            const { Unzlib } = await import("./three/fflate.module.js");
+            // No more than size bytes: unpacked a little at a time (4 KB in),
+            // stopped as soon as more than that has come. (fflate's
+            // unzlibSync, given a buffer, fills it, but goes on unpacking
+            // the rest, unkept: seconds, for a block made to be huge.)
+            const inflate = (data, size) => {
+                const out = new Uint8Array(size);
+                let n = 0;
+                const unzlib = new Unzlib((chunk) => {
+                    if (n + chunk.length > size) throw new Error("a block of it doesn't unpack to its size");
+                    out.set(chunk, n);
+                    n += chunk.length;
+                });
+                // (Its last 4 bytes, zlib's checksum, with the last push.)
+                const body = Math.max(0, data.length - 4);
+                for (let at = 0; at < body; at += 4096) unzlib.push(data.subarray(at, Math.min(body, at + 4096)), false);
+                unzlib.push(data.subarray(body), true);
+                return out.subarray(0, n);
+            };
+            const { gcode, truncated } = readBGCode(new Uint8Array(bytes), inflate);
             return gcodeReply(gcode, truncated);
         }
         if (format === "3mf") return await threeMFReply(new Uint8Array(bytes), name);
@@ -117,14 +135,20 @@ async function threeMFReply(bytes, name) {
 // part is a shape's arrays, its normals made if it's a mesh without them,
 // or with some that aren't (STL files often have 0, 0, 0: unlit, black).
 function part(kind, geometry) {
-    if (kind === "mesh" && !usableNormals(geometry.attributes.normal)) geometry.computeVertexNormals();
+    // (Normals made for a mesh whose faces each have their own corners are
+    // flat: it's facets, as an STL's, for the page to smooth if asked.)
+    let madeFlat = false;
+    if (kind === "mesh" && !usableNormals(geometry.attributes.normal)) {
+        geometry.computeVertexNormals();
+        madeFlat = !geometry.index;
+    }
     const own = (attr) => (attr ? (attr.isInterleavedBufferAttribute ? Float32Array.from({ length: attr.count * attr.itemSize }, (_, i) => attr.getComponent(Math.floor(i / attr.itemSize), i % attr.itemSize)) : attr.array) : null);
     return { kind, position: own(geometry.attributes.position), normal: own(geometry.attributes.normal),
         color: own(geometry.attributes.color), uv: own(geometry.attributes.uv), index: geometry.index?.array ?? null,
         // Which material each run of it is (an OBJ's usemtl).
         groups: geometry.groups.map(({ start, count, materialIndex }) => ({ start, count, materialIndex })),
         // (PLY's colours are bytes, 0 to 255, meaning 0 to 1.)
-        colorNormalized: !!geometry.attributes.color?.normalized };
+        colorNormalized: !!geometry.attributes.color?.normalized, madeFlat };
 }
 
 // usableNormals reports whether every one of normals is a direction.

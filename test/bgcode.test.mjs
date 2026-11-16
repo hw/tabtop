@@ -6,7 +6,8 @@ import { readBGCode, heatshrink, meatPack } from "../tabtopd/bgcode.js";
 import { parseGCode } from "../tabtopd/gcode.js";
 
 const fixture = (name) => new Uint8Array(readFileSync(new URL(`data/3d/${name}`, import.meta.url)));
-const inflate = (b) => new Uint8Array(inflateSync(b));
+// (As the worker's: no more than size; Node's says so by throwing.)
+const inflate = (b, size) => new Uint8Array(inflateSync(b, { maxOutputLength: Math.max(1, size) }));
 const text = (b) => new TextDecoder().decode(b);
 
 // prism.bgcode and prism-text.gcode: PrusaSlicer 2.9.2's slicing of
@@ -109,4 +110,7 @@ test("its blocks: metadata as comments, thumbnails passed over, G-code as it is 
     assert.throws(() => readBGCode(file([[1, 9, enc("x")]]), inflate), /compressed in a way/);
     assert.throws(() => readBGCode(file([[7, 0, enc("x")]]), inflate), /kind this preview doesn't know/);
     assert.throws(() => readBGCode(file([[1, 2, Uint8Array.of(0), undefined, 65 << 20]]), inflate), /too big/);
+    // Deflate'd, saying it's 10 bytes, but 10 MB: not unpacked past 10.
+    const bomb = file([[1, 1, new Uint8Array(10 << 20), undefined, 10]]);
+    assert.throws(() => readBGCode(bomb, inflate));
 });

@@ -66,52 +66,61 @@ export function loginForm(title, cancellable = false, { remote = true } = {}) {
             });
             row.append(cancel);
         }
-        // With a passkey, where this page can use one (see passkey.go).
-        let usePasskey = false, passkey = null;
-        if (passkeysUsable()) {
-            const style = document.createElement("style");
-            style.textContent = `
-                #tabtop_login .passkey-option { max-width: 26rem; margin: 1.2rem 0; }
-                #tabtop_login .passkey-divider { display: flex; align-items: center; gap: .8rem; margin: 0 0 1rem; color: #9aa0a6; font-size: .8rem; }
-                #tabtop_login .passkey-divider::before, #tabtop_login .passkey-divider::after { content: ""; flex: 1; height: 1px; background: #3c4043; }
-                #tabtop_login .passkey-login { all: revert; box-sizing: border-box; display: flex; align-items: center; gap: .85rem; width: 100%; min-height: 4.5rem; padding: .8rem 1rem; border: 1px solid #6385b3; border-radius: 12px; font: inherit; color: #e8f0fe; background: #222e3d; cursor: pointer; text-align: left; transition: background .15s, border-color .15s; }
-                #tabtop_login .passkey-login:hover:not(:disabled) { background: #2b3d53; border-color: #aecbfa; }
-                #tabtop_login .passkey-login:active:not(:disabled) { background: #334b68; }
-                #tabtop_login .passkey-login:focus-visible { outline: 3px solid #aecbfa; outline-offset: 3px; }
-                #tabtop_login .passkey-login:disabled { opacity: .6; cursor: wait; }
-                #tabtop_login .passkey-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 2.5rem; height: 2.5rem; border-radius: 10px; background: #344c6a; color: #aecbfa; }
-                #tabtop_login .passkey-icon svg { display: block; }
-                #tabtop_login .passkey-copy { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
-                #tabtop_login .passkey-copy strong { font-size: 1rem; font-weight: 600; }
-                #tabtop_login .passkey-copy small { font-size: .8rem; color: #bdc9da; }
-                #tabtop_login .passkey-arrow { margin-left: auto; color: #aecbfa; font-size: 1.3rem; }
-                @media (prefers-reduced-motion: reduce) { #tabtop_login .passkey-login { transition: none; } }
-            `;
-            box.append(style);
-            passkey = document.createElement("button");
-            Object.assign(passkey, { type: "submit", className: "passkey-login" });
+        // The other ways in, below an "or": with a passkey, where this page
+        // can use one (see passkey.go), and by approval on another device
+        // (see remote_auth.go); each a card, as these styles have it.
+        const style = document.createElement("style");
+        style.textContent = `
+            #tabtop_login .login-options { max-width: 26rem; margin: 1.2rem 0; }
+            #tabtop_login .passkey-divider { display: flex; align-items: center; gap: .8rem; margin: 0 0 1rem; color: #9aa0a6; font-size: .8rem; }
+            #tabtop_login .passkey-divider::before, #tabtop_login .passkey-divider::after { content: ""; flex: 1; height: 1px; background: #3c4043; }
+            #tabtop_login :is(.passkey-login, .remote-login) { all: revert; box-sizing: border-box; display: flex; align-items: center; gap: .85rem; width: 100%; min-height: 4.5rem; margin: 0 0 .7rem; padding: .8rem 1rem; border: 1px solid #6385b3; border-radius: 12px; font: inherit; color: #e8f0fe; background: #222e3d; cursor: pointer; text-align: left; transition: background .15s, border-color .15s, transform .15s; }
+            #tabtop_login :is(.passkey-login, .remote-login):hover:not(:disabled) { background: #2b3d53; border-color: #aecbfa; }
+            #tabtop_login :is(.passkey-login, .remote-login):active:not(:disabled) { background: #334b68; transform: translateY(1px); }
+            #tabtop_login :is(.passkey-login, .remote-login):focus-visible { outline: 3px solid #aecbfa; outline-offset: 3px; }
+            #tabtop_login :is(.passkey-login, .remote-login):disabled { opacity: .6; cursor: wait; }
+            #tabtop_login .remote-login[hidden] { display: none; }
+            #tabtop_login .passkey-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 2.5rem; height: 2.5rem; border-radius: 10px; background: #344c6a; color: #aecbfa; }
+            #tabtop_login .passkey-icon svg { display: block; }
+            #tabtop_login .passkey-copy { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+            #tabtop_login .passkey-copy strong { font-size: 1rem; font-weight: 600; }
+            #tabtop_login .passkey-copy small { font-size: .8rem; color: #bdc9da; }
+            #tabtop_login .passkey-arrow { margin-left: auto; color: #aecbfa; font-size: 1.3rem; }
+            @media (prefers-reduced-motion: reduce) { #tabtop_login :is(.passkey-login, .remote-login) { transition: none; } }
+        `;
+        box.append(style);
+        // card is a way in's button: its icon, what it is, a word on it, ›.
+        const card = (button, iconName, title, hint) => {
             const icon = document.createElement("span");
             icon.className = "passkey-icon";
             icon.setAttribute("aria-hidden", "true");
-            icon.innerHTML = iconSVG("passkey");
+            icon.innerHTML = iconSVG(iconName);
             const copy = document.createElement("span");
             copy.className = "passkey-copy";
-            const heading = document.createElement("strong"); heading.textContent = "Use a passkey";
-            const hint = document.createElement("small"); hint.textContent = "Use your device or security key";
-            copy.append(heading, hint);
+            const heading = document.createElement("strong"); heading.textContent = title;
+            const small = document.createElement("small"); small.textContent = hint;
+            copy.append(heading, small);
             const arrow = document.createElement("span"); arrow.className = "passkey-arrow"; arrow.textContent = "›"; arrow.setAttribute("aria-hidden", "true");
-            passkey.append(icon, copy, arrow);
+            button.append(icon, copy, arrow);
+            return button;
+        };
+        const options = document.createElement("div"); options.className = "login-options";
+        const divider = document.createElement("div"); divider.className = "passkey-divider"; divider.textContent = "or";
+        options.append(divider);
+        let usePasskey = false, passkey = null;
+        if (passkeysUsable()) {
+            passkey = document.createElement("button");
+            Object.assign(passkey, { type: "submit", className: "passkey-login" });
+            card(passkey, "passkey", "Use a passkey", "Use your device or security key");
             passkey.addEventListener("click", () => { usePasskey = true; input.required = false; });
-            const option = document.createElement("div"); option.className = "passkey-option";
-            const divider = document.createElement("div"); divider.className = "passkey-divider"; divider.textContent = "or";
-            option.append(divider, passkey);
-            form.insertBefore(option, note);
+            options.append(passkey);
         }
         const remoteButton = document.createElement("button");
-        Object.assign(remoteButton, { type: "button", className: "remote-login", textContent: "Approve on other device" });
-        look(remoteButton, false);
-        Object.assign(remoteButton.style, { display: "block", width: "100%", maxWidth: "26rem", minHeight: "3.5rem", padding: ".75rem 1rem", margin: "1rem 0", borderColor: "#6385b3", background: "#222e3d", fontWeight: "600", whiteSpace: "normal" });
-        if (remote) form.insertBefore(remoteButton, note);
+        Object.assign(remoteButton, { type: "button", className: "remote-login" });
+        remoteButton.setAttribute("aria-label", "Approve on other device");
+        card(remoteButton, "devices", "Approve on other device", "Scan a code with a phone or computer you're logged in on");
+        if (remote) options.append(remoteButton);
+        if (passkey || remote) form.insertBefore(options, note);
         const setBusy = busy => {
             button.disabled = remoteButton.disabled = busy;
             if (passkey) passkey.disabled = busy;
@@ -126,6 +135,8 @@ export function loginForm(title, cancellable = false, { remote = true } = {}) {
                     if (cancelled || remoteAttempt.signal.aborted) return;
                     remoteView = remoteRequestView(details, () => remoteAttempt.abort());
                     form.insertBefore(remoteView.node, note);
+                    // (Its card's waiting for it: hidden while it's shown.)
+                    remoteButton.hidden = true;
                     remoteView.node.scrollIntoView?.({ block: "start" });
                 } });
                 if (cancelled) return;
@@ -135,6 +146,7 @@ export function loginForm(title, cancellable = false, { remote = true } = {}) {
                 if (!cancelled && !remoteAttempt.signal.aborted) error.textContent = err.message;
             } finally {
                 remoteView?.stop(); remoteView = null;
+                remoteButton.hidden = false;
                 if (!cancelled) { setBusy(false); if (!pending) remoteButton.focus(); }
                 remoteAttempt = null;
             }

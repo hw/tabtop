@@ -27,6 +27,9 @@ import (
 	"os"
 	"syscall"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -80,8 +83,36 @@ func readHEIFChild(args []string) int {
 	if len(args) == 1 && args[0] == "sandbox-check" {
 		_, open := os.Open("/etc/hostname")
 		_, dial := net.Dial("tcp", "127.0.0.1:9")
-		fmt.Printf("sandbox: %v; open: %v; dial: %v", sandboxed, open, dial)
+		parent := os.Getppid()
+		var limit syscall.Rlimit
+		_, _, prlimit := syscall.RawSyscall6(syscall.SYS_PRLIMIT64, uintptr(parent), syscall.RLIMIT_NOFILE, 0, uintptr(unsafe.Pointer(&limit)), 0, 0)
+		_, _, signal := syscall.RawSyscall(syscall.SYS_TGKILL, uintptr(parent), uintptr(parent), 0)
+		_, _, fork := syscall.RawSyscall6(syscall.SYS_CLONE, uintptr(syscall.SIGCHLD), 0, 0, 0, 0, 0)
+		if fork == 0 {
+			os.Exit(0) // (a process made after all: it goes)
+		}
+		// Its own: as before.
+		_, _, own := syscall.RawSyscall6(syscall.SYS_PRLIMIT64, 0, syscall.RLIMIT_NOFILE, 0, uintptr(unsafe.Pointer(&limit)), 0, 0)
+		// Having a descriptor signal the parent, shared memory, a group of
+		// its own, no parent-death signal: refused; a call newer than the
+		// sandbox knows (heifNewest's): "not implemented"; its output's flags: read.
+		_, _, owner := syscall.RawSyscall(syscall.SYS_FCNTL, 1, syscall.F_SETOWN, uintptr(parent))
+		_, _, shared := syscall.RawSyscall(unix.SYS_SHMGET, 0 /* IPC_PRIVATE */, 4096, 0o1600 /* IPC_CREAT | 0600 */)
+		_, _, group := syscall.RawSyscall(syscall.SYS_SETPGID, 0, 0, 0)
+		_, _, orphan := syscall.RawSyscall(syscall.SYS_PRCTL, unix.PR_SET_PDEATHSIG, 0, 0)
+		_, _, newer := syscall.RawSyscall(463, 0, 0, 0)
+		_, _, flags := syscall.RawSyscall(syscall.SYS_FCNTL, 1, syscall.F_GETFL, 0)
+		threads := make(chan int)
+		go func() { threads <- 1 }()
+		<-threads
+		fmt.Printf("sandbox: %v; open: %v; dial: %v; parent's limits: %v; signal parent: %v; fork: %v; signal owner: %v; shared memory: %v; "+
+			"own group: %v; parent-death signal: %v; newer call: %v; own limits: %v; its flags: %v", sandboxed, open, dial,
+			prlimit, signal, fork, owner, shared, group, orphan, newer, own, flags)
 		return 0
+	}
+	// Not sandboxed (a kernel, or container, that doesn't allow it): not decoded.
+	if sandboxed != nil {
+		return fail(errors.New("HEIC pictures can't be decoded safely on this server: its sandbox couldn't be set up (" + sandboxed.Error() + ")."))
 	}
 	thumbnail := len(args) == 1 && args[0] == "thumbnail"
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxHEIFInput+1))
@@ -123,7 +154,9 @@ func decodeHEIFIsolated(ctx context.Context, f *os.File, thumbnail bool) ([]byte
 	if thumbnail {
 		args = append(args, "thumbnail")
 	}
-	result := runIsolatedChild(isolatedChild{Context: ctx, Args: args, Input: f, Timeout: heifTimeout, OutputLimit: maxHEIFOutput})
+	// (Through a pipe, not the file itself: the child can't then lock it,
+	// or ask anything else of it.)
+	result := runIsolatedChild(isolatedChild{Context: ctx, Args: args, Input: struct{ io.Reader }{f}, Timeout: heifTimeout, OutputLimit: maxHEIFOutput})
 	switch {
 	case ctx.Err() != nil:
 		return nil, "", ctx.Err()

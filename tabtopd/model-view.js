@@ -245,7 +245,8 @@ export async function modelView({ file, blob, signal = null, read = null }) {
     axis.classList.add("model-axis");
     const tools = [button("", "Fit it in the window (0)", fit, "fit-page"), axis];
     // A model's surfaces: how they're shown (see model-looks.js).
-    looks = content.meshes.length ? lookTools(THREE, content.meshes, { renderer, redraw, button, toggle }) : null;
+    // (An STL's and a 3MF's are flat facets only: shown so, till smoothed.)
+    looks = content.meshes.length ? lookTools(THREE, content.meshes, { renderer, redraw, button, toggle, faceted: format === "stl" || format === "3mf" || !!content.faceted }) : null;
     if (looks) tools.push(...looks.tools);
     const info = el("span", { className: "hint model-info", textContent: `${content.label ?? FORMATS[format]} · ${content.info}` });
     const bar = el("div", { className: "model-bar" }, ...tools, ...(content.tools?.(redraw, { toggle }) ?? []), info);
@@ -346,7 +347,8 @@ function partsContent(THREE, { parts, facts }, materials = null) {
     // (Materials not used by a mesh: let go of now.)
     const used = new Set(meshes.flatMap((m) => [m.material].flat()));
     for (const m of materials?.byName.values() ?? []) if (!used.has(m)) disposeMaterial(m);
-    return { object, meshes, info, revoke: materials?.revoke };
+    // (Facets only, made flat by the worker: an STL's, an OBJ's without normals.)
+    return { object, meshes, info, revoke: materials?.revoke, faceted: parts.some((p) => p.madeFlat) };
 }
 
 // usedTextures is how many textures meshes' materials have, but missing
@@ -474,6 +476,10 @@ async function objMaterials(around, libraries, names) {
     return { byName, missing, revoke, release };
 }
 
+// The most instances of a mesh (glTF's EXT_mesh_gpu_instancing) each
+// looked at, for a scene's size.
+const MAX_INSTANCES = 1000;
+
 // sceneFacts is what a scene (glTF's, FBX's) object has: its meshes,
 // their facts together (or, with only lines and points, the size of
 // those), and how many textures they use.
@@ -486,7 +492,24 @@ function sceneFacts(THREE, object) {
         if (!o.isMesh || !o.geometry?.attributes?.position) return;
         meshes.push(o);
         for (const m of [o.material].flat().filter(Boolean)) for (const v of Object.values(m)) if (v?.isTexture) textures.add(v);
-        facts.push(meshFacts(worldPositions(THREE, o), o.geometry.index?.array));
+        if (o.isInstancedMesh) {
+            // Each instance, placed (up to MAX_INSTANCES of them: the rest as many again).
+            const placed = new THREE.Matrix4(), world = o.matrixWorld.clone(), n = Math.min(o.count, MAX_INSTANCES);
+            for (let i = 0; i < n; i++) {
+                o.getMatrixAt(i, placed);
+                o.matrixWorld.multiplyMatrices(world, placed);
+                facts.push(meshFacts(worldPositions(THREE, o), o.geometry.index?.array));
+            }
+            o.matrixWorld.copy(world);
+            if (o.count > n) {
+                // The rest: as many triangles again, where they all are (the bounds of all of them).
+                o.computeBoundingBox();
+                const all = o.boundingBox.clone().applyMatrix4(world);
+                facts.push({ triangles: facts.at(-1).triangles * (o.count - n), min: all.min.toArray(), max: all.max.toArray(), volume: 0 });
+            }
+        } else {
+            facts.push(meshFacts(worldPositions(THREE, o), o.geometry.index?.array));
+        }
     });
     if (!facts.length && drawn) {
         const box = new THREE.Box3().setFromObject(object);
@@ -528,7 +551,8 @@ async function gltfContent(around, format, blob) {
         const textures = Math.max(0, all - found.missing.length);
         let info = meshes.length ? describeMesh(facts, { unit: "m", volume: false, textures }) : `${sizeText(facts.min, facts.max, "m")} · ${drawnAs(object)}`;
         if (found.missing.length) info += ` · ${missingText(found.missing)}`;
-        return { object, meshes, info, environment: true, scene: true, revoke: found.revoke };
+        // (A glTF's mesh without normals is drawn flat: facets, to smooth if asked.)
+        return { object, meshes, info, environment: true, scene: true, revoke: found.revoke, faceted: meshes.some((m) => !m.geometry.attributes.normal) };
     } catch (err) {
         found.revoke();
         throw err;

@@ -19,8 +19,10 @@ const MAX_EDGED = 3e6;        // triangles: more aren't given edges, nor smoothe
 // lookTools is the tools for meshes' looks (and what they need): {tools
 // (the bar's controls), placed(box) (the model's placed: its plate's
 // height, box.min.y), stop()}. button and toggle make the bar's buttons, as
-// model-view.js does; redraw draws it again.
-export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
+// model-view.js does; redraw draws it again. faceted says its meshes are
+// flat facets only (an STL's, a 3MF's: no normals of their own to smooth
+// with); otherwise, they're shown smooth as they are to begin with.
+export function lookTools(THREE, meshes, { renderer, redraw, button, toggle, faceted = false }) {
     const triangles = meshes.reduce((n, m) => n + (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3, 0);
     const u = {
         uLook: { value: 0 }, uCos: { value: Math.cos(THREE.MathUtils.degToRad(45)) }, uBed: { value: 0 }, uEps: { value: 1e-3 }, uCap: { value: false },
@@ -32,8 +34,16 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
         patched.add(material);
         material.onBeforeCompile = (shader) => {
             Object.assign(shader.uniforms, u);
-            shader.vertexShader = "varying vec3 vLookWorld;\n" + shader.vertexShader.replace("#include <project_vertex>",
-                "#include <project_vertex>\n\tvLookWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+            // (Where it is in the scene: an instance's, or a batch's, placed as it is.)
+            shader.vertexShader = "varying vec3 vLookWorld;\n" + shader.vertexShader.replace("#include <project_vertex>", `#include <project_vertex>
+	vec4 lookAt = vec4(transformed, 1.0);
+	#ifdef USE_BATCHING
+		lookAt = batchingMatrix * lookAt;
+	#endif
+	#ifdef USE_INSTANCING
+		lookAt = instanceMatrix * lookAt;
+	#endif
+	vLookWorld = (modelMatrix * lookAt).xyz;`);
             shader.fragmentShader = "varying vec3 vLookWorld;\nuniform int uLook;\nuniform float uCos, uBed, uEps;\nuniform bool uCap;\nuniform vec3 uOverhang, uBase, uInside, uCut;\n" +
                 shader.fragmentShader.replace("#include <color_fragment>", `#include <color_fragment>
 	if (uLook == 1) {
@@ -49,13 +59,14 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
         material.customProgramCacheKey = () => "tabtop-looks";
         material.needsUpdate = true;
     };
-    const originals = new Map(meshes.map((m) => [m, { material: m.material, sides: [m.material].flat().map((mat) => mat.side) }]));
+    // Each mesh's own material(s), and theirs sides and shading, to go back to.
+    const originals = new Map(meshes.map((m) => [m, { material: m.material, sides: [m.material].flat().map((mat) => mat.side), flats: [m.material].flat().map((mat) => mat.flatShading) }]));
     for (const m of meshes) [m.material].flat().forEach(patch);
     const xray = new THREE.MeshStandardMaterial({ color: 0x8fa8c8, transparent: true, opacity: 0.25, depthWrite: false, side: THREE.DoubleSide, roughness: 0.6 });
     patch(xray);
     const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
     const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x1d2430, transparent: true, opacity: 0.8 });
-    let look = "materials", wireframe = false, sectioned = false, edges = null, smooth = meshes.some((m) => m.geometry.index), smoothed = null;
+    let look = "materials", wireframe = false, sectioned = false, edges = null, smooth = !faceted, smoothed = null, smoothing = null;
 
     // apply shows the meshes as look, wireframe, sectioned and smooth say.
     const apply = () => {
@@ -67,7 +78,9 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
             [m.material].flat().forEach((mat, i) => {
                 // (Their backs shown, where it's their backs that are looked for, or cut into.)
                 const side = look === "inside" || look === "overhang" || sectioned || mat === xray ? THREE.DoubleSide : was.sides[i] ?? mat.side;
-                const flat = !smooth;
+                // Smooth: as it is (its own normals; facets made smooth, for
+                // a faceted one); faceted: each face flat.
+                const flat = smooth ? (mat === xray || smoothed?.has(m) ? false : was.flats[i] ?? false) : true;
                 const clip = sectioned ? [plane] : null;
                 if (mat.side !== side || mat.flatShading !== flat || (mat.clippingPlanes?.length ?? 0) !== (clip?.length ?? 0)) mat.needsUpdate = true;
                 mat.side = side;
@@ -75,7 +88,7 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
                 mat.clippingPlanes = clip;
                 mat.wireframe = wireframe;
             });
-            if (smoothed) m.geometry = smooth ? smoothed.get(m) ?? m.geometry : smoothed.original.get(m);
+            if (smoothed) m.geometry = smooth ? smoothed.get(m) ?? smoothed.original.get(m) : smoothed.original.get(m);
         }
         edgeMaterial.clippingPlanes = sectioned ? [plane] : null;
         edgeMaterial.needsUpdate = true;
@@ -109,7 +122,8 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
         if (on && !edges) {
             edges = [];
             for (const m of meshes) {
-                if (m.isSkinnedMesh) continue;
+                // (Not an instanced mesh's: its edges would be drawn once, not for each.)
+                if (m.isSkinnedMesh || m.isInstancedMesh || m.isBatchedMesh) continue;
                 const line = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry, CREASE), edgeMaterial);
                 line.raycast = () => {};
                 m.add(line);
@@ -122,21 +136,35 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
     sharp.classList.add("model-edges");
     if (triangles > MAX_EDGED) { sharp.disabled = true; sharp.title = `Edges: it has too many triangles (${triangles.toLocaleString("en")}) to find them here`; }
 
-    const smoothing = toggle("", "Smooth: its faces shaded smooth, but across sharp edges (click for faceted)", smooth, async function (on) {
+    const said = (b) => {
+        b.title = smooth ? "Smooth: its faces shaded smooth, but across sharp edges (click for faceted)" : "Faceted: each face shaded flat (click for smooth)";
+        b.setAttribute("aria-label", b.title);
+        b.setAttribute("aria-pressed", String(smooth));
+    };
+    const shading = toggle("", "", smooth, async function (on) {
         smooth = on;
-        if (on && !smoothed && meshes.some((m) => !m.geometry.index)) {
-            // Faces each with their own corners (an STL's): normals made smooth, but across sharp edges.
-            const { toCreasedNormals } = await import("./three/BufferGeometryUtils.js");
-            smoothed = new Map();
-            smoothed.original = new Map(meshes.map((m) => [m, m.geometry]));
-            for (const m of meshes) if (!m.geometry.index && !m.isSkinnedMesh) smoothed.set(m, toCreasedNormals(m.geometry, THREE.MathUtils.degToRad(CREASE)));
+        said(this);
+        if (on && faceted && !smoothed) {
+            // Facets only (an STL's): normals made smooth, but across sharp
+            // edges; made once (clicked again meanwhile: the same making).
+            smoothing ??= import("./three/BufferGeometryUtils.js").then(({ toCreasedNormals }) => {
+                const made = new Map();
+                made.original = new Map(meshes.map((m) => [m, m.geometry]));
+                // (Those with faces each their own corners, or no normals at all.)
+                for (const m of meshes) {
+                    if (m.isSkinnedMesh || m.isInstancedMesh || m.isBatchedMesh) continue;
+                    if (!m.geometry.index || !m.geometry.attributes.normal) made.set(m, toCreasedNormals(m.geometry, THREE.MathUtils.degToRad(CREASE)));
+                }
+                smoothed = made;
+            });
+            await smoothing;
+            said(this); // (as it is now: clicked meanwhile, perhaps)
         }
-        this.title = on ? "Smooth: its faces shaded smooth, but across sharp edges (click for faceted)" : "Faceted: each face shaded flat (click for smooth)";
-        this.setAttribute("aria-label", this.title);
         apply();
     }, "smooth");
-    smoothing.classList.add("model-smooth");
-    if (triangles > MAX_EDGED) smoothing.disabled = true;
+    shading.classList.add("model-smooth");
+    said(shading);
+    if (triangles > MAX_EDGED && faceted) shading.disabled = true;
 
     // The section: cut away above the slider's height (of the model's).
     let bottom = 0, top = 1;
@@ -152,7 +180,7 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle }) {
     section.classList.add("model-section");
     apply();
     return {
-        tools: [pick, angleBox, wire, sharp, smoothing, section, height],
+        tools: [pick, angleBox, wire, sharp, shading, section, height],
         // The model placed: its plate's height, and how high it is (what's
         // overhanging is above the plate; the section's within it).
         placed(box) {

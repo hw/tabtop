@@ -146,8 +146,9 @@ export function zipTooBig(bytes, limit = MAX_UNZIPPED) {
     return "";
 }
 
-// The most triangles meshCheck looks at (its tables are some 50 bytes a
-// triangle; a million take a second or so): a model with more isn't checked.
+// The most triangles meshCheck looks at (and corners: three times as
+// many), as its tables are some 150 bytes a triangle at most, and a million
+// take a second or so: a model with more isn't checked.
 export const MAX_CHECKED = 2e6;
 
 // mix spreads a number's bits over all of them (murmur3's last step): a
@@ -166,15 +167,23 @@ function mix(h) {
 // edge run the same way by both); and how many pieces it's in. Corners at
 // the same place are the same corner (an STL's, or a 3MF's, triangles each
 // have their own). positions as meshFacts has them, index if given. It's
-// null for more than MAX_CHECKED triangles.
+// null for more than MAX_CHECKED triangles, or 3 * MAX_CHECKED corners.
 export function meshCheck(positions, index = null) {
     const corners = index ? index.length : positions.length / 3;
     const triangles = Math.floor(corners / 3);
-    if (triangles > MAX_CHECKED) return null;
+    // (Corners count too: an index can use few of many.)
+    if (triangles > MAX_CHECKED || positions.length / 3 > 3 * MAX_CHECKED) return null;
     // Each corner's place, as one id: an open-addressed table of its
     // coordinates' bits (exactly the same place, the same id).
     const floats = positions instanceof Float32Array ? positions : Float32Array.from(positions);
-    const bitsOf = new Uint32Array(floats.buffer, floats.byteOffset, floats.length);
+    const raw = new Uint32Array(floats.buffer, floats.byteOffset, floats.length);
+    // A coordinate's bits, -0's as 0's (the same place).
+    const bit = (i) => (raw[i] === 0x80000000 ? 0 : raw[i]);
+    // Its hashes seeded afresh each time (a mesh made to put its corners in
+    // one slot, for a hash known in advance, can't be), and its probing
+    // budgeted: past it, it's not checked (null), rather than slow.
+    const seed = (Math.random() * 0x100000000) >>> 0;
+    let budget = 64 * (positions.length / 3 + corners) + 1e6;
     const vertexCount = positions.length / 3;
     let size = 1;
     while (size < vertexCount * 2) size <<= 1;
@@ -182,9 +191,12 @@ export function meshCheck(positions, index = null) {
     let ids = 0;
     const firstOf = new Int32Array(vertexCount);
     for (let v = 0; v < vertexCount; v++) {
-        const a = bitsOf[v * 3], b = bitsOf[v * 3 + 1], c = bitsOf[v * 3 + 2];
-        let h = mix(a ^ mix(b ^ mix(c))) & (size - 1);
+        const a = bit(v * 3), b = bit(v * 3 + 1), c = bit(v * 3 + 2);
+        // (The seed mixed in first: with it outermost, places made to share
+        // a hash would share it whatever the seed.)
+        let h = mix(a ^ mix(b ^ mix(c ^ seed))) & (size - 1);
         for (;;) {
+            if (--budget < 0) return null;
             const at = table[h];
             if (at < 0) {
                 table[h] = v;
@@ -192,7 +204,7 @@ export function meshCheck(positions, index = null) {
                 weld[v] = ids++;
                 break;
             }
-            if (bitsOf[at * 3] === a && bitsOf[at * 3 + 1] === b && bitsOf[at * 3 + 2] === c) {
+            if (bit(at * 3) === a && bit(at * 3 + 1) === b && bit(at * 3 + 2) === c) {
                 weld[v] = firstOf[at];
                 break;
             }
@@ -201,8 +213,10 @@ export function meshCheck(positions, index = null) {
     }
     // Each edge: how many faces use it, and which ways (+1 run low to
     // high, -1 high to low); a table keyed by its two corners' ids.
+    // (Bigger than there may be edges: at most 3 a triangle, all apart; a
+    // closed surface's are half that. Never more than three-quarters full.)
     let edgeSize = 1;
-    while (edgeSize < triangles * 3) edgeSize <<= 1;
+    while (edgeSize < triangles * 4) edgeSize <<= 1;
     const keys = new Float64Array(edgeSize).fill(-1), uses = new Int32Array(edgeSize), ways = new Int32Array(edgeSize);
     // Pieces: corners joined by a face are one.
     const parent = new Int32Array(ids);
@@ -211,15 +225,23 @@ export function meshCheck(positions, index = null) {
         while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
         return i;
     };
-    const corner = (k) => weld[index ? index[k] : k];
+    // A corner's id; -1 for an index that isn't one of its corners.
+    const corner = (k) => {
+        const i = index ? index[k] : k;
+        return Number.isInteger(i) && i >= 0 && i < vertexCount ? weld[i] : -1;
+    };
     for (let t = 0; t < triangles; t++) {
         const v = [corner(t * 3), corner(t * 3 + 1), corner(t * 3 + 2)];
+        if (v[0] < 0 || v[1] < 0 || v[2] < 0) continue; // not its corners
         if (v[0] === v[1] || v[1] === v[2] || v[0] === v[2]) continue; // no area: no edges
         for (let e = 0; e < 3; e++) {
             const p = v[e], q = v[(e + 1) % 3];
             const lo = Math.min(p, q), hi = Math.max(p, q), key = lo * ids + hi;
-            let h = mix(lo ^ mix(hi)) & (edgeSize - 1);
-            while (keys[h] !== -1 && keys[h] !== key) h = (h + 1) & (edgeSize - 1);
+            let h = mix(lo ^ mix(hi ^ seed)) & (edgeSize - 1);
+            while (keys[h] !== -1 && keys[h] !== key) {
+                if (--budget < 0) return null;
+                h = (h + 1) & (edgeSize - 1);
+            }
             keys[h] = key;
             uses[h]++;
             ways[h] += p < q ? 1 : -1;
@@ -236,7 +258,10 @@ export function meshCheck(positions, index = null) {
     }
     // Pieces: of the corners faces use.
     const used = new Uint8Array(ids);
-    for (let k = 0; k < triangles * 3; k++) used[corner(k)] = 1;
+    for (let k = 0; k < triangles * 3; k++) {
+        const c = corner(k);
+        if (c >= 0) used[c] = 1;
+    }
     let pieces = 0;
     for (let i = 0; i < ids; i++) if (used[i] && root(i) === i) pieces++;
     return { open, nonManifold, flipped, pieces };

@@ -84,6 +84,10 @@ export function duration(text) {
 //   out, as said above); truncated; slicer; time (seconds, as the slicer
 //   estimated it), or null.
 export function parseGCode(bytes, { maxSegments = 10e6 } = {}) {
+    // (At most 16 segments a byte past the first 2 million, too: a small
+    // file of arcs, each drawn in hundreds, can't make 10 million; one of
+    // arcs a slicer fitted, with as many as it has, is read whole.)
+    maxSegments = Math.min(maxSegments, Math.max(2e6, bytes.length * 16));
     const ext = new Grow(Float32Array), extType = new Grow(Uint8Array), trav = new Grow(Float32Array);
     // Of each segment extruded: its speed (mm/s), filament pushed for each
     // mm it goes, the width and height the slicer said of it (or NaN), the
@@ -249,7 +253,7 @@ export function parseGCode(bytes, { maxSegments = 10e6 } = {}) {
             comment(c.replace(/\r$/, ""));
         }
         i = end + 1;
-        const G = 6, M = 12, X = 23, Y = 24, Z = 25, E = 4, F = 5, I = 8, J = 9, R = 17, S = 18, T = 19;
+        const G = 6, M = 12, X = 23, Y = 24, Z = 25, E = 4, F = 5, I = 8, J = 9, P = 15, R = 17, S = 18, T = 19;
         if (has[G] === 1) {
             const g = words[G];
             if (g === 0 || g === 1 || g === 2 || g === 3) {
@@ -336,6 +340,9 @@ export function parseGCode(bytes, { maxSegments = 10e6 } = {}) {
             else if (mc === 83) absoluteE = false;
             // The nozzle's temperature set (not its bed's: M140, M190).
             else if ((mc === 104 || mc === 109) && has[S] === 1 && !(has[T] === 1 && words[T] > 0)) temp = Math.max(0, Math.min(65535, Math.round(words[S])));
+            // The part's fan: not another (Bambu's and Orca's P2, P3: the
+            // auxiliary and chamber fans).
+            else if ((mc === 106 || mc === 107) && has[P] === 1 && words[P] > 1) { /* another fan */ }
             else if (mc === 106) fan = has[S] === 1 ? Math.max(0, Math.min(255, Math.round(words[S]))) : 255;
             else if (mc === 107) fan = 0;
         }

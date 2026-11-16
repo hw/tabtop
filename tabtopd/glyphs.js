@@ -19,6 +19,8 @@ const microphone = '<rect x="8" y="3" width="6" height="11" rx="3" fill="current
 
 const icons = {
     passkey: '<circle cx="8" cy="9" r="4"/><path d="M11 12l9 9m-4-4 3-3m-6 0 3-3"/>',
+    // Another device: a laptop's screen, a phone before it.
+    devices: '<path d="M3.5 15V5.5A1.5 1.5 0 0 1 5 4h12a1.5 1.5 0 0 1 1.5 1.5V8M2 18h11"/><rect x="15" y="10" width="7" height="11" rx="1.5"/><path d="M18.5 18.2h.01"/>',
     exif: '<rect x="3" y="6" width="18" height="15" rx="2"/><path d="M7 6l2-3h6l2 3M12 10v2m0 2v4"/>',
     delta: '<path d="M12 3L2 21h20z"/>',
     "compare-slider": '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M12 2v20M5 12h4m6 0h4M7 10l2 2-2 2m10-4-2 2 2 2"/>',
@@ -122,7 +124,7 @@ const icons = {
 // Most navigation/desktop icons use the original 25px noVNC-style grid.
 // Preview icons retain their own grids, sizes, and stroke weights.
 const metrics = {
-    passkey: [24, 24, 1.8],
+    passkey: [24, 24, 1.8], devices: [24, 24, 1.8],
     exif: [18, 24, 1.8],
     "external-none": [18, 24, 1.8], "external-proxy": [18, 24, 1.8], "external-direct": [18, 24, 1.8],
     download: [18, 24, 1.8], "download-direct": [18, 24, 1.8], extract: [18, 24, 1.8],

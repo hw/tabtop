@@ -5,6 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -80,6 +81,48 @@ test("the worker reads STL, OBJ, PLY and G-code, and says what's wrong", { skip:
     assert.match(r.gcode.slicer, /^PrusaSlicer/);
     assert.equal(r.gcode.extrude.width.length, r.gcode.extrude.types.length);
 
+    // A block that says it's 10 bytes, but Deflate'd from 256 MB: refused, at once.
+    const huge = deflateSync(Buffer.alloc(256 << 20, 65), { level: 9 });
+    const head = Buffer.alloc(22);
+    head.write("GCDE", 0); head.writeUInt32LE(1, 4); head.writeUInt16LE(0, 8);
+    head.writeUInt16LE(1, 10); head.writeUInt16LE(1, 12); head.writeUInt32LE(10, 14); head.writeUInt32LE(huge.length, 18);
+    const bomb = Buffer.concat([head, Buffer.alloc(2), huge]);
+    const started = Date.now();
+    r = await read("bgcode", bomb.buffer.slice(bomb.byteOffset, bomb.byteOffset + bomb.length));
+    assert.match(r.error, /doesn't unpack to its size/);
+    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+
     r = await read("step", new ArrayBuffer(4));
     assert.equal(r.error, "its format isn't known");
+});
+
+// Files made to take a pattern quadratic time (or worse): a 3MF of 2 KB,
+// unpacked to 1 MB, hung the worker for minutes. Each is answered at once.
+test("the worker reads files made to be slow to parse quickly", { skip: !assets && "THREE_ASSETS isn't set" }, async () => {
+    const read = await worker();
+    const { zipSync, strToU8 } = await import(`${pathToFileURL(resolve(assets)).href}/fflate.module.js`);
+    const N = 1 << 20;
+    const rels = '<Relationships><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>';
+    const threeMF = (model, relsText = rels) => zipSync({ "_rels/.rels": strToU8(relsText), "3D/3dmodel.model": strToU8(model) }, { level: 9 });
+    // A .bgcode: its header, a slicer metadata block (stored) of one long line, a little G-code.
+    const block = (type, data) => {
+        const h = Buffer.alloc(10);
+        h.writeUInt16LE(type, 0); h.writeUInt16LE(0, 2); h.writeUInt32LE(data.length, 4); h.writeUInt16LE(0, 8);
+        return Buffer.concat([h, data]);
+    };
+    const head = Buffer.alloc(10);
+    head.write("GCDE", 0); head.writeUInt32LE(1, 4); head.writeUInt16LE(0, 8);
+    const files = [
+        ["a tag's name, then spaces", "3mf", threeMF('<model unit="millimeter"><a' + " ".repeat(N))],
+        ["an attribute's long name", "3mf", threeMF('<model unit="millimeter" ' + "a".repeat(N) + "></model>")],
+        ["relationships, never closed", "3mf", threeMF('<model unit="millimeter"></model>', "<Relationship ".repeat(N / 14))],
+        ["a long metadata line", "bgcode", Buffer.concat([head, block(2, Buffer.from("a" + " ".repeat(N) + "b\n")), block(1, Buffer.from("G1 X0 Y0 Z0.2\nG1 X10 Y0 E1\n"))])],
+    ];
+    for (const [what, format, bytes] of files) {
+        const started = Date.now();
+        const r = await read(format, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length), `slow.${format}`);
+        assert.ok(Date.now() - started < 1000, `${what}: ${Date.now() - started} ms`);
+        if (format === "3mf") assert.equal(r.error, "it has no shapes in it", what);
+        else assert.ok(r.gcode, what);
+    }
 });

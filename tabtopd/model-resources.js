@@ -144,8 +144,10 @@ export function fbxText(bytes) {
     if (head.startsWith("Kaydara FBX Binary")) return null;
     const text = new TextDecoder().decode(bytes);
     return text
-        .replace(/^(\s*P:.*")([^"\n]*)$/gm, (_, quoted, values) => quoted + values.replace(/,\s+/g, ","))
-        .replace(/^(\s*P:\s*"[^"\n]*",\s*")(?:Vector|Vector2D|Vector4D)(")/gm, "$1Vector3D$2");
+        // (Spaces and tabs only, not \s: that runs over line ends, and a file
+        // of many blank lines took time growing with their square.)
+        .replace(/^([ \t]*P:[^\n]*")([^"\n]*)$/gm, (_, quoted, values) => quoted + values.replace(/,[ \t]+/g, ","))
+        .replace(/^([ \t]*P:[ \t]*"[^"\n]*",[ \t]*")(?:Vector|Vector2D|Vector4D)(")/gm, "$1Vector3D$2");
 }
 
 // fbxTextVersion is a text FBX's version (7500 for 7.5), or 0 if it doesn't say.
