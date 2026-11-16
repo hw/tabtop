@@ -81,6 +81,7 @@ type server struct {
 	pdfjs           assetSet
 	pdfjsNames      []string // pdf.js's files, in pdfjsDir (see pdfjsFiles)
 	handshakes      handshakes
+	remoteAuth      remoteAuthStore
 	passkeyWaits    handshakes // passkey logins waiting for the browser's answer
 	drain           tunnelDrain
 	shares          *shareStore // nil when share links are off
@@ -153,6 +154,7 @@ func main() {
 	flag.StringVar(&c.shareKeyFile, "share-key-file", c.shareKeyFile, "the key share links' tokens are kept sealed with, to show them again; empty keeps one in memory")
 	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
 	flag.StringVar(&c.passkeysFile, "passkeys-file", c.passkeysFile, "where passkeys added to log in with are kept; empty keeps them in memory, till a restart")
+	flag.StringVar(&c.remoteApprovalURL, "remote-approval-url", "", "trusted HTTPS approval page URL; empty uses this deployment at /auth/approve")
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,

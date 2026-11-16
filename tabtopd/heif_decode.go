@@ -18,7 +18,7 @@ package main
 // malloc'd, rows of width*channels bytes. With thumbnail, the file's own
 // smallest thumbnail that's at least side on its longer side, if it has
 // one. 0, or libheif's message in why.
-static int tabtop_heif_decode(const void* data, size_t size, int thumbnail, int side, uint64_t max_pixels,
+static int tabtop_heif_decode(const void* data, size_t size, int thumbnail, int side, uint64_t max_pixels, uint64_t thumb_max_pixels,
                               unsigned char** out, int* width, int* height, int* alpha, char* why, size_t why_size) {
     *out = NULL;
     struct heif_context* ctx = heif_context_alloc();
@@ -55,6 +55,13 @@ static int tabtop_heif_decode(const void* data, size_t size, int thumbnail, int 
             }
             if (best) { heif_image_handle_release(handle); handle = best; }
         }
+        // No thumbnail of its own: the picture itself, unless it's so big
+        // that decoding it whole for a thumbnail isn't worth it.
+        if (heif_image_handle_is_primary_image(handle) &&
+                (uint64_t)heif_image_handle_get_width(handle) * (uint64_t)heif_image_handle_get_height(handle) > thumb_max_pixels) {
+            snprintf(why, why_size, "The picture is too large to make a thumbnail of.");
+            goto failed;
+        }
     }
     *alpha = heif_image_handle_has_alpha_channel(handle) ? 1 : 0;
     err = heif_decode_image(handle, &img, heif_colorspace_RGB, *alpha ? heif_chroma_interleaved_RGBA : heif_chroma_interleaved_RGB, NULL);
@@ -90,6 +97,13 @@ import (
 	"unsafe"
 )
 
+// heifPrepare readies the child to decode: libheif's plugins loaded (from
+// files: while it can), then the sandbox (see heif_sandbox.go), or why not.
+func heifPrepare() error {
+	C.heif_init(nil)
+	return heifSandbox()
+}
+
 // decodeHEIF is the picture in data (the file's own thumbnail, if one is
 // asked for and it has one big enough), as RGBA.
 func decodeHEIF(data []byte, thumbnail bool) (heifPicture, error) {
@@ -105,7 +119,7 @@ func decodeHEIF(data []byte, thumbnail bool) (heifPicture, error) {
 	if thumbnail {
 		thumb = 1
 	}
-	status := C.tabtop_heif_decode(cData, C.size_t(len(data)), thumb, C.int(heifThumbnailSide), C.uint64_t(maxHEIFPixels),
+	status := C.tabtop_heif_decode(cData, C.size_t(len(data)), thumb, C.int(heifThumbnailSide), C.uint64_t(maxHEIFPixels), C.uint64_t(maxHEIFThumbnailPixels),
 		&out, &width, &height, &alpha, (*C.char)(unsafe.Pointer(&why[0])), C.size_t(len(why)))
 	if status != 0 {
 		return heifPicture{}, errors.New("The picture couldn't be decoded: " + C.GoString((*C.char)(unsafe.Pointer(&why[0]))))

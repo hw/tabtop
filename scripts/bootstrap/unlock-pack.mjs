@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Decrypt a /bootstrap/pack JSON object and expand the client onto disk.
+// Decrypt a /auth/pack JSON object and expand the client onto disk.
 // No browser required (uses Node's WebCrypto).
 //
 //   node scripts/bootstrap/unlock-pack.mjs --pass 'OOB_PASS' --pack tabtop-client.pack.json --out ./client

@@ -12,12 +12,7 @@ const crypto = readFileSync(join(dir, "pack-crypto.iife.js"), "utf8");
 if (!template.includes("/*PACK_CRYPTO_FALLBACK*/")) {
 	throw new Error("decode.template.html needs /*PACK_CRYPTO_FALLBACK*/");
 }
-if (!template.includes("/*PACK*/")) {
-	throw new Error("decode.template.html needs /*PACK*/");
-}
-let html = template.replace("/*PACK_CRYPTO_FALLBACK*/", () => crypto);
-// Full client lives in /bootstrap/pack; keep decoder free of an embedded PACK.
-html = html.replace("/*PACK*/", "");
+const html = template.replace("/*PACK_CRYPTO_FALLBACK*/", () => crypto);
 const outProto = join(dir, "decode.html");
 const outEmbed = join(dir, "../../tabtopd/bootstrap.html");
 writeFileSync(outProto, html);

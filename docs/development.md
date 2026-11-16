@@ -368,7 +368,7 @@ as `(bad)`. An address an instruction goes to or names (`jmp short 0x18c`,
 `call`, or memory read by its address alone, `[rip+…]` shown as where that is)
 is a link when it's within the file: click it to select that byte and see its
 code. **Back** (← in the hex bar) returns to the previous selection after
-following such a link, or a section or symbol in the Program tab; up to 100
+following such a link, or a section or symbol in the Structure tab; up to 100
 places are kept until the preview closes. Typing an offset or Find does not
 add history. With one byte selected, it's the 64 bytes from it; at most 4 KB, or
 512 instructions, are shown at a time. Addresses are file offsets, except in
@@ -421,7 +421,7 @@ and its exports, so calls within it stay unnamed. A `.o` isn't linked yet:
 its addresses are file offsets, and what it calls isn't filled in. A 64-bit
 address above 2^53 is treated as not loaded. No more than 24 MB of tables,
 8 MB of any one and 200,000 symbols are read, in pieces of up to 1 MB, four at a time, through the
-tunnel, and the Program tab says when symbols were left out; every count and
+tunnel, and the Structure tab says when symbols were left out; every count and
 offset in the file is checked against its size, and a file whose tables
 don't hold together is shown as any other file.
 
@@ -434,7 +434,7 @@ indirect symbols, which is there in a stripped program too, and whether its
 slots are filled the older way or by chained fixups (neither of which is
 read). A symbol has no size there, so, as in a PE, code after one is taken
 as inside it up to the next. A universal file holds a program for each of
-several machines: the first is read, the Program tab names them all, and
+several machines: the first is read, the Structure tab names them all, and
 choosing another reads that one (its offsets are where it is in the file,
 its addresses its own). A Java class file begins as a universal file does,
 and isn't taken for one: each program a universal file lists has to be in
@@ -453,7 +453,7 @@ in the disassembler's worker, by a WebAssembly module of its own
 msvc-demangler; 305,597 bytes, 99,964 with gzip), fetched when a program has
 such names; until it answers, and if it isn't there, the names are as the
 compiler made them. That name is still what a symbol is found by, as well as
-the written one, and shows on hovering over it in the Program tab. A name
+the written one, and shows on hovering over it in the Structure tab. A name
 longer than fits a line is cut in the middle, whole on hovering.
 `WEB_DISASM_DISABLE` doesn't turn this off: it's no disassembler.
 
@@ -786,8 +786,9 @@ and spans drive the SVG mask overlay and the actual canvas mask.
 ## 3D previews
 
 Both images bundle three.js as `/opt/three`: its core, orbit controls,
-the STL, OBJ, PLY and AMF loaders, and fflate, flattened into one folder
-by `scripts/three/vendor.sh`. `-three-dir` locates it; tabtopd serves its
+the STL, OBJ, PLY, AMF, glTF, FBX, MTL and TGA loaders, the room
+environment, and what they import (fflate among them), flattened into one
+folder by `scripts/three/vendor.sh`. `-three-dir` locates it; tabtopd serves its
 files under a hashed path and points `model-view.js` and
 `model-worker.js` at it. G-code is read by tabtopd's own `gcode.js`, not
 three.js's `GCodeLoader`, so the preview can show layers, feature kinds
@@ -808,7 +809,13 @@ THREE_ASSETS=/tmp/three node --test test/model-worker.test.mjs
 Without `THREE_ASSETS`, that test is skipped. `test/gcode.test.mjs` uses
 G-code that PrusaSlicer 2.9.2 and CuraEngine 5.0.0 made of
 `test/data/3d/prism.stl`, and `test/model-3mf.test.mjs` PrusaSlicer's 3MF
-of it. The browser check's `models` group draws them in the app.
+of it. The browser check's `models` group draws them in the app, and
+textured glTF and OBJ files whose textures are beside them.
+
+The files a model refers to are read through the tunnel by
+`model-read.js`, as `model-resources.js` finds them; the files page's CSP
+allows `connect-src blob: data:` for the glTF loader, which fetches a
+model's buffers and pictures from such URLs.
 
 ## Magic select
 

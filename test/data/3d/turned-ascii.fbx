@@ -1,0 +1,66 @@
+; FBX 7.4.0 project file
+; A triangle, turned and scaled as exporters other than Autodesk's write
+; it (spaces after commas), with a texture whose scaling is a "Vector".
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+}
+Objects:  {
+	Geometry: 100, "Geometry::tri", "Mesh" {
+		Vertices: *9 {
+			a: 0, 0, 0, 1, 0, 0, 0, 1, 0
+		}
+		PolygonVertexIndex: *3 {
+			a: 0, 1, -3
+		}
+		GeometryVersion: 124
+		LayerElementUV: 0 {
+			Version: 101
+			Name: "uv"
+			MappingInformationType: "ByPolygonVertex"
+			ReferenceInformationType: "Direct"
+			UV: *6 {
+				a: 0, 0, 1, 0, 0, 1
+			}
+		}
+		Layer: 0 {
+			Version: 100
+			LayerElement:  {
+				Type: "LayerElementUV"
+				TypedIndex: 0
+			}
+		}
+	}
+	Model: 200, "Model::tri", "Mesh" {
+		Version: 232
+		Properties70:  {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 5, 0, 0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", -90, -0, 0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 10, 10, 10
+		}
+	}
+	Material: 300, "Material::m", "" {
+		Version: 102
+		ShadingModel: "phong"
+		Properties70:  {
+			P: "DiffuseColor", "Color", "", "A", 0.8, 0.8, 0.8
+		}
+	}
+	Texture: 400, "Texture::t", "" {
+		Type: "TextureVideoClip"
+		Version: 202
+		TextureName: "Texture::t"
+		Properties70:  {
+			P: "Translation", "Vector", "", "A", 0, 0, 0
+			P: "Scaling", "Vector", "", "A", 2, 3, 1
+		}
+		FileName: "t.png"
+		RelativeFilename: "t.png"
+	}
+}
+Connections:  {
+	C: "OO", 200, 0
+	C: "OO", 100, 200
+	C: "OO", 300, 200
+	C: "OP", 400, 300, "DiffuseColor"
+}

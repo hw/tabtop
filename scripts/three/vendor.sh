@@ -1,10 +1,12 @@
 #!/bin/sh
 # Copies what the files page's 3D preview (tabtopd's model-view.js) uses of
 # three.js's npm package, at <package>, into <out>, flat: the core, orbit
-# controls, the STL, OBJ, PLY and AMF loaders, and fflate (which AMF's
-# loader unzips with, as tabtopd's model-worker.js unzips 3MF). Their
-# imports are rewritten to point within <out> ("three" and "../libs/" as
-# the package has them), which is served as one
+# controls, the STL, OBJ, PLY, AMF, glTF, FBX, MTL (OBJ's materials) and
+# TGA (textures) loaders, the room environment (glTF's materials reflect
+# it), and what those import; fflate too (which tabtopd's model-worker.js
+# unzips 3MF with). Their imports are rewritten to point within <out>
+# ("three", and "../libs/", "../utils/", "../curves/", "../environments/"
+# as the package has them), which is served as one
 # folder (tabtopd's threeFiles lists the same files). check.mjs checks the
 # result loads and parses.
 #
@@ -17,11 +19,16 @@ for f in build/three.module.js build/three.core.js \
     examples/jsm/controls/OrbitControls.js \
     examples/jsm/loaders/STLLoader.js examples/jsm/loaders/OBJLoader.js \
     examples/jsm/loaders/PLYLoader.js examples/jsm/loaders/AMFLoader.js \
+    examples/jsm/loaders/GLTFLoader.js examples/jsm/loaders/FBXLoader.js \
+    examples/jsm/loaders/MTLLoader.js examples/jsm/loaders/TGALoader.js \
+    examples/jsm/utils/BufferGeometryUtils.js examples/jsm/utils/SkeletonUtils.js \
+    examples/jsm/curves/NURBSCurve.js examples/jsm/curves/NURBSUtils.js \
+    examples/jsm/environments/RoomEnvironment.js \
     examples/jsm/libs/fflate.module.js; do
     cp "$pkg/$f" "$out/"
 done
 cp "$pkg/LICENSE" "$out/LICENSE.three"
-sed -i -E "s#from 'three';#from './three.module.js';#; s#from '\.\./(libs|utils)/#from './#" "$out"/*.js
+sed -i -E "s#from 'three';#from './three.module.js';#; s#from '\.\./(libs|utils|curves|environments)/#from './#" "$out"/*.js
 # Every import now within the folder.
 if grep -nE "^\s*(import|export)\b[^;]*from\s*['\"]([^.]|\.\./)" "$out"/*.js; then
     echo "an import still points outside $out" >&2

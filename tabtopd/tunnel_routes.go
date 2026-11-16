@@ -75,6 +75,9 @@ func files(serve func(g *server, c *tunnelCall)) tunnelRoute {
 func other(serve func(g *server, c *tunnelCall)) tunnelRoute { return tunnelRoute{serve: serve} }
 
 var tunnelRoutes = map[string]tunnelRoute{
+	"remote-auth-info":    other((*server).routeRemoteInfo),
+	"remote-auth-approve": other((*server).routeRemoteApprove),
+	"remote-auth-deny":    other((*server).routeRemoteDeny),
 	// The desktop, the terminal, and the desktop's sound.
 	"vnc":   other((*server).routeVNC),
 	"tty":   other((*server).routeTTY),
@@ -82,19 +85,19 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"mic":   other((*server).routeMic),
 
 	// Sessions, and the activity log: kept with file support off.
-	"logout":          other((*server).routeLogout),
-	"end-session":     other((*server).routeEndSession),
-	"logout-all":      other((*server).routeLogoutAll),
-	"passkeys":        other((*server).routePasskeys),
-	"passkey-options": other((*server).routePasskeyOptions),
-	"passkey-add":     other((*server).routePasskeyAdd),
-	"passkey-remove":  other((*server).routePasskeyRemove),
-	"sessions":          other((*server).routeSessions),
-	"name-session":      other((*server).routeNameSession),
-	"seen":              other((*server).routeSeen),
-	"bootstrap-reseal":  other((*server).routeBootstrapReseal),
-	"activity":          other((*server).routeActivity),
-	"activity-clear":    other((*server).routeActivityClear),
+	"logout":           other((*server).routeLogout),
+	"end-session":      other((*server).routeEndSession),
+	"logout-all":       other((*server).routeLogoutAll),
+	"passkeys":         other((*server).routePasskeys),
+	"passkey-options":  other((*server).routePasskeyOptions),
+	"passkey-add":      other((*server).routePasskeyAdd),
+	"passkey-remove":   other((*server).routePasskeyRemove),
+	"sessions":         other((*server).routeSessions),
+	"name-session":     other((*server).routeNameSession),
+	"seen":             other((*server).routeSeen),
+	"bootstrap-reseal": other((*server).routeBootstrapReseal),
+	"activity":         other((*server).routeActivity),
+	"activity-clear":   other((*server).routeActivityClear),
 
 	// Files.
 	"roots":         files(func(g *server, c *tunnelCall) { c.r.finish(map[string]any{"roots": g.rootReport()}) }),

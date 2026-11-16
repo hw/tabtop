@@ -175,17 +175,23 @@ export function createSessionView({ security, formatTime }) {
                 row.finish();
             }
         });
-        const bootPass = typeof r.bootstrap_passcode === "string" && r.bootstrap_passcode
-            ? el("p", { className: "hint bootstrap-pack" }, "Local client pack passcode: ",
-                el("code", { textContent: r.bootstrap_passcode }), " ", reseal)
-            : null;
-        const bootDecoder = typeof r.bootstrap_decoder_sha256 === "string" && r.bootstrap_decoder_sha256
-            ? el("p", { className: "hint bootstrap-pack" }, "Local decode SHA-256: ",
-                el("code", { textContent: r.bootstrap_decoder_sha256 }))
-            : null;
-        const bootHash = typeof r.bootstrap_pack_sha256 === "string" && r.bootstrap_pack_sha256
-            ? el("p", { className: "hint bootstrap-pack" }, "Local client pack SHA-256: ",
-                el("code", { textContent: r.bootstrap_pack_sha256 }))
+        const bootLines = [];
+        if (typeof r.bootstrap_passcode === "string" && r.bootstrap_passcode) {
+            bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "Passcode: ",
+                el("code", { textContent: r.bootstrap_passcode }), " ", reseal));
+        }
+        if (typeof r.bootstrap_decoder_sha256 === "string" && r.bootstrap_decoder_sha256) {
+            bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "Bootstrap SHA-256: ",
+                el("code", { textContent: r.bootstrap_decoder_sha256 })));
+        }
+        if (typeof r.bootstrap_pack_sha256 === "string" && r.bootstrap_pack_sha256) {
+            bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "Pack SHA-256: ",
+                el("code", { textContent: r.bootstrap_pack_sha256 })));
+        }
+        const bootSection = bootLines.length
+            ? el("details", { className: "bootstrap-pack" },
+                el("summary", { textContent: "Local client pack" }),
+                el("div", { className: "bootstrap-pack-body" }, ...bootLines))
             : null;
         const built = typeof r.build_time === "string" && r.build_time
             ? el("p", { className: "hint build-time", textContent: `TabTop built ${when(r.build_time)}` })
@@ -209,9 +215,7 @@ export function createSessionView({ security, formatTime }) {
         const activity = el("section", { className: "activity" });
         box.append(activity);
         await showActivity(activity, when, field);
-        if (bootPass) box.append(bootPass);
-        if (bootDecoder) box.append(bootDecoder);
-        if (bootHash) box.append(bootHash);
+        if (bootSection) box.append(bootSection);
         if (built) box.append(built);
     }
 

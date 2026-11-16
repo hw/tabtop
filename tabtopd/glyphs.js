@@ -87,6 +87,16 @@ const icons = {
     "clear-mask": '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 3"/><path d="M8 8l8 8m0-8-8 8"/>',
     "save-options": '<path d="M3 6h3m4 0h11M3 12h11m4 0h3M3 18h5m4 0h9"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
     "remove-background": '<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="2 3"/><path d="M8 17l2-5 2 2 2-5 3 8z"/><path d="M5 5l14 14M18 3v4m-2-2h4"/>',
+    // The 3D preview's: which axis is up (Z, or Y: its letter beside the
+    // upward arrow), and a model shown as its triangles' edges.
+    "axis-z-up": '<path d="M14 20V5m-3 3 3-3 3 3M14 20h7M14 20l-5 3"/><path stroke-width="1.6" d="M3 3h4.5L3 9h4.5"/>',
+    "axis-y-up": '<path d="M14 20V5m-3 3 3-3 3 3M14 20h7M14 20l-5 3"/><path stroke-width="1.6" d="M3 3l2.25 3L7.5 3M5.25 6v3"/>',
+    wireframe: '<path d="M4 4h16v16H4zM4 12h16M12 4v16M4 12l8-8M4 20 20 4M12 20l8-8"/>',
+    // ...its sharp edges drawn; shaded smooth or faceted; cut through; and G-code's lines as laid (wide).
+    edges: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" stroke-width="2.4"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9" stroke-width="1.2"/>',
+    smooth: '<circle cx="12" cy="12" r="8.5"/><path d="M7.5 10a5 5 0 0 1 4.5-3.5"/>',
+    section: '<path d="M4 9.5V7.5L12 3l8 4.5v2M4 7.5l8 4.5 8-4.5"/><path d="M3 15l9-4.5 9 4.5-9 4.5z" fill="currentColor" fill-opacity=".35"/>',
+    tubes: '<path stroke-width="4" d="M5 8.5h14M5 15.5h9"/>',
     "fit-page": '<rect x="3" y="1" width="18" height="22" rx="1"/><path stroke-width="1.5" d="M10 9L6 5m0 3V5h3M14 9l4-4m-3 0h3v3M10 15l-4 4m0-3v3h3M14 15l4 4m-3 0h3v-3"/>',
     "fit-width": '<path d="M3 5v14m18-14v14M5 12h14M8 9l-3 3 3 3m8-6l3 3-3 3"/>',
     "actual-size": '<rect x="2" y="4" width="20" height="16" rx="1"/><text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-family="system-ui, sans-serif" font-size="6" font-weight="600" textLength="16" lengthAdjust="spacingAndGlyphs" fill="currentColor" stroke="none">100%</text>',
@@ -126,6 +136,7 @@ const metrics = {
     "select-circle": [18, 24, 1.8], "select-all": [18, 24, 1.8], "flood-fill": [18, 24, 1.8], restore: [18, 24, 1.8],
     pen: [18, 24, 1.8], highlighter: [18, 24, 1.8], redo: [18, 24, 1.8], history: [18, 24, 1.8], "paste-image": [18, 24, 1.8],
     "draw-shape": [18, 24, 1.8], "shape-rect": [18, 24, 1.8], "shape-circle": [18, 24, 1.8], "shape-fill": [18, 24, 1.8], "shape-outline": [18, 24, 1.8],
+    "axis-z-up": [18, 24, 1.8], "axis-y-up": [18, 24, 1.8], wireframe: [18, 24, 1.6], edges: [18, 24, 1.8], smooth: [18, 24, 1.8], section: [18, 24, 1.8], tubes: [18, 24, 1.8],
     filter: [16, 24, 1.8], "search-files": [18, 24, 1.8], "view-grid": [18, 24, 1.8], "view-list": [18, 24, 1.8],
 };
 const attribute = (value) => String(value).replace(/[&"<>]/g,

@@ -7,19 +7,25 @@ package main
 // image-heif.js); only what's shown is made here.
 //
 // libheif runs in a child of tabtopd's own (see isolated_child.go), on the
-// file as it was opened, given as its input: a picture that's malformed,
-// or made to be, can at worst end that child. Its own limits are tightened
-// (no larger than the picture editor takes, nor more memory than that
-// needs), and the child has a time limit and a cap on what it writes.
+// file as it was opened, given as its input, in a sandbox (heif_sandbox.go:
+// no files opened, no network, no programs run), with limits on its memory
+// and processor time: a picture that's malformed, or made to be, can end
+// that child, and one that took over its decoder could do little else.
+// libheif's own limits are tightened (no larger than the picture editor
+// takes, nor more memory than that needs), and the child has a time limit
+// and a cap on what it writes.
 import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"net"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -33,8 +39,14 @@ const (
 	heifTimeout   = 60 * time.Second
 	heifQuality   = 90
 	// A thumbnail asked for: the file's own if it's at least this on its
-	// longer side (thumbnails.js makes them 192).
-	heifThumbnailSide = 192
+	// longer side (thumbnails.js makes them 192); if it hasn't one, the
+	// picture itself, if it's no more than maxHEIFThumbnailPixels.
+	heifThumbnailSide      = 192
+	maxHEIFThumbnailPixels = 64_000_000
+	// What the child may have of memory (libheif's own limit, 3 GiB, and
+	// more), and of the processor's time (more than heifTimeout: as well).
+	heifChildMemory = 4 << 30
+	heifChildCPU    = 90
 )
 
 var (
@@ -53,11 +65,23 @@ type heifPicture struct {
 }
 
 // readHEIFChild is the child: the HEIF file on its input, the picture on its
-// output, as a JPEG or a PNG; or why not, and exit 1.
+// output, as a JPEG or a PNG; or why not, and exit 1. It decodes in a
+// sandbox (see heif_sandbox.go), with limits on its memory (all of it, C's
+// too, not only Go's) and processor time. With the argument
+// "sandbox-check", it says what the sandbox lets it do (for its test).
 func readHEIFChild(args []string) int {
 	fail := func(err error) int {
 		os.Stdout.WriteString(err.Error())
 		return 1
+	}
+	syscall.Setrlimit(syscall.RLIMIT_DATA, &syscall.Rlimit{Cur: heifChildMemory, Max: heifChildMemory})
+	syscall.Setrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{Cur: heifChildCPU, Max: heifChildCPU})
+	sandboxed := heifPrepare()
+	if len(args) == 1 && args[0] == "sandbox-check" {
+		_, open := os.Open("/etc/hostname")
+		_, dial := net.Dial("tcp", "127.0.0.1:9")
+		fmt.Printf("sandbox: %v; open: %v; dial: %v", sandboxed, open, dial)
+		return 0
 	}
 	thumbnail := len(args) == 1 && args[0] == "thumbnail"
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxHEIFInput+1))

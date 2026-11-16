@@ -17,6 +17,9 @@
 // MAX_DEPTH aren't followed (nor ones that contain themselves).
 export const MAX_TRIANGLES = 20e6;
 const MAX_DEPTH = 16;
+// The most times objects are placed (an object used by many, used by
+// many, is placed many times over).
+export const MAX_PLACEMENTS = 100000;
 const UNITS = { micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000 };
 const CORE = "3dmodel";
 
@@ -146,6 +149,27 @@ export function read3MF(files) {
     const top = modelOf(root);
     const scale = top.unit;
 
+    // How many triangles each object comes to, its components' included,
+    // each worked out once: so a model whose objects use each other many
+    // times over is found too big before it's placed, not after.
+    const where = (c, path) => (c.path ? c.path.replace(/^\//, "") : path);
+    const totals = new Map(), working = new Set();
+    const triangles = (path, id) => {
+        const key = `${path}#${id}`;
+        if (totals.has(key)) return totals.get(key);
+        const object = modelOf(path)?.objects.get(id);
+        if (!object || working.has(key) || working.size > MAX_DEPTH) return 0;
+        working.add(key);
+        let n = object.mesh?.triangles.length ?? 0;
+        for (const c of object.components) n += triangles(where(c, path), c.objectid);
+        working.delete(key);
+        totals.set(key, n);
+        return n;
+    };
+    const items = top.build.map((item) => [where(item, root), item]);
+    const total = items.reduce((n, [path, item]) => n + triangles(path, item.objectid), 0);
+    if (total > MAX_TRIANGLES) throw new Error(`it has more than ${MAX_TRIANGLES / 1e6} million triangles`);
+
     // Count first, so the arrays are made once, the size they'll be.
     const placed = [];  // [mesh, matrix, model, object]
     let count = 0;
@@ -153,17 +177,19 @@ export function read3MF(files) {
         const model = modelOf(path);
         const object = model?.objects.get(id);
         const key = `${path}#${id}`;
-        if (!object || depth > MAX_DEPTH || seen.has(key)) return;
+        // (Nothing to draw under it: not gone into.)
+        if (!object || depth > MAX_DEPTH || seen.has(key) || !triangles(path, id)) return;
         if (object.mesh?.triangles.length) {
             count += object.mesh.triangles.length;
             if (count > MAX_TRIANGLES) throw new Error(`it has more than ${MAX_TRIANGLES / 1e6} million triangles`);
+            if (placed.length >= MAX_PLACEMENTS) throw new Error(`it places its parts more than ${MAX_PLACEMENTS.toLocaleString("en")} times`);
             placed.push([object.mesh, m, model, object]);
         }
         const inner = new Set(seen).add(key);
-        for (const c of object.components) visit(c.path ? c.path.replace(/^\//, "") : path, c.objectid, times(matrix(c.transform), m), depth + 1, inner);
+        for (const c of object.components) visit(where(c, path), c.objectid, times(matrix(c.transform), m), depth + 1, inner);
     };
     const units = [scale, 0, 0, 0, scale, 0, 0, 0, scale, 0, 0, 0];
-    for (const item of top.build) visit(item.path ? item.path.replace(/^\//, "") : root, item.objectid, times(matrix(item.transform), units), 0, new Set());
+    for (const [path, item] of items) visit(path, item.objectid, times(matrix(item.transform), units), 0, new Set());
     if (!count) throw new Error("it has no shapes in it");
 
     const position = new Float32Array(count * 9), normal = new Float32Array(count * 9);
@@ -173,6 +199,10 @@ export function read3MF(files) {
     const p = [0, 0, 0, 0, 0, 0, 0, 0, 0];
     for (const [mesh, m, model, object] of placed) {
         const v = mesh.vertices;
+        // A part placed mirrored (its transform's determinant negative)
+        // turns its triangles inside out: its volume, counted as it was.
+        const det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+        const sign = det < 0 ? -1 : 1;
         for (const [a, b, c, pid = object.pid, p1 = object.pindex, p2 = p1, p3 = p1] of mesh.triangles) {
             for (const [k, i] of [[0, a], [1, b], [2, c]]) {
                 const x = v[i * 3], y = v[i * 3 + 1], z = v[i * 3 + 2];
@@ -191,7 +221,7 @@ export function read3MF(files) {
             const l = Math.hypot(nx, ny, nz) || 1;
             nx /= l; ny /= l; nz /= l;
             for (let k = 0; k < 3; k++) normal.set([nx, ny, nz], t * 9 + k * 3);
-            volume += (p[0] * (p[4] * p[8] - p[5] * p[7]) - p[1] * (p[3] * p[8] - p[5] * p[6]) + p[2] * (p[3] * p[7] - p[4] * p[6])) / 6;
+            volume += sign * (p[0] * (p[4] * p[8] - p[5] * p[7]) - p[1] * (p[3] * p[8] - p[5] * p[6]) + p[2] * (p[3] * p[7] - p[4] * p[6])) / 6;
             const group = pid === undefined ? undefined : model.properties.get(pid);
             if (group) {
                 color ??= new Float32Array(count * 9).fill(-1);

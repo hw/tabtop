@@ -198,6 +198,11 @@ test("a zipped model too big to unpack is said to be, before it's tried", () => 
     assert.equal(zipTooBig(zip([1000, 2000])), "");
     assert.match(zipTooBig(zip([MAX_UNZIPPED / 2, MAX_UNZIPPED / 2 + 1])), /more than 400 MB/);
     assert.match(zipTooBig(zip([0xffffffff])), /more than 400 MB/);
+    // Its "total" count saying none, its count "on this disk" (which fflate
+    // unpacks by) saying two: counted as fflate would.
+    const lying = zip([MAX_UNZIPPED / 2, MAX_UNZIPPED / 2 + 1]);
+    new DataView(lying.buffer).setUint16(lying.length - 22 + 10, 0, true);
+    assert.match(zipTooBig(lying), /more than 400 MB/);
     // With a limit of its own (an AMF's, read on the page).
     assert.equal(zipTooBig(zip([1 << 20]), 2 << 20), "");
     assert.match(zipTooBig(zip([3 << 20]), 2 << 20), /more than 2 MB/);
@@ -205,4 +210,100 @@ test("a zipped model too big to unpack is said to be, before it's tried", () => 
     damaged[0] = 0;
     assert.equal(zipTooBig(damaged), "its file list is damaged");
     assert.equal(zipTooBig(new TextEncoder().encode("solid not a zip")), "");
+});
+
+test("each extrusion's speed, temperature, fan, width, height and flow", () => {
+    // 1.75 mm filament (said): its area, π·0.875².
+    const area = Math.PI * 0.875 ** 2;
+    const g = gcode(`; filament_diameter = 1.75
+M104 S205
+M106 S128
+G1 Z0.2 F600
+;WIDTH:0.5
+;HEIGHT:0.2
+G1 X10 E1 F1800
+M107
+M109 S215
+G1 X20 E2 F3000
+M104 T1 S250
+`);
+    const x = g.extrude;
+    assert.deepEqual([...x.speed], [30, 50]);
+    assert.deepEqual([...x.temp], [205, 215]);
+    assert.deepEqual([...x.fan], [128, 0]);
+    near(x.width[0], 0.5);
+    near(x.height[0], 0.2);
+    // Flow: filament pushed a mm (0.1), its area, the speed.
+    near(x.flow[0], 0.1 * area * 30);
+    assert.equal(g.filamentDiameter, 1.75);
+    assert.equal(g.diameterGuessed, false);
+    // Not said: its width from what's pushed, a line's sides rounded; its height, its layer's.
+    const w = gcode("; filament_diameter = 1.75\nG1 Z0.3 F1200\nG1 X10 E0.4\nG1 Z0.6\nG1 X0 E0.8\n").extrude;
+    const expected = 0.04 * area / 0.3 + 0.3 * (1 - Math.PI / 4);
+    near(w.width[0], expected);
+    near(w.height[0], 0.3);
+    near(w.height[1], 0.3);
+    // An arc's: its length along the arc.
+    const arc = gcode("; filament_diameter = 1.75\nG1 Z0.2 F600\nG1 X10 Y0\nG3 X-10 Y0 I-10 J0 E3.14159\n").extrude;
+    for (const f of arc.flow) near(f, 0.1 * area * 10, 1e-3);
+});
+
+test("filament not said: Cura's (2.85 mm), as its lines' widths show", () => {
+    const g = parseGCode(fixture("cura.gcode"));
+    assert.equal(g.filamentDiameter, 2.85);
+    assert.equal(g.diameterGuessed, true);
+    const widths = [...g.extrude.width].sort((a, b) => a - b);
+    near(widths[widths.length >> 1], 0.464, 0.01);
+    const prusa = parseGCode(fixture("prusa.gcode"));
+    assert.equal(prusa.diameterGuessed, false);
+    // PrusaSlicer says each line's width: those.
+    assert.ok([...prusa.extrude.width].every((w) => w > 0.3 && w < 0.8));
+});
+
+test("a mesh's check: watertight, or its holes, its edges of more than two faces, its faces inside out; its pieces", async () => {
+    const { meshCheck, meshCheckText, combineChecks } = await import("../tabtopd/model-info.js");
+    const P = [0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 10];
+    const F = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+    const flat = (faces, points = P) => Float32Array.from(faces.flatMap((i) => points.slice(i * 3, i * 3 + 3)));
+    // Each triangle its own corners, as an STL's: the same places, joined.
+    assert.deepEqual(meshCheck(flat(F)), { open: 0, nonManifold: 0, flipped: 0, pieces: 1 });
+    assert.equal(meshCheckText(meshCheck(flat(F))), "watertight");
+    // A face gone: three open edges.
+    assert.deepEqual(meshCheck(flat(F.slice(3))), { open: 3, nonManifold: 0, flipped: 0, pieces: 1 });
+    // A face turned inside out: its three edges run as their neighbours'.
+    assert.equal(meshCheck(flat([0, 1, 2, ...F.slice(3)])).flipped, 3);
+    // Two apart: two pieces; indexed, as it's given.
+    const two = meshCheck(Float32Array.from([...P, ...P.map((v, i) => (i % 3 === 0 ? v + 20 : v))]), Uint32Array.from([...F, ...F.map((i) => i + 4)]));
+    assert.deepEqual(two, { open: 0, nonManifold: 0, flipped: 0, pieces: 2 });
+    assert.equal(meshCheckText(two), "watertight · 2 pieces");
+    // A face more, on three of its edges: three faces each.
+    assert.equal(meshCheck(flat([...F, 0, 1, 2])).nonManifold, 3);
+    assert.equal(meshCheckText({ open: 1, nonManifold: 2, flipped: 0, pieces: 1 }), "1 open edge, 2 non-manifold edges");
+    assert.deepEqual(combineChecks([two, two]), { open: 0, nonManifold: 0, flipped: 0, pieces: 4 });
+    assert.equal(combineChecks([two, null]), null);
+    // The prism fixture: closed.
+    const stl = readFileSync(new URL("data/3d/prism.stl", import.meta.url));
+    const tris = stl.readUInt32LE(80), pos = new Float32Array(tris * 9);
+    for (let t = 0; t < tris; t++) for (let k = 0; k < 9; k++) pos[t * 9 + k] = stl.readFloatLE(84 + t * 50 + 12 + k * 4);
+    assert.equal(meshCheckText(meshCheck(pos)), "watertight");
+});
+
+test("colouring by a value: its span (but the farthest few), and the ramp's colours along it", async () => {
+    const { valueRange, rampAt, RAMP, COLOURINGS } = await import("../tabtopd/model-gcode.js");
+    // 1 to 100, and one far out: the 1st to the 99th of each hundred.
+    const values = Float32Array.from([...Array.from({ length: 100 }, (_, i) => i + 1), 10000]);
+    const [lo, hi] = valueRange(values);
+    assert.ok(lo >= 1 && lo <= 3 && hi >= 98 && hi <= 101, `${lo}, ${hi}`);
+    // All the same: a span about it. None a number: none.
+    const [a, b] = valueRange(Float32Array.from([5, 5, 5]));
+    assert.ok(a < 5 && b > 5);
+    assert.equal(valueRange(Float32Array.from([NaN, NaN])), null);
+    // Scaled (the fan's 0-255, as %).
+    assert.deepEqual(valueRange(Uint8Array.from([255, 255]), COLOURINGS.fan.scale).map(Math.round), [95, 105]);
+    // The ramp's ends are its first and last colours; between, between.
+    const hex = (rgb) => "#" + rgb.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+    assert.equal(hex(rampAt(0)), RAMP[0]);
+    assert.equal(hex(rampAt(1)), RAMP.at(-1));
+    assert.equal(hex(rampAt(-1)), RAMP[0]);
+    assert.equal(hex(rampAt(0.5)), RAMP[3]);
 });

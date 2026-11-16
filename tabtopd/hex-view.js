@@ -428,7 +428,7 @@ function hexHead() {
 // disassemble and assemble, x86 code (see sharedDisassembler, and
 // sharedAssembler, for editing it); executable reads what a program says
 // of itself (see exe-info.js), if it's one. Following a disassembly or
-// Program link remembers the selection for Back (in the hex bar). The
+// Structure link remembers the selection for Back (in the hex bar). The
 // element returned has jump(begin, end), stop(), and startEditing.
 export function hexView(bytes, { size = bytes.length, readRange = null, search = null, disassemble = sharedDisassembler, assemble = sharedAssembler,
     executable = readExecutable, disassemblersOff = DISASM_OFF, demangle = sharedDemangler } = {}) {
@@ -485,7 +485,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     const next = navButton(">", "Next bytes", "hex-next");
     const previousRange = navButton("−1 MB", "Previous 1 MB", "hex-previous-range");
     const nextRange = navButton("+1 MB", "Next 1 MB", "hex-next-range");
-    // After following a disassembly or Program link: up to 100 places, until
+    // After following a disassembly or Structure link: up to 100 places, until
     // the preview closes. Typing an offset or Find does not add history.
     const trail = [];
     const back = navButton("", "Back to the previous location", "hex-back glyph");
@@ -969,7 +969,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // given all of its height (the instruction set chosen at the right of
     // the tabs); which, remembered. A program has a third, of what it says
     // of itself (not remembered: other files have none).
-    const TABS = [["values", "Values"], ["disasm", "Disassembly"], ["program", "Program"]];
+    const TABS = [["values", "Values"], ["disasm", "Disassembly"], ["program", "Structure"]];
     const tabButtons = TABS.map(([tab, label]) => {
         const b = el("button", { type: "button", className: `hex-inspector-tab-${tab}`, textContent: label, hidden: tab === "program" || (tab === "disasm" && !modes.length) });
         b.addEventListener("click", () => showTab(tab));
@@ -999,7 +999,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             address != null && !info.relocatable ? `address 0x${address.toString(16)}` : "", short(symbol)].filter(Boolean).join(" · ");
         programAt.title = symbol.length > 80 ? symbol : "";
     };
-    // The Program tab: what it is, its sections (each goes to its first
+    // The Structure tab: what it is, its sections (each goes to its first
     // byte) and its symbols, found by a part of their names (each goes to
     // where it is in the file, if it's there).
     const programSummary = el("p", { className: "hex-program-summary" });
@@ -1690,7 +1690,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // has been since.
     // A universal file (macOS's) holds a program for each of several
     // machines, one after another: what's read is of one of them (a slice),
-    // the first to begin with, and another when it's chosen in the Program
+    // the first to begin with, and another when it's chosen in the Structure
     // tab, read then (readProgram; one still being read when another is
     // asked for is dropped). The instruction set follows it.
     const programReads = new AbortController();
@@ -1699,7 +1699,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // A read that failed (the connection; or a fault in the reading, which
     // would otherwise never be seen) isn't a file that's no program: unless
     // it was given up with the view, it's put in the console, and said in
-    // the Program tab if there's one to say it in (another of a universal
+    // the Structure tab if there's one to say it in (another of a universal
     // file's programs was asked for). The view stays as it was.
     const programFailed = (err) => {
         if (stopped || err?.name === "AbortError") return null;

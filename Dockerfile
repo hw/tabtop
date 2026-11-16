@@ -335,10 +335,11 @@ ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf3
 ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/facebookresearch/segment-anything/${SAM_REV}/LICENSE /segment/LICENSE.segment-anything
 RUN chmod -R u=rwX,go=rX /segment
 
-# three.js, for 3D previews of models for 3D printing (STL, OBJ, 3MF, AMF,
-# PLY) and G-code on the files page (see model-view.js in tabtopd): its
-# core, orbit controls, the STL, OBJ, PLY and AMF loaders and fflate (3MF
-# and G-code are tabtopd's own), in one folder, their
+# three.js, for 3D previews of models (STL, OBJ, 3MF, AMF, PLY, glTF, FBX)
+# and G-code on the files page (see model-view.js in tabtopd): its
+# core, orbit controls, the STL, OBJ, PLY, AMF, glTF, FBX, MTL and TGA
+# loaders, the room environment and what they import (3MF and G-code are
+# tabtopd's own), in one folder, their
 # imports pointing within it (scripts/three/vendor.sh; tabtopd's
 # threeFiles lists the same files). Checked here: each loads, and the
 # loaders and tabtopd's model-worker.js read small models. From npm; bump
@@ -349,14 +350,14 @@ ARG THREE_SHA256=ff540832ded0cfe919764d24a3d88f3e2a05f23303f876423e4f893841e9072
 ADD --checksum=sha256:${THREE_SHA256} https://registry.npmjs.org/three/-/three-${THREE_VERSION}.tgz /three.tgz
 WORKDIR /check
 COPY scripts/three/vendor.sh scripts/three/check.mjs ./
-COPY tabtopd/model-worker.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js ./tabtopd/
-COPY test/model-worker.test.mjs ./test/
-COPY test/data/3d/prism.stl test/data/3d/cura.gcode test/data/3d/prusa.3mf ./test/data/3d/
+COPY tabtopd/model-worker.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js tabtopd/bgcode.js tabtopd/model-resources.js tabtopd/preview-model.js tabtopd/file-types.js ./tabtopd/
+COPY test/model-worker.test.mjs test/model-fbx.test.mjs ./test/
+COPY test/data/3d/prism.stl test/data/3d/cura.gcode test/data/3d/prusa.3mf test/data/3d/turned-ascii.fbx test/data/3d/prism.bgcode ./test/data/3d/
 RUN mkdir /src \
  && tar -xzf /three.tgz -C /src --no-same-owner \
  && sh vendor.sh /src/package /three \
  && node check.mjs /three \
- && THREE_ASSETS=/three node --test test/model-worker.test.mjs
+ && THREE_ASSETS=/three node --test test/model-worker.test.mjs test/model-fbx.test.mjs
 
 # All Kaitai gallery schemas are compiled with byte-position metadata at build
 # time. The final image contains parsers and notices, without Node or the compiler.

@@ -19,7 +19,7 @@ func TestThreeAssets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "GLTFLoader.js"), []byte("//"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ColladaLoader.js"), []byte("//"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	g := &server{serverConfig: serverConfig{threeDir: dir}}
@@ -31,6 +31,9 @@ func TestThreeAssets(t *testing.T) {
 	path := g.threePath()
 	if !strings.HasPrefix(path, "three-") || path == "three-missing" {
 		t.Fatalf("path %q", path)
+	}
+	if csp := get(g, "model-worker.js").Header().Get("Content-Security-Policy"); csp != modelWorkerCSP {
+		t.Fatalf("the model worker's CSP: %q", csp)
 	}
 	for name, want := range map[string]string{
 		"model-view.js":   `import("./` + path + `/three.module.js")`,
@@ -50,7 +53,7 @@ func TestThreeAssets(t *testing.T) {
 			t.Fatalf("%s served as %q", name, w.Header().Get("Content-Type"))
 		}
 	}
-	if get(g, path+"/GLTFLoader.js").Code != 404 {
+	if get(g, path+"/ColladaLoader.js").Code != 404 {
 		t.Fatal("a file not listed was served")
 	}
 	for _, name := range []string{"gcode.js", "model-info.js"} {

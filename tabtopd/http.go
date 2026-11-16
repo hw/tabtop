@@ -44,11 +44,12 @@ func (g *server) handler() http.Handler {
 		mux.Handle(strings.TrimSuffix(p, "/"), http.RedirectHandler(g.abs(p), http.StatusMovedPermanently))
 	}
 	mux.HandleFunc("/tabtop/", g.scripts)
-	mux.HandleFunc("/tunnel", g.tunnelWS)
+	mux.HandleFunc("/session", g.tunnelWS)
+	mux.HandleFunc("/auth/approve", g.approvePage)
 	mux.HandleFunc("/healthz", g.healthz)
 	mux.HandleFunc("/doctor", g.doctor)
-	mux.HandleFunc("/bootstrap", g.bootstrap)
-	mux.HandleFunc("/bootstrap/pack", g.bootstrap)
+	mux.HandleFunc("/auth/bootstrap", g.bootstrap)
+	mux.HandleFunc("/auth/pack", g.bootstrap)
 	return noTransform(g.stripBase(mux))
 }
 

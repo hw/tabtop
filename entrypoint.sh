@@ -80,6 +80,7 @@ as_user /usr/local/bin/tabtopd \
     -share-key-file "$USER_HOME/.config/tabtop/share-link.key" \
     -activity-file "$USER_HOME/.config/tabtop/activity.jsonl" \
     -passkeys-file "$USER_HOME/.config/tabtop/passkeys.json" \
+    -remote-approval-url "${WEB_REMOTE_APPROVAL_URL:-}" \
     -fetch="$WEB_FETCH" \
     -fetch-private="$WEB_FETCH_PRIVATE" \
     -preview-fetch-private="$WEB_PREVIEW_FETCH_PRIVATE" \

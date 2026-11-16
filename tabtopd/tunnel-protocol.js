@@ -31,7 +31,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 export function tunnelURL() {
-    const url = new URL("../tunnel", import.meta.url);
+    const url = new URL("../session", import.meta.url);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     return url;
 }
@@ -411,4 +411,56 @@ export async function request(req, sess = storedSession()) {
     const t = await Tunnel.open(req, sess);
     t.close();
     return t.reply;
+}
+
+// Remote approval: the QR carries a one-time binding secret, whose commitment
+// is in the hello. Only an authenticated approver reveals it to the gateway.
+// A TLS interceptor can forge the initial ECDH channel, but cannot forge the
+// final approval/session response without that out-of-band secret.
+export async function remoteLogin(url = tunnelURL(), { signal, ready } = {}) {
+    signal?.throwIfAborted();
+    const c = await cryptoBackend(), { secret: eph, pub } = await c.keygen();
+    const binding = crypto.getRandomValues(new Uint8Array(32));
+    const commitment = await c.sha256(binding), hello = concat(pub, commitment);
+    const label = "tabtop remote approval v1", s = new Socket(url);
+    const abort = () => s.ws.close();
+    signal?.addEventListener("abort", abort, { once: true });
+    const deadline = setTimeout(abort, 145000);
+    const decode = (key, count, data) => {
+        const pt = chacha20poly1305(key, nonce(count)).decrypt(data);
+        if (pt[0] !== TEXT) throw new TunnelError("Invalid remote approval response.");
+        return JSON.parse(decoder.decode(pt.slice(1)));
+    };
+    try {
+        signal?.throwIfAborted();
+        await s.send(concat([VERSION, 4], hello));
+        const response = await s.next();
+        if (response.length !== 65 || response[0] !== VERSION) throw new TunnelError("Invalid remote approval handshake.");
+        const yb = response.slice(1, 33), fresh = response.slice(33);
+        const ee = await c.scalarMult(eph, yb);
+        const salt = await c.sha256(concat(encoder.encode(label), hello, yb, fresh));
+        const keys = await c.hkdf(ee, salt, label + " keys", 64);
+        const details = decode(keys.slice(32), 0, await s.next());
+        if (!/^[A-Za-z0-9_-]{43}$/.test(details.id) || !Number.isSafeInteger(details.expires) || typeof details.approval_url !== "string") throw new TunnelError("Invalid remote approval request.");
+        const approvalURL = new URL(details.approval_url);
+        if (approvalURL.username || approvalURL.password || approvalURL.search || approvalURL.hash || !(approvalURL.protocol === "https:" || approvalURL.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(approvalURL.hostname))) throw new TunnelError("Approval needs a trusted HTTPS address.");
+        const digest = await c.sha256(concat(encoder.encode(label + " approval"), hello, yb, fresh, encoder.encode(`${details.id}\n${details.approval_url}\n${details.expires}`)));
+        const proof = b64url(digest), hex = Array.from(digest.slice(0, 4), x => x.toString(16).padStart(2, "0")).join("").toUpperCase();
+        approvalURL.hash = new URLSearchParams({ id: details.id, proof, secret: b64url(binding) }).toString();
+        const finalKeys = await c.hkdf(concat(ee, binding), salt, label + " approved keys", 64);
+        signal?.throwIfAborted();
+        await ready?.({ url: approvalURL.href, code: hex.slice(0, 4) + "-" + hex.slice(4), expires: details.expires });
+        let approved;
+        try { approved = decode(finalKeys.slice(32), 0, await s.next()); }
+        catch (err) { signal?.throwIfAborted(); if (err instanceof TunnelError) throw err; throw new TunnelError("Remote approval couldn't be authenticated. Start again and check the trusted approval address."); }
+        if (approved.approved !== true) throw new TunnelError("Login was not approved.");
+        await s.send(chacha20poly1305(finalKeys.slice(0, 32), nonce(0)).encrypt(concat([TEXT], encoder.encode(JSON.stringify({ proof })))));
+        const result = decode(finalKeys.slice(32), 1, await s.next());
+        if (!result.ok || typeof result.session !== "string" || typeof result.secret !== "string") throw new TunnelError("Invalid remote session.");
+        signal?.throwIfAborted();
+        return { id: result.session, secret: result.secret, expires: result.expires, ip: result.ip, logins: result.logins || [] };
+    } finally {
+        binding.fill(0); clearTimeout(deadline);
+        signal?.removeEventListener("abort", abort); s.ws.close();
+    }
 }

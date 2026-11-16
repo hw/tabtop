@@ -53,6 +53,8 @@ Go modules (see `tabtopd/go.mod`), and the C libraries it links.
 | [libheif](https://github.com/strukturag/libheif) | Decoding HEIC pictures for their previews | LGPL 3.0 |
 | [libde265](https://github.com/strukturag/libde265) (libheif's plugin) | Decoding HEIC pictures' HEVC | LGPL 3.0 |
 
+The remote-login QR code is generated locally with [Nayuki’s QR Code Generator](https://www.nayuki.io/page/qr-code-generator-library), under the MIT license; its license is included in the vendored source.
+
 ## In the image
 
 Debian packages, under their own licenses: each one's is in

@@ -84,7 +84,7 @@ uploader's progress runs ahead of what's saved. Leave them out if you
 don't use upload links.
 
 Open `https://example.com/`. Paths stay as in the README (`/fs/`,
-`/tty/`, `/tunnel`, `/healthz`, `/bootstrap`, `/bootstrap/pack`).
+`/tty/`, `/session` (the encrypted tunnel), `/healthz`, `/auth/approve`, `/auth/bootstrap`, `/auth/pack`).
 
 ## nginx: site under a path (`WEB_BASE_PATH`)
 

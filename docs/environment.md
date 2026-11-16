@@ -27,6 +27,7 @@
 | [WEB_AUDIO_BITRATE](#web_audio_bitrate) | `64` | Sound quality in kbit/s, `32` to `256`. |
 | [WEB_AUDIO_SERVER](#web_audio_server-and-web_audio_sink) | *(empty)* | A PulseAudio or PipeWire socket mounted from the host, such as `/run/host-pulse/native`, whose sound is streamed instead of the container's own. See [Host audio](lite.md#host-audio). |
 | [WEB_AUDIO_SINK](#web_audio_server-and-web_audio_sink) | `@DEFAULT_SINK@` | With `WEB_AUDIO_SERVER`, the host's sink to stream; by default whichever is the host's default. |
+| [WEB_REMOTE_APPROVAL_URL](#web_remote_approval_url) | *(same instance)* | Trusted HTTPS address for approving another device, e.g. `https://trusted.example/auth/approve`. |
 | [WEB_SESSION_MAX](#web_session_max-and-web_session_idle) | `12h` | How long a login lasts at most, in hours and minutes, such as `12h` or `90m`. See [Sessions](encryption.md#sessions). |
 | [WEB_SESSION_IDLE](#web_session_max-and-web_session_idle) | `1h` | How long a login lasts with nothing open (no desktop, terminal or download), such as `1h` or `30m`. `0` for no limit. |
 | [WEB_TTY](#web_tty) | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
@@ -46,7 +47,7 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `VNC_RESIZE`, `VNC_ADDR`, `WEB_PORT`,
 `VNC_X509` (or what it needs; see [VNC_X509](#vnc_x509)),
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
-`WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
+`WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
 `WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
@@ -650,6 +651,23 @@ instead of the container's own; the container's PipeWire isn't started
 then. `WEB_AUDIO_SINK` names the host's sink to record, by default
 `@DEFAULT_SINK@`, whichever is the host's default when a browser starts
 listening. See [Host audio](lite.md#host-audio).
+
+## `WEB_REMOTE_APPROVAL_URL`
+
+**Approve on other device** on the login form displays a QR code and a
+one-time link. By default, the link opens `/auth/approve` on the current
+instance, including `WEB_BASE_PATH`. Set this to a trusted HTTPS address
+for the same TabTop gateway when the approving device uses a different
+public address, for example `https://trusted.example/tabtop/auth/approve`.
+Do not include a query string or fragment. HTTP is allowed only on localhost.
+The approving device must reach that address through a trusted connection.
+Passkeys must have been registered for its hostname.
+
+Requests expire after two minutes. Approval requires a fresh password and
+code or passkey login. The resulting session lasts at most one hour, or
+`WEB_SESSION_MAX` if shorter, and follows the usual idle and revocation
+rules. See [Remote approval](encryption.md#remote-approval) for the trust model.
+The equivalent gateway flag is `-remote-approval-url`.
 
 ## `WEB_SESSION_MAX` and `WEB_SESSION_IDLE`
 

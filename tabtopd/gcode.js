@@ -83,8 +83,14 @@ export function duration(text) {
 //   filament: mm of filament pushed, extruding; lines; skipped (moves left
 //   out, as said above); truncated; slicer; time (seconds, as the slicer
 //   estimated it), or null.
-export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
+export function parseGCode(bytes, { maxSegments = 10e6 } = {}) {
     const ext = new Grow(Float32Array), extType = new Grow(Uint8Array), trav = new Grow(Float32Array);
+    // Of each segment extruded: its speed (mm/s), filament pushed for each
+    // mm it goes, the width and height the slicer said of it (or NaN), the
+    // nozzle's temperature, and the fan's speed (0 to 255).
+    const extSpeed = new Grow(Float32Array), extFeed = new Grow(Float32Array), extWidth = new Grow(Float32Array), extHeight = new Grow(Float32Array);
+    const extTemp = new Grow(Uint16Array), extFan = new Grow(Uint8Array);
+    let feed = NaN, ePerMM = 0, width = NaN, height = NaN, temp = 0, fan = 0, diameter = NaN;
     const layerExt = [], layerTrav = [], layerZ = [];
     const types = [""], typeIndex = new Map([["", 0]]);
     let type = 0;
@@ -125,6 +131,8 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
         if (!byComments && !Number.isNaN(layerZ[i]) && Math.abs(z1 - layerZ[i]) >= LAYER_DZ) newLayer();
         if (!segment(ext, x0, y0, z0, x1, y1, z1)) return;
         extType.push(type);
+        extSpeed.push(feed / 60); extFeed.push(ePerMM); extWidth.push(width); extHeight.push(height);
+        extTemp.push(temp); extFan.push(fan);
         const j = layer();
         if (Number.isNaN(layerZ[j])) layerZ[j] = z1;
         layerExt[j] = ext.n / 6;
@@ -168,6 +176,12 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
             slicer = c.trim();
         } else if ((m = /^TIME_ELAPSED:(\d+(?:\.\d+)?)\s*$/.exec(c))) {
             elapsed = Number(m[1]);
+        } else if ((m = /^\s*(?:WIDTH|LINE_WIDTH)\s*:\s*([\d.]+)/i.exec(c))) {
+            width = Number(m[1]);
+        } else if ((m = /^\s*(?:HEIGHT|LAYER_HEIGHT)\s*:\s*([\d.]+)/i.exec(c))) {
+            height = Number(m[1]);
+        } else if ((m = /^\s*filament_?diameters?\s*[=:,]\s*([\d.]+)/i.exec(c)) || (m = /^\s*material_diameter\s*[=:]\s*([\d.]+)/i.exec(c))) {
+            diameter = Number(m[1]);
         } else if (time === null && (m = /^TIME:(\d+(?:\.\d+)?)\s*$/.exec(c))) {
             time = Number(m[1]);
         } else if (time === null && (m = /estimated printing time(?: \(normal mode\))?\s*[=:]\s*(.+)$/i.exec(c))) {
@@ -235,7 +249,7 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
             comment(c.replace(/\r$/, ""));
         }
         i = end + 1;
-        const G = 6, M = 12, X = 23, Y = 24, Z = 25, E = 4, I = 8, J = 9, R = 17;
+        const G = 6, M = 12, X = 23, Y = 24, Z = 25, E = 4, F = 5, I = 8, J = 9, R = 17, S = 18, T = 19;
         if (has[G] === 1) {
             const g = words[G];
             if (g === 0 || g === 1 || g === 2 || g === 3) {
@@ -247,6 +261,7 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
                     continue;
                 }
                 const de = ne - e;
+                if (has[F] === 1 && words[F] > 0) feed = words[F] * scale;
                 // (An arc by I and J back to where it began: a whole circle.)
                 const arc = g >= 2 && (nx !== x || ny !== y || has[I] === 1 || has[J] === 1);
                 const across = nx !== x || ny !== y || arc;
@@ -279,6 +294,7 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
                         let sweep = Math.atan2(ny - cy, nx - cx) - a0;
                         if (clockwise && sweep >= -1e-9) sweep -= 2 * Math.PI;
                         if (!clockwise && sweep <= 1e-9) sweep += 2 * Math.PI;
+                        if (extruding) ePerMM = de / (Math.hypot(Math.abs(sweep) * r, nz - z) || 1);
                         const steps = Math.max(1, Math.min(ARC_MAX, Math.ceil(Math.abs(sweep) * r / ARC_STEP)));
                         let px = x, py = y, pz = z;
                         for (let s = 1; s <= steps; s++) {
@@ -293,8 +309,10 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
                         continue;
                     }
                 }
-                if (extruding) extrudeTo(x, y, z, nx, ny, nz);
-                else if (across || nz !== z) travelTo(x, y, z, nx, ny, nz);
+                if (extruding) {
+                    ePerMM = de / (Math.hypot(nx - x, ny - y, nz - z) || 1);
+                    extrudeTo(x, y, z, nx, ny, nz);
+                } else if (across || nz !== z) travelTo(x, y, z, nx, ny, nz);
                 x = nx; y = ny; z = nz; e = ne;
             } else if (g === 90) absolute = true;
             else if (g === 91) absolute = false;
@@ -313,8 +331,13 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
                 if (all || has[Z]) z = 0;
             }
         } else if (has[M] === 1) {
-            if (words[M] === 82) absoluteE = true;
-            else if (words[M] === 83) absoluteE = false;
+            const mc = words[M];
+            if (mc === 82) absoluteE = true;
+            else if (mc === 83) absoluteE = false;
+            // The nozzle's temperature set (not its bed's: M140, M190).
+            else if ((mc === 104 || mc === 109) && has[S] === 1 && !(has[T] === 1 && words[T] > 0)) temp = Math.max(0, Math.min(65535, Math.round(words[S])));
+            else if (mc === 106) fan = has[S] === 1 ? Math.max(0, Math.min(255, Math.round(words[S]))) : 255;
+            else if (mc === 107) fan = 0;
         }
     }
     // A last layer with nothing extruded (lifting away at the end) is the one before's.
@@ -324,8 +347,45 @@ export function parseGCode(bytes, { maxSegments = 12e6 } = {}) {
         layerExt.pop(); layerTrav.pop(); layerZ.pop();
     }
     const extrudeCount = ext.n / 6;
+    // Each segment's height: as the slicer said, else its layer's (how far
+    // above the one before it is); and its width: as said, else what the
+    // filament pushed makes of that height (a slicer's line, its sides
+    // rounded: area = (w - h)·h + π(h/2)², as PrusaSlicer has it).
+    const heights = extHeight.done(), widths = extWidth.done(), feeds = extFeed.done();
+    const layerHeight = layerZ.map((zl, k) => {
+        const below = k > 0 ? layerZ[k - 1] : 0;
+        const h = zl - below;
+        return h > 0.01 && h < 5 ? h : NaN;
+    });
+    for (let k = 0, s = 0; k < layerZ.length; k++) {
+        for (; s < layerExt[k]; s++) if (!(heights[s] > 0)) heights[s] = layerHeight[k];
+    }
+    let guessed = false;
+    if (!(diameter > 0)) {
+        // Not said: 1.75 mm or 2.85 mm, whichever makes its lines nearer
+        // the width lines are (0.45 mm, or so: thicker filament, less of
+        // it pushed for a line as wide).
+        const sample = [];
+        const step = Math.max(1, Math.floor(feeds.length / 4000));
+        for (let s = 0; s < feeds.length; s += step) if (feeds[s] > 0 && heights[s] > 0) sample.push(feeds[s] / heights[s]);
+        sample.sort((a, b) => a - b);
+        const median = sample[sample.length >> 1] ?? 0;
+        const off = (d) => Math.abs(Math.log((median * Math.PI * (d / 2) ** 2 || 1e-9) / 0.45));
+        diameter = off(2.85) < off(1.75) ? 2.85 : 1.75;
+        guessed = true;
+    }
+    const filamentArea = Math.PI * (diameter / 2) ** 2;
+    for (let s = 0; s < widths.length; s++) {
+        if (widths[s] > 0) continue;
+        const h = heights[s], area = feeds[s] * filamentArea;
+        widths[s] = h > 0 && area > 0 ? Math.max(0.01, Math.min(10, area / h + h * (1 - Math.PI / 4))) : NaN;
+    }
+    // Flow, mm³ a second: what the nozzle pushes out.
+    const speeds = extSpeed.done(), flows = new Float32Array(speeds.length);
+    for (let s = 0; s < flows.length; s++) flows[s] = feeds[s] * filamentArea * speeds[s];
     return {
-        extrude: { positions: ext.done(), types: extType.done() },
+        extrude: { positions: ext.done(), types: extType.done(), speed: speeds, flow: flows, width: widths, height: heights, temp: extTemp.done(), fan: extFan.done() },
+        filamentDiameter: diameter, diameterGuessed: guessed,
         travel: { positions: trav.done() },
         layers: { extrudeEnd: Uint32Array.from(layerExt), travelEnd: Uint32Array.from(layerTrav), z: Float32Array.from(layerZ) },
         types,

@@ -31,6 +31,9 @@ const (
 )
 
 type tunnelRequest struct {
+	RemoteSecret string `json:"remote_secret,omitempty"`
+	RemoteID     string `json:"remote_id,omitempty"`
+	RemoteProof  string `json:"remote_proof,omitempty"`
 	// Type is the request (see tunnelRoutes for them all).
 	Type        string `json:"type"`
 	Root        string `json:"root,omitempty"`
@@ -200,6 +203,8 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	switch hello[1] {
 	case helloLogin:
 		g.loginTunnel(c, ip, browserName(r.Header.Get("User-Agent")), hello[2:])
+	case helloRemote:
+		g.remoteTunnel(c, r, hello[2:], handshaken)
 	case helloPasskey:
 		g.passkeyTunnel(c, ip, browserName(r.Header.Get("User-Agent")), hello[2:], handshaken)
 	case helloSession:

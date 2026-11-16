@@ -329,39 +329,83 @@ downloaded at `http://<host>:6080/fs/`:
   PDF is never overwritten. A batch allows up to 200 pages, 16 megapixels per
   page and 256 MiB of edited images or exported image data. Export copies before
   leaving the session to retain your work.
-- **3D models and G-code** for 3D printing (`.stl`, `.obj`, `.3mf`, `.amf`,
-  `.ply`, `.gcode`, `.gco`, up to 100 MB) are drawn with
-  [three.js](https://threejs.org/). Drag to turn the model, right-drag (or
-  Shift-drag) to move it, and use the wheel to zoom. **Fit** (0) shows it
-  all again. **Z up** switches which axis points up: Z, as printers have
-  it, is the default except for OBJ and PLY, which are usually Y up.
-  **Wireframe** shows the triangles' edges. Above the model, its size in
-  millimetres, how many triangles it has, and the volume it encloses
-  (`12 × 12 × 6 mm · 96 triangles · 0.67 cm³`). A 3MF shows its build
+- **3D models, scenes and G-code** (`.stl`, `.obj`, `.3mf`, `.amf`,
+  `.ply`, `.gltf`, `.glb`, `.fbx`, `.gcode`, `.gco`, `.bgcode`, up to 100 MB) are
+  drawn with [three.js](https://threejs.org/). Drag to turn the model,
+  right-drag (or Shift-drag) to move it, and use the wheel to zoom. The
+  glyphs above it: **Fit** (0) shows it all again; the **up axis** glyph
+  shows which axis points up (Z or Y) and switches it: Z, as printers have
+  it, is the default except for OBJ, PLY, glTF and FBX, which are usually
+  Y up. Above the model, its size in millimetres, how many triangles it
+  has, the volume it encloses, and, for models to print (STL, OBJ, 3MF,
+  AMF, PLY), whether its surface is closed: `watertight`, or its open
+  edges (holes), non-manifold edges (more than two faces on one) and
+  flipped edges (between a face and one turned inside out); and its
+  pieces, if more than one (`12 × 12 × 6 mm · 96 triangles · 0.67 cm³ ·
+  watertight`). A model of more than 2 million triangles isn't checked.
+  - **Looks:** the list beside the glyphs: **Materials** (its own);
+    **Overhangs**, the faces that face down more steeply than the angle
+    given (45° to begin with) from level, in red: what needs support
+    printed under it (not what's on the plate); **Faces inside out**,
+    their backs in red, where there's a hole, or a face the wrong way
+    round; **X-ray**, seen through. Then glyphs: **Wireframe** (the
+    triangles' edges); **Edges** (its sharp edges, where faces meet at more
+    than 30°, drawn on it); **Smooth**, or faceted (each face flat; smooth
+    keeps edges sharper than 30° sharp); **Section**, which cuts it away
+    above a height, the slider beside it, what's cut filled in orange.
+    Edges and smoothing aren't offered past 3 million triangles. A 3MF shows its build
   plate's objects where they're placed, including Bambu Studio's and
   Orca's projects (objects in model files of their own), in their colours
   (base materials and colour groups; not textures). A sliced 3MF
   (`.gcode.3mf`) shows its first plate's G-code. A PLY with no faces is
-  shown as a point cloud. An OBJ's materials (`.mtl`) aren't read, so
-  it's all one colour.
-  - **G-code** is drawn as the nozzle's path, coloured by what each part is
-    (outer and inner walls, infill, solid infill, top and bottom, bridges and
-    overhangs, support, skirt and brim), from the comments PrusaSlicer,
-    Cura, Orca, Bambu Studio and Simplify3D write; a legend shows the
-    colours in use. The slider shows the layers up to the one chosen;
-    **This layer only** shows that one; **Travel** adds the moves that
-    don't extrude. Above, its size, layers, the filament it uses, the
-    slicer's time estimate, and which slicer made it. Arcs (G2/G3) are
-    drawn; files with more than 12 million moves are shown in part.
-    Binary G-code (`.bgcode`) isn't supported.
-  - **Text and bytes:** G-code and OBJ files have **Show text view** to
+  shown as a point cloud.
+  - **Materials and textures:** an OBJ is shown in its materials, from the
+    `.mtl` files it names (`mtllib`), with their textures; a glTF in its
+    (physically based) materials and textures, its data (`.bin`) and
+    pictures read from beside a `.gltf`, or from inside a `.glb`; an FBX,
+    binary or text (ASCII, version 7.0 and later; an older one says so),
+    in its materials, with its textures, inside it or beside it (TGA too).
+    The files a model names are looked for where it says, relative to it,
+    then by name alone in its folder (as one made elsewhere names them
+    where they were: `C:\Users\…\wood.png`), never outside the files'
+    root, nor on the web. One that isn't there is said
+    (`a file it refers to isn't here: wood.png`), the model drawn without
+    it; a glTF without its data can't be drawn. A glTF's or FBX's size is in
+    its own units (glTF's are metres), without a volume, with how many
+    textures it has. Animations aren't played: a model is shown as it
+    stands (an animated character, in its rest pose). glTF compressed with
+    Draco or meshopt, or with KTX2 textures, isn't shown (it says so).
+  - **G-code** (and Prusa's binary G-code, `.bgcode`: compressed with
+    Deflate or Heatshrink, packed with MeatPack) is drawn as the lines the
+    printer lays down, each as wide and as high as it is: the width the
+    slicer says (PrusaSlicer's, Orca's and Bambu Studio's comments), else
+    what the filament pushed makes, its height its layer's. **Lines as
+    laid** (the glyph) switches between those and thin lines; past 3
+    million moves it starts with thin lines. The list colours them by what
+    each is (outer and inner walls, infill, solid infill, top and bottom,
+    bridges and overhangs, support, skirt and brim, from the comments
+    PrusaSlicer, Cura, Orca, Bambu Studio and Simplify3D write), or by
+    **Speed** (mm/s), **Flow** (mm³/s), **Line width**, **Layer height**,
+    **Temperature** (the nozzle's) or **Fan** (%), from blue (least) to
+    red (most), the legend saying the span (but the farthest 1% each way,
+    so a few don't make the rest one colour). A file that doesn't say its
+    filament's diameter (Cura's) is taken to be 1.75 mm or 2.85 mm, as its
+    lines' widths show, and its legend says so. The slider shows the
+    layers up to the one chosen; **This layer only** shows that one;
+    **Travel** adds the moves that don't extrude. Above, its size, layers,
+    the filament it uses, the slicer's time estimate, and which slicer
+    made it. Arcs (G2/G3) are drawn; files with more than 10 million
+    moves are shown in part.
+  - **Text and bytes:** G-code, OBJ, `.gltf` and text (ASCII) FBX files have **Show text view** to
     read them as text (the first 2 MB of a bigger file), and the other
     formats **Show binary view**; **Show 3D view** goes back. A file too
     big to draw opens as text (G-code, OBJ) or in hex. A `.obj` that's a
     compiler's object file, not a model, is shown in hex. G-code and OBJ
     files can be compared as text (**Compare text**).
   - Models are read in a worker, so a big one doesn't freeze the page,
-    except AMF, whose loader needs the page, and is read only up to 32 MB.
+    except AMF, glTF and FBX, whose loaders need the page: AMF and FBX are
+    read only up to 32 MB. A model's files beside it are read up to 64 of
+    them, 64 MB each, 256 MB together.
     A 3MF that unpacks to more than 400 MB, or has more than 20 million
     triangles, isn't read. A server without three.js (`-three-dir`) says
     3D previews aren't available.

@@ -24,13 +24,15 @@ const (
 	// registers download-sw.js and opens its downloads in a hidden frame;
 	// blob: is for saving files held in memory where there's no service
 	// worker, and for previews (see preview.js), which never use a frame.
-	filesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; " +
+	// connect-src blob: data:: the 3D preview's glTF loader fetches what a
+	// model has (its buffers and pictures) from them; neither reaches out.
+	filesCSP = "default-src 'none'; script-src 'self'; connect-src 'self' blob: data:; style-src 'unsafe-inline'; " +
 		"img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; frame-src 'self'; form-action 'none'; frame-ancestors 'none'"
 	// The download service worker fetches nothing itself.
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-info.js model-3mf.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed remote-auth-view.js remote-approve.js image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-info.js model-3mf.js model-gcode.js model-looks.js bgcode.js model-resources.js model-read.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var pageFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -281,11 +283,17 @@ func (g *server) inpaintPath() string {
 	return g.inpaint.path(g.inpaintAssets())
 }
 
+// modelWorkerCSP is the 3D preview's worker's: its modules (tabtopd's and
+// three.js's, from the site), and nothing else; it's handed what it reads.
+const modelWorkerCSP = "default-src 'none'; script-src 'self'"
+
 // three.js, for the 3D preview (model-view.js and model-worker.js): what
 // the Dockerfile's three stage (scripts/three/vendor.sh) copies, in one
 // folder, its imports pointing within it.
 var threeFiles = []string{"three.module.js", "three.core.js", "OrbitControls.js", "STLLoader.js", "OBJLoader.js",
-	"PLYLoader.js", "AMFLoader.js", "fflate.module.js", "LICENSE.three"}
+	"PLYLoader.js", "AMFLoader.js", "GLTFLoader.js", "FBXLoader.js", "MTLLoader.js", "TGALoader.js",
+	"BufferGeometryUtils.js", "SkeletonUtils.js", "NURBSCurve.js", "NURBSUtils.js", "RoomEnvironment.js",
+	"fflate.module.js", "LICENSE.three"}
 
 func (g *server) threeAssets() assets { return assets{"three", g.threeDir, threeFiles} }
 func (g *server) threePath() string {
@@ -405,7 +413,11 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		js, _ := pageFiles.ReadFile(name)
 		js = bytes.ReplaceAll(js, []byte(`"./demangle/`), []byte(`"./`+g.demanglePath()+`/`))
 		w.Write(g.disasmPaths(g.disasmOffJS(js)))
-	case name == "model-view.js" || name == "model-worker.js":
+	case name == "model-view.js" || name == "model-worker.js" || name == "model-looks.js":
+		if name == "model-worker.js" {
+			// It reads what it's handed: it needs its modules, and nothing else.
+			h.Set("Content-Security-Policy", modelWorkerCSP)
+		}
 		js, _ := pageFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./three/`), []byte(`"./`+g.threePath()+`/`)))
 	case name == "hex-view.js":

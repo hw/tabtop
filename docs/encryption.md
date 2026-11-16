@@ -91,6 +91,53 @@ container and the site it fetches from, not through your browser.)
 The desktop's own Chromium isn't affected: it browses from the container,
 not through your browser.
 
+## Remote approval
+
+Choose **Approve on other device** on the login form to display a locally
+generated QR code, a copyable one-time link, and a matching code. Scan it
+on a trusted device, verify the address, and log in there with a password
+and authenticator code or a passkey. The approval page shows the requesting
+IP, reported browser, expiry, and code. Confirm that you started the
+request and the codes match, then choose **Approve login** or **Deny**.
+Remembered sessions cannot approve: authentication must happen after the
+request starts. Remotely approved sessions cannot approve further devices.
+
+The link defaults to this instance's `/auth/approve` page. A different trusted
+HTTPS address for the same gateway can be configured with
+[`WEB_REMOTE_APPROVAL_URL`](environment.md#web_remote_approval_url).
+Keep the link private and only approve requests on devices you control.
+Cancelling closes the waiting connection; pending requests are forgotten
+on disconnect, expiry, or server restart. Each request can be decided once.
+Requests expire after two minutes, with at most three pending logins per IP
+and 256 globally, shared with passkey waits.
+
+The QR binds the full ephemeral X25519 exchange, a gateway nonce, request
+ID, approval address and expiry with SHA-256. Its fragment also holds a
+random one-time binding secret, whose SHA-256 commitment is sent in the
+requester's hello. The trusted device sends the secret and transcript hash
+through its authenticated E2E tunnel when approving. The gateway verifies
+both before using the secret together with the X25519 shared secret to
+derive new channel keys. The requesting page verifies an approval response
+under those keys and acknowledges the exact transcript before receiving
+its own session. Thus an interceptor cannot forge approval using only the
+initial, unauthenticated exchange. The short displayed code helps people
+check the devices; the full hash is checked by the protocol. Link fragments
+stay out of HTTP requests and are cleared from the approval page's address
+bar before it authenticates.
+
+The new session has its own secret, lasts at most one hour (or the configured
+session maximum if shorter), and can be revoked through **Sessions**. It
+uses the same E2E tunnels and idle timeout as other logins. Approval does
+not copy the trusted device's session to the requesting device.
+
+This keeps credentials on the trusted device and authenticates the E2E
+connection against an active TLS interceptor when both clients are genuine
+and the approving device uses a trusted path. It does not establish the
+integrity of JavaScript delivered through an intercepting proxy. Malicious
+requesting code, browser extensions, or a compromised endpoint can still
+steal the resulting session and plaintext. Use a verified local client when
+the requesting connection cannot be trusted to deliver genuine scripts.
+
 ## Sessions
 
 The desktop, terminal and files page share a login within one deployment.

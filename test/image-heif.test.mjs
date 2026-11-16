@@ -146,3 +146,12 @@ test("cut short or with bytes changed anywhere: an error or an answer, never a h
     }
     assert.ok(performance.now() - began < 20000);
 });
+
+test("EXIF that shares its bytes with the picture (running to the end, before it): refused, not cleared with it", () => {
+    const tiff = camera();
+    const file = heif({ items: [{ id: 2, type: "Exif", data: exifItem(tiff), toEnd: true }, { id: 1, type: "hvc1", data: PICTURE }],
+        refs: [{ type: "cdsc", from: 2, to: [1] }] });
+    const before = file.slice();
+    assert.throws(() => heifReplaceExif(file, camera()), /shares its bytes/);
+    assert.deepEqual(file, before);
+});

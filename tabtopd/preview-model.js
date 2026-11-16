@@ -53,9 +53,10 @@ export function typeOf(name) {
 }
 
 // textModel reports whether a file named name is a 3D model that's text
-// worth reading as such too (G-code, OBJ): its preview offers that.
+// worth reading as such too (G-code, OBJ, glTF's JSON): its preview offers
+// that.
 export function textModel(name) {
-    return /\.(?:gcode|gco|obj)$/i.test(name);
+    return /\.(?:gcode|gco|obj|gltf)$/i.test(name);
 }
 
 // binaryNamed reports whether name is a binary's (.bin, .dll, .exe, .so,

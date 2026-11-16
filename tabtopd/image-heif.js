@@ -158,19 +158,33 @@ function readMeta(bytes) {
     return { top, meta, children, primary, types, contentTypes, loc, refs, irefVersion, idat };
 }
 
-// An item's bytes: its pieces, one after another; null if any is outside
-// the file (or its idat). Pieces whose length is 0 run to the file's end.
-function itemBytes(bytes, m, item) {
+// An item's pieces, where they are in the file: [[begin, end]…]; null if
+// any is outside the file (or its idat), or they come to more than the
+// file (pieces may repeat what's in it: not so many times over). A piece
+// whose length is 0 runs to the end of the file (or of idat).
+function itemRanges(bytes, m, item) {
     if (item.reference !== 0 || item.method > 1) return null;
-    const parts = [];
     if (item.method === 1 && !m.idat) return null;
+    const ranges = [];
+    let total = 0;
     for (const e of item.extents) {
         const begin = item.method === 0 ? item.base + e.offset : m.idat.start + m.idat.header + item.base + e.offset;
         const limit = item.method === 0 ? bytes.length : m.idat.end;
-        const end = e.length === 0 && item.method === 0 ? limit : begin + e.length;
+        const end = e.length === 0 ? limit : begin + e.length;
         if (begin < 0 || end > limit || end < begin) return null;
-        parts.push(bytes.subarray(begin, end));
+        total += end - begin;
+        if (total > bytes.length) return null;
+        ranges.push([begin, end]);
     }
+    return ranges;
+}
+
+// An item's bytes: its pieces, one after another; null if they aren't
+// where they can be (see itemRanges).
+function itemBytes(bytes, m, item) {
+    const ranges = itemRanges(bytes, m, item);
+    if (!ranges) return null;
+    const parts = ranges.map(([begin, end]) => bytes.subarray(begin, end));
     const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
     let at = 0;
     for (const p of parts) { out.set(p, at); at += p.length; }
@@ -240,15 +254,20 @@ export function heifReplaceExif(bytes, tiff) {
     if (old.length > 1) fail("This image has multiple EXIF blocks; editing them is not supported.");
     if (m.primary == null) fail("The HEIF file has no primary picture.");
     const out = bytes.slice();
-    // The old EXIF bytes cleared, so what was taken out isn't left in the file.
+    // The old EXIF bytes cleared, so what was taken out isn't left in the
+    // file: unless they're another item's too (or, not in idat, meta's), as
+    // clearing them would lose that.
     if (old.length) {
-        if (old[0].method === 1 && !m.idat) fail("The EXIF item's bytes are outside the file.");
-        for (const e of old[0].extents) {
-            const begin = old[0].method === 0 ? old[0].base + e.offset : m.idat.start + m.idat.header + old[0].base + e.offset;
-            const end = e.length === 0 ? (old[0].method === 0 ? bytes.length : m.idat.end) : begin + e.length;
-            if (begin < 0 || end > bytes.length || end < begin) fail("The EXIF item's bytes are outside the file.");
-            out.fill(0, begin, end);
+        const ranges = itemRanges(bytes, m, old[0]);
+        if (!ranges) fail("The EXIF item's bytes are outside the file.");
+        const overlaps = (a, b) => a[0] < b[1] && b[0] < a[1];
+        for (const other of m.loc.items) {
+            if (other.id === old[0].id) continue;
+            const theirs = itemRanges(bytes, m, other) ?? [];
+            if (ranges.some((r) => theirs.some((t) => overlaps(r, t)))) fail("This image's EXIF shares its bytes with another part of it; it can't be changed safely.");
         }
+        if (old[0].method === 0 && ranges.some((r) => overlaps(r, [m.meta.start, m.meta.end]))) fail("This image's EXIF shares its bytes with another part of it; it can't be changed safely.");
+        for (const [begin, end] of ranges) out.fill(0, begin, end);
     }
     const exifId = old[0]?.id ?? Math.max(0, ...m.loc.items.map((i) => i.id), ...m.types.keys()) + 1;
     const payload = new Uint8Array(4 + tiff.length);
@@ -320,12 +339,14 @@ export function heifReplaceExif(bytes, tiff) {
     result.set(meta, metaStart);
     result.set(out.subarray(oldMetaEnd), metaStart + meta.length);
     result.set(tail, total);
-    // Read back: the EXIF is what was written, and every other item's bytes are as they were.
+    // Read back: the EXIF is what was written, and every other item's bytes
+    // are as they were in the file as it was (not as cleared: so clearing
+    // that took any of theirs is found).
     if (!sameBytes(heifExif(result), tiff)) fail("The HEIF file couldn't be written back.");
     const after = readMeta(result);
     for (const i of m.loc.items) {
         if (i.id === exifId) continue;
-        const was = itemBytes(out, m, i), now = itemBytes(result, after, after.loc.items.find((j) => j.id === i.id));
+        const was = itemBytes(bytes, m, i), now = itemBytes(result, after, after.loc.items.find((j) => j.id === i.id));
         if (!was || !now || !sameBytes(was, now)) fail("A HEIF item would have moved wrongly.");
     }
     return result;

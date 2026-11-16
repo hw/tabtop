@@ -1,8 +1,8 @@
-import { login, passkeyLogin, passkeysUsable } from "./tunnel-protocol.js";
+import { login, passkeyLogin, passkeysUsable, remoteLogin } from "./tunnel-protocol.js";
 import { iconSVG } from "./glyphs.js";
 import { saveSession } from "./session-state.js";
 
-export function loginForm(title, cancellable = false) {
+export function loginForm(title, cancellable = false, { remote = true } = {}) {
     const box = document.createElement("div");
     Object.assign(box.style, {
         position: "fixed", inset: "0", zIndex: "1000", overflow: "auto", padding: "2rem 1rem",
@@ -52,7 +52,7 @@ export function loginForm(title, cancellable = false) {
 
     return new Promise((resolve) => {
         const attempt = new AbortController();
-        let cancelled = false;
+        let cancelled = false, remoteAttempt = null, remoteView = null;
         if (cancellable) {
             const cancel = document.createElement("button");
             Object.assign(cancel, { type: "button", textContent: "Cancel" });
@@ -60,6 +60,7 @@ export function loginForm(title, cancellable = false) {
             cancel.addEventListener("click", () => {
                 cancelled = true;
                 attempt.abort();
+                remoteAttempt?.abort(); remoteView?.stop();
                 box.remove();
                 resolve(null);
             });
@@ -106,13 +107,45 @@ export function loginForm(title, cancellable = false) {
             option.append(divider, passkey);
             form.insertBefore(option, note);
         }
+        const remoteButton = document.createElement("button");
+        Object.assign(remoteButton, { type: "button", className: "remote-login", textContent: "Approve on other device" });
+        look(remoteButton, false);
+        Object.assign(remoteButton.style, { display: "block", width: "100%", maxWidth: "26rem", minHeight: "3.5rem", padding: ".75rem 1rem", margin: "1rem 0", borderColor: "#6385b3", background: "#222e3d", fontWeight: "600", whiteSpace: "normal" });
+        if (remote) form.insertBefore(remoteButton, note);
+        const setBusy = busy => {
+            button.disabled = remoteButton.disabled = busy;
+            if (passkey) passkey.disabled = busy;
+        };
+        remoteButton.addEventListener("click", async () => {
+            if (cancelled || button.disabled) return;
+            setBusy(true); error.textContent = ""; remoteAttempt = new AbortController();
+            let pending;
+            try {
+                pending = await remoteLogin(undefined, { signal: remoteAttempt.signal, ready: async details => {
+                    const { remoteRequestView } = await import("./remote-auth-view.js");
+                    if (cancelled || remoteAttempt.signal.aborted) return;
+                    remoteView = remoteRequestView(details, () => remoteAttempt.abort());
+                    form.insertBefore(remoteView.node, note);
+                    remoteView.node.scrollIntoView?.({ block: "start" });
+                } });
+                if (cancelled) return;
+                const { ip, logins, ...session } = pending;
+                saveSession(session); box.remove(); showLoginSummary(ip, logins); resolve(session);
+            } catch (err) {
+                if (!cancelled && !remoteAttempt.signal.aborted) error.textContent = err.message;
+            } finally {
+                remoteView?.stop(); remoteView = null;
+                if (!cancelled) { setBusy(false); if (!pending) remoteButton.focus(); }
+                remoteAttempt = null;
+            }
+        });
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
             const withPasskey = usePasskey;
             usePasskey = false;
             input.required = true;
             if (cancelled || button.disabled) { return; }
-            button.disabled = true;
+            setBusy(true);
             if (passkey) { passkey.disabled = true; passkey.setAttribute("aria-busy", String(withPasskey)); }
             button.style.opacity = ".6";  // busy agreeing on keys
             error.textContent = "";
@@ -131,7 +164,7 @@ export function loginForm(title, cancellable = false) {
                 input.focus();
             } finally {
                 if (!cancelled) {
-                    button.disabled = false;
+                    setBusy(false);
                     if (passkey) { passkey.disabled = false; passkey.setAttribute("aria-busy", "false"); }
                     button.style.opacity = "";
                 }

@@ -154,7 +154,22 @@ type tunnelClient struct {
 	sendN, recvN uint64
 }
 
-func wsURL(srvURL string) string { return "ws" + strings.TrimPrefix(srvURL, "http") + "/tunnel" }
+func wsURL(srvURL string) string { return "ws" + strings.TrimPrefix(srvURL, "http") + "/session" }
+
+// TestTunnelPath: the tunnel is at /session, and nowhere else (not at
+// /tunnel, which said what it is).
+func TestTunnelPath(t *testing.T) {
+	_, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	if _, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/tunnel", nil); err == nil || resp == nil || resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("/tunnel still answers: %v", err)
+	}
+	c, _, err := websocket.Dial(ctx, wsURL(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("/session: %v", err)
+	}
+	c.CloseNow()
+}
 
 func dialWS(t *testing.T, ctx context.Context, url string) *websocket.Conn {
 	t.Helper()
@@ -599,10 +614,10 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/nope.js", http.StatusNotFound},
 		{"GET", "/tabtop/third-party/README.md", http.StatusNotFound},
 		{"GET", "/tabtop/third-party/css-tree.LICENSE", http.StatusOK},
-		{"GET", "/bootstrap", http.StatusOK},
-		{"POST", "/bootstrap", http.StatusMethodNotAllowed},
-		{"GET", "/bootstrap/pack", http.StatusOK},
-		{"POST", "/bootstrap/pack", http.StatusMethodNotAllowed},
+		{"GET", "/auth/bootstrap", http.StatusOK},
+		{"POST", "/auth/bootstrap", http.StatusMethodNotAllowed},
+		{"GET", "/auth/pack", http.StatusOK},
+		{"POST", "/auth/pack", http.StatusMethodNotAllowed},
 	} {
 		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader("password=123456"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -658,14 +673,14 @@ func TestEndpoints(t *testing.T) {
 				resp.Header.Get("Content-Security-Policy") != downloadSWCSP {
 				t.Errorf("download-sw.js served as %q, CSP %q", ct, resp.Header.Get("Content-Security-Policy"))
 			}
-		case "GET /bootstrap":
+		case "GET /auth/bootstrap":
 			if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 				t.Errorf("bootstrap Content-Type %q", ct)
 			}
-			if !strings.Contains(string(body), "Local decode") || !strings.HasPrefix(string(body), "<!DOCTYPE html>") {
+			if !strings.Contains(string(body), "TabTop Bootstrap") || !strings.HasPrefix(string(body), "<!DOCTYPE html>") {
 				t.Errorf("bootstrap body is not the decoder page (%d bytes)", len(body))
 			}
-		case "GET /bootstrap/pack":
+		case "GET /auth/pack":
 			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
 				t.Errorf("bootstrap pack Content-Type %q", ct)
 			}
@@ -981,7 +996,7 @@ func TestTunnelUnderBasePath(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/x/fs/#/a" {
 		t.Errorf("redirect to %q", loc)
 	}
-	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/x/tunnel"
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/x/session"
 	s, status := loginAt(t, ctx, url, code(0))
 	if status != 0 {
 		t.Fatalf("login under /x/: %d", status)
@@ -1017,7 +1032,7 @@ func TestTunnelInteropWithJS(t *testing.T) {
 		os.MkdirAll(filepath.Dir(to), 0o755)
 		os.WriteFile(to, data, 0o644)
 	}
-	for _, name := range []string{"tunnel.js", "tunnel-protocol.js", "tunnel-crypto.js", "session.js", "session-state.js", "stored.js", "login-ui.js"} {
+	for _, name := range []string{"tunnel.js", "tunnel-protocol.js", "tunnel-crypto.js", "session.js", "session-state.js", "stored.js", "login-ui.js", "glyphs.js"} {
 		copyFile(name, filepath.Join(dir, name))
 	}
 	copyFile("testdata/tunnel_interop.mjs", filepath.Join(dir, "interop.mjs"))

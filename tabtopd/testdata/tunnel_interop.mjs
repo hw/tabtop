@@ -11,7 +11,7 @@ if (typeof WebSocket === "undefined") {
     process.exit(3);
 }
 
-const { Tunnel, login, elligator2, cpaceGenerator, cpaceISK, cryptoBackend } = await import(new URL("./tunnel.js", import.meta.url));
+const { Tunnel, login, remoteLogin, elligator2, cpaceGenerator, cpaceISK, cryptoBackend } = await import(new URL("./tunnel.js", import.meta.url));
 const [url, credential, vectors, backend, refusing, cpaceVectors] = process.argv.slice(2);
 const crypto_ = await cryptoBackend({ useNoble: backend === "noble" });
 
@@ -39,7 +39,27 @@ for (const attempt of [() => login(credential, refusing), () => Tunnel.open({ ty
     refused.push(err?.constructor?.name === "TunnelError" ? "TunnelError" : String(err));
 }
 
-const session = await login(credential, url);
+// Exercise the actual browser cross-device protocol against the Go gateway.
+// The requesting connection begins before the approving device authenticates.
+let checkedRemoteCode = false;
+const session = await remoteLogin(url, { ready: async details => {
+    const link = new URL(details.url), params = new URLSearchParams(link.hash.slice(1));
+    if (!params.get("secret") || link.pathname !== "/auth/approve") throw new Error("invalid approval link");
+    const trusted = await login(credential, url);
+    const req = { remote_id: params.get("id"), remote_proof: params.get("proof") };
+    const info = await Tunnel.open({ type: "remote-auth-info", ...req }, trusted, url);
+    checkedRemoteCode = info.reply.code === details.code;
+    info.close();
+    if (!checkedRemoteCode) throw new Error("cross-device code mismatch");
+    const approval = await Tunnel.open({ type: "remote-auth-approve", ...req, remote_secret: params.get("secret") }, trusted, url);
+    approval.close();
+} });
+const abort = new AbortController();
+let remoteCancelled = false;
+try {
+    await remoteLogin(url, { signal: abort.signal, ready: () => abort.abort() });
+} catch { remoteCancelled = abort.signal.aborted; }
+if (!checkedRemoteCode || !remoteCancelled) throw new Error("remote login checks failed");
 const list = await Tunnel.open({ type: "list", path: "" }, session, url);
 list.close();
 

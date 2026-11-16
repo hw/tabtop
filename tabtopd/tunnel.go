@@ -1,9 +1,10 @@
 package main
 
 // The encrypted tunnel, which carries everything private: a WebSocket at
-// /tunnel whose messages are encrypted between the page's JavaScript
-// (tunnel.js) and tabtopd, so a proxy that terminates TLS in between, and
-// logs or inspects what passes through, sees neither logins nor content. It
+// /session (a name that doesn't say what it is) whose messages are
+// encrypted between the page's JavaScript (tunnel.js) and tabtopd, so a
+// proxy that terminates TLS in between, and logs or inspects what passes
+// through, sees neither logins nor content. It
 // doesn't stop a proxy that rewrites traffic: that one can serve different
 // JavaScript.
 //

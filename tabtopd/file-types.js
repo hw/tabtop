@@ -17,6 +17,10 @@ export const FILE_TYPES = Object.freeze({
     "kind": "image",
     "mime": "image/avif"
   },
+  "bgcode": {
+    "kind": "model",
+    "mime": "application/octet-stream"
+  },
   "bmp": {
     "epubPicture": true,
     "kind": "image",
@@ -29,6 +33,10 @@ export const FILE_TYPES = Object.freeze({
   "epub": {
     "kind": "epub",
     "mime": "application/epub+zip"
+  },
+  "fbx": {
+    "kind": "model",
+    "mime": "application/octet-stream"
   },
   "flac": {
     "kind": "audio",
@@ -46,6 +54,14 @@ export const FILE_TYPES = Object.freeze({
     "epubPicture": true,
     "kind": "image",
     "mime": "image/gif"
+  },
+  "glb": {
+    "kind": "model",
+    "mime": "model/gltf-binary"
+  },
+  "gltf": {
+    "kind": "model",
+    "mime": "model/gltf+json"
   },
   "heic": {
     "kind": "image",

@@ -1,17 +1,6 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
-<title>Local decode — audit this file</title>
-<!--
-  AUDIT SURFACE: this file, including the inlined noble PBKDF2+AES-GCM fallback
-  (for file:// where Chrome leaves crypto.subtle undefined). Intended use:
-    1) Save this decoder from <base>/bootstrap and the sealed pack from
-       <base>/bootstrap/pack (application/json).
-    2) Over a trusted channel, get: passcode + SHA-256 of decoder and/or pack.
-    3) Open this file (file:// is OK) , choose the pack JSON, enter the passcode.
-    4) Wrong/tampered pack => hard failure; nothing is run.
-
-  No fetch()/import() of network URLs (except optional same-document hash over http).
--->
+<title>TabTop Bootstrap</title>
 <style>
   body { font: 15px/1.45 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
   code, pre { font-family: ui-monospace, monospace; font-size: 13px; }
@@ -24,22 +13,20 @@
   #meta { color: #444; font-size: 0.95em; }
   iframe { width: 100%; height: 16rem; border: 1px solid #ccc; margin-top: 1rem; }
 </style>
-<h1>Local decode</h1>
-<p>This decoder has <strong>no client embedded</strong>. Download
-<code>&lt;base&gt;/bootstrap/pack</code>, verify hashes out of band, then unlock
-that JSON here. Works as <code>file://</code> (uses an inlined noble crypto
-fallback when WebCrypto is missing).</p>
+<h1>TabTop Bootstrap</h1>
+<p>Choose the sealed pack from <code>&lt;base&gt;/auth/pack</code>, enter the
+passcode from your trusted channel, then unlock.</p>
 
-<label for="packFile">Sealed pack file (<code>tabtop-client.pack.json</code>)</label>
+<label for="packFile">Sealed pack (<code>tabtop-client.pack.json</code>)</label>
 <input id="packFile" type="file" accept=".pack,.txt,.json,text/plain,application/json">
 <p id="meta" hidden></p>
 
-<label for="pass">Passcode (from trusted channel)</label>
+<label for="pass">Passcode</label>
 <input id="pass" type="password" autocomplete="off" spellcheck="false">
 <p>
   <button type="button" id="go">Unlock</button>
-  <button type="button" id="hashPage">Hash this page…</button>
-  <button type="button" id="hashPack">Hash pack file…</button>
+  <button type="button" id="hashAny">Hash file…</button>
+  <input id="hashFile" type="file" hidden>
 </p>
 <p id="err" hidden></p>
 <p id="ok" hidden></p>
@@ -50,14 +37,10 @@ fallback when WebCrypto is missing).</p>
 </p>
 <pre id="hashOut" hidden></pre>
 <iframe id="view" sandbox="allow-scripts" hidden title="Decrypted payload"></iframe>
-<!-- PACK_CRYPTO: @noble/ciphers AES-GCM + @noble/hashes PBKDF2 (MIT). Audit with the rest of this file. -->
 <script>
 /*PACK_CRYPTO_FALLBACK*/
 </script>
 <script type="module">
-// ----- BEGIN AUDIT: decoder logic; no remote loads -----
-const PACK = "/*PACK*/";
-
 let lastClient = null;
 
 function fail(msg) {
@@ -77,7 +60,6 @@ function clientFileBytes(body) {
   return new TextEncoder().encode(String(body ?? ""));
 }
 
-/** Uncompressed ZIP (store), so a file:// unlock can still expand into a folder. */
 function zipStore(entries) {
   const enc = new TextEncoder();
   const locals = [];
@@ -113,7 +95,7 @@ function zipStore(entries) {
     const local = new Uint8Array(30 + nameBytes.length + data.length);
     local.set([0x50, 0x4b, 0x03, 0x04], 0);
     local.set(u16(20), 4);
-    local.set(u16(0), 8); // method: store
+    local.set(u16(0), 8);
     local.set(u32(crc), 14);
     local.set(u32(data.length), 18);
     local.set(u32(data.length), 22);
@@ -214,7 +196,6 @@ function hasSubtle() {
   return !!(globalThis.isSecureContext && crypto?.subtle);
 }
 
-/** Decrypt with WebCrypto when available; else inlined noble (file://). */
 async function decryptPackBytes(pass, salt, iterations, iv, ct) {
   if (hasSubtle()) {
     const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
@@ -229,9 +210,8 @@ async function decryptPackBytes(pass, salt, iterations, iv, ct) {
   }
   const fallback = globalThis.TabTopPackCrypto;
   if (!fallback?.decryptPack) {
-    throw new Error("No WebCrypto and no inlined fallback. Re-download /bootstrap.");
+    throw new Error("No WebCrypto and no inlined fallback. Re-download /auth/bootstrap.");
   }
-  // Sync PBKDF2 (~1s for 210k iters); yields via await so the click handler can paint.
   await new Promise((r) => setTimeout(r, 0));
   return fallback.decryptPack(pass, salt, iterations, iv, ct);
 }
@@ -243,7 +223,7 @@ async function sha256Hex(buf) {
     return [...new Uint8Array(dig)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
   if (!globalThis.TabTopPackCrypto?.sha256Hex) {
-    throw new Error("SHA-256 unavailable (re-download /bootstrap).");
+    throw new Error("SHA-256 unavailable (re-download /auth/bootstrap).");
   }
   return TabTopPackCrypto.sha256Hex(bytes);
 }
@@ -270,14 +250,8 @@ function parsePackText(text) {
 
 async function loadPack() {
   const file = document.getElementById("packFile").files?.[0];
-  if (file) return parsePackText(await file.text());
-  if (PACK.includes("/*PACK") || PACK.length < 20) {
-    throw new Error(
-      "Choose the sealed pack JSON from <base>/bootstrap/pack " +
-      "(this page does not embed the full client).",
-    );
-  }
-  return parsePackText(PACK);
+  if (!file) throw new Error("Choose the sealed pack JSON from <base>/auth/pack.");
+  return parsePackText(await file.text());
 }
 
 async function unlock(pass) {
@@ -293,10 +267,7 @@ async function unlock(pass) {
     plain = await decryptPackBytes(pass, salt, pack.iter, iv, ct);
   } catch (e) {
     if (/unsupported state|OperationError|decrypt failed|aes/i.test(String(e.message || e))) {
-      throw new Error(
-        "Decrypt failed (wrong passcode or tampered/truncated pack). Nothing was run.\n" +
-        `Pack ciphertext is ${(ct.length / 1e6).toFixed(2)} MB; passcode is trimmed of surrounding spaces.`,
-      );
+      throw new Error("Decrypt failed (wrong passcode or tampered/truncated pack). Nothing was run.");
     }
     throw e;
   }
@@ -310,7 +281,7 @@ function clientSummaryHTML(client, note) {
 <body style="font:15px/1.45 system-ui;max-width:40rem;margin:2rem auto;padding:0 1rem">
 <h1>TabTop client unlocked</h1>
 <p><code>${client.format}</code> · <strong>${client.name || "client"}</strong> · ${n} files</p>
-<p>Open <code>${entry}</code> (not <code>vnc.html</code> — Chrome blocks modules on file://).</p>
+<p>Open <code>${entry}</code>.</p>
 <p>${note || "Use the save buttons above the frame."}</p>
 </body>`;
 }
@@ -318,7 +289,7 @@ function clientSummaryHTML(client, note) {
 function saveLocalHTML(client) {
   const html = client.files["tabtop-local.html"];
   if (typeof html !== "string" || !html) {
-    throw new Error("This pack has no tabtop-local.html; re-download /bootstrap/pack after the server rebuilds.");
+    throw new Error("This pack has no tabtop-local.html; re-download /auth/pack after the server rebuilds.");
   }
   downloadBlob("tabtop-local.html", new Blob([html], { type: "text/html; charset=utf-8" }));
 }
@@ -332,20 +303,18 @@ function syncPackMeta() {
     return;
   }
   meta.hidden = false;
-  const mode = hasSubtle() ? "WebCrypto" : "noble fallback (file://)";
-  meta.textContent = `Selected: ${file.name} (${(file.size / 1e6).toFixed(2)} MB). Crypto: ${mode}.`;
+  meta.textContent = `Selected: ${file.name} (${(file.size / 1e6).toFixed(2)} MB)`;
 }
 
 document.getElementById("packFile").addEventListener("change", syncPackMeta);
 syncPackMeta();
 
 async function expandUnlockedClient(client) {
-  // file://: prefer the single-file launcher (Chrome blocks ES modules across files).
   if (location.protocol === "file:" || typeof showDirectoryPicker !== "function" || !globalThis.isSecureContext) {
     saveLocalHTML(client);
     return {
       how: "local-html",
-      detail: "Saved tabtop-local.html — open that file (not vnc.html).",
+      detail: "Saved tabtop-local.html — open that file.",
     };
   }
   try {
@@ -357,7 +326,7 @@ async function expandUnlockedClient(client) {
   } catch (e) {
     if (e && e.name === "AbortError") throw e;
     saveLocalHTML(client);
-    return { how: "local-html", detail: "Saved tabtop-local.html — open that file (not vnc.html)." };
+    return { how: "local-html", detail: "Saved tabtop-local.html — open that file." };
   }
 }
 
@@ -365,7 +334,7 @@ document.getElementById("saveLocal").onclick = () => {
   if (!lastClient) return;
   try {
     saveLocalHTML(lastClient);
-    document.getElementById("ok").textContent = "Saved tabtop-local.html — open that file (not vnc.html).";
+    document.getElementById("ok").textContent = "Saved tabtop-local.html — open that file.";
   } catch (e) {
     fail(String(e.message || e));
   }
@@ -387,7 +356,7 @@ document.getElementById("saveZip").onclick = () => {
   if (!lastClient) return;
   const zipName = saveClientZip(lastClient);
   document.getElementById("ok").textContent =
-    `Saved ${zipName}. Unzip it, then open tabtop-local.html (not vnc.html).`;
+    `Saved ${zipName}. Unzip it, then open tabtop-local.html.`;
 };
 
 document.getElementById("go").onclick = async () => {
@@ -413,12 +382,12 @@ document.getElementById("go").onclick = async () => {
     if (client) {
       lastClient = client;
       document.getElementById("saveWrap").hidden = false;
-      let note = "Use Save to folder… or Download ZIP…";
+      let note = "Use the save buttons above.";
       try {
         note = (await expandUnlockedClient(client)).detail;
       } catch (e) {
         if (!(e && e.name === "AbortError")) throw e;
-        note = "Save cancelled — use Save to folder… or Download ZIP…";
+        note = "Save cancelled — use the save buttons above.";
       }
       show = clientSummaryHTML(client, note);
       ok.textContent = `Unlocked. ${note}`;
@@ -435,66 +404,31 @@ document.getElementById("go").onclick = async () => {
   }
 };
 
-async function hashBytes(label, buf) {
+async function hashChosenFile(file) {
   const out = document.getElementById("hashOut");
-  const hex = await sha256Hex(buf);
   out.hidden = false;
-  out.textContent = `SHA-256 (${label}):\n${hex}\n\nCompare to the decoder hash from your trusted channel.`;
-}
-
-document.getElementById("hashPage").onclick = async () => {
-  const out = document.getElementById("hashOut");
-  try {
-    // file:// cannot fetch itself; pick the saved file so the digest matches sha256sum.
-    if (location.protocol === "file:") {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = ".html,.htm,.txt,text/html,text/plain";
-      input.onchange = async () => {
-        try {
-          const file = input.files?.[0];
-          if (!file) return;
-          await hashBytes(file.name, await file.arrayBuffer());
-        } catch (e) {
-          out.hidden = false;
-          out.textContent = `Could not hash file: ${e.message}`;
-        }
-      };
-      out.hidden = false;
-      out.textContent = "Choose the saved decoder HTML (the file you opened) to hash it…";
-      input.click();
-      return;
-    }
-    const res = await fetch(location.href, { cache: "no-store" });
-    if (!res.ok) throw new Error(String(res.status));
-    await hashBytes("this page's body", await res.arrayBuffer());
-  } catch (e) {
-    out.hidden = false;
-    out.textContent = `Hash failed (${e.message}). On disk run:\n  sha256sum <saved-bootstrap.html>`;
-  }
-};
-
-document.getElementById("hashPack").onclick = async () => {
-  const out = document.getElementById("hashOut");
-  const file = document.getElementById("packFile").files?.[0];
-  if (!file) {
-    out.hidden = false;
-    out.textContent = "Choose the sealed pack file first, then hash it.";
-    return;
-  }
+  out.textContent = `Hashing ${file.name}…`;
   try {
     const hex = await sha256Hex(await file.arrayBuffer());
-    out.hidden = false;
-    out.textContent = `SHA-256 (${file.name}):\n${hex}\n\nCompare to the pack hash from your trusted channel.`;
+    out.textContent = `SHA-256 (${file.name}):\n${hex}`;
   } catch (e) {
-    out.hidden = false;
-    out.textContent = `Could not hash pack file: ${e.message}`;
+    out.textContent = `Could not hash ${file.name}: ${e.message || e}`;
   }
+}
+
+document.getElementById("hashAny").onclick = () => {
+  document.getElementById("hashFile").click();
 };
+
+document.getElementById("hashFile").addEventListener("change", async () => {
+  const input = document.getElementById("hashFile");
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  await hashChosenFile(file);
+});
 
 document.getElementById("pass").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("go").click();
 });
-// ----- END AUDIT -----
 </script>
-<!-- EMBEDDED PACK: opaque ciphertext; do not "audit" it — verify file hash instead. -->

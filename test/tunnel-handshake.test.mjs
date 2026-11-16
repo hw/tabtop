@@ -64,7 +64,7 @@ for (const stage of ["scalarMult", "sha256", "hkdf"]) {
             globalThis.derivationStage = async (current) => {
                 if (current === stage) { socket.end(event); }
             };
-            await assert.rejects(Tunnel.open({ type: "list" }, session, "ws://tabtop.test/tunnel"), (err) => {
+            await assert.rejects(Tunnel.open({ type: "list" }, session, "ws://tabtop.test/session"), (err) => {
                 assert.ok(err instanceof TunnelError);
                 assert.equal(err.login, event.code === 4001);
                 assert.equal(err.lost, event.code === 1006);
@@ -79,7 +79,7 @@ test("a close after handler transfer still settles a waiting reader once", { tim
     const t = new Tunnel();
     let closes = 0;
     t.onclose = () => closes++;
-    await t._connect("ws://tabtop.test/tunnel", session);
+    await t._connect("ws://tabtop.test/session", session);
     const waiting = t.next();
     socket.end({ code: 1006, reason: "" });
     socket.end({ code: 1006, reason: "" });
@@ -92,14 +92,14 @@ test("a cancelled login closes its pending exchange", { timeout: 1000 }, async (
     const abort = new AbortController();
     holdHandshake = true;
     onSend = () => abort.abort();
-    await assert.rejects(login("credential", "ws://tabtop.test/tunnel", { signal: abort.signal }));
+    await assert.rejects(login("credential", "ws://tabtop.test/session", { signal: abort.signal }));
     assert.equal(socket.readyState, 3);
 });
 
 test("cancelling during login key generation never opens a socket", async () => {
     const abort = new AbortController();
     globalThis.derivationStage = async () => abort.abort();
-    await assert.rejects(login("credential", "ws://tabtop.test/tunnel", { signal: abort.signal }), { name: "AbortError" });
+    await assert.rejects(login("credential", "ws://tabtop.test/session", { signal: abort.signal }), { name: "AbortError" });
     assert.equal(socket, null);
 });
 

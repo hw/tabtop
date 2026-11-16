@@ -241,6 +241,18 @@ test("unknown previews explicitly select text or hex, enforce limits and close t
     assert.equal(asText.file.kind, "text");
     assert.equal(asText.file.truncated, true);
     assert.equal(requests.at(-1).length, unknownTextSize);
+    // An FBX: text (ASCII) or not, by its bytes; as text, its first part.
+    content = new TextEncoder().encode("; FBX 7.5.0 project file\n");
+    size = content.length;
+    assert.equal((await env.loadPreview("folder", "a.fbx")).file.textFBX, true);
+    content = new TextEncoder().encode("Kaydara FBX Binary  \0\x1a\0");
+    size = content.length;
+    assert.equal((await env.loadPreview("folder", "b.fbx")).file.textFBX, false);
+    content = new TextEncoder().encode("; FBX 7.5.0 project file\n");
+    size = limits.model;
+    const fbxText = await env.loadPreview("folder", "a.fbx", { mode: "text" });
+    assert.deepEqual([fbxText.file.kind, fbxText.file.truncated, fbxText.file.textFBX], ["text", true, true]);
+    assert.equal(requests.at(-1).length, unknownTextSize);
     // Too big to draw: G-code as text, an STL as its bytes; neither offered drawn.
     size = limits.model + 1;
     const bigGCode = await env.loadPreview("folder", "part.gcode");
@@ -1487,7 +1499,7 @@ test("a program's code is read at its addresses and written at its offsets, with
         await settle();
         assert.deepEqual(read, [[0, 1, 2, 3], 64]);
         assert.equal(tabGroup.children[2].hidden, false);
-        assert.equal(tabGroup.children[2].textContent, "Program");
+        assert.equal(tabGroup.children[2].textContent, "Structure");
         // Its instruction set, chosen for it; not remembered as a choice.
         assert.equal(mode.value, "arm64");
         assert.equal(programAt.textContent, "ELF 64-bit ARM64 executable");
@@ -1538,7 +1550,7 @@ test("a program's code is read at its addresses and written at its offsets, with
         await view.jump(34);
         assert.equal(programAt.textContent, ".data · address 0x403002 · table+0x2");
 
-        // The Program tab: what it is, its sections and its symbols, each a way there.
+        // The Structure tab: what it is, its sections and its symbols, each a way there.
         tabGroup.children[2].listeners.click();
         assert.equal(inspector.dataset.tab, "program");
         assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "x86-64" });
@@ -1835,7 +1847,7 @@ test("a file that isn't a program, or one that can't be read as one, is shown as
         fail(new Error("offline"));
         await new Promise((r) => setTimeout(r, 20));
         assert.equal(said.length, 0);
-        // Another of a universal file's programs that can't be read: said in the Program tab, and the one shown stays.
+        // Another of a universal file's programs that can't be read: said in the Structure tab, and the one shown stays.
         const slices = [{ machine: "x86-64", offset: 0, size: 32 }, { machine: "ARM64", offset: 32, size: 32 }];
         const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { demangle: null, disassemble: async () => [],
             executable: async (get, size, { slice }) => { if (slice) throw new Error("offline"); return { ...programInfo(), slices, slice: 0 }; } });

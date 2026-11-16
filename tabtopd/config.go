@@ -11,6 +11,7 @@ import (
 // serverConfig contains settings fixed before serving. Runtime services and
 // mutable state belong to server, rather than the flag parser.
 type serverConfig struct {
+	remoteApprovalURL                     string
 	vncOff, fsOff                         bool
 	base                                  string
 	novncDir                              string
@@ -54,6 +55,9 @@ func defaultServerConfig() serverConfig {
 }
 
 func newServer(c serverConfig) (*server, error) {
+	if c.remoteApprovalURL != "" && !validApprovalURL(c.remoteApprovalURL) {
+		return nil, fmt.Errorf("-remote-approval-url must be an HTTPS URL without credentials, query or fragment (HTTP is allowed only on localhost)")
+	}
 	if c.usersFile == "" || !c.fsOff && c.downloadsDir == "" && c.fsRoots == "" || c.nobleDir == "" {
 		return nil, fmt.Errorf("-users-file and -noble-dir are required, and -downloads-dir or -fs-roots (WEB_FS_ROOTS) unless files are off")
 	}

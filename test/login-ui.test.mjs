@@ -5,7 +5,7 @@ import { registerHooks } from "node:module";
 const target = new URL("../tabtopd/login-ui.js", import.meta.url).href;
 const hooks = registerHooks({ resolve(specifier, context, next) {
     if (context.parentURL === target && specifier === "./tunnel-protocol.js") {
-        return { shortCircuit: true, url: "data:text/javascript,export const login=(...args)=>globalThis.tryLogin(...args);export const passkeyLogin=()=>{throw new Error(\"no passkeys\");};export const passkeysUsable=()=>false;" };
+        return { shortCircuit: true, url: "data:text/javascript,export const login=(...args)=>globalThis.tryLogin(...args);export const passkeyLogin=()=>{throw new Error(\"no passkeys\");};export const passkeysUsable=()=>false;export const remoteLogin=(...args)=>globalThis.tryRemoteLogin(...args);" };
     }
     if (context.parentURL === target && specifier === "./session-state.js") {
         return { shortCircuit: true, url: "data:text/javascript,export const saveSession=s=>globalThis.savedSessions.push(s);" };
@@ -19,7 +19,7 @@ let nodes, pending, signal;
 beforeEach(() => {
     nodes = [];
     const make = (tag) => {
-        const n = { tag, style: {}, listeners: {}, append() {}, focus() {}, remove() { this.removed = true; },
+        const n = { tag, style: {}, listeners: {}, append() {}, insertBefore() {}, focus() {}, remove() { this.removed = true; },
             setAttribute() {}, addEventListener(type, fn) { this.listeners[type] = fn; } };
         nodes.push(n);
         return n;
@@ -65,4 +65,34 @@ test("a completed renewal still stores and returns its new session", async () =>
     await submitting;
     assert.deepEqual(await result, { id: "new", secret: "secret" });
     assert.deepEqual(savedSessions, [{ id: "new", secret: "secret" }]);
+});
+
+
+test("remote login aborts on cancellation and never saves a late result", async () => {
+    globalThis.tryRemoteLogin = (url, options) => { signal = options.signal; return pending.promise; };
+    const result = loginForm("Log in", true);
+    const clicking = nodes.find(n => n.className === "remote-login").listeners.click();
+    assert.equal(nodes.find(n => n.tag === "button" && n.textContent === "Log in").disabled, true);
+    nodes.find(n => n.textContent === "Cancel").listeners.click();
+    assert.equal(signal.aborted, true);
+    pending.resolve(success);
+    await clicking;
+    assert.equal(await result, null);
+    assert.deepEqual(savedSessions, []);
+});
+
+test("remote login stores its independent session and restores controls after failure", async () => {
+    globalThis.tryRemoteLogin = () => pending.promise;
+    const result = loginForm("Sign in");
+    const button = nodes.find(n => n.className === "remote-login");
+    const failed = button.listeners.click();
+    pending.reject(new Error("Login denied"));
+    await failed;
+    assert.equal(button.disabled, false);
+    assert.ok(nodes.some(n => n.textContent === "Login denied"));
+    pending = Promise.withResolvers();
+    const retry = button.listeners.click();
+    pending.resolve(success);
+    await retry;
+    assert.deepEqual(await result, { id: "new", secret: "secret" });
 });

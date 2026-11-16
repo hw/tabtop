@@ -31,7 +31,7 @@ import (
 var bootstrapPage string
 
 // bootstrapClientJSON is the plaintext tabtop-client/v1 tree. tabtopd seals it
-// each calendar day (server TZ) with a fresh passcode for /bootstrap/pack.
+// each calendar day (server TZ) with a fresh passcode for /auth/pack.
 // Built by scripts/bootstrap/build-full-client.mjs.
 //
 //go:embed bootstrap.client.json
@@ -39,7 +39,7 @@ var bootstrapClientJSON []byte
 
 const bootstrapPBKDF2Iter = 210000
 
-// bootstrapDecoderSHA256 is the SHA-256 of /bootstrap (the decoder HTML), for
+// bootstrapDecoderSHA256 is the SHA-256 of /auth/bootstrap (the decoder HTML), for
 // out-of-band comparison after download.
 func bootstrapDecoderSHA256() string {
 	sum := sha256.Sum256([]byte(bootstrapPage))
@@ -66,7 +66,7 @@ func (g *server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	// Public on purpose: the pack is sealed; authenticity is the OOB hash + passcode.
 	h.Set("Access-Control-Allow-Origin", "*")
 	switch r.URL.Path {
-	case "/bootstrap", "/bootstrap/pack":
+	case "/auth/bootstrap", "/auth/pack":
 	default:
 		http.NotFound(w, r)
 		return
@@ -84,7 +84,7 @@ func (g *server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	body := bootstrapPage
 	ct := "text/plain; charset=utf-8"
-	if r.URL.Path == "/bootstrap/pack" {
+	if r.URL.Path == "/auth/pack" {
 		pack, _, err := g.ensureBootstrapPack()
 		if err != nil {
 			log.Printf("bootstrap pack: %v", err)

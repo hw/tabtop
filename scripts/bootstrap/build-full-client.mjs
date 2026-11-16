@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Assemble the TabTop desktop (+ tunnel) local client as plaintext JSON for
 // tabtopd to embed (bootstrap.client.json). tabtopd reseals it daily with a
-// fresh passcode for /bootstrap/pack.
+// fresh passcode for /auth/pack.
 //
 //   node scripts/bootstrap/build-full-client.mjs
 //   node scripts/bootstrap/build-full-client.mjs --pass 'OOB_PASS' --out tabtopd/bootstrap.pack.json
@@ -69,7 +69,8 @@ const desktopFiles = [
 	"media-source.js", "stream-worker.js",
 	"download.js", "download-sw.js",
 	"tunnel.js", "tunnel-crypto.js", "tunnel-protocol.js",
-	"session.js", "session-state.js", "login-ui.js",
+	"session.js", "session-state.js", "stored.js", "login-ui.js", "glyphs.js", "preview-dom.js",
+	"remote-auth-view.js", "third-party/qrcodegen.js",
 	"reconnect.js", "expiry.js", "requests.js",
 ];
 
@@ -225,6 +226,7 @@ mkdirSync(join(stage, "tabtop"), { recursive: true });
 for (const f of desktopFiles) {
 	const src = join(tabtopd, f);
 	if (!existsSync(src)) throw new Error(`missing ${src}`);
+	mkdirSync(dirname(join(stage, "tabtop", f)), { recursive: true });
 	writeFileSync(join(stage, "tabtop", f), readFileSync(src));
 }
 copyTree(nobleDir, join(stage, "tabtop", "noble"));

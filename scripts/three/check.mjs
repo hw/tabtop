@@ -1,8 +1,9 @@
 // Checks a folder vendor.sh made: every file in it loads as the page loads
 // it (by its relative imports alone), and the loaders the 3D preview uses
 // parse a small model of each kind, ASCII and binary, to the triangles it
-// has. (AMF is XML, which its loader reads with DOMParser: only loaded
-// here, as Node hasn't it.)
+// has; glTF's and MTL's too. (AMF is XML, which its loader reads with
+// DOMParser; FBX's makes its textures in the page: only loaded here, as
+// Node hasn't those.)
 //
 // Usage: node scripts/three/check.mjs <folder>
 import { readdirSync } from "node:fs";
@@ -53,3 +54,29 @@ ply.set(head);
 ply.set(new Uint8Array(body.buffer), head.length);
 expect("binary PLY triangles", triangles(new PLYLoader().parse(ply.buffer)), 4);
 expect("one three.js", new THREE.Mesh().isMesh, true);
+
+// A glTF: one triangle, its data in a data: URL. (Browsers' ProgressEvent,
+// which three.js's file loader reports with, as Node hasn't it.)
+globalThis.ProgressEvent ??= class extends Event {
+    constructor(type, init = {}) { super(type); Object.assign(this, init); }
+};
+const { GLTFLoader } = await load("GLTFLoader.js");
+const tri = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+const gltf = {
+    asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] }],
+    bufferViews: [{ buffer: 0, byteLength: 36 }],
+    buffers: [{ byteLength: 36, uri: `data:application/octet-stream;base64,${Buffer.from(tri.buffer).toString("base64")}` }],
+};
+const scene = (await new GLTFLoader().parseAsync(JSON.stringify(gltf), "")).scene;
+let gltfTriangles = 0;
+scene.traverse((o) => { if (o.isMesh) gltfTriangles += triangles(o.geometry); });
+expect("glTF triangles", gltfTriangles, 1);
+// An MTL: its colour.
+const { MTLLoader } = await load("MTLLoader.js");
+const red = new MTLLoader().parse("newmtl red\nKd 1 0 0\n", "").create("red");
+expect("MTL colour", red.color.getHexString(), "ff0000");
+await load("FBXLoader.js");
+await load("TGALoader.js");
+await load("RoomEnvironment.js");

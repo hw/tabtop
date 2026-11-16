@@ -285,7 +285,7 @@ export function preview(dir, files, index, download, opts = {}) {
     });
     // modelAlternative is how a 3D model, by its name, is shown other than
     // drawn: as text (G-code, OBJ) or its bytes; null if it isn't one.
-    const modelAlternative = () => (current && typeOf(current.name)?.kind === "model" ? (textModel(current.name) ? "text" : "hex") : null);
+    const modelAlternative = () => (current && typeOf(current.name)?.kind === "model" ? (textModel(current.name) || current.textFBX ? "text" : "hex") : null);
     // shownAsModel reports whether what's shown is a model, drawn or the
     // other way: so the toggle goes between the two (not back to a drawing
     // it can't be: too big, or a .obj that's a compiler's).

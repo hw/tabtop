@@ -112,8 +112,9 @@ async function loadAs(dir, name, { signal, progress, mode }) {
         : mode === "sqlite" ? sqliteType : typeOf(name) ?? (mode === "auto" ? { kind: "text", type: "text/plain" } : null);
     if (!type || !Object.hasOwn(loaders, type.kind)) throw new Error("this file isn't supported for preview");
     const unknown = !typeOf(name);
-    // (A model that's text, as text: its first part, as an unknown file's.)
-    const prefix = mode === "hex" || unknown && ["auto", "text"].includes(mode) || mode === "text" && textModel(name);
+    // (A model that's text, as text: its first part, as an unknown file's;
+    // an FBX may be text too, ASCII.)
+    const prefix = mode === "hex" || unknown && ["auto", "text"].includes(mode) || mode === "text" && (textModel(name) || /\.fbx$/i.test(name));
     const first = mode === "text" ? UNKNOWN_FIRST : binaryChunkSize;
     const path = join(dir, name);
     let file;
@@ -158,6 +159,11 @@ async function loadAs(dir, name, { signal, progress, mode }) {
     }
     // A model too big to draw is shown only some other way.
     if (typeOf(name)?.kind === "model" && file.size > limits.model) file.modelUnavailable = true;
+    // An FBX that's text (ASCII), not binary: it can be read as text too.
+    if (blob && /\.fbx$/i.test(name)) {
+        const head = new Uint8Array(await blob.slice(0, 8000).arrayBuffer());
+        file.textFBX = !new TextDecoder("latin1").decode(head.subarray(0, 18)).startsWith("Kaydara FBX Binary") && !head.includes(0);
+    }
     if (mode === "auto" && unknown && file.kind === "text" && file.previewSize < Math.min(file.size, UNKNOWN_FIRST)) {
         const head = blob, begin = file.previewSize, end = Math.min(file.size, UNKNOWN_FIRST);
         const tail = await open({ type: "file", offset: begin, length: end - begin, if_mtime: file.mtime, if_size: file.size },

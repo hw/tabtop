@@ -1,6 +1,13 @@
-// The 3D preview: models for 3D printing (STL, OBJ, 3MF, AMF, PLY) and
-// G-code, drawn with three.js, turned with the mouse (drag to orbit,
-// right-drag or Shift-drag to pan, the wheel to zoom).
+// The 3D preview: models for 3D printing (STL, OBJ, 3MF, AMF, PLY),
+// G-code, and scenes (glTF, FBX), drawn with three.js, turned with the
+// mouse (drag to orbit, right-drag or Shift-drag to pan, the wheel to zoom).
+//
+// glTF's, FBX's and OBJ's materials and textures are shown: the files they
+// refer to (glTF's buffers and pictures, an OBJ's .mtl and its textures,
+// an FBX's textures) read from beside them (see model-resources.js).
+// glTF and FBX are read on the page, as their loaders need it (an FBX, so,
+// only up to MAX_FBX); an OBJ's shapes in the worker, its materials on the
+// page.
 //
 // Models are read in a worker (model-worker.js), so a big one doesn't
 // freeze the page: STL, OBJ and PLY by three.js's loaders, 3MF by
@@ -15,20 +22,17 @@
 // preview says it isn't available.
 import { el } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
-import { featureCategory } from "./gcode.js";
-import { meshFacts, combine, describeMesh, describeGCode, zipTooBig } from "./model-info.js";
+import { meshFacts, combine, describeMesh, missingText, sizeText, zipTooBig, meshCheck, meshCheckText, combineChecks } from "./model-info.js";
+import { gcodeContent } from "./model-gcode.js";
+import { lookTools } from "./model-looks.js";
+import { fetchResources, gltfReferences, glbJSON, UNSUPPORTED, BLANK, fbxText, fbxTextVersion } from "./model-resources.js";
 
-// The kinds G-code's moves are, as drawn: names and colours.
-export const CATEGORIES = {
-    "outer-wall": ["Outer wall", 0xf28e2b], "inner-wall": ["Inner wall", 0xedc948], infill: ["Infill", 0xe15759],
-    "solid-infill": ["Solid infill", 0xb07aa1], "top-bottom": ["Top/bottom", 0xff9da7], bridge: ["Bridge/overhang", 0x76b7b2],
-    support: ["Support", 0x59a14f], skirt: ["Skirt/brim", 0x9c755f], other: ["Other", 0x4e79a7],
-};
 const MODEL = 0x8fa8c8;          // a model's colour, where it hasn't its own
-const FORMATS = { stl: "STL", obj: "OBJ", "3mf": "3MF", amf: "AMF", ply: "PLY", gcode: "G-code", gco: "G-code" };
-// Those most often made with Y up (scans, and models from 3D software);
-// the rest, for printing, have Z up.
-const Y_UP = new Set(["obj", "ply"]);
+const FORMATS = { stl: "STL", obj: "OBJ", "3mf": "3MF", amf: "AMF", ply: "PLY", gcode: "G-code", gco: "G-code",
+    gltf: "glTF", glb: "glTF", fbx: "FBX", bgcode: "Binary G-code" };
+// Those most often made with Y up (scans, and models from 3D software;
+// glTF's is, always); the rest, for printing, have Z up.
+const Y_UP = new Set(["obj", "ply", "gltf", "glb", "fbx"]);
 
 // modelFormat is the format a file named name is shown as, by its
 // extension ("stl", "gcode"…), or "" if it isn't one.
@@ -39,10 +43,12 @@ export function modelFormat(name) {
 
 const failed = (message) => el("p", { className: "error", textContent: message });
 
-// modelView shows the model in blob, the file file; it resolves to the
-// view (with .stop), or to a note that it can't be shown. Aborting signal
-// stops reading it.
-export async function modelView({ file, blob, signal = null }) {
+// modelView shows the model in blob, the file file ({dir, name}); it
+// resolves to the view (with .stop), or to a note that it can't be shown.
+// Aborting signal stops reading it. read(path, signal) reads a file it
+// refers to (see model-resources.js; model-read.js's, from the server, if
+// not given).
+export async function modelView({ file, blob, signal = null, read = null }) {
     const format = modelFormat(file.name);
     let THREE, OrbitControls;
     try {
@@ -52,13 +58,33 @@ export async function modelView({ file, blob, signal = null }) {
         return failed("3D previews aren't available on this server: three.js isn't installed.");
     }
     const worker = { current: null, signal };
+    read ??= async (path, s) => (await import("./model-read.js")).readResource(path, s);
+    // changed.redraw: once there's a view, what draws it again (as a model's
+    // textures come in). near: folders beside it its textures may be in.
+    const base = file.name.replace(/\.[^.]*$/, "");
+    const around = { THREE, dir: file.dir ?? "", read, signal, changed: {}, near: [`${base}.fbm`, "textures", "Textures", "texture", "maps"] };
     let content;
     try {
         if (format === "amf") {
             content = await amfContent(THREE, blob);
+        } else if (format === "gltf" || format === "glb") {
+            content = await gltfContent(around, format, blob);
+        } else if (format === "fbx") {
+            content = await fbxContent(around, blob);
         } else {
             const reply = await fromWorker(format, blob, worker, file.name);
-            content = reply.gcode ? gcodeContent(THREE, reply.gcode) : partsContent(THREE, reply);
+            if (reply.gcode) {
+                content = gcodeContent(THREE, reply.gcode);
+            } else {
+                const names = new Set(reply.parts.flatMap((p) => p.materials ?? []));
+                const materials = reply.libraries?.length ? await objMaterials(around, reply.libraries, names) : null;
+                try {
+                    content = partsContent(THREE, reply, materials);
+                } catch (err) {
+                    materials?.release();
+                    throw err;
+                }
+            }
             // (A sliced 3MF's plate, drawn as its G-code.)
             if (reply.gcode && format === "3mf") content.label = "Sliced 3MF";
         }
@@ -78,10 +104,21 @@ export async function modelView({ file, blob, signal = null }) {
         renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     } catch {
         dispose(content.object);
+        content.revoke?.();
         return failed("This browser can't draw 3D: WebGL isn't available.");
     }
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     renderer.setClearColor(0x000000, 0);
+    // A scene's materials (glTF's: physically based) reflect a room, and
+    // are toned as glTF viewers do.
+    let environment = null;
+    if (content.environment) {
+        const { RoomEnvironment } = await import("./three/RoomEnvironment.js");
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        environment = pmrem.fromScene(new RoomEnvironment(), 0.04);
+        pmrem.dispose();
+        renderer.toneMapping = THREE.NeutralToneMapping;
+    }
 
     // The model, in a group turned so its up is the scene's (Y).
     const scene = new THREE.Scene();
@@ -89,9 +126,10 @@ export async function modelView({ file, blob, signal = null }) {
     centred.add(content.object);
     turned.add(centred);
     scene.add(turned);
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x606070, 2.2));
+    if (environment) scene.environment = environment.texture;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x606070, environment ? 0.4 : 2.2));
     const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
-    const lamp = new THREE.DirectionalLight(0xffffff, 1.6);
+    const lamp = new THREE.DirectionalLight(0xffffff, environment ? 1 : 1.6);
     lamp.position.set(1, 2, 3);
     camera.add(lamp);
     scene.add(camera);
@@ -116,6 +154,7 @@ export async function modelView({ file, blob, signal = null }) {
         }
     };
     controls.addEventListener("change", redraw);
+    around.changed.redraw = redraw;
     const resize = () => {
         const w = stage.clientWidth || 1, h = stage.clientHeight || 1;
         renderer.setSize(w, h, false);
@@ -129,6 +168,7 @@ export async function modelView({ file, blob, signal = null }) {
     // place sets which way is up, puts the model on the plate (a grid
     // under it, in 10 mm squares), centred, and the camera to see it all.
     let zUp = !Y_UP.has(format);
+    let looks = null;
     const box = new THREE.Box3();
     const place = () => {
         turned.rotation.set(zUp ? -Math.PI / 2 : 0, 0, 0);
@@ -144,13 +184,18 @@ export async function modelView({ file, blob, signal = null }) {
         turned.updateMatrixWorld(true);
         box.setFromObject(content.measure ?? centred);
         if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+        // A print's plate in 10 mm squares; a scene's (in its own units)
+        // in squares a power of ten, some tens of them across.
         const size = box.getSize(new THREE.Vector3());
-        const side = Math.max(10, Math.ceil(Math.max(size.x, size.z) * 1.4 / 10) * 10);
-        grid = new THREE.GridHelper(side, Math.min(200, side / 10), 0x888888, 0x888888);
+        const span = Math.max(size.x, size.z, 1e-6) * 1.4;
+        const square = content.scene ? 10 ** Math.floor(Math.log10(span / 10)) : 10;
+        const squares = Math.max(1, Math.min(200, Math.ceil(span / square)));
+        grid = new THREE.GridHelper(squares * square, squares, 0x888888, 0x888888);
         grid.material.transparent = true;
         grid.material.opacity = 0.35;
         grid.position.y = box.min.y;
         scene.add(grid);
+        looks?.placed(box);
         fit();
     };
     const fit = () => {
@@ -174,29 +219,36 @@ export async function modelView({ file, blob, signal = null }) {
         b.addEventListener("click", onClick);
         return b;
     };
-    const toggle = (label, title, on, onChange) => {
+    const toggle = (label, title, on, onChange, icon = "") => {
         const b = button(label, title, () => {
             on = !on;
             b.setAttribute("aria-pressed", String(on));
             onChange.call(b, on);
             redraw();
-        });
+        }, icon);
         b.setAttribute("aria-pressed", String(on));
         return b;
     };
-    const tools = [button("", "Fit it in the window (0)", fit, "fit-page"),
-        toggle(zUp ? "Z up" : "Y up", "Which way is up: Z (as printers have it), or Y", zUp, function (on) {
-            zUp = on;
-            this.textContent = on ? "Z up" : "Y up";
-            place();
-        })];
-    if (content.meshes.length) {
-        tools.push(toggle("Wireframe", "Show its triangles' edges only", false, (on) => {
-            for (const m of content.meshes) for (const mat of [m.material].flat()) mat.wireframe = on;
-        }));
-    }
+    // The up axis's button shows which is up, and says what a click does.
+    const showAxis = (b) => {
+        b.innerHTML = iconSVG(zUp ? "axis-z-up" : "axis-y-up");
+        b.title = zUp ? "Z is up (as printers have it): click for Y up" : "Y is up: click for Z up (as printers have it)";
+        b.setAttribute("aria-label", b.title);
+    };
+    // (Not a pressed toggle: its glyph says which axis is up.)
+    const axis = button("", "", () => {
+        zUp = !zUp;
+        showAxis(axis);
+        place();
+    }, "axis-z-up");
+    showAxis(axis);
+    axis.classList.add("model-axis");
+    const tools = [button("", "Fit it in the window (0)", fit, "fit-page"), axis];
+    // A model's surfaces: how they're shown (see model-looks.js).
+    looks = content.meshes.length ? lookTools(THREE, content.meshes, { renderer, redraw, button, toggle }) : null;
+    if (looks) tools.push(...looks.tools);
     const info = el("span", { className: "hint model-info", textContent: `${content.label ?? FORMATS[format]} · ${content.info}` });
-    const bar = el("div", { className: "model-bar" }, ...tools, ...(content.tools?.(redraw) ?? []), info);
+    const bar = el("div", { className: "model-bar" }, ...tools, ...(content.tools?.(redraw, { toggle }) ?? []), info);
     const view = el("div", { className: "model-view" }, bar, stage);
     if (content.legend) view.append(content.legend);
     stage.addEventListener("keydown", (e) => {
@@ -211,7 +263,11 @@ export async function modelView({ file, blob, signal = null }) {
         stopped = true;
         resized.disconnect();
         controls.dispose();
+        looks?.stop();
+        content.stop?.();
         dispose(scene);
+        environment?.dispose();
+        content.revoke?.();
         renderer.dispose();
         renderer.forceContextLoss();
     };
@@ -251,8 +307,9 @@ const material = (THREE, colours) => new THREE.MeshStandardMaterial({ color: col
     roughness: 0.65, metalness: 0.05, side: THREE.DoubleSide });
 
 // partsContent is the shapes the worker read (an STL, OBJ, PLY or 3MF):
-// {object, meshes, info}.
-function partsContent(THREE, { parts, facts }) {
+// {object, meshes, info}. With materials (an OBJ's, see objMaterials),
+// each mesh has those its parts are made of, by name.
+function partsContent(THREE, { parts, facts }, materials = null) {
     if (!parts.length) throw new Error("it has no shapes in it");
     const object = new THREE.Group(), meshes = [];
     for (const p of parts) {
@@ -260,8 +317,16 @@ function partsContent(THREE, { parts, facts }) {
         geometry.setAttribute("position", new THREE.BufferAttribute(p.position, 3));
         if (p.normal) geometry.setAttribute("normal", new THREE.BufferAttribute(p.normal, 3));
         if (p.color) geometry.setAttribute("color", new THREE.BufferAttribute(p.color, 3, p.colorNormalized));
+        if (p.uv) geometry.setAttribute("uv", new THREE.BufferAttribute(p.uv, 2));
         if (p.index) geometry.setIndex(new THREE.BufferAttribute(p.index, 1));
-        if (p.kind === "mesh") {
+        for (const g of p.groups ?? []) geometry.addGroup(g.start, g.count, g.materialIndex);
+        const own = materials && p.kind === "mesh" && p.materials?.map((name) => materials.byName.get(name));
+        if (own?.some(Boolean)) {
+            const made = own.map((m) => m ?? material(THREE, null));
+            const mesh = new THREE.Mesh(geometry, made.length === 1 ? made[0] : made);
+            meshes.push(mesh);
+            object.add(mesh);
+        } else if (p.kind === "mesh") {
             const mesh = new THREE.Mesh(geometry, material(THREE, p.color));
             meshes.push(mesh);
             object.add(mesh);
@@ -273,10 +338,234 @@ function partsContent(THREE, { parts, facts }) {
                 size: 3, sizeAttenuation: false })));
         }
     }
-    const info = facts.points && !facts.triangles
+    let info = facts.points && !facts.triangles
         ? `${describeMesh({ ...facts, triangles: 0, volume: 0 }).replace(/ · 0 triangles$/, "")} · ${facts.points.toLocaleString("en")} points`
-        : describeMesh(facts);
-    return { object, meshes, info };
+        : describeMesh(facts, { textures: materials ? usedTextures(meshes, materials.missing.length) || null : null });
+    if (facts.check) info += ` · ${meshCheckText(facts.check)}`;
+    if (materials?.missing.length) info += ` · ${missingText(materials.missing)}`;
+    // (Materials not used by a mesh: let go of now.)
+    const used = new Set(meshes.flatMap((m) => [m.material].flat()));
+    for (const m of materials?.byName.values() ?? []) if (!used.has(m)) disposeMaterial(m);
+    return { object, meshes, info, revoke: materials?.revoke };
+}
+
+// usedTextures is how many textures meshes' materials have, but missing
+// (those they name that weren't there, and so are nothing).
+function usedTextures(meshes, missing) {
+    const textures = new Set();
+    for (const m of meshes) for (const mat of [m.material].flat().filter(Boolean)) for (const v of Object.values(mat)) if (v?.isTexture) textures.add(v);
+    return Math.max(0, textures.size - missing);
+}
+
+// disposeMaterial lets go of a material and its textures.
+function disposeMaterial(m) {
+    for (const v of Object.values(m)) if (v?.isTexture) v.dispose();
+    m.dispose();
+}
+
+// managerFor is a loading manager that gives a loader the files urls has
+// (a Map of what it asks for to blob: URLs) and, for any other, nothing
+// (BLANK: never the web, nor the server's own pages); blob: and data: URLs
+// as they are. TGA pictures are read as such. As each comes in, what's
+// drawn is drawn again (changed.redraw), as a texture loads after the
+// model's made.
+async function managerFor(THREE, urls, changed = {}) {
+    const manager = new THREE.LoadingManager();
+    manager.onProgress = () => changed.redraw?.();
+    manager.setURLModifier((u) => (/^(blob|data):/i.test(u) ? u : urls.get(u) ?? BLANK));
+    const { TGALoader } = await import("./three/TGALoader.js");
+    manager.addHandler(/\.tga$/i, new TGALoader(manager));
+    return manager;
+}
+
+// withResources makes a model (or its materials) by make(manager), once to
+// learn what files it asks for, then, if any, again with those read from
+// dir (relative to it, or in near), what was made the first time let go by
+// discard. It resolves to {made, missing, revoke}: revoke lets go of the
+// files read, and of the blob: URLs make made itself (an FBX's loader
+// makes one of each picture in it, and lets none go).
+async function withResources({ THREE, dir, read, signal, changed = {}, near = [] }, make, discard) {
+    const asked = new Set();
+    const probe = new THREE.LoadingManager();
+    probe.onProgress = () => changed.redraw?.();
+    probe.setURLModifier((u) => {
+        if (/^(blob|data):/i.test(u)) return u;
+        asked.add(u);
+        return BLANK;
+    });
+    const firstMade = madeURLs(() => make(probe));
+    const first = firstMade.value;
+    const revokeFirst = () => firstMade.urls.forEach((u) => URL.revokeObjectURL(u));
+    if (!asked.size) return { made: first, missing: [], revoke: revokeFirst };
+    discard(first);
+    revokeFirst();
+    const found = await fetchResources(dir, [...asked], read, { signal, near });
+    let again = { urls: [] };
+    try {
+        const manager = await managerFor(THREE, found.urls, changed);
+        again = madeURLs(() => make(manager));
+        return { made: again.value, missing: found.missing, revoke: () => { found.revoke(); again.urls.forEach((u) => URL.revokeObjectURL(u)); } };
+    } catch (err) {
+        found.revoke();
+        again.urls.forEach((u) => URL.revokeObjectURL(u));
+        throw err;
+    }
+}
+
+// madeURLs runs make (which does its work at once, not later), and is
+// {value: what it returns, urls: the blob: URLs it made meanwhile}.
+function madeURLs(make) {
+    const urls = [], create = URL.createObjectURL;
+    URL.createObjectURL = (o) => {
+        const u = create.call(URL, o);
+        urls.push(u);
+        return u;
+    };
+    try {
+        return { value: make(), urls };
+    } finally {
+        URL.createObjectURL = create;
+    }
+}
+
+// objMaterials reads an OBJ's materials, those named names, from its .mtl
+// files (libraries, relative to dir), and their textures (relative to
+// each): {byName, missing (files that aren't there), revoke, release}.
+// release lets go of all of it (when the model isn't, after all, shown).
+async function objMaterials(around, libraries, names) {
+    const { THREE, dir, read, signal } = around;
+    const libs = await fetchResources(dir, libraries, read, { signal });
+    libs.revoke();
+    const { MTLLoader } = await import("./three/MTLLoader.js");
+    const byName = new Map(), missing = [...libs.missing], revokes = [];
+    const revoke = () => revokes.forEach((r) => r());
+    const release = () => {
+        revoke();
+        for (const m of byName.values()) disposeMaterial(m);
+        byName.clear();
+    };
+    try {
+        for (const lib of libraries) {
+            const blob = libs.blobs.get(lib);
+            if (!blob) continue;
+            const text = await blob.text();
+            const path = libs.paths.get(lib);
+            const at = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+            // The materials it has that the OBJ uses (and no others) made,
+            // so it asks for their textures.
+            const make = (manager) => {
+                const creator = new MTLLoader(manager).setMaterialOptions({ side: THREE.DoubleSide }).parse(text, "");
+                for (const name of names) if (!byName.has(name) && Object.hasOwn(creator.materialsInfo, name)) creator.create(name);
+                return creator;
+            };
+            const discard = (creator) => Object.values(creator.materials).forEach(disposeMaterial);
+            const { made, missing: lost, revoke: let_go } = await withResources({ ...around, dir: at }, make, discard);
+            revokes.push(let_go);
+            missing.push(...lost);
+            for (const [name, m] of Object.entries(made.materials)) {
+                if (byName.has(name)) disposeMaterial(m);
+                else byName.set(name, m);
+            }
+        }
+    } catch (err) {
+        release();
+        throw err;
+    }
+    return { byName, missing, revoke, release };
+}
+
+// sceneFacts is what a scene (glTF's, FBX's) object has: its meshes,
+// their facts together (or, with only lines and points, the size of
+// those), and how many textures they use.
+function sceneFacts(THREE, object) {
+    const meshes = [], facts = [], textures = new Set();
+    let drawn = false;
+    object.updateMatrixWorld(true);
+    object.traverse((o) => {
+        if ((o.isLine || o.isPoints) && o.geometry?.attributes?.position) drawn = true;
+        if (!o.isMesh || !o.geometry?.attributes?.position) return;
+        meshes.push(o);
+        for (const m of [o.material].flat().filter(Boolean)) for (const v of Object.values(m)) if (v?.isTexture) textures.add(v);
+        facts.push(meshFacts(worldPositions(THREE, o), o.geometry.index?.array));
+    });
+    if (!facts.length && drawn) {
+        const box = new THREE.Box3().setFromObject(object);
+        return { meshes, facts: { triangles: 0, min: box.min.toArray(), max: box.max.toArray(), volume: 0 }, textures: 0 };
+    }
+    if (!facts.length) throw new Error("it has no shapes in it");
+    return { meshes, facts: combine(facts), textures: textures.size };
+}
+
+// drawnAs is what a scene with no surfaces is drawn as: "lines only",
+// "points only", or "lines and points".
+function drawnAs(object) {
+    let lines = false, points = false;
+    object.traverse((o) => { lines ||= !!o.isLine; points ||= !!o.isPoints; });
+    return lines && points ? "lines and points" : points ? "points only" : "lines only";
+}
+
+// gltfContent reads a glTF (its JSON, .gltf, with its buffers and pictures
+// beside it, or all in one, .glb), on the page: {object, meshes, info,
+// environment, revoke}. Its size is in metres, as glTF's are.
+async function gltfContent(around, format, blob) {
+    const { THREE, dir, read, signal } = around;
+    const buffer = await blob.arrayBuffer();
+    const json = format === "glb" ? glbJSON(buffer) : JSON.parse(new TextDecoder().decode(buffer));
+    const unsupported = (json.extensionsRequired ?? []).filter((e) => Object.hasOwn(UNSUPPORTED, e));
+    if (unsupported.length) throw new Error(`it has ${unsupported.map((e) => UNSUPPORTED[e]).join(" and ")}, which this preview can't show`);
+    const found = await fetchResources(dir, gltfReferences(json), read, { uri: true, signal });
+    try {
+        const lost = (json.buffers ?? []).map((b) => b?.uri).filter((u) => u && found.missing.includes(u));
+        const big = lost.filter((u) => found.tooBig.includes(u));
+        if (big.length) throw new Error(`its data, ${big.join(", ")}, is too big to read here`);
+        if (lost.length) throw new Error(`its data, ${lost.join(", ")}, isn't here beside it`);
+        const { GLTFLoader } = await import("./three/GLTFLoader.js");
+        const gltf = await new GLTFLoader(await managerFor(THREE, found.urls, around.changed)).parseAsync(buffer, "");
+        const object = gltf.scene ?? gltf.scenes?.[0];
+        if (!object) throw new Error("nothing was found in it");
+        const { meshes, facts, textures: all } = sceneFacts(THREE, object);
+        // (Not pictures it names that aren't there: they're nothing.)
+        const textures = Math.max(0, all - found.missing.length);
+        let info = meshes.length ? describeMesh(facts, { unit: "m", volume: false, textures }) : `${sizeText(facts.min, facts.max, "m")} · ${drawnAs(object)}`;
+        if (found.missing.length) info += ` · ${missingText(found.missing)}`;
+        return { object, meshes, info, environment: true, scene: true, revoke: found.revoke };
+    } catch (err) {
+        found.revoke();
+        throw err;
+    }
+}
+
+// The most an FBX is: it's read on the page (its loader needs it), which
+// a big one would freeze.
+const MAX_FBX = 32 << 20;
+
+// fbxContent reads an FBX (binary, or text: ASCII), on the page, its
+// textures (inside it, or files beside it): {object, meshes, info, revoke}. Its unit isn't said (FBX's
+// are the program's that made it).
+async function fbxContent(around, blob) {
+    const { THREE } = around;
+    if (blob.size > MAX_FBX) throw new Error(`it's too big to read here (it's more than ${MAX_FBX >> 20} MB)`);
+    let buffer = await blob.arrayBuffer();
+    // A text (ASCII) one: of a version its loader reads, and as it reads it.
+    const text = fbxText(new Uint8Array(buffer));
+    if (text !== null) {
+        const version = fbxTextVersion(text);
+        if (version && version < 7000) throw new Error(`it's an FBX ${Math.floor(version / 1000)}.${Math.floor(version % 1000 / 100)} file, older than this preview reads (7.0 and later)`);
+        buffer = new TextEncoder().encode(text).buffer;
+    }
+    const { FBXLoader } = await import("./three/FBXLoader.js");
+    const { made: object, missing, revoke } = await withResources(around, (manager) => new FBXLoader(manager).parse(buffer, ""), dispose);
+    try {
+        const { meshes, facts, textures: all } = sceneFacts(THREE, object);
+        // (Not those it names that aren't there: they're nothing.)
+        const textures = Math.max(0, all - missing.length);
+        let info = meshes.length ? describeMesh(facts, { unit: "", volume: false, textures }) : `${sizeText(facts.min, facts.max, "")} · ${drawnAs(object)}`;
+        if (missing.length) info += ` · ${missingText(missing)}`;
+        return { object, meshes, info, scene: true, revoke };
+    } catch (err) {
+        revoke();
+        throw err;
+    }
 }
 
 // The most an AMF is, unpacked: it's read on the page (its loader needs
@@ -293,16 +582,19 @@ async function amfContent(THREE, blob) {
     const { AMFLoader } = await import("./three/AMFLoader.js");
     const object = new AMFLoader().parse(buffer);
     if (!object) throw new Error("nothing was found in it");
-    const meshes = [], facts = [];
+    const meshes = [], facts = [], checks = [];
     object.updateMatrixWorld(true);
     object.traverse((o) => {
         if (!o.isMesh || !o.geometry?.attributes?.position) return;
         meshes.push(o);
         for (const m of [o.material].flat()) m.side = THREE.DoubleSide;
-        facts.push(meshFacts(worldPositions(THREE, o), o.geometry.index?.array));
+        const at = worldPositions(THREE, o);
+        facts.push(meshFacts(at, o.geometry.index?.array));
+        checks.push(meshCheck(at, o.geometry.index?.array));
     });
     if (!facts.length) throw new Error("it has no shapes in it");
-    return { object, meshes, info: describeMesh(combine(facts)) };
+    const check = meshCheckText(combineChecks(checks));
+    return { object, meshes, info: describeMesh(combine(facts)) + (check ? ` · ${check}` : "") };
 }
 
 // worldPositions is o's vertices, where they are in the model (3MF's
@@ -317,69 +609,4 @@ function worldPositions(THREE, o) {
         out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z;
     }
     return out;
-}
-
-// gcodeContent is G-code the worker read, g: {object, meshes (none), info,
-// tools (the layer slider, travel), legend, measure (what's extruded)}.
-function gcodeContent(THREE, g) {
-    const layers = g.layers.z.length;
-    if (!layers || !g.extrude.positions.length) throw new Error("nothing in it is printed");
-
-    // What's extruded, coloured by kind; what's not, faint, off at first.
-    // (Vertex colours are linear, as three.js works: the legend's sRGB
-    // colours made so once each, or the lines are paler than the legend.)
-    const categories = g.types.map((t) => (t ? featureCategory(t) : "other"));
-    const linear = categories.map((cat) => {
-        const c = new THREE.Color(CATEGORIES[cat][1]);
-        return [c.r, c.g, c.b].map((v) => Math.round(v * 255));
-    });
-    const colours = new Uint8Array(g.extrude.types.length * 6);
-    const used = new Set();
-    for (let s = 0; s < g.extrude.types.length; s++) {
-        const t = g.extrude.types[s];
-        used.add(categories[t]);
-        const [r, gr, b] = linear[t];
-        colours[s * 6] = colours[s * 6 + 3] = r;
-        colours[s * 6 + 1] = colours[s * 6 + 4] = gr;
-        colours[s * 6 + 2] = colours[s * 6 + 5] = b;
-    }
-    const printed = new THREE.BufferGeometry();
-    printed.setAttribute("position", new THREE.BufferAttribute(g.extrude.positions, 3));
-    printed.setAttribute("color", new THREE.BufferAttribute(colours, 3, true));
-    const lines = new THREE.LineSegments(printed, new THREE.LineBasicMaterial({ vertexColors: true }));
-    const moves = new THREE.BufferGeometry();
-    moves.setAttribute("position", new THREE.BufferAttribute(g.travel.positions, 3));
-    const travel = new THREE.LineSegments(moves, new THREE.LineBasicMaterial({ color: 0x8a8a8a, transparent: true, opacity: 0.4 }));
-    travel.visible = false;
-    const object = new THREE.Group();
-    object.add(lines, travel);
-
-    let upTo = layers - 1, only = false;
-    const show = () => {
-        const from = only && upTo > 0 ? g.layers.extrudeEnd[upTo - 1] : 0;
-        printed.setDrawRange(from * 2, (g.layers.extrudeEnd[upTo] - from) * 2);
-        const tFrom = only && upTo > 0 ? g.layers.travelEnd[upTo - 1] : 0;
-        moves.setDrawRange(tFrom * 2, (g.layers.travelEnd[upTo] - tFrom) * 2);
-        const z = g.layers.z[upTo];
-        label.textContent = `Layer ${(upTo + 1).toLocaleString("en")} of ${layers.toLocaleString("en")}${Number.isFinite(z) ? ` · Z ${z.toFixed(2)} mm` : ""}`;
-    };
-    const slider = el("input", { type: "range", className: "model-layer", min: "0", max: String(layers - 1), value: String(upTo), step: "1", ariaLabel: "Layers shown, up to" });
-    const label = el("span", { className: "hint model-layer-label", role: "status" });
-    show();
-    const tools = (redraw) => {
-        slider.addEventListener("input", () => { upTo = Number(slider.value); show(); redraw(); });
-        const check = (text, title, on, change) => {
-            const box = el("input", { type: "checkbox", checked: on });
-            box.addEventListener("change", () => { change(box.checked); show(); redraw(); });
-            return el("label", { className: "model-check", title }, box, ` ${text}`);
-        };
-        return [el("span", { className: "model-layers" }, slider, label),
-            check("This layer only", "Show only the layer the slider is at", false, (on) => { only = on; }),
-            check("Travel", "Show the moves that don't extrude", false, (on) => { travel.visible = on; })];
-    };
-    const legend = el("ul", { className: "model-legend", ariaLabel: "Colours" },
-        ...Object.entries(CATEGORIES).filter(([k]) => used.has(k)).map(([, [name, c]]) =>
-            el("li", {}, el("span", { className: "swatch", style: `background:#${c.toString(16).padStart(6, "0")}` }), name)));
-    const notes = [g.truncated ? "only the first part is shown: it has too many moves" : "", g.skipped ? `${g.skipped.toLocaleString("en")} moves out of range left out` : ""].filter(Boolean);
-    return { object, meshes: [], measure: lines, tools, legend, info: describeGCode(g) + (notes.length ? ` · ${notes.join("; ")}` : "") };
 }

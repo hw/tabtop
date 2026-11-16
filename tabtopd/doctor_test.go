@@ -530,7 +530,7 @@ func TestDoctorBoundsUpstreamConnections(t *testing.T) {
 // proxy's.
 func TestIPWarning(t *testing.T) {
 	req := func(peer string, header ...string) *http.Request {
-		r := httptest.NewRequest("GET", "/tunnel", nil)
+		r := httptest.NewRequest("GET", "/session", nil)
 		r.RemoteAddr = peer
 		for i := 0; i+1 < len(header); i += 2 {
 			r.Header.Set(header[i], header[i+1])

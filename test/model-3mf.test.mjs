@@ -93,10 +93,27 @@ test("units, transforms and nesting; what refers to itself, or to what isn't the
         `<item objectid="3"/>`) }));
     assert.equal(facts.triangles, 24);
     assert.deepEqual(facts.max, [4, 6, 1]);
+    // A cube, and one mirrored beside it: both counted.
+    ({ facts } = read3MF({ "_rels/.rels": RELS, "3D/3dmodel.model": model(`<object id="1">${cube(10)}</object>`,
+        `<item objectid="1"/><item objectid="1" transform="-1 0 0 0 1 0 0 0 1 30 0 0"/>`) }));
+    near(facts.volume, 2000, 1e-6);
     assert.throws(() => read3MF({ "_rels/.rels": RELS, "3D/3dmodel.model": model(`<object id="1"><mesh><vertices><vertex x="0" y="0" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>`, `<item objectid="1"/>`) }), /refer to vertices it hasn't got/);
     assert.throws(() => read3MF({ "_rels/.rels": RELS, "3D/3dmodel.model": model(`<object id="1">${cube()}</object>`, "") }), /no shapes/);
     assert.throws(() => read3MF({}), /no 3D model/);
     assert.ok(MAX_TRIANGLES >= 1e6);
+});
+
+test("objects that use each other many times over: found too big (or empty) at once, not walked", () => {
+    // Each level uses the next ten times, sixteen levels down: 10^16 placings.
+    const nested = (leaf) => {
+        let objects = "";
+        for (let d = 1; d <= 16; d++) objects += `<object id="${d}"><components>${`<component objectid="${d + 1}"/>`.repeat(10)}</components></object>`;
+        return { "_rels/.rels": RELS, "3D/3dmodel.model": model(objects + `<object id="17">${leaf}</object>`, `<item objectid="1"/>`) };
+    };
+    const started = Date.now();
+    assert.throws(() => read3MF(nested(cube(1))), /more than 20 million triangles/);
+    assert.throws(() => read3MF(nested("<mesh><vertices/><triangles/></mesh>")), /no shapes/);
+    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
 });
 
 test("the model's text is read for what matters, its namespaces whatever they're called", () => {

@@ -33,16 +33,17 @@ const (
 )
 
 type session struct {
-	secret    []byte
-	created   time.Time
-	expiry    time.Time
-	open      map[*tunnel]bool
-	idleSince time.Time    // when its last tunnel closed (or it was made)
-	uses      []sessionUse // where its tunnels came from: the login's first
-	browser   string       // what logged in, as browserName says
-	label     string       // what the person using it called it, such as "work laptop"
-	expire    lifecycleTimer
-	idle      lifecycleTimer // nil while a tunnel is open, or with no idle limit
+	remoteApproved bool // must reauthenticate with password/passkey to approve another device
+	secret         []byte
+	created        time.Time
+	expiry         time.Time
+	open           map[*tunnel]bool
+	idleSince      time.Time    // when its last tunnel closed (or it was made)
+	uses           []sessionUse // where its tunnels came from: the login's first
+	browser        string       // what logged in, as browserName says
+	label          string       // what the person using it called it, such as "work laptop"
+	expire         lifecycleTimer
+	idle           lifecycleTimer // nil while a tunnel is open, or with no idle limit
 }
 
 // sessionUse is one address a session was used from.
@@ -70,11 +71,18 @@ func (g *server) liveLocked(s *session, now time.Time) bool {
 // browserName): its id, its secret, and the logins before it, newest
 // first.
 func (g *server) newSession(ip, browser string) (string, []byte, []loginEvent) {
+	return g.newSessionFor(ip, browser, 0)
+}
+
+func (g *server) newSessionFor(ip, browser string, lifetime time.Duration) (string, []byte, []loginEvent) {
 	id := newToken()
 	secret := make([]byte, 32)
 	rand.Read(secret) // can't fail (see newToken)
 	now := g.clock.Now()
 	max := g.sessionMax
+	if lifetime > 0 && lifetime < max {
+		max = lifetime
+	}
 	s := &session{
 		secret: secret, created: now, expiry: now.Add(max), open: map[*tunnel]bool{},
 		idleSince: now, uses: []sessionUse{{ip, now, now}}, browser: browser,

@@ -151,3 +151,20 @@ func TestTunnelImageDecode(t *testing.T) {
 		t.Fatal("decoding went on after the page went")
 	}
 }
+
+// TestHEIFChildSandbox: the child, decoding, can't open a file nor reach
+// the network (built with libheif; without, it decodes nothing, and has no
+// sandbox to have).
+func TestHEIFChildSandbox(t *testing.T) {
+	if _, err := decodeHEIF([]byte{1}, false); err == errHEIFUnsupported {
+		t.Skip("built without -tags heif")
+	}
+	result := runIsolatedChild(isolatedChild{Args: []string{heifChildArg, "sandbox-check"}, Input: strings.NewReader(""), Timeout: 30 * time.Second, OutputLimit: 4096})
+	said := string(result.Output)
+	if result.Err != nil || !strings.HasPrefix(said, "sandbox: <nil>;") {
+		t.Fatalf("not sandboxed: %q, %v", said, result.Err)
+	}
+	if strings.Count(said, "operation not permitted") != 2 {
+		t.Fatalf("a file opened, or the network reached: %q", said)
+	}
+}

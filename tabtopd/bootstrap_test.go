@@ -20,7 +20,7 @@ func TestBootstrapPackJSON(t *testing.T) {
 	g, _ := newE2EServer(t)
 	h := g.handler()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/bootstrap/pack", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/pack", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
 	}
@@ -136,5 +136,33 @@ func TestSealBootstrapPackRoundTrip(t *testing.T) {
 	}
 	if string(got) != string(plain) {
 		t.Fatalf("plain %q", got)
+	}
+}
+
+// All auth pages use the configured base; the former public paths are gone.
+func TestAuthPathsUnderBase(t *testing.T) {
+	g, _ := newE2EServer(t)
+	for _, base := range []string{"/", "/nested/"} {
+		g.base = base
+		h := g.handler()
+		for _, path := range []string{"auth/approve", "auth/bootstrap", "auth/pack"} {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequest(method, base+path, nil))
+				if w.Code != http.StatusOK {
+					t.Errorf("%s %s: %d", method, base+path, w.Code)
+				}
+				if method == http.MethodHead && w.Body.Len() != 0 {
+					t.Errorf("HEAD %s returned a body", base+path)
+				}
+			}
+		}
+		for _, path := range []string{"approve", "bootstrap", "bootstrap/pack", "auth/bootstrap/pack"} {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, base+path, nil))
+			if w.Code != http.StatusNotFound {
+				t.Errorf("old path %s: %d", base+path, w.Code)
+			}
+		}
 	}
 }

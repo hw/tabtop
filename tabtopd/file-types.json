@@ -16,6 +16,10 @@
     "kind": "image",
     "mime": "image/avif"
   },
+  "bgcode": {
+    "kind": "model",
+    "mime": "application/octet-stream"
+  },
   "bmp": {
     "epubPicture": true,
     "kind": "image",
@@ -28,6 +32,10 @@
   "epub": {
     "kind": "epub",
     "mime": "application/epub+zip"
+  },
+  "fbx": {
+    "kind": "model",
+    "mime": "application/octet-stream"
   },
   "flac": {
     "kind": "audio",
@@ -45,6 +53,14 @@
     "epubPicture": true,
     "kind": "image",
     "mime": "image/gif"
+  },
+  "glb": {
+    "kind": "model",
+    "mime": "model/gltf-binary"
+  },
+  "gltf": {
+    "kind": "model",
+    "mime": "model/gltf+json"
   },
   "heic": {
     "kind": "image",
