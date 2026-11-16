@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -26,7 +27,7 @@ func TestFeatureConfigurations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("mask %d: %v", mask, err)
 		}
-		if c.fsOff && (g.shares != nil || g.fetches != nil) {
+		if c.fsOff && (g.shares != nil || slices.ContainsFunc(g.roots, func(r *fileRoot) bool { return r.fetches != nil })) {
 			t.Fatal("disabled files initialized shares or fetching")
 		}
 		if c.vncOff && g.audio != nil {
@@ -87,7 +88,7 @@ func TestDisabledFeatureTunnels(t *testing.T) {
 	g.vncOff, g.fsOff, g.termDir = true, true, ""
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
-	for _, kind := range []string{"vnc", "tty", "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes", "zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "sqlite", "cleanup", "share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches"} {
+	for _, kind := range []string{"vnc", "tty", "roots", "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "trash-list", "trash-restore", "trash-delete", "trash-empty", "watch", "changes", "zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "sqlite", "cleanup", "share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches"} {
 		r := openSession(t, ctx, srv.URL, s).request(t, ctx, tunnelRequest{Type: kind})
 		message, _ := r["error"].(string)
 		if r["ok"] == true || !strings.Contains(message, "turned off") {

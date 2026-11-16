@@ -9,9 +9,9 @@ import (
 // Every request that reads or changes Downloads, or links to it, needs
 // file support: these, and only these.
 func TestTunnelRoutesNeedingFiles(t *testing.T) {
-	want := []string{"list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "watch", "changes",
+	want := []string{"roots", "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "trash-list", "trash-all", "trash-restore", "trash-delete", "trash-empty", "transfer", "watch", "changes",
 		"zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "cleanup",
-		"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches", "preview-resource", "file-patch", "file-search", "sqlite"}
+		"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches", "preview-resource", "file-patch", "file-search", "sqlite", "versions", "version-file", "version-restore", "version-delete", "search"}
 	var got []string
 	for name, route := range tunnelRoutes {
 		if route.files {

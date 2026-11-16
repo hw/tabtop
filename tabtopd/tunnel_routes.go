@@ -19,11 +19,53 @@ type tunnelCall struct {
 	req         tunnelRequest
 	session, ip string
 	r           *tunnelResponder
+	files       *fileService
 }
 
 type tunnelRoute struct {
-	files bool // refused with file support off
-	serve func(g *server, c *tunnelCall)
+	files  bool // refused with file support off
+	access fileAccess
+	// writesIf, for a readFileRoot route, is when a request to it writes
+	// after all, and so is refused for a read-only root.
+	writesIf func(req tunnelRequest) bool
+	// crossRoot routes may name another root to write to (ToRoot), which
+	// they check themselves: its access, binding and Trash.
+	crossRoot bool
+	serve     func(g *server, c *tunnelCall)
+}
+
+type fileAccess uint8
+
+const (
+	noFileRoot fileAccess = iota
+	readFileRoot
+	writeFileRoot
+)
+
+func readFiles(serve func(*fileService, *tunnelCall)) tunnelRoute {
+	return tunnelRoute{files: true, access: readFileRoot, serve: func(g *server, c *tunnelCall) { serve(c.files, c) }}
+}
+func writeFiles(serve func(*fileService, *tunnelCall)) tunnelRoute {
+	route := readFiles(serve)
+	route.access = writeFileRoot
+	return route
+}
+
+// writes is whether req, to this route, writes to its root.
+func (route tunnelRoute) writes(req tunnelRequest) bool {
+	return route.access == writeFileRoot || route.access == readFileRoot && route.writesIf != nil && route.writesIf(req)
+}
+
+// acrossRoots is route, allowed to name another root to write to.
+func (route tunnelRoute) acrossRoots() tunnelRoute {
+	route.crossRoot = true
+	return route
+}
+
+// writesWhen is route, which reads, writing for the requests when says.
+func (route tunnelRoute) writesWhen(when func(req tunnelRequest) bool) tunnelRoute {
+	route.writesIf = when
+	return route
 }
 
 // files and other are routes that do, and don't, need file support.
@@ -40,45 +82,70 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"mic":   other((*server).routeMic),
 
 	// Sessions, and the activity log: kept with file support off.
-	"logout":         other((*server).routeLogout),
-	"end-session":    other((*server).routeEndSession),
-	"logout-all":     other((*server).routeLogoutAll),
-	"sessions":       other((*server).routeSessions),
-	"name-session":   other((*server).routeNameSession),
-	"seen":           other((*server).routeSeen),
-	"activity":       other((*server).routeActivity),
-	"activity-clear": other((*server).routeActivityClear),
+	"logout":          other((*server).routeLogout),
+	"end-session":     other((*server).routeEndSession),
+	"logout-all":      other((*server).routeLogoutAll),
+	"passkeys":        other((*server).routePasskeys),
+	"passkey-options": other((*server).routePasskeyOptions),
+	"passkey-add":     other((*server).routePasskeyAdd),
+	"passkey-remove":  other((*server).routePasskeyRemove),
+	"sessions":        other((*server).routeSessions),
+	"name-session":    other((*server).routeNameSession),
+	"seen":            other((*server).routeSeen),
+	"activity":        other((*server).routeActivity),
+	"activity-clear":  other((*server).routeActivityClear),
 
 	// Files.
-	"list":         files(func(g *server, c *tunnelCall) { g.tunnelFiles(c.t, c.req, c.r) }),
-	"file":         files(func(g *server, c *tunnelCall) { g.tunnelFiles(c.t, c.req, c.r) }),
-	"upload":       files(func(g *server, c *tunnelCall) { g.tunnelUpload(c.t, c.req, c.r) }),
-	"mkdir":        files(func(g *server, c *tunnelCall) { g.tunnelMkdir(c.t, c.req, c.r) }),
-	"create":       files(func(g *server, c *tunnelCall) { g.tunnelCreate(c.t, c.req, c.r) }),
-	"zip":          files(func(g *server, c *tunnelCall) { g.tunnelZip(c.t, c.req, c.ip, c.r) }),
-	"rename":       files(func(g *server, c *tunnelCall) { g.tunnelRename(c.t, c.req, c.ip, c.r) }),
-	"move":         files(func(g *server, c *tunnelCall) { g.tunnelMove(c.t, c.req, c.ip, c.r) }),
-	"delete":       files(func(g *server, c *tunnelCall) { g.tunnelDelete(c.t, c.req, c.ip, c.r) }),
-	"watch":        files(func(g *server, c *tunnelCall) { g.tunnelWatch(c.t, c.r) }),
-	"changes":      files(func(g *server, c *tunnelCall) { g.tunnelChanges(c.t, c.req, c.r) }),
+	"roots":         files(func(g *server, c *tunnelCall) { c.r.finish(map[string]any{"roots": g.rootReport()}) }),
+	"trash-list":    readFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
+	"trash-restore": writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
+	"trash-delete":  writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
+	"trash-empty":   writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
+	"list":          readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFiles(c.t, c.req, c.r) }),
+	"file":          readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFiles(c.t, c.req, c.r) }),
+	"upload":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelUpload(c.t, c.req, c.r) }),
+	"mkdir":         writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelMkdir(c.t, c.req, c.r) }),
+	"create":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelCreate(c.t, c.req, c.r) }),
+	"zip":           readFiles(func(g *fileService, c *tunnelCall) { g.tunnelZip(c.t, c.req, c.ip, c.r) }),
+	"rename":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelRename(c.t, c.req, c.ip, c.r) }),
+	"move":          writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelMove(c.t, c.req, c.ip, c.r) }),
+	// Copying, or moving, to another root: a copy only reads its own.
+	"transfer": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelTransfer(c.t, c.req, c.session, c.ip, c.r) }).
+		writesWhen(func(req tunnelRequest) bool { return !req.Copy }).acrossRoots(),
+	"trash-all":    files((*server).routeTrashAll),
+	"delete":       writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelDelete(c.t, c.req, c.ip, c.r) }),
+	"watch":        readFiles(func(g *fileService, c *tunnelCall) { g.tunnelWatch(c.t, c.r) }),
+	"changes":      readFiles(func(g *fileService, c *tunnelCall) { g.tunnelChanges(c.t, c.req, c.r) }),
 	"cleanup":      files((*server).routeCleanup),
-	"zip-preview":  files(func(g *server, c *tunnelCall) { g.tunnelZipPreview(c.t, c.req, c.r) }),
-	"zip-extract":  files(func(g *server, c *tunnelCall) { g.tunnelZipExtract(c.req, c.session, c.ip, c.r) }),
-	"zip-download": files(func(g *server, c *tunnelCall) { g.tunnelZipDownload(c.t, c.req, c.session, c.ip, c.r) }),
-	"file-patch":   files(func(g *server, c *tunnelCall) { g.tunnelFilePatch(c.req, c.session, c.ip, c.r) }),
-	"file-search":  files(func(g *server, c *tunnelCall) { g.tunnelFileSearch(c.req, c.r) }),
+	"zip-preview":  readFiles(func(g *fileService, c *tunnelCall) { g.tunnelZipPreview(c.t, c.req, c.r) }),
+	"zip-extract":  writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelZipExtract(c.req, c.session, c.ip, c.r) }),
+	"zip-download": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelZipDownload(c.t, c.req, c.session, c.ip, c.r) }),
+	"file-patch":   writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelFilePatch(c.req, c.session, c.ip, c.r) }),
+	"file-search":  readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFileSearch(c.req, c.r) }),
+	"search":       readFiles(func(g *fileService, c *tunnelCall) { g.tunnelSearch(c.t, c.req, c.r) }),
+	"versions":     readFiles(func(g *fileService, c *tunnelCall) { g.tunnelVersions(c.req, c.r) }),
+	"version-file": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelVersionFile(c.t, c.req, c.r) }),
+	"version-restore": writeFiles(func(g *fileService, c *tunnelCall) {
+		g.tunnelVersionRestore(c.req, c.session, c.ip, c.r)
+	}),
+	"version-delete": writeFiles(func(g *fileService, c *tunnelCall) {
+		g.tunnelVersionDelete(c.req, c.session, c.ip, c.r)
+	}),
 
 	// Previews.
-	"markdown":         files(func(g *server, c *tunnelCall) { g.tunnelMarkdown(c.t, c.req, c.r) }),
-	"epub":             files(func(g *server, c *tunnelCall) { g.tunnelEpub(c.t, c.req, c.r) }),
-	"epub-edit":        files(func(g *server, c *tunnelCall) { g.tunnelEpubEdit(c.t, c.req, c.r) }),
-	"sqlite":           files(func(g *server, c *tunnelCall) { g.tunnelSQLite(c.req, c.r) }),
-	"preview-resource": files(func(g *server, c *tunnelCall) { g.tunnelPreviewResource(c.t, c.req, c.r) }),
+	"markdown":         readFiles(func(g *fileService, c *tunnelCall) { g.tunnelMarkdown(c.t, c.req, c.r) }),
+	"epub":             readFiles(func(g *fileService, c *tunnelCall) { g.tunnelEpub(c.t, c.req, c.r) }),
+	"epub-edit":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelEpubEdit(c.t, c.req, c.r) }),
+	"sqlite":           readFiles(func(g *fileService, c *tunnelCall) { g.tunnelSQLite(c.req, c.r) }),
+	"preview-resource": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelPreviewResource(c.t, c.req, c.r) }),
 
 	// Fetching into Downloads, and share links to it.
-	"fetch":        files(func(g *server, c *tunnelCall) { g.tunnelFetch(c.t, c.req, c.session, c.ip, c.r) }),
-	"fetches":      files((*server).routeFetches),
-	"share":        files(func(g *server, c *tunnelCall) { g.tunnelShare(c.req, c.session, c.ip, c.r) }),
+	// A fetch with a name only reports on one; without, it starts one.
+	"fetch": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFetch(c.t, c.req, c.session, c.ip, c.r) }).
+		writesWhen(func(req tunnelRequest) bool { return req.Name == "" }),
+	"fetches": readFiles((*fileService).routeFetches),
+	"share": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelShare(c.req, c.session, c.ip, c.r) }).
+		writesWhen(func(req tunnelRequest) bool { return req.Upload }),
 	"share-again":  files((*server).routeShareAgain),
 	"reshare":      files((*server).routeReshare),
 	"reshare-many": files((*server).routeReshareMany),
@@ -181,9 +248,7 @@ func (g *server) routeEndSession(c *tunnelCall) {
 		return
 	}
 	g.act(session, "end-session", ip, "ended another session")
-	if g.fetches != nil {
-		g.fetches.cancelMatching(func(j *fetchJob) bool { return j.by == name })
-	}
+	g.cancelFetches(func(j *fetchJob) bool { return j.by == name })
 	if n := g.revokeShares(func(l *shareLink) bool { return l.By == name }); n > 0 {
 		log.Printf("%d share links revoked with the session ended from %s", n, ip)
 		g.act(session, "share", ip, "revoked %d link%s the ended session made", n, plural(n))
@@ -195,9 +260,7 @@ func (g *server) routeLogoutAll(c *tunnelCall) {
 	log.Printf("all sessions logged out from %s", c.ip)
 	g.act(c.session, "logout-all", c.ip, "logged out everywhere")
 	g.endAllSessions("Logged out everywhere.", c.t)
-	if g.fetches != nil {
-		g.fetches.cancelMatching(func(*fetchJob) bool { return true })
-	}
+	g.cancelFetches(func(*fetchJob) bool { return true })
 	if n := g.revokeShares(func(*shareLink) bool { return true }); n > 0 {
 		log.Printf("%d share links revoked with every session", n)
 		g.act(c.session, "share", c.ip, "revoked every link (%d) with logging out everywhere", n)
@@ -263,23 +326,44 @@ func (g *server) routeActivityClear(c *tunnelCall) {
 }
 
 // routeCleanup deletes uploads cut off and temporary files (see
-// cleanup.go), or with req.DryRun, counts them.
+// cleanup.go) in every writable root, or with req.DryRun, counts them. It
+// isn't scoped to one root: the Sessions page that asks has none chosen.
 func (g *server) routeCleanup(c *tunnelCall) {
-	rep := g.cleanup(c.req.DryRun)
-	if !c.req.DryRun && (rep.Kept > 0 || rep.Temps > 0) {
+	dry := c.req.DryRun
+	var rep cleanupReport
+	for _, files := range g.fileServices() {
+		if files.root.ReadOnly {
+			continue // nothing is uploaded there, and nothing may be removed
+		}
+		got := files.cleanup(dry)
+		rep.add(got)
+		if !dry && (got.Kept > 0 || got.Temps > 0) {
+			files.act(c.session, "cleanup", c.ip, "cleaned up %s: %d upload%s kept to carry on, and %d leftover temporary file%s",
+				humanSize(got.Bytes), got.Kept, plural(got.Kept), got.Temps, plural(got.Temps))
+		}
+	}
+	n, bytes := g.cleanGatewayTemps(dry)
+	rep.Temps += n
+	rep.Bytes += bytes
+	if !dry && n > 0 {
+		g.activity.addAs(g.sessionName(c.session), "cleanup", c.ip, "cleaned up %s: %d leftover temporary file%s of TabTop's own",
+			humanSize(bytes), n, plural(n))
+	}
+	if !dry && (rep.Kept > 0 || rep.Temps > 0) {
 		log.Printf("cleaned up from %s: %d uploads kept to carry on, %d temporary files, %s", c.ip, rep.Kept, rep.Temps, humanSize(rep.Bytes))
-		g.act(c.session, "cleanup", c.ip, "cleaned up %s: %d upload%s kept to carry on, and %d leftover temporary file%s",
-			humanSize(rep.Bytes), rep.Kept, plural(rep.Kept), rep.Temps, plural(rep.Temps))
 	}
 	c.r.finish(map[string]any{"cleanup": rep})
 }
 
-func (g *server) routeFetches(c *tunnelCall) {
-	if g.fetches == nil {
-		c.r.fail("Fetching from URLs is turned off (WEB_FETCH=0).")
-		return
+func (g *fileService) routeFetches(c *tunnelCall) {
+	switch {
+	case g.root.fetches != nil:
+		c.r.finish(map[string]any{"fetches": g.root.fetches.list()})
+	case g.root.ReadOnly && g.resourceClient != nil:
+		c.r.finish(map[string]any{"fetches": []any{}}) // none can be going
+	default:
+		c.r.fail(g.noFetches())
 	}
-	c.r.finish(map[string]any{"fetches": g.fetches.list()})
 }
 
 // routeShareAgain shows a link listed, by its handle, again.

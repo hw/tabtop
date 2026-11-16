@@ -18,6 +18,8 @@ export { elligator2, cpaceGenerator, cryptoBackend } from "./tunnel-crypto.js";
 const VERSION = 3;
 const HELLO_LOGIN = 1;
 const HELLO_SESSION = 2;
+const HELLO_PASSKEY = 3;
+const PASSKEY_LABEL = "tabtop passkey v3";
 const LABEL = "tabtop tunnel v3";
 const DATA = 0;
 const TEXT = 1;
@@ -142,6 +144,73 @@ export async function login(credential, url = tunnelURL(), { signal } = {}) {
         }
         const recv = chacha20poly1305(ks.slice(32, 64), nonce(0));
         const pt = recv.decrypt(await s.next());
+        const res = JSON.parse(decoder.decode(pt.slice(1)));
+        signal?.throwIfAborted();
+        return { id: res.session, secret: res.secret, expires: res.expires, ip: res.ip, logins: res.logins || [] };
+    } finally {
+        signal?.removeEventListener("abort", abort);
+        s.ws.close();
+    }
+}
+
+// b64url is bytes as base64url, unpadded, as WebAuthn's are sent.
+export function b64url(b) {
+    let s = "";
+    for (const x of new Uint8Array(b)) s += String.fromCharCode(x);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function unb64url(s) {
+    const t = s.replace(/-/g, "+").replace(/_/g, "/");
+    return Uint8Array.from(atob(t + "=".repeat((4 - t.length % 4) % 4)), (c) => c.charCodeAt(0));
+}
+
+// passkeysUsable says whether this page can log in with a passkey: over
+// HTTPS (or on localhost), at a name rather than an IP address, in a
+// browser that has them.
+export function passkeysUsable() {
+    const host = location.hostname;
+    return !!globalThis.PublicKeyCredential && isSecureContext && !/^[\d.]+$/.test(host) && !host.includes(":");
+}
+
+// passkeyLogin logs in with a passkey (see passkey.go): the browser asks
+// for one, to sign a challenge made of this handshake, and the session
+// comes back as login's does.
+export async function passkeyLogin(url = tunnelURL(), { signal } = {}) {
+    signal?.throwIfAborted();
+    const c = await cryptoBackend();
+    const { secret: eph, pub: ya } = await c.keygen();
+    const s = new Socket(url);
+    const abort = () => s.ws.close();
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+        await s.send(concat([VERSION, HELLO_PASSKEY], ya));
+        const hello = await s.next();
+        if (hello.length !== 65 || hello[0] !== VERSION) {
+            throw new TunnelError("The server's handshake is malformed.");
+        }
+        const yb = hello.slice(1, 33), fresh = hello.slice(33);
+        let ee;
+        try {
+            ee = await c.scalarMult(eph, yb);
+        } catch {
+            throw new TunnelError("The server's handshake is malformed.");
+        }
+        const salt = await c.sha256(concat(encoder.encode(PASSKEY_LABEL), ya, yb, fresh));
+        const keys = await c.hkdf(ee, salt, "tabtop passkey keys", 64);
+        const challenge = await c.sha256(concat(encoder.encode(PASSKEY_LABEL + " challenge"), ya, yb, fresh));
+        let cred;
+        try {
+            cred = await navigator.credentials.get({ publicKey: { challenge, userVerification: "required", timeout: 110000 }, signal });
+        } catch (err) {
+            signal?.throwIfAborted();
+            throw new TunnelError(err?.name === "NotAllowedError" ? "No passkey was used." : `The passkey couldn't be used: ${err?.message ?? err}`);
+        }
+        const r = cred.response;
+        const assertion = JSON.stringify({ id: b64url(cred.rawId), authenticator_data: b64url(r.authenticatorData),
+            client_data: b64url(r.clientDataJSON), signature: b64url(r.signature), user_handle: r.userHandle ? b64url(r.userHandle) : "" });
+        await s.send(chacha20poly1305(keys.slice(0, 32), nonce(0)).encrypt(concat([TEXT], encoder.encode(assertion))));
+        const pt = chacha20poly1305(keys.slice(32, 64), nonce(0)).decrypt(await s.next());
         const res = JSON.parse(decoder.decode(pt.slice(1)));
         signal?.throwIfAborted();
         return { id: res.session, secret: res.secret, expires: res.expires, ip: res.ip, logins: res.logins || [] };

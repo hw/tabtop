@@ -84,8 +84,9 @@ func (s *shareStore) token(l *shareLink) (string, error) {
 // activity log.
 func folderOrPath(reply map[string]any) string {
 	p, _ := reply["path"].(string)
+	label, _ := reply["root_label"].(string)
 	if reply["upload"] == true || reply["dir"] == true {
-		return folderText(p)
+		return linkFolderText(label, p)
 	}
 	return p
 }
@@ -101,7 +102,7 @@ func (s *shareStore) shareLinkAgain(handle string) (map[string]any, error) {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"token": token, "name": l.name(), "dir": l.Dir, "upload": l.Upload, "path": l.Path}, nil
+			return map[string]any{"token": token, "name": l.name(), "dir": l.Dir, "upload": l.Upload, "path": l.Path, "root_label": l.RootLabel}, nil
 		}
 	}
 	return nil, errors.New("That link has ended already.")

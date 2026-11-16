@@ -4,13 +4,17 @@ import { glyphs, iconSVG } from "./glyphs.js";
 import { askYes } from "./ui.js";
 import { previewView } from "./preview-view.js";
 import { el, join } from "./preview-dom.js";
-import { typeOf, languageOf, formatOf, previewLocation, resolvePath } from "./preview-model.js";
+import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize } from "./preview-model.js";
 import { previewWide, setPreviewWide, THEMES, readingTheme, setReadingTheme, VIEWS, viewShown, setViewShown } from "./preview-settings.js";
 import { loadPreview } from "./preview-loaders.js";
 import { renderPreview } from "./preview-renderers.js";
 import { call, uploadFile } from "./requests.js";
 import { cryptoBackend } from "./tunnel-crypto.js";
+import { readOnlyRoot } from "./fs-context.js";
 import { editableText, startEditing, startTableEditing, editBookDetails } from "./preview-editor.js";
+import { openImageDiff } from "./image-diff-view.js";
+import { openVersions } from "./versions-view.js";
+import { revealLine } from "./search-view.js";
 export { previewable, previewLocation, resolvePath, previewWebURL } from "./preview-model.js";
 
 // preview shows files[index] of files, [{name, bytes}] in the folder dir,
@@ -24,6 +28,9 @@ export { previewable, previewLocation, resolvePath, previewWebURL } from "./prev
 export function preview(dir, files, index, download, opts = {}) {
     const opener = document.activeElement;
     let previewMode = opts.mode ?? null;
+    // opts.reveal, {name, line, match}: where to show that file, once, if
+    // it's shown as text (see revealLine).
+    let reveal = opts.reveal ?? null;
     const name = el("strong");
     const where = el("span", { className: "hint" });
     const button = (text, label, className = "") => {
@@ -198,11 +205,42 @@ export function preview(dir, files, index, download, opts = {}) {
     };
     const edit = button(glyphs.edit, "Edit this file", "edit glyph");
     edit.hidden = true;
-    const saveStatus = el("span", { className: "hint save-status", hidden: true, role: "status" });
+    // The file's earlier versions, kept as saves replaced it.
+    const versions = button("", "Earlier versions", "versions glyph");
+    versions.innerHTML = iconSVG("history");
+    versions.hidden = true;
+    // Offered only for a file that has some: asked as the file's shown, and
+    // again after a save (which may have kept one) and once the list of
+    // them is closed (they may have been deleted). Whether it can be edited
+    // here doesn't say: an upload over it keeps a version too.
+    let versionsAsked = 0;
+    const checkVersions = async () => {
+        const mine = ++versionsAsked, file = current;
+        let any = false;
+        if (file && !readOnlyRoot()) {
+            try {
+                const t = await call({ type: "versions", path: join(file.dir, file.name) });
+                t.close();
+                any = (t.reply.versions ?? []).length > 0;
+            } catch {
+                // Not known: not offered.
+            }
+        }
+        if (mine === versionsAsked && current === file) versions.hidden = !any;
+    };
+    versions.addEventListener("click", async () => {
+        if (!current || !(await leaveEditing())) return;
+        const { dir, name } = current;
+        openVersions({ path: join(dir, name), name, text: current.kind === "text",
+            restored: () => display(dir, name), closed: checkVersions });
+    });
+    const saveStatus = el("button", { type: "button", className: "hint save-status", hidden: true });
+    saveStatus.addEventListener("click", () => editing?.compareSaved?.());
     const store = button("Save", "Save (Ctrl S)", "primary save-edit");
     const done = button("Done", "Stop editing", "done-edit");
     store.hidden = done.hidden = true;
-    const close = el("button", { type: "button", className: "close", textContent: glyphs.close, title: "Close (Esc)" });
+    const close = el("button", { type: "button", className: "close close-glyph", title: "Close (Esc)" });
+    close.innerHTML = iconSVG("close-circle");
     close.setAttribute("aria-label", "Close");
     // The whole window, or the box it starts as: as last chosen.
     const widen = button("", "", "widen glyph");
@@ -223,7 +261,7 @@ export function preview(dir, files, index, download, opts = {}) {
         if (!current || typeOf(current.name) && !current.sqlite || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
         previewMode = mode;
         if (blob && ["text", "hex"].includes(current.kind) && ["text", "hex"].includes(mode) &&
-                (mode !== "text" || blob.size >= Math.min(current.size, 10_000_000))) {
+                (mode !== "text" || blob.size >= Math.min(current.size, unknownTextSize))) {
             // Both views use the same bytes; switching does not fetch the file again.
             current = { ...current, kind: mode, type: mode === "text" ? "text/plain" : "application/octet-stream" };
             await draw(shown);
@@ -244,7 +282,7 @@ export function preview(dir, files, index, download, opts = {}) {
     const dialog = el("dialog", { className: "preview" },
         el("div", { className: "head", role: "toolbar", ariaLabel: "Preview actions" }, name, back, where,
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
-            el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, saveStatus, store, done),
+            el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, versions, saveStatus, store, done),
             el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle),
             externalGroup, saveGroup, widen, close), previewNotice, body);
     showWide();
@@ -282,6 +320,8 @@ export function preview(dir, files, index, download, opts = {}) {
         if (!editing) return;
         const text = body.querySelector(".edit-status")?.textContent ?? "";
         saveStatus.textContent = editing.saving?.() ? "Saving…" : text.startsWith("Not saved:") ? text : editing.dirty() ? "Unsaved changes" : "Saved";
+        saveStatus.setAttribute("aria-label", editing.compareSaved ? `${saveStatus.textContent} — Compare with saved` : saveStatus.textContent);
+        saveStatus.disabled = !editing.compareSaved || editing.saving?.() || editing.pending?.();
         saveStatus.classList.toggle("error", !!body.querySelector(".edit-status.error"));
         store.disabled = editing.saving?.() || editing.canSave?.() === false;
     });
@@ -355,7 +395,8 @@ export function preview(dir, files, index, download, opts = {}) {
         prev.hidden = next.hidden = following || files.length < 2;
         prev.disabled = index === 0;
         next.disabled = index === files.length - 1;
-        edit.hidden = view.hidden = theme.hidden = modeToggle.hidden = previewNotice.hidden = true;
+        edit.hidden = versions.hidden = view.hidden = theme.hidden = modeToggle.hidden = previewNotice.hidden = true;
+        versionsAsked++; // one asked for the file before isn't this one's
         const status = el("p", { className: "hint", textContent: "Loading…", role: "status" });
         body.replaceChildren(status);
         try {
@@ -400,7 +441,7 @@ export function preview(dir, files, index, download, opts = {}) {
         modeToggle.setAttribute("aria-label", modeToggle.title);
         modeToggle.setAttribute("aria-pressed", String(binary));
         previewNotice.hidden = binary || !current.truncated;
-        previewNotice.textContent = current.truncated ? `Showing the first 10 MB (${current.previewSize.toLocaleString()} bytes) of ${current.size.toLocaleString()} bytes.` : "";
+        previewNotice.textContent = current.truncated ? `Showing the first ${unknownTextSize / 1e6} MB (${current.previewSize.toLocaleString()} bytes) of ${current.size.toLocaleString()} bytes.` : "";
         const format = kind === "text" ? formatOf(current.name) : "";
         if (format === "table") {
             current.tableOptions = body.querySelector(".table-view")?.options() ?? current.tableOptions;
@@ -414,7 +455,8 @@ export function preview(dir, files, index, download, opts = {}) {
         view.hidden = !format;
         setView(format);
         theme.hidden = !(kind === "epub" || (format === "markdown" || format === "html") && viewShown(format));
-        edit.hidden = !editable;
+        edit.hidden = !editable || readOnlyRoot();
+        checkVersions();
         edit.title = kind === "epub" ? "Edit the book's title, author and cover" : kind === "hex" ? "Edit bytes: type over them" : "Edit this file";
         edit.setAttribute("aria-label", edit.title);
         frame?.stop();
@@ -432,9 +474,14 @@ export function preview(dir, files, index, download, opts = {}) {
         }
         frame = rendered;
         body.replaceChildren(rendered.element);
+        if (reveal && reveal.name === current.name) {
+            const { line, match } = reveal;
+            requestAnimationFrame(() => revealLine(body, line, match));
+        }
+        reveal = null;
         // A picture: editable if it can be written again as it is.
         if (kind === "image") {
-            edit.hidden = !rendered.element.editable;
+            edit.hidden = !rendered.element.editable || readOnlyRoot();
             edit.title = "Edit the picture: rotate, flip, crop, resize; save it smaller, without its metadata, or as another format";
             edit.setAttribute("aria-label", edit.title);
         }
@@ -484,6 +531,7 @@ export function preview(dir, files, index, download, opts = {}) {
     // rendered; Save writes it back over the file, unless the file has
     // changed since it was read (see unchangedSince in tabtopd).
     edit.addEventListener("click", async () => {
+        if (readOnlyRoot()) return;
         if (current?.kind === "epub") {
             editBook();
             return;
@@ -511,6 +559,7 @@ export function preview(dir, files, index, download, opts = {}) {
         editing = await start({
             body, current: editorFile, blob, markdown: languageOf(file.name) === "markdown",
             saved(newBlob, reply) {
+                checkVersions();
                 editorFile.mtime = reply.mtime;
                 editorFile.size = reply.size;
                 file.mtime = reply.mtime;
@@ -543,6 +592,10 @@ export function preview(dir, files, index, download, opts = {}) {
         store.hidden = done.hidden = false;
         saveStatus.hidden = false;
         saveStatus.textContent = "No unsaved changes";
+        saveStatus.classList.toggle("compare-saved", !!editing.compareSaved);
+        saveStatus.title = editing.compareSaved ? "Compare with saved" : "Save status";
+        saveStatus.setAttribute("aria-label", editing.compareSaved ? "No unsaved changes — Compare with saved" : "Save status");
+        saveStatus.disabled = !editing.compareSaved;
         saveStatus.classList.remove("error");
         editObserver.observe(body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
     };
@@ -558,12 +611,14 @@ export function preview(dir, files, index, download, opts = {}) {
             return;
         }
         const file = current;
+        let savedImage = blob, comparison;
         const started = await picture.startEditing({
             save: async (newBlob) => {
                 const reply = await uploadFile(new File([newBlob], file.name, { type: newBlob.type }), () => {}, file.dir,
                     new AbortController().signal, true, { expect: { mtime: file.mtime, size: file.size } });
                 file.mtime = reply.mtime;
                 file.size = reply.size;
+                savedImage = newBlob;
                 if (current === file) {
                     URL.revokeObjectURL(url);
                     blob = newBlob;
@@ -579,6 +634,16 @@ export function preview(dir, files, index, download, opts = {}) {
             started?.stop();
             return;
         }
+        const originalStop = started.stop;
+        started.compareSaved = () => {
+            comparison?.close();
+            comparison = openImageDiff({
+                a: { name: file.name, label: `${file.name} — Last saved`, blob: savedImage },
+                b: { name: file.name, label: `${file.name} — Current edits`, load: () => started.snapshot() },
+                initialMode: "slider",
+            });
+        };
+        started.stop = () => { comparison?.close(); originalStop(); savedImage = null; };
         editing = started;
         showEditing([modeToggle]);
     };
@@ -606,6 +671,7 @@ export function preview(dir, files, index, download, opts = {}) {
             // The file's version, and the copy shown from, as they are now,
             // so a search, a read, or Done drawing it again, sees the change.
             saved: (patches, reply) => {
+                checkVersions();
                 file.mtime = reply.mtime;
                 file.size = reply.size;
                 if (current !== file || !blob) {

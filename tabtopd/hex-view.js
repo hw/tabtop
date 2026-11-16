@@ -2,6 +2,7 @@ import { copyText, el } from "./preview-dom.js";
 import { binaryChunkSize } from "./preview-model.js";
 import { iconSVG } from "./glyphs.js";
 import { store, stored, storeJSON, storedJSON } from "./stored.js";
+import { programMap, readExecutable } from "./exe-info.js";
 
 const PAGE_BYTES = 4096;
 const pageStart = offset => Math.floor(offset / binaryChunkSize) * binaryChunkSize + Math.floor(offset % binaryChunkSize / PAGE_BYTES) * PAGE_BYTES;
@@ -303,17 +304,39 @@ export function patchRuns(changed) {
 // The disassembly in the inspector: of the selection, up to so many bytes
 // and instructions, or, with a byte selected, the bytes from it.
 const DISASM_BYTES = 4096, DISASM_WINDOW = 64, DISASM_LINES = 512;
+// The bytes after those, given too, so that an instruction that starts in
+// them and ends after is read whole (x86's longest is 15 bytes).
+const DISASM_AHEAD = 15;
 const DISASM_KEY = "tabtop.hex-disasm";
 const DISASM_MODES = [
     ["x86-64", "x86-64"], ["x86-32", "x86 (32-bit)"], ["x86-16", "x86 (16-bit)"],
     ["arm64", "ARM64"], ["arm32", "ARM32"], ["thumb", "ARM32-T (Thumb)"],
     ["mips32-le", "MIPS32 LE"], ["mips32-be", "MIPS32 BE"], ["mips64-le", "MIPS64 LE"], ["mips64-be", "MIPS64 BE"],
+    ["riscv32", "RISC-V 32"], ["riscv64", "RISC-V 64"],
 ];
+// The disassemblers this server has turned off (WEB_DISASM_DISABLE): of
+// "x86", "arm64", "capstone" (ARM32 and Thumb), "riscv" and "mips". tabtopd
+// fills this in as it serves the script; their instruction sets aren't
+// offered (nor, for all but Capstone's, instruction editing, which is
+// theirs).
+const DISASM_OFF = [];
+const disassemblerOf = (mode) => (mode.startsWith("x86-") ? "x86" : mode === "arm64" ? "arm64" : mode.startsWith("riscv") ? "riscv" : mode.startsWith("mips") ? "mips" : "capstone");
 const x86Bitness = (mode) => ({ "x86-16": 16, "x86-32": 32, "x86-64": 64 }[mode]);
-function disasmWanted() {
+// What a line of mode's code is assembled as, to change it in place: x86's
+// bitness, or the mode itself (ARM64, RISC-V, MIPS); null for an
+// instruction set that's only shown (ARM32, Thumb).
+const assembledAs = (mode) => x86Bitness(mode) ?? (mode === "arm64" || /^(riscv|mips)/.test(mode) ? mode : null);
+// What fills the room an instruction leaves: its instruction set's nop
+// (RISC-V's of two bytes, c.nop: its instructions are of two or four;
+// MIPS's is four zeros).
+const nopOf = (as) => (as === "arm64" ? [0x1f, 0x20, 0x03, 0xd5] : typeof as !== "string" ? [0x90] : as.startsWith("mips") ? [0, 0, 0, 0] : [0x01, 0x00]);
+// The tab and instruction set to begin with: those remembered; of modes,
+// the instruction sets on offer here (the first of them, if the one
+// remembered isn't; with none, there's no Disassembly tab to begin on).
+function disasmWanted(modes = DISASM_MODES) {
     const v = storedJSON(DISASM_KEY, {});
     const mode = DISASM_MODES.some(([mode]) => mode === v.mode) ? v.mode : `x86-${[16, 32, 64].includes(v.bitness) ? v.bitness : 64}`;
-    return { tab: v.tab === "disasm" ? "disasm" : "values", mode };
+    return { tab: v.tab === "disasm" && modes.length ? "disasm" : "values", mode: modes.some(([m]) => m === mode) ? mode : modes[0]?.[0] ?? mode };
 }
 const rememberDisasm = (tab, mode) => storeJSON(DISASM_KEY, { tab, mode });
 
@@ -354,13 +377,20 @@ function workerClient() {
     });
 }
 const workerCall = workerClient();
+// (names) resolves to each as it was written, a C++ or Rust symbol's name
+// read back from what its compiler made of it; "" for one that isn't such.
+const sharedDemangler = (names) => workerCall({ demangle: names }).then((data) => data.names);
+// What of a symbol's name is the compiler's: after another file's name
+// (KERNEL32!), before what says it's a stub or a slot (@plt, @got).
+const MANGLED = /^([^!]*!)?(_{1,2}[ZR].+?|\?.+?)(@plt|@got)?$/s;
 // (bytes, address, mode, max) resolves to [{offset, length, text}].
 const sharedDisassembler = (bytes, address, mode, max) => workerCall({ bytes, address, mode, max }, [bytes.buffer]).then(
     (data) => data.lines,
     (err) => { throw err.said ? new Error(`It couldn't be disassembled: ${err.message}.`) : err; });
-// (text, address, bitness, was) resolves to {bytes, text}: the line's bytes
+// (text, address, as, was) resolves to {bytes, text}: the line's bytes, as
+// x86 of that bitness or as "arm64" or RISC-V's or MIPS's mode (see assembledAs),
 // at address, and how it's shown (see x86-asm.js); was, the bytes there.
-const sharedAssembler = (text, address, bitness, was) => workerCall({ assemble: text, address, bitness, was: Array.from(was ?? []) }).then(
+const sharedAssembler = (text, address, as, was) => workerCall({ assemble: text, address, ...(typeof as === "number" ? { bitness: as } : { mode: as }), was: Array.from(was ?? []) }).then(
     (data) => ({ bytes: Uint8Array.from(data.bytes), text: data.text }),
     (err) => { throw err.said ? new Error(err.message.replace(/^./, (c) => c.toUpperCase())) : err; });
 
@@ -396,9 +426,11 @@ function hexHead() {
 // with readRange(begin, end, {signal}); search({pattern, mask, offset,
 // backward, signal}) looks in the file (see tunnelFileSearch), if given;
 // disassemble and assemble, x86 code (see sharedDisassembler, and
-// sharedAssembler, for editing it). The element returned has jump(begin,
-// end), stop(), and startEditing.
-export function hexView(bytes, { size = bytes.length, readRange = null, search = null, disassemble = sharedDisassembler, assemble = sharedAssembler } = {}) {
+// sharedAssembler, for editing it); executable reads what a program says
+// of itself (see exe-info.js), if it's one. The element returned has
+// jump(begin, end), stop(), and startEditing.
+export function hexView(bytes, { size = bytes.length, readRange = null, search = null, disassemble = sharedDisassembler, assemble = sharedAssembler,
+    executable = readExecutable, disassemblersOff = DISASM_OFF, demangle = sharedDemangler } = {}) {
     if (!size) return el("p", { className: "hint", textContent: "This file is empty." });
     const source = createHexRangeSource(bytes, size, readRange);
     // selected: {begin, end, from}, from the column it was chosen in ("hex"
@@ -615,30 +647,63 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         formatCopy.focus?.();
     });
     // Disassembly: the selection's bytes in the chosen instruction set.
-    const disasmPrefs = disasmWanted();
-    const disasmBitness = el("select", { className: "hex-disasm-bitness", ariaLabel: "Instruction set" },
-        ...DISASM_MODES.map(([value, label]) => el("option", { value: String(value), textContent: label })));
+    // (Not those of a disassembler that's turned off here; with all off,
+    // there's no Disassembly tab.)
+    const modes = DISASM_MODES.filter(([mode]) => !disassemblersOff.includes(disassemblerOf(mode)));
+    const disasmPrefs = disasmWanted(modes);
+    const disasmBitness = el("select", { className: "hex-disasm-bitness", ariaLabel: "Instruction set", hidden: !modes.length },
+        ...modes.map(([value, label]) => el("option", { value: String(value), textContent: label })));
     disasmBitness.value = disasmPrefs.mode;
     const disasmLines = el("ol", { className: "hex-disasm-lines" });
     const disasmNote = el("p", { className: "hint hex-disasm-note" });
     const disasm = el("div", { className: "hex-disasm" }, disasmLines, disasmNote);
     let disasmTimer = null, disasmAsked = 0, disasmKey = null;
+    // A program (an ELF or a PE; see exe-info.js), once what it says of
+    // itself is read: {info, map}. Its code is disassembled at the address
+    // it's loaded at, not its offset in the file, so that what it shows and
+    // goes to is as the program has it (the two differ by a different
+    // amount in each section). placeOf(offset) is the loaded section there
+    // and how far its addresses are from its offsets, or null: bytes that
+    // aren't loaded, or no program, are disassembled at their offsets.
+    let program = null, readProgram = () => {};
+    const placeOf = (offset) => {
+        const address = program?.map.addressOf(offset);
+        if (address == null) return null;
+        const section = program.map.sectionAt(offset);
+        return { section, shift: address - offset, end: section.offset + section.size };
+    };
+    // A symbol and how far in: main, main+0x10. short: no more of a long
+    // name (a C++ or Rust one can be hundreds of letters) than fits a line.
+    const symbolText = (at) => (at ? at.name + (at.delta ? `+0x${at.delta.toString(16)}` : "") : "");
+    const short = (name) => (name.length > 80 ? `${name.slice(0, 60)}…${name.slice(-16)}` : name);
     // An instruction's text, the addresses in it that it goes to or names
     // (targets), and are in the file, links to them: 018Ch, as iced shows
-    // hex, or 0x18c.
-    const withTargets = (text, targets = []) => {
+    // hex, or 0x18c. In a program's loaded code (mapped), they're its
+    // addresses: a link goes to where in the file that is, if it's there
+    // (.bss's isn't), and the symbol there is named after it.
+    const withTargets = (text, targets = [], mapped = false) => {
         const out = [];
         let last = 0;
         for (const m of text.matchAll(/\b(?:[0-9][0-9a-f]*h|0x[0-9a-f]+)\b/gi)) {
             const v = Number(BigInt("0x" + m[0].replace(/^0x|h$/gi, "")));
-            if (!targets.includes(v) || v >= size) continue;
-            out.push(text.slice(last, m.index), el("button", { type: "button", className: "hex-disasm-target", textContent: m[0],
-                title: `Go to 0x${v.toString(16)}`, value: String(v) }));
+            if (!targets.includes(v)) continue;
+            const offset = mapped ? program.map.offsetOf(v) : v, name = mapped ? symbolText(program.map.symbolAt(v)) : "";
+            const there = offset != null && offset < size;
+            if (!there && !name) continue;
+            out.push(text.slice(last, m.index), there ? el("button", { type: "button", className: "hex-disasm-target", textContent: m[0],
+                title: `Go to 0x${offset.toString(16)}`, value: String(offset) }) : m[0]);
+            if (name) out.push(el("span", { className: "hex-disasm-symbol", textContent: ` <${short(name)}>`, title: name }));
             last = m.index + m[0].length;
         }
         out.push(text.slice(last));
         return out.filter((p) => p !== "");
     };
+    // The code at offset begin as instructions: in a program's section
+    // (place), read at its address there; each line's offset is still where
+    // it is in the file, which is what's shown, selected and written, with
+    // its address beside it (and its targets are addresses).
+    const disassembleAt = (code, begin, mode, max, place) => (!place ? disassemble(code, begin, mode, max)
+        : disassemble(code, begin + place.shift, mode, max).then((lines) => lines.map((line) => ({ ...line, offset: line.offset - place.shift, address: line.offset }))));
     const runDisasm = async () => {
         if (!selected || !lastRange) {
             disasmKey = null;
@@ -654,40 +719,55 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             disasmNote.textContent = "Those bytes aren't loaded here.";
             return;
         }
-        const end = Math.min(n > 1 ? selected.end : begin + DISASM_WINDOW, begin + DISASM_BYTES, loaded, size);
+        // In a program's loaded section: no further than its end, as what's
+        // after is loaded elsewhere.
+        const place = placeOf(begin), within = Math.min(loaded, size, place?.end ?? Infinity);
+        const end = Math.min(n > 1 ? selected.end : begin + DISASM_WINDOW, begin + DISASM_BYTES, within);
         const mode = disasmBitness.value, bitness = x86Bitness(mode);
-        const canAssemble = !!editor && !!bitness;
-        const key = `${begin}-${end}-${mode}#${changes}${editor ? "e" : ""}`;
+        const as = assembledAs(mode), canAssemble = !!editor && as != null;
+        const key = `${begin}-${end}-${mode}#${changes}${editor ? "e" : ""}${place ? `@${place.shift}` : ""}`;
         if (key === disasmKey) {
             disasm.classList.toggle("editable", canAssemble);
             return;
         }
         const mine = ++disasmAsked;
-        const code = bytesFrom(lastRange, begin, end);
+        const code = bytesFrom(lastRange, begin, Math.min(end + DISASM_AHEAD, within));
         const hexOfRun = (offset, length) => hexBytes(code.subarray(offset - begin, offset - begin + length), " ");
         try {
-            const lines = await disassemble(code.slice(), begin, mode, DISASM_LINES);
+            // Those that start in the bytes asked for; the last may end after.
+            const lines = (await disassembleAt(code.slice(), begin, mode, DISASM_LINES, place)).filter((l) => l.offset < end);
             if (mine !== disasmAsked) return;
             disasmKey = key;
             asmEdit = null;
+            const items = [];
+            // (An address can be longer than an offset's 8 digits: the column as wide as the longest.)
+            const digits = Math.max(8, ...lines.map((line) => (line.address ?? line.offset).toString(16).length));
+            disasmLines.style?.setProperty?.("--hex-disasm-at", `${digits}ch`);
             const rows = lines.map((line) => {
                 const { offset, length, text } = line;
-                const parts = [el("span", { className: "hex-disasm-at", textContent: offset.toString(16).padStart(8, "0") }),
+                // In a program, by its address (where in the file, on hovering);
+                // and under the name of what begins there.
+                const at = line.address ?? offset, label = place ? program.map.symbolAt(at) : null;
+                if (label?.delta === 0) items.push(el("li", { className: "hex-disasm-label", textContent: `${short(label.name)}:`, title: label.name }));
+                const parts = [el("span", { className: "hex-disasm-at", textContent: at.toString(16).padStart(digits, "0"), title: place ? `0x${offset.toString(16)} in the file` : "" }),
                     el("span", { className: "hex-disasm-bytes", textContent: hexOfRun(offset, length), title: hexOfRun(offset, length) }),
-                    el("span", { className: "hex-disasm-text", title: text }, ...withTargets(text, line.targets))];
+                    el("span", { className: "hex-disasm-text", title: text }, ...withTargets(text, line.targets, !!place))];
                 const li = el("li", { className: text === "(bad)" ? "hex-disasm-line bad" : "hex-disasm-line", title: canAssemble ? "Click to change this instruction" : "" }, ...parts);
+                items.push(li);
                 return { li, line, parts };
             });
-            disasmShown = { rows, lines, mode, bitness };
+            disasmShown = { rows, lines, mode, as, place };
             disasm.classList.toggle("editable", canAssemble);
-            disasmLines.replaceChildren(...rows.map((r) => r.li));
+            disasmLines.replaceChildren(...items);
             disasmNote.textContent = [lines.length >= DISASM_LINES ? `The first ${DISASM_LINES} instructions.`
                 : n <= 1 ? `The ${end - begin} bytes from 0x${begin.toString(16)}; select bytes to disassemble just those.`
                 : end < selected.end ? `The first ${(end - begin).toLocaleString()} bytes of the selection.` : "",
                 canAssemble && lines.length ? "Click an instruction to change it." : "",
-                !bitness ? "Addresses are file offsets; instruction editing is available for x86." : "",
-                ["arm64", "arm32", "thumb"].includes(mode) ? "Little-endian instructions." : "",
-                !bitness && begin % (mode === "thumb" ? 2 : 4) ? "The selection starts at an unaligned address." : ""].filter(Boolean).join(" ");
+                place ? (program.info.relocatable ? "Addresses are file offsets: this isn't linked yet, so what it calls isn't filled in."
+                    : `Addresses are where ${place.section.name || "this"} is loaded${as == null ? "; instruction editing is available for x86, ARM64, RISC-V and MIPS" : ""}.`)
+                : !bitness || program ? `Addresses are file offsets${program ? " (these bytes aren't in a section that's loaded)" : ""}${as == null ? "; instruction editing is available for x86, ARM64, RISC-V and MIPS" : ""}.` : "",
+                ["arm64", "arm32", "thumb", "riscv32", "riscv64"].includes(mode) ? "Little-endian instructions." : "",
+                !bitness && begin % (mode === "thumb" || mode.startsWith("riscv") ? 2 : 4) ? "The selection starts at an unaligned address." : ""].filter(Boolean).join(" ");
         } catch (err) {
             if (mine !== disasmAsked) return;
             disasmKey = null;
@@ -703,7 +783,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // nops to the next; one longer goes over the next (listed or not), the
     // last of those that it ends inside filled out with nops, so what's
     // after still reads as it did. Escape (or leaving it) puts it back.
-    let disasmShown = null; // {rows: [{li, line, parts}], lines, mode, bitness}, as listed
+    let disasmShown = null; // {rows: [{li, line, parts}], lines, mode, as}, as listed
     let asmEdit = null; // {row, line, input, busy}
     const closeAsm = () => {
         if (!asmEdit) return;
@@ -714,7 +794,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     };
     const openAsm = (li) => {
         const row = disasmShown?.rows.find((r) => r.li === li);
-        if (!editor || !row || !disasm.classList.contains("editable") || !disasmShown.bitness || disasmShown.mode !== disasmBitness.value || asmEdit?.row === row) return;
+        if (!editor || !row || !disasm.classList.contains("editable") || disasmShown.as == null || disasmShown.mode !== disasmBitness.value || asmEdit?.row === row) return;
         closeAsm();
         const { line } = row;
         const input = el("input", { type: "text", className: "hex-disasm-input", value: line.text === "(bad)" ? "" : line.text,
@@ -742,19 +822,25 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     };
     const submitAsm = async () => {
         const edit = asmEdit;
-        if (!edit || edit.busy || !editor || !disasmShown?.bitness || disasmShown.mode !== disasmBitness.value) return;
+        if (!edit || edit.busy || !editor || disasmShown?.as == null || disasmShown.mode !== disasmBitness.value) return;
         const { line, input } = edit;
         const text = input.value.trim();
         if (!text || text === line.text) {
             closeAsm();
             return;
         }
-        const { lines, bitness, mode } = disasmShown;
+        const { lines, as, mode, place } = disasmShown;
+        // at: where in the file it's written; it's assembled for its
+        // address, which a branch's target is from.
         const at = line.offset, was = changes;
         edit.busy = true;
         let result, following = lines;
         try {
-            result = await assemble(text, at, bitness, bytesFrom(lastRange, at, at + line.length));
+            // ARM64's are four bytes, each over one: not over the odd bytes
+            // at the end of what's there.
+            if (as === "arm64" && line.length !== 4) throw new Error("There aren't the four bytes of an ARM64 instruction here.");
+            if (typeof as === "string" && as.startsWith("mips") && line.length !== 4) throw new Error("There aren't the four bytes of a MIPS instruction here.");
+            result = await assemble(text, line.address ?? at, as, bytesFrom(lastRange, at, at + line.length));
             // Longer than what's listed after it: the instructions it goes
             // over, past the list, found too, so the last is filled out
             // with nops like the rest.
@@ -762,7 +848,8 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             if (at + result.bytes.length > listedEnd) {
                 const loaded = Math.min(lastRange.begin + lastRange.bytes.length, size);
                 if (at + result.bytes.length > loaded) throw new Error("The bytes after it aren't loaded here, so it can't go over them.");
-                const more = await disassemble(bytesFrom(lastRange, listedEnd, Math.min(listedEnd + 64, loaded)), listedEnd, mode, 16);
+                if (place && at + result.bytes.length > place.end) throw new Error(`That would go past the end of ${place.section.name || "its section"}.`);
+                const more = await disassembleAt(bytesFrom(lastRange, listedEnd, Math.min(listedEnd + 64, loaded, place?.end ?? Infinity)), listedEnd, mode, 16, place);
                 following = [...lines, ...more];
             }
         } catch (err) {
@@ -794,9 +881,19 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         let end = at + Math.max(n, line.length);
         const over = following.filter((l) => l.offset > at && l.offset < at + n);
         for (const l of over) end = Math.max(end, l.offset + l.length);
-        const run = new Uint8Array(end - at).fill(0x90);
+        const nop = nopOf(as);
+        // Room that its nops don't fill evenly (an odd byte, in RISC-V)
+        // would be left as part of one.
+        if ((end - at - n) % nop.length) {
+            const why = "There's an odd byte after it here that a nop can't fill.";
+            input.setCustomValidity?.(why);
+            input.reportValidity?.();
+            sayEdit(why, true);
+            return;
+        }
+        const run = Uint8Array.from({ length: end - at }, (_, i) => nop[Math.max(0, i - n) % nop.length]);
         run.set(result.bytes);
-        const nops = run.length - n, plural = (k, word) => `${k} ${word}${k === 1 ? "" : "s"}`;
+        const nops = Math.ceil((run.length - n) / nop.length), plural = (k, word) => `${k} ${word}${k === 1 ? "" : "s"}`;
         const said = `0x${at.toString(16)} to ${result.text}` + (over.length ? `, over the ${plural(over.length, "instruction")} after it` : "")
             + (nops ? `, with ${plural(nops, "nop")} after it` : "");
         if (!writeRun(at, run, said)) {
@@ -830,12 +927,17 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         if (inspector.hidden || inspector.dataset.tab !== "disasm") return;
         disasmTimer = setTimeout(runDisasm, 150);
     };
-    disasmBitness.addEventListener("change", () => { rememberDisasm(inspector.dataset.tab, disasmBitness.value); updateDisasm(); });
+    // The instruction set chosen is remembered; a program's own, which it's
+    // set to when the program is read, isn't (it's the program's, not a choice).
+    let modeChosen = disasmPrefs.mode;
+    disasmBitness.addEventListener("change", () => { modeChosen = disasmBitness.value; rememberDisasm(inspector.dataset.tab, modeChosen); updateDisasm(); });
     // The panel shows the values or the disassembly, a tab each, the one
     // given all of its height (the instruction set chosen at the right of
-    // the tabs); which, remembered.
-    const tabButtons = [["values", "Values"], ["disasm", "Disassembly"]].map(([tab, label]) => {
-        const b = el("button", { type: "button", className: `hex-inspector-tab-${tab}`, textContent: label });
+    // the tabs); which, remembered. A program has a third, of what it says
+    // of itself (not remembered: other files have none).
+    const TABS = [["values", "Values"], ["disasm", "Disassembly"], ["program", "Program"]];
+    const tabButtons = TABS.map(([tab, label]) => {
+        const b = el("button", { type: "button", className: `hex-inspector-tab-${tab}`, textContent: label, hidden: tab === "program" || (tab === "disasm" && !modes.length) });
         b.addEventListener("click", () => showTab(tab));
         return b;
     });
@@ -843,9 +945,92 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         el("span", { className: "hex-inspector-tab-group", role: "group", ariaLabel: "Show" }, ...tabButtons), disasmBitness);
     const showTab = (tab, remember = true) => {
         inspector.dataset.tab = tab;
-        tabButtons.forEach((b, i) => b.setAttribute?.("aria-pressed", String((i === 0) === (tab === "values"))));
-        if (remember) rememberDisasm(tab, disasmBitness.value);
+        tabButtons.forEach((b, i) => b.setAttribute?.("aria-pressed", String(TABS[i][0] === tab)));
+        if (remember && tab !== "program") rememberDisasm(tab, modeChosen);
         updateDisasm();
+    };
+    // Where the selection is in a program: its section, its address, and
+    // the symbol it's at or in; under the tabs, whichever is shown.
+    const programAt = el("p", { className: "hint hex-program-at", hidden: true });
+    const showProgramAt = () => {
+        if (!program) return;
+        const { info, map } = program;
+        if (!selected) {
+            programAt.textContent = `${info.format} ${info.bits}-bit ${info.machine} ${info.kind}`;
+            return;
+        }
+        const section = map.sectionAt(selected.begin), address = map.addressOf(selected.begin);
+        const symbol = address == null ? "" : symbolText(map.symbolAt(address));
+        programAt.textContent = [section ? section.name || "(unnamed section)" : "Not in a section",
+            address != null && !info.relocatable ? `address 0x${address.toString(16)}` : "", short(symbol)].filter(Boolean).join(" · ");
+        programAt.title = symbol.length > 80 ? symbol : "";
+    };
+    // The Program tab: what it is, its sections (each goes to its first
+    // byte) and its symbols, found by a part of their names (each goes to
+    // where it is in the file, if it's there).
+    const programSummary = el("p", { className: "hex-program-summary" });
+    const programSections = el("tbody", {});
+    const symbolFilter = el("input", { type: "search", className: "hex-program-filter", placeholder: "Find a symbol", ariaLabel: "Find a symbol", spellcheck: false, autocomplete: "off" });
+    const symbolList = el("ol", { className: "hex-program-symbols" });
+    const symbolNote = el("p", { className: "hint hex-program-note" });
+    const SYMBOLS_LISTED = 200;
+    // (What a C++ or Rust name's compiler made of it, to see on hovering.)
+    const made = (s) => (s.mangled ? `: ${s.mangled}` : "");
+    const listSymbols = () => {
+        if (!program) return;
+        const { info, map } = program, want = (symbolFilter.value ?? "").trim().toLowerCase();
+        const found = [];
+        let more = false;
+        for (const s of info.symbols) {
+            if (want && !s.name.toLowerCase().includes(want) && !s.mangled?.toLowerCase().includes(want)) continue;
+            if (found.length >= SYMBOLS_LISTED) { more = true; break; }
+            found.push(s);
+        }
+        symbolList.replaceChildren(...found.map((s) => {
+            const offset = map.offsetOf(s.address), there = offset != null && offset < size;
+            const address = el("span", { className: "hex-program-address", textContent: s.address.toString(16).padStart(8, "0") });
+            // (To its bytes, as many as it says it has.)
+            return el("li", {}, address, there ? el("button", { type: "button", className: "hex-program-go", textContent: s.name, title: `Go to 0x${offset.toString(16)}${made(s)}`,
+                value: `${offset}-${Math.min(offset + Math.max(s.size, 1), size)}` }) : el("span", { textContent: s.name, title: `Not in the file${made(s)}` }));
+        }));
+        symbolNote.textContent = !info.symbols.length ? "It has no symbols: they've been stripped from it, or it has none to give."
+            : (more ? `The first ${SYMBOLS_LISTED} of those${want ? " found" : ""}; type more of a name for fewer. ` : !found.length ? "None by that name. " : "")
+                + (info.truncated ? "Not all of its symbols were read: there are too many." : "");
+    };
+    symbolFilter.addEventListener("input", listSymbols);
+    const programPanel = el("div", { className: "hex-program" }, programSummary,
+        el("table", { className: "hex-program-sections" },
+            el("thead", {}, el("tr", {}, ...["Section", "Offset", "Size", "Address", ""].map((h) => el("th", { scope: "col", textContent: h })))), programSections),
+        symbolFilter, symbolList, symbolNote);
+    programPanel.addEventListener("click", (event) => {
+        const slice = event.target?.closest?.(".hex-program-slice");
+        if (slice) {
+            if (program?.info.slice !== Number(slice.value)) readProgram(Number(slice.value));
+            return;
+        }
+        const go = event.target?.closest?.(".hex-program-go");
+        if (!go) return;
+        const [begin, end] = go.value.split("-").map(Number);
+        view.jump(begin, end || undefined);
+    });
+    const showProgram = () => {
+        const { info, map } = program, hex = (v) => `0x${v.toString(16)}`;
+        const entry = info.entry == null ? null : map.offsetOf(info.entry);
+        programSummary.replaceChildren(`${info.format} ${info.bits}-bit ${info.machine} ${info.kind}, ${info.little ? "little" : "big"}-endian. `,
+            ...(info.entry == null ? [] : ["It starts at ", entry != null && entry < size
+                ? el("button", { type: "button", className: "hex-program-go", textContent: hex(info.entry), title: `Go to ${hex(entry)}`, value: String(entry) }) : hex(info.entry),
+                symbolText(map.symbolAt(info.entry)) ? ` (${symbolText(map.symbolAt(info.entry))}). ` : ". "]),
+            `${info.symbols.length.toLocaleString()} symbol${info.symbols.length === 1 ? "" : "s"}.`,
+            // A universal file's programs, each a way to it: this is of the one pressed.
+            ...(info.slices?.length > 1 ? [" This file holds a program for each of: ", ...info.slices.flatMap((s, i) => [i ? ", " : "",
+                el("button", { type: "button", className: "hex-program-slice", textContent: s.machine, value: String(i), ariaPressed: String(i === info.slice),
+                    title: i === info.slice ? `Shown: the one at ${hex(s.offset)}` : `Show the one at ${hex(s.offset)}` })]), "."] : []));
+        programSections.replaceChildren(...info.sections.map((s) => el("tr", {},
+            el("th", { scope: "row" }, s.size ? el("button", { type: "button", className: "hex-program-go", textContent: s.name || "(unnamed)", title: `Go to ${hex(s.offset)}`, value: String(s.offset) })
+                : el("span", { textContent: s.name || "(unnamed)", title: "It has no bytes in the file" })),
+            el("td", { textContent: s.size ? hex(s.offset) : "" }), el("td", { textContent: hex(s.size || s.memSize) }),
+            el("td", { textContent: s.address != null && !info.relocatable ? hex(s.address) : "" }), el("td", { textContent: s.flags }))));
+        listSymbols();
     };
     const inspector = el("aside", { className: "hex-inspector", ariaLabel: "Data inspector", hidden: !inspectorWanted() },
         inspectorTabs,
@@ -853,10 +1038,11 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         el("table", { className: "hex-inspector-values" },
             el("tbody", {}, ...DECODED.map(([type], row) => el("tr", {}, el("th", { scope: "row", textContent: type }), valueCells[row].cell)))),
         el("div", { className: "hex-inspector-actions" }, el("span", { className: "hint", textContent: "Copy as" }), ...copyActions),
-        disasm);
+        programAt, programPanel, disasm);
     showTab(disasmPrefs.tab, false);
     const updateInspector = () => {
         updateDisasm();
+        showProgramAt();
         for (const b of copyActions) if (b.disabled !== !selected) b.disabled = !selected;
         const key = selected && lastRange ? `${selected.begin}@${lastRange.begin}#${changes}` : "";
         if (key === inspected) return;
@@ -1455,7 +1641,61 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         offsetInput.setCustomValidity(""); view.jump(offset);
     });
     offsetInput.addEventListener("input", () => offsetInput.setCustomValidity(""));
-    view.stop = () => { stopped = true; stopResize(); revision++; controller?.abort(); finding?.abort(); clearTimeout(disasmTimer); disasmAsked++; formatDialog.close?.(); formatDialog.remove?.(); };
+    // What a program says of itself, read once the view is up (its tables
+    // may be anywhere in the file, so this can take some reading). Until
+    // it's read, and if the file isn't one or it can't be read, the view is
+    // as it is for any file. Its instruction set is chosen, unless another
+    // has been since.
+    // A universal file (macOS's) holds a program for each of several
+    // machines, one after another: what's read is of one of them (a slice),
+    // the first to begin with, and another when it's chosen in the Program
+    // tab, read then (readProgram; one still being read when another is
+    // asked for is dropped). The instruction set follows it.
+    const programReads = new AbortController();
+    const opened = disasmBitness.value;
+    let programAsked = 0, modeGiven = opened;
+    // A read that failed (the connection; or a fault in the reading, which
+    // would otherwise never be seen) isn't a file that's no program: unless
+    // it was given up with the view, it's put in the console, and said in
+    // the Program tab if there's one to say it in (another of a universal
+    // file's programs was asked for). The view stays as it was.
+    const programFailed = (err) => {
+        if (stopped || err?.name === "AbortError") return null;
+        console.error("What this program says of itself couldn't be read:", err);
+        if (program) symbolNote.textContent = `That couldn't be read: ${err?.message ?? err}`;
+        return null;
+    };
+    readProgram = (slice = 0) => {
+        const mine = ++programAsked;
+        Promise.resolve().then(() => executable(async (begin, end) => (end <= bytes.length ? bytes.slice(begin, end)
+            : new Uint8Array(await readRange(begin, end, { signal: programReads.signal }))), size, { slice })).catch(programFailed).then((info) => {
+            if (!info || stopped || mine !== programAsked) return;
+            program = { info, map: programMap(info) };
+            tabButtons[2].hidden = programAt.hidden = false;
+            if (modes.some(([mode]) => mode === info.mode) && disasmBitness.value === modeGiven && modeChosen === opened) disasmBitness.value = modeGiven = info.mode;
+            showProgram();
+            disasmKey = null;
+            updateInspector();
+            // Its C++ and Rust names as they were written, once they're read
+            // back (in the worker): shown from then on. What the compiler
+            // made of each is kept (mangled), and still found by.
+            const mangled = info.symbols.filter((s) => MANGLED.test(s.name));
+            if (!demangle || !mangled.length) return;
+            demangle(mangled.map((s) => MANGLED.exec(s.name)[2])).then((names) => {
+                if (stopped || program?.info !== info) return;
+                mangled.forEach((s, i) => {
+                    if (!names[i]) return;
+                    const [, before = "", , after = ""] = MANGLED.exec(s.name);
+                    Object.assign(s, { mangled: s.name, name: before + names[i] + after });
+                });
+                showProgram();
+                disasmKey = null;
+                updateInspector();
+            }, () => {});
+        });
+    };
+    if (executable) readProgram();
+    view.stop =() => { stopped = true; stopResize(); revision++; controller?.abort(); finding?.abort(); programReads.abort(); clearTimeout(disasmTimer); disasmAsked++; formatDialog.close?.(); formatDialog.remove?.(); };
     show(0);
     return view;
 }

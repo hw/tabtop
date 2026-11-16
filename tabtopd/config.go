@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/netip"
 	"slices"
 	"time"
@@ -19,6 +20,7 @@ type serverConfig struct {
 	vncX509                               bool
 	vncCAFile, vncServerName, vncUsername string
 	downloadsDir                          string
+	fsRoots, fsHome                       string
 	trustedProxies                        []netip.Prefix
 	trustNProxies                         int
 	termDir, ttyCommand                   string
@@ -32,6 +34,7 @@ type serverConfig struct {
 	backgroundDir                         string // ONNX Runtime Web and U2NetP for image background removal; "" for none
 	segmentDir                            string // MobileSAM ONNX models, for magic select in image editing; "" for none
 	disasmDir                             string // iced-x86 for the browser, for disassembly in hex previews; "" for none
+	disasmOff                             string // the disassemblers turned off: "none", "all", or of x86, arm64, capstone, riscv and mips (see disasmDisabled)
 	sessionMax, sessionIdle               time.Duration
 	audioSink, micSink                    string
 	micCreate                             bool   // make micSink and its source on the audio server
@@ -40,6 +43,7 @@ type serverConfig struct {
 	fetchOn, fetchPrivate                 bool   // fetching from URLs, and from private networks
 	previewFetchPrivate                   bool   // previews' external resources from private networks too
 	activityFile                          string // where the activity log is kept; "" for in memory
+	passkeysFile                          string // where passkeys are kept; "" for in memory
 	shareKeyFile                          string // what share links' tokens are sealed with; "" for a key in memory
 	audioBitrate                          int
 }
@@ -49,8 +53,8 @@ func defaultServerConfig() serverConfig {
 }
 
 func newServer(c serverConfig) (*server, error) {
-	if c.usersFile == "" || !c.fsOff && c.downloadsDir == "" || c.nobleDir == "" {
-		return nil, fmt.Errorf("-users-file, -downloads-dir and -noble-dir are required")
+	if c.usersFile == "" || !c.fsOff && c.downloadsDir == "" && c.fsRoots == "" || c.nobleDir == "" {
+		return nil, fmt.Errorf("-users-file and -noble-dir are required, and -downloads-dir or -fs-roots (WEB_FS_ROOTS) unless files are off")
 	}
 	if c.vncOff && c.fsOff && c.termDir == "" {
 		return nil, fmt.Errorf("enable at least one of VNC, terminal or files")
@@ -96,6 +100,34 @@ func newServer(c serverConfig) (*server, error) {
 	c.trustedProxies = slices.Clone(c.trustedProxies)
 	g := &server{serverConfig: c, authentication: authentication{failures: map[string][]time.Time{}, pending: map[string]int{}}, sessions: map[string]*session{}, ttys: map[string]int{}}
 	g.activity = newActivityLog(c.activityFile, g.clock)
+	if !c.fsOff {
+		g.roots, g.rootProblems, err = parseFileRootsAll(c.fsRoots, c.fsHome, c.downloadsDir)
+		if err != nil {
+			return nil, err
+		}
+		// Not a root holding the gateway's own files (the login's key,
+		// passkeys, the share links' key...): through it they'd be read,
+		// by whoever a folder above them is shared with, and written, by
+		// whoever has a session, which would then be a login for good.
+		state := []string{c.usersFile, c.vncPasswordFile, c.sharesFile, c.shareKeyFile, c.activityFile, c.passkeysFile}
+		g.roots = slices.DeleteFunc(g.roots, func(root *fileRoot) bool {
+			dir := root.Path
+			if dir == "" {
+				dir = c.downloadsDir
+			}
+			held := stateFileIn(dir, state)
+			if held == "" {
+				return false
+			}
+			g.rootProblems = append(g.rootProblems, rootProblem{root.ID, root.Label,
+				fmt.Errorf("it holds TabTop's own files (%s), which Files mustn't reach: expose the folders wanted beside them, not one they're in", held)})
+			return true
+		})
+		for _, p := range g.rootProblems {
+			log.Printf("warning: root %q is unavailable and left out until a restart: %v", p.Label, p.Err)
+		}
+	}
+	g.passkeys = newPasskeyStore(c.passkeysFile)
 	if c.pdfjsDir != "" {
 		g.pdfjsNames = pdfjsFiles(c.pdfjsDir)
 	}
@@ -106,9 +138,27 @@ func newServer(c serverConfig) (*server, error) {
 		}
 	}
 	if c.fetchOn {
-		private := c.fetchPrivate
-		g.fetches = &fetchManager{downloadsDir: c.downloadsDir, transfers: &g.transfers, activity: g.activity,
-			client: newFetchClient(fetchPolicy(private)), resourceClient: newFetchClient(fetchPolicy(c.previewFetchPrivate))}
+		// Previews' external resources, for every root; fetches, only
+		// into the roots that can be written to.
+		g.resourceClient = newFetchClient(fetchPolicy(c.previewFetchPrivate))
+		client := newFetchClient(fetchPolicy(c.fetchPrivate))
+		slots := make(chan struct{}, maxFetches) // across the roots
+		for _, root := range g.roots {
+			if !root.ReadOnly {
+				root.fetches = &fetchManager{files: g.scope(root), activity: g.activity, client: client, slots: slots}
+			}
+		}
+	}
+	if g.shares != nil {
+		// Links to a root only missing for now (an unmounted drive) are
+		// kept: they work again once it's back and TabTop restarts.
+		g.shares.revoke(func(l *shareLink) bool {
+			if slices.ContainsFunc(g.rootProblems, func(p rootProblem) bool { return p.ID == l.Root }) {
+				return false
+			}
+			_, err := g.filesForShare(l)
+			return err != nil
+		})
 	}
 	if c.audioSink != "" {
 		var devices *micDevices

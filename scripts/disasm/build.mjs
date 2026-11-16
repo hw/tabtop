@@ -89,11 +89,25 @@ if (assemblerFile) {
         // absolute one, absolute.
         [64, 0x1000, "mov eax,[0x10]", "8b050af0ffff"], [64, 0x1000, "mov rax,qword ptr fs:[28h]", "64488b042528000000"],
         [64, 0x1000, "mov ecx,[10h]", "8b0c2510000000", "8b042510000000"],
+        // No displacement where none's needed, the other way round where
+        // only that's encoded, and an EVEX encoding's byte of it.
+        [16, 0x100, "mov cx,[bp+si]", "8b0a"], [16, 0x100, "mov cx,[bp]", "8b4e00"], [16, 0x100, "mov ax,[si+bx]", "8b00"],
+        [64, 0x1000, "mov eax,[rax+rsp]", "8b0404"], [64, 0x1000, "vmovups zmm1,[rax+100h]", "62f17c48104804"],
+        [64, 0x1000, "lldt bp", "0f00d5"], [64, 0x1000, "mov al, 'A' ; it's a comment", "b041"], [64, 0x1000, "mov al, ';'", "b03b"],
+        // A branch in a 16-bit file past 64 KB: to the file offset, as shown.
+        [16, 0x12340, "jmp 12352h", "eb10"], [16, 0x10005, "jmp 0FFF0h", "ebe9"], [16, 0x12340, "call 12343h", "e80000"],
     ];
     for (const [bitness, at, text, want, was] of lines)
         assert.equal(hex(assemble(text, at, bitness, was ? Buffer.from(was, "hex") : null).bytes), want, text);
-    for (const [bitness, text] of [[64, "inc [rax]"], [64, "foo eax"], [64, "jmp short 0x2000"], [64, "mov eax, rbx"], [64, "aaa"]])
+    for (const [bitness, text] of [[64, "inc [rax]"], [64, "foo eax"], [64, "jmp short 0x2000"], [64, "mov eax, rbx"], [64, "mov eax, bx"], [64, "aaa"]])
         assert.throws(() => assemble(text, 0x1000, bitness), Error, text);
+    // Not the 16 bits of it that the code's own addresses hold.
+    assert.throws(() => assemble("jmp 2352h", 0x12340, 16), Error);
+    assert.equal(self.x86BranchTarget(iced, ...(() => {
+        const decoder = new iced.Decoder(16, Uint8Array.of(0xeb, 0x10), iced.DecoderOptions.None);
+        decoder.ip = 0x12340n;
+        return [decoder.decode(), 16];
+    })()), 0x12352n);
     // Random bytes, as each mode decodes them: whatever's shown assembles
     // to what's shown again (or, rarely, can't be; never another).
     const formatter = new iced.Formatter(iced.FormatterSyntax.Intel);
@@ -126,6 +140,8 @@ if (assemblerFile) {
             const text2 = formatter.format(back), ripRelative2 = back.isIpRelMemoryOperand;
             back.free();
             again.free();
+            // No longer than it was: it would go over the instruction after.
+            assert.ok(result.bytes.length <= was.length, `${bitness}-bit ${text} (${hex(was)}) came back longer, as ${hex(result.bytes)}`);
             assert.ok((text2 === text || text2.replace(" short ", " ") === text) && ripRelative2 === ripRelative,
                 `${bitness}-bit ${text}${ripRelative ? " (RIP-relative)" : ""} came back as ${text2}${ripRelative2 ? " (RIP-relative)" : ""}`);
             assembled++;

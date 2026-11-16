@@ -1,5 +1,6 @@
 // Format-specific views for buffered files; their DOM is inert or constructed
 // by the existing table/JSON renderers. The controller owns their lifetime.
+import { readOnlyRoot } from "./fs-context.js";
 import { el } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { languageOf, jsonLines } from "./preview-model.js";
@@ -211,7 +212,7 @@ export function zipListing(entries, actions) {
         const over = selected.size > 1000 || total > 512n * (1n << 20n);
         selectionSummary.textContent = `${selected.size} file${selected.size === 1 ? "" : "s"} selected · ${sizeLabel(total)}` +
             (hidden ? ` · ${hidden} not shown` : "") + (over ? " · Exceeds limit" : "");
-        extractSelected.disabled = busy || !selected.size || over;
+        extractSelected.disabled = readOnlyRoot() || busy || !selected.size || over;
         downloadSelected.disabled = busy || !selected.size || over;
         clear.disabled = busy || !selected.size;
     };
@@ -372,7 +373,7 @@ export function zipListing(entries, actions) {
             save.hidden = !download;
             save.addEventListener("click", () => entry?.extractable && runDownload([entry.index]));
             const take = el("button", { type: "button", className: "zip-extract-one glyph",
-                disabled: !canTake,
+                disabled: !canTake || readOnlyRoot(),
                 title: entry?.extractable ? "Extract into a new folder beside the ZIP" : unavailable || "Unavailable" });
             take.setAttribute("aria-label", entry?.extractable ? `Extract ${entry.name}` : (unavailable || "Extract unavailable"));
             take.innerHTML = iconSVG("extract");

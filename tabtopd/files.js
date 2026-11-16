@@ -1,10 +1,11 @@
 // The files page, served by tabtopd (see tunnel.go). It lists ~/Downloads
 // and fetches files through the encrypted tunnel; the folder shown is the
 // path after "#". Files download (see download.js), never shown as a page
-// on this site; pictures, video, sound and text open in a preview instead,
+// on this site; files open in a preview by default,
 // where they're small enough (see preview.js), SQLite databases as their
-// tables, and binaries (.bin, .dll, .exe, .so) in hex; any other file can
-// be previewed from its menu, in hex if nothing else. A folder, or several files
+// tables, and binaries (.bin, .dll, .exe, .so) in hex. Unknown types open
+// as text or hex up to the unknown-text limit; larger files download. Any
+// file can still be previewed from its menu. A folder, or several files
 // and folders picked with their checkboxes, download as one zip. Files and
 // folders dropped or pasted on the page are uploaded into the folder shown,
 // as are those picked with its buttons (see drop.js, uploadFile and
@@ -19,21 +20,26 @@
 // recent logins (see showSessions). If the server can't be reached, it says
 // so and tries again (see reconnect.js).
 
+import { filesystemRoot, filesystemRoots, rootStorageScope, updateFilesystemRoot, ensureFilesystemRoots, rootLabel, rootPath, readOnlyRoot } from "./fs-context.js";
 import { createFileActions, MOVE_TYPE } from "./files-actions.js";
 import { glyphs, iconSVG } from "./glyphs.js";
+import { openImageDiff, comparableImages } from "./image-diff-view.js";
+import { openTextDiff, loadDiffText, comparableText } from "./text-diff-view.js";
 import { FolderModel } from "./folder-model.js";
 import { createTimeFormatter, humanBytes } from "./file-format.js";
 import { createSessionView } from "./sessions-view.js";
 import { deleteFiles, dropUploads } from "./drop.js";
-import { askName, rowMenu, statusRow } from "./ui.js";
+import { askName, askYes, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
 import { call, createFile, folderInfo, makeFolder, uploadFile } from "./requests.js";
 import { fetchFile, fetchZip } from "./download.js";
 import { preview, previewable } from "./preview.js";
-import { binaryNamed, probablyDatabase, typeOf } from "./preview-model.js";
+import { openSearch } from "./search-view.js";
+import { thumbnail, thumbnailable } from "./thumbnails.js";
+import { binaryNamed, probablyDatabase, typeOf, unknownTextSize } from "./preview-model.js";
 import { reconnect, reconnected } from "./reconnect.js";
 import { warnExpiry } from "./expiry.js";
-import { storeJSON, storedJSON } from "./stored.js";
+import { storeJSON, storedJSON, stored, store } from "./stored.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -43,7 +49,8 @@ const timeFormatter = createTimeFormatter();
 const { setTimeZone, friendlyTime, exactTime } = timeFormatter;
 const page = document.createElement("main");
 const nav = navBar("files", { logOutIcon: true });
-document.body.replaceChildren(nav, page);
+const rootBar = document.createElement("div"); rootBar.className = "filesystem-roots";
+document.body.replaceChildren(nav, rootBar, page);
 nameTab("files");
 
 // The sessions and recent logins show in place of a folder, at this
@@ -52,6 +59,8 @@ nameTab("files");
 // address, with the button beside it (see showShares).
 const SECURITY = "#sessions";
 const onSecurity = () => location.hash === SECURITY || location.hash === "#activity";
+const TRASH = "#trash";
+const onTrash = () => location.hash === TRASH;
 const SHARES = "#shares";
 const onShares = () => location.hash === SHARES;
 let lastDir = "";
@@ -71,6 +80,14 @@ shares.addEventListener("click", () => {
     location.hash = onShares() ? dirHash(lastDir) : SHARES;
 });
 security.after(shares);
+const TRASH_TITLE = "Trash";
+const trashButton = el("button", { type: "button", className: "trash", title: TRASH_TITLE });
+trashButton.setAttribute("aria-label", TRASH_TITLE);
+trashButton.innerHTML = iconSVG("trash");
+trashButton.addEventListener("click", () => {
+    location.hash = onTrash() ? dirHash(lastDir) : TRASH;
+});
+shares.after(trashButton);
 const { checkSecurity, showSessions, showShares: showShareLinks } = createSessionView({ security, formatTime: timeFormatter.shortTime });
 
 function el(tag, props = {}, ...children) {
@@ -82,7 +99,7 @@ function el(tag, props = {}, ...children) {
 // currentDir is the folder shown, or, while the sessions or share links
 // are shown, the last folder, which uploads dropped then go into.
 function currentDir() {
-    if (onSecurity() || onShares()) {
+    if (onSecurity() || onShares() || onTrash()) {
         return lastDir;
     }
     const p = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
@@ -90,7 +107,7 @@ function currentDir() {
 }
 
 const join = (dir, name) => (dir ? `${dir}/${name}` : name);
-const { deletion, rename, moveTarget, askMove, copyPath, share, fetchURL, followOnce, uploadLink, directLink, directDownload } = createFileActions({ show, exactTime, el, join });
+const { deletion, rename, moveTarget, askMove, askCopy, otherRoots, copyPath, share, fetchURL, followOnce, uploadLink, directLink, directDownload } = createFileActions({ show, exactTime, el, join });
 
 function button(className, textContent, onClick) {
     const b = el("button", { type: "button", className, textContent });
@@ -114,6 +131,18 @@ const folder = new FolderModel();
 // With refresh, it's the folder shown, listed again because it changed,
 // and the sessions below aren't.
 async function show({ refresh = false } = {}) {
+    try { await ensureFilesystemRoots(call); drawRoots(); if (!placeRestored) {placeRestored=true;restorePlace();} }
+    catch (err) {
+        drawRoots();
+        // Sessions, passkeys and links don't need the folder: with a root
+        // that's gone (an old bookmark), they're still to be reached.
+        if (err.lost || !(onSecurity() || onShares())) {
+            page.replaceChildren(el("p", { className: "error", textContent: err.message }), button("", "Retry", () => show()));
+            if (err.lost) reconnect("Can't reach the server.", () => show());
+            return false;
+        }
+    }
+    trashButton.setAttribute("aria-pressed", String(onTrash()));
     security.setAttribute("aria-pressed", String(onSecurity()));
     shares.setAttribute("aria-pressed", String(onShares()));
     if (onSecurity()) {
@@ -124,6 +153,7 @@ async function show({ refresh = false } = {}) {
         showShares();
         return true;
     }
+    if (onTrash()) { return showTrash(); }
     const me = folder.begin();
     let dir, t;
     try {
@@ -154,7 +184,7 @@ async function show({ refresh = false } = {}) {
         }
         stopChanges();
         folder.dir = null;
-        page.replaceChildren(el("h1", { className: "crumbs", textContent: "~/Downloads" }), el("p", { className: "error", textContent: err.message }),
+        page.replaceChildren(el("h1", { className: "crumbs", textContent: rootPath() }), el("p", { className: "error", textContent: err.message }),
             el("p", {}, el("a", { href: "#/", textContent: "Back to the top" })));
         return true;
     }
@@ -162,6 +192,7 @@ async function show({ refresh = false } = {}) {
     if (!folder.current(me)) {
         return true;
     }
+    if (t.reply.root) {updateFilesystemRoot(t.reply.root);drawRoots();}
     restoring = false;
     // The same folder drawn again keeps what's typed, ticked and focused.
     const kept = dir === folder.dir ? keepState() : null;
@@ -175,7 +206,7 @@ async function show({ refresh = false } = {}) {
 
 // Rendering consumes model state; requests and stale-response policy stay in show.
 function renderFolder({ dir, reply, kept, arrived, refresh }) {
-    document.title = "Downloads /" + (dir ? dir + "/" : "");
+    document.title = rootLabel() + " /" + (dir ? dir + "/" : "");
 
     if (!refresh) {
         checkSecurity();
@@ -186,10 +217,29 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     setTimeZone(reply.tz || undefined);
     const selected = folder.selected;
     const count = el("span");
+    const compare = button("compare-files", "Compare text", () => {
+        const entries = [...selected.values()];
+        if (!comparableText(entries)) return;
+        const sides = entries.map(e => ({ name: e.name, label: join(dir, e.name), load: signal => loadDiffText(join(dir, e.name), signal) }));
+        openTextDiff({ left: sides[0], right: sides[1] });
+    });
+    compare.title = "Compare these two text files, side by side";
+    const compareImages = button("compare-images", "Compare images", () => {
+        const entries = [...selected.values()];
+        if (!comparableImages(entries)) return;
+        const [a, b] = entries.map(entry => ({ name: entry.name, path: join(dir, entry.name) }));
+        openImageDiff({ a, b });
+    });
+    compareImages.title = "Compare these two images: A / B / delta";
+    // Each comparison is offered only while what's selected can be compared
+    // so (see updateSelection): two text files, or two images.
+    compare.hidden = compareImages.hidden = true;
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
-        button("move", "Move to…", () => askMove(dir, [...selected.keys()])),
-        button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show)),
+        compare, compareImages,
+        ...(!readOnlyRoot() ? [button("move", "Move to…", () => askMove(dir, [...selected.keys()]))] : []),
+        ...(otherRoots().length ? [button("copy-to", "Copy to…", () => askCopy(dir, [...selected.keys()]))] : []),
+        ...(!readOnlyRoot() ? [button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show))] : []),
         button("", "Clear selection", () => {
             selected.clear();
             drawRows();
@@ -197,9 +247,10 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     // The filter box narrows the list to names with what's typed in them;
     // "Select all" then picks those shown.
     let visible = entries;
-    const filter = el("input", { type: "search", className: "filter", placeholder: "Filter this folder  ( / )", autocomplete: "off",
+    const filter = el("input", { type: "search", className: "filter", placeholder: "Filter this folder  (Ctrl+G or /)", autocomplete: "off",
         spellcheck: false, value: folder.filter });
     filter.setAttribute("aria-label", "Filter this folder");
+    filter.setAttribute("aria-keyshortcuts", "Control+g /");
     const matches = el("span", { className: "hint" });
     filter.addEventListener("input", () => {
         folder.filter = filter.value;
@@ -209,6 +260,8 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     const updateSelection = () => {
         const picked = visible.filter((e) => selected.has(e.name)).length;
         selection.hidden = !selected.size;
+        compare.hidden = !comparableText([...selected.values()]);
+        compareImages.hidden = !comparableImages([...selected.values()]);
         const pickedFiles = [...selected.values()].filter(e => !e.dir);
         const bytes = pickedFiles.reduce((n, e) => n + (e.bytes ?? 0), 0);
         const folders = selected.size - pickedFiles.length;
@@ -236,7 +289,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         th.dataset.key = key;
         return th;
     };
-    head.append(el("th", { className: "sel" }, all), sortButton("name", "Name"), sortButton("size", "Size"),
+    head.append(el("th", { className: "sel" }, all), el("th", { className: "thumb" }), sortButton("name", "Name"), sortButton("size", "Size"),
         sortButton("time", "Modified"), el("th", { className: "act" }));
 
     const drawRows = () => {
@@ -247,10 +300,12 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         }
         // Focus in the list stays on the same row as it's redrawn.
         const focused = document.activeElement?.closest?.("tbody tr")?.dataset.name;
+        const thumbs = thumbnailsFor();
         const rows = [];
         if (dir) {
             const up = dir.split("/").slice(0, -1).join("/");
-            const tr = el("tr", {}, el("td", { className: "sel" }), el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
+            const tr = el("tr", {}, el("td", { className: "sel" }), el("td", { className: "thumb" }, el("span", { className: "thumb-icon", textContent: glyphs.upFolder })),
+                el("td", { className: "name" }, el("a", { href: dirHash(up), textContent: "../" })),
                 el("td", { className: "size" }), el("td", { className: "mod" }), el("td"));
             tr.dataset.name = "..";
             moveTarget(tr, dir, up);
@@ -267,7 +322,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
             const position = { x: scrollX, y: scrollY };
             preview(dir, alone ? [e] : previews, alone ? 0 : previews.indexOf(e), fetchFile, { mode, direct: reply.share ? directDownload : null,
                 restoreFocus: () => {
-                    if (onSecurity() || onShares() || currentDir() !== dir) return;
+                    if (onSecurity() || onShares() || onTrash() || currentDir() !== dir) return;
                     const row = [...page.querySelectorAll(".file-table tbody tr")].find(tr => tr.dataset.name === e.name);
                     const target = row?.querySelector("td.name a") ?? page.querySelector("input.filter");
                     target?.focus({ preventScroll: true });
@@ -282,7 +337,10 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
             if (!e.dir) {
                 link.addEventListener("click", (ev) => {
                     ev.preventDefault();
-                    canPreview ? open(e) : binaryNamed(e.name) ? open(e, "hex", true) : probablyDatabase(e.name) ? open(e, "auto", true) : fetchFile(path);
+                    if (canPreview) open(e);
+                    else if (binaryNamed(e.name)) open(e, "hex", true);
+                    else if (probablyDatabase(e.name) || !typeOf(e.name) && (e.bytes ?? 0) <= unknownTextSize) open(e, "auto", true);
+                    else fetchFile(path);
                 });
             }
             const box = el("input", { type: "checkbox", title: `Select ${e.name}`, checked: selected.has(e.name) });
@@ -291,21 +349,22 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
                 updateSelection();
             });
             const menu = rowMenu(`Actions for ${e.name}`, [
+                ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
+                ...(reply.share ? [["direct", "Direct Download", () => directLink(path, e.dir)]] : []),
                 // Every file: its own preview, or text, where it has one
                 // and isn't too big for it; otherwise, an unknown type as
                 // text or hex as its bytes are, a known one in hex (see
                 // loadPreview).
                 ...(canPreview ? [["preview", "Preview", () => open(e)]]
                     : !e.dir ? [["preview", "Preview", () => open(e, typeOf(e.name) ? null : binaryNamed(e.name) ? "hex" : "auto", true)]] : []),
-                ...(e.dir ? [["zip", "Download as .zip", () => fetchZip(dir, [e.name])]] : [["download", "Download", () => fetchFile(path)]]),
-                ["rename", "Rename…", () => rename(dir, e)],
-                ["move", "Move to…", () => askMove(dir, [e.name])],
+                ...(!readOnlyRoot() ? [["rename", "Rename…", () => rename(dir, e)],
+                ["move", "Move to…", () => askMove(dir, [e.name])]] : []),
+                ...(otherRoots().length ? [["copy-to", "Copy to…", () => askCopy(dir, [e.name])]] : []),
                 ["copy", "Copy path", () => copyPath(path)],
-                ...(reply.share ? [["share", "Share…", () => share(path, e.dir)],
-                    ["direct", "Direct Download", () => directLink(path, e.dir)]] : []),
-                ["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)],
+                ...(reply.share ? [["share", "Share…", () => share(path, e.dir)]] : []),
+                ...(!readOnlyRoot() ? [["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)]] : []),
             ]);
-            const tr = el("tr", { draggable: true }, el("td", { className: "sel" }, box), el("td", { className: "name" }, link),
+            const tr = el("tr", { draggable: !readOnlyRoot() }, el("td", { className: "sel" }, box), thumbs.cell(path, e, link), el("td", { className: "name" }, link),
                 el("td", { className: "num size", textContent: e.size ?? "", title: e.dir ? "" : `${(e.bytes ?? 0).toLocaleString()} bytes` }),
                 el("td", { className: "num mod", textContent: e.time ? friendlyTime(e.time) : e.modified,
                     title: e.time ? exactTime(e.time) : "" }),
@@ -315,7 +374,7 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
             // ticked if it's one of them.
             tr.addEventListener("dragstart", (ev) => {
                 const names = selected.has(e.name) ? [...selected.keys()] : [e.name];
-                ev.dataTransfer.setData(MOVE_TYPE, JSON.stringify({ dir, names }));
+                ev.dataTransfer.setData(MOVE_TYPE, JSON.stringify({ root: filesystemRoot().id, dir, names }));
                 ev.dataTransfer.effectAllowed = "move";
             });
             if (e.dir) {
@@ -324,9 +383,9 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
             rows.push(tr);
         }
         if (!entries.length) {
-            rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: "No files yet." })));
+            rows.push(el("tr", {}, el("td", { colSpan: 6, textContent: "No files yet." })));
         } else if (!visible.length) {
-            rows.push(el("tr", {}, el("td", { colSpan: 5, textContent: `Nothing here has “${filter.value.trim()}” in its name.` })));
+            rows.push(el("tr", {}, el("td", { colSpan: 6, textContent: `Nothing here has “${filter.value.trim()}” in its name.` })));
         }
         tbody.replaceChildren(...rows);
         updateSelection();
@@ -371,15 +430,15 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     }
     page.replaceChildren(
         crumbs,
-        ...(entries.length ? [el("div", { className: "find" }, filter, matches)] : []),
+        el("div", { className: "find" }, filter, searchButton(dir), viewButton(), matches),
         selection,
-        el("table", { className: "file-table" }, el("thead", {}, head), tbody),
+        el("table", { className: "file-table" + (gridView() ? " grid" : "") }, el("thead", {}, head), tbody),
         ...(reply.truncated ? [el("p", { className: "error", textContent: `This folder has more than ${reply.max} entries, ` +
             `so only ${reply.max} of them are shown, chosen in no particular order.` })] : []),
-        el("p", { className: "upload" }, uploadButton(), newFolder, newFile,
+        ...(!readOnlyRoot() ? [el("p", { className: "upload" }, uploadButton(), newFolder, newFile,
             ...(reply.fetch ? [button("fetch-url", "Fetch from URL…", () => fetchURL(dir))] : []),
             ...(reply.share ? [button("upload-link", "Upload link…", () => uploadLink(dir))] : []),
-            el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." })),
+            el("span", { className: "hint", textContent: "Or drop files or folders on this page. They go into this folder, end-to-end encrypted." }))] : []),
         ...(reply.total ? [diskSpace(reply.free, reply.total)] : []));
     if (arrived) {
         scrollTo(0, scrolls.get(dir) ?? 0);
@@ -503,7 +562,8 @@ document.addEventListener("visibilitychange", () => {
 // How far down each folder shown in this visit was scrolled, to go back
 // there; and, kept for the next visit where the browser allows, the last
 // folder shown and how far down it was.
-const PLACE_KEY = "tabtop-files-place";
+const placeKey = () => "tabtop-files-place:" + rootStorageScope();
+let placeRestored = false;
 const scrolls = new Map();
 
 // Set while showing the folder last shown, from the last visit.
@@ -523,7 +583,7 @@ function savePlace() {
     if (folder.dir === null) {
         return;
     }
-    storeJSON(PLACE_KEY, { dir: folder.dir, y: Math.round(scrolls.get(folder.dir) ?? 0) });
+    storeJSON(placeKey(), { dir: folder.dir, y: Math.round(scrolls.get(folder.dir) ?? 0) });
 }
 
 // restorePlace goes to the folder last shown, if the page was opened
@@ -532,7 +592,7 @@ function restorePlace() {
     if (location.hash) {
         return;
     }
-    const place = storedJSON(PLACE_KEY);
+    const place = storedJSON(placeKey(), filesystemRoot().id === "downloads" ? storedJSON("tabtop-files-place") : null);
     if (typeof place?.dir === "string" && place.dir) {
         history.replaceState(null, "", dirHash(place.dir));
         restoring = true;
@@ -556,7 +616,7 @@ function breadcrumbs(dir) {
     const parts = dir ? dir.split("/") : [];
     const h1 = el("h1", { className: "crumbs" });
     // As a path, the way the terminal shows it: ~/Downloads/a/b.
-    const names = ["~/Downloads", ...parts];
+    const names = [rootPath(), ...parts];
     names.forEach((name, i) => {
         if (i) {
             h1.append(el("span", { className: "sep", textContent: "/" }));
@@ -665,16 +725,221 @@ function showShares() {
     showShareLinks(box);
 }
 
+// Trash has its own listing generation so late responses never replace a
+// folder. It shows every root's Trash at once (see routeTrashAll), each
+// entry restored, or deleted, through its own root.
+async function showTrash() {
+    const me = folder.begin();
+    stopChanges();
+    folder.dir = null;
+    document.title = "Trash";
+    page.replaceChildren(el("h1", { textContent: "Trash" }), el("p", { textContent: "Loading…" }));
+    let roots = new Map();
+    // run does type to entry, or with none empties every root's Trash that
+    // has anything in it and can be changed.
+    const run = async (type, entry) => {
+        const root = entry ? roots.get(entry.root) : null;
+        if (entry && (!root || root.read_only)) return;
+        const emptied = [...roots.values()].filter((r) => r.count && !r.read_only);
+        const where = (r) => roots.size > 1 ? ` in ${r.label}` : "";
+        const message = entry ? `Permanently delete ${entry.path}${where(root)}? This can't be undone.`
+            : `Permanently delete everything in Trash${roots.size > 1 ? ` (in ${emptied.map((r) => r.label).join(", ")})` : ""}? This can't be undone.`;
+        if (type !== "trash-restore" && !(await askYes(message, "Delete permanently"))) return;
+        for (const r of entry ? [root] : emptied) {
+            const row = statusRow(entry ? entry.path : `Trash${where(r)}`);
+            try {
+                const t = await call({ type, root: r.id, root_version: r.version, ...(entry ? { name: entry.id } : {}) });
+                const reply = t.reply;
+                t.close();
+                row.set(type === "trash-restore" ? `Restored to ${(r.shell_path ?? r.label).replace(/\/$/, "")}/${reply.path}` : "Permanently deleted");
+            } catch (err) { row.set(err.message, true); }
+            row.finish();
+        }
+        if (onTrash()) await showTrash();
+    };
+    try {
+        const t = await call({ type: "trash-all" });
+        const reply = t.reply;
+        t.close();
+        if (!folder.current(me) || !onTrash()) return true;
+        roots = new Map(reply.roots.map((r) => [r.id, { ...r, count: 0 }]));
+        for (const entry of reply.entries) roots.get(entry.root).count++;
+        const many = roots.size > 1;
+        const body = el("tbody");
+        for (const entry of reply.entries) {
+            const root = roots.get(entry.root);
+            const tr = el("tr", {},
+                ...(many ? [el("td", { textContent: root.label })] : []),
+                el("td", { textContent: entry.path + (entry.dir ? "/" : "") }),
+                el("td", { textContent: humanBytes(entry.bytes) }),
+                el("td", { textContent: friendlyTime(new Date(entry.deleted).getTime() / 1000), title: entry.deleted }),
+                el("td", {}, ...(!root.read_only ? [button("", "Restore", () => run("trash-restore", entry)),
+                    button("delete", "Delete permanently…", () => run("trash-delete", entry))] : [])));
+            tr.dataset.key = `${entry.root}/${entry.id}`;
+            body.append(tr);
+        }
+        const failed = reply.roots.filter((r) => r.error);
+        const readOnly = reply.roots.filter((r) => r.read_only && !r.error);
+        const canEmpty = [...roots.values()].some((r) => r.count && !r.read_only);
+        page.replaceChildren(el("h1", { textContent: "Trash" }),
+            el("p", { textContent: `Items are kept for up to ${reply.days} days. ${many ? "Each folder's" : "Trash"} holds up to ${humanBytes(reply.max_bytes)} and ${reply.max_items.toLocaleString("en-US")} items; the oldest items are removed first.` }),
+            ...readOnly.map((r) => el("p", { className: "hint", textContent: `${r.label} is read-only: restore, permanent deletion and retention cleanup are paused there.` })),
+            ...failed.map((r) => el("p", { className: "error", textContent: `${r.label}: ${r.error}` })),
+            el("p", {}, button("", "Back to files", () => { location.hash = dirHash(lastDir); }),
+                button("", "Refresh", () => showTrash()),
+                ...(canEmpty ? [button("delete", "Empty Trash…", () => run("trash-empty"))] : [])),
+            ...(reply.entries.length ? [el("table", { className: "file-table" },
+                el("thead", {}, el("tr", {}, ...[...(many ? ["Folder"] : []), "Original path", "Size", "Deleted", "Actions"].map(textContent => el("th", { textContent })))), body)]
+                : [el("p", { textContent: "Trash is empty." })]));
+    } catch (err) {
+        if (folder.current(me) && onTrash()) page.replaceChildren(el("h1", { textContent: "Trash" }),
+            el("p", { className: "error", textContent: err.message }), button("", "Retry", () => showTrash()));
+    }
+    return true;
+}
+
+// The roots to switch between: beside the heading, whose path already says
+// which one this is, so only a ▾ that opens the list of them (a select over
+// it, unseen), and none with a single root; and that this one is read-only.
+function drawRoots() {
+    const signature = filesystemRoot().id + ":" + filesystemRoots().map(root => root.id + ":" + root.read_only).join(",");
+    if (rootBar.dataset.roots === signature) return;
+    rootBar.dataset.roots = signature;
+    const select = el("select", { className: "root-select", ariaLabel: "Filesystem root" });
+    const roots = filesystemRoots();
+    if (!roots.some(root => root.id === filesystemRoot().id)) select.append(el("option", { textContent: "Unavailable folder", disabled: true, selected: true }));
+    for (const root of roots) select.append(el("option", { value: root.id, textContent: root.label + (root.read_only ? " (read-only)" : ""), selected: root.id === filesystemRoot().id }));
+    select.addEventListener("change", () => {
+        const target = new URL(location.href); target.searchParams.set("root", select.value); target.hash = "";
+        location.assign(target.href);
+    });
+    const several = roots.length > 1 || select.options.length > roots.length;
+    select.title = "Switch folder";
+    rootBar.replaceChildren(
+        ...(several ? [el("label", { className: "root-switch" }, el("span", { textContent: glyphs.chevronDown, ariaHidden: "true" }), select)] : []),
+        ...(readOnlyRoot() ? [el("span", { className: "root-read-only", textContent: "Read-only" })] : []));
+    rootBar.hidden = !rootBar.children.length;
+}
+
+// The grid: the list's rows shown as cards, pictures' with thumbnails
+// (see thumbnails.js), as chosen last in this browser.
+let viewChosen = stored("tabtop-files-view");
+const gridView = () => viewChosen === "grid";
+
+function viewButton() {
+    const b = el("button", { type: "button", className: "view-toggle" });
+    const label = () => {
+        const grid = gridView();
+        // The view it changes to, drawn.
+        b.innerHTML = iconSVG(grid ? "view-list" : "view-grid");
+        b.title = grid ? "Show the folder as a list" : "Show the folder as a grid, with thumbnails of pictures";
+        b.setAttribute("aria-label", grid ? "List view" : "Grid view");
+        b.setAttribute("aria-pressed", String(grid));
+    };
+    label();
+    b.addEventListener("click", () => {
+        viewChosen = gridView() ? "list" : "grid";
+        store("tabtop-files-view", viewChosen);
+        label();
+        const table = page.querySelector(".file-table");
+        table?.classList.toggle("grid", gridView());
+        if (gridView()) thumbnailsShown?.start();
+    });
+    return b;
+}
+
+// thumbnailsShown is the list's thumbnails as last drawn: started once the
+// grid shows them, and stopped when the list is drawn again.
+let thumbnailsShown = null;
+
+// thumbnailsFor stops making the last list's thumbnails, and returns what
+// makes this one's: cell(path, e, link), its cell for the entry e at path,
+// which shows the thumbnail once it's in view, in the grid.
+function thumbnailsFor() {
+    thumbnailsShown?.stop();
+    const abort = new AbortController();
+    const cells = new Map();
+    let observer = null;
+    const load = (td) => {
+        const { path, e } = cells.get(td);
+        cells.delete(td);
+        observer?.unobserve(td);
+        thumbnail(path, e, abort.signal).then((url) => {
+            if (url && !abort.signal.aborted) {
+                td.querySelector(".thumb-icon")?.replaceWith(el("img", { src: url, alt: "", loading: "lazy", decoding: "async" }));
+            }
+        }).catch(() => { /* given up: the icon stays */ });
+    };
+    const start = () => {
+        if (observer || abort.signal.aborted || !("IntersectionObserver" in globalThis)) return;
+        observer = new IntersectionObserver((seen) => {
+            for (const s of seen) {
+                if (s.isIntersecting && cells.has(s.target)) load(s.target);
+            }
+        }, { rootMargin: "200px" });
+        for (const td of cells.keys()) observer.observe(td);
+    };
+    thumbnailsShown = {
+        start,
+        stop: () => { abort.abort(); observer?.disconnect(); },
+    };
+    queueMicrotask(() => { if (gridView()) start(); });
+    return {
+        cell(path, e, link) {
+            const icon = e.dir ? glyphs.folder : (e.name.includes(".") ? e.name.slice(e.name.lastIndexOf(".") + 1).slice(0, 5).toUpperCase() : "");
+            const td = el("td", { className: "thumb" }, el("span", { className: "thumb-icon", textContent: icon }));
+            td.addEventListener("click", () => link.click());
+            if (thumbnailable(e)) {
+                cells.set(td, { path, e });
+                observer?.observe(td);
+            }
+            return td;
+        },
+    };
+}
+
+// searchButton makes the button that searches the text of the files in
+// dir and the folders in it (Ctrl+Shift+F).
+function searchButton(dir) {
+    const b = el("button", { type: "button", className: "search-files",
+        title: "Search the text of the files in this folder and the folders in it (Ctrl+Shift+F)" });
+    b.innerHTML = iconSVG("search-files");
+    b.setAttribute("aria-label", "Search in files");
+    b.setAttribute("aria-keyshortcuts", "Control+Shift+F");
+    b.addEventListener("click", () => searchIn(dir));
+    return b;
+}
+
+function searchIn(dir) {
+    const label = dir ? `${rootLabel()}/${dir}` : rootLabel();
+    openSearch({ dir, label, open: (path, line, match) => {
+        const at = path.lastIndexOf("/");
+        const name = path.slice(at + 1);
+        preview(at < 0 ? "" : path.slice(0, at), [{ name }], 0, fetchFile, { reveal: { name, line, match } });
+    } });
+}
+document.addEventListener("keydown", (e) => {
+    if (document.querySelector("dialog[open]") || onSecurity() || onShares() || onTrash()) return;
+    if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "f" && page.querySelector("button.search-files")) {
+        e.preventDefault();
+        searchIn(currentDir());
+    }
+});
+
 // uploadButton makes the page's upload button (see drop.js).
 const uploadButton = dropUploads(uploadFile, makeFolder, () => show(), currentDir, "", folderInfo);
 document.addEventListener("keydown", listKeys);
-// "/" goes to the filter box, as in many sites' search, unless typing.
+// Ctrl+G focuses and selects the filter; / focuses it when not typing.
 document.addEventListener("keydown", (e) => {
-    if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest?.("input, textarea, [contenteditable], dialog")) {
-        const box = document.querySelector("input.filter");
+    if (document.querySelector("dialog[open]")) return;
+    const hotkey = e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "g";
+    const slash = e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest?.("input, textarea, [contenteditable]");
+    if (hotkey || slash) {
+        const box = page.querySelector("input.filter");
         if (box) {
             e.preventDefault();
             box.focus();
+            if (hotkey) box.select();
         }
     }
 });
@@ -682,5 +947,4 @@ window.addEventListener("hashchange", () => show());
 // Saved on the way out too, as the last scroll may not have been.
 addEventListener("pagehide", savePlace);
 warnExpiry();
-restorePlace();
 show();

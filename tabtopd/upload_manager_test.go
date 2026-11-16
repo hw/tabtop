@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestUploadManagerResumeInterruptsWithoutTransport(t *testing.T) {
 	defer store.Close()
 	var interrupted atomic.Bool
 	var active *activeUpload
-	active = m.track("resume", func() {
+	active = m.track("resume", "", func() {
 		interrupted.Store(true)
 		m.untrack("resume", active) // interruption must run outside the mutex
 	})
@@ -33,7 +34,7 @@ func TestUploadManagerResumeInterruptsWithoutTransport(t *testing.T) {
 }
 
 func TestUploadManagerDoesNotTakeSessionLock(t *testing.T) {
-	g := &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}}
+	g := withDefaultRoot(t, &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}})
 	store, err := openDownloadStore(g.downloadsDir)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +46,7 @@ func TestUploadManagerDoesNotTakeSessionLock(t *testing.T) {
 	}
 	g.mu.Lock()
 	done := make(chan struct{})
-	go func() { g.transfers.keepPartial(u, 10); close(done) }()
+	go func() { g.defaultRoot().transfers.keepPartial(u, 10); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -53,16 +54,16 @@ func TestUploadManagerDoesNotTakeSessionLock(t *testing.T) {
 		t.Fatal("upload state blocked on the session mutex")
 	}
 	g.mu.Unlock()
-	g.transfers.mu.Lock()
-	p := g.transfers.dropPartialLocked(u.id())
-	g.transfers.mu.Unlock()
-	g.transfers.removePartial(p)
+	g.defaultRoot().transfers.mu.Lock()
+	p := g.defaultRoot().transfers.dropPartialLocked(u.id())
+	g.defaultRoot().transfers.mu.Unlock()
+	removePartial(p)
 }
 
 func TestUploadManagerOldCompletionKeepsNewOwner(t *testing.T) {
 	var m uploadManager
-	old := m.track("id", nil)
-	next := m.track("id", nil)
+	old := m.track("id", "", nil)
+	next := m.track("id", "", nil)
 	m.untrack("id", old)
 	if m.active["id"] != next {
 		t.Fatal("old completion removed the new owner")
@@ -132,7 +133,7 @@ func TestUploadManagerRestrictsReclamationToDestination(t *testing.T) {
 	if _, err := store.root.Stat(foreign.tmp); err != nil {
 		t.Fatalf("foreign partial was deleted: %v", err)
 	}
-	m.removePartial(m.dropPartialLocked(foreign.id()))
+	removePartial(m.dropPartialLocked(foreign.id()))
 }
 
 func TestFileDiskSpaceUsesOpenedFilesystem(t *testing.T) {
@@ -156,5 +157,81 @@ func TestFileDiskSpaceUsesOpenedFilesystem(t *testing.T) {
 	_, wantTotal, ok := diskSpace("/dev/shm")
 	if !ok || total != wantTotal {
 		t.Fatalf("total=%d, want %d", total, wantTotal)
+	}
+}
+
+type stoppedTimer struct{}
+
+func (stoppedTimer) Stop() bool { return true }
+
+// A kept upload held, as its folder's moved or deleted, isn't dropped by
+// its time running out, nor to make room; once let go, it's dropped then.
+func TestUploadManagerHeldPartialsStay(t *testing.T) {
+	store, err := openDownloadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var expire func()
+	m := uploadManager{clock: lifecycleClock{afterFunc: func(_ time.Duration, f func()) lifecycleTimer { expire = f; return stoppedTimer{} }}}
+	store.root.Mkdir("f", 0o755)
+	u, err := store.startUpload("f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Write([]byte("part"))
+	m.keepPartial(u, 10)
+	held, busy := m.holdUnder("f", nil)
+	if busy || len(held) != 1 {
+		t.Fatalf("held %v, busy %v", held, busy)
+	}
+	expire()
+	destination, _ := openRootDirectory(store.root, ".")
+	defer destination.Close()
+	m.reclaimPartials(destination, 1<<62)
+	if len(m.partials) != 1 {
+		t.Fatal("a held upload was dropped")
+	}
+	if _, err := store.root.Stat(u.tmp); err != nil {
+		t.Fatalf("its file: %v", err)
+	}
+	m.release(held, false, nil)
+	if len(m.partials) != 0 {
+		t.Fatal("expired while held, it stayed once let go")
+	}
+	if _, err := store.root.Stat(u.tmp); !os.IsNotExist(err) {
+		t.Fatalf("its file stayed: %v", err)
+	}
+}
+
+// Held twice (two deletes over nested folders at once), it's not let go
+// for both by the first release: the second, whose folder went, drops it.
+func TestUploadManagerHeldTwice(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openDownloadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var m uploadManager
+	os.MkdirAll(filepath.Join(dir, "a", "b"), 0o755)
+	u, err := store.startUpload("a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Write([]byte("part"))
+	m.keepPartial(u, 10)
+	outer, _ := m.holdUnder("a", nil)
+	inner, _ := m.holdUnder("a/b", nil)
+	m.release(outer, false, nil)
+	if p := m.partials[u.id()]; p == nil || p.holding != 1 {
+		t.Fatal("let go for both by one")
+	}
+	if up, _ := m.claimPartial(store, u.id(), "a/b", 10); up != nil {
+		t.Fatal("claimed while still held")
+	}
+	m.release(inner, true, nil)
+	if len(m.partials) != 0 {
+		t.Fatal("not dropped by the one whose folder went")
 	}
 }

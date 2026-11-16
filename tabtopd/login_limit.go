@@ -78,6 +78,14 @@ func limitKey(ip string) string {
 	return p.String()
 }
 
+// lockedOut reports whether logins from ip are refused, for now, for
+// the failures from it.
+func (g *authentication) lockedOut(ip string) bool {
+	g.authMu.Lock()
+	defer g.authMu.Unlock()
+	return g.lockedOutLocked(limitKey(ip))
+}
+
 // beginLogin reserves one of ip's login attempts until endLogin gives its
 // result, or reports that it has none left.
 func (g *authentication) beginLogin(ip string) bool {

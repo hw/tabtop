@@ -4,6 +4,7 @@
 // folder, and by the desktop and the terminal for files dropped on them.
 // How each goes shows in the transfers panel (see ui.js).
 
+import { readOnlyRoot, onFilesPage, uploadRootLabel, rootLabel, rootsKnown } from "./fs-context.js";
 import { runTransfer } from "./transfer.js";
 import { humanBytes } from "./file-format.js";
 import { askChoice, askYes, statusRow } from "./ui.js";
@@ -25,7 +26,7 @@ import { askChoice, askYes, statusRow } from "./ui.js";
 // it's done; done(names, dir) is called, and awaited, once all have been
 // tried and any succeeded, with the names of the files and folders saved
 // in the folder dir. While files are dragged over the page, it says where
-// they'd go, followed by note. It returns a function that makes the upload
+// they'd go, followed by note (or what the function note returns). It returns a function that makes the upload
 // buttons, which send the files or folder picked the same way.
 export function dropUploads(send, mkdir, done, here, note = "", inspect = async () => ({ names: new Set(), free: null })) {
     let depth = 0;
@@ -43,7 +44,19 @@ export function dropUploads(send, mkdir, done, here, note = "", inspect = async 
                 } catch {
                     // A malformed address: the page says so, and uploads fail.
                 }
-                where.textContent = `Drop to upload into ${["Downloads", ...dir.split("/").filter(Boolean)].join(" / ")}${note ? ` ${note}` : ""}`;
+                // Away from the files page, with no root yet to upload into,
+                // one's asked for once the files are dropped; with the roots
+                // not known yet (still loading, or not yet asked for, as
+                // before a login), it's said once they are.
+                const say = () => {
+                    const into = uploadRootLabel();
+                    where.textContent = (into === null ? "Drop to upload"
+                        : `Drop to upload into ${[into, ...dir.split("/").filter(Boolean)].join(" / ")}`);
+                    const said = typeof note === "function" ? note() : note;
+                    if (said) where.textContent += ` ${said}`;
+                };
+                say();
+                if (uploadRootLabel() === null) rootsKnown().then(() => { if (depth) say(); });
                 if (!overlay.isConnected) {
                     document.body.append(overlay);
                 }
@@ -67,6 +80,9 @@ export function dropUploads(send, mkdir, done, here, note = "", inspect = async 
     // into dir, by default the one shown.
     let queue = Promise.resolve();
     const upload = (files, folders = [], dir = here()) => {
+        if (readOnlyRoot() && onFilesPage()) {
+            const row=statusRow("This folder is read-only.");row.set("This folder is read-only.",true);row.finish();return;
+        }
         const jobs = [
             ...files.map((file) => ({ file, row: statusRow(`${file.name}: waiting`, true) })),
             ...folders.map((folder) => ({ folder, row: statusRow("Reading a folder…", true) })),
@@ -211,7 +227,7 @@ async function askReplace(files, dir, names) {
     if (!taken.length) {
         return new Set();
     }
-    const where = ["Downloads", ...dir.split("/").filter(Boolean)].join(" / ");
+    const where = [uploadRootLabel() ?? rootLabel(), ...dir.split("/").filter(Boolean)].join(" / ");
     const shown = taken.slice(0, 3).join(", ") + (taken.length > 3 ? ` and ${taken.length - 3} more` : "");
     const message = taken.length === 1 ? `${where} already has a file named ${taken[0]}. Replace it, or keep both (the new one gets a number)?`
         : `${where} already has files named ${shown}. Replace them, or keep both (the new ones get numbers)?`;
@@ -224,7 +240,7 @@ async function askReplace(files, dir, names) {
 // if it failed, a function that tries again, with upload(files, folders,
 // dir). With replace, a file with its name there is replaced.
 async function uploadOne(file, dir, row, send, replace, upload) {
-    row.destination(`To: Downloads${dir ? "/" + dir : ""}`);
+    row.destination(`To: ${uploadRootLabel() ?? rootLabel()}${dir ? "/" + dir : ""}`);
     const result = await runTransfer({
         signal: row.signal,
         retry: () => upload([file], [], dir),
@@ -387,29 +403,106 @@ async function uploadFolder(pending, dir, row, send, mkdir, upload) {
     return { name: saved ? got : "" };
 }
 
-// deleteFiles asks before deleting items, [{name, dir, remove}], each a
-// file or folder (if dir) and a function that deletes it, resolving once
-// it's gone; then calls and awaits done(). The outcome of each shows in the
-// status list.
+// deleteFiles asks before deleting items, [{name, dir, remove, restore}],
+// each a file or folder (if dir), a function that moves it to Trash,
+// resolving to its Trash ID once it's gone, or with remove(true) deletes
+// it outright, and one that restores it by that ID; then calls and awaits
+// done(). Those Trash can't take (too big, on another filesystem, or
+// Trash's place taken) it offers to delete permanently. The outcome of
+// each shows in the status list, and what went to Trash can be put back
+// with Undo there, or Ctrl+Z, while it shows.
 export async function deleteFiles(items, done) {
     const [only] = items;
-    const question = items.length > 1 ? `Delete these ${items.length} items? Folders among them go with everything in them.`
-        : only.dir ? `Delete the folder ${only.name} and everything in it?` : `Delete ${only.name}?`;
-    if (!(await askYes(`${question} This can't be undone.`, "Delete"))) {
+    const question = items.length > 1 ? `Move these ${items.length} items to Trash? Folders include everything in them.`
+        : only.dir ? `Move the folder ${only.name} and everything in it to Trash?` : `Move ${only.name} to Trash?`;
+    if (!(await askYes(`${question} You can restore them from Trash until retention limits remove them.`, "Move to Trash"))) {
         return;
     }
-    for (const { name, dir, remove } of items) {
-        const label = dir ? `${name}/` : name;
-        const row = statusRow(`${label}: deleting`);
+    const refused = [];
+    const trashed = [];
+    for (const item of items) {
+        const label = item.dir ? `${item.name}/` : item.name;
+        const row = statusRow(`${label}: moving to Trash`);
         try {
-            await remove();
-            row.set(`${label}: deleted`);
+            const id = await item.remove();
+            row.set(`${label}: moved to Trash`);
+            if (id && item.restore) {
+                trashed.push({ item, id });
+            }
         } catch (err) {
-            row.set(`${label}: not deleted: ${err.message}`, true);
+            row.set(`${label}: not moved to Trash: ${err.message}`, true);
+            if (err.code === "trash-unavailable") {
+                refused.push(item);
+            }
         }
         row.finish();
     }
+    if (refused.length) {
+        const [one] = refused;
+        const what = refused.length > 1 ? `These ${refused.length} items are` : `${one.dir ? `The folder ${one.name}` : one.name} is`;
+        if (await askYes(`${what} can't be moved to Trash (the list below says why). Delete permanently instead? This can't be undone.`, "Delete permanently")) {
+            for (const { name, dir, remove } of refused) {
+                const label = dir ? `${name}/` : name;
+                const row = statusRow(`${label}: deleting permanently`);
+                try {
+                    await remove(true);
+                    row.set(`${label}: permanently deleted`);
+                } catch (err) {
+                    row.set(`${label}: not deleted: ${err.message}`, true);
+                }
+                row.finish();
+            }
+        }
+    }
+    if (trashed.length) {
+        offerUndo(trashed, done);
+    }
     await redraw(done);
+}
+
+// undoLast is the latest Undo offered, while it's there to click.
+let undoLast = null;
+document.addEventListener("keydown", (e) => {
+    const typing = e.target.closest?.("input:not([type=checkbox]), textarea, [contenteditable]");
+    if (undoLast && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "z" && !typing && !document.querySelector("dialog[open]")) {
+        // Its row gone (tidied away), Ctrl+Z is the browser's again.
+        if (undoLast()) e.preventDefault();
+        else undoLast = null;
+    }
+});
+
+// offerUndo adds a row saying what went to Trash, [{item, id}], with an
+// Undo that restores it all; then calls and awaits done().
+function offerUndo(trashed, done) {
+    const what = trashed.length > 1 ? `${trashed.length} items` : trashed[0].item.dir ? `${trashed[0].item.name}/` : trashed[0].item.name;
+    const row = statusRow(`Moved ${what} to Trash`);
+    row.finish();
+    const click = row.offer("Undo", async () => {
+        if (undoLast === click) {
+            undoLast = null;
+        }
+        row.set(`Restoring ${what}`);
+        const failed = [];
+        const renamed = [];
+        for (const { item, id } of trashed) {
+            try {
+                const got = await item.restore(id);
+                const name = got.split("/").pop();
+                if (name && name !== item.name) {
+                    renamed.push(`${item.name} as ${name}`);
+                }
+            } catch (err) {
+                failed.push(`${item.name}: ${err.message}`);
+            }
+        }
+        if (failed.length) {
+            row.set(`Not all restored: ${failed.join("; ")}`, true);
+        } else {
+            row.set(`Restored ${what}${renamed.length ? ` (${renamed.join(", ")}, its name being taken)` : ""}`);
+        }
+        await redraw(done);
+    });
+    undoLast = click;
 }
 
 // redraw calls and awaits done(), which redraws the page.

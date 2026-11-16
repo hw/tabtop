@@ -94,7 +94,7 @@ func TestShutdownDeadline(t *testing.T) {
 // Uploads kept to resume are deleted: nothing can resume them after a
 // restart.
 func TestShutdownRemovesPartialUploads(t *testing.T) {
-	g := &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}}
+	g := withDefaultRoot(t, &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}})
 	store, err := openDownloadStore(g.downloadsDir)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestShutdownRemovesPartialUploads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.transfers.keepPartial(u, 10)
+	g.defaultRoot().transfers.keepPartial(u, 10)
 	if n := countFiles(t, g.downloadsDir); n != 1 {
 		t.Fatalf("%d files before shutdown, want the upload's", n)
 	}
@@ -114,7 +114,7 @@ func TestShutdownRemovesPartialUploads(t *testing.T) {
 	if n := countFiles(t, g.downloadsDir); n != 0 {
 		t.Errorf("%d files left after shutdown", n)
 	}
-	if len(g.transfers.partials) != 0 {
+	if len(g.defaultRoot().transfers.partials) != 0 {
 		t.Error("partial upload still kept")
 	}
 }

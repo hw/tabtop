@@ -82,16 +82,14 @@ func (d *tunnelDrain) stop(ctx context.Context) error {
 // host's sound server, if it made it there. Fetches going are cancelled. One still going when ctx ends is
 // left to the next start (removeStaleUploads).
 func (g *server) shutdown(ctx context.Context) error {
-	if g.fetches != nil {
-		// Cancelled first, so they delete what they had while the
-		// tunnels close.
-		g.fetches.cancelMatching(func(*fetchJob) bool { return true })
-	}
+	g.cancelFetches(func(*fetchJob) bool { return true })
 	err := g.drain.stop(ctx)
-	if g.fetches != nil {
-		g.fetches.stop(ctx)
+	for _, service := range g.fileServices() {
+		if service.root.fetches != nil {
+			service.root.fetches.stop(ctx)
+		}
+		service.root.transfers.removePartials()
 	}
-	g.transfers.removePartials()
 	g.removeLinkPartials()
 	if g.shares != nil {
 		g.shares.flush()
@@ -111,6 +109,6 @@ func (m *uploadManager) removePartials() {
 	}
 	m.mu.Unlock()
 	for _, p := range dropped {
-		m.removePartial(p)
+		removePartial(p)
 	}
 }

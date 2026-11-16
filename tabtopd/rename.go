@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"log"
 	"path"
-	"strings"
 )
 
 var (
@@ -37,15 +36,24 @@ func renameError(err error) string {
 
 // tunnelRename answers a rename request, of the file or folder at
 // req.Path to req.Name.
-func (g *server) tunnelRename(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
-	root, err := openDownloadStore(g.downloadsDir)
+func (g *fileService) tunnelRename(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+	root, err := g.openStore()
 	if err != nil {
 		r.fail(renameError(err))
 		return
 	}
 	defer root.Close()
-	name := strings.Trim(req.Path, "/")
-	if err := root.renameEntry(name, req.Name); err != nil {
+	name := g.realItem(req.Path) // as what's tracked of it has it
+	release, ok := g.holdForMove(name, r)
+	if !ok {
+		return
+	}
+	err = root.renameEntry(name, req.Name)
+	if err == nil {
+		g.moveVersions(name, path.Join(path.Dir(name), req.Name))
+	}
+	if err != nil {
+		release(false, "")
 		if !errors.Is(err, errNameTaken) {
 			log.Printf("%s couldn't rename %q through the tunnel: %v", ip, name, err)
 		}
@@ -53,21 +61,31 @@ func (g *server) tunnelRename(t *tunnel, req tunnelRequest, ip string, r *tunnel
 		return
 	}
 	log.Printf("%s renamed %q to %q through the tunnel", ip, name, req.Name)
+	release(true, path.Join(path.Dir(name), req.Name))
 	r.finish(nil)
 }
 
 // tunnelMove answers a move request, of the file or folder at req.Path into
 // the folder req.To.
-func (g *server) tunnelMove(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
-	root, err := openDownloadStore(g.downloadsDir)
+func (g *fileService) tunnelMove(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+	root, err := g.openStore()
 	if err != nil {
 		r.fail(renameError(err))
 		return
 	}
 	defer root.Close()
-	name := strings.Trim(req.Path, "/")
-	to := strings.Trim(req.To, "/")
-	if err := root.moveEntry(name, to); err != nil {
+	name := g.realItem(req.Path) // as what's tracked of it has it
+	to := g.resolved(req.To)
+	release, ok := g.holdForMove(name, r)
+	if !ok {
+		return
+	}
+	err = root.moveEntry(name, to)
+	if err == nil {
+		g.moveVersions(name, path.Join(to, path.Base(name)))
+	}
+	if err != nil {
+		release(false, "")
 		if !errors.Is(err, errMoveTaken) && !errors.Is(err, errMoveHere) && !errors.Is(err, errMoveInside) {
 			log.Printf("%s couldn't move %q to %q through the tunnel: %v", ip, name, to, err)
 		}
@@ -75,6 +93,25 @@ func (g *server) tunnelMove(t *tunnel, req tunnelRequest, ip string, r *tunnelRe
 		return
 	}
 	log.Printf("%s moved %q to %q through the tunnel", ip, name, to)
+	release(true, path.Join(to, path.Base(name)))
 	g.placed(path.Join(to, path.Base(name)))
 	r.finish(nil)
+}
+
+// holdForMove holds what's being written into name, a file or folder
+// about to be renamed or moved, as a delete does (see holdWrites): what's
+// being uploaded, fetched or extracted into it is tracked by its path, so
+// it would carry on, unseen, under the new one. If something is, it fails
+// r, saying so. Uploads kept to resume in it are given up once it's moved
+// (release(true, to)), their files removed where they went.
+func (g *fileService) holdForMove(name string, r *tunnelResponder) (release func(moved bool, to string), ok bool) {
+	if path.Clean(name) == "." {
+		return func(bool, string) {}, true // refused as it's renamed
+	}
+	hold, _, busy := g.holdWrites(name)
+	if busy {
+		r.fail("Something is still being uploaded or fetched into it. Stop it, or let it finish, then rename or move it.")
+		return nil, false
+	}
+	return hold, true
 }

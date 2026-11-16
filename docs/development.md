@@ -23,7 +23,8 @@
 | `PDFJS_SHA256` | *(checksum of 6.4.299)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
 | `ICED_X86_VERSION` | `1.22.0` | iced-x86 release from npm (`iced-x86`), which disassembles x86 code in the hex preview's data inspector. `scripts/disasm/build.mjs` makes its Node build loadable in a browser worker, without its documentation comments, and checks it at build time. |
 | `ICED_X86_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/iced-x86/-/iced-x86-<version>.tgz`. |
-| `CAPSTONE_JS_REV`, `CAPSTONE_JS_SHA256` | *(revision and checksum in Dockerfile)* | Capstone.js wrapper source, built with Emscripten 4.0.23 and only the ARM, ARM64 and MIPS backends. |
+| `CAPSTONE_JS_REV`, `CAPSTONE_JS_SHA256` | *(revision and checksum in Dockerfile)* | Capstone.js wrapper source, built with Emscripten 4.0.23 and only the ARM backend. A second build, of ARM64, MIPS and RISC-V, checks fARM64, `mips-asm.js` and `riscv-asm.js` during the image build and isn't put in the image. |
+| *(Rust image and `Cargo.lock`)* | `rust:1.100.0-slim-trixie`, fARM64 `0.1.0` | The ARM64 disassembler and assembler in `scripts/disasm/arm64-asm` is built to WebAssembly in the `arm64asm` stage. fARM64's version and checksum are pinned in its `Cargo.lock`, and the build uses `--locked`. |
 | `CAPSTONE_REV`, `CAPSTONE_SHA256` | *(revision and checksum in Dockerfile)* | The Capstone submodule matching that wrapper revision. Update both source pins together. |
 | `ONNX_WEB_VERSION` | `1.22.0` | ONNX Runtime Web, WASM backend only, for U2NetP background removal in the image editor. |
 | `ONNX_WEB_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-<version>.tgz`. Update the pinned runtime license and third-party notice checksums with the version. |
@@ -345,28 +346,120 @@ phone, or in a narrow window, the panel sits under the bytes); the tab is
 remembered in your browser. **Disassembly** shows the selected bytes as
 instructions, a line each: its offset, its bytes and the instruction. Choose
 **x86-64**, **x86 (32-bit)**, **x86 (16-bit)**, **ARM64**, **ARM32**,
-**ARM32-T (Thumb)**, or **MIPS32/64 LE/BE** at the right of the tabs; this
+**ARM32-T (Thumb)**, **MIPS32/64 LE/BE**, or **RISC-V 32/64** at the right of the tabs; this
 choice is remembered too. x86 uses Intel syntax. ARM modes use little-endian
 instructions; Thumb includes both 16-bit and 32-bit instructions and tracks
-IT state within the selection. MIPS modes use standard 4-byte instructions;
-MIPS16, microMIPS and Release 6 modes are not offered. The Values tab's byte
+IT state within the selection. MIPS modes use standard 4-byte instructions,
+with the floating-point, DSP and MSA ones (and Octeon's in MIPS64);
+MIPS16, microMIPS and Release 6 modes are not offered. RISC-V modes are
+little-endian RV32G and RV64G with the compressed (16-bit) instructions,
+which have names of their own (`c.addi`); a branch is shown with where it
+goes, not how far. The Values tab's byte
 order does not change the instruction set. Bytes that aren't an instruction show
 as `(bad)`. An address an instruction goes to or names (`jmp short 018Ch`,
 `call`, or memory read by its address alone, `[rip+…]` shown as where that is)
 is a link when it's within the file: click it to select that byte and see its
 code. With one byte selected, it's the 64 bytes from it; at most 4 KB, or
-512 instructions, are shown at a time. Addresses are file offsets, with no
-executable load-address mapping. Decoding starts at the exact selected byte;
-unaligned ARM/MIPS starts are labelled rather than rounded. ARM/MIPS branch
-destinations, and ARM64 ADR/ADRP addresses, are links when within the file.
+512 instructions, are shown at a time. Addresses are file offsets, except in
+a program's loaded sections (see below). Decoding starts at the exact selected byte;
+unaligned ARM/MIPS/RISC-V starts are labelled rather than rounded. ARM, MIPS
+and RISC-V branch destinations, and the addresses ARM64's ADR, ADRP and
+literal loads (`ldr x0, 0x1010`) give, are links when within the file. ARM64
+shows an address without `#` (`b 0x1010`).
 Register-indirect destinations cannot be resolved statically.
 
-iced-x86 handles x86; Capstone.js handles ARM/MIPS. Each backend is fetched
-only when first used and runs as WebAssembly in the existing worker (the page
-itself isn't allowed to run WebAssembly). The Capstone subset adds 1,141,542
-bytes of JS/WASM, or 417,439 bytes with gzip, at the pinned versions. Browser
+**Programs.** A file that begins as an ELF (a Linux program, a `.so`, a `.o`)
+or a PE (a Windows `.exe` or `.dll`) or a Mach-O (a macOS or iOS program,
+`.dylib` or `.o`) does, whatever it's named, has what it
+says of itself read when its hex view opens (`exe-info.js`): its sections,
+where each is loaded, and its symbols. Until that's read, and for any other
+file, the view is as above. With it:
+
+- The instruction set is the program's own (x86, ARM64, ARM32 or Thumb, MIPS,
+  RISC-V). Choosing another still works, and only a choice is remembered.
+- A line under the tabs says where the selection is: its section, its address
+  when loaded, and the symbol it's at or in (`.text · address 0x401136 ·
+  main+0x10`).
+- In a loaded section, code is disassembled at its address, not its file
+  offset, and no further than the section's end: the offset column shows the
+  address (the file offset on hovering), and what an instruction goes to or
+  names is the program's address. That matters because addresses and offsets
+  differ by a different amount in each section. A destination is a link to
+  where it is in the file, when it's there (`.bss` isn't), followed by its
+  symbol (`call 0000000000401030h <puts@plt>`); the name of what begins at a
+  line is over it (`main:`). Bytes that aren't in a loaded section are
+  disassembled at their offsets, as before. An instruction is still written
+  where it is in the file, assembled for its address.
+- A third tab, **Program**, has what it is and where it starts, its sections
+  (name, offset, size, address, and `r`/`w`/`x`; click one to go to it), and
+  its symbols, with a box to find one by part of its name (click one to
+  select its bytes).
+
+Symbols are an ELF's `.symtab` and `.dynsym`, a PE's exports and its
+compiler's symbol table where that's left in. What a program takes from
+other files is named where it reaches it: a PE's import slots
+(`KERNEL32!Sleep`), an ELF's slots (`puts@got`, from the relocations that
+fill them) and, for x86-64 and ARM64, the stubs that jump through them
+(`puts@plt`), which is what calls go to. An x86 or x86-64 PE's stubs, where
+its compiler makes them (MinGW does), are named as the function (`Sleep`,
+for the slot `KERNEL32!Sleep`): each `jmp` through an import's slot that
+stands alone, after padding, a `ret` or another stub, in up to 8 MB of its
+code; the same jump ending a function isn't one. An ARM64 PE's are its
+`adrp x16`, `ldr x16`, `br x16` through a slot. A stripped program has only those
+and its exports, so calls within it stay unnamed. A `.o` isn't linked yet:
+its addresses are file offsets, and what it calls isn't filled in. A 64-bit
+address above 2^53 is treated as not loaded. No more than 24 MB of tables,
+8 MB of any one and 200,000 symbols are read, in pieces of up to 1 MB, four at a time, through the
+tunnel, and the Program tab says when symbols were left out; every count and
+offset in the file is checked against its size, and a file whose tables
+don't hold together is shown as any other file.
+
+A Mach-O's sections are named with their segments (`__TEXT,__text`); a
+segment with none of its own (`__LINKEDIT`) is listed whole. Its symbols are
+its symbol table's that are somewhere in it. Its stubs are named as the
+function each is for (`_puts`), and the slots they jump through, or data is
+reached by, as `_puts@got`: which symbol each is for comes from its table of
+indirect symbols, which is there in a stripped program too, and whether its
+slots are filled the older way or by chained fixups (neither of which is
+read). A symbol has no size there, so, as in a PE, code after one is taken
+as inside it up to the next. A universal file holds a program for each of
+several machines: the first is read, the Program tab names them all, and
+choosing another reads that one (its offsets are where it is in the file,
+its addresses its own). A Java class file begins as a universal file does,
+and isn't taken for one: each program a universal file lists has to be in
+the file and begin as a Mach-O. Not read: Objective-C and Swift's own
+tables, code signatures, the shared cache that macOS keeps its system
+libraries in, and Swift's names, which aren't demangled.
+
+C++ and Rust names are shown as they were written
+(`std::vector<int, std::allocator<int> >::push_back(int const&)` for
+`_ZNSt6vectorIiSaIiEE9push_backERKi`; `core::fmt::write` for
+`_ZN4core3fmt5write17h…E`, without its hash): GCC's and Clang's C++ names,
+Microsoft's (`?bar@Foo@@QEAAHH@Z` as `Foo::bar(int)`, without its return
+type and calling convention), and both of Rust's schemes. They're read back
+in the disassembler's worker, by a WebAssembly module of its own
+(`scripts/disasm/demangle`: rustc-demangle, cpp_demangle and
+msvc-demangler; 305,597 bytes, 99,964 with gzip), fetched when a program has
+such names; until it answers, and if it isn't there, the names are as the
+compiler made them. That name is still what a symbol is found by, as well as
+the written one, and shows on hovering over it in the Program tab. A name
+longer than fits a line is cut in the middle, whole on hovering.
+`WEB_DISASM_DISABLE` doesn't turn this off: it's no disassembler.
+
+iced-x86 handles x86; fARM64 handles ARM64, its disassembly and its
+assembler in one module (737,518 bytes of WASM, 233,504 with gzip);
+Capstone.js handles ARM32 and Thumb; RISC-V and MIPS are tabtop's own
+`riscv-asm.js` and `mips-asm.js`, scripts of 28,221 bytes (8,885 with gzip)
+and 57,972 bytes (12,891 with gzip) that both disassemble and assemble,
+with no WebAssembly. Each backend is fetched
+only when first used and runs in the existing worker (the page
+itself isn't allowed to run WebAssembly). The Capstone subset adds 418,201
+bytes of JS/WASM, or 141,463 bytes with gzip, at the pinned versions. Browser
 assets have immutable content-hashed URLs. On **Values**, or with the inspector
 hidden, neither backend is requested.
+[`WEB_DISASM_DISABLE`](environment.md#web_disasm_disable) turns any of the
+five off, or all of them: their instruction sets aren't offered and their
+files aren't served.
 
 The `capstone` Docker stage builds from checksummed source with a pinned
 Emscripten version; the SDK is absent from the final image. The upstream JS
@@ -375,7 +468,8 @@ generates offsets using the actual WASM ABI and headers. `capstone-detail.js`
 uses these to read instruction groups and immediate operands. The `disasm`
 stage runs `check-capstone.mjs` against the actual WASM through the worker,
 checking modes, Thumb IT state, branch targets, byte order, invalid words,
-truncated input and limits, and prints raw/gzip sizes. To run this check
+truncated input and limits, and prints raw/gzip sizes; `check-riscv.mjs`
+and `check-mips.mjs` do the same for RISC-V and MIPS, and their assemblers. To run this check
 independently, build `docker build --target disasm -t tabtop:disasm-check .`.
 
 **Find**, in the bar above the bytes, looks for a run of bytes in the whole
@@ -422,7 +516,68 @@ why, and the box stays to put right; Escape puts it back. `x86-asm.js`
 assembles it, in the disassembler's worker: it reads the line, tries each of
 iced-x86's encodings of that name whose operands fit, encodes them with
 iced-x86, and keeps the shortest that decodes back to the same instruction.
-ARM/MIPS instructions remain view-only; their raw hex bytes can still be edited.
+ARM64 instructions can be changed the same way. An ARM64 instruction is
+always four bytes, so one replaces one, with nothing to pad. It is typed
+as the disassembly shows it, with or without `#`, numbers in hex or decimal,
+and `lr`, `fp`, `ip0` and `ip1` for the registers they name; a branch's
+target is the file offset, as shown. `scripts/disasm/arm64-asm`, a small Rust
+crate built to WebAssembly on [fARM64](https://github.com/binsnake/fARM64),
+which also draws the list, reads the line and tries each of fARM64's
+encodings with the operands read each way they could be meant; the worker
+writes the one that is shown again as the line typed (the bytes already
+there, if they're one of them). What it doesn't read yet is refused, not
+guessed at: lists of registers (`{v0.16b, v1.16b}`), system registers and
+operations (`msr`, `prfm`), and most of SVE. The image build checks it
+through the worker on lines as typed and on random words as shown: about
+five in six assemble, and none to anything else. As fARM64 then both
+assembles a line and reads it back, the build also has a Capstone with
+ARM64 (not put in the image) read each assembled word, which is to be the
+same line, and compares what the two show for random words.
+Where fARM64 writes an instruction otherwise than Arm does, the crate puts
+it right before it's shown (`put_right` in its `lib.rs`): SME's ZA tiles, a
+few SVE operands, and the system registers fARM64 has no name for, which
+are in `sysreg_names.rs`. That list is written by
+`scripts/disasm/list-arm64-sysregs.mjs` from what that Capstone names; the
+build checks every system register against it, and says to write the list
+again if the pinned Capstone has come to differ.
+RISC-V instructions can be changed too. One is two bytes (those named
+`c.`) or four, so what's typed says which: a shorter one is followed by a
+`c.nop`, and a longer one goes over the next, as with x86. It is typed as
+shown, with numbers in hex or decimal, registers by either name (`a0`,
+`x10`; `fp` for `s0`), and a branch's target as the address shown; another
+name for the same instruction is taken, and shown as the disassembly has it
+(`addi a0, a1, 0` as `mv a0, a1`). `riscv-asm.js` has one table, of each
+instruction's name, bits and operands, that it both reads code by and
+assembles a line by, so every line it shows assembles to the same bytes.
+The image build's `check-riscv.mjs` holds it to that for every 16-bit
+instruction and for 32-bit words of every opcode and function, and to what
+Capstone shows for them (a Capstone built with RISC-V for the check, not
+put in the image). It differs from Capstone only where the check lists:
+a control register with no name is in hex, `pmpaddr13` and `pmpaddr14`
+aren't each other, `jalr`'s offset isn't taken for an address, a branch
+to before the file's start is still written as where it goes, and RV32
+has no shift by 32 or more.
+MIPS instructions can be changed as well. One is always four bytes, in the
+mode's byte order, so one replaces one. It is typed as shown, with or
+without `$`, registers by name or number (`$a0`, `$4`; `$s8` for `$fp`),
+numbers in hex or decimal, and a branch's or jump's target as the address
+shown; a line that's another name for the same instruction is taken, and
+shown as the disassembly has it (`or $a0, $s0, $zero` as `move $a0, $s0`).
+There are no macros: `li` and `la` aren't instructions. `mips-asm.js` goes
+by one table too, of some 1,100 forms: each a name, the bits that make it
+that, and its operands. The table was first drawn up from what Capstone
+shows (a search for every form, then each form's bits found by changing
+them one at a time), with the irregular ones written by hand; the image
+build's `check-mips.mjs` holds it to Capstone since, on words of every
+opcode with every value of the fields that say which instruction one is,
+and holds every line shown to assembling back. It differs from Capstone
+only where the check lists: `ins`, `dinsm`, `dinsu`, `dextm` and `dextu`
+show a field's place and size as they are (Capstone has those past a
+doubleword's first half 32 short, and shows fields of no size), `jalx`'s
+target is a link, a branch to before the file's start is still written as
+where it goes, and a MIPS32 branch's link isn't cut to 32 bits in a file
+past 4 GB.
+ARM32 and Thumb instructions remain view-only; their raw hex bytes can still be edited.
 The image build checks it on lines as typed and on random bytes, as each
 instruction set decodes them, assembled back to the same, RIP-relative or not. The disassembly shows the
 instructions themselves rather than pseudo-ops (`cmpss xmm0,xmm1,4`, not
@@ -714,3 +869,78 @@ checks PDF/image insertion, thumbnail reordering, page-change undo, failed
 imports, resolution changes, and assembled export order independently. The
 full PDF image group also runs these assembly checks. It also runs with the `pdf`,
 `previews` and full browser suites.
+
+## Text comparisons
+
+`text-diff.js` computes bounded Myers line diffs in `text-diff-worker.js`.
+Inputs retain newline bytes and BOM metadata, with limits of 2 MB and 50,000
+lines per side. A work budget groups large edits while preserving matching
+prefixes and suffixes; the view identifies this fallback. The dialog renders
+500 aligned rows at a time, reuses validated highlight.js spans with multiline
+context, and terminates its worker and file reads when closed.
+
+`node --test test/text-diff.test.mjs` checks alignment, minimal edit counts,
+randomized reconstruction, byte-level distinctions, limits and fallback.
+`test/browser-check.sh IMAGE --group diff` checks selection, safe highlighting,
+pagination/change navigation, cancellation, text validation, and saved-editor
+snapshots across successful and conflicting saves. The group can use the lite
+image; it enables files and disables the desktop and terminal.
+
+## Image comparisons
+
+`image-diff.js` supplies dimension limits and the pure pixel-delta operation.
+The view reads up to 50 MB per image through the tunnel, decodes bitmaps with
+EXIF orientation, and transfers them to `image-diff-worker.js`. SVG decoding
+uses an image element and a temporary object URL, revoked after decoding.
+The worker validates the common canvas (16 MP, at most 8192 pixels per side)
+and reads pixels in 128-row strips to bound temporary buffers. Deltas compare
+premultiplied RGB and alpha in browser-decoded sRGB, ignore hidden transparent
+RGB, and mark single-image coverage magenta. The output canvases receive
+transferable bitmaps; the dialog owns cancellation, synchronized views and
+resource disposal. Delta gain affects display brightness only.
+
+`node --test test/image-diff.test.mjs` checks colour/alpha semantics, dimension
+mismatches, strip equivalence and invalid inputs. `test/browser-check.sh IMAGE
+--group image-diff` checks actual decoded/rendered pixels, all view modes,
+selection, shared zoom/pan, SVG safety, errors, cancellation and narrow/dark
+layouts. It works with the lite image. The `diff`, `images`, `previews`, and
+full browser suites include these checks too.
+
+## Filesystem roots
+
+`roots.go` parses the root registry and constructs a request-scoped `fileService`
+referencing the shared server and one root's mutable state. It never copies server
+mutexes or changes the server's default path while a request is running. Each
+operation opens its root's directory afresh, checked to be the folder named at
+startup (by inode: see `sameFolder`); reads, writes, previews, watches, background
+fetches and maintenance use confined handles. Resumable uploads retain a directory handle
+for cleanup. Each root owns transfers, fetch jobs, Trash locks and placed-file
+tracking. Authentication, activity and share admission limits remain global.
+
+Mount views from `/proc/self/mountinfo` reject overlapping bind-mount sources,
+including nested mounts reachable through an exposed parent.
+
+The route table declares read/write access. The dispatcher resolves the root,
+checks its optional `root_version` precondition, and rejects writes to read-only
+roots before dispatch. Share uploads and fetch starts have conditional write
+requirements; cleanup is read-only only for its dry run. Public share requests
+resolve the stored root binding independently. A configured root's binding is
+its canonical path and directory inode (not its device or filesystem ID, which a
+remount can change: so another filesystem mounted at the same path isn't told
+apart); the default Downloads root's is its path alone. Share storage is version 2 and rejects older data.
+
+`fs-context.js` binds each document to its root. Root switches load a new URL;
+requests capture the root ID/version before authentication. Storage keys include
+the deployment and root version. Role metadata is refreshed by directory listings,
+while directory reassignment requires a page reload. Client controls reflect
+permissions; server enforcement remains authoritative. Download links may be
+created from read-only roots; upload links may not.
+
+`mise exec -- go test ./...` covers configuration, API permission gates, confined
+reads, per-root state, pinned directories, share persistence/rebinding, and legacy
+share removal. `node --test test/fs-roots.test.mjs` checks request capture, root
+selection, read-only uploads and reading-position separation. Run
+`test/browser-check.sh IMAGE --group roots` for a three-root setup with an actual
+read-only Documents mount. It checks startup, the chooser, readonly previews,
+backend denial, shares/activity, writes, Trash, cross-root drag/move denial and
+independent folder memory. The test image can be the lite image.

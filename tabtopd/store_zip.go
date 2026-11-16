@@ -82,6 +82,7 @@ func (z *zipper) addDir(p, name string, want fs.FileInfo, depth int) error {
 		z.skipped++
 		return nil
 	}
+	filter := z.store.entryFilter(p)
 	// Its own entry, so an empty folder is kept.
 	if _, err := z.zw.CreateHeader(&zip.FileHeader{Name: name + "/", Method: zip.Store}); err != nil {
 		return err
@@ -89,8 +90,8 @@ func (z *zipper) addDir(p, name string, want fs.FileInfo, depth int) error {
 	for {
 		des, rerr := d.ReadDir(256)
 		for _, de := range des {
-			if strings.HasPrefix(de.Name(), uploadTempPrefix) {
-				continue // an upload in progress
+			if filter.hidden(de) {
+				continue // an upload in progress, or Trash
 			}
 			cp, cn := path.Join(p, de.Name()), name+"/"+de.Name()
 			var err error

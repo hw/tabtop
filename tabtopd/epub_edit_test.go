@@ -390,7 +390,7 @@ func TestEpubEditTunnel(t *testing.T) {
 	}
 	leftovers := func() {
 		t.Helper()
-		if des, _ := os.ReadDir(g.downloadsDir); len(des) != 1 {
+		if des := shownEntries(g.downloadsDir); len(des) != 1 {
 			t.Errorf("left in the folder: %v", des)
 		}
 	}

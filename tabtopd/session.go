@@ -270,9 +270,14 @@ type handshakes struct {
 // which the returned function (safe to call twice) records. It's false if
 // too many are at that stage already.
 func (h *handshakes) start(ip string) (func(), bool) {
+	return h.startUpTo(ip, maxHandshakes, maxHandshakesPerIP)
+}
+
+// startUpTo is start, with most in all and perIP from one address.
+func (h *handshakes) startUpTo(ip string, most, perIP int) (func(), bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.total >= maxHandshakes || h.byIP[ip] >= maxHandshakesPerIP {
+	if h.total >= most || h.byIP[ip] >= perIP {
 		return nil, false
 	}
 	if h.byIP == nil {

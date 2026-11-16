@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { hexDump, hexView, createHexRangeSource, decodeAt, selectionAs, parseSearch, patchRuns, encodeValue } from "../tabtopd/hex-view.js";
-import { typeOf, limits, binaryChunkSize } from "../tabtopd/preview-model.js";
+import { typeOf, limits, binaryChunkSize, unknownTextSize } from "../tabtopd/preview-model.js";
 import { iconSVG } from "../tabtopd/glyphs.js";
 
 test("hex rows preserve offsets, all bytes, ASCII boundaries and final-row alignment", () => {
@@ -214,7 +214,7 @@ test("unknown previews explicitly select text or hex, enforce limits and close t
         .replace(/^import .*;\n/gm, "").replace("export async function loadPreview", "async function loadPreview");
     let size = 3, closed = 0, collected = 0, content = Uint8Array.of(65, 0, 255);
     const requests = [];
-    const env = { typeOf, limits, binaryChunkSize, TextDecoder, Blob, join: (d, n) => `${d}/${n}`,
+    const env = { typeOf, limits, binaryChunkSize, unknownTextSize, TextDecoder, Blob, join: (d, n) => `${d}/${n}`,
         call: async req => { requests.push(req); return { reply: { size, mtime: 1, length: Math.min(size, req.length ?? size) }, close() { closed++; } }; },
         collect: async (_t, _size, _progress, type) => { collected++; return new Blob([content], { type }); } };
     runInNewContext(`${source}\nglobalThis.loadPreview = loadPreview;`, env);
@@ -684,7 +684,8 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         content.listeners.pointerdown({ button: 0, pointerId: 1, shiftKey: true, target: hex(0)[6], preventDefault() {} });
         content.listeners.pointerup({});
         await settle();
-        assert.deepEqual(asked.at(-1), { bytes: [2, 3, 4, 5, 6], address: 2, bitness: "x86-64", max: 512 });
+        // (And the 15 after, so that the last instruction is read whole.)
+        assert.deepEqual(asked.at(-1), { bytes: Array.from({ length: 20 }, (_, i) => i + 2), address: 2, bitness: "x86-64", max: 512 });
         assert.equal(lines.children.length, 3);
         const [at, raw, text] = lines.children[1].children;
         assert.deepEqual([at.textContent, raw.textContent, text.textContent], ["00000003", "03 04 05", "mov rbp,rsp"]);
@@ -695,7 +696,7 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         content.listeners.pointerup({});
         await settle();
         assert.equal(asked.at(-1).address, 16);
-        assert.equal(asked.at(-1).bytes.length, 64);
+        assert.equal(asked.at(-1).bytes.length, 64 + 15);
         assert.match(note.textContent, /^The 64 bytes from 0x10; select bytes/);
         // 32-bit, asked again; the same, not.
         const count = asked.length;
@@ -967,7 +968,7 @@ test("instruction sets migrate old preferences, persist ARM/MIPS choices, and gu
         const [tabs, mode] = inspector.children[0].children;
         const disasm = inspector.children.at(-1), lines = disasm.children[0];
         assert.equal(mode.value, "x86-32");
-        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "arm32", "thumb", "mips32-le", "mips32-be", "mips64-le", "mips64-be"]);
+        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "arm32", "thumb", "mips32-le", "mips32-be", "mips64-le", "mips64-be", "riscv32", "riscv64"]);
         view.startEditing({ save: async () => ({}) });
         content.listeners.pointerdown({ button: 0, pointerId: 1, target: content.children[0].children[1].children[0], preventDefault() {} });
         content.listeners.pointerup({});
@@ -975,7 +976,8 @@ test("instruction sets migrate old preferences, persist ARM/MIPS choices, and gu
         const settle = () => new Promise((r) => setTimeout(r, 200));
         await settle();
         assert.equal(pending[0].mode, "x86-32");
-        mode.value = "arm64";
+        // (An instruction set that's only shown: ARM64 can be changed too.)
+        mode.value = "arm32";
         mode.listeners.change();
         // An old response arriving during the debounce must not appear.
         pending[0].resolve([{ offset: 0, length: 1, text: "old x86" }]);
@@ -997,7 +999,8 @@ test("instruction sets migrate old preferences, persist ARM/MIPS choices, and gu
             assert.equal(pending.at(-1).mode, next);
             pending.at(-1).resolve([{ offset: 0, length: 4, text: "nop" }]);
             await Promise.resolve();
-            assert.equal(disasm.classList.contains("editable"), false);
+            // (Thumb is only shown; MIPS can be changed.)
+            assert.equal(disasm.classList.contains("editable"), next === "mips64-be");
         }
         assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "mips64-be" });
         const reopened = hexView(new Uint8Array(4), { disassemble: async () => [] });
@@ -1105,6 +1108,259 @@ test("editing: a byte changed, then another part of the file shown: undone or sa
     }
 });
 
+test("editing ARM64: assembled as arm64, four bytes over four; not over fewer", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // nop; ret; then a byte that isn't an instruction, and the rest.
+        const code = Uint8Array.from([0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22]);
+        const all = [{ offset: 0, length: 4, text: "nop" }, { offset: 4, length: 4, text: "ret" }, { offset: 8, length: 1, text: "(bad)" },
+            { offset: 9, length: 4, text: "svc #0" }, { offset: 13, length: 3, text: "(bad)" }];
+        const disassemble = async (bytes, begin) => all.filter((l) => l.offset >= begin);
+        const asked = [];
+        const assemble = async (text, address, as, was) => {
+            asked.push({ text, address, as, was: [...was] });
+            return { bytes: Uint8Array.of(0x20, 0x00, 0x80, 0xd2), text: "mov x0, #1" };
+        };
+        const view = hexView(code, { disassemble, assemble });
+        const { controls, content, inspector } = parts(view);
+        const disasm = inspector.children.at(-1);
+        const [lines, note] = disasm.children;
+        const [tabGroup, mode] = inspector.children[0].children;
+        tabGroup.children[1].listeners.click();
+        const cell = (at) => content.children[0].children[1].children[at];
+        const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        const status = () => controls.children.find((c) => c.classList.contains("edit-status")).textContent;
+        const enter = async (i, text) => {
+            lines.listeners.click({ target: lines.children[i] });
+            const input = lines.children[i].children[1];
+            input.value = text;
+            input.listeners.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+            await settle();
+        };
+        view.startEditing({ save: async () => ({}) });
+        await settle();
+        // ARM32 is only shown; ARM64 can be changed.
+        mode.value = "arm32";
+        mode.listeners.change();
+        await settle();
+        assert.equal(disasm.classList.contains("editable"), false);
+        assert.match(note.textContent, /instruction editing is available for x86, ARM64, RISC-V and MIPS/);
+        mode.value = "arm64";
+        mode.listeners.change();
+        await settle();
+        assert.equal(disasm.classList.contains("editable"), true);
+        assert.match(note.textContent, /Click an instruction to change it\. Addresses are file offsets\./);
+        // Over ret: its four bytes, no more.
+        await enter(1, "mov x0, #1");
+        assert.deepEqual(asked.at(-1), { text: "mov x0, #1", address: 4, as: "arm64", was: [0xc0, 0x03, 0x5f, 0xd6] });
+        assert.equal(bytes(0, 16), "1f 20 03 d5 20 00 80 d2 aa bb cc dd ee ff 11 22");
+        assert.equal(status(), "Set 0x4 to mov x0, #1.");
+        // Fewer than four bytes aren't an ARM64 instruction's: not written over.
+        await enter(2, "mov x0, #1");
+        assert.equal(asked.length, 1);
+        assert.equal(bytes(4, 16), "20 00 80 d2 aa bb cc dd ee ff 11 22");
+        assert.equal(status(), "There aren't the four bytes of an ARM64 instruction here.");
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+test("editing RISC-V: assembled as its mode, of two bytes or four; c.nop fills what's left, and not half of one", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // The worker's own script (riscv-asm.js), as the worker calls it.
+        const context = {};
+        runInNewContext(readFileSync(new URL("../tabtopd/riscv-asm.js", import.meta.url), "utf8"), { self: context });
+        const { riscv } = context;
+        // addi a0, a0, 1; c.nop; ret; c.nop; and three bytes that aren't one.
+        const code = Uint8Array.from([0x13, 0x05, 0x15, 0x00, 0x01, 0x00, 0x67, 0x80, 0x00, 0x00, 0x01, 0x00, 0xff, 0xff, 0xff, 0x00]);
+        let odd = null;
+        const disassemble = async (bytes, begin, mode) => odd ?? riscv.disassemble(bytes, begin, mode === "riscv32" ? 32 : 64, 512).lines;
+        const asked = [];
+        const assemble = async (text, address, as, was) => {
+            asked.push({ text, address, as, was: [...was] });
+            const { bytes, text: shown } = riscv.assemble(text, address, as === "riscv32" ? 32 : 64, was);
+            return { bytes: Uint8Array.from(bytes), text: shown };
+        };
+        const view = hexView(code, { disassemble, assemble });
+        const { controls, content, inspector } = parts(view);
+        const disasm = inspector.children.at(-1);
+        const [lines, note] = disasm.children;
+        const [tabGroup, mode] = inspector.children[0].children;
+        tabGroup.children[1].listeners.click();
+        const cell = (at) => content.children[0].children[1].children[at];
+        const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        const status = () => controls.children.find((c) => c.classList.contains("edit-status")).textContent;
+        const shown = () => lines.children.map((li) => li.children.at(-1).textContent);
+        const enter = async (i, text) => {
+            lines.listeners.click({ target: lines.children[i] });
+            const input = lines.children[i].children[1];
+            input.value = text;
+            input.listeners.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+            await settle();
+        };
+        view.startEditing({ save: async () => ({}) });
+        await settle();
+        mode.value = "riscv64";
+        mode.listeners.change();
+        await settle();
+        assert.equal(disasm.classList.contains("editable"), true);
+        assert.match(note.textContent, /Click an instruction to change it\. Addresses are file offsets\. Little-endian instructions\./);
+        assert.deepEqual(shown().slice(0, 4), ["addi a0, a0, 1", "c.nop", "ret", "c.nop"]);
+        // Two bytes over four: a c.nop after it.
+        await enter(0, "c.li a0, 1");
+        assert.deepEqual(asked.at(-1), { text: "c.li a0, 1", address: 0, as: "riscv64", was: [0x13, 0x05, 0x15, 0x00] });
+        assert.equal(bytes(0, 6), "05 45 01 00 01 00");
+        assert.equal(status(), "Set 0x0 to c.li a0, 1, with 1 nop after it.");
+        // Four bytes over two: over the ret after it too, the rest of which is a c.nop.
+        await enter(2, "jal 0x10");
+        assert.equal(bytes(4, 12), "ef 00 c0 00 01 00 01 00");
+        assert.equal(status(), "Set 0x4 to jal 0x10, over the 1 instruction after it, with 1 nop after it.");
+        // What isn't RISC-V says why, and nothing is written.
+        await enter(0, "c.li a0, 64");
+        assert.equal(status(), "\"64\" isn't one c.li can have there.");
+        assert.equal(bytes(0, 2), "05 45");
+        // Room that isn't a whole number of c.nops isn't half filled.
+        odd = [{ offset: 0, length: 3, text: "(bad)", targets: [] }, { offset: 3, length: 2, text: "c.nop", targets: [] }];
+        mode.value = "riscv32";
+        mode.listeners.change();
+        await settle();
+        await enter(0, "c.nop");
+        assert.equal(status(), "There's an odd byte after it here that a nop can't fill.");
+        assert.equal(bytes(0, 4), "05 45 01 00");
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+test("editing MIPS: assembled as its mode, four bytes over four in its byte order; not over fewer", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // The worker's own script (mips-asm.js), as the worker calls it.
+        const context = {};
+        runInNewContext(readFileSync(new URL("../tabtopd/mips-asm.js", import.meta.url), "utf8"), { self: context });
+        const { mips } = context;
+        // Little-endian: addiu $v0, $zero, 1; jr $ra; nop; then three bytes that aren't one.
+        const code = Uint8Array.from([0x01, 0x00, 0x02, 0x24, 0x08, 0x00, 0xe0, 0x03, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc]);
+        const disassemble = async (bytes, begin, mode) => mips.disassemble(bytes, begin, mode, 512).lines;
+        const asked = [];
+        const assemble = async (text, address, as, was) => {
+            asked.push({ text, address, as, was: [...was] });
+            const { bytes, text: shown } = mips.assemble(text, address, as, was);
+            return { bytes: Uint8Array.from(bytes), text: shown };
+        };
+        const view = hexView(code, { disassemble, assemble });
+        const { controls, content, inspector } = parts(view);
+        const disasm = inspector.children.at(-1);
+        const [lines, note] = disasm.children;
+        const [tabGroup, mode] = inspector.children[0].children;
+        tabGroup.children[1].listeners.click();
+        const cell = (at) => content.children[0].children[1].children[at];
+        const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        const status = () => controls.children.find((c) => c.classList.contains("edit-status")).textContent;
+        const shown = () => lines.children.map((li) => li.children.at(-1).textContent);
+        const enter = async (i, text) => {
+            lines.listeners.click({ target: lines.children[i] });
+            const input = lines.children[i].children[1];
+            input.value = text;
+            input.listeners.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+            await settle();
+        };
+        view.startEditing({ save: async () => ({}) });
+        await settle();
+        mode.value = "mips32-le";
+        mode.listeners.change();
+        await settle();
+        assert.equal(disasm.classList.contains("editable"), true);
+        assert.match(note.textContent, /Click an instruction to change it\. Addresses are file offsets\./);
+        assert.deepEqual(shown(), ["addiu $v0, $zero, 1", "jr $ra", "nop", "(bad)"]);
+        // Over the first: its four bytes, in the mode's order, no more.
+        await enter(0, "li v0, 2");
+        assert.equal(status(), "There's no instruction called li.");
+        await enter(0, "ori v0, zero, 2");
+        assert.deepEqual(asked.at(-1), { text: "ori v0, zero, 2", address: 0, as: "mips32-le", was: [0x01, 0x00, 0x02, 0x24] });
+        assert.equal(bytes(0, 8), "02 00 02 34 08 00 e0 03");
+        assert.equal(status(), "Set 0x0 to ori $v0, $zero, 2.");
+        // Where a branch goes is the address shown.
+        await enter(2, "b 0");
+        assert.equal(bytes(8, 12), "fd ff 00 10");
+        assert.equal(status(), "Set 0x8 to b 0.");
+        // Fewer than four bytes aren't a MIPS instruction's: not written over.
+        const before = asked.length;
+        await enter(3, "nop");
+        assert.equal(asked.length, before);
+        assert.equal(status(), "There aren't the four bytes of a MIPS instruction here.");
+        assert.equal(bytes(12, 15), "aa bb cc");
+        // The other byte order: the same line, the bytes the other way.
+        mode.value = "mips32-be";
+        mode.listeners.change();
+        await settle();
+        await enter(0, "nop");
+        assert.equal(bytes(0, 4), "00 00 00 00");
+        await enter(0, "addiu $v0, $zero, 1");
+        assert.equal(bytes(0, 4), "24 02 00 01");
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+test("an instruction the selection ends inside is listed whole, and written over whole", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // push rbp at 0; a 5-byte call at 1-5; a 3-byte mov at 6-8; ret at 9.
+        // Bytes 0-2 selected: the selection ends inside the call.
+        const code = Uint8Array.from([0x55, 0xe8, 1, 2, 3, 4, 0x48, 0x89, 0xe5, 0xc3, 0, 0, 0, 0, 0, 0]);
+        const all = [{ offset: 0, length: 1, text: "push rbp" }, { offset: 1, length: 5, text: "call 0000000004030207h" },
+            { offset: 6, length: 3, text: "mov rbp,rsp" }, { offset: 9, length: 1, text: "ret" }];
+        const asked = [];
+        // As the worker: whole instructions of the bytes it's given.
+        const disassemble = async (bytes, begin) => {
+            asked.push([begin, bytes.length]);
+            return all.filter((l) => l.offset >= begin && l.offset + l.length <= begin + bytes.length);
+        };
+        const assemble = async () => ({ bytes: Uint8Array.of(0x48, 0xc7, 0xc0, 1, 0, 0, 0), text: "mov rax,1" });
+        const view = hexView(code, { disassemble, assemble });
+        const { content, inspector } = parts(view);
+        const lines = inspector.children.at(-1).children[0];
+        inspector.children[0].children[0].children[1].listeners.click();
+        const cell = (at) => content.children[0].children[1].children[at];
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        // Editing, before the selection (starting places the caret, a byte).
+        view.startEditing({ save: async () => ({}) });
+        await settle();
+        content.listeners.pointerdown({ button: 0, pointerId: 1, target: cell(0), preventDefault() {} });
+        content.listeners.pointerup({});
+        content.listeners.pointerdown({ button: 0, pointerId: 1, shiftKey: true, target: cell(2), preventDefault() {} });
+        content.listeners.pointerup({});
+        await settle();
+        // The bytes after the selection given too; of what comes back, the
+        // instructions that start in the selection, the call whole.
+        assert.deepEqual(asked.at(-1), [0, 16]);
+        assert.equal(lines.children.length, 2);
+        const [at, raw, text] = lines.children[1].children;
+        assert.deepEqual([at.textContent, raw.textContent, text.textContent], ["00000001", "e8 01 02 03 04", "call 0000000004030207h"]);
+        // push rbp changed to 7 bytes: over the call, and into the mov after
+        // it, the rest of which is nops; the ret after that is as it was.
+        lines.listeners.click({ target: lines.children[0] });
+        const input = lines.children[0].children[1];
+        input.value = "mov rax,1";
+        input.listeners.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+        await settle();
+        const bytes = Array.from({ length: 12 }, (_, i) => cell(i).textContent).join(" ");
+        assert.equal(bytes, "48 c7 c0 01 00 00 00 90 90 c3 00 00");
+        assert.ok(asked.some(([begin]) => begin === 6), "the bytes past the list were disassembled from where an instruction starts");
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
 test("editing, an instruction longer than those listed after it: the next one, past the list, is filled out with nops too", async () => {
     const oldDocument = globalThis.document;
     globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
@@ -1141,6 +1397,425 @@ test("editing, an instruction longer than those listed after it: the next one, p
         const bytes = Array.from({ length: 10 }, (_, i) => cell(i).textContent).join(" ");
         assert.equal(bytes, "55 b8 01 00 00 00 90 90 90 00");
         assert.ok(asked.includes(4), "the bytes past the list were disassembled");
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+// What exe-info.js reads of a small ARM64 program: 16 bytes of code at 16
+// in the file, loaded at 0x401000; data at 32, loaded at 0x403000; and
+// data with no bytes in the file.
+const programInfo = () => ({
+    format: "ELF", bits: 64, little: true, machine: "ARM64", kind: "executable", mode: "arm64", entry: 0x401000, relocatable: false, truncated: false,
+    sections: [
+        { name: ".text", offset: 16, size: 16, address: 0x401000, memSize: 16, flags: "r-x" },
+        { name: ".data", offset: 32, size: 8, address: 0x403000, memSize: 8, flags: "rw-" },
+        { name: ".bss", offset: 40, size: 0, address: 0x404000, memSize: 0x20, flags: "rw-" },
+    ],
+    symbols: [
+        { name: "main", address: 0x401000, size: 8, kind: "func" }, { name: "helper", address: 0x401008, size: 8, kind: "func" },
+        { name: "table", address: 0x403000, size: 8, kind: "object" }, { name: "counter", address: 0x404000, size: 4, kind: "object" },
+    ],
+});
+// Its code, as the worker gives it: at its addresses.
+const programCode = [
+    { offset: 0x401000, length: 4, text: "bl 0x401008", targets: [0x401008] }, { offset: 0x401004, length: 4, text: "ldr x0, 0x404000", targets: [0x404000] },
+    { offset: 0x401008, length: 4, text: "adr x0, 0x403000", targets: [0x403000] }, { offset: 0x40100c, length: 4, text: "ret", targets: [] },
+];
+
+test("a program's code is read at its addresses and written at its offsets, with its symbols named and its instruction set chosen", async () => {
+    const oldDocument = globalThis.document, oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const kept = new Map();
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    Object.defineProperty(globalThis, "localStorage", { value: { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, v) }, configurable: true });
+    let view;
+    try {
+        const code = Uint8Array.from({ length: 64 }, (_, i) => i);
+        const asked = [], assembled = [], read = [];
+        const disassemble = async (bytes, address, mode) => {
+            asked.push({ address, length: bytes.length, mode });
+            return programCode.filter((l) => l.offset >= address && l.offset + l.length <= address + bytes.length).map((l) => ({ ...l }));
+        };
+        const assemble = async (text, address, as, was) => {
+            assembled.push({ text, address, as, was: [...was] });
+            return { bytes: Uint8Array.of(0x1f, 0x20, 0x03, 0xd5), text: "nop" };
+        };
+        const executable = async (get, size) => {
+            read.push([...(await get(0, 4))], size);
+            return programInfo();
+        };
+        view = hexView(code, { disassemble, assemble, executable });
+        const { controls, content, inspector } = parts(view);
+        const [tabGroup, mode] = inspector.children[0].children;
+        const [programAt, panel, disasm] = inspector.children.slice(-3);
+        const [lines, note] = disasm.children;
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        // Not till it's read: as for any file.
+        assert.equal(tabGroup.children[2].hidden, true);
+        assert.equal(mode.value, "x86-64");
+        await settle();
+        assert.deepEqual(read, [[0, 1, 2, 3], 64]);
+        assert.equal(tabGroup.children[2].hidden, false);
+        assert.equal(tabGroup.children[2].textContent, "Program");
+        // Its instruction set, chosen for it; not remembered as a choice.
+        assert.equal(mode.value, "arm64");
+        assert.equal(programAt.textContent, "ELF 64-bit ARM64 executable");
+        tabGroup.children[1].listeners.click();
+        assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "x86-64" });
+        view.startEditing({ save: async () => ({}) });
+        await view.jump(16, 32);
+        await settle();
+        // Asked at the address; no bytes past the section's end.
+        assert.deepEqual(asked.at(-1), { address: 0x401000, length: 16, mode: "arm64" });
+        assert.equal(programAt.textContent, ".text · address 0x401000 · main");
+        assert.deepEqual(lines.children.map((li) => li.className), ["hex-disasm-label", "hex-disasm-line", "hex-disasm-line", "hex-disasm-label", "hex-disasm-line", "hex-disasm-line"]);
+        assert.deepEqual([lines.children[0].textContent, lines.children[3].textContent], ["main:", "helper:"]);
+        const [at, bytes, text] = lines.children[1].children;
+        // Its address shown, and where that is in the file; the bytes from there.
+        assert.deepEqual([at.textContent, at.title, bytes.textContent], ["00401000", "0x10 in the file", "10 11 12 13"]);
+        // What it goes to: a link to where that is in the file, and its name.
+        assert.deepEqual(text.children.map((c) => (typeof c === "string" ? c : [c.className, c.textContent, c.value ?? ""])),
+            ["bl ", ["hex-disasm-target", "0x401008", "24"], ["hex-disasm-symbol", " <helper>", ""]]);
+        assert.equal(text.title, "bl 0x401008");
+        // What has no bytes in the file is named, with nowhere to go to.
+        assert.deepEqual(lines.children[2].children[2].children.map((c) => (typeof c === "string" ? c : [c.className, c.textContent])),
+            ["ldr x0, ", "0x404000", ["hex-disasm-symbol", " <counter>"]]);
+        assert.equal(lines.children[4].children[2].children[1].value, "32");
+        assert.match(note.textContent, /Click an instruction to change it\. Addresses are where \.text is loaded\./);
+        // Changed: assembled for its address, written where it is in the file.
+        const cell = (offset) => content.children[offset >> 4].children[1].children[offset & 15];
+        lines.listeners.click({ target: lines.children[5] });
+        const input = lines.children[5].children[1];
+        assert.equal(input.value, "ret");
+        input.value = "nop";
+        input.listeners.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+        await settle();
+        assert.deepEqual(assembled, [{ text: "nop", address: 0x40100c, as: "arm64", was: [28, 29, 30, 31] }]);
+        assert.deepEqual([27, 28, 29, 30, 31, 32].map((o) => cell(o).textContent), ["1b", "1f", "20", "03", "d5", "20"]);
+        assert.equal(controls.children.find((c) => c.classList.contains("edit-status")).textContent, "Set 0x1c to nop.");
+        // A link goes to the file's offset; from a byte, the code to the section's end.
+        lines.listeners.click({ target: lines.children[1].children[2].children[1] });
+        await settle();
+        assert.deepEqual(asked.at(-1), { address: 0x401008, length: 8, mode: "arm64" });
+        assert.equal(programAt.textContent, ".text · address 0x401008 · helper");
+        // Outside any loaded section: by its offset, as any file's bytes.
+        await view.jump(4);
+        await settle();
+        assert.equal(asked.at(-1).address, 4);
+        assert.equal(programAt.textContent, "Not in a section");
+        assert.match(note.textContent, /Addresses are file offsets \(these bytes aren't in a section that's loaded\)/);
+        await view.jump(34);
+        assert.equal(programAt.textContent, ".data · address 0x403002 · table+0x2");
+
+        // The Program tab: what it is, its sections and its symbols, each a way there.
+        tabGroup.children[2].listeners.click();
+        assert.equal(inspector.dataset.tab, "program");
+        assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "x86-64" });
+        const [summary, table, filter, list, said] = panel.children;
+        assert.equal(summary.textContent, "ELF 64-bit ARM64 executable, little-endian. It starts at 0x401000 (main). 4 symbols.");
+        assert.equal(summary.children[2].value, "16");
+        const rows = table.children[1].children.map((tr) => tr.children.map((c) => c.textContent));
+        assert.deepEqual(rows, [[".text", "0x10", "0x10", "0x401000", "r-x"], [".data", "0x20", "0x8", "0x403000", "rw-"], [".bss", "", "0x20", "0x404000", "rw-"]]);
+        assert.equal(table.children[1].children[0].children[0].children[0].value, "16");
+        assert.equal(table.children[1].children[2].children[0].children[0].className, ""); // no bytes: nowhere to go
+        assert.deepEqual(list.children.map((li) => li.textContent), ["00401000main", "00401008helper", "00403000table", "00404000counter"]);
+        assert.equal(said.textContent, "");
+        filter.value = "HELP";
+        filter.listeners.input();
+        assert.deepEqual(list.children.map((li) => li.children[1].textContent), ["helper"]);
+        panel.listeners.click({ target: list.children[0].children[1] });
+        await settle();
+        // (Its 8 bytes selected.)
+        assert.match(controls.children[1].textContent, /8 bytes selected \(0x18–0x1f\)/);
+        filter.value = "nothing";
+        filter.listeners.input();
+        assert.equal(said.textContent, "None by that name. ");
+    } finally {
+        view?.stop();
+        globalThis.document = oldDocument;
+        if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+        else delete globalThis.localStorage;
+    }
+});
+
+test("a 64-bit program's addresses are shown whole, and a long name cut to fit, whole on hovering", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // As a Windows program is loaded: past 4 GB, 9 digits.
+        const long = `_ZN${"x".repeat(200)}E`, base = 0x140001000;
+        const info = { ...programInfo(), mode: "x86-64", sections: [{ name: ".text", offset: 16, size: 16, address: base, memSize: 16, flags: "r-x" }],
+            symbols: [{ name: long, address: base, size: 0, kind: "func" }] };
+        const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { executable: async () => info,
+            disassemble: async (bytes, address) => [{ offset: address, length: 5, text: "call 0000000140001000h", targets: [base] }, { offset: address + 5, length: 1, text: "ret", targets: [] }] });
+        const { inspector } = parts(view);
+        const [programAt, , disasm] = inspector.children.slice(-3);
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        await settle();
+        inspector.children[0].children[0].children[1].listeners.click();
+        await view.jump(16, 22);
+        await settle();
+        const [label, call, ret] = disasm.children[0].children;
+        assert.deepEqual([call.children[0].textContent, ret.children[0].textContent], ["140001000", "140001005"]);
+        assert.equal(ret.children[0].title, "0x15 in the file");
+        const cut = `${long.slice(0, 60)}…${long.slice(-16)}`;
+        assert.deepEqual([label.textContent, label.title], [`${cut}:`, long]);
+        const [, link, name] = call.children[2].children;
+        assert.deepEqual([link.textContent, link.value, name.textContent, name.title], ["0000000140001000h", "16", ` <${cut}>`, long]);
+        assert.deepEqual([programAt.textContent, programAt.title], [`.text · address 0x140001000 · ${cut}`, long]);
+        view.stop();
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+test("the instruction sets of a disassembler turned off aren't offered; with all off, there's no Disassembly tab", async () => {
+    const oldDocument = globalThis.document, oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    // (Remembered: the Disassembly tab, on an instruction set that's Capstone's.)
+    const kept = new Map([["tabtop.hex-disasm", JSON.stringify({ tab: "disasm", mode: "thumb" })]]);
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    Object.defineProperty(globalThis, "localStorage", { value: { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, v) }, configurable: true });
+    try {
+        // The script as it's served says none is off: tabtopd fills the list in, in each.
+        for (const file of ["hex-view.js", "disasm-worker.js"]) {
+            assert.equal(readFileSync(new URL(`../tabtopd/${file}`, import.meta.url), "utf8").split("const DISASM_OFF = [];").length, 2, file);
+        }
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        const open = async (disassemblersOff, executable = null) => {
+            const asked = [];
+            const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { disassemblersOff, executable, disassemble: async (bytes, address, mode) => { asked.push(mode); return []; } });
+            const { inspector } = parts(view);
+            const [tabGroup, mode] = inspector.children[0].children;
+            await settle();
+            return { view, inspector, tabGroup, mode, asked };
+        };
+        // None off: as remembered.
+        let { view, inspector, tabGroup, mode } = await open([]);
+        assert.deepEqual([inspector.dataset.tab, mode.value, mode.children.length, mode.hidden, tabGroup.children[1].hidden], ["disasm", "thumb", 12, false, false]);
+        view.stop();
+        // Capstone's off: its instruction sets aren't there; the first of the rest.
+        ({ view, inspector, tabGroup, mode } = await open(["capstone"]));
+        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "mips32-le", "mips32-be", "mips64-le", "mips64-be", "riscv32", "riscv64"]);
+        assert.deepEqual([inspector.dataset.tab, mode.value, tabGroup.children[1].hidden], ["disasm", "x86-64", false]);
+        view.stop();
+        // (RISC-V and MIPS are disassemblers of their own, not Capstone's.)
+        ({ view, mode } = await open(["x86", "arm64", "riscv", "mips"]));
+        assert.deepEqual(mode.children.map((o) => o.value), ["arm32", "thumb"]);
+        assert.equal(mode.value, "thumb");
+        view.stop();
+        // A program's own instruction set isn't chosen if it's off.
+        let asked;
+        ({ view, mode, asked } = await open(["arm64"], async () => programInfo()));
+        assert.equal(mode.value, "thumb");
+        await view.jump(16, 32);
+        await settle();
+        assert.deepEqual(asked, ["thumb"]);
+        view.stop();
+        // All off: no tab for it, nothing to choose, and nothing asked.
+        ({ view, inspector, tabGroup, mode, asked } = await open(["x86", "capstone", "arm64", "riscv", "mips"], async () => programInfo()));
+        assert.deepEqual([inspector.dataset.tab, tabGroup.children[0].hidden, tabGroup.children[1].hidden, tabGroup.children[2].hidden, mode.hidden, mode.children.length],
+            ["values", false, true, false, true, 0]);
+        await view.jump(16, 32);
+        await settle();
+        assert.deepEqual(asked, []);
+        // (The program's own tab is still there.)
+        tabGroup.children[2].listeners.click();
+        assert.equal(inspector.dataset.tab, "program");
+        view.stop();
+    } finally {
+        globalThis.document = oldDocument;
+        if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+        else delete globalThis.localStorage;
+    }
+});
+
+test("a program's C++ and Rust names are shown as they were written, once read back; found by either", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        const info = { ...programInfo(), symbols: [
+            { name: "_ZN3Foo3barEi", address: 0x401000, size: 8, kind: "func" }, { name: "_ZN4core3fmt5write17h0123456789abcdefE@plt", address: 0x401008, size: 8, kind: "plt" },
+            { name: "LIB!?get@Foo@@QEAAHXZ", address: 0x403000, size: 8, kind: "import" }, { name: "_Zebra", address: 0x403004, size: 0, kind: "object" },
+            { name: "counter", address: 0x404000, size: 4, kind: "object" },
+        ] };
+        const asked = [];
+        let answer;
+        const demangle = (names) => { asked.push(names); return new Promise((resolve, reject) => { answer = { resolve, reject }; }); };
+        const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { executable: async () => info, demangle,
+            disassemble: async (bytes, address) => programCode.filter((l) => l.offset >= address && l.offset + l.length <= address + bytes.length).map((l) => ({ ...l })) });
+        const { inspector } = parts(view);
+        const [programAt, panel, disasm] = inspector.children.slice(-3);
+        const [, , filter, list] = panel.children;
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        await settle();
+        // What's asked: the compiler's part of each name that could be one's; not the plain ones.
+        assert.deepEqual(asked, [["_ZN3Foo3barEi", "_ZN4core3fmt5write17h0123456789abcdefE", "?get@Foo@@QEAAHXZ", "_Zebra"]]);
+        // Until they're read back, as they are.
+        assert.equal(list.children[0].children[1].textContent, "_ZN3Foo3barEi");
+        inspector.children[0].children[0].children[1].listeners.click();
+        await view.jump(16, 32);
+        await settle();
+        assert.equal(disasm.children[0].children[0].textContent, "_ZN3Foo3barEi:");
+        answer.resolve(["Foo::bar(int)", "core::fmt::write", "Foo::get()", ""]);
+        await settle();
+        // Read back: in the list, with what stood before and after each; the one that wasn't a name is as it was.
+        assert.deepEqual(list.children.map((li) => li.children[1].textContent), ["Foo::bar(int)", "core::fmt::write@plt", "LIB!Foo::get()", "_Zebra", "counter"]);
+        assert.equal(list.children[0].children[1].title, "Go to 0x10: _ZN3Foo3barEi");
+        assert.equal(list.children[4].children[1].title, "Not in the file");
+        // In the code, over what begins there and after what's gone to; and where the selection is.
+        const lines = disasm.children[0].children;
+        assert.deepEqual([lines[0].textContent, lines[3].textContent], ["Foo::bar(int):", "core::fmt::write@plt:"]);
+        assert.equal(lines[1].children[2].children[2].textContent, " <core::fmt::write@plt>");
+        assert.equal(lines[4].children[2].children[2].textContent, " <LIB!Foo::get()>");
+        assert.equal(programAt.textContent, ".text · address 0x401000 · Foo::bar(int)");
+        // Found by the name as written, or as the compiler made it.
+        for (const [typed, found] of [["foo::", ["Foo::bar(int)", "LIB!Foo::get()"]], ["_ZN3Foo", ["Foo::bar(int)"]], ["h0123456789abcdef", ["core::fmt::write@plt"]], ["zebra", ["_Zebra"]]]) {
+            filter.value = typed;
+            filter.listeners.input();
+            assert.deepEqual(list.children.map((li) => li.children[1].textContent), found, typed);
+        }
+        view.stop();
+        // A demangler that can't be had (or none): the names as they are, and nothing else amiss.
+        for (const none of [() => Promise.reject(new Error("unavailable")), null]) {
+            const plain = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { executable: async () => ({ ...programInfo(), symbols: [{ name: "_ZN3Foo3barEi", address: 0x401000, size: 8, kind: "func" }] }),
+                demangle: none, disassemble: async () => [] });
+            await settle();
+            assert.equal(parts(plain).inspector.children.at(-2).children[3].children[0].children[1].textContent, "_ZN3Foo3barEi");
+            plain.stop();
+        }
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+test("a universal file's other program is read when it's chosen; its code is written where that one is in the file", async () => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // Two programs in 128 bytes: x86-64's from 0, ARM64's from 64; each
+        // with 16 bytes of code 16 bytes in, loaded at the same address.
+        const slices = [{ machine: "x86-64", offset: 0, size: 64 }, { machine: "ARM64", offset: 64, size: 64 }];
+        const of = (slice) => ({ ...programInfo(), format: "Mach-O", machine: slices[slice].machine, mode: slice ? "arm64" : "x86-64", slices, slice,
+            sections: [{ name: "__TEXT,__text", offset: slices[slice].offset + 16, size: 16, address: 0x100000010, memSize: 16, flags: "r-x" }],
+            symbols: [{ name: slice ? "_arm_main" : "_intel_main", address: 0x100000010, size: 0, kind: "func" }], entry: 0x100000010 });
+        const reads = [], asked = [], assembled = [];
+        let hold = null;
+        const executable = async (get, size, { slice }) => { reads.push(slice); if (hold) await hold; return of(slice); };
+        const view = hexView(Uint8Array.from({ length: 128 }, (_, i) => i), { executable, demangle: null,
+            disassemble: async (bytes, address, mode) => { asked.push({ address, length: bytes.length, mode }); return [{ offset: address, length: 4, text: "nop", targets: [] }]; },
+            assemble: async (text, address, as, was) => { assembled.push({ address, as, was: [...was] }); return { bytes: Uint8Array.of(0xc0, 0x03, 0x5f, 0xd6), text: "ret" }; } });
+        const { content, inspector } = parts(view);
+        const [tabGroup, mode] = inspector.children[0].children;
+        const [programAt, panel, disasm] = inspector.children.slice(-3);
+        const summary = panel.children[0], lines = disasm.children[0];
+        const settle = () => new Promise((r) => setTimeout(r, 200));
+        await settle();
+        // The first, to begin with; each named, the one shown pressed.
+        assert.deepEqual(reads, [0]);
+        assert.equal(mode.value, "x86-64");
+        const buttons = () => summary.children.filter((c) => c.className === "hex-program-slice");
+        assert.match(summary.textContent, /^Mach-O 64-bit x86-64 executable.* This file holds a program for each of: x86-64, ARM64\.$/);
+        assert.deepEqual(buttons().map((b) => [b.textContent, b.value, b.ariaPressed]), [["x86-64", "0", "true"], ["ARM64", "1", "false"]]);
+        // The one shown, pressed again: nothing read.
+        panel.listeners.click({ target: buttons()[0] });
+        assert.deepEqual(reads, [0]);
+        // The other: read, shown, and its instruction set chosen.
+        panel.listeners.click({ target: buttons()[1] });
+        await settle();
+        assert.deepEqual(reads, [0, 1]);
+        assert.deepEqual(buttons().map((b) => b.ariaPressed), ["false", "true"]);
+        assert.equal(mode.value, "arm64");
+        assert.equal(panel.children[3].children[0].children[1].textContent, "_arm_main");
+        // Its code is where it is in the file (80), at its own address; and written there.
+        tabGroup.children[1].listeners.click();
+        view.startEditing({ save: async () => ({}) });
+        await view.jump(80, 96);
+        await settle();
+        assert.deepEqual(asked.at(-1), { address: 0x100000010, length: 16, mode: "arm64" });
+        assert.equal(programAt.textContent, "__TEXT,__text · address 0x100000010 · _arm_main");
+        assert.deepEqual([lines.children[0].textContent, lines.children[1].children[0].textContent, lines.children[1].children[0].title], ["_arm_main:", "100000010", "0x50 in the file"]);
+        lines.listeners.click({ target: lines.children[1] });
+        const input = lines.children[1].children[1];
+        input.value = "ret";
+        input.listeners.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+        await settle();
+        assert.deepEqual(assembled, [{ address: 0x100000010, as: "arm64", was: [80, 81, 82, 83] }]);
+        const cell = (offset) => content.children[offset >> 4].children[1].children[offset & 15];
+        assert.deepEqual([16, 79, 80, 81, 82, 83, 84].map((o) => cell(o).textContent), ["10", "4f", "c0", "03", "5f", "d6", "54"]);
+        // The first's bytes at 16 aren't this one's code: by their offsets.
+        await view.jump(16, 32);
+        await settle();
+        assert.equal(asked.at(-1).address, 16);
+        assert.equal(programAt.textContent, "Not in a section");
+        // One chosen while another's still being read: the later is what's shown.
+        let release;
+        hold = new Promise((r) => { release = r; });
+        panel.listeners.click({ target: buttons()[0] });
+        panel.listeners.click({ target: buttons()[1] });
+        hold = null;
+        release();
+        await settle();
+        assert.deepEqual(reads, [0, 1, 0]);
+        assert.equal(panel.children[3].children[0].children[1].textContent, "_intel_main");
+        // An instruction set chosen by hand stays, whichever program is shown.
+        mode.value = "x86-16";
+        mode.listeners.change();
+        panel.listeners.click({ target: buttons()[1] });
+        await settle();
+        assert.equal(mode.value, "x86-16");
+        view.stop();
+    } finally {
+        globalThis.document = oldDocument;
+    }
+});
+
+test("a file that isn't a program, or one that can't be read as one, is shown as any file", async (t) => {
+    const oldDocument = globalThis.document;
+    globalThis.document = { createElement: mockNode, elementFromPoint: () => null };
+    try {
+        // (A file that isn't one says nothing; a read that failed is put in the console, not passed over in silence.)
+        const said = [], oldError = console.error;
+        console.error = (...args) => said.push(args);
+        t.after(() => { console.error = oldError; });
+        for (const [executable, faults] of [[async () => null, 0], [async () => { throw new Error("offline"); }, 1], [async (get) => get(0, 2_000_000), 1], [null, 0]]) {
+            const asked = [];
+            said.length = 0;
+            const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { executable, disassemble: async (bytes, address, mode) => { asked.push({ address, mode }); return []; } });
+            const { inspector } = parts(view);
+            const [tabGroup, mode] = inspector.children[0].children;
+            const settle = () => new Promise((r) => setTimeout(r, 200));
+            await settle();
+            assert.equal(tabGroup.children[2].hidden, true);
+            assert.equal(inspector.children.at(-3).hidden, true);
+            assert.equal(mode.value, "x86-64");
+            tabGroup.children[1].listeners.click();
+            await view.jump(16, 32);
+            await settle();
+            assert.deepEqual(asked.at(-1), { address: 16, mode: "x86-64" });
+            assert.equal(said.length, faults, String(said[0]));
+            view.stop();
+        }
+        // One given up with the view isn't a fault.
+        said.length = 0;
+        let fail;
+        const closed = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { executable: () => new Promise((_, reject) => { fail = reject; }), disassemble: async () => [] });
+        await new Promise((r) => setTimeout(r, 20));
+        closed.stop();
+        fail(new Error("offline"));
+        await new Promise((r) => setTimeout(r, 20));
+        assert.equal(said.length, 0);
+        // Another of a universal file's programs that can't be read: said in the Program tab, and the one shown stays.
+        const slices = [{ machine: "x86-64", offset: 0, size: 32 }, { machine: "ARM64", offset: 32, size: 32 }];
+        const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { demangle: null, disassemble: async () => [],
+            executable: async (get, size, { slice }) => { if (slice) throw new Error("offline"); return { ...programInfo(), slices, slice: 0 }; } });
+        await new Promise((r) => setTimeout(r, 50));
+        const panel = parts(view).inspector.children.at(-2);
+        panel.listeners.click({ target: panel.children[0].children.filter((c) => c.className === "hex-program-slice")[1] });
+        await new Promise((r) => setTimeout(r, 50));
+        assert.equal(said.length, 1);
+        assert.equal(panel.children[4].textContent, "That couldn't be read: offline");
+        assert.equal(panel.children[3].children.length, 4); // the first program's symbols, still
+        view.stop();
     } finally {
         globalThis.document = oldDocument;
     }

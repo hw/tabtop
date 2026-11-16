@@ -6,7 +6,7 @@
 # later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
-# Usage: test/browser-check.sh <image> [--group all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|previews]
+# Usage: test/browser-check.sh <image> [--group all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|previews]
 set -euo pipefail
 
 image=${1:?usage: $0 <image> [--group group]}
@@ -19,7 +19,7 @@ while (($#)); do
     esac
 done
 case "$group" in
-    all|services|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|previews) ;;
+    all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|previews) ;;
     *) echo "Unknown browser test group: $group" >&2; exit 1 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
@@ -47,6 +47,17 @@ trap cleanup EXIT
 # WEB_FETCH_PRIVATE=1: the check fetches from the container's own address.
 service_args=()
 if [[ "$group" == services ]]; then service_args=(-e WEB_VNC=0 -e WEB_FS=0); fi
+if [[ "$group" == diff || "$group" == image-diff ]]; then service_args=(-e WEB_VNC=0 -e WEB_TTY=0 -e WEB_AUDIO=0); fi
+if [[ "$group" == roots ]]; then
+    mkdir -p "$work/roots/downloads" "$work/roots/documents/reports" "$work/roots/data"
+    chmod 777 "$work/roots/downloads" "$work/roots/data"
+    echo 'Read-only document' > "$work/roots/documents/readonly.txt"
+    echo 'Report' > "$work/roots/documents/reports/note.txt"
+    echo 'downloads original' > "$work/roots/downloads/same.txt"
+    echo 'data original' > "$work/roots/data/same.txt"
+    service_args=(-e WEB_VNC=0 -e WEB_TTY=0 -e WEB_AUDIO=0 -e WEB_FS_ROOTS=Downloads:rw,Documents:ro,data=/data:rw
+        -v "$work/roots/downloads:/home/user/Downloads" -v "$work/roots/documents:/home/user/Documents:ro" -v "$work/roots/data:/data")
+fi
 docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 -e WEB_PREVIEW_FETCH_PRIVATE=1 "${service_args[@]}" \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"

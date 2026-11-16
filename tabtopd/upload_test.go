@@ -71,13 +71,13 @@ func TestResumeRejectsReplacedPartial(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer root.Close()
-		g := &server{serverConfig: serverConfig{downloadsDir: dir}}
+		g := withDefaultRoot(t, &server{serverConfig: serverConfig{downloadsDir: dir}})
 		u, err := (&downloadStore{root: root}).startUpload(".")
 		if err != nil {
 			t.Fatal(err)
 		}
 		u.Write([]byte("part"))
-		g.transfers.keepPartial(u, 10)
+		g.defaultRoot().transfers.keepPartial(u, 10)
 		// Keep the old inode allocated to make identity differences deterministic.
 		if err := root.Rename(u.tmp, u.tmp+".old"); err != nil {
 			t.Fatal(err)
@@ -90,7 +90,7 @@ func TestResumeRejectsReplacedPartial(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, offset := g.transfers.claimPartial(&downloadStore{root: root}, u.id(), ".", 10)
+		res, offset := g.defaultRoot().transfers.claimPartial(&downloadStore{root: root}, u.id(), ".", 10)
 		if res != nil || offset != 0 {
 			t.Fatal("resumed a replaced partial")
 		}
@@ -215,9 +215,8 @@ func TestTunnelUpload(t *testing.T) {
 		}
 	}
 	time.Sleep(100 * time.Millisecond)
-	entries, _ := os.ReadDir(g.downloadsDir)
 	var names []string
-	for _, e := range entries {
+	for _, e := range shownEntries(g.downloadsDir) {
 		names = append(names, e.Name())
 	}
 	if strings.Join(names, ",") != "big (1).bin,big.bin" {
@@ -232,9 +231,9 @@ func TestTunnelUploadResume(t *testing.T) {
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
 	partials := func() int {
-		g.transfers.mu.Lock()
-		defer g.transfers.mu.Unlock()
-		return len(g.transfers.partials)
+		g.defaultRoot().transfers.mu.Lock()
+		defer g.defaultRoot().transfers.mu.Unlock()
+		return len(g.defaultRoot().transfers.partials)
 	}
 	// start begins an upload of size bytes, sends first, and returns the
 	// tunnel and the reply.
@@ -302,9 +301,9 @@ func TestTunnelUploadResume(t *testing.T) {
 	}
 	// Gone, as after a restart (which forgets those saved, too): it starts
 	// again.
-	g.transfers.mu.Lock()
-	g.transfers.done = nil
-	g.transfers.mu.Unlock()
+	g.defaultRoot().transfers.mu.Lock()
+	g.defaultRoot().transfers.done = nil
+	g.defaultRoot().transfers.mu.Unlock()
 	if tc, reply := start(10, id, ""); reply["offset"] != 0.0 {
 		t.Errorf("resuming one gone: %v", reply)
 	} else {
@@ -315,7 +314,7 @@ func TestTunnelUploadResume(t *testing.T) {
 // TestKeepPartialLimit checks that only maxPartials uploads cut off are
 // kept, the oldest going first.
 func TestKeepPartialLimit(t *testing.T) {
-	g := &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}}
+	g := withDefaultRoot(t, &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}})
 	root, _ := os.OpenRoot(g.downloadsDir)
 	defer root.Close()
 	var first string
@@ -327,13 +326,13 @@ func TestKeepPartialLimit(t *testing.T) {
 		if i == 0 {
 			first = u.id()
 		}
-		g.transfers.keepPartial(u, 1)
+		g.defaultRoot().transfers.keepPartial(u, 1)
 	}
 	entries, _ := os.ReadDir(g.downloadsDir)
-	if len(g.transfers.partials) != maxPartials || len(entries) != maxPartials || g.transfers.partials[first] != nil {
-		t.Errorf("%d kept, %d files, the first kept: %v", len(g.transfers.partials), len(entries), g.transfers.partials[first] != nil)
+	if len(g.defaultRoot().transfers.partials) != maxPartials || len(entries) != maxPartials || g.defaultRoot().transfers.partials[first] != nil {
+		t.Errorf("%d kept, %d files, the first kept: %v", len(g.defaultRoot().transfers.partials), len(entries), g.defaultRoot().transfers.partials[first] != nil)
 	}
-	if u, _ := g.transfers.claimPartial(&downloadStore{root: root}, first, ".", 1); u != nil {
+	if u, _ := g.defaultRoot().transfers.claimPartial(&downloadStore{root: root}, first, ".", 1); u != nil {
 		t.Error("the oldest could be resumed")
 	}
 }
@@ -341,7 +340,7 @@ func TestKeepPartialLimit(t *testing.T) {
 // TestReclaimPartials checks that the room uploads kept to resume take is
 // counted as free, and given up to an upload that needs it.
 func TestReclaimPartials(t *testing.T) {
-	g := &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}}
+	g := withDefaultRoot(t, &server{serverConfig: serverConfig{downloadsDir: t.TempDir()}})
 	root, _ := os.OpenRoot(g.downloadsDir)
 	defer root.Close()
 	u, err := (&downloadStore{root: root}).startUpload(".")
@@ -351,24 +350,24 @@ func TestReclaimPartials(t *testing.T) {
 	held := int64(4 << 20)
 	u.Write(make([]byte, held))
 	u.f.Sync()
-	g.transfers.keepPartial(u, 2*held)
+	g.defaultRoot().transfers.keepPartial(u, 2*held)
 	destination, err := openRootDirectory(root, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer destination.Close()
 	free, _, _ := diskSpace(g.downloadsDir)
-	room, _, _ := g.transfers.uploadRoom(destination)
+	room, _, _ := g.defaultRoot().transfers.uploadRoom(destination)
 	if d := room - free; d < held/2 || d > 2*held {
 		t.Errorf("%d more counted as free, with %d kept", d, held)
 	}
 	// More than there is: everything kept goes, and it's still refused.
-	if free, ok := g.transfers.reclaimPartials(destination, 1<<62); !ok || free >= 1<<62 {
+	if free, ok := g.defaultRoot().transfers.reclaimPartials(destination, 1<<62); !ok || free >= 1<<62 {
 		t.Fatalf("free %d, %v", free, ok)
 	}
 	entries, _ := os.ReadDir(g.downloadsDir)
-	if len(g.transfers.partials) != 0 || len(entries) != 0 {
-		t.Errorf("%d still kept, %d files", len(g.transfers.partials), len(entries))
+	if len(g.defaultRoot().transfers.partials) != 0 || len(entries) != 0 {
+		t.Errorf("%d still kept, %d files", len(g.defaultRoot().transfers.partials), len(entries))
 	}
 }
 
@@ -668,13 +667,13 @@ func TestResumeRemovesChangedPartial(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	g := &server{serverConfig: serverConfig{downloadsDir: dir}}
+	g := withDefaultRoot(t, &server{serverConfig: serverConfig{downloadsDir: dir}})
 	u, err := (&downloadStore{root: root}).startUpload(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.Write([]byte("part"))
-	g.transfers.keepPartial(u, 10)
+	g.defaultRoot().transfers.keepPartial(u, 10)
 	// The same file, grown since it was kept.
 	f, err := os.OpenFile(filepath.Join(dir, u.tmp), os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
@@ -682,7 +681,7 @@ func TestResumeRemovesChangedPartial(t *testing.T) {
 	}
 	f.Write([]byte("more"))
 	f.Close()
-	if res, _ := g.transfers.claimPartial(&downloadStore{root: root}, u.id(), ".", 10); res != nil {
+	if res, _ := g.defaultRoot().transfers.claimPartial(&downloadStore{root: root}, u.id(), ".", 10); res != nil {
 		t.Fatal("resumed a partial that changed")
 	}
 	if _, err := root.Lstat(u.tmp); !os.IsNotExist(err) {
@@ -871,7 +870,7 @@ func TestTunnelUploadDoneTwice(t *testing.T) {
 	if again["offset"] != 3.0 || res["name"] != "notes.txt" || res["mtime"] != saved["mtime"] {
 		t.Errorf("asked again: %v %v, first %v", again, res, saved)
 	}
-	des, _ := os.ReadDir(g.downloadsDir)
+	des := shownEntries(g.downloadsDir)
 	if b, _ := os.ReadFile(file); string(b) != "new" || len(des) != 1 {
 		t.Errorf("notes.txt holds %q; in the folder: %v", b, des)
 	}
@@ -917,7 +916,7 @@ func TestTunnelUploadRetryWhileSaving(t *testing.T) {
 	if res := tc2.readJSON(t, ctx); res["name"] != "notes.txt" {
 		t.Errorf("told %v", res)
 	}
-	des, _ := os.ReadDir(g.downloadsDir)
+	des := shownEntries(g.downloadsDir)
 	if b, _ := os.ReadFile(file); string(b) != "new" || len(des) != 1 {
 		t.Errorf("notes.txt holds %q; in the folder: %v", b, des)
 	}

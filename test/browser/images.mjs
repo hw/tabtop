@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 
 // png is a width×height RGBA PNG, each pixel colour(x, y) → [r, g, b, a].
-function png(width, height, colour) {
+export function png(width, height, colour) {
     const crcTable = Array.from({ length: 256 }, (_, n) => {
         let c = n;
         for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;

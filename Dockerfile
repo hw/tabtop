@@ -197,9 +197,12 @@ RUN mkdir -p /src /pdfjs/wasm \
  && ! find /pdfjs -name '*sandbox*' -o -name '*quickjs*' | grep -q . \
  && chmod -R u=rwX,go=rX /pdfjs
 
-# Capstone.js, with only ARM (including Thumb), ARM64 and MIPS. Keep the
+# Capstone.js, with only ARM (including Thumb). Keep the
 # wrapper and its Capstone submodule pinned together. The SDK stays in
 # this build stage; the final image gets only JS/WASM and licence notices.
+# A second build, of ARM64, MIPS and RISC-V, isn't served (those are
+# fARM64's, below, and tabtopd's mips-asm.js and riscv-asm.js): the disasm
+# stage checks them against it.
 FROM emscripten/emsdk:4.0.23 AS capstone
 ARG CAPSTONE_JS_REV=75da2ab549729c50bc49842d07984c4ff2e33deb
 ARG CAPSTONE_JS_SHA256=0cec68b93ff7367238adb7b66c90dee398cc48467d1160741e79566548876433
@@ -208,19 +211,63 @@ ARG CAPSTONE_SHA256=1b0d7efa450e766c120a8dfcf9b539f1e120925fc1478fbe125d6d52bae0
 ADD --checksum=sha256:${CAPSTONE_JS_SHA256} https://codeload.github.com/AlexAltea/capstone.js/tar.gz/${CAPSTONE_JS_REV} /capstone-js.tgz
 ADD --checksum=sha256:${CAPSTONE_SHA256} https://codeload.github.com/capstone-engine/capstone/tar.gz/${CAPSTONE_REV} /capstone.tgz
 COPY scripts/disasm/capstone-layout.c scripts/disasm/capstone-detail.js /adapter/
-RUN mkdir -p /src/capstone /capstone-out \
+RUN mkdir -p /src/capstone /capstone-out /capstone-check \
  && tar -xzf /capstone-js.tgz -C /src --strip-components=1 --no-same-owner \
  && tar -xzf /capstone.tgz -C /src/capstone --strip-components=1 --no-same-owner \
  && emcc -I/src/capstone/include /adapter/capstone-layout.c -o /tmp/layout.js \
  && node /tmp/layout.js >> /src/src/capstone-wrapper.js \
  && cat /adapter/capstone-detail.js >> /src/src/capstone-wrapper.js \
- && cd /src && python3 build.py arm arm64 mips \
- && cp dist/capstone_arm+arm64+mips.js /capstone-out/capstone.js \
- && cp dist/capstone_arm+arm64+mips.wasm /capstone-out/capstone.wasm \
+ && cd /src && python3 build.py arm \
+ && cp dist/capstone_arm.js /capstone-out/capstone.js \
+ && cp dist/capstone_arm.wasm /capstone-out/capstone.wasm \
+ && python3 build.py arm64 mips riscv \
+ && cp dist/capstone_arm64+mips+riscv.js /capstone-check/capstone.js \
+ && cp dist/capstone_arm64+mips+riscv.wasm /capstone-check/capstone.wasm \
  && cp LICENSE /capstone-out/LICENSE.capstone-js \
  && cp capstone/LICENSE.TXT /capstone-out/LICENSE.capstone \
  && cp capstone/LICENSE_LLVM.TXT /capstone-out/LICENSE.capstone-llvm \
  && cp capstone/CREDITS.TXT /capstone-out/CREDITS.capstone
+
+# ARM64 for the hex preview (see scripts/disasm/arm64-asm): fARM64's
+# decoder and formatter for its disassembly, and its encoder, with tabtop's
+# reading of a line over it, for instruction editing; one WebAssembly
+# module. fARM64 comes from crates.io at the version and checksum in
+# Cargo.lock (--locked); bump the Rust image and the lock together. Its
+# tests run here; what it shows and assembles is checked against Capstone
+# in the disasm stage.
+FROM rust:1.100.0-slim-trixie AS arm64asm
+COPY scripts/disasm/arm64-asm /src/arm64-asm
+COPY scripts/disasm/wasm-reply /src/wasm-reply
+RUN rustup target add wasm32-unknown-unknown \
+ && cd /src/arm64-asm \
+ && cargo test --release --locked \
+ && cargo build --release --locked --lib --target wasm32-unknown-unknown \
+ && mkdir -p /arm64-out \
+ && cp target/wasm32-unknown-unknown/release/arm64_asm.wasm /arm64-out/arm64-asm.wasm \
+ && cp "$CARGO_HOME"/registry/src/*/fARM64-0.1.0/LICENSE /arm64-out/LICENSE.farm64 \
+ && cp "$CARGO_HOME"/registry/src/*/fARM64-0.1.0/NOTICE /arm64-out/NOTICE.farm64
+
+# The demangler, for the names of a program's C++ and Rust symbols in the hex
+# preview (see scripts/disasm/demangle): rustc-demangle, cpp_demangle and
+# msvc-demangler, one WebAssembly module. From crates.io at the versions and
+# checksums in its Cargo.lock (--locked), as fARM64 is. Its tests run here;
+# the module is checked through the worker in the disasm stage.
+FROM rust:1.100.0-slim-trixie AS demangle
+COPY scripts/disasm/demangle /src/demangle
+COPY scripts/disasm/wasm-reply /src/wasm-reply
+RUN rustup target add wasm32-unknown-unknown \
+ && cd /src/demangle \
+ && cargo test --release --locked \
+ && cargo build --release --locked --lib --target wasm32-unknown-unknown \
+ && mkdir -p /demangle-out \
+ && cp target/wasm32-unknown-unknown/release/demangle.wasm /demangle-out/demangle.wasm \
+ && cp "$CARGO_HOME"/registry/src/*/rustc-demangle-0.1.28/LICENSE-MIT /demangle-out/LICENSE.rustc-demangle \
+ && cp "$CARGO_HOME"/registry/src/*/cpp_demangle-0.6.0/LICENSE-MIT /demangle-out/LICENSE.cpp_demangle \
+ && cp "$CARGO_HOME"/registry/src/*/msvc-demangler-0.11.0/LICENSE.MIT /demangle-out/LICENSE.msvc-demangler \
+ && cp "$CARGO_HOME"/registry/src/*/msvc-demangler-0.11.0/LICENSE.LLVM /demangle-out/LICENSE.msvc-demangler-llvm \
+ && cp "$CARGO_HOME"/registry/src/*/bitflags-2.13.2/LICENSE-MIT /demangle-out/LICENSE.bitflags \
+ && cp "$CARGO_HOME"/registry/src/*/itoa-1.0.19/LICENSE-MIT /demangle-out/LICENSE.itoa \
+ && cp "$CARGO_HOME"/registry/src/*/cfg-if-1.0.5/LICENSE-MIT /demangle-out/LICENSE.cfg-if
 
 # iced-x86, for the x86 disassembly in the hex preview's data inspector (see
 # disasm-worker.js in tabtopd): its npm build, which is for Node, made
@@ -232,13 +279,20 @@ ARG ICED_X86_VERSION=1.22.0
 ARG ICED_X86_SHA256=be77147b3c91531da378d103b4e3e5a45e9ddc29392fe01e6c214e799da125c3
 ADD --checksum=sha256:${ICED_X86_SHA256} https://registry.npmjs.org/iced-x86/-/iced-x86-${ICED_X86_VERSION}.tgz /iced.tgz
 COPY scripts/disasm/build.mjs /build.mjs
-COPY tabtopd/x86-asm.js /x86-asm.js
+COPY tabtopd/x86-asm.js tabtopd/riscv-asm.js tabtopd/mips-asm.js /
 COPY --from=capstone /capstone-out /disasm
-COPY scripts/disasm/check-capstone.mjs /check-capstone.mjs
+COPY --from=arm64asm /arm64-out /disasm
+COPY --from=demangle /demangle-out /disasm
+COPY --from=capstone /capstone-check /capstone-check
+COPY scripts/disasm/check-capstone.mjs scripts/disasm/check-arm64.mjs scripts/disasm/check-riscv.mjs scripts/disasm/check-mips.mjs scripts/disasm/check-demangle.mjs /
 COPY tabtopd/disasm-worker.js /disasm-worker.js
 RUN mkdir -p /src && tar -xzf /iced.tgz -C /src --no-same-owner \
  && node /build.mjs /src/package /disasm /x86-asm.js \
  && node /check-capstone.mjs /disasm /disasm-worker.js \
+ && node /check-arm64.mjs /disasm /disasm-worker.js /capstone-check \
+ && node /check-riscv.mjs /riscv-asm.js /disasm-worker.js /capstone-check \
+ && node /check-mips.mjs /mips-asm.js /disasm-worker.js /capstone-check \
+ && node /check-demangle.mjs /disasm /disasm-worker.js \
  && chmod -R u=rwX,go=rX /disasm
 
 # U2NetP background removal runs in the browser, with ONNX Runtime Web's

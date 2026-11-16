@@ -577,6 +577,7 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/requests.js", http.StatusOK},
 		{"GET", "/tabtop/preview.js", http.StatusOK},
 		{"GET", "/tabtop/hex-view.js", http.StatusOK},
+		{"GET", "/tabtop/exe-info.js", http.StatusOK},
 		{"GET", "/tabtop/kaitai-view.js", http.StatusOK},
 		{"GET", "/tabtop/format-combobox.js", http.StatusOK},
 		{"GET", "/tabtop/kaitai-worker.js", http.StatusOK},
@@ -801,8 +802,13 @@ func TestTunnelTTY(t *testing.T) {
 	if !strings.Contains(out.String(), "30 100") {
 		t.Errorf("terminal size not applied: %q", out.String())
 	}
-	// The program exiting ends the tunnel.
-	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+	// The program exiting ends the tunnel (after what it has left to say,
+	// which may come as a message of its own).
+	var err error
+	for err == nil {
+		_, _, err = tc.read(ctx)
+	}
+	if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
 		t.Errorf("after exit: %v, want a normal close", err)
 	}
 }

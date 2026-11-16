@@ -15,7 +15,8 @@ Module.Instruction = function(pointer, arch) {
     const common = capstoneLayout.detail;
     const groups = Module.getValue(detail + common.groups_count, "i8");
     for (let i = 0; i < groups; i++) this.detail.groups.push(Module.getValue(detail + common.groups + i, "i8"));
-    const a = arch === Module.ARCH_ARM ? capstoneLayout.arm : arch === Module.ARCH_ARM64 ? capstoneLayout.arm64 : capstoneLayout.mips;
+    const a = arch === Module.ARCH_ARM ? capstoneLayout.arm
+        : arch === Module.ARCH_RISCV ? capstoneLayout.riscv : capstoneLayout.mips;
     const base = detail + common.arch, count = Module.getValue(base + a.op_count, "i8");
     for (let i = 0; i < count; i++) {
         const at = base + a.operands + i * a.stride, type = Module.getValue(at + a.type, "i32");

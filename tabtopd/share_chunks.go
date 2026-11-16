@@ -112,7 +112,7 @@ func (g *server) dropLinkPartial(key string, p *linkPartial) {
 		p.timer.Stop()
 	}
 	ps.mu.Unlock()
-	g.transfers.removePartial(&p.part)
+	removePartial(&p.part)
 	g.shares.settle(p.link, p.part.size, "", "")
 }
 
@@ -175,7 +175,7 @@ func (g *server) removeLinkPartials() {
 	}
 	ps.mu.Unlock()
 	for _, p := range gone {
-		g.transfers.removePartial(&p.part)
+		removePartial(&p.part)
 	}
 }
 
@@ -188,7 +188,7 @@ func parseContentRange(h string) (a, b, size int64, ok bool) {
 }
 
 // chunkOffset says where the upload id through l has got to.
-func (g *server) chunkOffset(l *shareLink, id string) int64 {
+func (g *fileService) chunkOffset(l *shareLink, id string) int64 {
 	ps := &g.shares.partials
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -203,9 +203,16 @@ func (g *server) chunkOffset(l *shareLink, id string) int64 {
 
 // receiveChunk saves a piece of the upload id as name through l, from ip,
 // and answers as the top of this file says.
-func (g *server) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, ip, name, id string) {
+func (g *fileService) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, ip, name, id string) {
 	h := w.Header()
 	h.Set("Content-Type", "text/plain; charset=utf-8")
+	// Starting, or a piece coming: either way, being written.
+	writing, err := g.beginLinkWrite(l)
+	if err != nil {
+		refuseUpload(w, err)
+		return
+	}
+	defer writing()
 	fail := func(err error) {
 		refuseUpload(w, err)
 	}
@@ -320,19 +327,29 @@ func (g *server) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLi
 			return
 		}
 		var err error
-		if u, err = store.startUpload(l.Path); err != nil {
+		// Kept by where its folder really is, as what holds uploads while
+		// a folder's deleted or moved matches them (see holdWrites).
+		dir := g.resolved(l.Path)
+		if u, err = store.startUpload(dir); err != nil {
 			g.shares.settle(l, size, "", "")
 			fail(&uploadLinkError{http.StatusInternalServerError, uploadError(err)})
 			return
 		}
-		if free, ok := g.transfers.reclaimPartials(u.f, size); ok && size > free {
+		if free, ok := g.reclaimPartials(u.f, size); ok && size > free {
 			u.abort()
 			g.shares.settle(l, size, "", "")
 			fail(&uploadLinkError{http.StatusInsufficientStorage, "There isn't room for it on the disk."})
 			return
 		}
+		pin, err := store.root.OpenRoot(".")
+		if err != nil {
+			u.abort()
+			g.shares.settle(l, size, "", "")
+			fail(&uploadLinkError{http.StatusInternalServerError, uploadError(err)})
+			return
+		}
 		p = &linkPartial{link: l, name: name, ip: ip, busy: true,
-			part: partialUpload{rootDir: g.downloadsDir, dir: l.Path, tmp: u.tmp, size: size}}
+			part: partialUpload{root: pin, dir: dir, tmp: u.tmp, size: size}}
 		ps.mu.Lock()
 		if ps.m == nil {
 			ps.m = map[string]*linkPartial{}
@@ -341,6 +358,9 @@ func (g *server) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLi
 		ps.doneStarting(l.ID)
 		reserved = false
 		if ps.m[key] != nil {
+			if p.part.root != nil {
+				p.part.root.Close()
+			}
 			// Started twice at once: this one gives way.
 			ps.mu.Unlock()
 			u.abort()
@@ -361,7 +381,7 @@ func (g *server) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLi
 	}
 
 	// The piece, as far as it comes.
-	err := g.writePiece(u, l, stallReader{io.LimitReader(r.Body, b-a+1), http.NewResponseController(w)})
+	err = g.writePiece(u, l, stallReader{io.LimitReader(r.Body, b-a+1), http.NewResponseController(w)})
 	st, serr := u.f.Stat()
 	held := int64(0)
 	if serr == nil {
@@ -380,7 +400,14 @@ func (g *server) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLi
 			if saved != "" {
 				ps.recordDoneLocked(key, saved, size, g.shares.clock.Now())
 			}
+			// Its own to close, now it's out of ps.m: nil, so nothing
+			// that still has it (see dropLinkPartial) uses it closed.
+			pin := p.part.root
+			p.part.root = nil
 			ps.mu.Unlock()
+			if pin != nil {
+				pin.Close()
+			}
 			g.shares.settle(l, size, saved, ip)
 		}()
 		if st, err := store.stat(l.Path); err != nil || !l.matches(st) {
@@ -419,7 +446,7 @@ func (g *server) receiveChunk(w http.ResponseWriter, r *http.Request, l *shareLi
 }
 
 // writePiece writes what body holds to u, unless l has ended.
-func (g *server) writePiece(u *upload, l *shareLink, body io.Reader) error {
+func (g *fileService) writePiece(u *upload, l *shareLink, body io.Reader) error {
 	buf := make([]byte, 256<<10)
 	for {
 		n, rerr := body.Read(buf)
@@ -441,7 +468,90 @@ func (g *server) writePiece(u *upload, l *shareLink, body io.Reader) error {
 }
 
 // chunkHead answers HEAD for the upload id: where it has got to.
-func (g *server) chunkHead(w http.ResponseWriter, l *shareLink, id string) {
+func (g *fileService) chunkHead(w http.ResponseWriter, l *shareLink, id string) {
 	w.Header().Set("Upload-Offset", strconv.FormatInt(g.chunkOffset(l, id), 10))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// holdLinkUploadsUnder reports whether an upload in pieces through a link
+// into folder of root, or a folder in it, has a piece being written. If
+// none has, those kept between pieces there are held, marked busy so no
+// piece is taken meanwhile, and their keys returned, for release once
+// it's known whether the folder's gone (see holdWrites).
+func (g *server) holdLinkUploadsUnder(root, folder string, resolve func(string) string) (held []string, busy bool) {
+	if g.shares == nil {
+		return nil, false
+	}
+	ps := &g.shares.partials
+	// Resolved before ps.mu is taken, as that can take a while on a slow
+	// disk (see uploadManager.holdUnder).
+	real := map[string]string{}
+	if resolve != nil {
+		ps.mu.Lock()
+		var dirs []string
+		for _, p := range ps.m {
+			if p.link.Root == root {
+				dirs = append(dirs, p.part.dir)
+			}
+		}
+		ps.mu.Unlock()
+		for _, d := range dirs {
+			if _, ok := real[d]; !ok {
+				real[d] = resolve(d)
+			}
+		}
+	}
+	in := func(dir string) bool {
+		if r, ok := real[dir]; ok {
+			dir = r
+		}
+		return inFolder(dir, folder)
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	for _, p := range ps.m {
+		if p.link.Root == root && in(p.part.dir) && p.busy {
+			return nil, true
+		}
+	}
+	for k, p := range ps.m {
+		if p.link.Root == root && in(p.part.dir) {
+			p.busy = true
+			held = append(held, k)
+		}
+	}
+	return held, false
+}
+
+// releaseLinkUploads lets the uploads held carry on, kept for partialKeep
+// more, or, with drop, gives them up.
+func (g *server) releaseLinkUploads(held []string, drop bool, moved func(string) string) {
+	ps := &g.shares.partials
+	for _, k := range held {
+		ps.mu.Lock()
+		p := ps.m[k]
+		if p == nil {
+			ps.mu.Unlock()
+			continue
+		}
+		if p.timer != nil {
+			p.timer.Stop()
+		}
+		if drop {
+			// Given up while it's still held: taken out here, under the
+			// lock, so no piece arriving meanwhile carries it on where its
+			// folder went (see dropLinkPartial, which lets a busy one be).
+			delete(ps.m, k)
+			if moved != nil {
+				p.part.tmp = moved(p.part.tmp)
+			}
+			ps.mu.Unlock()
+			removePartial(&p.part)
+			g.shares.settle(p.link, p.part.size, "", "")
+			continue
+		}
+		p.busy = false
+		p.timer = g.shares.clock.AfterFunc(partialKeep, func() { g.dropLinkPartial(k, p) })
+		ps.mu.Unlock()
+	}
 }

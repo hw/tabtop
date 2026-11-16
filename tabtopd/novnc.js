@@ -19,7 +19,7 @@ import { glyphs, iconDataURL } from "./glyphs.js";
 import { TunnelSocket } from "./tunnel.js";
 import { logOut, nameTab, openPage, terminalOn, pages } from "./nav.js";
 import { dropUploads } from "./drop.js";
-import { call, folderInfo, makeFolder, setLoginTitle, uploadFile } from "./requests.js";
+import { call, folderInfo, loadRoots, makeFolder, setLoginTitle, uploadFile, uploadNote } from "./requests.js";
 import { fetchFile } from "./download.js";
 import { humanBytes } from "./file-format.js";
 import { warnExpiry } from "./expiry.js";
@@ -62,7 +62,7 @@ if (settings) {
 document.head.append(Object.assign(document.createElement("link"), { rel: "stylesheet", href: new URL("./desktop.css", import.meta.url).href }));
 setLoginTitle("Desktop");
 if (pages.some((page) => page.id === "files")) {
-    dropUploads(uploadFile, makeFolder, () => {}, () => "", "(~/Downloads)", folderInfo);
+    dropUploads(uploadFile, makeFolder, () => {}, () => "", () => uploadNote(), folderInfo);
 }
 
 // The notices, newest at the top, at most MAX_NOTICES; each stays until
@@ -119,6 +119,7 @@ async function watchDownloads() {
             }
             watching = t;
             wait = 2000;
+            loadRoots(); // logged in now: where drops go can be said
             for (let m; (m = await t.next());) {
                 const saved = m.text && JSON.parse(m.text);
                 if (saved?.saved) {
@@ -128,6 +129,9 @@ async function watchDownloads() {
         } catch (err) {
             if (!err.lost) {
                 console.warn(`tabtop: no notices of new downloads: ${err.message}`);
+                // Refused (Downloads not exposed where the desktop saves,
+                // say), not unreachable: where drops go can still be said.
+                loadRoots();
                 break;
             }
         }

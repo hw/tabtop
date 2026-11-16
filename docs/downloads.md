@@ -1,5 +1,17 @@
 # Downloads
 
+Downloads is the default exposed folder. [`WEB_FS_ROOTS`](environment.md#web_fs_roots)
+can expose Documents, mounted storage and other directories with individual
+read-only or read/write access. The **▾** before the path at the top of the
+page switches between them (it is shown only when there is more than one);
+**Read-only** identifies a root whose contents can be read, previewed, compared,
+downloaded and shared for download, but cannot be changed here. Paths and actions
+below are relative to the selected root; examples use Downloads. Trash and transfer
+state are separate for each root. Sessions, share management and activity stay
+global, with root labels distinguishing paths.
+
+Old share links made before multi-root support are discarded; recreate them.
+
 Files that Chromium saves on the desktop go to `~/Downloads`. They can be
 downloaded at `http://<host>:6080/fs/`:
 
@@ -17,11 +29,16 @@ downloaded at `http://<host>:6080/fs/`:
   (see [Fetching from a URL](#fetching-from-a-url)).
 - **Finding your way:** the line above the list shows the folder's path,
   as the terminal would (`~/Downloads/photos/2024`), each folder in it a
-  link back up. The box above the list (or **/** from anywhere on
+  link back up. The box above the list (or **/** or **Ctrl+G** from anywhere on
   the page) narrows it to names with what you type in them; **Select all**
   then picks only those shown. Click **Name**, **Size** or **Modified** to sort
   by it, and again to turn the order round; folders stay first, and the
-  order is remembered in this browser. Times are shown as "Today 9:34",
+  order is remembered in this browser. **Grid** (beside the box) shows the
+  folder as cards instead, with thumbnails of the pictures in it (up to
+  40 MB each), made in the browser as they scroll into view, a few at a
+  time, and kept only while the page is open (in memory: nothing of the
+  pictures is left in the browser after); **List** goes back. Everything else works as
+  in the list: ticking, the menu, dragging, the keyboard. Times are shown as "Today 9:34",
   "Yesterday", a weekday or a date, in your browser's language and the
   container's time zone (`TZ`, UTC by default); hovering over one, or over
   a size, shows it exactly. Each row's
@@ -55,9 +72,10 @@ downloaded at `http://<host>:6080/fs/`:
   guessed. Text over 512 KB is shown plain, as colouring it would be slow.
   Coloured or not, it's only ever text: a web page's source can't run.
   The whole file is fetched first, so previews are for pictures up to
-  50 MB and text up to 2 MB; bigger ones, and every other kind, download
-  when clicked, except binaries (`.bin`, `.dll`, `.exe` and `.so`, or a
-  versioned `.so` such as `libc.so.6`), which open in hex whatever their
+  50 MB and text up to 2 MB; bigger ones download when clicked. Unknown
+  file types up to 10 MB open as text or hex, according to their contents;
+  larger ones download. Binaries (`.bin`, `.dll`, `.exe` and `.so`, or a
+  versioned `.so` such as `libc.so.6`), open in hex whatever their
   size. Any file can still be previewed from its row's menu
   (**Preview**): one too big for its own preview, or for text, is shown in
   hex, its first 1 MB fetched and the rest read as you move through it,
@@ -517,6 +535,103 @@ downloaded at `http://<host>:6080/fs/`:
   over: the editor says so and keeps your text, to copy or save as
   another file. **Done**, closing the preview, and the arrows ask first
   if there are changes not saved. Tab types a tab.
+- **Search in files:** **Search in files…** beside the filter box (or
+  **Ctrl+Shift+F**) finds the lines with some text in the text files of the
+  folder shown and every folder in it, ignoring case unless **Match case**
+  is ticked; with **Regular expression**, the text is one (Go's RE2
+  syntax). Results come as they're found, grouped by file with line
+  numbers; choosing one opens the file at that line with what was found
+  selected (in its text: rendered Markdown or HTML opens as it's shown).
+  **Stop** (or Escape) ends a search. Links aren't followed, and Trash,
+  unfinished uploads, files that aren't text (with a NUL byte near the
+  start) and files over 8 MiB aren't looked in. A search shows at most
+  1,000 lines (100 from one file), reads at most 512 MiB, 200,000 files and
+  folders, and 30 seconds' worth, saying when it stopped at one of those.
+  At most 3 searches run at once, over every session: another is asked
+  to wait.
+  Folders that can't be opened (permission denied) are passed over, and
+  counted.
+- **Compare text:** select two text files and choose **Compare text**,
+  which is offered only for two files that may be text (not folders,
+  images or other known binary types) of at most 2 MB each, for a
+  side-by-side, read-only diff with aligned line numbers, syntax colours,
+  added/removed lines, and **Previous change** / **Next change**. Each file
+  must be UTF-8 text, at most 2 MB and 50,000 lines. The shared scroll area
+  keeps both sides aligned; **Previous rows** / **Next rows** page through
+  500 rows at a time, and change navigation jumps between pages automatically.
+  Whitespace and line endings are compared exactly; the headers identify
+  CRLF/LF, BOMs and missing final newlines. Very large edits are grouped into
+  a single change block, with a notice when matching lines may be included.
+  In the text editor, click the **Unsaved changes** / **Saved** status
+  (**Compare with saved**) to compare the current edits with
+  the snapshot opened in that editor or its latest successful save. A failed
+  save keeps that snapshot for the editing session; earlier saves are kept
+  as versions (below). Comparisons run locally in a worker; opening them
+  doesn't save or change either file, and closing cancels outstanding
+  reads and comparison work.
+- **Versions:** each time a save replaces a file (the text, picture and
+  book editors' saves, an upload chosen to replace it, the hex editor's
+  changes), what it was is kept as a version. The preview's
+  **Earlier versions** button, shown for a file that has some, lists them, newest first, each with
+  **Compare** (for text and images: with the file as it is now) and **Restore**, which
+  makes the file that version again, keeping what it is now as a version
+  in turn; **Delete** removes one, and **Delete all versions…** every one.
+  Renamed or moved, in its root or to another, a file, or a folder it's
+  in, keeps its versions (copied, to another root on another
+  filesystem).
+  Moved to Trash, its versions go with it (not shown for a new file put
+  where it was), and come back with it when it's restored, under
+  whatever name it gets. **Restore** is refused if the file was saved
+  again since the list was shown: list them again to see that save too.
+  Deleting a file permanently removes its versions with it. So does its
+  leaving Trash for good (deleted or emptied there, or removed as Trash
+  keeps to its limits): that's checked as Trash changes and hourly, when
+  versions past their limits, and any a crash left part made, are
+  removed too. A file gone from its path some other way (deleted or
+  renamed from a terminal, a drive unmounted) keeps its versions their
+  30 days, for when it's back; they're found by its path, so a new file
+  put there has them. Each root keeps the latest **10** of each file, for **30 days**,
+  within **500** versions and **512 MiB** all told, the oldest going first;
+  files over 128 MiB aren't kept. A file a save replaces is kept by a hard
+  link where the filesystem allows, taking no more room than it did; one
+  the hex editor writes into is copied first, if it's at most 16 MiB.
+  They're kept in Trash's folder
+  (`.tabtop-trash/versions`), out of reach as Trash is, but aren't listed in
+  Trash, nor removed by emptying it. A read-only root keeps none.
+- **Compare images:** select two images and choose **Compare images**,
+  which is offered only for two images of at most 50 MB each.
+  Direct comparisons start **Side by side**; versions and comparisons with
+  saved images start in **Slider**. Drag the slider divider to reveal A or B
+  (arrow keys adjust it, Shift for larger steps, Home/End for either image).
+  **Swap sides** reverses their positions. The slider's **Show differences**
+  glyph overlays changed pixels in orange and missing areas in magenta,
+  leaving unchanged pixels clear; **Opacity** adjusts the highlight strength.
+  Zoom and pan are shared across views.
+  **All** shows **A**, **B** and **Delta** together; the view buttons or
+  A, B and D keys show one at a time. Zoom and scrolling stay in sync.
+  Use **Fit** (0), **100%** (1), **+** / **−**, Ctrl+wheel, or drag to pan.
+  Images align at the top left at their decoded pixel size, without resizing;
+  EXIF orientation is applied as in the picture viewer. Delta is black where
+  pixels match, brighter where colour or transparency differs, and magenta
+  where only one image has pixels. **Delta gain** makes subtle changes
+  brighter without changing the reported differing-pixel count. Hidden RGB
+  in fully transparent pixels is ignored. The summary counts pixels covered
+  by either image, excluding empty corners outside both images. Comparisons
+  use browser-decoded sRGB pixels, so different encodings or metadata can
+  still produce identical pixels. Animated raster images use their first
+  frame; SVGs use a decoded image snapshot with scripts inactive.
+  Each file can be up to 50 MB. The combined canvas can be at most
+  16 megapixels and 8,192 pixels on each side; larger comparisons are refused.
+  Files are fetched through the encrypted tunnel; comparison runs locally,
+  never changes either file, and closing releases its images and worker.
+  In the image editor, click the **Unsaved changes** / **Saved** status to
+  compare applied edits against the image opened or last successfully saved
+  over the file. Apply or cancel any active editing tool first. A failed save
+  keeps the previous comparison baseline; saving a copy keeps the original
+  file's baseline. Comparisons do not save edits.
+  Text comparisons offer split and unified layouts, with unified used when
+  opened on a narrow screen. Both text and image comparisons have a **Maximize** button; choose
+  **Restore size** to return to the original dialog size.
 - **Transfers:** downloads, uploads, zips and other changes show in a
   panel in the bottom corner, each with a progress bar while it goes and
   a **Cancel** button where it can be stopped, and a bar for how many are
@@ -627,13 +742,81 @@ downloaded at `http://<host>:6080/fs/`:
   (empty for `~/Downloads` itself). Like a rename, a move never replaces
   anything: if the folder has something of the same name, that one isn't
   moved, and the page says so. A folder can't be moved inside itself.
+- **Between roots:** with more than one root exposed (see
+  [`WEB_FS_ROOTS`](environment.md#web_fs_roots)), **Move to…** first asks
+  which root, and **Copy to…** (offered even in a read-only root) copies
+  into another writable one. Each item goes one at a time, with progress
+  and **Cancel** in the transfers panel; a name already taken there gets a
+  number, as an upload's does. Where both roots are on one filesystem a
+  move is a rename, done at once, however much it holds, links and all.
+  Otherwise what's copied is gathered in a
+  hidden folder and only appears, under its name, once it's all there, so
+  a cancelled or failed copy leaves nothing behind (and what a crash
+  leaves is removed by cleanup). A move then deletes the original, and
+  only once all of it was copied: if anything in it was added or changed
+  meanwhile (by another program, say), the original is kept, and the move
+  says so, leaving both. Copies keep files' permissions and
+  modification times, and leave out links and special files, saying how
+  many; a folder holding any can't be moved that way, only copied. A
+  file or folder in it that can't be opened (permission denied) stops a
+  copy, leaving nothing copied. Unfinished
+  uploads' temporary files aren't copied. Moving a folder that something
+  is being uploaded or fetched into is refused, as deleting it is, and
+  neither a copy nor a move can be made into Trash. Dragging rows only
+  moves within the root shown.
 - **Deleting:** **Delete…** in a row's menu deletes it, after asking, and
   **Delete** in the bar above the list deletes everything ticked, after
   asking once. Deleting a folder deletes everything in it.
-  Deleting is permanent: there's no trash. Deleting a symlink removes the
-  link, not the file or folder it leads to, and a folder is deleted
-  without following any symlinks in it. Files can't be changed from the
-  web, only replaced by deleting and uploading again.
+  Items move to **Trash**, opened from the navigation bar, where **Restore**
+  returns them to their original folder (recreating missing parent folders).
+  Right after a delete, the transfers panel says what went, with **Undo**
+  (or **Ctrl+Z**, outside a text box) to put it all back at once, for as
+  long as that row shows; an item whose name has been taken meanwhile comes
+  back numbered, as an upload would. Trash shows what's been deleted in every root at once, saying which root
+  each item came from, and restores each to its own root; **Empty Trash…**
+  empties every root's Trash that can be changed. Each root keeps its own
+  Trash, with its own limits.
+  If a name is taken, restore uses a numbered name, preserving both items.
+  **Delete permanently…** and **Empty Trash…** ask before removing items
+  irreversibly. Trash keeps items for up to **7 days**, **1 GiB** total and
+  **1,000 items**; the oldest are permanently removed first when a limit is
+  reached. Age cleanup runs at startup, hourly, and when Trash is used.
+  Items over 1 GiB or with more than 100,000 entries cannot be trashed,
+  nor can items on another mounted filesystem, nor anything while a file
+  has Trash's name at the top of the root. For those, the page says so
+  and asks whether to **Delete permanently** instead; nothing is removed
+  unless you agree. A folder that takes over 10 seconds to measure (on a
+  slow or network disk) isn't trashed either, and is asked about the
+  same way; as is anything when Trash can't be made ready (the disk
+  full, or the root's top folder not to be written in), or when it would
+  fit only by dropping what was deleted in the last 5 minutes (several
+  items deleted together that come to more than Trash keeps: the first
+  aren't dropped, unasked, for the last). One with a folder in it that can't be opened isn't trashed
+  (Trash couldn't remove it later), and is asked about the same way,
+  though deleting it permanently may fail as well. Nor is a
+  folder with a filesystem mounted in it
+  (a drive or a share, or a bind mount) trashed or deleted, permanently or
+  not, since emptying it would empty what's mounted there: unmount it
+  first.
+  Trashing a symlink moves the link itself, and folders are measured and
+  removed without following symlinks inside them. A folder can't be
+  deleted, renamed or moved while an upload or fetch into it is still
+  going (stop it or let it finish first); uploads paused there, waiting to
+  resume, are given up when it's deleted, renamed or moved.
+  Trash is stored in the reserved `.tabtop-trash` directory at the top of
+  each root, hidden from normal listings and folder ZIPs. Only that one is
+  reserved: a `.tabtop-trash` folder deeper down is listed and handled like
+  any other, though new items can't be given that name. On a FAT or
+  exFAT drive, which ignores case, every spelling of the name reaches
+  Trash and is treated as Trash; elsewhere a folder spelled differently,
+  such as `.TABTOP-TRASH`, is an ordinary one. No spelling can be given to
+  new items. Trash can't be
+  reached by another name either: a symlink leading to the top of the root,
+  or into Trash, doesn't show it, and requests through one are refused;
+  nor is anything restored through one. It survives restarts when
+  Downloads is persisted. Upload cleanup leaves it alone. Trash and restore
+  cover actions made through this page; shell and desktop deletions keep
+  their own behavior.
 - **Attachments only:** files are always sent as downloads, never shown as
   pages, so an HTML file in `~/Downloads` can't run on the site. A preview
   shows a file in an element that can't run anything in it: a picture
@@ -797,7 +980,7 @@ container rather than through your browser and connection.
 
 - **It's the server's:** closing the page doesn't stop it. A row in the
   transfers panel shows how it's going, with **Cancel**; the files page,
-  opened again, shows the fetches still going. Up to 4 go at once.
+  opened again, shows the fetches still going. Up to 4 go at once, into all the folders together.
 - **Cut off,** it carries on where it stopped, if the server allows it,
   up to 5 times. One that gets nothing for a minute is cut off and tried
   again.

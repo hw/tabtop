@@ -122,8 +122,11 @@
     // A line: prefixes, the mnemonic, a branch's short/near/far, and its
     // operands.
     function parseLine(text, register) {
-        // Lowercase, but for what's in quotes; a comment after ; left out.
-        let rest = String(text).replace(/'[^']*'|[^']+/g, (m) => (m[0] === "'" ? m : m.toLowerCase())).replace(/;[^']*$/, "").trim();
+        // A comment after ; left out (a ; in quotes isn't one, and the
+        // comment may have a quote of its own); then lowercase, but for
+        // what's in quotes.
+        let rest = String(text).replace(/^((?:'[^']*'|[^';])*);.*$/s, "$1")
+            .replace(/'[^']*'|[^']+/g, (m) => (m[0] === "'" ? m : m.toLowerCase())).trim();
         const prefixes = [];
         let word;
         while ((word = /^([a-z][a-z0-9]*)\b\s*/.exec(rest)) && PREFIXES.has(word[1]) && rest.slice(word[0].length).trim()) {
@@ -163,6 +166,21 @@
         if (mnemonic === "xlatb") return ["xlat"];
         if (mnemonic === "sal") return ["shl"];
         return [];
+    }
+
+    // Where a near branch goes, as a file offset. iced wraps a target to
+    // the code's own width (16 bits in 16-bit code), which is the file
+    // offset only while the instruction itself is within that; past it (a
+    // 16-bit file over 64 KB), it's the next instruction's offset and the
+    // branch's distance, which is where it goes whatever its segment.
+    // Shown so (see disasm-worker.js), and typed so. A BigInt.
+    function branchTarget(I, insn, bitness) {
+        const kind = insn.opCount ? insn.opKind(0) : -1;
+        const width = kind === I.OpKind.NearBranch16 ? 16 : kind === I.OpKind.NearBranch32 ? 32 : 0;
+        const target = insn.nearBranchTarget;
+        if (width !== bitness || insn.ip < (1n << BigInt(width))) return target;
+        const next = insn.ip + BigInt(insn.length);
+        return next + BigInt.asIntN(width, target - next);
     }
 
     function makeAssembler(I) {
@@ -289,9 +307,18 @@
             const rk = REGISTER_KIND.exec(kind);
             if (rk && op.kind === "reg") {
                 const want = { kp1: "k", xmmp3: "xmm", zmmp3: "zmm", sti: "st" }[rk[1]] ?? rk[1];
-                if (kinds.get(op.reg) !== want) return false;
+                let reg = op.reg;
+                if (kinds.get(reg) !== want) {
+                    // lldt bp: an encoding that reads 16 bits of a wider
+                    // register, which iced shows by its 16-bit name. Taken
+                    // only if that's how it's then shown (see tryEncoding).
+                    const wider = rk[2] === "or_mem" && kinds.get(reg) === "r16" ? { r32: R.EAX, r64: R.RAX }[want] : null;
+                    if (wider == null) return false;
+                    (ctx.shownAs ??= []).push(formatter.formatRegister(reg).toLowerCase());
+                    reg = wider + (reg - R.AX);
+                }
                 ins.setOpKind(i, OK.Register);
-                ins.setOpRegister(i, op.reg);
+                ins.setOpRegister(i, reg);
                 return true;
             }
             if (op.kind === "mem" && (kind === "mem" || kind === "mem_mpx" || kind === "mem_mib" || kind === "sibmem" || kind === "mem_offs"
@@ -321,7 +348,13 @@
                 const short = near[3] === "1";
                 if ((line.branch === "short" && !short) || (line.branch === "near" && short) || line.branch === "far") return false;
                 const width = near[2] ? Number(near[2]) : near[1] === "xbegin_" ? bitness : near[3] === "2" ? 16 : 32;
-                if (!fitsEither(op.value, width)) return false;
+                // In 16- or 32-bit code, the file offset it's to, which
+                // may be past what the code's own addresses reach: kept
+                // only if that's where it then goes (see branchTarget).
+                if (width === bitness && width < 64 && op.value >= 0n) {
+                    if (op.value > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+                    ctx.target = op.value;
+                } else if (!fitsEither(op.value, width)) return false;
                 const target = BigInt.asUintN(width, op.value);
                 if (width === 16) { ins.setOpKind(i, OK.NearBranch16); ins.nearBranch16 = Number(target); }
                 else if (width === 32) { ins.setOpKind(i, OK.NearBranch32); ins.nearBranch32 = Number(target); }
@@ -352,6 +385,9 @@
         }
 
         function setMemory(ins, i, kind, op, { bitness, entry, ripTarget }) {
+            // [si+bx], [rax+rsp]: the same address, the way round it's encoded.
+            if (op.base != null && op.index != null && op.scale === 1 && (op.index === R.RSP || op.index === R.ESP
+                || ([R.BX, R.BP].includes(op.index) && [R.SI, R.DI].includes(op.base)))) op = { ...op, base: op.index, index: op.base };
             // Its size, if given, the encoding's (or its broadcast element's).
             const wanted = op.bcst || op.decorations.some((d) => /^1to\d+$/.test(d)) ? entry.bcstSize : entry.size;
             if (op.bcst || op.decorations.some((d) => /^1to\d+$/.test(d))) {
@@ -387,9 +423,12 @@
             if (!fitsEither(op.disp, width)) return false;
             const disp = BigInt.asUintN(width, op.disp);
             ins.memoryDisplacementU64 = disp;
+            // None, but where the encoding without one means something else
+            // ([bp], [ebp], [r13]; not 16-bit [bp+si]); else a byte, which
+            // iced makes the full size where it doesn't fit (an EVEX
+            // encoding's byte is in units of its memory's size).
             ins.memoryDisplSize = absolute ? width / 8
-                : op.disp === 0n && !BP.has(op.base) ? 0
-                : fitsSigned(BigInt.asIntN(width, disp), 8) ? 1 : width / 8;
+                : op.disp === 0n && !(BP.has(op.base) && (width !== 16 || op.index == null)) ? 0 : 1;
             return true;
         }
 
@@ -453,7 +492,9 @@
                 decoder.ip = BigInt(address);
                 const back = decoder.decode();
                 try {
-                    const same = !back.isInvalid && back.length === bytes.length && back.code === entry.code && formatter.format(back) === shown;
+                    const same = !back.isInvalid && back.length === bytes.length && back.code === entry.code && formatter.format(back) === shown
+                        && (ctx.target == null || branchTarget(I, back, bitness) === ctx.target)
+                        && (ctx.shownAs ?? []).every((name) => shown.split(/[ ,]+/).includes(name));
                     return same ? { bytes, shown, entry } : null;
                 } finally {
                     back.free();
@@ -567,4 +608,5 @@
 
     root.makeAssembler = makeAssembler;
     root.x86Parse = { parseLine, parseNumber, aliases };
+    root.x86BranchTarget = branchTarget;
 })(typeof self !== "undefined" ? self : globalThis);

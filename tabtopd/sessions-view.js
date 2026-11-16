@@ -1,6 +1,7 @@
+import { rootLabel, readOnlyRoot, filesystemRoots } from "./fs-context.js";
 import * as tunnel from "./tunnel.js";
 import { call, saveBlob, shareURL } from "./requests.js";
-import { askChangeLink, askChangeLinks, askSessionName, askYes, copyText, showLink, statusRow } from "./ui.js";
+import { askChangeLink, askChangeLinks, askCode, askPasskey, askSessionName, askYes, copyText, showLink, statusRow } from "./ui.js";
 import { logOut } from "./nav.js";
 import { humanBytes } from "./file-format.js";
 import { store, stored } from "./stored.js";
@@ -22,6 +23,12 @@ function untilText(ms) {
     const hours = Math.round(minutes / 60);
     return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
+// linkName is what the link l is to: its root's name, then the path in it.
+function linkName(l) {
+    const root = l.root_label || l.root;
+    return l.path === "." ? root : `${root}/${l.path}`;
+}
+
 function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
     e.append(...children);
@@ -162,12 +169,104 @@ export function createSessionView({ security, formatTime }) {
                 + "End… logs another session out." + idle }),
             el("h2", { textContent: "Recent logins" }),
             el("table", { className: "logins-table" }, ...(logins.length ? logins : [el("tr", {}, field("", { textContent: "None since the server started." }))])));
+        const passkeys = el("section", { className: "passkeys" });
+        box.append(passkeys);
+        await showPasskeys(passkeys, when);
         const activity = el("section", { className: "activity" });
         box.append(activity);
         await showActivity(activity, when, field);
         if (built) {
             box.append(built);
         }
+    }
+
+    // showPasskeys lists in box the passkeys added (see passkey.go), each
+    // to remove, with a button that adds another.
+    async function showPasskeys(box, when) {
+        let r;
+        try {
+            const t = await call({ type: "passkeys" });
+            t.close();
+            r = t.reply;
+        } catch (err) {
+            box.replaceChildren(el("div", { className: "bar" }, el("h2", { textContent: "Passkeys" })),
+                el("p", { className: "error", textContent: err.message }));
+            return;
+        }
+        const usable = tunnel.passkeysUsable();
+        const field = (label, props = {}, ...children) => {
+            const td = el("td", props, ...children);
+            td.dataset.label = label;
+            return td;
+        };
+        const add = button("add-passkey", "Add a passkey…", () => addPasskey(box, when));
+        add.disabled = !usable || r.passkeys.length >= r.max;
+        const never = (t) => !t || t.startsWith("0001-");
+        const rows = r.passkeys.map((k) => el("tr", {},
+            field("Passkey", { className: "name", textContent: k.name }),
+            field("Added", { textContent: when(k.created) }),
+            field("Last used", { textContent: never(k.last_used) ? "never" : when(k.last_used) }),
+            field("Actions", { className: "act" }, button("remove-passkey", "Remove…", async () => {
+                const code = await askCode(`Remove the passkey ${k.name}? It won't log in here any more (remove it from the device or password manager too). `
+                    + "Give your password + authenticator code again, so no one else with this session can remove it: "
+                    + "the code that logged this session in can't be used again, so wait for the next one.", "Remove");
+                if (!code) {
+                    return;
+                }
+                try {
+                    (await call({ type: "passkey-remove", name: k.id, code })).close();
+                } catch (err) {
+                    const row = statusRow("");
+                    row.set(`The passkey ${k.name} wasn't removed: ${err.message}`, true);
+                    row.finish();
+                }
+                await showPasskeys(box, when);
+            }))));
+        box.replaceChildren(el("div", { className: "bar" }, el("h2", { textContent: "Passkeys" }), add),
+            rows.length ? el("table", { className: "passkeys-table" }, el("tr", {}, el("th", { textContent: "Passkey" }),
+                el("th", { textContent: "Added" }), el("th", { textContent: "Last used" }), el("th", { className: "act" })), ...rows)
+                : el("p", { className: "hint", textContent: "None yet." }),
+            el("p", { className: "hint", textContent: usable
+                ? `A passkey logs in instead of the password + code, unlocked as the device or password manager holding it is (a fingerprint, a face, a PIN). It works at ${location.hostname} only. At most ${r.max}.`
+                : "Passkeys need this page opened over HTTPS at a name (not an IP address), in a browser that has them." }));
+    }
+
+    // addPasskey asks for a passkey's name and the password + code again,
+    // has the browser make one, and adds it.
+    async function addPasskey(box, when) {
+        const asked = await askPasskey();
+        if (!asked) {
+            return;
+        }
+        const row = statusRow(`Adding the passkey ${asked.name || "Passkey"}`);
+        try {
+            const t = await call({ type: "passkey-options", code: asked.code });
+            t.close();
+            const o = t.reply;
+            const cred = await navigator.credentials.create({ publicKey: {
+                rp: { name: "TabTop" },
+                user: { id: tunnel.unb64url(o.user_id), name: "tabtop", displayName: "TabTop" },
+                challenge: tunnel.unb64url(o.challenge),
+                pubKeyCredParams: [-7, -8, -257].map((alg) => ({ type: "public-key", alg })),
+                authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+                excludeCredentials: o.exclude.map((id) => ({ type: "public-key", id: tunnel.unb64url(id) })),
+                attestation: "none", timeout: 120000,
+            } });
+            const res = cred.response;
+            const pub = res.getPublicKey?.();
+            if (!pub) {
+                throw new Error("this browser doesn't give a passkey's public key: it's too old for passkeys here");
+            }
+            const done = await call({ type: "passkey-add", name: asked.name, passkey: {
+                id: tunnel.b64url(cred.rawId), public_key: tunnel.b64url(pub), alg: res.getPublicKeyAlgorithm(),
+                authenticator_data: tunnel.b64url(res.getAuthenticatorData()), client_data: tunnel.b64url(res.clientDataJSON) } });
+            done.close();
+            row.set(`Passkey ${done.reply.name} added`);
+        } catch (err) {
+            row.set(`No passkey added: ${err?.name === "NotAllowedError" ? "none was made" : err.message}`, true);
+        }
+        row.finish();
+        await showPasskeys(box, when);
     }
 
     // Share and upload links, with cleanup below the links.
@@ -211,7 +310,8 @@ export function createSessionView({ security, formatTime }) {
             const downloads = `${l.count}${l.max ? ` of ${l.max}` : ""}` + (l.upload
                 ? ` file${l.count === 1 && !l.max ? "" : "s"}, ${humanBytes(l.bytes ?? 0)} of ${humanBytes(l.max_bytes)}` : "");
             const from = [...new Set(l.uses.map((u) => u.ip))].join(", ");
-            const what = l.upload ? `Upload into ${l.path === "." ? "Downloads" : l.path}/` : l.path + (l.dir ? "/ (as a .zip)" : "");
+            const target = linkName(l);
+            const what = l.upload ? `Upload into ${target}/` : target + (l.dir ? "/ (as a .zip)" : "");
             const tick = el("input", { type: "checkbox", title: `Select the link to ${what}` });
             tick.addEventListener("change", () => {
                 tick.checked ? picked.add(l.handle) : picked.delete(l.handle);
@@ -239,13 +339,15 @@ export function createSessionView({ security, formatTime }) {
             el("p", { className: "hint", textContent: "Uploads cut off are kept for an hour so they can carry on, and a crash can leave "
                 + "temporary files behind (they're deleted at the next start). Clean up… deletes them now. Uploads and fetches going on "
                 + "aren't touched." }));
-        box.append(cleanup);
+        // Cleaning up covers every writable root, not only the one chosen.
+        const roots = filesystemRoots();
+        if (roots.length ? roots.some(root => !root.read_only) : !readOnlyRoot()) box.append(cleanup);
     }
 
     // How many entries of the activity log are shown at first.
     const ACTIVITY_SHOWN = 25;
     // The activity log's kinds of entry, in groups to filter by.
-    const ACTIVITY_KINDS = [["", "Everything"], ["login logout logout-all end-session session login-failed", "Logins and sessions"],
+    const ACTIVITY_KINDS = [["", "Everything"], ["login logout logout-all end-session session login-failed passkey", "Logins, sessions and passkeys"],
         ["login-failed", "Failed logins"], ["share share-used", "Share and upload links"], ["upload", "Files received"],
         ["fetch", "Fetches"], ["cleanup cleared", "Cleaning up"]];
     // What the log is filtered by, kept as it's listed again.
@@ -268,10 +370,10 @@ export function createSessionView({ security, formatTime }) {
         const kinds = new Set(activityFilter.kinds.split(" ").filter(Boolean));
         const q = activityFilter.text.trim().toLowerCase();
         const entries = r.entries.filter((e) => (!kinds.size || kinds.has(e.kind))
-            && (!q || e.text.toLowerCase().includes(q) || (e.ip ?? "").toLowerCase().includes(q)));
+            && (!q || e.text.toLowerCase().includes(q) || (e.ip ?? "").toLowerCase().includes(q) || (e.root ?? "").toLowerCase().includes(q) || (e.path ?? "").toLowerCase().includes(q)));
         const rows = entries.map((e) => el("tr", {}, field("When", { textContent: when(e.time) }),
             field("From", { className: "name" }, e.ip || "", ...(e.session ? [el("br"), el("span", { className: "hint", textContent: e.session })] : [])),
-            field("What", { className: e.kind === "login-failed" || e.kind === "cleared" ? "error" : "", textContent: e.text })));
+            field("What", { className: e.kind === "login-failed" || e.kind === "cleared" ? "error" : "", textContent: (e.root ? `[${e.root}${e.path ? "/" + e.path : ""}] ` : "") + e.text })));
         const more = !filtering && r.total > r.entries.length
             ? [button("more", `Show all ${r.total}`, () => showActivity(section, when, field, true))] : [];
         const kind = el("select", { className: "kind" }, ...ACTIVITY_KINDS.map(([value, text]) => el("option", { value, textContent: text })));
@@ -351,8 +453,8 @@ export function createSessionView({ security, formatTime }) {
         try {
             const t = await call({ type: "activity", max: 0 });
             t.close();
-            const lines = ["time\tfrom\tsession\tkind\twhat",
-                ...t.reply.entries.reverse().map((e) => [e.time, e.ip ?? "", e.session ?? "", e.kind, e.text].join("\t"))];
+            const lines = ["time\tfrom\tsession\tkind\troot\tpath\twhat",
+                ...t.reply.entries.reverse().map((e) => [e.time, e.ip ?? "", e.session ?? "", e.kind, e.root ?? "", e.path ?? "", e.text].join("\t"))];
             const name = `tabtop-activity-${new Date().toISOString().slice(0, 10)}.tsv`;
             saveBlob(new Blob([lines.join("\n") + "\n"], { type: "text/tab-separated-values" }), name);
             row.set(`${name}: downloaded`);
@@ -403,7 +505,7 @@ export function createSessionView({ security, formatTime }) {
 
     // showShare shows the link l again, as listed, to copy.
     async function showShare(l, when) {
-        const name = l.path === "." ? "Downloads" : l.path;
+        const name = linkName(l);
         let r;
         try {
             const t = await call({ type: "share-again", name: l.handle });
@@ -436,7 +538,7 @@ export function createSessionView({ security, formatTime }) {
         if (!how) {
             return;
         }
-        const name = l.path === "." ? "Downloads" : l.path;
+        const name = linkName(l);
         const row = statusRow("Changing a link");
         try {
             const t = await call({ type: "reshare", name: l.handle, expires: how.expires, max: how.max, max_bytes: how.maxBytes, label: how.label });
@@ -513,14 +615,14 @@ export function createSessionView({ security, formatTime }) {
     // revokeShare asks, then revokes the share link l, as listed in box, and
     // lists them again.
     async function revokeShare(l, box) {
-        if (!(await askYes(`Revoke the ${l.upload ? "upload " : ""}link to ${l.path === "." ? "Downloads" : l.path}? `
+        if (!(await askYes(`Revoke the ${l.upload ? "upload " : ""}link to ${linkName(l)}? `
             + `It stops working at once, ${l.upload ? "uploads" : "downloads"} going on included.`, "Revoke it"))) {
             return;
         }
         const row = statusRow("Revoking a link");
         try {
             (await call({ type: "unshare", name: l.handle })).close();
-            row.set(`Revoked the link to ${l.path === "." ? "Downloads" : l.path}`);
+            row.set(`Revoked the link to ${linkName(l)}`);
         } catch (err) {
             row.set(`The link wasn't revoked: ${err.message}`, true);
         }

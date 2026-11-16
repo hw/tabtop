@@ -21,14 +21,14 @@ var zipDownloadSlots = newPreviewWork(previewEditConcurrency)
 // tunnelZipDownload streams req.Entries from the ZIP at req.Path to the
 // page: {"name":...,"size":...} then bytes for one file, or {"name":...}
 // then a zip and {"done":true} for several.
-func (g *server) tunnelZipDownload(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelZipDownload(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder) {
 	release, ok := zipDownloadSlots.acquire()
 	if !ok {
 		r.fail("Other ZIP downloads are in progress; try again in a moment.")
 		return
 	}
 	defer release()
-	opened, err := openDownloadsFile(g.downloadsDir, req.Path)
+	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())
 		return

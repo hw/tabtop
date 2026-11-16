@@ -1,7 +1,8 @@
 # Health checks
 
 With `WEB_VNC=0`, health checks do not require a VNC server. The doctor
-report marks disabled desktop, terminal and file services as off.
+report marks disabled desktop, terminal and file services as off. With
+`WEB_FS_ROOTS`, it checks each configured root and reports its access mode.
 
 `/healthz` (under `WEB_BASE_PATH`, like every path) answers `200 ok` while
 the desktop's VNC server is there and the login file can be read, and

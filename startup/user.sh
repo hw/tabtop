@@ -33,10 +33,14 @@ provision_user() {
     # A volume meant for the home, mounted under /home/ at another name than
     # VNC_USER's, isn't used: the account gets a new, empty home beside it.
     # Mount points are the fifth field of mountinfo, with spaces as \040.
-    while read -r _ _ _ _ MOUNT_POINT _; do
+    local READ_ONLY_HOME_MOUNTS=()
+    while read -r _ _ _ _ MOUNT_POINT MOUNT_OPTIONS _; do
         MOUNT_POINT="${MOUNT_POINT//\\040/ }"
         case "$MOUNT_POINT" in
-            "$USER_HOME" | "$USER_HOME"/*) ;;
+            "$USER_HOME") ;;
+            "$USER_HOME"/*)
+                if [[ ",$MOUNT_OPTIONS," == *,ro,* ]]; then READ_ONLY_HOME_MOUNTS+=("$MOUNT_POINT"); fi
+                ;;
             /home/*)
                 MOUNT_NAME="${MOUNT_POINT#/home/}"
                 echo "Warning: $MOUNT_POINT is mounted, but the home folder is $USER_HOME (VNC_USER=$VNC_USER)," >&2
@@ -51,7 +55,18 @@ provision_user() {
     # on every start. chown -R doesn't follow symlinks, and the copy runs as the
     # user, so symlinks left in a reused home can't redirect root.
     if [ "$(stat -c %u "$USER_HOME")" != "$(id -u "$VNC_USER")" ]; then
-        chown -R "$VNC_USER:" "$USER_HOME"
+        if ((${#READ_ONLY_HOME_MOUNTS[@]})); then
+            # Docker may create a root-owned home above mounted subfolders.
+            # Preserve the normal ownership repair, excluding read-only mounts.
+            local OWNERSHIP_PRUNES=()
+            local READ_ONLY_MOUNT
+            for READ_ONLY_MOUNT in "${READ_ONLY_HOME_MOUNTS[@]}"; do
+                OWNERSHIP_PRUNES+=(-samefile "$READ_ONLY_MOUNT" -prune -o)
+            done
+            find "$USER_HOME" "${OWNERSHIP_PRUNES[@]}" -exec chown -h "$VNC_USER:" {} +
+        else
+            chown -R "$VNC_USER:" "$USER_HOME"
+        fi
         runuser -u "$VNC_USER" -- cp -r --update=none /etc/skel/. "$USER_HOME/"
     fi
 

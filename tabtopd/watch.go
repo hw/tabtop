@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -21,42 +20,53 @@ import (
 
 // placed notes that the gateway itself put name (a path in ~/Downloads)
 // there, as a move does, so it isn't told of as saved.
-func (g *server) placed(name string) {
+func (g *fileService) placed(name string) {
 	if path.Dir(name) != "." {
 		return // the watch only covers ~/Downloads itself
 	}
-	g.placedMu.Lock()
-	defer g.placedMu.Unlock()
-	if g.placedAt == nil {
-		g.placedAt = map[string]time.Time{}
+	g.root.placedMu.Lock()
+	defer g.root.placedMu.Unlock()
+	if g.root.placedAt == nil {
+		g.root.placedAt = map[string]time.Time{}
 	}
 	now := time.Now()
-	for n, t := range g.placedAt {
+	for n, t := range g.root.placedAt {
 		if now.Sub(t) > watchQuiet {
-			delete(g.placedAt, n)
+			delete(g.root.placedAt, n)
 		}
 	}
-	g.placedAt[name] = now
+	g.root.placedAt[name] = now
 }
 
-func (g *server) wasPlaced(name string) bool {
-	g.placedMu.Lock()
-	defer g.placedMu.Unlock()
-	t, ok := g.placedAt[name]
+func (g *fileService) wasPlaced(name string) bool {
+	g.root.placedMu.Lock()
+	defer g.root.placedMu.Unlock()
+	t, ok := g.root.placedAt[name]
 	return ok && time.Since(t) <= watchQuiet
 }
 
 // tunnelWatch answers a watch request: it sends {"saved":name,"bytes":n}
 // for each file saved into ~/Downloads (see monitorDownloads) while the page
 // keeps the tunnel open. The page sends nothing.
-func (g *server) tunnelWatch(t *tunnel, r *tunnelResponder) {
-	if st, err := os.Stat(g.downloadsDir); err != nil || !st.IsDir() {
-		r.fail("The Downloads folder is missing.")
+func (g *fileService) tunnelWatch(t *tunnel, r *tunnelResponder) {
+	store, err := g.openStore()
+	if err != nil {
+		r.fail("The folder is missing.")
 		return
 	}
-	source, err := openDirectoryEvents(g.downloadsDir, downloadWatchMask)
+	dir, err := openRootDirectory(store.root, ".")
+	store.Close()
 	if err != nil {
-		r.fail("Downloads can't be watched.")
+		r.fail("The folder is missing.")
+		return
+	}
+	// Register through the checked descriptor, then release it: while it's
+	// open, deleting the folder sends no event, and the watch would go on
+	// watching a folder nobody can see.
+	source, err := openDirectoryEvents(fmt.Sprintf("/proc/self/fd/%d", dir.Fd()), downloadWatchMask)
+	dir.Close()
+	if err != nil {
+		r.fail("This folder can't be watched.")
 		return
 	}
 	defer source.Close()
@@ -74,7 +84,7 @@ func (g *server) tunnelWatch(t *tunnel, r *tunnelResponder) {
 	})
 	if err != nil {
 		log.Printf("watching %s: %v", g.downloadsDir, err)
-		t.Close(websocket.StatusInternalError, "Downloads can't be watched.")
+		t.Close(websocket.StatusInternalError, "This folder can't be watched.")
 		return
 	}
 	r.finish(nil)
@@ -86,10 +96,10 @@ var errDirGone = errors.New("the folder was deleted or moved")
 // after anything in the folder at req.Path changes (see monitorChanges),
 // while the page keeps the tunnel open. The page sends nothing. If the
 // folder is deleted or moved, it closes the tunnel, saying so.
-func (g *server) tunnelChanges(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	root, err := openDownloadStore(g.downloadsDir)
+func (g *fileService) tunnelChanges(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+	root, err := g.openStore()
 	if err != nil {
-		r.fail("The downloads folder is missing.")
+		r.fail("The exposed folder is unavailable.")
 		return
 	}
 	defer root.Close()

@@ -270,9 +270,30 @@ func (g *server) collectDoctorReport(r *http.Request) doctorReport {
 
 	if g.fsOff {
 		checks["downloads"] = check{OK: true, Detail: "off"}
+	} else if g.fsRoots != "" {
+		checks["downloads"] = check{OK: true, Detail: "see configured roots"}
+		for _, service := range g.fileServices() {
+			root, err := service.openRoot()
+			if root != nil {
+				root.Close()
+			}
+			mode := "read-write"
+			if service.root.ReadOnly {
+				mode = "read-only"
+			}
+			checks["root:"+service.root.ID] = newCheck(service.root.Label+" ("+mode+")", err)
+		}
+		for _, p := range g.rootProblems {
+			checks["root:"+p.ID] = check{Detail: fmt.Sprintf("%s: unavailable at startup, left out until a restart: %v", p.Label, p.Err)}
+		}
 	} else {
 		entries, err := countEntries(g.downloadsDir, maxListing)
 		checks["downloads"] = newCheck(fmt.Sprintf("%s, %s entries", g.downloadsDir, entries), err)
+		// Left out at startup (it holds the gateway's own files, say):
+		// there, but not served.
+		for _, p := range g.rootProblems {
+			checks["downloads"] = check{Detail: fmt.Sprintf("%s: left out until a restart: %v", p.Label, p.Err)}
+		}
 	}
 
 	if g.audio == nil {

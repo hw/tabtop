@@ -1,7 +1,7 @@
 // Public browser API: protocol exports plus the WebSocket-compatible UI adapter.
 import { Tunnel } from "./tunnel-protocol.js";
 import { session, storedSession, forgetSession } from "./session.js";
-export { Tunnel, TunnelError, login, tunnelURL, request } from "./tunnel-protocol.js";
+export { Tunnel, TunnelError, login, passkeyLogin, passkeysUsable, b64url, unb64url, tunnelURL, request } from "./tunnel-protocol.js";
 export { elligator2, cpaceGenerator, cpaceISK, cryptoBackend } from "./tunnel-crypto.js";
 export { SESSION_KEY, storedSession, forgetSession, session, renewSession } from "./session.js";
 

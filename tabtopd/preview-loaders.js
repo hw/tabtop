@@ -1,10 +1,10 @@
 // Format-specific transport loading. The controller owns cancellation and
 // creates object URLs only after a load is still current.
 import { call, collect } from "./requests.js";
-import { typeOf, limits, binaryChunkSize } from "./preview-model.js";
+import { typeOf, limits, binaryChunkSize, unknownTextSize } from "./preview-model.js";
 import { join } from "./preview-dom.js";
 const PDF_FIRST = 64 * 1024;
-const UNKNOWN_FIRST = 10_000_000;
+const UNKNOWN_FIRST = unknownTextSize;
 
 const loaders = {
     zip: async (open) => open({ type: "zip-preview" }, (t) => ({ entries: t.reply.entries })),

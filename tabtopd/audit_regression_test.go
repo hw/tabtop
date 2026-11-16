@@ -57,7 +57,7 @@ func uploadFormFixture(t *testing.T, quota int64) (*server, *downloadStore, *sha
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, link, err := g.shares.create(".", st, shareSpec{Life: time.Hour, Upload: true, MaxBytes: quota}, "owner", "127.0.0.1")
+	_, link, err := g.shares.create(".", st, shareSpec{Root: "downloads", RootBinding: g.roots[0].Binding, RootLabel: "Downloads", Life: time.Hour, Upload: true, MaxBytes: quota}, "owner", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestUploadFormRejectsWithoutDraining(t *testing.T) {
 			r := httptest.NewRequest("POST", "/fs/token/", reader)
 			r.Header.Set("Content-Type", mw.FormDataContentType())
 			w := httptest.NewRecorder()
-			g.receiveForm(w, r, link, store, false, "127.0.0.1")
+			g.defaultFiles().receiveForm(w, r, link, store, false, "127.0.0.1")
 			if w.Code < 400 || reader.n >= body.Len()/2 || w.Header().Get("Connection") != "close" {
 				t.Fatalf("rejected form consumed %d of %d bytes; status %d, headers %v", reader.n, body.Len(), w.Code, w.Header())
 			}
@@ -118,7 +118,7 @@ func TestUploadFormAdmissionPrecedesBodyParsing(t *testing.T) {
 	reader := &countedFormBody{Reader: bytes.NewBufferString("not even parsed")}
 	r := httptest.NewRequest("POST", "/", reader)
 	w := httptest.NewRecorder()
-	g.receiveForm(w, r, link, store, false, "127.0.0.1")
+	g.defaultFiles().receiveForm(w, r, link, store, false, "127.0.0.1")
 	if w.Code != http.StatusServiceUnavailable || reader.n != 0 {
 		t.Fatalf("admission read %d bytes, status %d", reader.n, w.Code)
 	}

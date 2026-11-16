@@ -1006,8 +1006,8 @@ func readSQLiteIsolated(ctx context.Context, f *os.File, q sqliteQuery) (json.Ra
 // tunnelSQLite answers a "sqlite" request: req.SQLite asked of the database
 // at req.Path, as the page read it; with the schema, its size and version,
 // and whether a -wal file beside it holds changes not shown.
-func (g *server) tunnelSQLite(req tunnelRequest, r *tunnelResponder) {
-	opened, err := openDownloadsFile(g.downloadsDir, req.Path)
+func (g *fileService) tunnelSQLite(req tunnelRequest, r *tunnelResponder) {
+	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())
 		return

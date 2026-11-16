@@ -12,6 +12,7 @@ VNC_SERVER_NAME="${VNC_SERVER_NAME:-}"
 WEB_PORT="${WEB_PORT:-6080}"
 WEB_VNC="${WEB_VNC:-1}"
 WEB_FS="${WEB_FS:-1}"
+WEB_FS_ROOTS="${WEB_FS_ROOTS:-}"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
 WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
@@ -21,6 +22,7 @@ WEB_SHARE="${WEB_SHARE:-1}"
 WEB_FETCH="${WEB_FETCH:-1}"
 WEB_FETCH_PRIVATE="${WEB_FETCH_PRIVATE:-0}"
 WEB_PREVIEW_FETCH_PRIVATE="${WEB_PREVIEW_FETCH_PRIVATE:-0}"
+WEB_DISASM_DISABLE="${WEB_DISASM_DISABLE:-none}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
 WEB_AUDIO_SINK="${WEB_AUDIO_SINK:-}"
@@ -156,6 +158,11 @@ case "$WEB_PREVIEW_FETCH_PRIVATE" in
     0|1) ;;
     *) echo "WEB_PREVIEW_FETCH_PRIVATE must be 0 or 1 (got '${WEB_PREVIEW_FETCH_PRIVATE}')." >&2; exit 1 ;;
 esac
+# none, all, or some of x86, arm64, capstone, riscv and mips, with commas between.
+if ! [[ "$WEB_DISASM_DISABLE" =~ ^(none|all|(x86|arm64|capstone|riscv|mips)(,(x86|arm64|capstone|riscv|mips))*)$ ]]; then
+    echo "WEB_DISASM_DISABLE must be none, all, or a comma-separated list of x86, arm64, capstone, riscv and mips (got '${WEB_DISASM_DISABLE}')." >&2
+    exit 1
+fi
 if ! [[ "$WEB_AUDIO_BITRATE" =~ ^[0-9]{1,3}$ ]] || [ "$WEB_AUDIO_BITRATE" -lt 32 ] \
         || [ "$WEB_AUDIO_BITRATE" -gt 256 ]; then
     echo "WEB_AUDIO_BITRATE must be 32 to 256 kbit/s (got '${WEB_AUDIO_BITRATE}')." >&2

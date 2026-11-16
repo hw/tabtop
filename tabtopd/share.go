@@ -48,7 +48,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -81,15 +80,18 @@ var shareToken = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
 
 // shareLink is a link, as kept in -shares-file.
 type shareLink struct {
-	ID      string    `json:"id"`   // the token's SHA-256, hex
-	Path    string    `json:"path"` // in ~/Downloads, without slashes at either end
-	Dir     bool      `json:"dir,omitempty"`
-	Ino     uint64    `json:"ino"` // what it was made for: see matches
-	Size    int64     `json:"size,omitempty"`
-	ModTime int64     `json:"mtime,omitempty"` // Unix nanoseconds
-	Created time.Time `json:"created"`
-	Expires time.Time `json:"expires"`
-	Max     int       `json:"max,omitempty"` // downloads it allows; 0 for no limit
+	Root        string    `json:"root"`
+	RootBinding string    `json:"root_binding"`
+	RootLabel   string    `json:"root_label"`
+	ID          string    `json:"id"`   // the token's SHA-256, hex
+	Path        string    `json:"path"` // in ~/Downloads, without slashes at either end
+	Dir         bool      `json:"dir,omitempty"`
+	Ino         uint64    `json:"ino"` // what it was made for: see matches
+	Size        int64     `json:"size,omitempty"`
+	ModTime     int64     `json:"mtime,omitempty"` // Unix nanoseconds
+	Created     time.Time `json:"created"`
+	Expires     time.Time `json:"expires"`
+	Max         int       `json:"max,omitempty"` // downloads it allows; 0 for no limit
 	// Made for one download by the files page itself (a preview's Direct
 	// Download): it goes once that's done, whole.
 	Once  bool       `json:"once,omitempty"`
@@ -129,7 +131,10 @@ type shareUse struct {
 
 func (l *shareLink) name() string {
 	if l.Path == "." {
-		return "Downloads"
+		if l.RootLabel != "" {
+			return l.RootLabel
+		}
+		return l.Root
 	}
 	return path.Base(l.Path)
 }
@@ -264,7 +269,8 @@ func newShareStore(file string, clock lifecycleClock) *shareStore {
 		return s
 	}
 	var saved struct {
-		Links []json.RawMessage `json:"links"`
+		Version int               `json:"version"`
+		Links   []json.RawMessage `json:"links"`
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
 		// Set aside, its links kept to mend, rather than saved over.
@@ -277,12 +283,17 @@ func newShareStore(file string, clock lifecycleClock) *shareStore {
 		log.Printf("share links: %s isn't readable (%v); set aside as %s, starting with none", file, err, aside)
 		return s
 	}
+	if saved.Version != 2 {
+		log.Print("share links: discarded legacy records without filesystem root bindings")
+		s.saveLocked()
+		return s
+	}
 	now := clock.Now()
 	for _, raw := range saved.Links {
 		l := &shareLink{}
 		// Anything that doesn't parse, or doesn't look like a link made
 		// here, is left out: the file is the desktop user's to change.
-		if json.Unmarshal(raw, l) != nil || len(l.ID) != 64 || l.Path == "" || !now.Before(l.Expires) {
+		if json.Unmarshal(raw, l) != nil || len(l.ID) != 64 || l.Path == "" || l.Root == "" || l.RootBinding == "" || !now.Before(l.Expires) {
 			continue
 		}
 		if _, err := hex.DecodeString(l.ID); err != nil {
@@ -303,7 +314,7 @@ func (s *shareStore) saveLocked() {
 		links = append(links, l)
 	}
 	slices.SortFunc(links, func(a, b *shareLink) int { return a.Created.Compare(b.Created) })
-	data, err := json.MarshalIndent(map[string]any{"version": 1, "links": links}, "", "  ")
+	data, err := json.MarshalIndent(map[string]any{"version": 2, "links": links}, "", "  ")
 	if err == nil {
 		err = writeFileAtomic(s.file, data)
 	}
@@ -357,7 +368,7 @@ func syncFolder(dir string) error {
 	if cerr := d.Close(); err == nil {
 		err = cerr
 	}
-	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+	if syncUnsupported(err) {
 		return nil
 	}
 	return err
@@ -381,17 +392,21 @@ func (s *shareStore) pruneLocked(now time.Time) bool {
 // downloads (or files, for an upload link) it allows, 0 for no limit, and
 // for an upload link, how much it may take in all.
 type shareSpec struct {
-	Label    string
-	Life     time.Duration
-	Max      int
-	Upload   bool
-	MaxBytes int64
-	Once     bool
+	Root, RootBinding, RootLabel string
+	Label                        string
+	Life                         time.Duration
+	Max                          int
+	Upload                       bool
+	MaxBytes                     int64
+	Once                         bool
 }
 
 // create makes a link to what's at p in ~/Downloads, st, as spec says, for
 // the session by from ip, and returns its token.
 func (s *shareStore) create(p string, st fs.FileInfo, spec shareSpec, by, ip string) (string, *shareLink, error) {
+	if !rootID.MatchString(spec.Root) || len(spec.RootBinding) != 64 {
+		return "", nil, errors.New("A share must be bound to a configured filesystem root.")
+	}
 	sys, ok := identitySys(st)
 	if !ok {
 		return "", nil, errors.New("can't tell what file this is")
@@ -401,7 +416,7 @@ func (s *shareStore) create(p string, st fs.FileInfo, spec shareSpec, by, ip str
 	token := base64.RawURLEncoding.EncodeToString(b)
 	sum := sha256.Sum256([]byte(token))
 	now := s.clock.Now()
-	l := &shareLink{ID: hex.EncodeToString(sum[:]), Path: p, Dir: st.IsDir(), Ino: uint64(sys.Ino),
+	l := &shareLink{Root: spec.Root, RootBinding: spec.RootBinding, RootLabel: spec.RootLabel, ID: hex.EncodeToString(sum[:]), Path: p, Dir: st.IsDir(), Ino: uint64(sys.Ino),
 		Created: now, Expires: now.Add(spec.Life), Max: spec.Max, By: by, ByIP: ip, Upload: spec.Upload, MaxBytes: spec.MaxBytes, Label: spec.Label, Once: spec.Once}
 	if !l.Dir {
 		l.Size, l.ModTime = st.Size(), st.ModTime().UnixNano()
@@ -665,18 +680,20 @@ func (s *shareStore) revoke(match func(*shareLink) bool) int {
 
 // shareInfo is a link, as the security page lists it.
 type shareInfo struct {
-	Handle  string     `json:"handle"`
-	Path    string     `json:"path"`
-	Dir     bool       `json:"dir"`
-	Created time.Time  `json:"created"`
-	Expires time.Time  `json:"expires"`
-	Max     int        `json:"max"`
-	Count   int        `json:"count"`
-	ByIP    string     `json:"by_ip"`
-	Mine    bool       `json:"mine"` // made by the session asking
-	Uses    []shareUse `json:"uses"`
-	Shown   bool       `json:"shown"` // can be shown again (see shareLinkAgain)
-	Label   string     `json:"label,omitempty"`
+	RootLabel string     `json:"root_label"`
+	Root      string     `json:"root"`
+	Handle    string     `json:"handle"`
+	Path      string     `json:"path"`
+	Dir       bool       `json:"dir"`
+	Created   time.Time  `json:"created"`
+	Expires   time.Time  `json:"expires"`
+	Max       int        `json:"max"`
+	Count     int        `json:"count"`
+	ByIP      string     `json:"by_ip"`
+	Mine      bool       `json:"mine"` // made by the session asking
+	Uses      []shareUse `json:"uses"`
+	Shown     bool       `json:"shown"` // can be shown again (see shareLinkAgain)
+	Label     string     `json:"label,omitempty"`
 	// An upload link's (see shareLink)
 	Upload   bool  `json:"upload,omitempty"`
 	MaxBytes int64 `json:"max_bytes,omitempty"`
@@ -693,7 +710,7 @@ func (s *shareStore) list(current string) []shareInfo {
 	}
 	out := []shareInfo{}
 	for _, l := range s.links {
-		out = append(out, shareInfo{l.handle(), l.Path, l.Dir, l.Created, l.Expires, l.Max, l.Count, l.ByIP,
+		out = append(out, shareInfo{l.RootLabel, l.Root, l.handle(), l.Path, l.Dir, l.Created, l.Expires, l.Max, l.Count, l.ByIP,
 			l.By == current, append([]shareUse{}, l.Uses...), l.Sealed != "", l.Label, l.Upload, l.MaxBytes, l.Bytes})
 	}
 	slices.SortFunc(out, func(a, b shareInfo) int { return b.Created.Compare(a.Created) })
@@ -727,7 +744,8 @@ func (g *server) serveShare(w http.ResponseWriter, r *http.Request, token, name 
 		return
 	}
 	gone := func() { shareFail(w, page, http.StatusNotFound, "This link doesn't exist, or has ended.") }
-	if l == nil && page && name == "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+	_, defaultAvailable := g.rootByID("")
+	if l == nil && defaultAvailable == nil && page && name == "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		// /fs/<name>/ is a folder's address as well as an upload link's:
 		// said so, the same whether there's such a folder or not, so it
 		// tells nothing of what's in Downloads.
@@ -735,14 +753,25 @@ func (g *server) serveShare(w http.ResponseWriter, r *http.Request, token, name 
 			Error: "This link doesn't exist, or has ended.", Folder: token, FolderURL: g.abs(filesPrefix) + "#/" + escapePath(token)})
 		return
 	}
-	usedUp := func() {
-		shareFail(w, page, http.StatusGone, "This link has been downloaded as many times as it allows.")
-	}
 	if l == nil {
 		gone()
 		return
 	}
-	store, err := openDownloadStore(g.downloadsDir)
+	service, err := g.filesForShare(l)
+	if err != nil {
+		gone()
+		return
+	}
+	service.serveRootShare(w, r, l, name, page, ip)
+}
+
+func (g *fileService) serveRootShare(w http.ResponseWriter, r *http.Request, l *shareLink, name string, page bool, ip string) {
+	h := w.Header()
+	gone := func() { shareFail(w, page, http.StatusNotFound, "This link doesn't exist, or has ended.") }
+	usedUp := func() {
+		shareFail(w, page, http.StatusGone, "This link has been downloaded as many times as it allows.")
+	}
+	store, err := g.openStore()
 	if err != nil {
 		gone()
 		return
@@ -898,7 +927,7 @@ func linkKind(l *shareLink) string {
 
 func linkTarget(l *shareLink) string {
 	if l.Upload || l.Dir {
-		return folderText(l.Path)
+		return linkFolderText(l.RootLabel, l.Path)
 	}
 	return l.Path
 }
@@ -962,13 +991,13 @@ func (w revocableWriter) Write(p []byte) (int, error) {
 
 // logShareUse logs a download of l by ip, in the log and the activity log,
 // as often as logUse says.
-func (g *server) logShareUse(l *shareLink, ip string) {
+func (g *fileService) logShareUse(l *shareLink, ip string) {
 	if !g.shares.logUse(l, ip) {
 		return
 	}
 	n := g.shares.now(l)
 	log.Printf("share link to %q downloaded from %s (%d of %s)", l.Path, ip, n.Count, maxText(n.Max))
-	g.activity.add("share-used", ip, "downloaded %s through a share link %s", linkTarget(l), usedText(n.Count, n.Max))
+	g.activity.addFileAs("", g.root.ID, l.Path, "share-used", ip, "downloaded %s through a share link %s", linkTarget(l), usedText(n.Count, n.Max))
 }
 
 // Downloads through links going at once, from any one address, and all

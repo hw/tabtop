@@ -64,6 +64,7 @@ const (
 
 type server struct {
 	serverConfig
+	roots           []*fileRoot
 	doctorProbes    doctorProbeCache
 	vncBackoff      vncBackoff
 	audio           *audioHub
@@ -75,24 +76,31 @@ type server struct {
 	background      assetSet // U2NetP and its browser runtime
 	segment         assetSet // MobileSAM, for magic select
 	disasm          assetSet // iced-x86, for the hex view's disassembly
+	demangle        assetSet // the demangler, for the names of a program's C++ and Rust symbols
 	pdfjs           assetSet
 	pdfjsNames      []string // pdf.js's files, in pdfjsDir (see pdfjsFiles)
 	handshakes      handshakes
+	passkeyWaits    handshakes // passkey logins waiting for the browser's answer
 	drain           tunnelDrain
-	shares          *shareStore   // nil when share links are off
-	fetches         *fetchManager // nil when fetching from URLs is off
+	shares          *shareStore // nil when share links are off
+	passkeys        *passkeyStore
 	activity        *activityLog
 
 	mu       sync.Mutex
 	sessions map[string]*session // session id -> session
 	ttys     map[string]int      // session token -> open terminals
 	authentication
-	clock     lifecycleClock
-	transfers uploadManager
-	seen      time.Time // when security warnings were last marked as seen
+	clock lifecycleClock
+	seen  time.Time // when security warnings were last marked as seen
 
-	placedMu sync.Mutex
-	placedAt map[string]time.Time // names the gateway moved into ~/Downloads itself, lately (see watch.go)
+	// resourceClient loads previews' external resources (nil with
+	// fetching off). The URLs come from the document being previewed, not
+	// the user, so -fetch-private doesn't apply: only
+	// -preview-fetch-private lets it reach private networks.
+	resourceClient *http.Client
+	// rootProblems are configured roots left out at startup (see
+	// parseFileRootsAll).
+	rootProblems []rootProblem
 }
 
 func main() {
@@ -119,6 +127,8 @@ func main() {
 	flag.StringVar(&c.usersFile, "users-file", c.usersFile, "pam_oath users file holding the TOTP key")
 	flag.StringVar(&c.vncPasswordFile, "vnc-password-file", c.vncPasswordFile,
 		"file holding the password to give the VNC server, if it asks for one; empty or missing for noVNC to ask")
+	flag.StringVar(&c.fsRoots, "fs-roots", os.Getenv("WEB_FS_ROOTS"), "comma-separated exposed roots: Downloads:rw,Documents:ro,data=/data:rw")
+	flag.StringVar(&c.fsHome, "fs-home", "", "home directory for relative filesystem roots")
 	flag.StringVar(&c.downloadsDir, "downloads-dir", c.downloadsDir, "directory served at "+filesPrefix)
 	flag.IntVar(&c.trustNProxies, "trust-nproxies", c.trustNProxies,
 		"how many proxies in front are trusted whatever their address, counting the one that connects")
@@ -137,6 +147,7 @@ func main() {
 	flag.StringVar(&c.sharesFile, "shares-file", c.sharesFile, "where share links are kept, to last across restarts; empty keeps them in memory")
 	flag.StringVar(&c.shareKeyFile, "share-key-file", c.shareKeyFile, "the key share links' tokens are kept sealed with, to show them again; empty keeps one in memory")
 	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
+	flag.StringVar(&c.passkeysFile, "passkeys-file", c.passkeysFile, "where passkeys added to log in with are kept; empty keeps them in memory, till a restart")
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,
@@ -148,6 +159,8 @@ func main() {
 	flag.StringVar(&c.backgroundDir, "background-dir", c.backgroundDir, "background removal model and browser runtime; empty for none")
 	flag.StringVar(&c.segmentDir, "segment-dir", c.segmentDir, "MobileSAM models, for magic select in image editing; empty for none")
 	flag.StringVar(&c.disasmDir, "disasm-dir", c.disasmDir, "iced-x86, made loadable in a browser worker, for x86 disassembly in hex previews; empty for none")
+	flag.StringVar(&c.disasmOff, "disasm-disable", c.disasmOff,
+		"the hex preview's disassemblers to turn off: none, all, or a comma-separated list of x86, arm64, capstone (ARM32 and Thumb), riscv and mips")
 	flag.StringVar(&c.previewDir, "preview-dir", c.previewDir, "KaTeX and Mermaid, for math and diagrams in Markdown previews; empty for none")
 	flag.StringVar(&c.highlightDir, "highlight-dir", c.highlightDir, "highlight.js files for the colours of text previews; empty for none")
 	flag.StringVar(&c.nobleDir, "noble-dir", c.nobleDir, "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
@@ -174,6 +187,9 @@ func main() {
 	if c.sessionIdle, err = parseSessionLimit(*sessionIdle, true); err != nil {
 		log.Fatalf("-session-idle: %v", err)
 	}
+	if _, err = disasmDisabled(c.disasmOff); err != nil {
+		log.Fatalf("-disasm-disable: %v", err)
+	}
 	g, err := newServer(c)
 	if err != nil {
 		log.Fatal(err)
@@ -185,10 +201,10 @@ func main() {
 	if c.trustNProxies > 0 {
 		log.Printf("believing X-Forwarded-For from the %d nearest proxies, whatever their address", c.trustNProxies)
 	}
-	if g.fetches != nil && c.fetchPrivate {
+	if c.fetchOn && !c.fsOff && c.fetchPrivate {
 		log.Print("fetching from URLs on, private networks included")
 	}
-	if g.fetches != nil && c.previewFetchPrivate {
+	if c.fetchOn && !c.fsOff && c.previewFetchPrivate {
 		log.Print("previews' external resources may come from private networks")
 	}
 	if g.shares != nil {
@@ -223,7 +239,16 @@ func main() {
 	// Before serving, so no upload is going yet, whatever the file
 	// system's timestamps.
 	if !g.fsOff {
-		removeStaleUploads(c.downloadsDir, time.Now(), staleUploadScan)
+		// Side by side, so a slow root can't use up the others' time: each
+		// has the whole budget, and the start waits for it once.
+		started := time.Now()
+		var wg sync.WaitGroup
+		for _, root := range g.roots {
+			if !root.ReadOnly {
+				wg.Go(func() { g.scope(root).removeStaleUploads(started, staleUploadScan) })
+			}
+		}
+		wg.Wait()
 	}
 	// Read the files browsers keep now, rather than on the first request.
 	if tag, _ := g.noble.load(g.nobleAssets()); tag == "" {
@@ -251,6 +276,13 @@ func main() {
 	}
 	log.Printf("listening on %s under %s; desktop=%t terminal=%t files=%t", *listen, g.base, !g.vncOff, g.termDir != "", !g.fsOff)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	if !g.fsOff {
+		for _, root := range g.roots {
+			if !root.ReadOnly {
+				go g.scope(root).maintainTrash(ctx)
+			}
+		}
+	}
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	select {

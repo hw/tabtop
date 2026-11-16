@@ -24,6 +24,7 @@ type entry struct {
 // maxListingScan are looked at, so a huge directory can't take forever.
 func (s *downloadStore) listDir(dir string, f *os.File) (entries []entry, truncated bool, err error) {
 	root := s.root
+	filter := s.entryFilter(dir)
 	for scanned := 0; ; {
 		if scanned >= maxListingScan {
 			// Stopped looking: say so if there's anything more.
@@ -40,8 +41,8 @@ func (s *downloadStore) listDir(dir string, f *os.File) (entries []entry, trunca
 		}
 		scanned += len(des)
 		for _, de := range des {
-			if strings.HasPrefix(de.Name(), uploadTempPrefix) {
-				continue // an upload in progress
+			if filter.hidden(de) {
+				continue // an upload in progress, or Trash
 			}
 			// Stat through the root: this follows symlinks that stay inside
 			// and fails for ones leading outside, which are left out.

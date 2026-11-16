@@ -68,13 +68,17 @@ as_user /usr/local/bin/tabtopd \
     -background-dir /opt/background \
     -segment-dir /opt/segment \
     -disasm-dir /opt/disasm \
+    -disasm-disable "$WEB_DISASM_DISABLE" \
     -users-file "$TOTP_USERS_FILE" \
     -vnc-password-file "$VNC_UPSTREAM_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
+    -fs-roots "$WEB_FS_ROOTS" \
+    -fs-home "$USER_HOME" \
     -share="$WEB_SHARE" \
     -shares-file "$USER_HOME/.config/tabtop/shares.json" \
     -share-key-file "$USER_HOME/.config/tabtop/share-link.key" \
     -activity-file "$USER_HOME/.config/tabtop/activity.jsonl" \
+    -passkeys-file "$USER_HOME/.config/tabtop/passkeys.json" \
     -fetch="$WEB_FETCH" \
     -fetch-private="$WEB_FETCH_PRIVATE" \
     -preview-fetch-private="$WEB_PREVIEW_FETCH_PRIVATE" \

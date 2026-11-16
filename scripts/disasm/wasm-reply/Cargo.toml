@@ -1,0 +1,8 @@
+# How tabtop's own WebAssembly modules (arm64-asm, demangle) are given bytes
+# and reply with bytes: the part of each that's the same, kept once.
+[package]
+name = "wasm-reply"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false

@@ -18,12 +18,19 @@ const microphone = '<rect x="8" y="3" width="6" height="11" rx="3" fill="current
     + '<path d="M5 11.5a6 6 0 0 0 12 0M11 17.5v4m-3 0h6"/>';
 
 const icons = {
+    delta: '<path d="M12 3L2 21h20z"/>',
+    "compare-slider": '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M12 2v20M5 12h4m6 0h4M7 10l2 2-2 2m10-4-2 2 2 2"/>',
+    compare: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M12 4v16M6 9h3m-3 4h3m6-4h3m-3 4h3"/>',
     "scan-document": '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M7 6h7l3 3v9H7zM10 12h4m-4 3h4"/>',
     "invert-selection": '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="2 2"/><path d="M12 4h8v16H4v-8h8z" fill="currentColor" opacity=".4"/><path d="M6 6h6v6H6z"/>',
     desktop: '<rect x="2.5" y="4" width="20" height="13.5" rx="1.5"/><path d="M8.5 21h8m-4-3.5v3.5"/>',
     terminal: '<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>',
     files: '<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>',
     logout: '<path d="M10 4.5h-5v16h5m4-12l4.5 4-4.5 4m4.5-4h-10"/>',
+    "search-files": '<path d="M4 6h10M4 11h4.5M4 16h4.5"/><circle cx="14.5" cy="13.5" r="4.5"/><path d="M18 17l3 3"/>',
+    "view-grid": '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>',
+    "view-list": '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+    trash: '<path d="M4.5 7h16M10 7V4.5h5V7M6.5 7l1 13.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13.5M10.5 11v6.5M14.5 11v6.5"/>',
     search: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/>',
     bell: '<path d="M6.5 17.5v-6.5a6 6 0 0 1 12 0v6.5l1.5 1.5h-15z"/><path d="M10.5 21.5h4"/>',
     "bell-off": '<path d="M6.5 17.5v-6.5a6 6 0 0 1 12 0v6.5l1.5 1.5h-15z"/><path d="M10.5 21.5h4M4 4l17 17"/>',
@@ -113,7 +120,7 @@ const metrics = {
     "select-circle": [18, 24, 1.8], "select-all": [18, 24, 1.8], "flood-fill": [18, 24, 1.8], restore: [18, 24, 1.8],
     pen: [18, 24, 1.8], highlighter: [18, 24, 1.8], redo: [18, 24, 1.8], history: [18, 24, 1.8], "paste-image": [18, 24, 1.8],
     "draw-shape": [18, 24, 1.8], "shape-rect": [18, 24, 1.8], "shape-circle": [18, 24, 1.8], "shape-fill": [18, 24, 1.8], "shape-outline": [18, 24, 1.8],
-    filter: [16, 24, 1.8],
+    filter: [16, 24, 1.8], "search-files": [18, 24, 1.8], "view-grid": [18, 24, 1.8], "view-list": [18, 24, 1.8],
 };
 const attribute = (value) => String(value).replace(/[&"<>]/g,
     (c) => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[c]);

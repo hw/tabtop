@@ -52,14 +52,19 @@ var uploadStageName = regexp.MustCompile(`^` + regexp.QuoteMeta(uploadTempPrefix
 // if a read of the file system hangs, so a huge or slow tree can't hold up
 // the start for long: the search stops there, removing nothing more, and
 // what it didn't get to waits for the next start.
-func removeStaleUploads(dir string, started time.Time, budget time.Duration) {
+func (g *fileService) removeStaleUploads(started time.Time, budget time.Duration) {
+	if !g.root.ReadOnly {
+		removeStaleUploadsWith(g.openRoot, started, budget)
+	}
+}
+func removeStaleUploadsWith(open func() (*os.Root, error), started time.Time, budget time.Duration) {
 	if time.Since(started) >= budget {
 		return
 	}
 	var stop atomic.Bool
 	removed := make(chan int, 1)
 	go func() {
-		root, err := openDirectoryRoot(dir)
+		root, err := open()
 		if err != nil {
 			removed <- 0
 			return
@@ -98,6 +103,8 @@ func walkStaleUploads(root *os.Root, dirs []string, started time.Time, stop *ato
 			for _, de := range des {
 				p := path.Join(d, de.Name())
 				switch {
+				case topFolder(d) && trashName(de.Name()): // walked without following links, so d is real
+					continue // Trash owns retention of its contents.
 				case de.IsDir() && uploadStageName.MatchString(de.Name()):
 					if info, err := de.Info(); err == nil && info.ModTime().Before(started) && !stop.Load() && root.RemoveAll(p) == nil {
 						n++
@@ -129,7 +136,7 @@ var (
 // one path segment, not a temporary upload's.
 func validUploadName(name string) bool {
 	return name != "" && name != "." && name != ".." && len(name) <= maxNameBytes && utf8.ValidString(name) &&
-		!strings.ContainsAny(name, "/\x00") && !strings.HasPrefix(name, uploadTempPrefix)
+		!strings.ContainsAny(name, "/\x00") && !hiddenDownloadName(name)
 }
 
 // validNewName reports whether name can be given to a file or folder made
@@ -138,13 +145,15 @@ func validUploadName(name string) bool {
 // shell, and could pass for something else where it's shown. One already
 // there with them can still be renamed, moved and deleted.
 func validNewName(name string) bool {
-	return validUploadName(name) && !strings.ContainsFunc(name, unicode.IsControl)
+	// Trash's name is reserved for new items anywhere, so nothing made in a
+	// folder can later be moved over Trash at the top.
+	return validUploadName(name) && !trashName(name) && !strings.ContainsFunc(name, unicode.IsControl)
 }
 
 // tunnelMkdir answers a mkdir request, for a folder req.Name in req.Path,
 // with {"name":...}, the name it got.
-func (g *server) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	root, err := openDownloadStore(g.downloadsDir)
+func (g *fileService) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+	root, err := g.openStore()
 	if err != nil {
 		r.fail(uploadError(fs.ErrNotExist))
 		return
@@ -166,8 +175,8 @@ func (g *server) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 
 // tunnelCreate answers a create request, for an empty file req.Name in
 // req.Path, with {"name":...}, the name it got.
-func (g *server) tunnelCreate(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	root, err := openDownloadStore(g.downloadsDir)
+func (g *fileService) tunnelCreate(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+	root, err := g.openStore()
 	if err != nil {
 		r.fail(uploadError(fs.ErrNotExist))
 		return
@@ -217,26 +226,32 @@ var uploadSavedHook = func() {}
 // part way, as when the connection is lost, what came is kept, and a
 // request with req.Resume set to the id carries on from it (see
 // keepPartial); offset is 0 if it's gone.
-func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	if !validNewName(req.Name) || req.Size < 0 {
 		r.fail(errUploadName.Error())
 		return
 	}
-	root, err := openDownloadStore(g.downloadsDir)
+	root, err := g.openStore()
 	if err != nil {
 		r.fail(uploadError(fs.ErrNotExist))
 		return
 	}
 	defer root.Close()
-	dir := strings.Trim(req.Path, "/")
-	if dir == "" {
-		dir = "."
+	// By where it really is, as everything that tracks uploads has it
+	// (deletes and moves of the folder by another path, through a link,
+	// see it), and a resume, by the same.
+	dir := g.resolved(req.Path)
+	writing, err := g.beginWrites(dir)
+	if err != nil {
+		r.fail(err.Error())
+		return
 	}
+	defer writing()
 	// Carrying on with one saved already: its answer was lost, so it's
 	// answered again, and nothing more is done. (Before the check that the
 	// file's as it was: it's been changed since, by this upload.)
 	done := func() bool {
-		reply := g.transfers.doneUpload(req.Resume, dir, req.Size)
+		reply := g.root.transfers.doneUpload(req.Resume, dir, req.Size)
 		if req.Resume == "" || reply == nil {
 			return false
 		}
@@ -250,13 +265,13 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	}
 	var u *upload
 	offset := int64(0)
-	if req.Resume != "" && !g.transfers.wasDone(req.Resume) {
+	if req.Resume != "" && !g.root.transfers.wasDone(req.Resume) {
 		// The upload carried on with may still be going, perhaps saving
 		// the file now: it's stopped, or let finish, first, then asked
 		// about again, before the file is checked against how it was, which
 		// a save that has just replaced it would fail. (One saved already,
 		// though not as this asks, has nothing to wait for.)
-		u, offset = g.transfers.claimPartial(root, req.Resume, dir, req.Size)
+		u, offset = g.root.transfers.claimPartial(root, req.Resume, dir, req.Size)
 		if u == nil && done() {
 			return
 		}
@@ -265,7 +280,7 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 		if err := unchangedSince(root, path.Join(dir, req.Name), req.IfMtime, req.IfSize); err != nil {
 			if u != nil {
 				// Kept again, as it was: it's not this request's to lose.
-				g.transfers.keepPartial(u, req.Size)
+				g.root.transfers.keepPartial(u, req.Size)
 			}
 			r.fail(err.Error())
 			return
@@ -280,9 +295,9 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 	}
 	// Check the file actually opened, so nested mounts and directory races
 	// cannot make the space check refer to a different filesystem.
-	if free, ok := g.transfers.reclaimPartials(u.f, req.Size-offset); ok && req.Size-offset > free {
+	if free, ok := g.reclaimPartials(u.f, req.Size-offset); ok && req.Size-offset > free {
 		if resuming {
-			g.transfers.keepPartial(u, req.Size)
+			g.root.transfers.keepPartial(u, req.Size)
 		} else {
 			u.abort()
 		}
@@ -290,17 +305,21 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 		return
 	}
 	saved, keep := false, false
-	active := g.transfers.track(u.id(), func() { t.CloseNow() })
-	defer func() {
-		switch {
-		case saved:
-		case keep || active.resumed.Load():
-			g.transfers.keepPartial(u, req.Size)
-		default:
-			u.abort()
-		}
-		g.transfers.untrack(u.id(), active)
-	}()
+	active := g.root.transfers.track(u.id(), dir, func() { t.CloseNow() })
+	var ended sync.Once
+	end := func() {
+		ended.Do(func() {
+			switch {
+			case saved:
+			case keep || active.resumed.Load():
+				g.root.transfers.keepPartial(u, req.Size)
+			default:
+				u.abort()
+			}
+			g.root.transfers.untrack(u.id(), active)
+		})
+	}
+	defer end()
 	t.c.SetReadLimit(fileChunk + tunnelOverhead)
 	if !r.accept(map[string]any{"id": u.id(), "offset": offset}) {
 		return
@@ -357,6 +376,10 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 			return
 		}
 	}
+	if req.Replace {
+		kept := path.Join(dir, req.Name)
+		u.keep = func(old *os.File) func() { return g.keepVersion(kept, old, false) }
+	}
 	name, err := u.finishAt(req.Name, req.Replace, target)
 	// Its time and size, read before another save can replace it: the
 	// page sends them back to say which file it has (see unchangedSince).
@@ -388,7 +411,11 @@ func (g *server) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) 
 		res["warning"] = "saved, but the disk didn't confirm it; it could be lost if the power fails soon"
 	}
 	uploadSavedHook()
-	g.transfers.recordDone(u.id(), dir, req.Size, res)
+	g.root.transfers.recordDone(u.id(), dir, req.Size, res)
+	// Over, before the page's told: it may at once delete or move the
+	// folder, which mustn't find the upload still going.
+	end()
+	writing()
 	r.finish(res)
 }
 

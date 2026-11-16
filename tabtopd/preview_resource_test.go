@@ -37,8 +37,8 @@ func TestPreviewResource(t *testing.T) {
 	}))
 	defer remote.Close()
 	g, address, session := newFetchServer(t)
-	manager := g.fetches
-	defer func() { g.fetches = manager }()
+	manager := g.defaultRoot().fetches
+	defer func() { g.defaultRoot().fetches = manager }()
 	ctx := testCtx(t)
 	for _, path := range []string{"/image", "/redirect"} {
 		tc := openSession(t, ctx, address, session)
@@ -69,11 +69,11 @@ func TestPreviewResource(t *testing.T) {
 		}
 	}
 	// The normal production policy refuses loopback even though a test server allowed it above.
-	g.fetches.resourceClient = newFetchClient(fetchPolicy(false))
+	g.resourceClient = newFetchClient(fetchPolicy(false))
 	if reply := openSession(t, ctx, address, session).request(t, ctx, tunnelRequest{Type: "preview-resource", URL: remote.URL + "/image"}); reply["error"] == nil {
 		t.Fatal("private address was fetched")
 	}
-	g.fetches = nil
+	g.defaultRoot().fetches = nil
 	if reply := openSession(t, ctx, address, session).request(t, ctx, tunnelRequest{Type: "preview-resource", URL: remote.URL + "/image"}); reply["error"] == nil {
 		t.Fatal("WEB_FETCH=0 bypassed")
 	}

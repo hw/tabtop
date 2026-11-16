@@ -25,14 +25,15 @@ var storedExt = map[string]bool{
 	".mp4": true, ".m4v": true, ".mkv": true, ".mov": true, ".webm": true,
 }
 
-// zipName is what to call a zip of names in dir: after the one thing in
-// it, or else after dir.
-func zipName(dir string, names []string) string {
+// zipName is what to call a zip of names in dir, in the root called
+// label: after the one thing in it, or else after dir, or at the top after
+// the root.
+func zipName(label, dir string, names []string) string {
 	switch {
 	case len(names) == 1:
 		return names[0] + ".zip"
-	case dir == ".":
-		return "Downloads.zip"
+	case topFolder(dir):
+		return label + ".zip"
 	}
 	return path.Base(dir) + ".zip"
 }
@@ -41,10 +42,10 @@ func zipName(dir string, names []string) string {
 // with {"name":...}, what to save it as, then the zip in data messages,
 // sent as a file is, then {"done":true,"skipped":n}, n being how many files
 // or folders couldn't be read and were left out.
-func (g *server) tunnelZip(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
-	root, err := openDownloadStore(g.downloadsDir)
+func (g *fileService) tunnelZip(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+	root, err := g.openStore()
 	if err != nil {
-		r.fail("The downloads folder is missing.")
+		r.fail("The folder is missing.")
 		return
 	}
 	defer root.Close()
@@ -68,7 +69,7 @@ func (g *server) tunnelZip(t *tunnel, req tunnelRequest, ip string, r *tunnelRes
 		}
 		seen[n] = true
 	}
-	name := zipName(dir, req.Names)
+	name := zipName(g.root.Label, dir, req.Names)
 	if !r.accept(map[string]any{"name": name}) {
 		return
 	}

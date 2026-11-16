@@ -1,0 +1,24 @@
+# ARM64 for the hex view, its disassembly and the assembler behind
+# instruction editing: built to WebAssembly by the Dockerfile's arm64asm
+# stage, loaded by tabtopd/disasm-worker.js. fARM64 is pinned here and, by
+# checksum, in Cargo.lock.
+[package]
+name = "arm64-asm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fARM64 = { version = "=0.1.0", features = ["alloc", "full"] }
+wasm-reply = { path = "../wasm-reply" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

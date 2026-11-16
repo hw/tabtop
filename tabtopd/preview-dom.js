@@ -1,3 +1,5 @@
+import { glyphs } from "./glyphs.js";
+
 export function el(tag, props = {}, ...children) {
     const e = Object.assign(document.createElement(tag), props);
     e.append(...children);
@@ -26,4 +28,19 @@ export async function copyText(text) {
     if (!ok) {
         throw new Error("not copied");
     }
+}
+
+// Toggle a dialog between its normal bounds and the whole viewport.
+export function maximizeButton(dialog, className) {
+    const button = el("button", { type: "button", className: `${className} glyph` });
+    const update = () => {
+        const wide = dialog.classList.contains("wide");
+        button.textContent = wide ? glyphs.contract : glyphs.expand;
+        button.title = wide ? "Restore size" : "Maximize";
+        button.setAttribute("aria-label", button.title);
+        button.setAttribute("aria-pressed", String(wide));
+    };
+    button.addEventListener("click", () => { dialog.classList.toggle("wide"); update(); });
+    update();
+    return button;
 }

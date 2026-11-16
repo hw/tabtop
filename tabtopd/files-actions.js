@@ -1,12 +1,25 @@
 // File actions and transfer tracking. Folder rendering stays in files.js.
-import { askFolder, askName, askShare, askUploadLink, askURL, copyText, showLink, statusRow } from "./ui.js";
+import { filesystemRoot, filesystemRoots, rootLabel, readOnlyRoot } from "./fs-context.js";
+import { askChoice, askFolder, askName, askShare, askUploadLink, askURL, copyText, showLink, statusRow } from "./ui.js";
 import { call, shareURL, shellPath } from "./requests.js";
 import { humanBytes } from "./file-format.js";
 export const MOVE_TYPE = "application/x-tabtop-move";
 export function createFileActions({ show, exactTime, el, join }) {
-    // deletion is how deleteFiles (see drop.js) deletes the entry e in dir.
+    // deletion is how deleteFiles (see drop.js) deletes the entry e in dir:
+    // to Trash, resolving to its entry's ID there, or with permanent,
+    // outright; and how it puts back what went to Trash by that ID,
+    // resolving to where it went (by another name if its own was taken).
     function deletion(dir, e) {
-        return { name: e.name, dir: e.dir, remove: () => call({ type: "delete", path: join(dir, e.name) }).then((t) => t.close()) };
+        const root = filesystemRoot();
+        return {
+            name: e.name, dir: e.dir,
+            remove: (permanent = false) =>
+                call({ type: "delete", path: join(dir, e.name), ...(permanent ? { permanent: true } : {}) })
+                    .then((t) => { t.close(); return t.reply?.id ?? null; }),
+            restore: (id) =>
+                call({ type: "trash-restore", name: id, root: root.id, root_version: root.version })
+                    .then((t) => { t.close(); return t.reply?.path ?? ""; }),
+        };
     }
 
     // rename asks for a new name for the entry e in dir, and renames it.
@@ -37,6 +50,7 @@ export function createFileActions({ show, exactTime, el, join }) {
     // moveTarget makes target, a row or link for the folder to, take rows
     // dragged onto it from the folder dir, and move them there.
     function moveTarget(target, dir, to) {
+        if (readOnlyRoot()) return;
         const ours = (ev) => ev.dataTransfer?.types.includes(MOVE_TYPE);
         target.addEventListener("dragover", (ev) => {
             if (ours(ev)) {
@@ -52,20 +66,95 @@ export function createFileActions({ show, exactTime, el, join }) {
                 return;
             }
             ev.preventDefault();
-            const { names } = JSON.parse(ev.dataTransfer.getData(MOVE_TYPE));
+            let payload;
+            try {payload=JSON.parse(ev.dataTransfer.getData(MOVE_TYPE));}catch{return;}
+            if (payload.root !== filesystemRoot().id || !Array.isArray(payload.names)) {
+                const row=statusRow("Moving between filesystem roots is not supported.");row.finish();return;
+            }
+            const {names}=payload;
             // A folder dragged onto itself stays.
             moveNames(dir, names.filter((n) => join(dir, n) !== to), to);
         });
     }
 
-    // askMove asks which folder to move names, in the folder dir, into, and
-    // moves them there.
+    // otherRoots are the roots, besides this page's, that can be written to:
+    // where Copy to… and Move to… can send things.
+    const otherRoots = () => filesystemRoots().filter((root) => root.id !== filesystemRoot().id && !root.read_only);
+
+    // askRoot asks which root to verb what into, here among them unless
+    // copying (a copy within one root isn't offered), and resolves to it, or
+    // null if cancelled. With only one to choose, it's that one.
+    async function askRoot(verb, what, here) {
+        const roots = [...(here ? [filesystemRoot()] : []), ...otherRoots()];
+        if (roots.length < 2) return roots[0] ?? null;
+        const id = await askChoice(`${verb} ${what} into which folder?`,
+            roots.map((root) => [root.id, root.id === filesystemRoot().id ? `${root.label} (here)` : root.label]));
+        return roots.find((root) => root.id === id) ?? null;
+    }
+
+    // askMove asks which folder to move names, in the folder dir, into, in
+    // this root or another, and moves them there.
     async function askMove(dir, names) {
         const what = names.length === 1 ? names[0] : `these ${names.length} items`;
-        const to = await askFolder(`Move ${what} into which folder? Give its path in Downloads, as photos/2026.`, "Move", dir);
-        if (to !== null && to !== dir) {
-            await moveNames(dir, names, to);
+        const root = await askRoot("Move", what, true);
+        if (!root) return;
+        const here = root.id === filesystemRoot().id;
+        const to = await askFolder(`Move ${what} into which folder? Give its path in ${root.label}, as photos/2026${here ? "" : ", or leave it empty for the top"}.`, "Move", here ? dir : "");
+        if (to === null || here && to === dir) return;
+        await (here ? moveNames(dir, names, to) : transferNames(dir, names, root, to, false));
+    }
+
+    // askCopy asks which folder of another root to copy names, in the folder
+    // dir, into, and copies them there.
+    async function askCopy(dir, names) {
+        const what = names.length === 1 ? names[0] : `these ${names.length} items`;
+        const root = await askRoot("Copy", what, false);
+        if (!root) return;
+        const to = await askFolder(`Copy ${what} into which folder of ${root.label}? Give its path, as photos/2026, or leave it empty for the top.`, "Copy", "");
+        if (to !== null) await transferNames(dir, names, root, to, true);
+    }
+
+    // transferNames copies, or moves, names, in the folder dir, into the
+    // folder to of the root root, one at a time, showing how each goes (with
+    // a Cancel) in the transfers panel, then redraws the page.
+    async function transferNames(dir, names, root, to, copy) {
+        const where = [root.label, ...to.split("/").filter(Boolean)].join(" / ");
+        for (const name of names) {
+            const row = statusRow(`${name}: ${copy ? "copying" : "moving"} to ${where}`, true);
+            row.destination(`To: ${where}`);
+            let t = null;
+            try {
+                t = await call({ type: "transfer", path: join(dir, name), to, to_root: root.id, to_root_version: root.version, copy }, { signal: row.signal });
+                let reply = t.reply;
+                const total = reply.total ?? 0;
+                row.signal.addEventListener("abort", () => {
+                    try { t.sendText(JSON.stringify({ cancel: true })); } catch { /* gone */ }
+                });
+                // A rename is done at once; a copy says how it goes.
+                while (reply.path === undefined) {
+                    const m = await t.next();
+                    if (!m) throw new Error("The connection was lost; see the folder for what got there.");
+                    if (m.text === undefined) continue;
+                    reply = JSON.parse(m.text);
+                    if (reply.error) throw new Error(reply.error);
+                    if (reply.done !== undefined) {
+                        row.set(`${name}: ${humanBytes(reply.done)} of ${humanBytes(total)}`);
+                        row.progress(total ? reply.done / total : null);
+                    }
+                }
+                const got = reply.path.split("/").pop();
+                const left = reply.skipped ? ` (${reply.skipped} link${reply.skipped === 1 ? "" : "s"} or special file${reply.skipped === 1 ? "" : "s"} left out)` : "";
+                row.set(`${name}: ${copy ? "copied" : "moved"} to ${where}${got !== name ? ` as ${got}` : ""}${left}${reply.warning ? `. ${reply.warning}` : ""}`, !!reply.warning);
+            } catch (err) {
+                const cancelled = row.signal.aborted || err.message === "cancelled";
+                row.set(cancelled ? `${name}: cancelled` : `${name}: not ${copy ? "copied" : "moved"}: ${err.message}`, !cancelled);
+            } finally {
+                t?.close();
+            }
+            row.finish();
+            if (row.signal.aborted) break;
         }
+        if (!copy) await show();
     }
 
     // moveNames moves names, in the folder dir, into the folder to, showing
@@ -74,11 +163,11 @@ export function createFileActions({ show, exactTime, el, join }) {
         if (!names.length) {
             return;
         }
-        const where = ["Downloads", ...to.split("/").filter(Boolean)].join(" / ");
+        const where = [rootLabel(), ...to.split("/").filter(Boolean)].join(" / ");
         for (const name of names) {
             const row = statusRow(`${name}: moving to ${where}`);
             try {
-                const t = await call({ type: "move", path: join(dir, name), to });
+                const t = await call({ type: "move", path: join(dir, name), to, to_root: filesystemRoot().id });
                 t.close();
                 row.set(`${name}: moved to ${where}`);
             } catch (err) {
@@ -151,7 +240,7 @@ export function createFileActions({ show, exactTime, el, join }) {
 
     // fetchURL asks for an address, and has the gateway fetch it into dir.
     async function fetchURL(dir) {
-        const url = await askURL(dir ? dir.split("/").pop() : "Downloads");
+        const url = await askURL(dir ? dir.split("/").pop() : rootLabel());
         if (!url) {
             return;
         }
@@ -213,7 +302,7 @@ export function createFileActions({ show, exactTime, el, join }) {
             row.progress(f.total > 0 ? f.got / f.total : null);
         };
         update(last);
-        const where = last.dir === "." ? "Downloads" : last.dir;
+        const where = last.dir === "." ? rootLabel() : last.dir;
         row.destination(`To: ${where}`);
         try {
             for (;;) {
@@ -276,7 +365,7 @@ export function createFileActions({ show, exactTime, el, join }) {
     // uploadLink asks how a link for uploading into dir should work, makes it
     // and shows it.
     async function uploadLink(dir) {
-        const name = dir ? dir.split("/").pop() : "Downloads";
+        const name = dir ? dir.split("/").pop() : rootLabel();
         const how = await askUploadLink(name);
         if (!how) {
             return;
@@ -358,5 +447,5 @@ export function createFileActions({ show, exactTime, el, join }) {
         row.finish();
     }
 
-    return { deletion, rename, moveTarget, askMove, copyPath, share, fetchURL, followOnce, uploadLink, directLink, directDownload };
+    return { deletion, rename, moveTarget, askMove, askCopy, otherRoots, copyPath, share, fetchURL, followOnce, uploadLink, directLink, directDownload };
 }

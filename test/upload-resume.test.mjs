@@ -10,7 +10,10 @@ export class TunnelError extends Error {
     constructor(message, login = false, lost = false) { super(message); this.login = login; this.lost = lost; }
 }
 export const session = async () => ({ id: "s" }), forgetSession = () => {};
-export class Tunnel { static open(req) { return globalThis.openTunnel(req); } }
+export class Tunnel { static open(req) {
+ if(req.type==="roots")return Promise.resolve({reply:{roots:[{id:"downloads",label:"Downloads",shell_path:"~/Downloads",read_only:false}]},close(){}});
+ return globalThis.openTunnel(req);
+} }
 `;
 const hooks = registerHooks({ resolve(specifier, context, next) {
     if (context.parentURL === target && specifier === "./tunnel.js") {

@@ -34,6 +34,9 @@ export function languageOf(name) {
 // Audio, video and PDFs are read in ranges, and a book a chapter at a time
 // (see epubFrame), so these have no whole-file buffer limit.
 export const binaryChunkSize = 1_000_000;
+// The most of a file of no known kind that's loaded to show as text (the
+// rest is there in the binary view, read as it's looked at).
+export const unknownTextSize = 10_000_000;
 
 export const limits = { image: 50e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, hex: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER, sqlite: Number.MAX_SAFE_INTEGER };
 

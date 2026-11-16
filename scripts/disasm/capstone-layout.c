@@ -19,8 +19,8 @@ int main(void) {
     FIELD(cs_detail, groups); FIELD(cs_detail, groups_count);
     printf("\"arch\":%zu},", offsetof(cs_detail, arm));
     ARCH("arm", cs_arm, cs_arm_op); printf(",");
-    ARCH("arm64", cs_arm64, cs_arm64_op); printf(",");
-    ARCH("mips", cs_mips, cs_mips_op);
+    ARCH("mips", cs_mips, cs_mips_op); printf(",");
+    ARCH("riscv", cs_riscv, cs_riscv_op);
     printf("};\n");
     return 0;
 }

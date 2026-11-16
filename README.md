@@ -3,8 +3,8 @@
 [![Build](https://github.com/hw/tabtop/actions/workflows/build.yml/badge.svg)](https://github.com/hw/tabtop/actions/workflows/build.yml)
 
 A Linux desktop in the browser: XFCE and Chromium over noVNC, plus a
-terminal and a files page for `~/Downloads`. Log in with a TOTP code
-(optionally preceded by a password). Sound plays in the browser. Logins and
+terminal and a files page for `~/Downloads` or [configured folders](docs/environment.md#web_fs_roots), each read-only or read-write. Log in with a TOTP code
+(optionally preceded by a password), or a [passkey](docs/encryption.md#sessions) once one's added. Sound plays in the browser. Logins and
 everything after them use an [encrypted tunnel](docs/encryption.md), so a
 proxy that only decrypts HTTPS can't read them.
 

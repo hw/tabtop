@@ -23,6 +23,23 @@ keystrokes, terminal sessions, files and anything it could replay.
   vectors. Codes are
   single-use, and failed logins count against the
   [login limit](environment.md#web_trusted_proxies).
+- **Passkeys:** once one is added (see [Sessions](#sessions)), **Use a
+  passkey** on the login form logs in with it instead of the password and
+  code: the browser asks the device or password manager holding it, which
+  checks it's you (a fingerprint, a face, a PIN). The login is a fresh
+  X25519 exchange between the page and the gateway, and what the passkey
+  signs is a hash of that exchange, sent encrypted under keys from it: a
+  signature is good for that one login only, and someone in the middle,
+  who'd have made a different exchange with each side, gets nothing it can
+  use. Unlike CPace, this doesn't prove the gateway to the page; a page
+  changed on the way is outside what the tunnel protects anyway (below).
+  Passkeys need the site opened over HTTPS (or on `localhost`) at a name,
+  not an IP address, and a browser from 2023 or later; the button shows
+  only where they'll work. Failed passkey logins count against the login
+  limit as failed codes do; waiting for the device to answer (up to 2
+  minutes) doesn't hold a login attempt, but at most 3 can wait at once
+  from one address, and 256 in all. If the passkeys file can't be read,
+  logging in with one, and the Passkeys section, say so.
 - **Sessions:** a successful login gives the page a random session secret,
   kept in the browser's local storage. Every later connection combines a
   fresh X25519 exchange with that secret, so only that browser can open
@@ -126,6 +143,21 @@ ended separately.
   derived from it. **Log out everywhere** ends every session, this one
   too, and closes everything they have open: an open desktop or terminal
   asks for a login when it reconnects, which it does by itself.
+- **Passkeys:** the Passkeys section lists the passkeys added, with when
+  each was last used, and **Remove…** for each. **Add a passkey…** asks
+  for a name and the password + code again (so a session someone else got
+  hold of can't add one of its own, which would outlast **Log out
+  everywhere**; the code that logged this session in can't be used again,
+  so it takes the next one), then has the browser make the passkey, kept
+  by the device or password manager (synced, as with iCloud Keychain or
+  Google Password Manager, or on a security key). **Remove…** asks for
+  the password + code again too, so such a session can't take the
+  owner's away either. Up to 20 can be added.
+  A passkey works only at the address it was added at (its host name).
+  They're kept in `~/.config/tabtop/passkeys.json`. Adding and removing
+  them shows in the activity log; logins with one say so in the list of
+  logins. **Log out everywhere** doesn't remove them: remove one you don't
+  recognise here.
 - **Naming sessions:** **Name…** beside a session calls it something,
   such as "work laptop" or "phone", shown in the list and the activity
   log. This browser's own name is kept in the browser, and given to each
@@ -193,4 +225,6 @@ out and starts that list empty; the activity log stays.
   pages from the site itself can open the tunnel; the gateway refuses
   WebSocket requests from other sites.
 - **Files:** anyone logged in can delete files and folders in
-  `~/Downloads`, with no way to undo it.
+  `~/Downloads`. Files deleted through the files page can be restored from
+  Trash until its age or capacity limits remove them; permanent deletion
+  from Trash cannot be undone.

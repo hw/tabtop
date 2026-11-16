@@ -6,7 +6,7 @@ const target = new URL("../tabtopd/tunnel.js", import.meta.url).href;
 const stubs = {
     "./tunnel-protocol.js": `export class Tunnel { static open(...args) { return globalThis.openTunnel(...args); } }
         export class TunnelError extends Error {}
-        export const login=()=>{}, tunnelURL=()=>{}, request=()=>{};`,
+        export const login=()=>{}, passkeyLogin=()=>{}, passkeysUsable=()=>false, b64url=()=>'', unb64url=()=>new Uint8Array(), tunnelURL=()=>{}, request=()=>{};`,
     "./session.js": `export const SESSION_KEY='test';
         export const storedSession=()=>({id:'stored'}), session=()=>globalThis.getSession(), forgetSession=()=>globalThis.forgot++;
         export const renewSession=()=>{};`,

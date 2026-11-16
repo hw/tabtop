@@ -42,24 +42,33 @@ type cleanupReport struct {
 	Stopped bool  `json:"stopped"` // the search took too long, and stopped part way
 }
 
-// cleanup deletes what the top of this file says, or with dry, only
-// counts it.
-func (g *server) cleanup(dry bool) cleanupReport {
+func (r *cleanupReport) add(o cleanupReport) {
+	r.Kept += o.Kept
+	r.Temps += o.Temps
+	r.Bytes += o.Bytes
+	r.Stopped = r.Stopped || o.Stopped
+}
+
+// cleanup deletes what the top of this file says in this root, or with
+// dry, only counts it. The gateway's own leftovers are cleanGatewayTemps'.
+func (g *fileService) cleanup(dry bool) cleanupReport {
 	var rep cleanupReport
 	busy := map[string]bool{} // temporary files in use, by path in ~/Downloads
 
 	// Uploads from the files page: those going on, and those kept.
-	m := &g.transfers
+	m := &g.root.transfers
 	m.mu.Lock()
 	for id := range m.active {
 		busy["id:"+id] = true
 	}
 	var kept []string
 	for id, p := range m.partials {
-		rep.Kept++
-		rep.Bytes += p.held
 		busy[p.tmp] = true
-		kept = append(kept, id)
+		if p.holding == 0 { // one held is its folder's move's to let go
+			rep.Kept++
+			rep.Bytes += p.held
+			kept = append(kept, id)
+		}
 	}
 	var dropped []*partialUpload
 	if !dry {
@@ -69,7 +78,7 @@ func (g *server) cleanup(dry bool) cleanupReport {
 	}
 	m.mu.Unlock()
 	for _, p := range dropped {
-		m.removePartial(p)
+		removePartial(p)
 	}
 
 	// Uploads through links, in pieces.
@@ -79,6 +88,9 @@ func (g *server) cleanup(dry bool) cleanupReport {
 		idle := map[string]*linkPartial{}
 		now := g.shares.clock.Now()
 		for k, p := range ps.m {
+			if p.link.Root != g.root.ID {
+				continue
+			}
 			busy[p.part.tmp] = true
 			// Between pieces isn't left: one that had a piece lately is
 			// still going, its next on the way.
@@ -97,21 +109,24 @@ func (g *server) cleanup(dry bool) cleanupReport {
 	}
 
 	// Fetches going on.
-	if g.fetches != nil {
-		g.fetches.mu.Lock()
-		for _, j := range g.fetches.jobs {
+	if g.root.fetches != nil {
+		g.root.fetches.mu.Lock()
+		for _, j := range g.root.fetches.jobs {
 			j.mu.Lock()
 			if j.tmp != "" {
 				busy[j.tmp] = true
 			}
 			j.mu.Unlock()
 		}
-		g.fetches.mu.Unlock()
+		g.root.fetches.mu.Unlock()
 	}
+
+	// Folders being filled (see tunnelTransfer).
+	g.root.writes.staged(busy)
 
 	// The rest of ~/Downloads.
 	before := time.Now().Add(-cleanupAge)
-	if root, err := openDirectoryRoot(g.downloadsDir); err == nil {
+	if root, err := g.openRoot(); err == nil {
 		var stop atomic.Bool
 		timer := time.AfterFunc(cleanupBudget, func() { stop.Store(true) })
 		n, bytes := cleanTemps(root, before, busy, dry, &stop)
@@ -122,9 +137,15 @@ func (g *server) cleanup(dry bool) cleanupReport {
 		rep.Stopped = stop.Load()
 	}
 
-	// What saving the gateway's own files left.
+	return rep
+}
+
+// cleanGatewayTemps deletes, or with dry counts, what saving the gateway's
+// own files left: once, whatever the roots.
+func (g *server) cleanGatewayTemps(dry bool) (n int, bytes int64) {
+	before := time.Now().Add(-cleanupAge)
 	dirs := map[string]bool{}
-	for _, f := range []string{g.sharesFile, g.activityFile, g.shareKeyFile} {
+	for _, f := range []string{g.sharesFile, g.activityFile, g.shareKeyFile, g.passkeysFile} {
 		if f != "" {
 			dirs[filepath.Dir(f)] = true
 		}
@@ -137,12 +158,12 @@ func (g *server) cleanup(dry bool) cleanupReport {
 				continue
 			}
 			if dry || os.Remove(filepath.Join(dir, de.Name())) == nil {
-				rep.Temps++
-				rep.Bytes += info.Size()
+				n++
+				bytes += info.Size()
 			}
 		}
 	}
-	return rep
+	return n, bytes
 }
 
 // cleanTemps deletes, or with dry counts, the temporary files of uploads
@@ -164,7 +185,12 @@ func cleanTemps(root *os.Root, before time.Time, busy map[string]bool, dry bool,
 				p := path.Join(d, de.Name())
 				var info fs.FileInfo
 				switch {
+				case topFolder(d) && trashName(de.Name()): // walked without following links, so d is real
+					continue // Trash owns retention of its contents.
 				case de.IsDir() && uploadStageName.MatchString(de.Name()):
+					if busy[p] {
+						continue
+					}
 					if info, err = de.Info(); err == nil && info.ModTime().Before(before) && (dry || root.RemoveAll(p) == nil) {
 						n++
 					}

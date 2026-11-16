@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path"
 	"sort"
@@ -213,31 +212,27 @@ func extractZipFilesWithSync(ctx context.Context, opened *downloadItem, ids []in
 	if !validNewName(base) {
 		base = "Extracted files"
 	}
-	for i := 0; i < 1000; i++ {
-		got := base
-		if i > 0 {
-			got = numberedName(base, "", i)
-		}
-		err = opened.store.renameAt(dir, stageName, dir, got)
-		if errors.Is(err, fs.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		return path.Join(dir, got), syncDirectory(opened.store.root, dir)
+	got, err := freeName(base, true, func(got string) error { return opened.store.renameAt(dir, stageName, dir, got) })
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("too many folders with that name")
+	return path.Join(dir, got), syncDirectory(opened.store.root, dir)
 }
 
-func (g *server) tunnelZipExtract(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelZipExtract(req tunnelRequest, session, ip string, r *tunnelResponder) {
 	release, ok := zipExtractSlots.acquire()
 	if !ok {
 		r.fail("Other files are being extracted; try again in a moment.")
 		return
 	}
 	defer release()
-	opened, err := openDownloadsFile(g.downloadsDir, req.Path)
+	writing, err := g.beginWrites(path.Dir(strings.Trim(req.Path, "/")))
+	if err != nil {
+		r.fail(err.Error())
+		return
+	}
+	defer writing()
+	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())
 		return
@@ -259,5 +254,6 @@ func (g *server) tunnelZipExtract(req tunnelRequest, session, ip string, r *tunn
 	if err != nil {
 		reply["warning"] = "Extracted, but the disk did not confirm the folder was saved; it could be lost if the power fails soon."
 	}
+	writing() // over, before the page's told (see beginWrites)
 	r.finish(reply)
 }

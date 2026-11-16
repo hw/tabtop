@@ -105,10 +105,12 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         await waitFor(`${listed}.includes("libclick.so.1")`, "a versioned shared library listed");
         await ev(`${row("libclick.so.1")}.querySelector("td.name a").click()`);
         await waitFor(`!!document.querySelector("dialog.preview .hex-dump") && document.querySelector("dialog.preview .hex-dump .hex-byte")?.textContent === "7f"`, "a shared library's name clicked shows its bytes");
+        // It's a program (an ELF): what it says of itself is read, and its tab offered.
+        await waitFor(`document.querySelector("dialog.preview .hex-inspector-tab-program")?.hidden === false && /^ELF 64-bit /.test(document.querySelector("dialog.preview .hex-program-summary")?.textContent ?? "")
+            && document.querySelectorAll("dialog.preview .hex-program-sections tbody tr").length > 10`, "a program's sections read", 30000);
         await closeBinary();
 
-        await ev(`${row("notes.unknown")}.querySelector("summary").click()`);
-        await ev(`[...${row("notes.unknown")}.querySelectorAll("button")].find(b => b.textContent === "Preview").click()`);
+        await ev(`${row("notes.unknown")}.querySelector("td.name a").click()`);
         await waitFor(`document.querySelector("dialog.preview pre")?.textContent === "hello from unknown text\\n"`, "unknown text preview");
         if (await ev(`document.querySelector("dialog.preview button.preview-mode-toggle").textContent`) !== "") throw new Error("the preview switch is not glyph-only");
         if (await ev(`document.querySelector("dialog.preview button.preview-mode-toggle").title`) !== "Show binary view") throw new Error("the preview switch has no tooltip");
@@ -510,7 +512,7 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         sh(`rm ${file}`);
         return "?? and half-byte wildcards, ASCII, both ways; x86-64 and 32-bit disassembly; a uint16 typed in the inspector and undone; nop typed over an instruction, padded with nops; two bytes typed over and saved in place (same inode and size); Done redraws them; unsaved changes asked about";
     });
-    await step("files: ARM, Thumb-2 and MIPS disassembly in the browser worker", async () => {
+    await step("files: ARM, Thumb-2, RISC-V and MIPS disassembly in the browser worker", async () => {
         const bytes = Buffer.alloc(96);
         bytes.set([0x04, 0, 0, 0x14], 0);
         bytes.set([0x02, 0, 0, 0xea], 16);
@@ -518,6 +520,7 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         bytes.set([0x03, 0, 0, 0x10], 48);
         bytes.set([0x10, 0, 0, 0x03], 64);
         bytes.set([0xfd, 0x7b, 0xbf, 0xa9], 80);
+        bytes.set([0xef, 0, 0x80, 0], 84);
         inContainer("sh", "-c", `printf '%s' '${bytes.toString("base64")}' | base64 -d > ~/Downloads/media/arm-mips.bin`);
         await open("fs/#/media/", `${listed}.includes("arm-mips.bin")`, "the ARM/MIPS fixture");
         const preview = async () => {
@@ -529,7 +532,10 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         await ev(`if (document.querySelector(".hex-inspector").hidden) document.querySelector(".hex-inspector-toggle").click();
             document.querySelector(".hex-inspector-tab-disasm").click()`);
         const shown = `[...document.querySelectorAll(".hex-disasm-text")].map(e => e.textContent).join("|")`;
-        const choose = (mode) => ev(`(() => { const e = document.querySelector(".hex-disasm-bitness"); e.value = ${JSON.stringify(mode)}; e.dispatchEvent(new Event("change")); })()`);
+        const choose = async (mode) => {
+            await waitFor(`!!document.querySelector(".hex-disasm-bitness")`, "the instruction set chooser");
+            await ev(`(() => { const e = document.querySelector(".hex-disasm-bitness"); e.value = ${JSON.stringify(mode)}; e.dispatchEvent(new Event("change")); })()`);
+        };
         const panelSize = (axis) => ev(`document.querySelector(".hex-inspector").getBoundingClientRect().${axis}`);
         const dragInspector = async (dx, dy) => {
             const at = await ev(`(() => { const r = document.querySelector(".hex-inspector-resize").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -539,9 +545,11 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         };
         let resizedWidth;
         for (const [mode, pattern, text] of [
-            ["arm64", "04 00 00 14", "b #0x10"],
+            ["arm64", "04 00 00 14", "b 0x10"],
             ["arm32", "02 00 00 ea", "b #0x20"],
             ["thumb", "08 bf 01 20 00 f0 00 f8", "it eq|moveq r0, #1|bl #0x28"],
+            ["riscv32", "ef 00 80 00", "jal 0x5c"],
+            ["riscv64", "ef 00 80 00", "jal 0x5c"],
             ["mips32-le", "03 00 00 10", "b 0x40"],
             ["mips64-le", "03 00 00 10", "b 0x40"],
             ["mips32-be", "10 00 00 03", "b 0x50"],
@@ -586,10 +594,54 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         }
         await ev(`document.querySelector("dialog.preview button.edit").click()`);
         await waitFor(`!!document.querySelector(".hex-dump.editing") && ${shown} === "b 0x50"`, "MIPS while editing bytes");
+        // ARM32 is only shown: no box for its instructions.
+        await choose("arm32");
+        await ev(`document.querySelector(".hex-find-input").value = "02 00 00 ea"; document.querySelector(".hex-find").requestSubmit()`);
+        await waitFor(`${shown} === "b #0x20"`, "ARM32 while editing bytes");
         await ev(`document.querySelector(".hex-disasm-lines li").click()`);
-        if (await ev(`!!document.querySelector(".hex-disasm-input") || document.querySelector(".hex-disasm").classList.contains("editable")`)) throw new Error("MIPS entered the x86 instruction editor");
+        if (await ev(`!!document.querySelector(".hex-disasm-input") || document.querySelector(".hex-disasm").classList.contains("editable")`)) throw new Error("ARM32 entered the instruction editor");
+        // ARM64's can be changed: a line that isn't an instruction, said by
+        // its assembler, and the box put back.
+        await choose("arm64");
+        await ev(`document.querySelector(".hex-find-input").value = "fd 7b bf a9"; document.querySelector(".hex-find").requestSubmit()`);
+        await waitFor(`${shown} === "stp x29, x30, [sp, #-0x10]!" && document.querySelector(".hex-disasm").classList.contains("editable")`, "ARM64 code, to change");
+        await ev(`document.querySelector(".hex-disasm-lines li").click()`);
+        await waitFor(`document.activeElement?.classList.contains("hex-disasm-input")`, "the box for an ARM64 instruction");
+        await ev(`document.activeElement.select()`);
+        await cdp("Input.insertText", { text: "bogus x0" });
+        await press("Enter");
+        await waitFor(`document.querySelector(".edit-status").textContent === '"bogus" isn\\'t an ARM64 instruction.' && !!document.querySelector(".hex-disasm-input")`, "a line that isn't an ARM64 instruction", 30000);
+        await press("Escape");
+        await waitFor(`!document.querySelector(".hex-disasm-input") && ${shown} === "stp x29, x30, [sp, #-0x10]!"`, "the ARM64 box put back");
+        // RISC-V's too, by tabtop's own assembler: a line that isn't one
+        // (nothing is written: closing would then ask about the changes).
+        await choose("riscv64");
+        await ev(`document.querySelector(".hex-find-input").value = "ef 00 80 00"; document.querySelector(".hex-find").requestSubmit()`);
+        await waitFor(`${shown} === "jal 0x5c" && document.querySelector(".hex-disasm").classList.contains("editable")`, "RISC-V code, to change");
+        await ev(`document.querySelector(".hex-disasm-lines li").click()`);
+        await waitFor(`document.activeElement?.classList.contains("hex-disasm-input")`, "the box for a RISC-V instruction");
+        await ev(`document.activeElement.select()`);
+        await cdp("Input.insertText", { text: "bogus a0" });
+        await press("Enter");
+        await waitFor(`document.querySelector(".edit-status").textContent === "There's no instruction called bogus." && !!document.querySelector(".hex-disasm-input")`, "a line that isn't a RISC-V instruction", 30000);
+        await press("Escape");
+        await waitFor(`!document.querySelector(".hex-disasm-input") && ${shown} === "jal 0x5c"`, "the RISC-V box put back");
+        // And MIPS's, likewise.
+        await choose("mips64-be");
+        await ev(`document.querySelector(".hex-find-input").value = "10 00 00 03"; document.querySelector(".hex-find").requestSubmit()`);
+        await waitFor(`${shown} === "b 0x50" && document.querySelector(".hex-disasm").classList.contains("editable")`, "MIPS code, to change");
+        await ev(`document.querySelector(".hex-disasm-lines li").click()`);
+        await waitFor(`document.activeElement?.classList.contains("hex-disasm-input")`, "the box for a MIPS instruction");
+        await ev(`document.activeElement.select()`);
+        await cdp("Input.insertText", { text: "bogus $a0" });
+        await press("Enter");
+        await waitFor(`document.querySelector(".edit-status").textContent === "There's no instruction called bogus." && !!document.querySelector(".hex-disasm-input")`, "a line that isn't a MIPS instruction", 30000);
+        await press("Escape");
+        await waitFor(`!document.querySelector(".hex-disasm-input") && ${shown} === "b 0x50"`, "the MIPS box put back");
+        await choose("mips64-be");
         await ev(`document.querySelector("dialog.preview button.close").click()`);
         await preview();
+        await waitFor(`!!document.querySelector(".hex-disasm-bitness")`, "the instruction set chooser, reopened");
         if (await ev(`document.querySelector(".hex-disasm-bitness").value`) !== "mips64-be") throw new Error("the MIPS instruction set wasn't remembered");
         await waitFor(`Math.abs(document.querySelector(".hex-inspector").getBoundingClientRect().width - ${resizedWidth}) <= 2`, "the resized inspector width remembered after reopening");
         await ev(`document.querySelector(".hex-inspector-resize").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
@@ -597,7 +649,7 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         // Restore the default for other browser groups.
         await choose("x86-64");
         await ev(`document.querySelector("dialog.preview button.close").click()`);
-        return "ARM64/A32/Thumb-2, MIPS32/64 LE/BE, branch links, guarded instruction editing; inspector dragging, keyboard resizing, mobile height, saved width and reset";
+        return "ARM64/A32/Thumb-2, RISC-V 32/64, MIPS32/64 LE/BE, branch links, guarded instruction editing; inspector dragging, keyboard resizing, mobile height, saved width and reset";
     });
 
 }

@@ -12,22 +12,34 @@ import (
 	"log"
 	"os"
 	"path"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
 
-type downloadStore struct{ root *os.Root }
+type downloadStore struct {
+	root *os.Root
+	// checked are paths already found not to lead into Trash, by the
+	// request this store was opened for (see requestScope).
+	checked []string
+	// index is the root's Trash entries as last read (see trashIndex).
+	index *trashIndex
 
-func openDownloadStore(dir string) (*downloadStore, error) {
-	root, err := openDirectoryRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	return &downloadStore{root: root}, nil
+	// What inTrash has found, for it to use again (see inTrash).
+	mu        sync.Mutex
+	trashSeen bool               // Trash was there
+	realDirs  map[string]realDir // folders, by path, resolved
 }
+
+type realDir struct {
+	real string
+	err  error
+}
+
 func (s *downloadStore) Close() error { return s.root.Close() }
 
 // downloadItem owns both the confined store and its opened descriptor.
@@ -39,33 +51,9 @@ type downloadItem struct {
 	name  string
 }
 
-var errDownloadsMissing = errors.New("The downloads folder is missing.")
+var errDownloadsMissing = errors.New("The exposed folder is unavailable.")
 var errDownloadMissing = errors.New("Not found.")
 
-func openDownloadsItem(dir, name string) (*downloadItem, error) {
-	store, err := openDownloadStore(dir)
-	if err != nil {
-		return nil, errDownloadsMissing
-	}
-	name = path.Clean(strings.Trim(name, "/"))
-	f, st, err := store.open(name)
-	if err != nil {
-		store.Close()
-		return nil, errDownloadMissing
-	}
-	return &downloadItem{store: store, file: f, info: st, name: name}, nil
-}
-func openDownloadsFile(dir, name string) (*downloadItem, error) {
-	item, err := openDownloadsItem(dir, name)
-	if err != nil {
-		return nil, err
-	}
-	if !item.info.Mode().IsRegular() {
-		item.Close()
-		return nil, errDownloadMissing
-	}
-	return item, nil
-}
 func (item *downloadItem) Close() error { return errors.Join(item.file.Close(), item.store.Close()) }
 
 // A trailing separator makes the kernel require a directory before opening
@@ -87,6 +75,9 @@ func openRootDirectory(root *os.Root, name string) (*os.File, error) {
 }
 
 func (s *downloadStore) open(name string) (*os.File, fs.FileInfo, error) {
+	if !slices.Contains(s.checked, path.Clean(strings.Trim(name, "/"))) && s.inTrash(name) {
+		return nil, nil, fs.ErrNotExist
+	}
 	f, err := s.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, err
@@ -142,6 +133,9 @@ type upload struct {
 	dir, tmp string
 	f        *os.File
 	unsynced bool // saved, but its folder may not be on disk yet
+	// keep, if set, keeps the file a save replaces, open, as a version (see
+	// keepVersion), and returns what undoes that if the save then fails.
+	keep func(old *os.File) (drop func())
 }
 
 // id names the upload to resume it (see keepPartial): its temporary
@@ -209,11 +203,6 @@ func (u *upload) finishAt(name string, replace bool, target *downloadStore) (str
 		u.f.Close()
 		return "", err
 	}
-	ext := path.Ext(name)
-	if ext == name {
-		ext = "" // ".bashrc" is all name
-	}
-	base := strings.TrimSuffix(name, ext)
 	if replace {
 		target := path.Join(dir, name)
 		if st, err := root.Lstat(target); err == nil && st.IsDir() {
@@ -228,39 +217,39 @@ func (u *upload) finishAt(name string, replace bool, target *downloadStore) (str
 			// stays one that runs.
 			u.f.Chmod(st.Mode().Perm())
 		}
+		drop := func() {}
+		if u.keep != nil {
+			if old, err := root.OpenFile(target, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+				if ost, err := old.Stat(); err == nil && ost.Mode().IsRegular() {
+					drop = u.keep(old)
+				}
+				old.Close()
+			}
+		}
 		if err := u.publishAt(name, true, root, dir); err != nil {
+			drop()
 			return "", err
 		}
-		if err := syncDir(root, dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+		if err := syncDir(root, dir); err != nil && !syncUnsupported(err) {
 			log.Printf("upload saved as %q, but syncing its folder failed: %v", target, err)
 			u.unsynced = true
 		}
 		return name, nil
 	}
-	for i := 0; i < 1000; i++ {
-		got := name
-		if i > 0 {
-			got = numberedName(base, ext, i)
-		}
-		// Unlike a rename, a link fails rather than replace a file.
-		err := u.publish(got, false)
-		if err == nil {
-			// And the folder, so the name is. If that fails, the file is
-			// still saved, so the upload is too, with a warning; unless
-			// the file system can't sync a folder at all, where the file
-			// being synced is as far as it goes (and saying so on every
-			// upload would only be noise).
-			if err := syncDir(u.root, u.dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
-				log.Printf("upload saved as %q, but syncing its folder failed: %v", path.Join(u.dir, got), err)
-				u.unsynced = true
-			}
-			return got, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return "", err
-		}
+	// Unlike a rename, a link fails rather than replace a file.
+	got, err := freeName(name, false, func(got string) error { return u.publish(got, false) })
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("too many files with that name")
+	// And the folder, so the name is. If that fails, the file is still
+	// saved, so the upload is too, with a warning; unless the file system
+	// can't sync a folder at all, where the file being synced is as far as
+	// it goes (and saying so on every upload would only be noise).
+	if err := syncDir(u.root, u.dir); err != nil && !syncUnsupported(err) {
+		log.Printf("upload saved as %q, but syncing its folder failed: %v", path.Join(u.dir, got), err)
+		u.unsynced = true
+	}
+	return got, nil
 }
 
 // publish links the open, synced inode rather than trusting its temporary
@@ -301,6 +290,36 @@ func (u *upload) publishAt(name string, replace bool, root *os.Root, dir string)
 	return unix.Renameat(int(s.Fd()), "saved", int(d.Fd()), name)
 }
 
+// errNamesTaken is every name like one wanted taken (see freeName).
+var errNamesTaken = errors.New("There are too many items with that name.")
+
+// freeName gives name, or the first numbered name like it (see
+// numberedName) that's free, to what put puts there: it tries each in
+// turn, while put says the name is taken (fs.ErrExist, or ENOTEMPTY, as a
+// rename onto a folder says), and returns the one it got. A folder's name
+// is all name: "photos.2024 (1)"; as is a dotfile's: ".bashrc (1)".
+func freeName(name string, folder bool, put func(name string) error) (string, error) {
+	ext := path.Ext(name)
+	if folder || ext == name {
+		ext = ""
+	}
+	base := strings.TrimSuffix(name, ext)
+	for i := 0; i < 1000; i++ {
+		got := name
+		if i > 0 {
+			got = numberedName(base, ext, i)
+		}
+		err := put(got)
+		if err == nil {
+			return got, nil
+		}
+		if !errors.Is(err, fs.ErrExist) && !errors.Is(err, syscall.ENOTEMPTY) {
+			return "", err
+		}
+	}
+	return "", errNamesTaken
+}
+
 // numberedName is "base (i)ext", with base cut short (at a character's
 // end) if that would be longer than a name can be. If the extension leaves
 // no room, it's cut short as part of the name instead.
@@ -316,6 +335,12 @@ func numberedName(base, ext string, i int) string {
 		base = base[:len(base)-size]
 	}
 	return base + suffix + ext
+}
+
+// syncUnsupported reports whether err, from a sync, is the filesystem
+// saying it can't, rather than that it failed.
+func syncUnsupported(err error) bool {
+	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP)
 }
 
 func syncDir(root *os.Root, dir string) error {
@@ -341,21 +366,11 @@ func (s *downloadStore) makeFolder(dir, name string) (string, error) {
 	if st, err := root.Stat(dir); err != nil || !st.IsDir() {
 		return "", fs.ErrNotExist
 	}
-	for i := 0; i < 1000; i++ {
-		got := name
-		if i > 0 {
-			got = numberedName(name, "", i) // "photos.2024 (1)": a folder has no extension
-		}
-		err := root.Mkdir(path.Join(dir, got), 0o755)
-		if err == nil {
-			syncDir(root, dir) // only files are promised to be on disk
-			return got, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return "", err
-		}
+	got, err := freeName(name, true, func(got string) error { return root.Mkdir(path.Join(dir, got), 0o755) })
+	if err == nil {
+		syncDir(root, dir) // only files are promised to be on disk
 	}
-	return "", errors.New("too many folders with that name")
+	return got, err
 }
 
 // createFile creates an empty file name in dir, or the first free name
@@ -368,29 +383,20 @@ func (s *downloadStore) createFile(dir, name string) (string, error) {
 	if st, err := root.Stat(dir); err != nil || !st.IsDir() {
 		return "", fs.ErrNotExist
 	}
-	ext := path.Ext(name)
-	if ext == name {
-		ext = "" // ".bashrc" is all name
-	}
-	base := strings.TrimSuffix(name, ext)
-	for i := 0; i < 1000; i++ {
-		got := name
-		if i > 0 {
-			got = numberedName(base, ext, i)
-		}
+	got, err := freeName(name, false, func(got string) error {
 		f, err := root.OpenFile(path.Join(dir, got), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err == nil {
 			f.Close()
-			if err := syncDir(root, dir); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
-				log.Printf("empty file saved as %q, but syncing its folder failed: %v", path.Join(dir, got), err)
-			}
-			return got, nil
 		}
-		if !errors.Is(err, fs.ErrExist) {
-			return "", err
-		}
+		return err
+	})
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("too many files with that name")
+	if err := syncDir(root, dir); err != nil && !syncUnsupported(err) {
+		log.Printf("empty file saved as %q, but syncing its folder failed: %v", path.Join(dir, got), err)
+	}
+	return got, nil
 }
 
 // deleteFile deletes the file or folder at name in root, a folder with
@@ -416,6 +422,10 @@ func (s *downloadStore) deleteFile(name string) (bool, error) {
 		return false, fs.ErrNotExist
 	}
 	if lst.IsDir() {
+		// Not what holds a mount, whose filesystem RemoveAll would empty.
+		if err := holdsMount(root, name); err != nil {
+			return true, err
+		}
 		// RemoveAll works through open folders, not paths, and doesn't
 		// follow symlinks, so nothing swapped in can lead it out.
 		return true, root.RemoveAll(name)
@@ -473,6 +483,9 @@ func (s *downloadStore) moveEntry(name, to string) error {
 	if path.Clean(to) == path.Clean(dir) {
 		return errMoveHere
 	}
+	if trashName(old) && s.isTop(to) {
+		return errMoveTaken // Trash's own place
+	}
 	if to == name || strings.HasPrefix(to, name+"/") {
 		return errMoveInside
 	}
@@ -496,13 +509,69 @@ func (s *downloadStore) moveEntry(name, to string) error {
 // RENAME_NOREPLACE fails (with EEXIST) rather than replace what has
 // newName, even if it appears at the last moment.
 func (s *downloadStore) renameAt(dir, name, to, newName string) error {
-	root := s.root
-	d, err := openRootDirectory(root, dir)
+	return renameBetween(s, dir, name, s, to, newName)
+}
+
+// placeAt moves name, in the folder dir, to got in the folder to, taking
+// no other's name: as renameAt does it; or, on a filesystem that can't
+// rename without risking replacing something, as an upload is published
+// there: a folder renamed over an empty one just made by that name, a
+// file linked by it (neither of which takes a name in use).
+func (s *downloadStore) placeAt(dir, name, to, got string, isDir bool) error {
+	err := s.renameAt(dir, name, to, got)
+	if !errors.Is(err, errNoRename) {
+		return err
+	}
+	return s.placePlainly(path.Join(dir, name), path.Join(to, got), isDir)
+}
+
+// renameOver renames from to at, paths in the root, plainly: as rename(2)
+// does it, replacing a file, or an empty folder, that's there. For where
+// that's wanted, or nothing can be there.
+func (s *downloadStore) renameOver(from, at string) error {
+	d, err := openRootDirectory(s.root, path.Dir(from))
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	t, err := openRootDirectory(s.root, path.Dir(at))
+	if err != nil {
+		return err
+	}
+	defer t.Close()
+	return unix.Renameat(int(d.Fd()), path.Base(from), int(t.Fd()), path.Base(at))
+}
+
+// placePlainly is placeAt's way where renaming can't be told not to
+// replace: from made at, a name not in use.
+func (s *downloadStore) placePlainly(from, at string, isDir bool) error {
+	if isDir {
+		if err := s.root.Mkdir(at, 0o700); err != nil {
+			return err
+		}
+		if err := s.renameOver(from, at); err != nil {
+			s.root.Remove(at)
+			return err
+		}
+		return nil
+	}
+	if err := s.root.Link(from, at); err != nil {
+		return err
+	}
+	s.root.Remove(from)
+	return nil
+}
+
+// renameBetween is renameAt from the folder dir in src to the folder to in
+// dst, which may be another root: on another filesystem, the kernel says
+// EXDEV, and nothing's moved.
+func renameBetween(src *downloadStore, dir, name string, dst *downloadStore, to, newName string) error {
+	d, err := openRootDirectory(src.root, dir)
 	if err != nil {
 		return fs.ErrNotExist
 	}
 	defer d.Close()
-	t, err := openRootDirectory(root, to)
+	t, err := openRootDirectory(dst.root, to)
 	if err != nil {
 		return errNoFolder
 	}

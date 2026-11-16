@@ -5,7 +5,7 @@ import { registerHooks } from "node:module";
 const target = new URL("../tabtopd/login-ui.js", import.meta.url).href;
 const hooks = registerHooks({ resolve(specifier, context, next) {
     if (context.parentURL === target && specifier === "./tunnel-protocol.js") {
-        return { shortCircuit: true, url: "data:text/javascript,export const login=(...args)=>globalThis.tryLogin(...args);" };
+        return { shortCircuit: true, url: "data:text/javascript,export const login=(...args)=>globalThis.tryLogin(...args);export const passkeyLogin=()=>{throw new Error(\"no passkeys\");};export const passkeysUsable=()=>false;" };
     }
     if (context.parentURL === target && specifier === "./session-state.js") {
         return { shortCircuit: true, url: "data:text/javascript,export const saveSession=s=>globalThis.savedSessions.push(s);" };

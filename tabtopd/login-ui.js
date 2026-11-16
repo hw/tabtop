@@ -1,4 +1,4 @@
-import { login } from "./tunnel-protocol.js";
+import { login, passkeyLogin, passkeysUsable } from "./tunnel-protocol.js";
 import { saveSession } from "./session-state.js";
 
 export function loginForm(title, cancellable = false) {
@@ -64,14 +64,27 @@ export function loginForm(title, cancellable = false) {
             });
             row.append(cancel);
         }
+        // With a passkey, where this page can use one (see passkey.go).
+        let usePasskey = false;
+        if (passkeysUsable()) {
+            const passkey = document.createElement("button");
+            Object.assign(passkey, { type: "submit", className: "passkey-login", textContent: "Use a passkey" });
+            look(passkey, false);
+            passkey.addEventListener("click", () => { usePasskey = true; input.required = false; });
+            row.append(passkey);
+        }
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
+            const withPasskey = usePasskey;
+            usePasskey = false;
+            input.required = true;
             if (cancelled || button.disabled) { return; }
             button.disabled = true;
             button.style.opacity = ".6";  // busy agreeing on keys
             error.textContent = "";
             try {
-                const { ip, logins, ...s } = await login(input.value.trim(), undefined, { signal: attempt.signal });
+                const { ip, logins, ...s } = withPasskey ? await passkeyLogin(undefined, { signal: attempt.signal })
+                    : await login(input.value.trim(), undefined, { signal: attempt.signal });
                 if (cancelled) { return; }
                 saveSession(s);
                 box.remove();

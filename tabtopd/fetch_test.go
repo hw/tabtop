@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -100,9 +101,10 @@ func TestFetchRefusesLoopback(t *testing.T) {
 func newFetchServer(t *testing.T) (*server, string, testSession) {
 	t.Helper()
 	g, srv := newE2EServer(t)
-	g.fetches = &fetchManager{downloadsDir: g.downloadsDir, transfers: &g.transfers,
-		client: newFetchClient(func(netip.Addr) bool { return true }), resourceClient: newFetchClient(func(netip.Addr) bool { return true })}
-	t.Cleanup(func() { g.fetches.stop(context.Background()) })
+	g.defaultRoot().fetches = &fetchManager{files: g.defaultFiles(),
+		client: newFetchClient(func(netip.Addr) bool { return true })}
+	g.resourceClient = newFetchClient(func(netip.Addr) bool { return true })
+	t.Cleanup(func() { g.defaultRoot().fetches.stop(context.Background()) })
 	return g, srv.URL, login(t, testCtx(t), srv.URL, code(0))
 }
 
@@ -392,7 +394,7 @@ func TestFetchFollowedLate(t *testing.T) {
 		first := tc.request(t, testCtx(t), tunnelRequest{Type: "fetch", URL: remote.URL + path})
 		id := first["fetch"].(map[string]any)["id"].(string)
 		follow(t, tc)
-		g.fetches.forget(g.fetches.job(id))
+		g.defaultRoot().fetches.forget(g.defaultRoot().fetches.job(id))
 		return id
 	}
 	again := func(id string) map[string]any {
@@ -410,9 +412,9 @@ func TestFetchFollowedLate(t *testing.T) {
 	if last := again(failed); last["error"] != "the server answered 404 Not Found" {
 		t.Errorf("followed late, failed: %v", last)
 	}
-	g.fetches.mu.Lock()
-	g.fetches.outcomes = nil
-	g.fetches.mu.Unlock()
+	g.defaultRoot().fetches.mu.Lock()
+	g.defaultRoot().fetches.outcomes = nil
+	g.defaultRoot().fetches.mu.Unlock()
 	if last := again(ok); last["error"] != errFetchForgotten.Error() {
 		t.Errorf("followed after it's forgotten: %v", last)
 	}
@@ -448,5 +450,20 @@ func TestFetchUnsizedRoom(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(filepath.Join(g.downloadsDir, "*")); len(left) != 0 {
 		t.Errorf("left %v", left)
+	}
+}
+
+// The bound on fetches is the gateway's, across every root's: with its
+// slots taken (by fetches into other roots), none starts here.
+func TestFetchSlotsShared(t *testing.T) {
+	slots := make(chan struct{}, maxFetches)
+	for range maxFetches {
+		slots <- struct{}{}
+	}
+	g, _ := newE2EServer(t)
+	m := &fetchManager{files: g.defaultFiles(), slots: slots}
+	u, _ := url.Parse("https://example.com/file")
+	if _, err := m.start(u, ".", "", "", ""); err != errFetchBusy {
+		t.Fatalf("started with every slot taken: %v", err)
 	}
 }

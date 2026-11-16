@@ -139,7 +139,8 @@ function tidyAway(p) {
 // Cancel button that aborts signal. The row counts as going, and keeps
 // its button, until finish() is called. A row that's then marked as an
 // error stays, with a Retry button if given retry, which removes the row
-// and calls it; one that isn't goes after a while.
+// and calls it; one that isn't goes after a while. offer(label, act) adds
+// a button that, clicked, goes and calls act: an Undo, say.
 export function statusRow(text, cancellable = false) {
     const { list, announcements, update } = transfers();
     const span = el("span", { textContent: text });
@@ -177,6 +178,20 @@ export function statusRow(text, cancellable = false) {
         },
         get text() {
             return span.textContent;
+        },
+        offer(label, act) {
+            const b = el("button", { type: "button", className: "offer", textContent: label });
+            b.addEventListener("click", () => {
+                b.remove();
+                act();
+            });
+            p.append(b);
+            // Clicks it, if it's still there: true if it was.
+            return () => {
+                if (!b.isConnected) return false;
+                b.click();
+                return true;
+            };
         },
         signal: abort.signal,
         finish(retry) {
@@ -407,7 +422,9 @@ export async function askChangeLink(l, ends, bytes) {
     const row = (label, field) => el("label", { className: "field" }, el("span", { textContent: label }), field);
     const so = l.upload ? `It has taken ${l.count} file${l.count === 1 ? "" : "s"} (${bytes(l.bytes ?? 0)}) so far.`
         : `It has been downloaded ${l.count} time${l.count === 1 ? "" : "s"} so far.`;
-    const name = l.path === "." ? "Downloads" : l.path;
+    // As the list beside it names it: by its root, not always Downloads.
+    const root = l.root_label || l.root || "Downloads";
+    const name = l.path === "." ? root : `${root}/${l.path}`;
     if (!(await ask(`Change the ${l.upload ? "upload " : ""}link to ${name}?`, "Change it", ...fields.map(([label, f]) => row(label, f)),
         el("p", { className: "hint", textContent: `${so} Its address stays the same.` })))) {
         return null;
@@ -422,6 +439,28 @@ export async function showLink(message, url) {
     input.setAttribute("aria-label", "The link");
     requestAnimationFrame(() => input.select());
     return (await choose(message, [["", "Close"], ["copy", "Copy link"]], input)) === "copy";
+}
+
+// askPasskey asks what to call a passkey to add, and for the password +
+// authenticator code again; it resolves to {name, code}, or null.
+export async function askPasskey() {
+    const name = el("input", { type: "text", maxLength: 50, spellcheck: false, autocomplete: "off", placeholder: "Passkey",
+        className: "passkey-name" });
+    name.setAttribute("aria-label", "The passkey's name");
+    const code = el("input", { type: "password", autocomplete: "off", required: true, className: "passkey-code" });
+    code.setAttribute("aria-label", "Password + authenticator code");
+    const ok = await ask("Add a passkey: its name (what the device or password manager is, say), then your password + authenticator code, "
+        + "given again so no one else with this session can add one. The code that logged this session in can't be used again: wait for the next one.",
+        "Add passkey", el("label", {}, "Name ", name), el("label", {}, "Password + code ", code));
+    return ok ? { name: name.value.trim(), code: code.value.trim() } : null;
+}
+
+// askCode asks, with message, for the password + authenticator code
+// again, resolving to it, or null if it's not given.
+export async function askCode(message, ok) {
+    const code = el("input", { type: "password", autocomplete: "off", required: true, className: "passkey-code" });
+    code.setAttribute("aria-label", "Password + authenticator code");
+    return (await ask(message, ok, el("label", {}, "Password + code ", code))) ? code.value.trim() : null;
 }
 
 // askName asks for a name for a file or folder, starting with value, and

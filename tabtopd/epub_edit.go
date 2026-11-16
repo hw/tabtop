@@ -823,7 +823,7 @@ func epubEditChild(z *epubZip, args []string) ([]byte, error) {
 // author req.Creator, and, if req.Size, a new cover, its bytes sent after
 // the request; with req.RegenerateTOC, its contents list is rebuilt from
 // the chapters' headings.
-func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	p := path.Clean(strings.Trim(req.Path, "/"))
 	if req.IfMtime == "" || len(req.Title) > 4*maxEpubDetail || len(req.Creator) > 4*maxEpubDetail {
 		r.fail("That's not a change that can be made.")
@@ -833,7 +833,7 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 		r.fail(fmt.Sprintf("The cover picture is too big: it can be at most %s.", humanSize(maxEpubPicture)))
 		return
 	}
-	opened, err := openDownloadsFile(g.downloadsDir, p)
+	opened, err := g.openFile(p)
 	if err != nil {
 		r.fail(err.Error())
 		return
@@ -853,7 +853,7 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 	}
 	dir := path.Dir(p)
 	if d, _, err := store.open(dir); err == nil {
-		free, _, ok := g.transfers.uploadRoom(d)
+		free, _, ok := g.uploadRoom(d)
 		d.Close()
 		if ok && free < st.Size()+req.Size+1<<20 {
 			r.fail("There isn't room on the disk for the changed book.")
@@ -891,6 +891,14 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 	if !ok {
 		return
 	}
+	// A write into its folder, as an upload's: not while that's being
+	// deleted or moved, which wouldn't see it.
+	writing, err := g.beginWrites(dir)
+	if err != nil {
+		r.fail(err.Error())
+		return
+	}
+	defer writing()
 	u, err := store.startUpload(dir)
 	if err != nil {
 		r.fail(uploadError(err))
@@ -946,6 +954,7 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 		fail(errEpubChanged.Error())
 		return
 	}
+	u.keep = func(old *os.File) func() { return g.keepVersion(p, old, false) }
 	_, err = u.finishAt(path.Base(p), true, target)
 	// Its time and size, read before another save can replace it.
 	var nst fs.FileInfo
@@ -969,6 +978,7 @@ func (g *server) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder
 	if u.unsynced {
 		res["warning"] = "saved, but the disk didn't confirm it; it could be lost if the power fails soon"
 	}
+	writing() // over, before the page's told (see beginWrites)
 	r.finish(res)
 }
 

@@ -951,8 +951,8 @@ func runEpubChild(f *os.File, timeout time.Duration, extra []*os.File, args ...s
 
 // tunnelEpub answers an "epub" request: the book at req.Path, or with
 // req.Item, a chapter or picture of it (see the top of this file).
-func (g *server) tunnelEpub(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	opened, err := openDownloadsFile(g.downloadsDir, req.Path)
+func (g *fileService) tunnelEpub(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())
 		return

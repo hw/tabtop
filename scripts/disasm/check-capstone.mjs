@@ -18,7 +18,7 @@ const self = {
 };
 runInNewContext(readFileSync(workerFile, "utf8"), {
     self, Uint8Array,
-    importScripts() { throw new Error("the ARM/MIPS path loaded x86 scripts"); },
+    importScripts() { throw new Error("the ARM32 path loaded other scripts"); },
     fetch: async (path) => {
         assert.equal(path, "./disasm/capstone.wasm");
         fetches++;
@@ -33,9 +33,6 @@ const ask = async (mode, bytes, address = 0x1000, max = 512) => {
     return result.lines;
 };
 const line = (offset, length, text, targets = []) => ({ offset, length, text, targets });
-assert.deepEqual(await ask("arm64", [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6]), [
-    line(0x1000, 4, "nop"), line(0x1004, 4, "ret"),
-]);
 assert.deepEqual(await ask("arm32", [0x00, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1]), [
     line(0x1000, 4, "mov r0, #0"), line(0x1004, 4, "bx lr"),
 ]);
@@ -46,45 +43,29 @@ assert.deepEqual(await ask("thumb", [0x08, 0xbf, 0x01, 0x20, 0x00, 0xf0, 0x00, 0
 // A new question has its own Thumb IT state.
 assert.deepEqual(await ask("thumb", [0x01, 0x20]), [line(0x1000, 2, "movs r0, #1")]);
 for (const [mode, bytes, text] of [
-    ["arm64", [0x04, 0, 0, 0x14], "b #0x1010"],
     ["arm32", [0x02, 0, 0, 0xea], "b #0x1010"],
     ["thumb", [0x06, 0xe0], "b #0x1010"],
 ]) assert.deepEqual(await ask(mode, bytes), [line(0x1000, bytes.length, text, [0x1010])]);
-assert.deepEqual(await ask("arm64", [0xff, 0xff, 0xff, 0x17]), [line(0x1000, 4, "b #0xffc", [0xffc])]);
-// TBZ's bit number is an immediate too, but only its final operand is a destination.
-assert.deepEqual((await ask("arm64", [0x80, 0, 0, 0x36]))[0].targets, [0x1010]);
-assert.deepEqual((await ask("arm64", [0x80, 0, 0, 0x10]))[0].targets, [0x1010]); // ADR
-assert.deepEqual((await ask("arm64", [0x00, 0x02, 0x80, 0xd2]))[0].targets, []); // MOV immediate
-for (const width of [32, 64]) {
-    for (const endian of ["le", "be"]) {
-        const mode = `mips${width}-${endian}`;
-        const words = [[0x10, 0, 0, 3], [0, 0, 0, 0], [0x24, 0x02, 0, 1]];
-        const bytes = words.flatMap((word) => endian === "le" ? word.toReversed() : word);
-        assert.deepEqual(await ask(mode, bytes), [
-            line(0x1000, 4, "b 0x1010", [0x1010]), line(0x1004, 4, "nop"), line(0x1008, 4, "addiu $v0, $zero, 1"),
-        ]);
-        const daddiu = [0x64, 0x02, 0, 1];
-        if (width === 64) assert.equal((await ask(mode, endian === "le" ? daddiu.toReversed() : daddiu))[0].text, "daddiu $v0, $zero, 1");
-        const back = [0x10, 0, 0xff, 0xfe];
-        assert.deepEqual((await ask(mode, endian === "le" ? back.toReversed() : back))[0].targets, [0xffc]);
-    }
-}
+assert.deepEqual(await ask("arm32", [0xfe, 0xff, 0xff, 0xea]), [line(0x1000, 4, "b #0x1000", [0x1000])]);
+// An immediate that isn't a branch's is no destination.
+assert.deepEqual((await ask("arm32", [0x01, 0x0a, 0xa0, 0xe3]))[0].targets, []);
 // Invalid words advance, with no bytes lost; a short tail stays visible.
-assert.deepEqual(await ask("arm64", [0xff, 0xff, 0xff, 0xff, 0x1f, 0x20, 0x03, 0xd5, 0xaa]), [
-    line(0x1000, 4, "(bad)"), line(0x1004, 4, "nop"), line(0x1008, 1, "(bad)"),
+assert.deepEqual(await ask("arm32", [0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0xa0, 0xe3, 0xaa]), [
+    line(0x1000, 4, "(bad)"), line(0x1004, 4, "mov r0, #0"), line(0x1008, 1, "(bad)"),
 ]);
-for (const mode of ["arm64", "arm32", "thumb", "mips32-le", "mips32-be", "mips64-le", "mips64-be"]) {
+for (const mode of ["arm32", "thumb"]) {
     assert.deepEqual(await ask(mode, []), []);
     assert.deepEqual(await ask(mode, [0xaa]), [line(0x1000, 1, "(bad)")]);
 }
 assert.deepEqual(await ask("thumb", [0x00, 0xf0]), [line(0x1000, 2, "(bad)")]);
-assert.equal((await ask("arm64", [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6], 0x1000, 1)).length, 1);
-assert.equal((await ask("arm64", [0x1f, 0x20, 0x03, 0xd5], 0x1001))[0].offset, 0x1001);
-assert.deepEqual((await ask("arm64", [0x04, 0, 0, 0x14], 0x100000000))[0].targets, [0x100000010]);
+assert.equal((await ask("arm32", [0x00, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1], 0x1000, 1)).length, 1);
+assert.equal((await ask("arm32", [0x00, 0x00, 0xa0, 0xe3], 0x1001))[0].offset, 0x1001);
 assert.equal(fetches, 1);
 assert.equal(loads, 1);
 const lib = await factory({ wasmBinary: wasm });
-assert.ok(lib.support(lib.ARCH_ARM) && lib.support(lib.ARCH_ARM64) && lib.support(lib.ARCH_MIPS));
+assert.ok(lib.support(lib.ARCH_ARM));
+// ARM64 is fARM64's (see check-arm64.mjs), RISC-V riscv-asm.js's (check-riscv.mjs), MIPS mips-asm.js's (check-mips.mjs).
+for (const arch of [lib.ARCH_ARM64, lib.ARCH_RISCV, lib.ARCH_MIPS]) assert.equal(lib.support(arch), 0);
 assert.equal(lib.support(lib.ARCH_X86), 0);
 let raw = 0, gz = 0;
 for (const file of ["capstone.js", "capstone.wasm"]) {
@@ -92,4 +73,4 @@ for (const file of ["capstone.js", "capstone.wasm"]) {
     raw += bytes.length;
     gz += gzipSync(bytes).length;
 }
-console.log(`Capstone ARM/ARM64/MIPS: checked; ${raw} bytes raw, ${gz} bytes gzip (JS + WASM)`);
+console.log(`Capstone ARM32/Thumb: checked; ${raw} bytes raw, ${gz} bytes gzip (JS + WASM)`);

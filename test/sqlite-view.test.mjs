@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { cellText, columnKind } from "../tabtopd/sqlite-view.js";
-import { typeOf, limits, binaryChunkSize, probablyDatabase } from "../tabtopd/preview-model.js";
+import { typeOf, limits, binaryChunkSize, unknownTextSize, probablyDatabase } from "../tabtopd/preview-model.js";
 
 test("values show as SQLite has them: NULL, exact integers, reals, cut text, blobs", () => {
     assert.deepEqual(cellText(null), { text: "NULL", className: "null" });
@@ -34,7 +34,7 @@ test("loading: a database's schema; one by its bytes in auto; a misnamed one in 
     let content = Uint8Array.from([...magic, 0x10, 0, 1, 1]);
     let database = true, busy = false;
     const requests = [];
-    const env = { typeOf, limits, binaryChunkSize, TextDecoder, Blob, join: (d, n) => `${d}/${n}`,
+    const env = { typeOf, limits, binaryChunkSize, unknownTextSize, TextDecoder, Blob, join: (d, n) => `${d}/${n}`,
         call: async (req) => {
             requests.push(req);
             if (req.type === "sqlite") {

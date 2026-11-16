@@ -102,7 +102,7 @@ func TestPreviewResourcesPrivateNetworks(t *testing.T) {
 		// Refused before connecting; allowed, it tries and times out.
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://10.255.255.1/", nil)
-		_, err = g.fetches.resourceClient.Do(req)
+		_, err = g.resourceClient.Do(req)
 		cancel()
 		if refused := errors.Is(err, errFetchAddress); refused != tc.refused {
 			t.Errorf("fetch-private=%t preview-fetch-private=%t: refused=%t, want %t (%v)", tc.fetchPrivate, tc.previewPrivate, refused, tc.refused, err)

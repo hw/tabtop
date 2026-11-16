@@ -1,0 +1,26 @@
+# The names of C++ and Rust symbols as they were written, for the hex view's
+# programs (see tabtopd/exe-info.js): built to WebAssembly by the Dockerfile's
+# demangle stage, loaded by tabtopd/disasm-worker.js. The demanglers are
+# pinned here and, by checksum, in Cargo.lock.
+[package]
+name = "demangle"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustc-demangle = "=0.1.28"
+cpp_demangle = { version = "=0.6.0", default-features = false, features = ["alloc"] }
+msvc-demangler = "=0.11.0"
+wasm-reply = { path = "../wasm-reply" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

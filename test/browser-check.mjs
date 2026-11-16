@@ -42,7 +42,11 @@ import { checkImages } from "./browser/images.mjs";
 import { checkStylesheetConditions } from "./browser/stylesheet-conditions.mjs";
 import { checkSavedHTML } from "./browser/saved-html.mjs";
 import { checkStylesAndMedia } from "./browser/styles-media.mjs";
+import { checkTextDiff } from "./browser/diff.mjs";
+import { checkImageDiff } from "./browser/image-diff.mjs";
+import { checkRoots } from "./browser/roots.mjs";
 import { checkServices } from "./browser/services.mjs";
+import { checkFeatures } from "./browser/features.mjs";
 
 const [port, base, downloads, work, container, group = "all"] = process.argv.slice(2);
 // inContainer runs a command in the container as its user, and returns
@@ -97,12 +101,16 @@ async function step(name, fn) {
 
 const checks = { port, base, downloads, work, container, inContainer, sleep, step, totp, cdp, ev, waitFor, click, press, type, open, newTab, listed, row, answer, waitForFile, status, setFiles, inFrame, inMarkdownFrame, checkPreviewLink, rendered };
 const groups = {
+    roots: [checkRoots],
+    features: [checkFeatures],
+    diff: [checkTextDiff, checkImageDiff],
+    "image-diff": [checkImageDiff],
     services: [checkServices],
     binary: [checkBinary], zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
     media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkHTML],
-    markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit], pdf: [checkPDF, checkPDFImages], "pdf-images": [checkPDFImages], "pdf-assembly": [checkPDFAssembly],
-    epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured], sqlite: [checkSQLite], images: [checkImages],
-    previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages],
+    markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit, checkTextDiff], pdf: [checkPDF, checkPDFImages], "pdf-images": [checkPDFImages], "pdf-assembly": [checkPDFAssembly],
+    epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured], sqlite: [checkSQLite], images: [checkImages, checkImageDiff],
+    previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkTextDiff, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages, checkImageDiff],
 };
 if (group !== "all" && !groups[group]) throw new Error(`Unknown group ${group}; choose all, ${Object.keys(groups).join(", ")}`);
 
@@ -373,6 +381,10 @@ try {
 
     await step("files: filter", async () => {
         const typeFilter = (text) => ev(`(() => { const f = document.querySelector("input.filter"); f.value = ${JSON.stringify(text)}; f.dispatchEvent(new Event("input")); })()`);
+        await typeFilter("old query");
+        await ev(`document.activeElement.blur()`);
+        await press("g", 2);
+        await waitFor(`document.activeElement.matches("input.filter") && document.activeElement.selectionStart === 0 && document.activeElement.selectionEnd === 9`, "Ctrl+G to focus and select the filter");
         await typeFilter("HELL");
         await waitFor(`${listed}.join() === "hello.txt"`, "only hello.txt");
         await typeFilter("nothing-like-it");
@@ -401,8 +413,41 @@ try {
     await step("files: delete", async () => {
         await ev(`${row("up.bin")}.querySelector("button.delete").click()`);
         await answer();
-        await waitFor(`/up.bin: deleted/.test(${status})`, "the delete");
+        await waitFor(`/up.bin: moved to Trash/.test(${status})`, "the delete");
         await waitFor(`!${listed}.includes("up.bin")`, "up.bin to go");
+    });
+
+    await step("files: undo a delete", async () => {
+        await ev(`[...document.querySelectorAll("#uploads p")].find(p => p.textContent.startsWith("Moved up.bin to Trash")).querySelector("button.offer").click()`);
+        await waitFor(`/Restored up.bin/.test(${status}) && ${listed}.includes("up.bin")`, "the undo");
+        // Deleted again, by Ctrl+Z's Undo, for the Trash checks that follow.
+        await ev(`${row("up.bin")}.querySelector("button.delete").click()`);
+        await answer();
+        await waitFor(`!${listed}.includes("up.bin")`, "up.bin to go again");
+        await ev(`document.body.focus(); document.dispatchEvent(new KeyboardEvent("keydown", {key: "z", ctrlKey: true, bubbles: true}))`);
+        await waitFor(`${listed}.includes("up.bin")`, "Ctrl+Z's undo");
+        await ev(`${row("up.bin")}.querySelector("button.delete").click()`);
+        await answer();
+        await waitFor(`!${listed}.includes("up.bin")`, "up.bin to go once more");
+    });
+
+    await step("files: Trash restore and permanent delete", async () => {
+        await ev(`document.querySelector("button.trash").click()`);
+        await waitFor(`location.hash === "#trash" && !![...document.querySelectorAll("tbody tr")].find(r => r.textContent.includes("up.bin"))`, "the deleted file in Trash");
+        await ev(`[...document.querySelectorAll("tbody tr")].find(r => r.textContent.includes("up.bin")).querySelector("button").click()`);
+        await waitFor(`!!document.querySelector("main p") && document.querySelector("main").textContent.includes("Trash is empty.")`, "the restored item to leave Trash");
+        await ev(`document.querySelector("button.trash").click()`);
+        await waitFor(`${listed}.includes("up.bin")`, "the restored file");
+        await ev(`${row("up.bin")}.querySelector("button.delete").click()`);
+        await answer();
+        await waitFor(`!${listed}.includes("up.bin")`, "the file to return to Trash");
+        await ev(`document.querySelector("button.trash").click()`);
+        await waitFor(`!!document.querySelector("tbody button.delete")`, "the Trash controls");
+        await ev(`document.querySelector("tbody button.delete").click()`);
+        await answer();
+        await waitFor(`document.querySelector("main").textContent.includes("Trash is empty.")`, "permanent deletion");
+        await ev(`document.querySelector("button.trash").click()`);
+        await waitFor(`!!document.querySelector("input.filter")`, "the file listing");
     });
 
     await step("files: folder upload, twice", async () => {
@@ -474,8 +519,18 @@ try {
     await step("files: delete a folder", async () => {
         await ev(`${row("up-folder (1)/")}.querySelector("button.delete").click()`);
         await answer();
-        await waitFor(`/up-folder \\(1\\)\\/: deleted/.test(${status})`, "the delete");
+        await waitFor(`/up-folder \\(1\\)\\/: moved to Trash/.test(${status})`, "the delete");
         await waitFor(`!${listed}.includes("up-folder (1)/")`, "up-folder (1)/ to go");
+    });
+
+    await step("files: empty Trash", async () => {
+        await ev(`document.querySelector("button.trash").click()`);
+        await waitFor(`!!document.querySelector("tbody button.delete")`, "the deleted folder in Trash");
+        await ev(`[...document.querySelectorAll("main button")].find(b => b.textContent === "Empty Trash…").click()`);
+        await answer();
+        await waitFor(`document.querySelector("main").textContent.includes("Trash is empty.")`, "empty Trash");
+        await ev(`document.querySelector("button.trash").click()`);
+        await waitFor(`!!document.querySelector("input.filter")`, "the files page");
     });
 
     await step("files: download a folder as .zip", async () => {
@@ -681,7 +736,7 @@ try {
         }
         await ev(`[...document.querySelectorAll("#shares .shares-table tr")].find((r) => r.textContent.includes("share-me.txt")).querySelector("button.revoke").click()`);
         await answer();
-        await waitFor(`/Revoked the link to share-me.txt/.test(${status}) && document.querySelectorAll("#shares button.revoke").length === 1`, "the link revoked");
+        await waitFor(`/Revoked the link to Downloads\\/share-me.txt/.test(${status}) && document.querySelectorAll("#shares button.revoke").length === 1`, "the link revoked");
         const code = execFileSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", hello], { encoding: "utf8" });
         if (code !== "404") {
             throw new Error(`a revoked link answers ${code}`);
@@ -743,7 +798,7 @@ try {
         await waitFor(`document.querySelectorAll("dialog[open] select").length === 2`, "the Change dialog");
         await ev(`document.querySelectorAll("dialog[open] select")[1].value = "5"`);
         await answer();
-        await waitFor(`/Changed the link to share-me.txt/.test(${status}) && ${listedLink}?.textContent.includes("1 of 5")`, "the link, changed");
+        await waitFor(`/Changed the link to Downloads\\/share-me.txt/.test(${status}) && ${listedLink}?.textContent.includes("1 of 5")`, "the link, changed");
         if (httpCode(url) !== "200") {
             throw new Error("the link given more downloads still doesn't work");
         }
@@ -933,7 +988,7 @@ try {
             && document.querySelector(".tabtop-nav button.security").getAttribute("aria-pressed") === "true"
             && document.querySelector(".tabtop-nav button.shares").getAttribute("aria-pressed") === "false"`, "Sessions and Activity");
         const headings = await ev(`[...document.querySelectorAll("#sessions h2")].map((h) => h.textContent)`);
-        if (headings.join() !== "Sessions,Recent logins,Activity" || await ev(`!!document.querySelector("#sessions .shares-table, #sessions .cleanup")`)) {
+        if (headings.join() !== "Sessions,Recent logins,Passkeys,Activity" || await ev(`!!document.querySelector("#sessions .shares-table, #sessions .cleanup")`)) {
             throw new Error(`the sessions tab's sections: ${headings}`);
         }
         await open("fs/#sessions", `!!document.querySelector("#sessions .activity-table") && document.title === "Sessions and Activity"`, "Sessions and Activity, opened directly");
@@ -966,7 +1021,7 @@ try {
         await waitForFile(`${downloads}/${name}`, name);
         await sleep(300);
         const lines = readFileSync(`${downloads}/${name}`, "utf8").trim().split("\n");
-        if (lines[0] !== "time\tfrom\tsession\tkind\twhat" || !lines[1].includes("\tlogin\t") || lines.length < 10) {
+        if (lines[0] !== "time\tfrom\tsession\tkind\troot\tpath\twhat" || !lines[1].includes("\tlogin\t") || lines.length < 10) {
             throw new Error(`${name} starts ${lines.slice(0, 2).join(" | ")}`);
         }
         // Cleared: one entry left, saying so.
@@ -1059,9 +1114,14 @@ try {
         for (const type of ["dragEnter", "dragOver"]) {
             await cdp("Input.dispatchDragEvent", { type, x: 600, y: 400, data });
         }
+        // Where they'd go is said once the page knows its roots.
+        await waitFor(`document.getElementById("drop_overlay")?.textContent.startsWith("Drop to upload into")`, "the drop overlay to say where", 5000).catch(() => {});
         const overlay = await ev(`getComputedStyle(document.getElementById("drop_overlay")).display + " " + document.getElementById("drop_overlay").textContent`);
         if (overlay !== "flex Drop to upload into Downloads (~/Downloads)") {
-            throw new Error(`while dragging, the overlay is ${JSON.stringify(overlay)}`);
+            // What the page knew of its roots, to tell why.
+            const known = await ev(`import("/tabtop/fs-context.js").then((m) => JSON.stringify({ roots: m.filesystemRoots().map((r) => [r.id, r.default, r.read_only]),
+                loading: !!m.rootsLoading(), page: location.href }))`);
+            throw new Error(`while dragging, the overlay is ${JSON.stringify(overlay)}; the page knew ${known}`);
         }
         await cdp("Input.dispatchDragEvent", { type: "drop", x: 600, y: 400, data });
         await waitFor(`/b.txt: uploaded/.test(${status})`, "the upload");
@@ -1178,6 +1238,7 @@ try {
         for (const type of ["dragEnter", "dragOver"]) {
             await cdp("Input.dispatchDragEvent", { type, x: 600, y: 400, data });
         }
+        await waitFor(`document.getElementById("drop_overlay")?.textContent.startsWith("Drop to upload into")`, "the drop overlay to say where", 5000).catch(() => {});
         const overlay = await ev(`getComputedStyle(document.getElementById("drop_overlay")).display + " " + document.getElementById("drop_overlay").textContent`);
         if (!overlay.startsWith("flex Drop to upload into Downloads")) {
             throw new Error(`while dragging, the overlay is ${JSON.stringify(overlay)}`);
@@ -1331,6 +1392,11 @@ try {
         }
         await open("fs/#/", `${listed}.includes("renewed.txt")`, "renewed.txt, written after the old login ended");
     });
+
+    await checkTextDiff(checks);
+    await checkImageDiff(checks);
+    await checkFeatures(checks);
+    await open("fs/#/", `${listed}.includes("renewed.txt")`, "files after comparisons");
 
     await step("logout", async () => {
         // An icon here, named for screen readers.

@@ -67,6 +67,7 @@ const (
 // fetchJob is a fetch, going or finished.
 type fetchJob struct {
 	id, host, dir string
+	real          string // dir, as it really is: links followed (see start)
 	by, ip, who   string // the handle of the session that started it, where from, and what it's called
 	cancel        context.CancelFunc
 	done          chan struct{}
@@ -112,15 +113,14 @@ func (j *fetchJob) set(f func(*fetchJob)) {
 
 // fetchManager runs the fetches.
 type fetchManager struct {
-	downloadsDir string
-	client       *http.Client
-	// resourceClient loads previews' external resources. The URLs come
-	// from the document being previewed, not the user, so -fetch-private
-	// doesn't apply: only -preview-fetch-private lets it reach private
-	// networks.
-	resourceClient *http.Client
-	transfers      *uploadManager
-	activity       *activityLog
+	// files is the root fetched into, opened as every other operation on
+	// it opens it.
+	files    *fileService
+	client   *http.Client
+	activity *activityLog
+	// slots, shared by every root's manager, bounds the fetches going at
+	// once to maxFetches across the gateway (nil: this one's own count).
+	slots chan struct{}
 
 	mu       sync.Mutex
 	jobs     map[string]*fetchJob
@@ -267,7 +267,7 @@ func newFetchClient(allow func(netip.Addr) bool) *http.Client {
 	}
 }
 
-var errFetchBusy = fmt.Errorf("%d fetches are going already; wait for one to finish", maxFetches)
+var errFetchBusy = fmt.Errorf("%d fetches are going already (into all the folders together); wait for one to finish", maxFetches)
 
 // start starts fetching u into dir, for the session by.
 func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
@@ -276,18 +276,40 @@ func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, er
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &fetchJob{id: hex.EncodeToString(b), host: u.Host, dir: dir, by: by, ip: ip, who: who, cancel: cancel, done: make(chan struct{}),
 		name: urlName(u), total: -1}
+	// Where the folder really is, found once, before m.mu's taken (it can
+	// take a while on a slow disk): what's recorded as written into, and
+	// what's written into, are then the same folder.
+	j.real = m.files.resolved(dir)
 	m.mu.Lock()
-	going := 0
-	for _, o := range m.jobs {
-		if o.state().Done {
-			continue
+	release := func() {}
+	if m.slots != nil {
+		select {
+		case m.slots <- struct{}{}:
+			release = func() { <-m.slots }
+		default:
+			m.mu.Unlock()
+			cancel()
+			return nil, errFetchBusy
 		}
-		going++
+	} else {
+		going := 0
+		for _, o := range m.jobs {
+			if !o.state().Done {
+				going++
+			}
+		}
+		if going >= maxFetches {
+			m.mu.Unlock()
+			cancel()
+			return nil, errFetchBusy
+		}
 	}
-	if going >= maxFetches {
+	writing, err := m.files.root.writes.begin(j.real)
+	if err != nil {
+		release()
 		m.mu.Unlock()
 		cancel()
-		return nil, errFetchBusy
+		return nil, err
 	}
 	if m.jobs == nil {
 		m.jobs = map[string]*fetchJob{}
@@ -297,8 +319,10 @@ func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, er
 	m.mu.Unlock()
 	go func() {
 		defer m.wg.Done()
+		defer writing()
 		defer cancel()
 		err := m.run(ctx, j, u)
+		release()
 		j.set(func(j *fetchJob) {
 			switch {
 			case err == nil:
@@ -313,12 +337,12 @@ func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, er
 		s := j.state()
 		switch {
 		case err == nil:
-			m.activity.addAs(j.who, "fetch", ip, "fetched %s (%s) from %s into %s", s.Name, humanSize(s.Got), j.host, folderText(dir))
+			m.activity.addFileAs(j.who, m.files.root.ID, dir, "fetch", ip, "fetched %s (%s) from %s into %s", s.Name, humanSize(s.Got), j.host, m.files.folderText(dir))
 		case ctx.Err() != nil:
-			m.activity.addAs(j.who, "fetch", ip, "fetch of %s from %s cancelled", s.Name, j.host)
+			m.activity.addFileAs(j.who, m.files.root.ID, dir, "fetch", ip, "fetch of %s from %s cancelled", s.Name, j.host)
 		default:
 			log.Printf("fetch from %s into %q failed: %v", j.host, dir, err)
-			m.activity.addAs(j.who, "fetch", ip, "fetch from %s failed: %v", j.host, err)
+			m.activity.addFileAs(j.who, m.files.root.ID, dir, "fetch", ip, "fetch from %s failed: %v", j.host, err)
 		}
 		time.AfterFunc(fetchKept, func() { m.forget(j) })
 	}()
@@ -434,12 +458,14 @@ var errFetchStalled = errors.New("stalled")
 
 // run fetches u for j, into a temporary file, then saves it.
 func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
-	store, err := openDownloadStore(m.downloadsDir)
+	store, err := m.files.openStore()
 	if err != nil {
-		return errors.New("the downloads folder is missing")
+		return errors.New("the exposed folder is unavailable")
 	}
 	defer store.Close()
-	up, err := store.startUpload(j.dir)
+	// Its file made where the folder really is, as what tracks writes
+	// and cleanup see it (see start).
+	up, err := store.startUpload(j.real)
 	if err != nil {
 		return errors.New(strings.TrimSuffix(uploadError(err), "."))
 	}
@@ -509,10 +535,10 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 					j.set(func(j *fetchJob) { j.name = name })
 				}
 				if total > 0 {
-					if free, ok := m.transfers.reclaimPartials(up.f, total); ok && total > free {
+					if free, ok := m.files.reclaimPartials(up.f, total); ok && total > free {
 						return 0, false, fmt.Errorf("there isn't room for it: it's %s, and %s is free", humanSize(total), humanSize(free))
 					}
-				} else if free, ok := m.transfers.reclaimPartials(up.f, 0); ok {
+				} else if free, ok := m.files.reclaimPartials(up.f, 0); ok {
 					// Not said how big it is: it may take what's free, less
 					// some to spare, and no more, so a server sending without
 					// end can't fill the disk.
@@ -662,23 +688,31 @@ func cleanFetchName(name string) string {
 	return name
 }
 
+// noFetches is why there are no fetches into g's root.
+func (g *fileService) noFetches() string {
+	if g.root.ReadOnly && g.resourceClient != nil {
+		return "This folder is read-only."
+	}
+	return "Fetching from URLs is turned off (WEB_FETCH=0)."
+}
+
 // tunnelFetch answers a fetch request: with req.URL, it starts fetching it
 // into the folder at req.Path; with req.Name, it follows the fetch with
 // that id. Either way it replies with the fetch's state (see fetchState),
 // and again every fetchTick, while the page follows it; the last has Done,
 // and the name it was saved as, or Error. A text message from the page
 // cancels it. The page going doesn't.
-func (g *server) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder) {
-	if g.fetches == nil {
-		r.fail("Fetching from URLs is turned off (WEB_FETCH=0).")
+func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder) {
+	if g.root.fetches == nil {
+		r.fail(g.noFetches())
 		return
 	}
 	var j *fetchJob
 	if req.Name != "" {
-		if j = g.fetches.job(req.Name); j == nil {
+		if j = g.root.fetches.job(req.Name); j == nil {
 			// No longer listed: how it ended, if that's remembered, as a
 			// page following it is told when it ends.
-			o, ok := g.fetches.outcome(req.Name)
+			o, ok := g.root.fetches.outcome(req.Name)
 			switch {
 			case !ok:
 				r.fail(errFetchForgotten.Error())
@@ -705,7 +739,7 @@ func (g *server) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r
 		if dir == "" {
 			dir = "."
 		}
-		if j, err = g.fetches.start(u, path.Clean(dir), sessionHandle(session), ip, g.sessionName(session)); err != nil {
+		if j, err = g.root.fetches.start(u, path.Clean(dir), sessionHandle(session), ip, g.sessionName(session)); err != nil {
 			r.fail(err.Error())
 			return
 		}
@@ -714,19 +748,7 @@ func (g *server) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r
 		return
 	}
 	// A text message cancels; the page going just stops this.
-	gone := make(chan struct{})
-	go func() {
-		defer close(gone)
-		for {
-			typ, _, err := t.Read(context.Background())
-			if err != nil {
-				return
-			}
-			if typ == websocket.MessageText {
-				j.cancel()
-			}
-		}
-	}()
+	gone := cancelOnText(t, j.cancel)
 	tick := time.NewTicker(fetchTick)
 	defer tick.Stop()
 	for {
@@ -753,4 +775,26 @@ func (g *server) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r
 			}
 		}
 	}
+}
+
+// cancelOnText reads what the page sends over t while a request it made
+// runs, calling cancel for each text message: what pages send to cancel.
+// What it returns is closed once the page has gone (t can't be read).
+// The reads aren't given a context that ends: one that ended would close
+// the connection, which the reply has yet to go through.
+func cancelOnText(t *tunnel, cancel func()) <-chan struct{} {
+	gone := make(chan struct{})
+	go func() {
+		defer close(gone)
+		for {
+			typ, _, err := t.Read(context.Background())
+			if err != nil {
+				return
+			}
+			if typ == websocket.MessageText {
+				cancel()
+			}
+		}
+	}()
+	return gone
 }

@@ -23,7 +23,7 @@ body.dropping #drop_overlay { display: flex; }
        clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 40rem) { #transfers { left: .5rem; right: .5rem; bottom: .5rem; width: auto; } }
 
-#transfers.has-active:not(.show-finished) #uploads > p:not(.going):not(.error) { display: none; }
+#transfers.has-active:not(.show-finished) #uploads > p:not(.going):not(.error):not(:has(button.offer)) { display: none; }
 #uploads { display: flex; flex-direction: column; }
 #uploads > .going { order: -2; }
 #uploads > .error:not(.going) { order: -1; }

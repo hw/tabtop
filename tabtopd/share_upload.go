@@ -117,12 +117,12 @@ const (
 // activity log, as often as logUse says: every one, for a link with a
 // limit; for one without, once in a while from each address, so that
 // sending file after file can't push all else out of the activity log.
-func (g *server) logUpload(l *shareLink, ip, name string, size int64, how string) {
+func (g *fileService) logUpload(l *shareLink, ip, name string, size int64, how string) {
 	if !g.shares.logUse(l, ip) {
 		return
 	}
 	log.Printf("upload link to %q: %q (%s) uploaded from %s%s", l.Path, name, humanSize(size), ip, how)
-	g.activity.add("upload", ip, "uploaded %s (%s) into %s through an upload link", name, humanSize(size), folderText(l.Path))
+	g.activity.addFileAs("", g.root.ID, l.Path, "upload", ip, "uploaded %s (%s) into %s through an upload link", name, humanSize(size), g.folderText(l.Path))
 }
 
 // linkFileName is name as an upload link saves it, if it can: one name, not
@@ -146,7 +146,12 @@ func (s stallReader) Read(p []byte) (int, error) {
 
 // receive saves body, length bytes (-1 if not known), as name in l's
 // folder, uploaded from ip, and returns the name it got.
-func (g *server) receive(l *shareLink, store *downloadStore, ip, name string, body io.Reader, length int64) (string, error) {
+func (g *fileService) receive(l *shareLink, store *downloadStore, ip, name string, body io.Reader, length int64) (string, error) {
+	writing, err := g.beginLinkWrite(l)
+	if err != nil {
+		return "", err
+	}
+	defer writing()
 	name, ok := linkFileName(name)
 	if !ok {
 		return "", &uploadLinkError{http.StatusBadRequest, "That name can't be used for a file."}
@@ -156,11 +161,12 @@ func (g *server) receive(l *shareLink, store *downloadStore, ip, name string, bo
 	}
 	written, saved := int64(0), ""
 	defer func() { g.shares.settle(l, written, saved, ip) }()
-	u, err := store.startUpload(l.Path)
+	// Where its folder really is, as the write's tracked (see beginWrites).
+	u, err := store.startUpload(g.resolved(l.Path))
 	if err != nil {
 		return "", &uploadLinkError{http.StatusInternalServerError, uploadError(err)}
 	}
-	if free, ok := g.transfers.reclaimPartials(u.f, max(length, 0)); ok && length > free {
+	if free, ok := g.reclaimPartials(u.f, max(length, 0)); ok && length > free {
 		u.abort()
 		return "", &uploadLinkError{http.StatusInsufficientStorage, "There isn't room for it on the disk."}
 	}
@@ -218,6 +224,16 @@ func refuseUpload(w http.ResponseWriter, err error) {
 	http.Error(w, msg, code)
 }
 
+// beginLinkWrite records an upload through l going on (see folderWrites),
+// or refuses it while its folder is being deleted.
+func (g *fileService) beginLinkWrite(l *shareLink) (func(), error) {
+	done, err := g.beginWrites(l.Path)
+	if err != nil {
+		return nil, &uploadLinkError{http.StatusConflict, err.Error()}
+	}
+	return done, nil
+}
+
 // errorCode is the status to refuse err with.
 func errorCode(err error) (int, string) {
 	if e, ok := errors.AsType[*uploadLinkError](err); ok {
@@ -230,7 +246,7 @@ func errorCode(err error) (int, string) {
 // follows the token in the path: GET shows a browser the page (and tells
 // curl how to use it), PUT uploads a file as name, and POST, the page's
 // form without its script, the files picked.
-func (g *server) serveUploadLink(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, name string, page bool, ip string) {
+func (g *fileService) serveUploadLink(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, name string, page bool, ip string) {
 	h := w.Header()
 	if id := r.URL.Query().Get("u"); id != "" && name != "" {
 		// A piece of an upload from the page (see share_chunks.go).
@@ -287,7 +303,13 @@ func (g *server) serveUploadLink(w http.ResponseWriter, r *http.Request, l *shar
 
 // receiveForm saves the files posted with the upload page's form, each as
 // it comes, rather than all of them first somewhere else.
-func (g *server) receiveForm(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, page bool, ip string) {
+func (g *fileService) receiveForm(w http.ResponseWriter, r *http.Request, l *shareLink, store *downloadStore, page bool, ip string) {
+	writing, err := g.beginLinkWrite(l)
+	if err != nil {
+		refuseUpload(w, err)
+		return
+	}
+	defer writing()
 	limit, done, err := g.shares.startForm(l)
 	if err != nil {
 		refuseUpload(w, err)
@@ -408,7 +430,7 @@ func partName(part *multipart.Part) string {
 
 // uploadPage is the page an upload link shows a browser, with what was
 // just sent, if anything.
-func (g *server) uploadPage(l *shareLink, sent []sentLine) sharePage {
+func (g *fileService) uploadPage(l *shareLink, sent []sentLine) sharePage {
 	n := g.shares.now(l)
 	p := sharePage{Title: "Upload to " + l.name(), Heading: "Upload files to " + l.name(), Upload: true, Sent: sent}
 	room := humanSize(max(0, n.MaxBytes-n.Bytes)) + " in all"

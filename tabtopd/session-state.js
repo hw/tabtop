@@ -17,6 +17,20 @@ export function storedSession() {
 export function forgetSession(over) {
     if (!over || storedSession()?.id === over.id) {
         store(SESSION_KEY, null);
+        forgetThumbnails();
+    }
+}
+
+// THUMBNAIL_CACHE is where the files page keeps thumbnails of pictures
+// (see thumbnails.js): this deployment's, gone with its session, as what
+// they show is private.
+export const THUMBNAIL_CACHE = "tabtop-thumbnails:" + new URL("../", import.meta.url).pathname;
+
+function forgetThumbnails() {
+    try {
+        globalThis.caches?.delete(THUMBNAIL_CACHE).catch(() => {});
+    } catch {
+        // No Cache Storage here: nothing kept.
     }
 }
 

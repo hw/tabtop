@@ -15,6 +15,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,8 @@ const maxActivity = 2000
 
 // activityEntry is one thing done.
 type activityEntry struct {
+	Root string    `json:"root,omitempty"`
+	Path string    `json:"path,omitempty"`
 	Time time.Time `json:"time"`
 	Kind string    `json:"kind"` // login, login-failed, logout, logout-all, end-session, session (naming one), share, share-used, upload, fetch, cleanup or cleared
 	IP   string    `json:"ip,omitempty"`
@@ -138,10 +141,13 @@ func (a *activityLog) add(kind, ip, format string, args ...any) {
 
 // addAs is add, for the session called session.
 func (a *activityLog) addAs(session, kind, ip, format string, args ...any) {
+	a.addFileAs(session, "", "", kind, ip, format, args...)
+}
+func (a *activityLog) addFileAs(session, root, filePath, kind, ip, format string, args ...any) {
 	if a == nil {
 		return
 	}
-	e := activityEntry{Time: a.clock.Now().UTC().Truncate(time.Second), Kind: kind, IP: ip, Session: session, Text: fmt.Sprintf(format, args...)}
+	e := activityEntry{Root: root, Path: filePath, Time: a.clock.Now().UTC().Truncate(time.Second), Kind: kind, IP: ip, Session: session, Text: fmt.Sprintf(format, args...)}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.entries = append(a.entries, e)
@@ -209,12 +215,10 @@ func withBrowser(browser string) string {
 	return " with " + browser
 }
 
-// folderText is how the activity log names a folder in ~/Downloads.
-func folderText(dir string) string {
-	if dir == "." || dir == "" {
-		return "Downloads"
-	}
-	return dir + "/"
+// linkFolderText names the folder dir of a link in the root called label,
+// as the rest of the activity log names folders.
+func linkFolderText(label, dir string) string {
+	return rootFolderText(cmp.Or(label, "Downloads"), dir)
 }
 
 // countText is "n units", or "any number of units" for 0.

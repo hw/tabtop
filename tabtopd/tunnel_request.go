@@ -32,7 +32,15 @@ const (
 
 type tunnelRequest struct {
 	// Type is the request (see tunnelRoutes for them all).
-	Type string `json:"type"`
+	Type        string `json:"type"`
+	Root        string `json:"root,omitempty"`
+	ToRoot      string `json:"to_root,omitempty"`
+	RootVersion string `json:"root_version,omitempty"`
+	// ToRootVersion is ToRoot's binding as the page knew it, for a
+	// request between roots (see tunnelTransfer), as RootVersion is Root's.
+	ToRootVersion string `json:"to_root_version,omitempty"`
+	// Copy: a transfer copies, leaving what's at Path, rather than moves.
+	Copy bool `json:"copy,omitempty"`
 
 	// --- Files ---
 	Path  string   `json:"path,omitempty"`
@@ -57,6 +65,9 @@ type tunnelRequest struct {
 	Length int64 `json:"length,omitempty"`
 	// cleanup: only say what it would delete
 	DryRun bool `json:"dry_run,omitempty"`
+	// delete: remove it outright instead of moving it to Trash, for an item
+	// Trash can't take (see errTrashUnavailable)
+	Permanent bool `json:"permanent,omitempty"`
 
 	// --- ZIP archives ---
 	Entries []int `json:"entries,omitempty"` // zip-extract, zip-download: entry ordinals from the preview
@@ -90,6 +101,16 @@ type tunnelRequest struct {
 	Pattern  string `json:"pattern,omitempty"`
 	Mask     string `json:"mask,omitempty"`
 	Backward bool   `json:"backward,omitempty"`
+	// search: the text to look for in the files in the folder at Path, and
+	// those in it: as written, ignoring case unless MatchCase, or with
+	// Regex, a regular expression (RE2's)
+	Query string `json:"query,omitempty"`
+	// passkey-options: the password + code, given again; passkey-add: the
+	// passkey made
+	Passkey   *passkeyRegistration `json:"passkey,omitempty"`
+	Code      string               `json:"code,omitempty"`
+	Regex     bool                 `json:"regex,omitempty"`
+	MatchCase bool                 `json:"match_case,omitempty"`
 
 	// --- SQLite ---
 	// sqlite: what to ask of the database at Path (see sqlite.go)
@@ -176,6 +197,8 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	switch hello[1] {
 	case helloLogin:
 		g.loginTunnel(c, ip, browserName(r.Header.Get("User-Agent")), hello[2:])
+	case helloPasskey:
+		g.passkeyTunnel(c, ip, browserName(r.Header.Get("User-Agent")), hello[2:], handshaken)
 	case helloSession:
 		t, session := g.sessionTunnel(c, hello[2:])
 		if t != nil {
@@ -219,7 +242,45 @@ func (g *server) serveRequest(t *tunnel, session, ip string, authenticated func(
 	case route.files && g.fsOff:
 		r.fail("File support is turned off (WEB_FS=0).")
 	default:
-		route.serve(g, &tunnelCall{t: t, req: req, session: session, ip: ip, r: r})
+		c := &tunnelCall{t: t, req: req, session: session, ip: ip, r: r}
+		if route.access != noFileRoot {
+			root, err := g.rootByID(req.Root)
+			if err != nil {
+				r.fail(err.Error())
+				return
+			}
+			if req.RootVersion != "" && req.RootVersion != root.Binding {
+				r.failCode("This filesystem root changed. Reload Files before continuing.", "root-changed")
+				return
+			}
+			across := req.ToRoot != "" && req.ToRoot != root.ID
+			if across && !route.crossRoot {
+				r.fail("Moving between filesystem roots is not supported.")
+				return
+			}
+			if root.ReadOnly && route.writes(req) {
+				r.failCode("This folder is read-only.", "read-only")
+				return
+			}
+			c.files = g.scope(root).serving()
+			c.files.activityPath = req.Path
+			// The one check on a request's paths (see trash.go for the rest).
+			// To, in another root, is checked there (see tunnelTransfer).
+			check := req
+			if across {
+				check.To = ""
+			}
+			if c.files.reachesTrash(check) {
+				r.fail("Trash is only available through its restore and delete controls.")
+				return
+			}
+		}
+		defer func() {
+			if c.files != nil {
+				c.files.closeOpened()
+			}
+		}()
+		route.serve(g, c)
 	}
 }
 
@@ -250,7 +311,7 @@ func receiveData(t *tunnel, size int64, why string) ([]byte, bool) {
 
 // tunnelMarkdown answers a markdown request: the file at req.Path, as
 // HTML for the preview's frame (see markdown.go), in {"html": ...}.
-func (g *server) tunnelMarkdown(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelMarkdown(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 	if req.Path == "" {
 		// Text being edited (see the editor in preview.js), req.Size bytes
 		// of it, sent after the request as data, as an upload's is: too
@@ -274,7 +335,7 @@ func (g *server) tunnelMarkdown(t *tunnel, req tunnelRequest, r *tunnelResponder
 		r.finish(map[string]any{"html": html})
 		return
 	}
-	opened, err := openDownloadsFile(g.downloadsDir, req.Path)
+	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())
 		return
@@ -308,7 +369,7 @@ func (g *server) revokeShares(match func(*shareLink) bool) int {
 // the gateway doesn't keep: the page makes the URL from it, with its own
 // address, rather than one the gateway would have to guess from behind a
 // proxy.
-func (g *server) tunnelShare(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelShare(req tunnelRequest, session, ip string, r *tunnelResponder) {
 	if g.shares == nil {
 		r.fail("Share links are turned off (WEB_SHARE=0).")
 		return
@@ -323,9 +384,9 @@ func (g *server) tunnelShare(req tunnelRequest, session, ip string, r *tunnelRes
 		r.fail("That's not a lifetime or limit a link can have.")
 		return
 	}
-	store, err := openDownloadStore(g.downloadsDir)
+	store, err := g.openStore()
 	if err != nil {
-		r.fail("The downloads folder is missing.")
+		r.fail("The exposed folder is unavailable.")
 		return
 	}
 	defer store.Close()
@@ -335,7 +396,7 @@ func (g *server) tunnelShare(req tunnelRequest, session, ip string, r *tunnelRes
 		name = "."
 	}
 	if name == "." && !req.Upload {
-		r.fail("Share a file or folder in Downloads, not Downloads itself.")
+		r.fail(fmt.Sprintf("Share a file or folder in %s, not %s itself.", g.root.Label, g.root.Label))
 		return
 	}
 	f, st, err := store.open(name)
@@ -353,7 +414,7 @@ func (g *server) tunnelShare(req tunnelRequest, session, ip string, r *tunnelRes
 		r.fail(fmt.Sprintf("A label is one line of at most %d characters.", maxLabel))
 		return
 	}
-	token, l, err := g.shares.create(path.Clean(name), st, shareSpec{Label: label, Life: life, Max: req.Max, Upload: req.Upload, MaxBytes: req.MaxBytes, Once: req.Direct},
+	token, l, err := g.shares.create(path.Clean(name), st, shareSpec{Root: g.root.ID, RootBinding: g.root.Binding, RootLabel: g.root.Label, Label: label, Life: life, Max: req.Max, Upload: req.Upload, MaxBytes: req.MaxBytes, Once: req.Direct},
 		sessionHandle(session), ip)
 	if errors.Is(err, errTooManyShares) {
 		r.fail(err.Error())
@@ -379,7 +440,7 @@ func (g *server) tunnelShare(req tunnelRequest, session, ip string, r *tunnelRes
 	}
 	if l.Upload {
 		log.Printf("upload link to %q made from %s, for %s, %s files, up to %s", l.Path, ip, life, maxText(req.Max), humanSize(req.MaxBytes))
-		g.act(session, "share", ip, "made an upload link to %s%s, for %s, %s, up to %s", folderText(l.Path), labelQuote(label), lifeText(life), countText(req.Max, "file"), humanSize(req.MaxBytes))
+		g.act(session, "share", ip, "made an upload link to %s%s, for %s, %s, up to %s", g.folderText(l.Path), labelQuote(label), lifeText(life), countText(req.Max, "file"), humanSize(req.MaxBytes))
 	} else {
 		log.Printf("share link to %q made from %s, for %s, %s", l.Path, ip, life, maxText(req.Max))
 		g.act(session, "share", ip, "made a share link to %s%s, for %s, %s", linkTarget(l), labelQuote(label), lifeText(life), countText(req.Max, "download"))
@@ -483,8 +544,8 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 // tunnelFiles answers a list request with the directory's entries, and a
 // file request with the file's name and size, then its contents in data
 // messages.
-func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	opened, err := openDownloadsItem(g.downloadsDir, req.Path)
+func (g *fileService) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+	opened, err := g.openItem(req.Path)
 	if err != nil {
 		r.fail(err.Error())
 		return
@@ -507,8 +568,8 @@ func (g *server) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
 			out = append(out, fileEntry{Name: strings.TrimSuffix(e.Name, "/"), Dir: e.dir, Size: e.Size, Bytes: e.bytes,
 				Modified: e.Modified, Time: e.time})
 		}
-		res := map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone, "share": g.shares != nil, "fetch": g.fetches != nil}
-		if free, total, ok := g.transfers.uploadRoom(f); ok {
+		res := map[string]any{"entries": out, "truncated": truncated, "max": maxListing, "tz": g.timeZone, "share": g.shares != nil, "fetch": g.root.fetches != nil && !g.root.ReadOnly, "root": g.root, "roots": g.rootReport(), "read_only": g.root.ReadOnly}
+		if free, total, ok := g.uploadRoom(f); ok {
 			res["free"], res["total"] = free, total
 		}
 		r.finish(res)

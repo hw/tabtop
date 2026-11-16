@@ -1,3 +1,4 @@
+import { rootStorageScope } from "./fs-context.js";
 import { glyphs } from "./glyphs.js";
 import { store, stored, storeJSON, storedJSON } from "./stored.js";
 
@@ -42,7 +43,7 @@ export const setViewShown = (format, shown) => store(VIEWS[format].key, shown ? 
 // Where each book was read to, in this browser, by its path and size: the
 // most recent BOOK_PLACES of them.
 const BOOK_PLACES = 50, BOOK_PLACES_KEY = "tabtop.bookPlaces";
-const placeKey = (path, size) => `${path}\n${size}`;
+const placeKey = (path, size) => `${rootStorageScope()}\n${path}\n${size}`;
 function bookPlaces() {
     const all = storedJSON(BOOK_PLACES_KEY, {});
     return typeof all === "object" ? all : {};

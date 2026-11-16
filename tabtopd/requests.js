@@ -4,6 +4,7 @@
 // folder, and collecting a file or zip that's fetched.
 
 import * as tunnel from "./tunnel.js";
+import { filesystemRoot, filesystemRoots, ensureFilesystemRoots, assertWritableRoot, onFilesPage, rootPath, uploadRoot, setUploadRoot, uploadRootPath } from "./fs-context.js";
 
 // The login form's title, if one is needed: the page's name.
 let title = "Downloads";
@@ -14,7 +15,13 @@ export function setLoginTitle(t) {
 
 // call runs a request with the session, logging in again if it's over.
 // Aborting signal before the reply ends it (see Tunnel.open).
+// Its root is req.root, or the page's: on the files page, the one it
+// shows; elsewhere none, which the server takes as Downloads at its default
+// place (and refuses if that isn't exposed).
 export async function call(req, { signal } = {}) {
+    const id = req.root ?? (onFilesPage() ? filesystemRoot().id : "");
+    const target = id === filesystemRoot().id ? filesystemRoot() : filesystemRoots().find(root => root.id === id);
+    req = { ...req, root: id, root_version: req.root_version ?? (id ? target?.version : undefined) };
     for (;;) {
         const session = await tunnel.session(title);
         try {
@@ -67,6 +74,7 @@ const RESUME_GIVE_UP = 15 * 60 * 1000;
 // file's mtime and size too.
 export async function uploadFile(file, progress, dir, signal, replace = false,
     { delays = RESUME_DELAYS, giveUp = RESUME_GIVE_UP, expect = null } = {}) {
+    const root = await ensureUploadRoot();
     let got = 0;
     let since = Date.now();
     const sent = (bytes) => {
@@ -78,7 +86,7 @@ export async function uploadFile(file, progress, dir, signal, replace = false,
     };
     for (let tries = 0; ; tries++) {
         try {
-            return await uploadOnce(file, sent, dir, signal, replace, expect);
+            return await uploadOnce(file, sent, root, dir, signal, replace, expect);
         } catch (err) {
             if (!err.lost || signal.aborted || Date.now() - since >= giveUp) {
                 throw err;
@@ -107,11 +115,11 @@ function sleep(ms, signal) {
     });
 }
 
-async function uploadOnce(file, progress, dir, signal, replace, expect) {
+async function uploadOnce(file, progress, root, dir, signal, replace, expect) {
     signal.throwIfAborted();
     const kept = partial.get(file);
     const resume = kept?.dir === dir ? kept.id : "";
-    const t = await call({ type: "upload", path: dir, name: file.name, size: file.size,
+    const t = await call({ type: "upload", root, path: dir, name: file.name, size: file.size,
         ...(replace ? { replace: true } : {}), ...(resume ? { resume } : {}),
         ...(expect ? { if_mtime: expect.mtime, if_size: expect.size } : {}) });
     const abort = () => {
@@ -172,17 +180,77 @@ export function shareURL(token, { name, dir = false, upload = false }) {
     return new URL(`fs/${token}/${upload ? "" : encodeURIComponent(dir ? name + ".zip" : name)}`, siteRoot).href;
 }
 
-// shellPath is the path of path, in ~/Downloads, as a shell takes it:
-// quoted if it needs to be.
-export function shellPath(path) {
-    return "~/Downloads/" + (/^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
+// shellPath is the path of path, in the root at root (the page's, by
+// default), as a shell takes it: quoted if it needs to be.
+export function shellPath(path, root = rootPath()) {
+    // The home folder as "~", not "~/."; and nothing after the root for
+    // its own top folder.
+    root = root.replace(/\/\.$/, "").replace(/(.)\/$/, "$1");
+    const quote = value => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+    const join = (a, b) => b ? (a === "/" ? "/" + b : a + "/" + b) : a;
+    if (root === "~") return path ? "~/" + quote(path) : "~";
+    if (root.startsWith("~/")) return "~/" + quote(join(root.slice(2), path));
+    return quote(join(root, path));
 }
+
+// loadRoots learns, in the background, the roots exposed, so a page away
+// from the files page can say where dropped files will go before any are
+// (see uploadRootLabel). It needs the session the page already has.
+export function loadRoots() {
+    ensureFilesystemRoots(call).catch(() => {});
+}
+
+// uploadShellPath is shellPath for path in the root uploads go into.
+export function uploadShellPath(path) {
+    return shellPath(path, uploadRootPath() ?? rootPath());
+}
+
+// uploadNote is "(where uploads go)", followed by more, for the note a
+// page away from the files page shows as files are dragged over it.
+export function uploadNote(more = "") {
+    const where = uploadRootPath();
+    return [where ? `(${where})` : "", more].filter(Boolean).join(", ");
+}
+
+// ensureUploadRoot resolves to the id of the root uploads go into, once
+// it's known to be one that can be written to: the files page's own, or
+// elsewhere uploadRoot (see fs-context.js): the Downloads the server has
+// at its default place, where the browser saves, if it can be written to;
+// else one asked for, once. The page's root stays as it was: the desktop
+// still watches, and fetches its new downloads from, Downloads.
+async function ensureUploadRoot() {
+    await ensureFilesystemRoots(call);
+    if (onFilesPage()) {
+        assertWritableRoot();
+        return filesystemRoot().id;
+    }
+    if (!uploadRoot()) {
+        const writable = filesystemRoots().filter(root => !root.read_only);
+        const downloads = writable.find(root => root.default);
+        if (downloads) setUploadRoot(downloads);
+        else {
+            if (!writable.length) throw new Error("No writable filesystem root is exposed.");
+            // Asked once, however many uploads start meanwhile: they all
+            // wait for the one answer. Cancelled, it's asked again next time.
+            choosing ??= (async () => {
+                const { askChoice } = await import("./ui.js");
+                const id = await askChoice("Upload into which folder?", writable.map(root => [root.id, root.label]));
+                if (id !== null) setUploadRoot(writable.find(root => root.id === id));
+                return id;
+            })().finally(() => { choosing = null; });
+            if ((await choosing) === null) throw new Error("Upload cancelled.");
+        }
+    }
+    return uploadRoot().id;
+}
+let choosing = null;
 
 // folderInfo resolves, for uploads into the folder dir, to {names, free}:
 // the names of the files in it (not its folders, which an upload can't
 // replace), and the bytes free there, or null if the server can't tell.
 export async function folderInfo(dir) {
-    const t = await call({ type: "list", path: dir });
+    const root = await ensureUploadRoot();
+    const t = await call({ type: "list", root, path: dir });
     t.close();
     return { names: new Set(t.reply.entries.filter((e) => !e.dir).map((e) => e.name)), free: t.reply.free ?? null };
 }
@@ -190,14 +258,16 @@ export async function folderInfo(dir) {
 // makeFolder makes the folder name in dir for an upload, and returns the
 // name it got.
 export async function makeFolder(dir, name) {
-    const t = await call({ type: "mkdir", path: dir, name });
+    const root = await ensureUploadRoot();
+    const t = await call({ type: "mkdir", root, path: dir, name });
     t.close();
     return t.reply.name;
 }
 
 // createFile makes an empty file name in dir, and returns the name it got.
 export async function createFile(dir, name) {
-    const t = await call({ type: "create", path: dir, name });
+    const root = await ensureUploadRoot();
+    const t = await call({ type: "create", root, path: dir, name });
     t.close();
     return t.reply.name;
 }

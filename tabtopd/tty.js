@@ -24,7 +24,7 @@ import { nameTab, navBar, pages } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
-import { folderInfo, makeFolder, setLoginTitle, shellPath, uploadFile } from "../tabtop/requests.js";
+import { folderInfo, loadRoots, makeFolder, setLoginTitle, uploadShellPath, uploadFile, uploadNote } from "../tabtop/requests.js";
 
 // Links to the desktop and the files page, Search, notifications, and Log
 // out, all icons, in a bar above the terminal.
@@ -712,11 +712,13 @@ setLoginTitle("Terminal");
 // so a shell doesn't run the line.
 if (pages.some((page) => page.id === "files")) dropUploads(uploadFile, makeFolder, (names, dir) => {
     if (ws) {
-        term.paste(names.map((n) => shellPath(dir ? `${dir}/${n}` : n)).join(" ") + " ");
+        term.paste(names.map((n) => uploadShellPath(dir ? `${dir}/${n}` : n)).join(" ") + " ");
         term.focus();
     }
-}, () => "", "(~/Downloads), then type their paths here", folderInfo);
+}, () => "", () => uploadNote("then type their paths here"), folderInfo);
 
 if (!(await connect())) {
     reconnect("Can't reach the server.", connect);
+} else if (pages.some((page) => page.id === "files")) {
+    loadRoots(); // logged in now: where drops go can be said
 }

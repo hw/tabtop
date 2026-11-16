@@ -25,6 +25,14 @@ test("numbers: 0x, h as the disassembly shows them, decimal, negative, and chara
     assert.equal(parseNumber("ffh"), null);
 });
 
+test("a comment is left out, whatever's in it; a ; in quotes isn't one", () => {
+    const line = (text) => plain(parseLine(text, register));
+    assert.deepEqual(line("mov al, 'A' ; it's the flag"), line("mov al, 'A'"));
+    assert.deepEqual(line("mov al, ';' ; c'mon"), line("mov al, ';'"));
+    assert.deepEqual(line("mov al, ';'").operands[1], { kind: "imm", value: "59n", decorations: [] });
+    assert.deepEqual(line("NOP ; Plain"), line("nop"));
+});
+
 test("a line: prefixes, mnemonic, branch size, and operands of each kind", () => {
     assert.deepEqual(plain(parseLine("MOV RAX,[RBX+RCX*8+100h]", register)), {
         prefixes: [], mnemonic: "mov", branch: null, decorations: [], operands: [

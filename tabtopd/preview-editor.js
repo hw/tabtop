@@ -3,11 +3,13 @@
 import { glyphs, iconSVG } from "./glyphs.js";
 import { call, collect, uploadFile, saveBlob } from "./requests.js";
 import { humanBytes } from "./file-format.js";
+import { rootLabel } from "./fs-context.js";
 import { askBookDetails, askYes, askLine, statusRow } from "./ui.js";
 import { checkJSON, formatJSON, FormatTooBig, parseJSON } from "./json-view.js";
 import { tableView } from "./table-view.js";
 import { el, join } from "./preview-dom.js";
 import { limits, typeOf, formatOf, jsonLines, languageOf } from "./preview-model.js";
+import { openTextDiff } from "./text-diff-view.js";
 import { colour } from "./preview-content.js";
 import { markdownFrame } from "./preview-frames.js";
 import { moveBookPlace, editHighlight, setEditHighlight } from "./preview-settings.js";
@@ -250,6 +252,20 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     const box = el("textarea", { className: "editor", value: text, spellcheck: false, autocomplete: "off" });
     box.setAttribute("aria-label", `The text of ${current.name}`);
     let savedText = box.value;  // as the box has it: line endings made \n
+    let savedVersion = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);  // as the file has it
+    let comparison = null;
+    const compareSaved = () => {
+        comparison?.close();
+        // The right side is what saving would write, line endings made the
+        // file's main kind. Unedited, that's the file as it is: one with
+        // mixed line endings shows no change until something is changed.
+        const currentText = box.value === savedText ? savedVersion
+            : (bom ? "\ufeff" : "") + (crlf ? box.value.replace(/\n/g, "\r\n") : box.value);
+        comparison = openTextDiff({
+            left: { name: current.name, label: `${current.name} — Last saved`, text: savedVersion },
+            right: { name: current.name, label: `${current.name} — Current edits`, text: currentText },
+        });
+    };
     const position = editorPosition(box);
     const note = el("p", { className: "hint edit-status", hidden: true });
     const syntax = syntaxEditor(box, current.name);
@@ -467,6 +483,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
                 { expect: { mtime: current.mtime, size: current.size } });
             recovery.hidden = true;
             savedText = value;
+            savedVersion = (bom ? "\ufeff" : "") + out;
             note.dataset.mtime = reply.mtime ?? "";
             saved(new Blob(parts, { type: "text/plain" }), reply);
             note.textContent = box.value === value ? "Saved." : "Saved; changed since.";
@@ -511,6 +528,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
     };
     editor.addEventListener("keydown", onKey);
     return {
+        compareSaved,
         goToLine,
         cursorLocation: position.element,
         syntaxToggle: syntax.toggle,
@@ -520,6 +538,7 @@ export async function startEditing({ body, current, blob, markdown, saved }) {
         save,
         stop() {
             stopped = true;
+            comparison?.close();
             position.stop();
             clearTimeout(renderTimer);
             clearTimeout(checking);
@@ -671,7 +690,7 @@ function pickPicture(start) {
     const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
     const show = async (dir) => {
         shownDir = dir;
-        p.where.textContent = ["Downloads", ...dir.split("/").filter(Boolean)].join(" / ");
+        p.where.textContent = [rootLabel(), ...dir.split("/").filter(Boolean)].join(" / ");
         p.listed([]);
         p.status.textContent = "Loading…";
         let entries;

@@ -18,6 +18,7 @@
 | [WEB_PORT](#web_port) | `6080` | Port the gateway listens on inside the container. |
 | [WEB_VNC](#web_vnc-web_tty-and-web_fs) | `1` | `0` disables the desktop page and VNC connections, and skips desktop and audio startup. |
 | [WEB_FS](#web_vnc-web_tty-and-web_fs) | `1` | `0` disables file browsing, transfers, previews, share/upload links and URL fetching. |
+| [WEB_FS_ROOTS](#web_fs_roots) | *(unset)* | Exposed folders and per-folder access, such as `Downloads:rw,Documents:ro,data=/data:rw`. Unset exposes `~/Downloads`. |
 | [WEB_BASE_PATH](#web_base_path) | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
 | [WEB_TRUSTED_PROXIES](#web_trusted_proxies) | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
 | [WEB_TRUST_NPROXIES](#web_trust_nproxies) | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [WEB_TRUST_NPROXIES](#web_trust_nproxies). |
@@ -34,6 +35,7 @@
 | [WEB_FETCH](#web_fetch-and-web_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
 | [WEB_FETCH_PRIVATE](#web_fetch-and-web_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
 | [WEB_PREVIEW_FETCH_PRIVATE](#web_preview_fetch_private) | `0` | `1` lets previews in Proxy mode load a document's images, styles, fonts and media from private networks too. |
+| [WEB_DISASM_DISABLE](#web_disasm_disable) | `none` | Turns off disassembly in binary previews: `all` of it, or a comma-separated list of `x86`, `arm64`, `capstone` (ARM32 and Thumb), `riscv` and `mips`. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
 | [TZ](#tz) | `UTC` | Time zone, as a name such as `Europe/Berlin` or `Asia/Singapore`: for the desktop's clock, the terminal, everything else in the container, and the times on the files page. |
@@ -46,10 +48,109 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_VNC`, `WEB_FS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
+
+## `WEB_FS_ROOTS`
+
+A comma-separated list of up to 32 directories exposed by the files page:
+
+```sh
+WEB_FS_ROOTS='Downloads:rw,Documents:ro,data=/data:rw'
+```
+
+- `Downloads:rw` exposes `~/Downloads` for reading and writing.
+- `Documents:ro` exposes `~/Documents` for reading only.
+- `data=/data:rw` exposes `/data` under the name **data**.
+- Bare entries default to `rw`: `Downloads,Documents,/data` works too.
+
+Relative paths, and paths starting `~/`, resolve under `VNC_USER`'s home;
+absolute paths refer to the container filesystem (`~name` isn't supported). Mount host directories into the container to expose them.
+Use `name=/path:mode` to name a root other than by its path's basename. A
+root can't be, or hold, the folder TabTop keeps its own files in
+(`~/.config/tabtop`: the login's key, passkeys, the share links' key), which
+would be read and written through it: such a root, `~` or `~/.config` say,
+is left out, and the health check says why. Expose the folders wanted
+beside it. A root's ID, which must be unique, is its name
+in lower case, with anything but letters, digits, `_` and `-` (a space,
+say) made `-`: `/data/My Files` is `my-files` (a name with none of those,
+in another script, gets an ID from its hash). An `=` after a path, as in
+`/data/run=3`, is part of the path: a name has no `/` in it. Modes are
+`ro` and `rw`, taken from a trailing `:ro` or `:rw`; any other colon is part
+of the path, as in `backup=/mnt/2026-01-01T10:00:ro`. CSV quoting supports
+commas in paths, for example `Downloads:rw,"docs=/data/team,one:ro"`.
+
+With the variable unset or empty, the existing Downloads-only setup is kept.
+`~/Downloads` is created at startup either way, since Chromium saves there.
+With an explicit list, every other directory should already exist and be
+readable by `VNC_USER`. One that's missing or unreadable at startup (an
+unmounted drive, say) is left out until the next restart, with a warning in
+the log and in [`/doctor`](health-checks.md); its share links are kept for when
+it's back. Mistakes in the setting itself (`/`, duplicate IDs, overlapping
+paths and aliases of the same directory) stop TabTop from starting. Bind-mount aliases, including nested mounts reachable through
+another root, are checked using `/proc/self/mountinfo`; keep that file readable
+for explicit root configuration. A configured `rw` root still needs Unix write
+permission. If a configured root's directory is deleted or replaced
+while TabTop runs, that root reports itself unavailable rather than serving
+whatever now has its path; putting the same directory back, or restarting,
+makes it available again. The default Downloads-only setup instead follows
+`~/Downloads` as it currently is.
+
+For example, after creating the three host folders:
+
+```sh
+docker run -d --name tabtop -p 6080:6080 \
+  -e WEB_FS_ROOTS='Downloads:rw,Documents:ro,data=/data:rw' \
+  -v "$PWD/downloads:/home/user/Downloads" \
+  -v "$PWD/documents:/home/user/Documents:ro" \
+  -v "$PWD/data:/data" \
+  ghcr.io/hw/tabtop:latest
+```
+
+The **▾** before the path at the top of the page (shown when more than one
+root is exposed) selects a root. Each page URL identifies its root with
+`?root=<id>`; the folder hash is relative to it. Existing rootless bookmarks
+still open Downloads when it is exposed. If Downloads isn't exposed, a fresh
+files page chooses the first configured root; an explicit unknown root is
+reported as unavailable. An old rootless API request never targets another
+root implicitly.
+
+Read-only roots allow browsing, previews, comparisons, downloads and download
+share links. They refuse uploads, upload links, URL fetches, changes, extraction
+into storage and Trash mutations. Downloads of ZIP contents remain available.
+Background upload cleanup and Trash retention skip read-only roots. Retention
+resumes if that root is made writable later. Read/write permissions apply to
+TabTop's file interfaces; the desktop and terminal still run with the Unix
+account's permissions. A read-only volume mount enforces the restriction at
+the filesystem level too.
+
+Uploads dropped on the desktop or terminal use Downloads when it is exposed
+at its default place (`~/Downloads`, where the desktop's browser saves) and
+writable. Otherwise a chooser asks for a writable root, once per page; the
+desktop's notices of new downloads still come from Downloads. A root merely
+named `downloads` but elsewhere isn't taken for it. Moves and drag/drop
+moves stay within one root; **Move to…** and **Copy to…** can send items to
+another root (see [Between roots](downloads.md)). Saved folder and
+reading positions are separated by deployment, root and directory identity.
+
+Shares are bound to their root ID and directory identity: the folder's path
+and inode, which survive a restart or a remount (even one that gives its
+filesystem another device number, as tmpfs, overlay, NFS and FUSE volumes
+can). Reassigning a root, or deleting and recreating its folder, invalidates
+its shares and old browser requests; reload Files before working in the
+replacement directory. A different filesystem mounted in place of the old one
+at the same mount point may not be detected, since its top folder can have
+the same inode. Share storage now uses version 2. **Existing
+version-1 shares are discarded on upgrade; recreate their links.** There is no
+legacy-share migration. Upload links also stop working if their root becomes
+read-only. Sessions and the activity log remain global; activity records include
+the root ID and relative path. State stays in `~/.config/tabtop/`.
+
+`WEB_FS=0` disables all roots. For a directly launched gateway, `-fs-roots` takes
+the same syntax and `-fs-home` supplies the home directory for relative paths;
+`-downloads-dir` remains the default when `-fs-roots` is empty.
 
 ## `WEB_VNC`, `WEB_TTY` and `WEB_FS`
 
@@ -610,6 +711,31 @@ With `WEB_PREVIEW_FETCH_PRIVATE=1` (default `0`), they may come from private
 networks too, for documents that use pictures on your intranet. Any file
 you preview in Proxy mode can then make the server request addresses on
 those networks.
+
+## `WEB_DISASM_DISABLE`
+
+The data inspector of a [binary preview](development.md) disassembles the
+selected bytes with five disassemblers, each downloaded by the browser only
+when first used. `WEB_DISASM_DISABLE` turns them off:
+
+| Value | Turns off |
+|-|-|
+| `none` (the default) | Nothing. |
+| `all` | All disassembly and instruction editing; the inspector has no Disassembly tab. |
+| `x86` | x86-64, x86 (32-bit) and x86 (16-bit), and editing their instructions. |
+| `arm64` | ARM64, and editing its instructions. |
+| `capstone` | ARM32 and Thumb (which are only shown). |
+| `riscv` | RISC-V 32 and 64, and editing their instructions. |
+| `mips` | MIPS32 and MIPS64, of either byte order, and editing their instructions. |
+
+Several can be given with commas between, as `WEB_DISASM_DISABLE=capstone,arm64`;
+naming all five is the same as `all`. The instruction sets of one that's off
+aren't offered, its files aren't served, and the worker refuses it. (RISC-V
+and MIPS were `capstone`'s until tabtop had disassemblers of its own for
+them: a server that turned them off with `capstone` now names `riscv` and
+`mips` too.) The rest
+of the hex view, and what a program says of itself (its sections and
+symbols), are unaffected.
 
 ## `WEB_DOCTOR_ENDPOINT`
 
