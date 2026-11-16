@@ -25,6 +25,7 @@ import { pipeline } from "node:stream/promises";
 import { execFileSync } from "node:child_process";
 import { webcrypto } from "node:crypto";
 import { Readable } from "node:stream";
+import { buildFileLauncherHTML } from "./file-launcher.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -230,19 +231,22 @@ copyTree(nobleDir, join(stage, "tabtop", "noble"));
 
 writeFileSync(join(stage, "README-LOCAL-CLIENT.txt"), `TabTop local desktop client (${clientName})
 
-Open vnc.html via http://127.0.0.1/… after verifying this pack's hash and
-passcode out of band. Point the gateway URL / tunnel at your TabTop server.
+Open tabtop-local.html (double-click / file://). Chrome blocks ES modules in
+plain vnc.html on file://; tabtop-local.html embeds the tree and loads it via
+blob URLs. Point the gateway at your TabTop server when logging in.
 
 Files under tabtop/ are the gateway's desktop + E2E tunnel scripts; tabtop/noble/
 is the crypto the tunnel needs. noVNC's app/, core/, and vendor/ are upstream.
 `);
 
 const files = collectFiles(stage);
+console.error("building tabtop-local.html (file:// launcher)…");
+files["tabtop-local.html"] = buildFileLauncherHTML(files);
 const plaintextObj = {
 	format: "tabtop-client/v1",
 	name: clientName,
 	created: new Date().toISOString(),
-	entry: "vnc.html",
+	entry: "tabtop-local.html",
 	files,
 };
 const plain = Buffer.from(JSON.stringify(plaintextObj), "utf8");

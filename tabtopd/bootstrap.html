@@ -44,6 +44,7 @@ fallback when WebCrypto is missing).</p>
 <p id="err" hidden></p>
 <p id="ok" hidden></p>
 <p id="saveWrap" hidden>
+  <button type="button" id="saveLocal">Download tabtop-local.html…</button>
   <button type="button" id="saveFolder">Save to folder…</button>
   <button type="button" id="saveZip">Download ZIP…</button>
 </p>
@@ -1422,14 +1423,22 @@ async function unlock(pass) {
 
 function clientSummaryHTML(client, note) {
   const n = client.files ? Object.keys(client.files).length : 0;
-  const entry = client.entry || "vnc.html";
+  const entry = client.entry || "tabtop-local.html";
   return `<!DOCTYPE html><meta charset="utf-8"><title>Unlocked client</title>
 <body style="font:15px/1.45 system-ui;max-width:40rem;margin:2rem auto;padding:0 1rem">
 <h1>TabTop client unlocked</h1>
 <p><code>${client.format}</code> · <strong>${client.name || "client"}</strong> · ${n} files</p>
-<p>Entry: <code>${entry}</code>.</p>
-<p>${note || "Use Save to folder… or Download ZIP… above the frame."}</p>
+<p>Open <code>${entry}</code> (not <code>vnc.html</code> — Chrome blocks modules on file://).</p>
+<p>${note || "Use the save buttons above the frame."}</p>
 </body>`;
+}
+
+function saveLocalHTML(client) {
+  const html = client.files["tabtop-local.html"];
+  if (typeof html !== "string" || !html) {
+    throw new Error("This pack has no tabtop-local.html; re-download /bootstrap/pack after the server rebuilds.");
+  }
+  downloadBlob("tabtop-local.html", new Blob([html], { type: "text/html; charset=utf-8" }));
 }
 
 function syncPackMeta() {
@@ -1449,29 +1458,43 @@ document.getElementById("packFile").addEventListener("change", syncPackMeta);
 syncPackMeta();
 
 async function expandUnlockedClient(client) {
-  // Prefer a real folder when the browser allows it; file:// Chrome usually does not.
+  // file://: prefer the single-file launcher (Chrome blocks ES modules across files).
+  if (location.protocol === "file:" || typeof showDirectoryPicker !== "function" || !globalThis.isSecureContext) {
+    saveLocalHTML(client);
+    return {
+      how: "local-html",
+      detail: "Saved tabtop-local.html — open that file (not vnc.html).",
+    };
+  }
   try {
-    if (typeof showDirectoryPicker === "function" && globalThis.isSecureContext) {
-      const name = await saveClientToFolder(client);
-      return { how: "folder", detail: `Wrote ${Object.keys(client.files).length} files into “${name}/”.` };
-    }
+    const name = await saveClientToFolder(client);
+    return {
+      how: "folder",
+      detail: `Wrote ${Object.keys(client.files).length} files into “${name}/”. Open tabtop-local.html inside it.`,
+    };
   } catch (e) {
     if (e && e.name === "AbortError") throw e;
-    // fall through to ZIP
+    saveLocalHTML(client);
+    return { how: "local-html", detail: "Saved tabtop-local.html — open that file (not vnc.html)." };
   }
-  const zipName = saveClientZip(client);
-  return {
-    how: "zip",
-    detail: `Saved ${zipName} (${Object.keys(client.files).length} files). Unzip it, then open ${client.entry || "vnc.html"}.`,
-  };
 }
+
+document.getElementById("saveLocal").onclick = () => {
+  if (!lastClient) return;
+  try {
+    saveLocalHTML(lastClient);
+    document.getElementById("ok").textContent = "Saved tabtop-local.html — open that file (not vnc.html).";
+  } catch (e) {
+    fail(String(e.message || e));
+  }
+};
 
 document.getElementById("saveFolder").onclick = async () => {
   if (!lastClient) return;
   try {
     const name = await saveClientToFolder(lastClient);
     document.getElementById("ok").textContent =
-      `Wrote ${Object.keys(lastClient.files).length} files into “${name}/”.`;
+      `Wrote ${Object.keys(lastClient.files).length} files into “${name}/”. Open tabtop-local.html.`;
   } catch (e) {
     if (e && e.name === "AbortError") return;
     fail(String(e.message || e));
@@ -1482,7 +1505,7 @@ document.getElementById("saveZip").onclick = () => {
   if (!lastClient) return;
   const zipName = saveClientZip(lastClient);
   document.getElementById("ok").textContent =
-    `Saved ${zipName}. Unzip it, then open ${lastClient.entry || "vnc.html"}.`;
+    `Saved ${zipName}. Unzip it, then open tabtop-local.html (not vnc.html).`;
 };
 
 document.getElementById("go").onclick = async () => {
