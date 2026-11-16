@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 
 // png is a width×height RGBA PNG, each pixel colour(x, y) → [r, g, b, a].
@@ -213,6 +213,19 @@ export async function checkImages(checks) {
         await waitFor(`${listed}.includes("photo.jpg")`, "the photo listed");
         await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "photo.jpg").click()`);
         await waitFor(`/^75×100 · JPEG · .* · EXIF, comment$/.test(${info})`, "the photo, standing as its EXIF says, with what metadata it has");
+        if (!await ev(`document.querySelector("dialog.preview .head .image-exif-info")?.nextElementSibling===document.querySelector("dialog.preview .head button.edit") && !${view}.querySelector(".image-exif-info")`)) throw new Error("EXIF isn't before Edit in the preview header");
+        await checks.click('document.querySelector("dialog.preview .head .image-exif-info")');
+        await waitFor(`document.querySelector(".exif-content")?.textContent.includes("SecretCa")`, "camera EXIF shown");
+        if (!await ev(`document.querySelector(".exif-summary")?.textContent.includes("Rotated 90° clockwise")`)) throw new Error("EXIF orientation not displayed");
+        // Each field changed where it is: one there already opened by its value, one that isn't added by its name; set as a script would, with no input event.
+        await ev(`(()=>{const set=(id,label,value)=>{const row=document.querySelector('tr[data-field="'+id+'"]');if(row)row.querySelector('.exif-value').click();else{const choice=document.querySelector('.exif-add-choice');choice.value=[...document.querySelectorAll('datalist option')].map(o=>o.value).find(v=>v.includes(' — '+label+' ('));choice.dispatchEvent(new Event('change'));}document.querySelector('tr[data-field="'+id+'"] textarea').value=value;};set('Image:315','Artist','Test photographer');set('EXIF:36867','Date taken','2024:02:29 12:30:00');set('EXIF:34855','ISO speed','400');})()`);
+        await checks.click('document.querySelector(".exif-save")');
+        await waitFor(`document.querySelector(".exif-status")?.textContent.startsWith("EXIF saved")`, "metadata-only save");
+        const tagged = execFileSync("docker", ["exec", container, "cat", "/home/user/Downloads/media/photo.jpg"]);
+        if (!tagged.includes("Test photographer") || !tagged.subarray(tagged.indexOf(Buffer.from([255,218]))).equals(photo.subarray(photo.indexOf(Buffer.from([255,218]))))) throw new Error("EXIF edit changed image data or lost the artist");
+        await checks.click('document.querySelector("dialog.image-exif .close-glyph")');
+        if (!await ev(`document.activeElement.matches('.image-exif-info')`)) throw new Error("EXIF close lost preview focus");
+
         await ev(`document.querySelector("dialog.preview button.edit").click()`);
         await waitFor(`!!${view}.querySelector("input.image-keep-meta")`, "editing the photo");
         await click(".image-save-options-toggle");
@@ -228,6 +241,33 @@ export async function checkImages(checks) {
         await ev(`document.querySelector("dialog.preview button.done-edit").click()`);
         await waitFor(`/^75×100 · JPEG · .* · EXIF$/.test(${info})`, "shown, standing as it did");
         await close();
+
+        // HEIC, which Chrome can't decode: shown as the server decodes it,
+        // turned by its own rotation (160×120, irot 270: 120×160); its EXIF
+        // read and written in the file itself, its picture left as it was.
+        const heic = readFileSync(new URL("../../tabtopd/testdata/rotated.heic", import.meta.url));
+        writeFileSync(`${work}/turned.heic`, heic);
+        execFileSync("docker", ["cp", "-q", `${work}/turned.heic`, `${container}:/home/user/Downloads/media/turned.heic`]);
+        execFileSync("docker", ["exec", container, "chown", "user", "/home/user/Downloads/media/turned.heic"]);
+        await waitFor(`${listed}.includes("turned.heic")`, "the HEIC listed");
+        await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "turned.heic").click()`);
+        await waitFor(`/^120×160 · HEIC · .* · EXIF/.test(${info})`, "the HEIC, decoded by the server, standing as it says");
+        if (await ev(`document.querySelector("dialog.preview button.edit").hidden`)) throw new Error("the HEIC not offered for editing");
+        await checks.click('document.querySelector("dialog.preview .head .image-exif-info")');
+        await waitFor(`!!document.querySelector(".exif-content")`, "the HEIC's EXIF shown");
+        await ev(`(()=>{const choice=document.querySelector('.exif-add-choice');choice.value=[...document.querySelectorAll('datalist option')].map(o=>o.value).find(v=>v.includes(' — Artist ('));choice.dispatchEvent(new Event('change'));document.querySelector('tr[data-field="Image:315"] textarea').value='HEIC photographer';})()`);
+        await checks.click('document.querySelector(".exif-save")');
+        await waitFor(`document.querySelector(".exif-status")?.textContent.startsWith("EXIF saved")`, "the HEIC's EXIF saved");
+        const heicTagged = execFileSync("docker", ["exec", container, "cat", "/home/user/Downloads/media/turned.heic"]);
+        if (!heicTagged.includes("HEIC photographer") || !heicTagged.subarray(0, 4).equals(heic.subarray(0, 4))) throw new Error("the HEIC's EXIF edit lost the artist");
+        await checks.click('document.querySelector("dialog.image-exif .close-glyph")');
+        await waitFor(`/^120×160 · HEIC · .* · EXIF/.test(${info})`, "the HEIC, still standing as it did");
+        await close();
+        // Its edited file decodes as before.
+        await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "turned.heic").click()`);
+        await waitFor(`/^120×160 · HEIC/.test(${info})`, "the edited HEIC, decoded again");
+        await close();
+        execFileSync("docker", ["exec", container, "rm", "/home/user/Downloads/media/turned.heic"]);
 
         // Animated: said so; not editable (Save would keep one frame).
         await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "loop.gif").click()`);

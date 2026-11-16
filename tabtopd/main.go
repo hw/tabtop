@@ -72,11 +72,12 @@ type server struct {
 	noble, ttyFiles assetSet
 	highlight       assetSet
 	preview         assetSet
-	inpaint         assetSet // MI-GAN for browser inpainting
-	background      assetSet // U2NetP and its browser runtime
-	segment         assetSet // MobileSAM, for magic select
-	disasm          assetSet // iced-x86, for the hex view's disassembly
-	demangle        assetSet // the demangler, for the names of a program's C++ and Rust symbols
+	inpaint         assetSet   // MI-GAN for browser inpainting
+	background      assetSet   // U2NetP and its browser runtime
+	segment         assetSet   // MobileSAM, for magic select
+	three           assetSet   // three.js, for 3D previews
+	disasm          disasmSets // the hex view's disassemblers' files, each one's a set of its own
+	demangle        assetSet   // the demangler, for the names of a program's C++ and Rust symbols
 	pdfjs           assetSet
 	pdfjsNames      []string // pdf.js's files, in pdfjsDir (see pdfjsFiles)
 	handshakes      handshakes
@@ -85,6 +86,7 @@ type server struct {
 	shares          *shareStore // nil when share links are off
 	passkeys        *passkeyStore
 	activity        *activityLog
+	bootPack        bootstrapState // daily sealed local-client pack + OOB passcode
 
 	mu       sync.Mutex
 	sessions map[string]*session // session id -> session
@@ -112,6 +114,9 @@ func main() {
 	}
 	if len(os.Args) >= 2 && os.Args[1] == sqliteChildArg {
 		os.Exit(readSQLiteChild(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == heifChildArg {
+		os.Exit(readHEIFChild(os.Args[2:]))
 	}
 	c := defaultServerConfig()
 	flag.BoolVar(&c.vncOff, "disable-vnc", false, "disable the desktop page and VNC tunnel")
@@ -158,6 +163,7 @@ func main() {
 	flag.StringVar(&c.inpaintDir, "inpaint-dir", c.inpaintDir, "MI-GAN model for image inpainting; empty for none")
 	flag.StringVar(&c.backgroundDir, "background-dir", c.backgroundDir, "background removal model and browser runtime; empty for none")
 	flag.StringVar(&c.segmentDir, "segment-dir", c.segmentDir, "MobileSAM models, for magic select in image editing; empty for none")
+	flag.StringVar(&c.threeDir, "three-dir", c.threeDir, "three.js, for 3D previews of models and G-code; empty for none")
 	flag.StringVar(&c.disasmDir, "disasm-dir", c.disasmDir, "iced-x86, made loadable in a browser worker, for x86 disassembly in hex previews; empty for none")
 	flag.StringVar(&c.disasmOff, "disasm-disable", c.disasmOff,
 		"the hex preview's disassemblers to turn off: none, all, or a comma-separated list of x86, arm64, capstone (ARM32 and Thumb), riscv and mips")
@@ -267,6 +273,11 @@ func main() {
 	if g.highlightDir != "" {
 		if tag, _ := g.highlight.load(g.highlightAssets()); tag == "" {
 			log.Printf("warning: can't read the highlight.js files in %s; text previews have no colours", c.highlightDir)
+		}
+	}
+	if g.threeDir != "" {
+		if tag, _ := g.three.load(g.threeAssets()); tag == "" {
+			log.Printf("warning: can't read three.js in %s; 3D previews say they aren't available", c.threeDir)
 		}
 	}
 	if g.termDir != "" {

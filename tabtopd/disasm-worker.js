@@ -4,9 +4,9 @@
 // with riscv-asm.js and MIPS with mips-asm.js (tabtop's own, scripts beside
 // this one), each fetched when first asked for; and assembles a line of
 // x86 (see x86-asm.js), ARM64, RISC-V or MIPS code, to edit it in place.
-// tabtopd serves
-// this with "./disasm/" made the path the libraries are served under, and
-// a CSP that lets it run WebAssembly, which the page itself can't.
+// tabtopd serves this with each library's place (under ./disasm/ here)
+// made the path its files are served under, each library's its own, and a
+// CSP that lets it run WebAssembly, which the page itself can't.
 //
 // Asked {id, bytes, address, mode, max}: the bytes (4096, and up to 15 more
 // so that the last instruction is whole), the file offset of the first,
@@ -58,13 +58,16 @@ const loadCapstone = () => capstone ??= Promise.resolve().then(() => {
 
 // RISC-V's disassembler and assembler (riscv-asm.js): a script, with no
 // WebAssembly to fetch. One that failed to load is asked for again.
+// (What it and MIPS's have the same, asm-common.js, is loaded before either.)
 const loadRiscv = async () => {
+    if (!self.asmCommon) importScripts("./asm-common.js");
     if (!self.riscv) importScripts("./riscv-asm.js");
     return self.riscv;
 };
 const riscvXlen = (mode) => ({ riscv32: 32, riscv64: 64 }[mode]);
 // MIPS's (mips-asm.js), likewise; it takes the mode as it's named.
 const loadMips = async () => {
+    if (!self.asmCommon) importScripts("./asm-common.js");
     if (!self.mips) importScripts("./mips-asm.js");
     return self.mips;
 };
@@ -255,39 +258,20 @@ function targets(lib, insn, bitness) {
     return [...out].filter((v) => v <= BigInt(Number.MAX_SAFE_INTEGER)).map(Number);
 }
 
-// text, with the branch target iced wrote in it (from) as the file offset
-// it's to (see branchTarget in x86-asm.js): 12352h, as iced writes hex.
-function withBranchTarget(text, from, to, bitness) {
-    let at = null;
-    for (const m of text.matchAll(/\b[0-9][0-9A-F]*h\b/g)) if (BigInt("0x" + m[0].slice(0, -1)) === from) at = m;
-    if (!at) return text;
-    const digits = to.toString(16).toUpperCase().padStart(bitness / 4, "0");
-    return text.slice(0, at.index) + (/^[A-F]/.test(digits) ? "0" : "") + digits + "h" + text.slice(at.index + at[0].length);
-}
-
-function format(lib, formatter, insn, bitness) {
-    const text = formatter.format(insn);
-    const kind = insn.opCount ? insn.opKind(0) : -1;
-    if (kind !== lib.OpKind.NearBranch16 && kind !== lib.OpKind.NearBranch32) return text;
-    const from = insn.nearBranchTarget, to = self.x86BranchTarget(lib, insn, bitness);
-    return to === from ? text : withBranchTarget(text, from, to, bitness);
-}
-
 function disassemble(lib, { bytes, address, bitness, max }) {
-    const { Decoder, DecoderOptions, Formatter, FormatterSyntax } = lib;
+    const { Decoder, DecoderOptions } = lib;
     if (![16, 32, 64].includes(bitness)) throw new Error("not a bitness");
     const decoder = new Decoder(bitness, bytes, DecoderOptions.None);
-    const formatter = new Formatter(FormatterSyntax.Intel);
-    // What's shown can be typed back (see x86-asm.js): cmpss xmm0,xmm1,4,
-    // not the pseudo-op cmpneqss.
-    formatter.usePseudoOps = false;
+    // Written as the assembler reads it back (see x86-asm.js, whose these
+    // are): numbers as 0x1f, a branch's target the file offset it's to.
+    const formatter = self.x86Formatter(lib);
     const lines = [];
     try {
         decoder.ip = BigInt(address);
         while (decoder.canDecode && lines.length < max) {
             const insn = decoder.decode();
             lines.push(insn.isInvalid ? { offset: Number(insn.ip), length: insn.length, text: "(bad)", targets: [] }
-                : { offset: Number(insn.ip), length: insn.length, text: format(lib, formatter, insn, bitness), targets: targets(lib, insn, bitness) });
+                : { offset: Number(insn.ip), length: insn.length, text: self.x86Text(lib, formatter, insn, bitness), targets: targets(lib, insn, bitness) });
             insn.free();
         }
     } finally {
@@ -309,7 +293,7 @@ self.onmessage = async ({ data }) => {
         const xlen = riscvXlen(mode);
         const mips = mipsModes.has(mode);
         if (!bitness && !xlen && !mips && mode !== "arm64" && !capstoneModes.has(mode)) throw new Error("unknown instruction set");
-        if (DISASM_OFF.includes(bitness ? "x86" : xlen ? "riscv" : mips ? "mips" : mode === "arm64" ? "arm64" : "capstone")) throw new Error("this instruction set is turned off on this server");
+        if (DISASM_OFF.includes(bitness ? "x86" : xlen ? "riscv" : mips ? "mips" : mode === "arm64" ? "arm64" : "capstone")) throw new Error("this instruction set isn't available on this server (it's turned off, or its files are missing)");
         if (!Number.isSafeInteger(data.address) || data.address < 0) throw new Error("invalid address");
         if (typeof data.assemble === "string") {
             if (mode === "arm64") {

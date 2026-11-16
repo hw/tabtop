@@ -28,6 +28,7 @@ files, except Ghostty's, which comes compiled into ghostty-web.
 | [pako](https://github.com/nodeca/pako) | Bounded zlib decompression in binary previews | MIT |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | The colours of text previews, and of code in Markdown previews, on the files page | BSD-3-Clause |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | Math in Markdown previews | MIT |
+| [three.js](https://github.com/mrdoob/three.js) (`three`) | 3D previews of models and G-code, with the [fflate](https://github.com/101arrowz/fflate) module 3MF and AMF are unzipped with | MIT (`/opt/three/LICENSE.three`; fflate's MIT notice is in its file) |
 | [pdf.js](https://github.com/mozilla/pdf.js) (`pdfjs-dist`) | PDF previews, with its OpenJPEG, JBIG2 and QCMS decoders and the Foxit and Liberation standard fonts it ships | Apache-2.0 (the decoders and fonts under their own licences, in `/opt/pdfjs`) |
 | [Mermaid](https://github.com/mermaid-js/mermaid) | Diagrams in Markdown previews | MIT |
 | [goldmark](https://github.com/yuin/goldmark) | Turning Markdown into HTML for previews, in tabtopd | MIT |
@@ -49,6 +50,8 @@ Go modules (see `tabtopd/go.mod`), and the C libraries it links.
 | [Opus](https://opus-codec.org/) (libopus) | Encoding the sound for the browser | BSD 3-Clause |
 | [OATH Toolkit](https://www.nongnu.org/oath-toolkit/) (liboath) | Checking TOTP codes | LGPL 2.1 or later |
 | [SQLite](https://sqlite.org/) (libsqlite3) | Reading databases for their previews | Public domain |
+| [libheif](https://github.com/strukturag/libheif) | Decoding HEIC pictures for their previews | LGPL 3.0 |
+| [libde265](https://github.com/strukturag/libde265) (libheif's plugin) | Decoding HEIC pictures' HEVC | LGPL 3.0 |
 
 ## In the image
 

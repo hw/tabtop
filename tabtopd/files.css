@@ -22,6 +22,11 @@ td.name { overflow-wrap: anywhere; }
 .error { color: #c5221f; }
 @media (prefers-color-scheme: dark) { .error { color: #f28b82; } }
 .hint { opacity: .7; font-size: 13px; }
+.bootstrap-pack { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .5rem; }
+.bootstrap-pack code { word-break: break-all; }
+button.bootstrap-reseal.glyph { display: inline-flex; align-items: center; justify-content: center;
+	min-width: 1.6rem; min-height: 1.6rem; padding: .1rem .25rem; vertical-align: middle; }
+button.bootstrap-reseal.glyph svg { display: block; width: 14px; height: 14px; }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
 p.space { margin-top: -.25rem; }
@@ -246,6 +251,26 @@ dialog.preview .body > .image-view { align-self: stretch; flex: 1; display: flex
 .image-zoom-group { display: inline-flex; align-items: center; gap: .25rem; }
 .image-zoom { min-width: 3.2rem; text-align: center; font-variant-numeric: tabular-nums; }
 .image-info { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The 3D preview (model-view.js). */
+dialog.preview .body > .model-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.model-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; padding: .4rem .75rem; border-bottom: 1px solid var(--line); }
+.model-bar button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; padding: .15rem .35rem; }
+.model-bar button[aria-pressed="true"] { background: var(--hover); border-color: var(--accent); }
+.model-info { margin-left: auto; font-variant-numeric: tabular-nums; }
+.model-layers { display: inline-flex; align-items: center; gap: .5rem; }
+.model-layer { width: min(18rem, 40vw); }
+.model-layer-label { min-width: 12rem; font-variant-numeric: tabular-nums; }
+.model-check { display: inline-flex; align-items: center; gap: .25rem; white-space: nowrap; }
+.model-stage { position: relative; flex: 1; min-height: 16rem; overflow: hidden; outline: none; touch-action: none;
+    background: radial-gradient(circle at 50% 35%, #fdfdfd, #d9dde3); }
+.model-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.model-canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+.model-canvas:active { cursor: grabbing; }
+.model-legend { position: absolute; left: .75rem; bottom: .75rem; margin: 0; padding: .4rem .6rem; list-style: none; font-size: 13px;
+    background: color-mix(in srgb, var(--bg) 85%, transparent); border: 1px solid var(--line); border-radius: 6px; pointer-events: none; }
+.model-legend li { display: flex; align-items: center; gap: .4rem; }
+.model-legend .swatch { width: .8rem; height: .8rem; border-radius: 2px; }
+@media (prefers-color-scheme: dark) { .model-stage { background: radial-gradient(circle at 50% 35%, #3a3d44, #1e2024); } }
 .image-edit { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem; padding-left: .6rem; border-left: 1px solid var(--line); }
 .image-edit[hidden] { display: none; }
 .image-edit > :is(.image-edit-default, .image-crop-tools, .image-inpaint-tools, .image-background-spatial, .image-draw-tools, .image-place-tools):not([hidden]) { display: contents; }
@@ -399,7 +424,7 @@ button:is(.image-scan-corner, .image-scan-curve-point).outside:not(:disabled):ho
 /* SQLite: a table or view chosen, its rows below (see sqlite-view.js). */
 dialog.preview .body > .sqlite-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .sqlite-bar select.sqlite-table { max-width: min(24rem, 100%); }
-.sqlite-bar button.sqlite-schema-toggle { padding: .15rem .55rem; }
+.sqlite-bar button.sqlite-schema-toggle, .sqlite-bar button.sqlite-export { padding: .15rem .55rem; }
 .sqlite-bar button.sqlite-schema-toggle[aria-pressed="true"] { background: var(--hover); border-color: var(--fg); }
 .sqlite-bar .sqlite-facts { margin-left: auto; }
 .sqlite-notes > p { margin: .4rem .75rem; }
@@ -476,7 +501,7 @@ dialog.preview .head button.glyph { min-width: 2.2rem; font-size: 1.1rem; line-h
 dialog.preview .head button.edit.glyph { transform: scaleX(-1); }
 /* Those whose glyph is a drawing, not a character: it in the middle, not
    on the text's baseline, where it sits higher than the others. */
-dialog.preview .head button:is(.back, .versions, .preview-mode-toggle):not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
+dialog.preview .head button:is(.back, .versions, .image-exif-info, .preview-mode-toggle):not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
 dialog.preview .head :is(.download-group, .external-group) { position: relative; display: inline-flex; }
 dialog.preview .head :is(.download-group, .external-group)[hidden] { display: none; }
 dialog.preview .head :is(.download-group, .external-group) button.glyph { display: inline-flex; align-items: center; justify-content: center; }
@@ -641,6 +666,9 @@ dialog.preview .head :is(.download-menu, .external-menu) { flex-direction: colum
 /* Keep address, bytes and ASCII in separate columns; scroll on narrow screens. */
 dialog.preview .body > .hex-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 dialog.preview .hex-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
+dialog.preview .hex-controls button.hex-back { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; padding: .15rem .35rem; }
+dialog.preview .hex-controls button.hex-back[hidden] { display: none; }
+dialog.preview .hex-controls button.hex-back svg { display: block; }
 /* The status takes what room there is, on one line, cut short if need be:
    what it says (a selection, as it's dragged) never wraps the controls,
    which would move the dump under the pointer. */
@@ -1071,3 +1099,83 @@ dialog:is(.text-diff, .image-diff).wide { width: 100vw; height: 100dvh; max-widt
 .image-diff button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; }
 dialog.preview .head button.save-status { font: inherit; font-size: .8rem; padding: .2rem .4rem; }
 @media (max-width: 40rem) { .image-diff .image-diff-panes.two { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); } }
+
+/* The EXIF dialog (image-exif-view.js): what's looked for first, then every
+   field by group, each changed where it is; what's changed and not saved,
+   with Save and Discard, in a bar at its foot. */
+dialog.image-exif { width: min(52rem, calc(100vw - 2rem)); height: min(48rem, calc(100dvh - 2rem)); max-height: none; padding: 0; }
+dialog.image-exif[open] { display: flex; flex-direction: column; }
+dialog.image-exif.wide { width: 100vw; height: 100dvh; max-width: none; margin: 0; border-radius: 0; }
+.exif-head { display: flex; align-items: center; gap: .5rem; padding: .6rem .75rem; border-bottom: 1px solid var(--line); }
+.exif-head strong { margin-right: auto; overflow-wrap: anywhere; }
+.exif-head button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; }
+.exif-status { margin: .5rem .75rem 0; }
+.exif-content { flex: 1; min-height: 0; overflow: auto; padding: .5rem .75rem .75rem; }
+.exif-summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem .9rem; margin: 0 0 .7rem; padding: .6rem .75rem;
+       border: 1px solid var(--line); border-radius: .4rem; background: var(--raised); }
+.exif-summary dt { color: #888; }
+.exif-summary dd { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .7rem; overflow-wrap: anywhere; }
+.exif-summary button.exif-link { font: inherit; padding: 0; border: 0; border-radius: 0; background: none; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.exif-shift-tools, .exif-place-tools { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .5rem; flex-basis: 100%; }
+.exif-shift-tools[hidden], .exif-place-tools[hidden] { display: none; }
+.exif-shift-tools label { color: #888; font-size: .85rem; }
+.exif-shift, .exif-place { font: inherit; padding: .1rem .35rem; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+.exif-place { width: 13rem; max-width: 100%; }
+.exif-going { color: #c5221f; }
+.exif-privacy { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .5rem; margin: 0 0 .7rem; }
+.exif-privacy-action { padding: .2rem .6rem; }
+.exif-privacy-action[aria-pressed="true"] { background: var(--hover); border-color: var(--accent); font-weight: 600; }
+.exif-xmp { flex-basis: 100%; }
+.exif-tools { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .5rem; position: sticky; top: -.5rem; z-index: 1; padding: .4rem 0; background: var(--bg); }
+.exif-tools input { font: inherit; padding: .25rem .45rem; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; min-width: 0; }
+.exif-filter { flex: 1 1 10rem; }
+.exif-add-choice { flex: 2 1 14rem; }
+.exif-group { margin: 0 0 .4rem; }
+.exif-group[hidden] { display: none; }
+.exif-group > summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
+.exif-group > summary .hint { font-weight: normal; }
+.exif-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.exif-table th, .exif-table td { text-align: left; vertical-align: top; overflow-wrap: anywhere; padding: .35rem .5rem; border-top: 1px solid var(--line); }
+.exif-table th { width: 34%; font-weight: normal; }
+.exif-table .exif-tag-id { display: block; font-size: .75rem; }
+.exif-table td.exif-row-tools { width: 4.6rem; padding-left: 0; padding-right: 0; text-align: right; white-space: nowrap; }
+.exif-table tr[hidden] { display: none; }
+.exif-value { white-space: pre-wrap; }
+.exif-value[role="button"] { cursor: text; border-radius: 4px; }
+.exif-value[role="button"]:is(:hover, :focus-visible) { background: var(--hover); outline: none; }
+.exif-row.changed .exif-value, .exif-row.added .exif-value { box-shadow: inset 3px 0 0 var(--accent); }
+.exif-row.removed :is(th, .exif-value) { text-decoration: line-through; opacity: .55; }
+.exif-row.managed :is(th, .exif-value) { color: #888; }
+.exif-content.stripping .exif-group { opacity: .8; }
+.exif-row-tools button.glyph svg { width: 16px; height: 16px; }
+.exif-row-tools button.glyph { padding: .15rem .3rem; border: 0; background: none; display: inline-flex; vertical-align: middle; opacity: .7; }
+.exif-row-tools button.glyph:is(:hover, :focus-visible) { opacity: 1; background: var(--hover); }
+.exif-editor { display: grid; gap: .3rem; min-width: 0; }
+.exif-editor :is(input, select, textarea) { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .2rem .35rem; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.exif-field-value { width: 100%; resize: vertical; min-height: 1.9rem; max-height: 16rem; font: .9rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.exif-editor [aria-invalid="true"] { border-color: #d0461d; }
+.exif-field-error { color: #c5221f; }
+.exif-field-error:empty { display: none; }
+@media (prefers-color-scheme: dark) { .exif-field-error, .exif-going { color: #f28b82; } }
+.exif-editor-tools { display: flex; align-items: flex-start; gap: .5rem; }
+.exif-advanced { flex: 1; min-width: 0; font-size: .85rem; }
+.exif-advanced > summary { cursor: pointer; color: #888; }
+.exif-field-spec { display: flex; flex-wrap: wrap; gap: .4rem .7rem; margin: .3rem 0; }
+.exif-field-spec label, .exif-raw { display: flex; align-items: center; gap: .35rem; }
+.exif-raw { align-items: flex-start; }
+.exif-tag { width: 5.5rem; }
+.exif-done { padding: .15rem .6rem; }
+.exif-actions { display: flex; align-items: center; gap: .5rem; padding: .55rem .75rem; border-top: 1px solid var(--line); background: var(--raised); }
+.exif-actions[hidden] { display: none; }
+.exif-changes { margin-right: auto; min-width: 0; overflow-wrap: anywhere; }
+.exif-actions button[hidden] { display: none; }
+.exif-actions button.exif-save { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.exif-actions button.exif-save:disabled { opacity: .5; }
+dialog.preview .head button.image-exif-info svg { display: block; }
+@media (max-width: 40rem) {
+    dialog.image-exif { width: 100vw; height: 100dvh; max-width: none; margin: 0; border-radius: 0; }
+    .exif-summary { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .exif-summary dd { margin: 0 0 .45rem; }
+    .exif-table th { width: 40%; }
+    .exif-table td.exif-row-tools { width: 3.6rem; }
+}

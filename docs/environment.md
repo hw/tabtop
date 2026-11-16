@@ -737,6 +737,12 @@ them: a server that turned them off with `capstone` now names `riscv` and
 of the hex view, and what a program says of itself (its sections and
 symbols), are unaffected.
 
+A disassembler whose files aren't there is treated as off in the same way:
+with no `-disasm-dir`, or one built before a disassembler was added (it has
+no `arm64-asm.wasm`, say), its instruction sets aren't offered. Each
+disassembler's files are its own: one's being missing leaves the others
+working.
+
 ## `WEB_DOCTOR_ENDPOINT`
 
 With `1`, `/doctor` serves a troubleshooting report without a login; see

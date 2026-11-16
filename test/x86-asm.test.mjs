@@ -13,9 +13,16 @@ const REGISTERS = ["rax", "rbx", "rcx", "rdi", "rsi", "rbp", "rsp", "eax", "ecx"
 const register = (name) => (REGISTERS.includes(name) ? name : undefined);
 const plain = (value) => JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "bigint" ? `${v}n` : v)));
 
-test("numbers: 0x, h as the disassembly shows them, decimal, negative, and characters", () => {
+test("numbers: 0x as the disassembly shows them, h as Intel's assemblers write them, decimal, negative, and characters", () => {
     assert.equal(parseNumber("0x1f"), 31n);
+    assert.equal(parseNumber("0X1F"), 31n);
     assert.equal(parseNumber("0FFh"), 255n);
+    assert.equal(parseNumber("0ffH"), 255n);
+    assert.equal(parseNumber("-0x10"), -16n);
+    assert.equal(parseNumber("-10h"), -16n);
+    // One or the other, not both; and h's needs a digit first (ffh could be a name).
+    assert.equal(parseNumber("0x10h"), null);
+    assert.equal(parseNumber("ffh"), null);
     assert.equal(parseNumber("0000000000001012h"), 0x1012n);
     assert.equal(parseNumber("10"), 10n);
     assert.equal(parseNumber("-8"), -8n);

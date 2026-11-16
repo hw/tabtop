@@ -578,6 +578,7 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/preview.js", http.StatusOK},
 		{"GET", "/tabtop/hex-view.js", http.StatusOK},
 		{"GET", "/tabtop/exe-info.js", http.StatusOK},
+		{"GET", "/tabtop/asm-common.js", http.StatusOK},
 		{"GET", "/tabtop/kaitai-view.js", http.StatusOK},
 		{"GET", "/tabtop/format-combobox.js", http.StatusOK},
 		{"GET", "/tabtop/kaitai-worker.js", http.StatusOK},
@@ -598,6 +599,10 @@ func TestEndpoints(t *testing.T) {
 		{"GET", "/tabtop/nope.js", http.StatusNotFound},
 		{"GET", "/tabtop/third-party/README.md", http.StatusNotFound},
 		{"GET", "/tabtop/third-party/css-tree.LICENSE", http.StatusOK},
+		{"GET", "/bootstrap", http.StatusOK},
+		{"POST", "/bootstrap", http.StatusMethodNotAllowed},
+		{"GET", "/bootstrap/pack", http.StatusOK},
+		{"POST", "/bootstrap/pack", http.StatusMethodNotAllowed},
 	} {
 		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader("password=123456"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -652,6 +657,26 @@ func TestEndpoints(t *testing.T) {
 			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") ||
 				resp.Header.Get("Content-Security-Policy") != downloadSWCSP {
 				t.Errorf("download-sw.js served as %q, CSP %q", ct, resp.Header.Get("Content-Security-Policy"))
+			}
+		case "GET /bootstrap":
+			if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+				t.Errorf("bootstrap Content-Type %q", ct)
+			}
+			if !strings.Contains(string(body), "Local decode") || !strings.HasPrefix(string(body), "<!DOCTYPE html>") {
+				t.Errorf("bootstrap body is not the decoder page (%d bytes)", len(body))
+			}
+		case "GET /bootstrap/pack":
+			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("bootstrap pack Content-Type %q", ct)
+			}
+			if !strings.Contains(resp.Header.Get("Content-Disposition"), "tabtop-client.pack.json") {
+				t.Errorf("bootstrap pack Content-Disposition %q", resp.Header.Get("Content-Disposition"))
+			}
+			if !strings.Contains(string(body), `"kdf":"PBKDF2-SHA256"`) && !strings.Contains(string(body), `"kdf": "PBKDF2-SHA256"`) {
+				t.Errorf("bootstrap pack is not a sealed JSON object (%d bytes)", len(body))
+			}
+			if !strings.Contains(string(body), `"ct":`) {
+				t.Errorf("bootstrap pack missing ct (%d bytes)", len(body))
 			}
 		}
 	}

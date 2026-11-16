@@ -39,6 +39,7 @@ import { checkCells, checkStructured } from "./browser/tables.mjs";
 import { checkSQLite } from "./browser/sqlite.mjs";
 import { checkPDFImages, checkPDFAssembly } from "./browser/pdf-images.mjs";
 import { checkImages } from "./browser/images.mjs";
+import { checkModels } from "./browser/models.mjs";
 import { checkStylesheetConditions } from "./browser/stylesheet-conditions.mjs";
 import { checkSavedHTML } from "./browser/saved-html.mjs";
 import { checkStylesAndMedia } from "./browser/styles-media.mjs";
@@ -109,8 +110,8 @@ const groups = {
     binary: [checkBinary], zip: [checkZIP], audio: [checkAudio], video: [checkVideo], mkv: [checkMKV],
     media: [checkAudio, checkVideo, checkMKV], text: [checkText], html: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkHTML],
     markdown: [checkMarkdownRender, checkMarkdownLinks, checkTextEdit], editing: [checkTextEdit, checkTextDiff], pdf: [checkPDF, checkPDFImages], "pdf-images": [checkPDFImages], "pdf-assembly": [checkPDFAssembly],
-    epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured], sqlite: [checkSQLite], images: [checkImages, checkImageDiff],
-    previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkTextDiff, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages, checkImageDiff],
+    epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured], sqlite: [checkSQLite], images: [checkImages, checkImageDiff], models: [checkModels],
+    previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkTextDiff, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages, checkImageDiff, checkModels],
 };
 if (group !== "all" && !groups[group]) throw new Error(`Unknown group ${group}; choose all, ${Object.keys(groups).join(", ")}`);
 
@@ -347,6 +348,7 @@ try {
     await checkStructured(checks);
     await checkSQLite(checks);
     await checkImages(checks);
+    await checkModels(checks);
 
     await step("files: upload", async () => {
         await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/up.bin`]);

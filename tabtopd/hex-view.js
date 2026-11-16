@@ -427,8 +427,9 @@ function hexHead() {
 // backward, signal}) looks in the file (see tunnelFileSearch), if given;
 // disassemble and assemble, x86 code (see sharedDisassembler, and
 // sharedAssembler, for editing it); executable reads what a program says
-// of itself (see exe-info.js), if it's one. The element returned has
-// jump(begin, end), stop(), and startEditing.
+// of itself (see exe-info.js), if it's one. Following a disassembly or
+// Program link remembers the selection for Back (in the hex bar). The
+// element returned has jump(begin, end), stop(), and startEditing.
 export function hexView(bytes, { size = bytes.length, readRange = null, search = null, disassemble = sharedDisassembler, assemble = sharedAssembler,
     executable = readExecutable, disassemblersOff = DISASM_OFF, demangle = sharedDemangler } = {}) {
     if (!size) return el("p", { className: "hint", textContent: "This file is empty." });
@@ -484,8 +485,41 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     const next = navButton(">", "Next bytes", "hex-next");
     const previousRange = navButton("−1 MB", "Previous 1 MB", "hex-previous-range");
     const nextRange = navButton("+1 MB", "Next 1 MB", "hex-next-range");
+    // After following a disassembly or Program link: up to 100 places, until
+    // the preview closes. Typing an offset or Find does not add history.
+    const trail = [];
+    const back = navButton("", "Back to the previous location", "hex-back glyph");
+    back.innerHTML = iconSVG("back");
+    back.hidden = true;
     const offsetInput = el("input", { type: "text", inputMode: "numeric", placeholder: "Offset or 0x…", ariaLabel: "Byte offset" });
     const jumpForm = el("form", { className: "hex-jump" }, offsetInput, el("button", { type: "submit", textContent: "Go" }));
+    const rememberHere = () => {
+        const begin = selected?.begin ?? start;
+        const end = selected?.end ?? Math.min(begin + 1, size);
+        const from = selected?.from ?? "hex";
+        const top = trail.at(-1);
+        if (top && top.begin === begin && top.end === end && top.from === from) return;
+        trail.push({ begin, end, from });
+        if (trail.length > 100) trail.shift();
+        back.hidden = false;
+    };
+    let goingBack = false;
+    const followJump = (begin, end, from) => {
+        const toEnd = end ?? Math.min(begin + 1, size);
+        if (!(selected && selected.begin === begin && selected.end === toEnd)) rememberHere();
+        return view.jump(begin, end, from);
+    };
+    back.addEventListener("click", async () => {
+        if (goingBack || !trail.length) return;
+        goingBack = true;
+        try {
+            const to = trail.pop();
+            back.hidden = !trail.length;
+            await view.jump(to.begin, to.end, to.from);
+        } finally {
+            goingBack = false;
+        }
+    });
     const buttons = () => {
         previous.disabled = start === 0;
         next.disabled = Math.min(start + PAGE_BYTES, (Math.floor(start / binaryChunkSize) + 1) * binaryChunkSize) >= size;
@@ -677,8 +711,8 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     const symbolText = (at) => (at ? at.name + (at.delta ? `+0x${at.delta.toString(16)}` : "") : "");
     const short = (name) => (name.length > 80 ? `${name.slice(0, 60)}…${name.slice(-16)}` : name);
     // An instruction's text, the addresses in it that it goes to or names
-    // (targets), and are in the file, links to them: 018Ch, as iced shows
-    // hex, or 0x18c. In a program's loaded code (mapped), they're its
+    // (targets), and are in the file, links to them: 0x18c, as every
+    // instruction set's are shown (or 018Ch). In a program's loaded code (mapped), they're its
     // addresses: a link goes to where in the file that is, if it's there
     // (.bss's isn't), and the symbol there is named after it.
     const withTargets = (text, targets = [], mapped = false) => {
@@ -907,11 +941,11 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         if (selected && selected.end - selected.begin > 1 && end > selected.end) selectThrough(selected.begin, end - 1, selected.from);
     };
     disasmLines.addEventListener("click", (event) => {
-        // An address in it: there, its code shown.
+        // An address in it: there, its code shown (Back returns here).
         const target = event.target?.closest?.(".hex-disasm-target");
         if (target) {
             closeAsm();
-            view.jump(Number(target.value));
+            followJump(Number(target.value));
             return;
         }
         const li = event.target?.closest?.(".hex-disasm-line");
@@ -976,13 +1010,21 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     const SYMBOLS_LISTED = 200;
     // (What a C++ or Rust name's compiler made of it, to see on hovering.)
     const made = (s) => (s.mangled ? `: ${s.mangled}` : "");
+    let symbolKeys = null; // see listSymbols; none when the symbols, or their names, change
     const listSymbols = () => {
         if (!program) return;
         const { info, map } = program, want = (symbolFilter.value ?? "").trim().toLowerCase();
         const found = [];
         let more = false;
-        for (const s of info.symbols) {
-            if (want && !s.name.toLowerCase().includes(want) && !s.mangled?.toLowerCase().includes(want)) continue;
+        // What each is found by, in small letters: made as it's first looked
+        // through (there can be 200,000 of them, each long, and this is at
+        // each letter typed), kept while something's looked for, and let go
+        // when the box is emptied. The view's own, by the symbols' places.
+        if (!want) symbolKeys = null;
+        else symbolKeys ??= new Array(info.symbols.length);
+        for (let i = 0; i < info.symbols.length; i++) {
+            const s = info.symbols[i];
+            if (want && !(symbolKeys[i] ??= `${s.name}\n${s.mangled ?? ""}`.toLowerCase()).includes(want)) continue;
             if (found.length >= SYMBOLS_LISTED) { more = true; break; }
             found.push(s);
         }
@@ -1011,7 +1053,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
         const go = event.target?.closest?.(".hex-program-go");
         if (!go) return;
         const [begin, end] = go.value.split("-").map(Number);
-        view.jump(begin, end || undefined);
+        followJump(begin, end || undefined);
     });
     const showProgram = () => {
         const { info, map } = program, hex = (v) => `0x${v.toString(16)}`;
@@ -1537,7 +1579,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // The toggle is in the bar, unless where it's shown puts it elsewhere
     // (the Kaitai view, beside Interpret as: see view.inspectorToggle).
     const view = el("div", { className: "hex-view" },
-        el("div", { className: "hex-controls", role: "group", ariaLabel: "Byte navigation" }, previous, status, next, previousRange, nextRange, jumpForm, findForm, editStatus, toggle),
+        el("div", { className: "hex-controls", role: "group", ariaLabel: "Byte navigation" }, previous, status, next, previousRange, nextRange, back, jumpForm, findForm, editStatus, toggle),
         el("div", { className: "hex-main" }, el("div", { className: "hex-pane" }, head, content), inspector));
     const stopResize = inspectorResize(view.children[1], inspector);
     view.inspectorToggle = toggle;
@@ -1671,6 +1713,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             : new Uint8Array(await readRange(begin, end, { signal: programReads.signal }))), size, { slice })).catch(programFailed).then((info) => {
             if (!info || stopped || mine !== programAsked) return;
             program = { info, map: programMap(info) };
+            symbolKeys = null;
             tabButtons[2].hidden = programAt.hidden = false;
             if (modes.some(([mode]) => mode === info.mode) && disasmBitness.value === modeGiven && modeChosen === opened) disasmBitness.value = modeGiven = info.mode;
             showProgram();
@@ -1688,6 +1731,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
                     const [, before = "", , after = ""] = MANGLED.exec(s.name);
                     Object.assign(s, { mangled: s.name, name: before + names[i] + after });
                 });
+                symbolKeys = null;
                 showProgram();
                 disasmKey = null;
                 updateInspector();

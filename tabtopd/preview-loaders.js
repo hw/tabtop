@@ -1,7 +1,7 @@
 // Format-specific transport loading. The controller owns cancellation and
 // creates object URLs only after a load is still current.
 import { call, collect } from "./requests.js";
-import { typeOf, limits, binaryChunkSize, unknownTextSize } from "./preview-model.js";
+import { typeOf, limits, binaryChunkSize, unknownTextSize, textModel } from "./preview-model.js";
 import { join } from "./preview-dom.js";
 const PDF_FIRST = 64 * 1024;
 const UNKNOWN_FIRST = unknownTextSize;
@@ -15,6 +15,7 @@ const loaders = {
     audio: loadMedia,
     video: loadMedia,
     image: loadBuffered,
+    model: loadBuffered,
     text: loadBuffered,
     hex: loadBuffered,
     // Its schema, asked of the server (see sqlite.go); rows come as shown.
@@ -90,7 +91,8 @@ export async function loadPreview(dir, name, { signal, progress = () => {}, mode
     } catch (err) {
         const asDatabase = mode === "sqlite" || mode === null && typeOf(name)?.kind === "sqlite";
         if (err !== tooBig && !(asDatabase && notDatabase(err))) throw err;
-        return loadAs(dir, name, { signal, progress, mode: "hex" });
+        // (G-code too big to draw: as text, as it was before it was drawn.)
+        return loadAs(dir, name, { signal, progress, mode: err === tooBig && mode === null && textModel(name) ? "text" : "hex" });
     }
     if (mode === "auto" && loaded.file.sqlite) {
         // Its tables, if they can be read; if not (not a database after
@@ -110,7 +112,8 @@ async function loadAs(dir, name, { signal, progress, mode }) {
         : mode === "sqlite" ? sqliteType : typeOf(name) ?? (mode === "auto" ? { kind: "text", type: "text/plain" } : null);
     if (!type || !Object.hasOwn(loaders, type.kind)) throw new Error("this file isn't supported for preview");
     const unknown = !typeOf(name);
-    const prefix = mode === "hex" || unknown && ["auto", "text"].includes(mode);
+    // (A model that's text, as text: its first part, as an unknown file's.)
+    const prefix = mode === "hex" || unknown && ["auto", "text"].includes(mode) || mode === "text" && textModel(name);
     const first = mode === "text" ? UNKNOWN_FIRST : binaryChunkSize;
     const path = join(dir, name);
     let file;
@@ -125,7 +128,7 @@ async function loadAs(dir, name, { signal, progress, mode }) {
             if (!prefix && size > limits[type.kind]) throw tooBig;
             const previewSize = prefix ? (request.offset ?? 0) + t.reply.length : size;
             file = { dir, name, size, mtime, ...type, prefix, previewSize, truncated: prefix && previewSize < size };
-            progress(0, ["text", "hex", "image"].includes(type.kind) ? previewSize : null);
+            progress(0, ["text", "hex", "image", "model"].includes(type.kind) ? previewSize : null);
             return await consume(t, type.type);
         } finally {
             signal?.removeEventListener("abort", cancel);
@@ -144,12 +147,17 @@ async function loadAs(dir, name, { signal, progress, mode }) {
         // while binary/control bytes start in the hex and structure view.
         await identifyText(file, blob);
     }
-    if (blob && !unknown && file.kind === "text" && new Uint8Array(await blob.slice(0, 8000).arrayBuffer()).includes(0)) {
-        // Named as text, but not (a NUL, as render tells): its bytes, in hex.
+    // Named as text, but not (a NUL, as render tells): its bytes, in hex.
+    // So is a .obj that isn't a model's but a compiler's (MSVC's).
+    if (blob && !unknown && (file.kind === "text" || file.kind === "model" && /\.obj$/i.test(name)) &&
+            new Uint8Array(await blob.slice(0, 8000).arrayBuffer()).includes(0)) {
         file.kind = "hex";
         file.type = "application/octet-stream";
         file.textAvailable = false;
+        if (typeOf(name)?.kind === "model") file.modelUnavailable = true;
     }
+    // A model too big to draw is shown only some other way.
+    if (typeOf(name)?.kind === "model" && file.size > limits.model) file.modelUnavailable = true;
     if (mode === "auto" && unknown && file.kind === "text" && file.previewSize < Math.min(file.size, UNKNOWN_FIRST)) {
         const head = blob, begin = file.previewSize, end = Math.min(file.size, UNKNOWN_FIRST);
         const tail = await open({ type: "file", offset: begin, length: end - begin, if_mtime: file.mtime, if_size: file.size },

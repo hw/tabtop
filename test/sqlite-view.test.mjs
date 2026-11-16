@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { cellText, columnKind } from "../tabtopd/sqlite-view.js";
+import { cellText, columnKind, exportCell, csvEscape, rowsToCSV, rowsToJSON, exportFileName } from "../tabtopd/sqlite-view.js";
 import { typeOf, limits, binaryChunkSize, unknownTextSize, probablyDatabase } from "../tabtopd/preview-model.js";
 
 test("values show as SQLite has them: NULL, exact integers, reals, cut text, blobs", () => {
@@ -17,6 +17,24 @@ test("values show as SQLite has them: NULL, exact integers, reals, cut text, blo
     assert.equal(cellText({ b: "00ff10", n: 3 }).text, "blob, 3 bytes: 00 ff 10");
     assert.equal(cellText({ b: "0000", n: 100000 }).text, "blob, 100,000 bytes: 00 00 …");
     assert.equal(cellText({ b: "", n: 0 }).text, "blob, 0 bytes");
+});
+
+test("export CSV and JSON keep preview value shapes and escape CSV fields", () => {
+    assert.equal(exportCell(null), "");
+    assert.equal(exportCell({ i: "-9223372036854775808" }), "-9223372036854775808");
+    assert.equal(exportCell({ r: "+Inf" }), "Inf");
+    assert.equal(exportCell({ t: "abc", cut: true, n: 9 }), "abc…");
+    assert.equal(exportCell({ b: "dead" }), "dead");
+    assert.equal(csvEscape("plain"), "plain");
+    assert.equal(csvEscape('a,b'), '"a,b"');
+    assert.equal(csvEscape('say "hi"'), '"say ""hi"""');
+    assert.equal(csvEscape("a\nb"), '"a\nb"');
+    const columns = ["id", "name"];
+    const rows = [[{ i: "1" }, { t: "Ann, Bob" }], [null, { t: "x" }]];
+    assert.equal(rowsToCSV(columns, rows), "id,name\r\n1,\"Ann, Bob\"\r\n,x\r\n");
+    assert.equal(rowsToJSON(columns, rows), '[\n  {\n    "id": "1",\n    "name": "Ann, Bob"\n  },\n  {\n    "id": "",\n    "name": "x"\n  }\n]\n');
+    assert.equal(exportFileName("people.sqlite", "best view", "csv"), "people-best_view.csv");
+    assert.equal(exportFileName("data.db", "t", "json"), "data-t.json");
 });
 
 test("databases by name, and by their first bytes when the name doesn't say", () => {

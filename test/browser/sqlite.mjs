@@ -62,6 +62,26 @@ CREATE VIEW best AS SELECT name, score FROM people WHERE score > -3000;`);
         if (JSON.stringify(await ev(cells(1))) !== JSON.stringify(["2", "2", "person1", "-1000"])) throw new Error(`row 2: ${JSON.stringify(await ev(cells(1)))}`);
         if (JSON.stringify(await ev(`[...${view}.querySelectorAll("thead th")].map(t => t.querySelector("button.col-name")?.textContent ?? t.textContent)`)) !== JSON.stringify(["rowid", "id", "name", "score"])) throw new Error("the column heads");
         await waitFor(`${view}.querySelector(".sqlite-count").textContent === "450 rows"`, "the row count");
+        await waitFor(`!${view}.querySelector("button.sqlite-export").disabled`, "export enabled");
+        await ev(`(() => {
+            window.__sqliteExports = [];
+            const orig = HTMLAnchorElement.prototype.click;
+            HTMLAnchorElement.prototype.click = function () {
+                if (this.download) window.__sqliteExports.push({ name: this.download, href: this.href });
+                return orig.apply(this, arguments);
+            };
+            window.__sqliteExportRestore = () => { HTMLAnchorElement.prototype.click = orig; };
+        })()`);
+        await ev(`${view}.querySelectorAll("button.sqlite-export")[0].click()`);
+        await waitFor(`window.__sqliteExports.some((x) => x.name === "people-people.csv")`, "CSV export downloaded", 60000);
+        await ev(`${view}.querySelectorAll("button.sqlite-export")[1].click()`);
+        await waitFor(`window.__sqliteExports.some((x) => x.name === "people-people.json")`, "JSON export downloaded", 60000);
+        const csvText = await ev(`(async () => {
+            const hit = window.__sqliteExports.find((x) => x.name.endsWith(".csv"));
+            return await (await fetch(hit.href)).text();
+        })()`);
+        if (!csvText.startsWith("id,name,score\r\n") || !csvText.includes("person0")) throw new Error(`CSV export contents: ${csvText.slice(0, 120)}`);
+        await ev(`window.__sqliteExportRestore?.()`);
         // Scrolled to the end: the rest, a page at a time.
         for (const n of [400, 450]) {
             await ev(`(s => s.scrollTop = s.scrollHeight)(${view}.querySelector(".table-scroll"))`);

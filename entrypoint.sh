@@ -67,6 +67,7 @@ as_user /usr/local/bin/tabtopd \
     -inpaint-dir /opt/inpaint \
     -background-dir /opt/background \
     -segment-dir /opt/segment \
+    -three-dir /opt/three \
     -disasm-dir /opt/disasm \
     -disasm-disable "$WEB_DISASM_DISABLE" \
     -users-file "$TOTP_USERS_FILE" \

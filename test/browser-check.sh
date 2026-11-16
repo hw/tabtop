@@ -6,7 +6,7 @@
 # later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
-# Usage: test/browser-check.sh <image> [--group all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|previews]
+# Usage: test/browser-check.sh <image> [--group all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|models|previews]
 set -euo pipefail
 
 image=${1:?usage: $0 <image> [--group group]}
@@ -19,7 +19,7 @@ while (($#)); do
     esac
 done
 case "$group" in
-    all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|previews) ;;
+    all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|models|previews) ;;
     *) echo "Unknown browser test group: $group" >&2; exit 1 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)

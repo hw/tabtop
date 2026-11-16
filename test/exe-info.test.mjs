@@ -387,6 +387,58 @@ test("an x86-64 stub's length: 16 bytes where its jmp is followed by a push and 
     assert.deepEqual([map.symbolAt(0x401106).delta, map.symbolAt(0x40110f).name, map.symbolAt(0x401207).name, map.symbolAt(0x401208)], [6, "puts@plt", "exit@plt", null]);
 });
 
+test("where sections lie over each other, and symbols inside each other", () => {
+    // One that isn't loaded over one that is: a place's section is the one its address is from.
+    const map = programMap({ symbols: [], sections: [{ name: ".text", offset: 16, size: 16, address: 0x401000, memSize: 16, flags: "r-x" },
+        { name: ".note", offset: 20, size: 4, address: null, memSize: 4, flags: "---" }, { name: ".debug", offset: 40, size: 8, address: null, memSize: 8, flags: "---" }] });
+    assert.deepEqual([map.addressOf(20), map.sectionAt(20).name, map.sectionAt(18).name], [0x401004, ".text", ".text"]);
+    // (Where none that's loaded is, the one that's there.)
+    assert.deepEqual([map.addressOf(42), map.sectionAt(42).name, map.sectionAt(50)], [null, ".debug", null]);
+    // A small symbol inside a larger: past the small one, still in the larger.
+    const nested = programMap({ sections: [{ name: ".text", offset: 0, size: 0x1000, address: 0x1000, memSize: 0x1000, flags: "r-x" }], symbols: [
+        { name: "func", address: 0x1000, size: 0x200, kind: "func" }, { name: "inner", address: 0x1010, size: 8, kind: "func" }, { name: "after", address: 0x1300, size: 0x10, kind: "func" }] });
+    const at = (address) => { const s = nested.symbolAt(address); return s && `${s.name}+0x${s.delta.toString(16)}`; };
+    assert.deepEqual([0x1008, 0x1010, 0x1014, 0x1018, 0x1100, 0x11ff, 0x1200, 0x1300, 0x130f, 0x1310].map(at),
+        ["func+0x8", "inner+0x0", "inner+0x4", "func+0x18", "func+0x100", "func+0x1ff", null, "after+0x0", "after+0xf", null]);
+    // Several names for one place (in the order they're sorted in: a function's first, then the shorter): the same name inside it as at its start.
+    const section = { name: ".text", offset: 0, size: 0x10000, address: 0x1000, memSize: 0x10000, flags: "r-x" };
+    const named = programMap({ sections: [section], symbols: [{ name: "malloc", address: 0x1000, size: 0x40, kind: "func" },
+        { name: "__libc_malloc", address: 0x1000, size: 0x40, kind: "func" }, { name: "obj", address: 0x1000, size: 0x80, kind: "object" }] });
+    const of = (map, address) => { const s = map.symbolAt(address); return s && `${s.name}+0x${s.delta.toString(16)}`; };
+    // (Past the two that are 0x40 long, in the one that's longer.)
+    assert.deepEqual([0x1000, 0x1004, 0x103f, 0x1040, 0x107f, 0x1080].map((a) => of(named, a)), ["malloc+0x0", "malloc+0x4", "malloc+0x3f", "obj+0x40", "obj+0x7f", null]);
+    // Many small ones inside a large one, and one inside another inside another: however many, past them it's the large one's.
+    const many = programMap({ sections: [section], symbols: [{ name: "outer", address: 0x1000, size: 0x8000, kind: "func" }, { name: "middle", address: 0x1008, size: 0x4000, kind: "func" },
+        ...Array.from({ length: 500 }, (_, i) => ({ name: `inner${i}`, address: 0x1010 + i * 16, size: 8, kind: "func" })), { name: "label", address: 0x6000, size: 0, kind: "" }] });
+    assert.deepEqual([0x1004, 0x100c, 0x1014, 0x1018, 0x2f44, 0x2f48, 0x3000, 0x5007, 0x5008].map((a) => of(many, a)),
+        ["outer+0x4", "middle+0x4", "inner0+0x4", "middle+0x10", "inner499+0x4", "middle+0x1f40", "middle+0x1ff8", "middle+0x3fff", "outer+0x4008"]);
+    // A label in it, which says no length: what's after it is the label's, as far as the function it's in goes.
+    assert.deepEqual([0x5fff, 0x6000, 0x6004, 0x8fff, 0x9000].map((a) => of(many, a)), ["outer+0x4fff", "label+0x0", "label+0x4", "label+0x2fff", null]);
+});
+
+test("a Mach-O whose sections each say every indirect symbol is theirs isn't gone through for each", async () => {
+    // 2,000 sections of slots, each from the table's start and as long as all
+    // of it; 2,000,000 entries that are no symbol's. (Gone through for each,
+    // that's four thousand million entries, and most of a minute: the time
+    // allowed is far from both that and what it takes, a moment.)
+    const sections = 2000, entries = 2_000_000, text = new TextEncoder();
+    const commands = 72 + sections * 80 + 24 + 80, symbolsAt = 32 + commands, stringsAt = symbolsAt + 16, indirectAt = stringsAt + 8;
+    const bytes = new Uint8Array(indirectAt + entries * 4), view = new DataView(bytes.buffer);
+    bytes.set(joined(packed(true, [0xfeedfacf, 4], [0x0100000c, 4], [0, 4], [2, 4], [3, 4], [commands, 4], [0, 4], [0, 4], [0x19, 4], [72 + sections * 80, 4]),
+        text.encode("__DATA".padEnd(16, "\0")), packed(true, [0x100000000, 8], [0x4000, 8], [0, 8], [0, 8], [7, 4], [3, 4], [sections, 4], [0, 4])));
+    for (let i = 0; i < sections; i++) {
+        bytes.set(joined(text.encode("__got".padEnd(16, "\0")), text.encode("__DATA".padEnd(16, "\0")), packed(true, [0x100000000, 8], [entries * 8, 8], [0, 4], [0, 4], [0, 4], [0, 4], [6, 4], [0, 4], [0, 4], [0, 4])), 32 + 72 + i * 80);
+    }
+    bytes.set(joined(packed(true, [2, 4], [24, 4], [symbolsAt, 4], [1, 4], [stringsAt, 4], [8, 4]),
+        packed(true, [0xb, 4], [80, 4], ...Array.from({ length: 12 }, () => [0, 4]), [indirectAt, 4], [entries, 4], ...Array.from({ length: 4 }, () => [0, 4])),
+        packed(true, [1, 4], [0x0f, 1], [1, 1], [0, 2], [0x100000000, 8]), [0, 0x78, 0, 0, 0, 0, 0, 0]), 32 + 72 + sections * 80);
+    for (let i = 0; i < entries; i++) view.setUint32(indirectAt + i * 4, 0x80000000, true);
+    const began = performance.now(), info = await parse(bytes);
+    assert.ok(performance.now() - began < 15_000, `${Math.round(performance.now() - began)} ms`);
+    // What was read stands, and it's said that not all was.
+    assert.deepEqual([info.sections.length, info.symbols.map((s) => s.name), info.truncated], [sections, ["x"], true]);
+});
+
 test("a PE that takes thousands of functions from other files has every one read", async () => {
     // 80 libraries, 170 functions of each, in one section at RVA 0x1000: what's
     // taken (a descriptor for each library), each library's list, the names.

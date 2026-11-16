@@ -89,11 +89,12 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"passkey-options": other((*server).routePasskeyOptions),
 	"passkey-add":     other((*server).routePasskeyAdd),
 	"passkey-remove":  other((*server).routePasskeyRemove),
-	"sessions":        other((*server).routeSessions),
-	"name-session":    other((*server).routeNameSession),
-	"seen":            other((*server).routeSeen),
-	"activity":        other((*server).routeActivity),
-	"activity-clear":  other((*server).routeActivityClear),
+	"sessions":          other((*server).routeSessions),
+	"name-session":      other((*server).routeNameSession),
+	"seen":              other((*server).routeSeen),
+	"bootstrap-reseal":  other((*server).routeBootstrapReseal),
+	"activity":          other((*server).routeActivity),
+	"activity-clear":    other((*server).routeActivityClear),
 
 	// Files.
 	"roots":         files(func(g *server, c *tunnelCall) { c.r.finish(map[string]any{"roots": g.rootReport()}) }),
@@ -138,6 +139,7 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"epub-edit":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelEpubEdit(c.t, c.req, c.r) }),
 	"sqlite":           readFiles(func(g *fileService, c *tunnelCall) { g.tunnelSQLite(c.req, c.r) }),
 	"preview-resource": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelPreviewResource(c.t, c.req, c.r) }),
+	"image-decode":     readFiles(func(g *fileService, c *tunnelCall) { g.tunnelImageDecode(c.t, c.req, c.r) }),
 
 	// Fetching into Downloads, and share links to it.
 	// A fetch with a name only reports on one; without, it starts one.
@@ -310,6 +312,22 @@ func (g *server) routeSeen(c *tunnelCall) {
 	g.mu.Unlock()
 	log.Printf("security warnings marked as seen from %s", c.ip)
 	c.r.finish(nil)
+}
+
+// routeBootstrapReseal seals a new local-client pack with a fresh passcode
+// (shown on the Sessions page next to today's pack hash).
+func (g *server) routeBootstrapReseal(c *tunnelCall) {
+	pass, hash, err := g.resealBootstrapPack()
+	if err != nil {
+		log.Printf("bootstrap reseal from %s: %v", c.ip, err)
+		c.r.fail("Couldn't reseal the local client pack.")
+		return
+	}
+	g.act(c.session, "bootstrap", c.ip, "resealed the local client pack")
+	c.r.finish(map[string]any{
+		"bootstrap_passcode":    pass,
+		"bootstrap_pack_sha256": hash,
+	})
 }
 
 // routeActivity answers with the newest req.Max entries of the activity

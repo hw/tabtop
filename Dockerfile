@@ -279,7 +279,7 @@ ARG ICED_X86_VERSION=1.22.0
 ARG ICED_X86_SHA256=be77147b3c91531da378d103b4e3e5a45e9ddc29392fe01e6c214e799da125c3
 ADD --checksum=sha256:${ICED_X86_SHA256} https://registry.npmjs.org/iced-x86/-/iced-x86-${ICED_X86_VERSION}.tgz /iced.tgz
 COPY scripts/disasm/build.mjs /build.mjs
-COPY tabtopd/x86-asm.js tabtopd/riscv-asm.js tabtopd/mips-asm.js /
+COPY tabtopd/x86-asm.js tabtopd/asm-common.js tabtopd/riscv-asm.js tabtopd/mips-asm.js /
 COPY --from=capstone /capstone-out /disasm
 COPY --from=arm64asm /arm64-out /disasm
 COPY --from=demangle /demangle-out /disasm
@@ -335,6 +335,29 @@ ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf3
 ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/facebookresearch/segment-anything/${SAM_REV}/LICENSE /segment/LICENSE.segment-anything
 RUN chmod -R u=rwX,go=rX /segment
 
+# three.js, for 3D previews of models for 3D printing (STL, OBJ, 3MF, AMF,
+# PLY) and G-code on the files page (see model-view.js in tabtopd): its
+# core, orbit controls, the STL, OBJ, PLY and AMF loaders and fflate (3MF
+# and G-code are tabtopd's own), in one folder, their
+# imports pointing within it (scripts/three/vendor.sh; tabtopd's
+# threeFiles lists the same files). Checked here: each loads, and the
+# loaders and tabtopd's model-worker.js read small models. From npm; bump
+# the version together with its checksum.
+FROM node:24-trixie-slim AS three
+ARG THREE_VERSION=0.187.0
+ARG THREE_SHA256=ff540832ded0cfe919764d24a3d88f3e2a05f23303f876423e4f893841e90728
+ADD --checksum=sha256:${THREE_SHA256} https://registry.npmjs.org/three/-/three-${THREE_VERSION}.tgz /three.tgz
+WORKDIR /check
+COPY scripts/three/vendor.sh scripts/three/check.mjs ./
+COPY tabtopd/model-worker.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js ./tabtopd/
+COPY test/model-worker.test.mjs ./test/
+COPY test/data/3d/prism.stl test/data/3d/cura.gcode test/data/3d/prusa.3mf ./test/data/3d/
+RUN mkdir /src \
+ && tar -xzf /three.tgz -C /src --no-same-owner \
+ && sh vendor.sh /src/package /three \
+ && node check.mjs /three \
+ && THREE_ASSETS=/three node --test test/model-worker.test.mjs
+
 # All Kaitai gallery schemas are compiled with byte-position metadata at build
 # time. The final image contains parsers and notices, without Node or the compiler.
 FROM node:24-trixie-slim AS kaitai
@@ -356,10 +379,12 @@ RUN mkdir /formats \
 # The Go version matches mise.toml, which pins it for local development.
 # tabtopd encodes audio with libopus and checks logins with liboath, through
 # cgo, so it links the system's libraries and glibc; the final stage is the
-# same Debian release, where libpam-oath brings liboath.
+# same Debian release, where libpam-oath brings liboath. With -tags heif it
+# decodes HEIC pictures with libheif (LGPL-3.0), for the browsers that can't;
+# libheif's libde265 plugin (also LGPL-3.0) decodes their HEVC.
 FROM golang:1.27.3-trixie AS tabtopd
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libopus-dev liboath-dev libsqlite3-dev \
+ && apt-get install -y --no-install-recommends libopus-dev liboath-dev libsqlite3-dev libheif-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
@@ -370,7 +395,7 @@ COPY tabtopd/third-party/ ./third-party/
 # time this stage runs.
 ARG BUILD_TIME=
 RUN BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
- && go build -trimpath -ldflags="-s -w -X main.buildTime=${BUILD_TIME}" -o /tabtopd .
+ && go build -tags heif -trimpath -ldflags="-s -w -X main.buildTime=${BUILD_TIME}" -o /tabtopd .
 
 # What every build has: the gateway's libraries, the terminal and its
 # tools. pulseaudio-utils (pactl) checks a host's sound server
@@ -393,6 +418,8 @@ RUN apt-get update \
         qrencode \
         libopus0 \
         libsqlite3-0 \
+        libheif1 \
+        libheif-plugin-libde265 \
         pulseaudio-utils \
         tmux \
         openssh-client \
@@ -486,6 +513,7 @@ COPY --from=disasm /disasm /opt/disasm
 COPY --from=background /background /opt/background
 COPY --from=inpaint /inpaint /opt/inpaint
 COPY --from=segment /segment /opt/segment
+COPY --from=three /three /opt/three
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck

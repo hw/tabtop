@@ -47,6 +47,8 @@ func (g *server) handler() http.Handler {
 	mux.HandleFunc("/tunnel", g.tunnelWS)
 	mux.HandleFunc("/healthz", g.healthz)
 	mux.HandleFunc("/doctor", g.doctor)
+	mux.HandleFunc("/bootstrap", g.bootstrap)
+	mux.HandleFunc("/bootstrap/pack", g.bootstrap)
 	return noTransform(g.stripBase(mux))
 }
 

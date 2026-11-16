@@ -1,5 +1,7 @@
+import { HEIF_TYPES, heifMetadata, heifExif, heifReplaceExif } from "./image-heif.js";
+
 // A picture's metadata, in its bytes, for the picture editor (see
-// image-view.js): what a JPEG, PNG or WebP has (EXIF, XMP, IPTC, comments
+// image-view.js): what a JPEG, PNG, WebP, AVIF or HEIC has (EXIF, XMP, IPTC, comments
 // and text), its EXIF orientation; and the picture without it, losslessly
 // (its pixels' bytes as they were), or a picture re-encoded given it back.
 //
@@ -274,6 +276,8 @@ const webpTiff = (data) => (ascii(data, 0, "Exif\0\0") ? data.subarray(6) : data
 // metadataOf is what metadata the picture bytes, of type, have: {kinds
 // (["EXIF", "XMP", …], each once), orientation (its EXIF's, 1 if none)}.
 export function metadataOf(bytes, type) {
+    // (A HEIF picture's own transforms turn it, not its EXIF: see image-heif.js.)
+    if (HEIF_TYPES.has(type)) return heifMetadata(bytes);
     const kinds = new Set();
     let orientation = 1;
     if (type === "image/jpeg") {
@@ -309,7 +313,8 @@ export function metadataOf(bytes, type) {
 export function knownFrom(head, type, size) {
     if (head.length >= size) return true;
     if (type === "image/jpeg") return jpegSegments(head) !== null;
-    return type !== "image/png" && type !== "image/webp";
+    // (A HEIF file's items can be anywhere, its EXIF often at its end.)
+    return type !== "image/png" && type !== "image/webp" && !HEIF_TYPES.has(type);
 }
 
 // --- Without it, losslessly ----------------------------------------------
@@ -452,4 +457,85 @@ export function withMetadata(encoded, original, type, width, height) {
         return concat(parts);
     }
     return encoded;
+}
+
+// The original EXIF block, without its container prefix. Keep container
+// rewriting here so metadata edits never pass through a pixel encoder.
+export function exifOf(bytes, type) {
+    let blocks;
+    if (type === "image/jpeg") {
+        const j = jpegSegments(bytes);
+        if (!j) throw new Error("The JPEG headers are incomplete.");
+        blocks = j.segs.filter(s => jpegKind(bytes, s) === "EXIF").map(s => bytes.subarray(s.start + 10, s.end));
+    } else if (type === "image/png") {
+        const chunks = pngChunks(bytes);
+        if (!chunks) throw new Error("The PNG chunks are incomplete.");
+        blocks = chunks.filter(c => c.type === "eXIf").map(c => c.data);
+    } else if (type === "image/webp") {
+        const chunks = webpChunks(bytes);
+        if (!chunks) throw new Error("The WebP chunks are incomplete.");
+        blocks = chunks.filter(c => c.type === "EXIF").map(c => webpTiff(c.data));
+    } else if (HEIF_TYPES.has(type)) return heifExif(bytes);
+    else throw new Error("EXIF is supported for JPEG, PNG, WebP, AVIF and HEIC images.");
+    if (blocks.length > 1) throw new Error("This image has multiple EXIF blocks; editing them is not supported.");
+    return blocks[0] ?? null;
+}
+
+export function replaceExif(bytes, type, tiff) {
+    if (HEIF_TYPES.has(type)) return heifReplaceExif(bytes, tiff);
+    exifOf(bytes, type); // Validate the container and reject ambiguous blocks.
+    if (type === "image/jpeg") {
+        if (tiff.length > 65527) throw new Error("The EXIF block exceeds the JPEG size limit.");
+        const j = jpegSegments(bytes), parts = [bytes.subarray(0, 2)];
+        let inserted = false;
+        for (const s of j.segs) {
+            if (!inserted && s.marker !== 0xe0) {
+                parts.push(jpegSegment(0xe1, concat([text("Exif\0\0"), tiff]))); inserted = true;
+            }
+            if (jpegKind(bytes, s) !== "EXIF") parts.push(bytes.subarray(s.start, s.end));
+        }
+        if (!inserted) parts.push(jpegSegment(0xe1, concat([text("Exif\0\0"), tiff])));
+        return concat([...parts, bytes.subarray(j.rest)]);
+    }
+    if (type === "image/png") {
+        const parts = [PNG_SIGNATURE];
+        for (const c of pngChunks(bytes)) {
+            if (c.type !== "eXIf") parts.push(bytes.subarray(c.start, c.end));
+            if (c.type === "IHDR") parts.push(pngChunk("eXIf", tiff));
+        }
+        return concat(parts);
+    }
+    const chunks = webpChunks(bytes), parts = [];
+    if (!chunks.some(c => c.type === "VP8X")) {
+        const lossy = chunks.find(c => c.type === "VP8 "), lossless = chunks.find(c => c.type === "VP8L");
+        let w, h, alpha = false;
+        if (lossy?.data.length >= 10 && ascii(lossy.data, 3, "\x9d\x01\x2a")) {
+            w = (lossy.data[6] | lossy.data[7] << 8) & 0x3fff; h = (lossy.data[8] | lossy.data[9] << 8) & 0x3fff;
+        } else if (lossless?.data.length >= 5 && lossless.data[0] === 0x2f) {
+            const b = lossless.data;
+            w = 1 + (b[1] | (b[2] & 63) << 8); h = 1 + (b[2] >> 6 | b[3] << 2 | (b[4] & 15) << 10); alpha = !!(b[4] & 16);
+        }
+        if (!w || !h) throw new Error("The WebP dimensions couldn't be read.");
+        const header = new Uint8Array(10); header[0] = 0x08 | (alpha ? 0x10 : 0);
+        for (let i = 0; i < 3; i++) { header[4 + i] = (w - 1) >>> (i * 8); header[7 + i] = (h - 1) >>> (i * 8); }
+        parts.push(webpExifChunk("VP8X", header));
+    }
+    let inserted = false;
+    for (const c of chunks) {
+        if (c.type === "EXIF") continue;
+        // EXIF belongs after image data, before XMP.
+        if (c.type === "XMP " && !inserted) { parts.push(webpExifChunk("EXIF", tiff)); inserted = true; }
+        const chunk = bytes.slice(c.start, c.end);
+        if (c.type === "VP8X") { if (c.data.length !== 10) throw new Error("Invalid WebP extended header."); chunk[8] |= 0x08; }
+        parts.push(chunk);
+    }
+    if (!inserted) parts.push(webpExifChunk("EXIF", tiff));
+    const body = concat(parts), out = concat([text("RIFF"), new Uint8Array(4), text("WEBP"), body]);
+    new DataView(out.buffer).setUint32(4, out.length - 8, true);
+    return out;
+}
+function webpExifChunk(kind, data) {
+    const out = new Uint8Array(8 + data.length + (data.length & 1));
+    out.set(text(kind)); new DataView(out.buffer).setUint32(4, data.length, true); out.set(data, 8);
+    return out;
 }

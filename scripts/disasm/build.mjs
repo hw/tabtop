@@ -99,6 +99,24 @@ if (assemblerFile) {
     ];
     for (const [bitness, at, text, want, was] of lines)
         assert.equal(hex(assemble(text, at, bitness, was ? Buffer.from(was, "hex") : null).bytes), want, text);
+    // A number typed as 0x1f, as 1Fh or in decimal is the same bytes, and
+    // shown the one way, as the other instruction sets' numbers are: 0x1f.
+    // Where a branch goes is in hex however small, as an address is.
+    for (const [bitness, at, typed, want, shown] of [
+        [64, 0x1000, ["mov eax,0xff", "mov eax,0FFh", "mov eax,0ffh", "MOV EAX, 255"], "b8ff000000", "mov eax,0xff"],
+        [64, 0x1000, ["jmp short 0x1012", "jmp short 1012h", "jmp short 0000000000001012h", "jmp 4114"], "eb10", "jmp short 0x1012"],
+        [64, 0, ["jmp 2", "jmp 0x2", "jmp 2h"], "eb00", "jmp short 0x2"], [16, 0x12340, ["jmp 0x12352", "jmp 12352h"], "eb10", "jmp short 0x12352"],
+        [64, 0x1000, ["mov rax,fs:[0x28]", "mov rax,qword ptr fs:[28h]"], "64488b042528000000", "mov rax,fs:[0x28]"],
+        [64, 0x1000, ["mov eax,[rax+rcx*8+0x1000]", "mov eax,[rax+rcx*8+1000h]"], "8b84c800100000", "mov eax,[rax+rcx*8+0x1000]"],
+        [32, 0x1000, ["add eax,5", "add eax,0x5", "add eax,5h"], "83c005", "add eax,5"],
+    ]) {
+        for (const text of typed) {
+            const made = assemble(text, at, bitness);
+            assert.deepEqual([hex(made.bytes), made.text], [want, shown], text);
+        }
+    }
+    // (Not both at once.)
+    assert.throws(() => assemble("mov eax,0x10h", 0x1000, 64), Error);
     for (const [bitness, text] of [[64, "inc [rax]"], [64, "foo eax"], [64, "jmp short 0x2000"], [64, "mov eax, rbx"], [64, "mov eax, bx"], [64, "aaa"]])
         assert.throws(() => assemble(text, 0x1000, bitness), Error, text);
     // Not the 16 bits of it that the code's own addresses hold.
@@ -110,8 +128,7 @@ if (assemblerFile) {
     })()), 0x12352n);
     // Random bytes, as each mode decodes them: whatever's shown assembles
     // to what's shown again (or, rarely, can't be; never another).
-    const formatter = new iced.Formatter(iced.FormatterSyntax.Intel);
-    formatter.usePseudoOps = false; // as disasm-worker.js shows them
+    const formatter = self.x86Formatter(iced); // as disasm-worker.js shows them, with x86Text
     let seed = 1;
     const random = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32;
     const leads = [[], [0x62], [0xc4], [0xc5], [0x0f], [0x66, 0x0f], [0xf3, 0x0f], [0xf2, 0x0f], [0xd8], [0xdc], [0xde], [0xdd], [0x0f, 0x38], [0x0f, 0x3a], [0x8f]];
@@ -126,18 +143,20 @@ if (assemblerFile) {
             const insn = decoder.decode();
             // As shown, and whether its address is RIP-relative, which the
             // text doesn't say; with the bytes it was, as the hex view asks.
-            const text = insn.isInvalid ? null : formatter.format(insn);
+            const text = insn.isInvalid ? null : self.x86Text(iced, formatter, insn, bitness);
             const ripRelative = !insn.isInvalid && insn.isIpRelMemoryOperand, was = b.slice(0, insn.length);
             insn.free();
             decoder.free();
             if (text == null) continue;
+            // No number as iced has them by itself (1Fh): each is 0x1f.
+            assert.doesNotMatch(text, /\b[0-9][0-9A-Fa-f]*h\b/, `${bitness}-bit ${text}`);
             shown++;
             let result;
             try { result = assemble(text, 0x4000, bitness, was); } catch { continue; }
             const again = new iced.Decoder(bitness, result.bytes, iced.DecoderOptions.None);
             again.ip = 0x4000n;
             const back = again.decode();
-            const text2 = formatter.format(back), ripRelative2 = back.isIpRelMemoryOperand;
+            const text2 = self.x86Text(iced, formatter, back, bitness), ripRelative2 = back.isIpRelMemoryOperand;
             back.free();
             again.free();
             // No longer than it was: it would go over the instruction after.

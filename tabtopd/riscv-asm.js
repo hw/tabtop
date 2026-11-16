@@ -38,16 +38,9 @@
     }
     const CSR_NUMBER = new Map([...CSR].map(([number, name]) => [name, number]));
 
-    // A number as it's shown: in hex from ten; and read: hex or not, BigInt.
-    const shown = (v) => (v < 0 ? "-" : "") + (Math.abs(v) > 9 ? `0x${Math.abs(v).toString(16)}` : `${Math.abs(v)}`);
-    function number(text) {
-        const m = /^([+-]?)(0x[0-9a-f]+|\d+)$/.exec(text);
-        return m ? (m[1] === "-" ? -BigInt(m[2]) : BigInt(m[2])) : null;
-    }
-    const small = (text) => {
-        const v = number(text);
-        return v != null && v >= -(2n ** 53n) && v <= 2n ** 53n ? Number(v) : null;
-    };
+    // (How a number is shown and read, a line taken apart, and a name's
+    // rows gone through, are MIPS's assembler's too: see asm-common.js.)
+    const { shown, number, small, parseLine, assembleLine } = root.asmCommon;
 
     // What an operand is: get, its value in a word (null: no such); put, the
     // bits a value is in it (null: it can't be that); show, as it's written;
@@ -146,10 +139,11 @@
         cwss: immediate([[9, 4, 2], [7, 2, 6]], 8, false), cqss: immediate([[10, 3, 3], [7, 3, 6]], 9, false),
         cj: target([[3, 3, 1], [11, 1, 4], [2, 1, 5], [7, 1, 6], [6, 1, 7], [9, 2, 8], [8, 1, 10], [12, 1, 11]], 12),
         cb: target([[3, 2, 1], [10, 2, 3], [2, 1, 5], [5, 2, 6], [12, 1, 8]], 9),
-        // c.lui's: of 20 bits, as lui's is, the 6 it has carried up through them.
+        // c.lui's: of 20 bits, as lui's is, the 6 it has carried up through
+        // them; never 0, which isn't an instruction.
         clui: {
-            get: (w) => (((w >>> 2) & 31) | (w & 0x1000 ? 0xfffe0 : 0)),
-            put: (v) => (Number.isInteger(v) && (v >>> 0 < 32 || (v >= 0xfffe0 && v <= 0xfffff)) ? (((v & 31) << 2) | (v & 32 ? 0x1000 : 0)) >>> 0 : null),
+            get: (w) => (((w >>> 2) & 31) | (w & 0x1000 ? 0xfffe0 : 0)) || null,
+            put: (v) => (Number.isInteger(v) && ((v > 0 && v < 32) || (v >= 0xfffe0 && v <= 0xfffff)) ? (((v & 31) << 2) | (v & 32 ? 0x1000 : 0)) >>> 0 : null),
             show: shown,
             read: small,
         },
@@ -373,8 +367,11 @@
         }
         return null;
     }
-    // The instruction at `at` in bytes: {length, text, targets}; "(bad)", of
-    // two bytes (or the one that's left), for what isn't one.
+    // The instruction at `at` in bytes: {length, text, targets}; "(bad)" for
+    // what isn't one: of its four bytes, where its first say it's that long
+    // (one of an extension that isn't read here, as the vector ones: half
+    // of it isn't then read as an instruction of its own), and else of two
+    // bytes (or the one that's left).
     function lineAt(bytes, at, address, xlen) {
         const left = bytes.length - at;
         if (left < 2) return { length: left, text: "(bad)", targets: [] };
@@ -382,7 +379,8 @@
         if (!short && left < 4) return { length: 2, text: "(bad)", targets: [] };
         const word = short ? half : (half | (bytes[at + 2] << 16) | (bytes[at + 3] << 24)) >>> 0;
         const found = rowOf(word, short, xlen);
-        if (!found) return { length: 2, text: "(bad)", targets: [] };
+        // (Low bits 11, and not 11111, which is for longer ones still: four bytes.)
+        if (!found) return { length: !short && (half & 0x1f) !== 0x1f ? 4 : 2, text: "(bad)", targets: [] };
         const context = { address, xlen, targets: [] };
         const operands = found.row.operands.map((o, i) => o.show(found.values[i], context));
         return { length: found.row.length, text: operands.length ? `${found.row.name} ${operands.join(", ")}` : found.row.name, targets: context.targets };
@@ -397,68 +395,25 @@
         return { lines };
     }
 
-    // A line as typed: its name, and its operands, at the commas outside
-    // brackets; in small letters, without what's after ; # or //.
-    function parseLine(text) {
-        const line = text.toLowerCase().split(/[;#]|\/\//)[0].trim().replace(/\s+/g, " ");
-        const space = line.indexOf(" ");
-        const name = space < 0 ? line : line.slice(0, space), rest = space < 0 ? "" : line.slice(space + 1).replace(/ /g, "");
-        const operands = [];
-        let depth = 0, from = 0;
-        for (let i = 0; i < rest.length; i++) {
-            if (rest[i] === "(") depth++;
-            else if (rest[i] === ")") depth--;
-            else if (rest[i] === "," && depth === 0) {
-                operands.push(rest.slice(from, i));
-                from = i + 1;
-            }
-        }
-        if (rest) operands.push(rest.slice(from));
-        return { name, operands };
-    }
     const bytesOf = (word, length) => Array.from({ length }, (_, i) => (word >>> (8 * i)) & 255);
     // The line's bytes at address, and how it's then shown: {bytes, text}.
     // It throws what's wrong with a line that isn't an instruction here
-    // (what was typed in quotes where it's first, as the page gives what's
-    // said a capital).
+    // (see assembleLine, in asm-common.js).
     // was, the bytes there now: kept, if they're shown as the line is.
     function assemble(text, address, xlen, was) {
-        if (text.length > 200) throw new Error("That's too long to be an instruction.");
-        const { name, operands } = parseLine(text);
-        if (!name) throw new Error("There's no instruction there.");
-        const rows = NAMED.get(name);
-        if (!rows) throw new Error(`There's no instruction called ${name}.`);
-        const here = rows.filter((r) => !r.xlen || r.xlen === xlen);
-        if (!here.length) throw new Error(`"${name}" is only in RV${rows[0].xlen}.`);
-        const counted = here.filter((r) => r.operands.length === operands.length);
-        if (!counted.length) {
-            const counts = [...new Set(here.map((r) => r.operands.length))].sort();
-            throw new Error(`"${name}" takes ${counts.join(" or ")} operand${counts.length === 1 && counts[0] === 1 ? "" : "s"}, not ${operands.length}.`);
-        }
-        let why = null;
-        for (const r of counted) {
-            const context = { address, xlen, targets: [] };
-            let word = r.match, wrong = null;
-            for (let i = 0; i < operands.length && !wrong; i++) {
-                const value = r.operands[i].read(operands[i], context);
-                if (value == null) wrong = `${operands[i] ? `"${operands[i]}"` : "Nothing"} isn't what ${name} takes ${["first", "second", "third", "fourth", "fifth"][i]}.`;
-                else {
-                    const bits = Number.isNaN(value) ? null : r.operands[i].put(value);
-                    if (bits == null) wrong = `"${operands[i]}" isn't one ${name} can have there.`;
-                    else word = (word | bits) >>> 0;
-                }
-            }
-            // As it's then read: the same instruction, by this name or another's.
-            const line = wrong ? null : lineAt(bytesOf(word, r.length), 0, address, xlen);
-            if (!wrong && (line.text === "(bad)" || line.length !== r.length)) wrong = "That isn't an instruction as it would be written.";
-            if (wrong) {
-                why ??= wrong;
-                continue;
-            }
-            const there = was?.length === r.length ? lineAt(was, 0, address, xlen) : null;
-            return { bytes: there && there.text === line.text ? Array.from(was) : bytesOf(word, r.length), text: line.text };
-        }
-        throw new Error(why);
+        return assembleLine(text, {
+            named: NAMED, xlen, family: "RV", kinds: (r) => r.operands, context: () => ({ address, xlen, targets: [] }),
+            put(kind, value, word) {
+                const bits = Number.isNaN(value) ? null : kind.put(value);
+                return bits == null ? null : (word | bits) >>> 0;
+            },
+            done(r, word) {
+                const line = lineAt(bytesOf(word, r.length), 0, address, xlen);
+                if (line.text === "(bad)" || line.length !== r.length) return null;
+                const there = was?.length === r.length ? lineAt(was, 0, address, xlen) : null;
+                return { bytes: there && there.text === line.text ? Array.from(was) : bytesOf(word, r.length), text: line.text };
+            },
+        });
     }
 
     root.riscv = { disassemble, assemble, parseLine };

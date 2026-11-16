@@ -8,6 +8,8 @@ import { previewLink } from "./preview-links.js";
 import { pictureLoader } from "./preview-pictures.js";
 import { frameResources, remoteResource, resourceAddress, webAddress } from "./preview-resources.js";
 import { frameMedia } from "./preview-media.js";
+import { askYes } from "./ui.js";
+import { PDF_PRINT_WARN, pdfPrintBlob, openPrintDialog } from "./pdf-print.js";
 
 const readRange = createRangedFileReader({ call, collect });
 
@@ -259,6 +261,9 @@ export function pdfFrame(path, file, opts = {}) {
     const frame = sandboxFrame("pdf", "PDF", "pdf-frame.html");
     const renders = new Map();
     let renderID = 0, imageEditor = null, openingImages = false, stopped = false;
+    let printAsking = null;
+    const sayPrint = (busy, text = "Print") => frame.contentWindow?.postMessage({ type: "print-status", busy, text }, "*");
+    const mb = (bytes) => `${Math.round(bytes / (1 << 20))} MB`;
     const renderPage = (number, dpi, signal, thumbnail = false) => new Promise((resolve, reject) => {
         if (stopped || signal.aborted) { reject(new Error("Page rendering cancelled.")); return; }
         const id = `pdf-image-${++renderID}`;
@@ -296,6 +301,32 @@ export function pdfFrame(path, file, opts = {}) {
             queue.shift()?.();
         }
     };
+    const printPDF = async () => {
+        if (stopped || printAsking) return;
+        if (file.size > PDF_PRINT_WARN) {
+            const ok = await askYes(`Printing fetches the whole PDF (${mb(file.size)}). Continue?`, "Print");
+            if (!ok || stopped) return;
+        }
+        printAsking = new AbortController();
+        const signal = printAsking.signal;
+        sayPrint(true, "Fetching to print…");
+        try {
+            const blob = await pdfPrintBlob(path, file, {
+                signal,
+                read: readRange,
+                onProgress: (got, size) => sayPrint(true, `Fetching to print… ${mb(got)} / ${mb(size)}`),
+            });
+            signal.throwIfAborted();
+            sayPrint(true, "Opening print dialog…");
+            if (!openPrintDialog(blob)) throw new Error("the browser blocked the print window");
+            sayPrint(false, "Print");
+        } catch (err) {
+            if (signal.aborted || stopped) sayPrint(false, "Print");
+            else sayPrint(false, `Print failed: ${err.message}`);
+        } finally {
+            if (printAsking?.signal === signal) printAsking = null;
+        }
+    };
     const answer = async (m) => {
         if (m.type === "ready") {
             ready = true;
@@ -318,13 +349,15 @@ export function pdfFrame(path, file, opts = {}) {
                     current: Number.isSafeInteger(m.current) && m.current >= 1 && m.current <= m.pages ? m.current : 1,
                     renderPage, closed: () => { imageEditor = null; } });
             } finally { openingImages = false; }
+        } else if (m.type === "print") {
+            printPDF();
         }
     };
     bindFrame(frame, answer, opts, () => ready);
     frame.renderPage = renderPage;
     const stop = frame.stop;
     frame.stop = () => {
-        stopped = true; imageEditor?.stop(); stop();
+        stopped = true; printAsking?.abort(); imageEditor?.stop(); stop();
         for (const finish of [...renders.values()]) finish("PDF preview closed.");
     };
     return frame;

@@ -418,7 +418,7 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         await ev(`(() => { const b = document.querySelector(".hex-disasm-bitness"); b.value = "x86-64"; b.dispatchEvent(new Event("change")); })()`);
         // A jump, eb 4e at 0x30, to 0x80: its address a link, there.
         await find("hex", "eb 4e");
-        await waitFor(`${status}.endsWith("Found at 0x30.") && ${disassembled} === "00000030 jmp short 0000000000000080h" && !!document.querySelector(".hex-disasm-target")`, "a jump, its target a link");
+        await waitFor(`${status}.endsWith("Found at 0x30.") && ${disassembled} === "00000030 jmp short 0x80" && !!document.querySelector(".hex-disasm-target")`, "a jump, its target a link");
         await ev(`document.querySelector(".hex-disasm-target").click()`);
         await waitFor(`${selected} === "128" && ${disassembled}.startsWith("00000080 ")`, "the jump's target, its code shown");
         await find("hex", "55 48 89 e5 c3", true);

@@ -30,7 +30,7 @@ const (
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-info.js model-3mf.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var pageFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -141,7 +141,7 @@ func (g *server) highlightAssets() assets { return assets{"highlight", g.highlig
 // which assembles too), capstone (ARM32 and Thumb), arm64 (fARM64, which
 // assembles too), and riscv and mips (riscv-asm.js and mips-asm.js, which
 // assemble too, and have no files).
-var disasmEngines = []struct {
+var disasmEngines = [...]struct {
 	name  string
 	files []string
 }{
@@ -151,6 +151,9 @@ var disasmEngines = []struct {
 	{"riscv", nil},
 	{"mips", nil},
 }
+
+// disasmSets is each disassembler's files, by its place in disasmEngines.
+type disasmSets [len(disasmEngines)]assetSet
 
 // disasmDisabled is the disassemblers that value, as -disasm-disable takes
 // it, turns off, in disasmEngines' order: none of them for "none" (or
@@ -185,32 +188,71 @@ func disasmDisabled(value string) ([]string, error) {
 	return names, nil
 }
 
-// disasmOffJS is what the hex view and its worker are told is turned off:
-// the list their scripts have empty, filled in.
-func (g *server) disasmOffJS(js []byte) []byte {
+// disasmPath is where disassembler i of disasmEngines has its files served,
+// a path of its own (as the demangler's is): "" if it has none to serve,
+// being turned off (it's in off), a script with no files, or one whose
+// files can't all be read (no -disasm-dir, or one from before it was
+// added). Whether one is to be had and where its files are both come from
+// this, the one reading of them (see assetSet.load, which keeps what it
+// read), so the page and the worker are never told differently.
+func (g *server) disasmPath(i int, off []string) string {
+	e := disasmEngines[i]
+	if g.disasmDir == "" || len(e.files) == 0 || slices.Contains(off, e.name) {
+		return ""
+	}
+	tag, _ := g.disasm[i].load(assets{"disasm", g.disasmDir, e.files})
+	return tag
+}
+
+// disasmUnavailable is the disassemblers that aren't to be had, in
+// disasmEngines' order: those turned off, and those whose files can't be
+// read. Each is its own: one's files being missing doesn't take another's
+// with them.
+func (g *server) disasmUnavailable() []string {
 	off, _ := disasmDisabled(g.disasmOff)
-	list, _ := json.Marshal(off)
+	names := []string{}
+	for i, e := range disasmEngines {
+		if slices.Contains(off, e.name) || len(e.files) > 0 && g.disasmPath(i, off) == "" {
+			names = append(names, e.name)
+		}
+	}
+	return names
+}
+
+// disasmOffJS is what the hex view and its worker are told isn't to be had
+// (see disasmUnavailable): the list their scripts have empty, filled in, so
+// the page offers only the instruction sets it can show.
+func (g *server) disasmOffJS(js []byte) []byte {
+	list, _ := json.Marshal(g.disasmUnavailable())
 	return bytes.Replace(js, []byte("const DISASM_OFF = [];"), []byte("const DISASM_OFF = "+string(list)+";"), 1)
 }
 
-// The files of the disassemblers that are on: those of one turned off
-// aren't served, nor needed to be there.
-func (g *server) disasmAssets() assets {
+// disasmPaths is the worker's script with where each disassembler's files
+// are served (see disasmPath), or a path that's nothing's for one that
+// isn't to be had.
+func (g *server) disasmPaths(js []byte) []byte {
 	off, _ := disasmDisabled(g.disasmOff)
-	names := []string{}
-	for _, e := range disasmEngines {
-		if !slices.Contains(off, e.name) {
-			names = append(names, e.files...)
+	for i, e := range disasmEngines {
+		path := g.disasmPath(i, off)
+		if path == "" {
+			path = "disasm-missing"
+		}
+		for _, file := range e.files {
+			js = bytes.ReplaceAll(js, []byte(`"./disasm/`+file+`"`), []byte(`"./`+path+`/`+file+`"`))
 		}
 	}
-	return assets{"disasm", g.disasmDir, names}
+	return js
 }
 
-func (g *server) disasmPath() string {
-	if g.disasmDir == "" || len(g.disasmAssets().names) == 0 {
-		return "disasm-missing"
+// serveDisasm serves name if it's one of a disassembler's files.
+func (g *server) serveDisasm(w http.ResponseWriter, r *http.Request, name string) bool {
+	off, _ := disasmDisabled(g.disasmOff)
+	for i, e := range disasmEngines {
+		if g.disasmPath(i, off) != "" && g.disasm[i].serve(w, r, assets{"disasm", g.disasmDir, e.files}, name) {
+			return true
+		}
 	}
-	return g.disasm.path(g.disasmAssets())
+	return false
 }
 
 // The demangler the same worker loads, for the names of a program's C++
@@ -237,6 +279,20 @@ func (g *server) inpaintPath() string {
 		return "inpaint-missing"
 	}
 	return g.inpaint.path(g.inpaintAssets())
+}
+
+// three.js, for the 3D preview (model-view.js and model-worker.js): what
+// the Dockerfile's three stage (scripts/three/vendor.sh) copies, in one
+// folder, its imports pointing within it.
+var threeFiles = []string{"three.module.js", "three.core.js", "OrbitControls.js", "STLLoader.js", "OBJLoader.js",
+	"PLYLoader.js", "AMFLoader.js", "fflate.module.js", "LICENSE.three"}
+
+func (g *server) threeAssets() assets { return assets{"three", g.threeDir, threeFiles} }
+func (g *server) threePath() string {
+	if g.threeDir == "" {
+		return "three-missing"
+	}
+	return g.three.path(g.threeAssets())
 }
 
 // MobileSAM, for magic select: an encoder run once per picture, and a
@@ -348,7 +404,10 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Security-Policy", disasmWorkerCSP)
 		js, _ := pageFiles.ReadFile(name)
 		js = bytes.ReplaceAll(js, []byte(`"./demangle/`), []byte(`"./`+g.demanglePath()+`/`))
-		w.Write(bytes.ReplaceAll(g.disasmOffJS(js), []byte(`"./disasm/`), []byte(`"./`+g.disasmPath()+`/`)))
+		w.Write(g.disasmPaths(g.disasmOffJS(js)))
+	case name == "model-view.js" || name == "model-worker.js":
+		js, _ := pageFiles.ReadFile(name)
+		w.Write(bytes.ReplaceAll(js, []byte(`"./three/`), []byte(`"./`+g.threePath()+`/`)))
 	case name == "hex-view.js":
 		js, _ := pageFiles.ReadFile(name)
 		w.Write(g.disasmOffJS(js))
@@ -370,7 +429,8 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case g.inpaintDir != "" && g.inpaint.serve(w, r, g.inpaintAssets(), name):
 	case g.backgroundDir != "" && g.background.serve(w, r, g.backgroundAssets(), name):
 	case g.segmentDir != "" && g.segment.serve(w, r, g.segmentAssets(), name):
-	case g.disasmDir != "" && len(g.disasmAssets().names) > 0 && g.disasm.serve(w, r, g.disasmAssets(), name):
+	case g.threeDir != "" && g.three.serve(w, r, g.threeAssets(), name):
+	case g.serveDisasm(w, r, name):
 	case g.disasmDir != "" && g.demangle.serve(w, r, g.demangleAssets(), name):
 	case g.servePDFJS(w, r, name):
 	case g.serveKaitai(w, r, name):

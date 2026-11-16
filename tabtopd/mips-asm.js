@@ -16,16 +16,9 @@
 (function (root) {
     const GPR = "zero at v0 v1 a0 a1 a2 a3 t0 t1 t2 t3 t4 t5 t6 t7 s0 s1 s2 s3 s4 s5 s6 s7 t8 t9 k0 k1 gp sp fp ra".split(" ");
 
-    // A number as it's shown: in hex from ten; and read: hex or not, BigInt.
-    const shown = (v) => (v < 0 ? "-" : "") + (Math.abs(v) > 9 ? `0x${Math.abs(v).toString(16)}` : `${Math.abs(v)}`);
-    function number(text) {
-        const m = /^([+-]?)(0x[0-9a-f]+|\d+)$/.exec(text);
-        return m ? (m[1] === "-" ? -BigInt(m[2]) : BigInt(m[2])) : null;
-    }
-    const small = (text) => {
-        const v = number(text);
-        return v != null && v >= -(2n ** 53n) && v <= 2n ** 53n ? Number(v) : null;
-    };
+    // (How a number is shown and read, a line taken apart, and a name's
+    // rows gone through, are RISC-V's assembler's too: see asm-common.js.)
+    const { shown, number, small, parseLine, assembleLine } = root.asmCommon;
     const bits = (w, low, width) => (w >>> low) & (2 ** width - 1);
     const at = (v, low, width) => (Number.isInteger(v) && v >= 0 && v < 2 ** width ? (v << low) >>> 0 : null);
 
@@ -66,7 +59,8 @@
         },
         u: (low, width, shift = 0, add = 0) => ({
             get: (w) => (bits(w, low, width) << shift) + add,
-            put: (v) => (Number.isInteger(v) && (v - add) % (1 << shift) === 0 ? at((v - add) >> shift, low, width) : null),
+            // (Divided, not shifted: a shift keeps only 32 bits, and a number past them isn't its low ones.)
+            put: (v) => (Number.isInteger(v) && (v - add) % (1 << shift) === 0 ? at((v - add) / (1 << shift), low, width) : null),
             show: shown,
             read: small,
         }),
@@ -1364,68 +1358,23 @@ sd fc000000 fc000000 G16,s0.16(G21) @64
         return { lines };
     }
 
-    // A line as typed: its name, and its operands, at the commas outside
-    // brackets; in small letters, without what's after ; # or //.
-    function parseLine(text) {
-        const line = text.toLowerCase().split(/[;#]|\/\//)[0].trim().replace(/\s+/g, " ");
-        const space = line.indexOf(" ");
-        const name = space < 0 ? line : line.slice(0, space), rest = space < 0 ? "" : line.slice(space + 1).replace(/ /g, "");
-        const typed = [];
-        let depth = 0, from = 0;
-        for (let i = 0; i < rest.length; i++) {
-            if (rest[i] === "(" || rest[i] === "[") depth++;
-            else if (rest[i] === ")" || rest[i] === "]") depth--;
-            else if (rest[i] === "," && depth === 0) {
-                typed.push(rest.slice(from, i));
-                from = i + 1;
-            }
-        }
-        if (rest) typed.push(rest.slice(from));
-        return { name, operands: typed };
-    }
     // The line's four bytes at address, and how it's then shown: {bytes,
     // text}. It throws what's wrong with a line that isn't an instruction
-    // here (what was typed in quotes where it's first, as the page gives
-    // what's said a capital). was, the bytes there now: kept, if they're
-    // shown as the line is (a word can have bits that aren't shown).
+    // here (see assembleLine, in asm-common.js). was, the bytes there now:
+    // kept, if they're shown as the line is (a word can have bits that
+    // aren't shown).
     function assemble(text, address, mode, was) {
         const { xlen, little } = modeOf(mode);
-        if (text.length > 200) throw new Error("That's too long to be an instruction.");
-        const { name, operands: typed } = parseLine(text);
-        if (!name) throw new Error("There's no instruction there.");
-        const rows = NAMED.get(name);
-        if (!rows) throw new Error(`There's no instruction called ${name}.`);
-        const here = rows.filter((r) => !r.xlen || r.xlen === xlen);
-        if (!here.length) throw new Error(`"${name}" is only in MIPS${rows[0].xlen}.`);
-        const counted = here.filter((r) => r.operands.length === typed.length);
-        if (!counted.length) {
-            const counts = [...new Set(here.map((r) => r.operands.length))].sort();
-            throw new Error(`"${name}" takes ${counts.join(" or ")} operand${counts.length === 1 && counts[0] === 1 ? "" : "s"}, not ${typed.length}.`);
-        }
-        let why = null;
-        for (const row of counted) {
-            const context = { address, targets: [] }, kinds = made(row);
-            let word = row.match, wrong = null;
-            for (let i = 0; i < typed.length && !wrong; i++) {
-                const values = kinds[i].read(typed[i], context);
-                if (values == null) wrong = `${typed[i] ? `"${typed[i]}"` : "Nothing"} isn't what ${name} takes ${["first", "second", "third", "fourth", "fifth"][i]}.`;
-                else {
-                    const next = values.some(Number.isNaN) ? null : kinds[i].put(values, word);
-                    if (next == null) wrong = `"${typed[i]}" isn't one ${name} can have there.`;
-                    else word = next;
-                }
-            }
-            // As it's then read: the same instruction, by this name or another's.
-            const line = wrong ? null : lineOf(word, address, xlen);
-            if (!wrong && line.text === "(bad)") wrong = "That isn't an instruction as it would be written.";
-            if (wrong) {
-                why ??= wrong;
-                continue;
-            }
-            const there = was?.length === 4 && lineOf(wordAt(was, 0, little), address, xlen).text === line.text;
-            return { bytes: there ? Array.from(was) : bytesOf(word, little), text: line.text };
-        }
-        throw new Error(why);
+        return assembleLine(text, {
+            named: NAMED, xlen, family: "MIPS", kinds: made, context: () => ({ address, targets: [] }),
+            put: (kind, values, word) => (values.some(Number.isNaN) ? null : kind.put(values, word)),
+            done(row, word) {
+                const line = lineOf(word, address, xlen);
+                if (line.text === "(bad)") return null;
+                const there = was?.length === 4 && lineOf(wordAt(was, 0, little), address, xlen).text === line.text;
+                return { bytes: there ? Array.from(was) : bytesOf(word, little), text: line.text };
+            },
+        });
     }
 
     root.mips = { disassemble, assemble, parseLine };

@@ -9,10 +9,12 @@
 // changes undone); saved over the file in its own format, re-encoded, with
 // its metadata or without (or, changed in no other way, without it,
 // losslessly: see image-meta.js); or as a copy, in another format.
+import { openExif } from "./image-exif-view.js";
 import { el } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { humanBytes } from "./file-format.js";
 import { knownFrom, metadataOf, stripped, withMetadata } from "./image-meta.js";
+import { HEIF_TYPES } from "./image-heif.js";
 import { clipSelection, maskPath, newMaskMark, extendMaskMark, enclosedFill, glyphCaption, brushControls, imageMaskPoint } from "./image-mask.js";
 import { inpaintTool } from "./image-inpaint.js";
 import { drawTool, drawShape } from "./image-draw.js";
@@ -26,6 +28,7 @@ import { Segmenter, selectionMark, objectBounds } from "./image-segment.js";
 
 const FORMATS = {
     "image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP", "image/gif": "GIF", "image/avif": "AVIF",
+    "image/heic": "HEIC", "image/heif": "HEIF",
     "image/bmp": "BMP", "image/x-icon": "ICO", "image/vnd.microsoft.icon": "ICO", "image/svg+xml": "SVG", "application/pdf": "PDF",
 };
 // What Save writes, in the format it was: what browsers' canvases encode.
@@ -248,13 +251,18 @@ export function savePlan(it, { type, kinds, orientation }) {
 
 // imageView shows the picture file, held in blob at url; it resolves once
 // it's decoded, to the view (with .editable and .startEditing), or to a
-// note that it can't be shown.
-export async function imageView({ file, blob, url }) {
+// note that it can't be shown. shown, if given, is the picture as it's
+// shown and edited (a HEIC's, decoded by the server, see heif.go): blob
+// stays the file, whose metadata is read and written.
+export async function imageView({ file, blob, url, shown = null, saveMetadata = null }) {
     const type = blob?.type || file.type;
-    const img = el("img", { src: url, alt: file.name, draggable: false, className: "image-content" });
+    let shownURL = shown ? URL.createObjectURL(shown) : null;
+    const pixels = () => shown ?? blob;
+    const img = el("img", { src: shownURL ?? url, alt: file.name, draggable: false, className: "image-content" });
     try {
         await img.decode();
     } catch {
+        if (shownURL) URL.revokeObjectURL(shownURL);
         return el("p", { className: "error", textContent: "This browser can't show this picture. Download it instead." });
     }
     // Its first bytes say whether it moves, and a JPEG's, what metadata it
@@ -262,7 +270,7 @@ export async function imageView({ file, blob, url }) {
     let probe = blob ? new Uint8Array(await blob.slice(0, PROBE_BYTES).arrayBuffer()) : new Uint8Array();
     const moving = animated(probe, type);
     if (blob && !knownFrom(probe, type, blob.size)) probe = new Uint8Array(await blob.arrayBuffer());
-    const metaKinds = metadataOf(probe, type).kinds;
+    let metaKinds = metadataOf(probe, type).kinds;
     probe = null;
     let width = img.naturalWidth || DEFAULT_SIZE[0], height = img.naturalHeight || DEFAULT_SIZE[1];
     img.style.width = `${width}px`;
@@ -280,6 +288,32 @@ export async function imageView({ file, blob, url }) {
     const fitButton = button("fit-page", "Fit it in the window (0)", "image-fit");
     const actualButton = button("actual-size", "Actual size: a pixel for a pixel (1)", "image-actual");
     const info = el("span", { className: "hint image-info" });
+    let exifDialog, metadataURL, viewStopped = false;
+    const showExif = () => {
+        if (view.classList.contains("editing")) return;
+        exifDialog?.close();
+        exifDialog = openExif({ name: file.name, blob, save: saveMetadata ? async (next, signal) => {
+            await saveMetadata(next, signal);
+            signal.throwIfAborted();
+            blob = next; file.size = next.size;
+            metaKinds = metadataOf(new Uint8Array(await next.arrayBuffer()), type).kinds;
+            // A HEIF picture's turn is its own, not its EXIF's: as it was.
+            if (HEIF_TYPES.has(type)) { if (!viewStopped) showInfo(); return; }
+            // Orientation is editable metadata: refresh the decoded image so
+            // the preview immediately follows its new display orientation.
+            const nextURL = URL.createObjectURL(next);
+            if (metadataURL) URL.revokeObjectURL(metadataURL);
+            metadataURL = nextURL; img.src = nextURL;
+            try {
+                await img.decode();
+                if (!viewStopped) {
+                    width = img.naturalWidth || DEFAULT_SIZE[0]; height = img.naturalHeight || DEFAULT_SIZE[1];
+                    img.style.width = `${width}px`; img.style.height = `${height}px`;
+                    showInfo(); if (fitting) fit(); else place();
+                }
+            } catch { if (!viewStopped) showInfo(); }
+        } : null });
+    };
     const editBar = el("span", { className: "image-edit", hidden: true });
     const bar = el("div", { className: "image-bar" },
         el("span", { className: "image-zoom-group", role: "group", ariaLabel: "Zoom" }, zoomOut, zoomLabel, zoomIn), fitButton, actualButton, editBar, info);
@@ -287,6 +321,7 @@ export async function imageView({ file, blob, url }) {
     const stage = el("div", { className: "image-stage", tabIndex: 0, ariaLabel: file.name }, img, cropBox);
     const hintBar = el("div", { className: "image-tool-hints", hidden: true });
     const view = el("div", { className: "image-view" }, bar, hintBar, stage);
+    view.openExif = blob && (["image/jpeg", "image/png", "image/webp"].includes(type) || HEIF_TYPES.has(type)) ? showExif : null;
     const showInfo = () => { info.textContent = describe({ width, height, type, size: file.size, moving, meta: view.classList?.contains("editing") ? [] : metaKinds }); };
     showInfo();
 
@@ -439,7 +474,7 @@ export async function imageView({ file, blob, url }) {
     // Editable, a picture that stays still, and isn't too big for a canvas:
     // saved over the file if it's a format canvases write; else as a copy.
     view.editable = !moving && type !== "image/svg+xml" && width * height <= MAX_EDIT_PIXELS && width <= MAX_SIDE && height <= MAX_SIDE;
-    view.stop = () => { resized.disconnect(); window.removeEventListener("resize", relayout); };
+    view.stop = () => { viewStopped = true; if (metadataURL) URL.revokeObjectURL(metadataURL); if (shownURL) URL.revokeObjectURL(shownURL); exifDialog?.close(); resized.disconnect(); window.removeEventListener("resize", relayout); };
     fit();
     requestAnimationFrame(() => (fitting ? fit() : place()));
 
@@ -454,7 +489,7 @@ export async function imageView({ file, blob, url }) {
         let source, bytes;
         try {
             bytes = new Uint8Array(await blob.arrayBuffer());
-            source = await createImageBitmap(blob, { imageOrientation: "from-image" });
+            source = await createImageBitmap(pixels(), { imageOrientation: "from-image" });
         } catch {
             return null;
         }

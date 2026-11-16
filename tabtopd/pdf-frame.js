@@ -23,7 +23,9 @@
 // page's text only with all it holds, its pictures too, so that fetches as
 // much of the file as showing every page would. So it stops to ask before
 // going on, once it has fetched FIND_BYTES, or found no text at all in the
-// first pages (a scanned PDF). It shows each match, highlighted. The
+// first pages (a scanned PDF). It shows each match, highlighted. Print asks
+// the parent to fetch the whole file and open the system print dialog
+// ({type: "print"}; the parent answers with {type: "print-status"}). The
 // frame tells the page {type: "rendered", report} as it goes: how many pages,
 // which are drawn, with text, what was found, and anything that went wrong.
 
@@ -41,6 +43,7 @@
 
     let restoreAt = null;
     let restoredY = 0;
+    let printButton = null, printBusy = false;
     const waiting = new Map();
     let lastId = 0;
     function ask(message) {
@@ -73,6 +76,11 @@
         } else if (m.type === "image-cancel" && typeof m.id === "string") {
             const request = imageRenders.get(m.id);
             if (request) { request.cancelled = true; request.task?.cancel(); }
+        } else if (m.type === "print-status" && printButton) {
+            printBusy = !!m.busy;
+            printButton.disabled = printBusy;
+            printButton.title = m.text || "Print";
+            printButton.setAttribute("aria-label", printButton.title);
         }
     });
 
@@ -597,7 +605,14 @@
         const images = button("", "Edit or export pages as images", () => page.postMessage({ type: "edit-images", pages: doc.numPages, current: currentPage() }, "*"));
         images.className = "edit-images";
         images.innerHTML = iconSVG("inpaint");
-        bar.replaceChildren(zooming, finding, images);
+        printButton = button("", "Print", () => {
+            if (printBusy || !doc) return;
+            page.postMessage({ type: "print" }, "*");
+        });
+        printButton.className = "print";
+        printButton.innerHTML = iconSVG("print");
+        printButton.disabled = printBusy;
+        bar.replaceChildren(zooming, finding, images, printButton);
         showWhere();
     }
 

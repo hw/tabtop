@@ -1,7 +1,15 @@
 {
+  "3mf": {
+    "kind": "model",
+    "mime": "model/3mf"
+  },
   "aac": {
     "kind": "audio",
     "mime": "audio/aac"
+  },
+  "amf": {
+    "kind": "model",
+    "mime": "application/x-amf"
   },
   "avif": {
     "epubPicture": true,
@@ -25,10 +33,30 @@
     "kind": "audio",
     "mime": "audio/flac"
   },
+  "gco": {
+    "kind": "model",
+    "mime": "text/x-gcode"
+  },
+  "gcode": {
+    "kind": "model",
+    "mime": "text/x-gcode"
+  },
   "gif": {
     "epubPicture": true,
     "kind": "image",
     "mime": "image/gif"
+  },
+  "heic": {
+    "kind": "image",
+    "mime": "image/heic"
+  },
+  "heif": {
+    "kind": "image",
+    "mime": "image/heif"
+  },
+  "hif": {
+    "kind": "image",
+    "mime": "image/heif"
   },
   "ico": {
     "kind": "image",
@@ -68,6 +96,10 @@
     "kind": "video",
     "mime": "video/mp4"
   },
+  "obj": {
+    "kind": "model",
+    "mime": "model/obj"
+  },
   "oga": {
     "kind": "audio",
     "mime": "audio/ogg"
@@ -88,6 +120,10 @@
     "kind": "pdf",
     "mime": "application/pdf"
   },
+  "ply": {
+    "kind": "model",
+    "mime": "application/x-ply"
+  },
   "png": {
     "epubPicture": true,
     "kind": "image",
@@ -100,6 +136,10 @@
   "sqlite3": {
     "kind": "sqlite",
     "mime": "application/vnd.sqlite3"
+  },
+  "stl": {
+    "kind": "model",
+    "mime": "model/stl"
   },
   "svg": {
     "epubPicture": true,

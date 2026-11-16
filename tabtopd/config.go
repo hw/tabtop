@@ -33,6 +33,7 @@ type serverConfig struct {
 	inpaintDir                            string // MI-GAN ONNX model for image repairs; "" for none
 	backgroundDir                         string // ONNX Runtime Web and U2NetP for image background removal; "" for none
 	segmentDir                            string // MobileSAM ONNX models, for magic select in image editing; "" for none
+	threeDir                              string // three.js, for 3D previews of models and G-code; "" for none
 	disasmDir                             string // iced-x86 for the browser, for disassembly in hex previews; "" for none
 	disasmOff                             string // the disassemblers turned off: "none", "all", or of x86, arm64, capstone, riscv and mips (see disasmDisabled)
 	sessionMax, sessionIdle               time.Duration
@@ -167,5 +168,6 @@ func newServer(c serverConfig) (*server, error) {
 		}
 		g.audio = newAudioHub(c.audioSink, c.micSink, c.audioBitrate, devices)
 	}
+	g.startBootstrapRotation()
 	return g, nil
 }

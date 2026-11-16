@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { gzipSync } from "node:zlib";
 
@@ -20,6 +20,8 @@ const self = { postMessage: (message) => { result = JSON.parse(JSON.stringify(me
 const worker = {
     self, Uint8Array, BigInt,
     importScripts(path) {
+        // (What it has the same as MIPS's, beside it, first.)
+        if (path === "./asm-common.js") return runInNewContext(readFileSync(resolve(dirname(scriptFile), "asm-common.js"), "utf8"), { self });
         assert.equal(path, "./riscv-asm.js");
         imports++;
         runInNewContext(script, { self });
@@ -137,6 +139,8 @@ const DIFFERENCES = {
         const m = /^((?:c\.)?(?:j|jal|b\w+)(?: .*[ ,]| ))(-?)(0x[0-9a-f]+|\d+)$/.exec(l.text);
         return !m || l.targets.length ? null : { ...l, text: `${m[1]}0x${BigInt.asUintN(64, BigInt(at) + valueOf(m[2], m[3])).toString(16)}` };
     },
+    // c.lui of nothing isn't an instruction (it's kept for other uses): Capstone showed one.
+    "no c.lui of 0": (l) => (/^c\.lui \w+, 0$/.test(l.text) ? { length: 2, text: "(bad)", targets: [] } : null),
     // RV32 has no shift by 32 or more: Capstone showed one.
     "no RV32 shift by more than 31": (l, at, xlen) => (xlen === 32 && /^(c\.)?s(ll|rl|ra)i /.test(l.text) && Number(l.text.split(", ").pop()) > 31 ? { length: 2, text: "(bad)", targets: [] } : null),
 };
@@ -149,6 +153,11 @@ function expected(mode, xlen, bytes, address) {
         differed.set(name, differed.get(name) + 1);
         l = other;
     }
+    // What isn't an instruction is as long as its first bytes say one there
+    // is (four, for low bits 11 that aren't 11111: one of an extension that
+    // isn't read), so the half of it isn't read as another: Capstone gave
+    // two bytes of it.
+    if (l.text === "(bad)" && bytes.length >= 4 && (bytes[0] & 3) === 3 && (bytes[0] & 0x1f) !== 0x1f) l = { ...l, length: 4 };
     return l;
 }
 
@@ -269,7 +278,7 @@ for (const [mode, xlen] of MODES) {
         for (let at = 0; at < length;) {
             const l = length - at < 2 ? { length: 1, text: "(bad)", targets: [] } : expected(mode, xlen, bytes.subarray(at), address + at);
             // (Capstone gives the whole of a tail it can't read: here, two bytes of it, then the one.)
-            if (l.text === "(bad)") l.length = Math.min(2, length - at);
+            if (l.text === "(bad)" && l.length !== 4) l.length = Math.min(2, length - at);
             want.push(line(address + at, l.length, l.text, l.targets));
             at += l.length;
         }

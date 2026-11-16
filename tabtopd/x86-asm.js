@@ -20,7 +20,8 @@
     // Other names of the same condition, as other assemblers write them.
     const CONDITIONS = { z: "e", nz: "ne", c: "b", nae: "b", nc: "ae", nb: "ae", na: "be", nbe: "a", pe: "p", po: "np", nge: "l", nl: "ge", ng: "le", nle: "g" };
 
-    // A number: 0x1f, 1Fh (as shown; a digit first), decimal, or up to 8
+    // A number: 0x1f (as shown), 1Fh (as assemblers of Intel's syntax have
+    // it, and as it was shown once; a digit first), decimal, or up to 8
     // characters in quotes ('A', 'MZ': the first the lowest byte); BigInt.
     function parseNumber(text) {
         const q = /^'([\x20-\x7e]{1,8})'$/.exec(text.trim());
@@ -183,11 +184,38 @@
         return next + BigInt.asIntN(width, target - next);
     }
 
-    function makeAssembler(I) {
-        const K = I.OpCodeOperandKind, OK = I.OpKind, R = I.Register;
-        // As the disassembly shows it: cmpss xmm0,xmm1,4, not cmpneqss.
+    // What the disassembly is written with (see disasm-worker.js), and what's
+    // assembled is read back with: Intel's order of operands; numbers as the
+    // other instruction sets' are written (0x1f, not iced's own 1Fh; under
+    // ten, as they are; no zeros before them); and cmpss xmm0,xmm1,4, not
+    // the pseudo-op cmpneqss, so that what's shown can be typed back.
+    function formatterOf(I) {
         const formatter = new I.Formatter(I.FormatterSyntax.Intel);
         formatter.usePseudoOps = false;
+        formatter.hexPrefix = "0x";
+        formatter.hexSuffix = "";
+        formatter.uppercaseHex = false;
+        formatter.branchLeadingZeros = false;
+        return formatter;
+    }
+    // insn as it's shown, by formatter: where a near branch goes always in
+    // hex (0x8, not 8: it's an address, which the view makes a link), and
+    // as the file offset it's to, where that's past what the code's own
+    // addresses reach (see branchTarget).
+    function textOf(I, formatter, insn, bitness) {
+        const text = formatter.format(insn);
+        const kind = insn.opCount ? insn.opKind(0) : -1;
+        if (![I.OpKind.NearBranch16, I.OpKind.NearBranch32, I.OpKind.NearBranch64].includes(kind)) return text;
+        // (Where iced wrote it: the last number in the text that's it.)
+        const from = insn.nearBranchTarget;
+        let at = null;
+        for (const m of text.matchAll(/\b(?:0x[0-9a-f]+|\d+)\b/g)) if (BigInt(m[0]) === from) at = m;
+        return at ? `${text.slice(0, at.index)}0x${branchTarget(I, insn, bitness).toString(16)}${text.slice(at.index + at[0].length)}` : text;
+    }
+
+    function makeAssembler(I) {
+        const K = I.OpCodeOperandKind, OK = I.OpKind, R = I.Register;
+        const formatter = formatterOf(I);
         // Names, as the formatter shows them (and r8b... too), to registers;
         // registers to their kind (r8, r16... xmm, st...).
         const names = new Map(), kinds = new Map(), widths = new Map();
@@ -495,7 +523,7 @@
                     const same = !back.isInvalid && back.length === bytes.length && back.code === entry.code && formatter.format(back) === shown
                         && (ctx.target == null || branchTarget(I, back, bitness) === ctx.target)
                         && (ctx.shownAs ?? []).every((name) => shown.split(/[ ,]+/).includes(name));
-                    return same ? { bytes, shown, entry } : null;
+                    return same ? { bytes, shown, entry, text: textOf(I, formatter, back, bitness) } : null;
                 } finally {
                     back.free();
                     decoder.free();
@@ -576,9 +604,11 @@
             // The closest to the operands as typed.
             const closest = Math.min(...found.map((f) => f.missed));
             found.splice(0, found.length, ...found.filter((f) => f.missed === closest));
-            // Shown as typed (fsubr st(0),st, not st,st(0)): preferred.
-            const typed = String(text).toLowerCase().replace(/\s+/g, "");
-            const asTyped = (f) => f.shown.replace(/\s+/g, "") === typed;
+            // Shown as typed (fsubr st(0),st, not st,st(0)): preferred. (A
+            // number is the same whichever way it's written: 0x1f, 1Fh, 31.)
+            const plain = (s) => s.toLowerCase().replace(/\s+/g, "").replace(/\b(?:0x[0-9a-f]+|[0-9][0-9a-f]*h|\d+)\b/g, (n) => `0x${parseNumber(n).toString(16)}`);
+            const typed = plain(String(text));
+            const asTyped = (f) => plain(f.shown) === typed;
             // Memory without a size, and more than one size it could be: one
             // shown as typed, or the instruction there before; or say which,
             // if there's a name for each (a nop's size doesn't matter, nor
@@ -600,7 +630,7 @@
                 || (b.entry.code === wasCode) - (a.entry.code === wasCode)
                 || (ENCODING_RANK[a.entry.encoding] ?? 9) - (ENCODING_RANK[b.entry.encoding] ?? 9)
                 || a.entry.code - b.entry.code);
-            return { bytes: found[0].bytes, text: found[0].shown };
+            return { bytes: found[0].bytes, text: found[0].text };
         }
 
         return { assemble, register };
@@ -609,4 +639,6 @@
     root.makeAssembler = makeAssembler;
     root.x86Parse = { parseLine, parseNumber, aliases };
     root.x86BranchTarget = branchTarget;
+    root.x86Formatter = formatterOf;
+    root.x86Text = textOf;
 })(typeof self !== "undefined" ? self : globalThis);

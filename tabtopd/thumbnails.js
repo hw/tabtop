@@ -3,7 +3,7 @@
 // show is private: nothing of it is left in the browser once the page is
 // closed), by the file's root, path, size and time, so a file changed gets
 // a new one. Only a few are made at once, and only for what's shown.
-import { call, collect } from "./requests.js";
+import { call, collect, serverDecoded, SERVER_DECODED } from "./requests.js";
 import { typeOf } from "./preview-model.js";
 import { rootStorageScope } from "./fs-context.js";
 import { THUMBNAIL_CACHE } from "./session-state.js";
@@ -98,8 +98,21 @@ function turn(signal) {
     });
 }
 
-// make reads the file, and draws it small.
+// make reads the file, and draws it small. A HEIC picture, which most
+// browsers can't decode, is decoded by the server: its own thumbnail, if
+// it has one.
 async function make(path, e, signal) {
+    const blob = SERVER_DECODED.has(typeOf(e.name).type)
+        // (One that can't be decoded has none; one given up on, or not
+        // decoded now, the server busy, isn't remembered: it's tried again.)
+        ? await serverDecoded(path, { thumbnail: true, signal }).catch((err) => { signal.throwIfAborted(); return null; })
+        : await read(path, e, signal);
+    if (!blob) return null;
+    return draw(blob, signal);
+}
+
+// read is the file e at path, or null if it's too large to be drawn small.
+async function read(path, e, signal) {
     const t = await call({ type: "file", path }, { signal });
     const abort = () => t.close();
     signal.addEventListener("abort", abort, { once: true });
@@ -111,6 +124,11 @@ async function make(path, e, signal) {
         signal.removeEventListener("abort", abort);
         t.close();
     }
+    return blob;
+}
+
+// draw is the picture in blob, at most THUMB_SIZE on its longer side, as WebP.
+async function draw(blob, signal) {
     signal.throwIfAborted();
     // An <img> decodes all a browser shows, SVG included (whose scripts
     // don't run there), and applies EXIF orientation.

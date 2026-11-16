@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { hexDump, hexView, createHexRangeSource, decodeAt, selectionAs, parseSearch, patchRuns, encodeValue } from "../tabtopd/hex-view.js";
-import { typeOf, limits, binaryChunkSize, unknownTextSize } from "../tabtopd/preview-model.js";
+import { typeOf, limits, binaryChunkSize, unknownTextSize, textModel } from "../tabtopd/preview-model.js";
 import { iconSVG } from "../tabtopd/glyphs.js";
 
 test("hex rows preserve offsets, all bytes, ASCII boundaries and final-row alignment", () => {
@@ -214,7 +214,7 @@ test("unknown previews explicitly select text or hex, enforce limits and close t
         .replace(/^import .*;\n/gm, "").replace("export async function loadPreview", "async function loadPreview");
     let size = 3, closed = 0, collected = 0, content = Uint8Array.of(65, 0, 255);
     const requests = [];
-    const env = { typeOf, limits, binaryChunkSize, unknownTextSize, TextDecoder, Blob, join: (d, n) => `${d}/${n}`,
+    const env = { typeOf, limits, binaryChunkSize, unknownTextSize, textModel, TextDecoder, Blob, join: (d, n) => `${d}/${n}`,
         call: async req => { requests.push(req); return { reply: { size, mtime: 1, length: Math.min(size, req.length ?? size) }, close() { closed++; } }; },
         collect: async (_t, _size, _progress, type) => { collected++; return new Blob([content], { type }); } };
     runInNewContext(`${source}\nglobalThis.loadPreview = loadPreview;`, env);
@@ -227,6 +227,29 @@ test("unknown previews explicitly select text or hex, enforce limits and close t
         assert.deepEqual(requests.at(-1).path, "folder/sample.unknown");
     }
     assert.equal(closed, 2);
+    // A .obj that's a compiler's, not a model: its bytes. One that's a
+    // model, drawn.
+    const obj = await env.loadPreview("folder", "main.obj");
+    assert.equal(obj.file.kind, "hex");
+    assert.equal(obj.file.modelUnavailable, true);
+    content = new TextEncoder().encode("v 0 0 0\n");
+    size = content.length;
+    assert.equal((await env.loadPreview("folder", "cube.obj")).file.kind, "model");
+    // G-code as text: its first part, however big it is.
+    size = limits.model;
+    const asText = await env.loadPreview("folder", "part.gcode", { mode: "text" });
+    assert.equal(asText.file.kind, "text");
+    assert.equal(asText.file.truncated, true);
+    assert.equal(requests.at(-1).length, unknownTextSize);
+    // Too big to draw: G-code as text, an STL as its bytes; neither offered drawn.
+    size = limits.model + 1;
+    const bigGCode = await env.loadPreview("folder", "part.gcode");
+    assert.deepEqual([bigGCode.file.kind, bigGCode.file.truncated, bigGCode.file.modelUnavailable], ["text", true, true]);
+    content = Uint8Array.of(0, 1, 2);
+    const bigSTL = await env.loadPreview("folder", "part.stl");
+    assert.deepEqual([bigSTL.file.kind, bigSTL.file.modelUnavailable], ["hex", true]);
+    content = Uint8Array.of(65, 0, 255);
+    closed = 2; collected = 2;  // (as before these)
     // Too big for its own preview (or text): hex, from its first part,
     // the first transfer closed unread.
     size = limits.text + 1;
@@ -668,7 +691,7 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         let extra = [];
         const code = Uint8Array.from({ length: 100 }, (_, i) => i);
         const view = hexView(code, { disassemble });
-        const { content, inspector } = parts(view);
+        const { controls, content, inspector } = parts(view);
         const disasm = inspector.children.at(-1);
         const [lines, note] = disasm.children;
         // Values | Disassembly, and the instruction set at their right.
@@ -730,20 +753,28 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         assert.deepEqual([inspector.dataset.tab, asked.length, asked.at(-1).address], ["disasm", before + 1, 48]);
         // Where an instruction goes, a link there, its code then shown; a
         // number that's not where it goes, or past the file's end, not.
-        extra = [{ offset: 53, length: 2, text: "jmp short 0050h", targets: [0x50] }, { offset: 55, length: 2, text: "mov al,50h", targets: [] },
-            { offset: 57, length: 5, text: "call 0000000000001000h", targets: [0x1000] }];
+        extra = [{ offset: 53, length: 2, text: "jmp short 0x50", targets: [0x50] }, { offset: 55, length: 2, text: "mov al,0x50", targets: [] },
+            { offset: 57, length: 5, text: "call 0x1000", targets: [0x1000] }];
         bitness.value = "x86-16";
         bitness.listeners.change();
         await settle();
         const texts = lines.children.slice(3).map((li) => li.children[2]);
-        assert.deepEqual(texts.map((t) => t.textContent), ["jmp short 0050h", "mov al,50h", "call 0000000000001000h"]);
+        assert.deepEqual(texts.map((t) => t.textContent), ["jmp short 0x50", "mov al,0x50", "call 0x1000"]);
         assert.deepEqual(texts.map((t) => t.children.filter((c) => c.className === "hex-disasm-target").length), [1, 0, 0]);
         const link = texts[0].children[1];
-        assert.deepEqual([link.textContent, link.value], ["0050h", "80"]);
+        assert.deepEqual([link.textContent, link.value], ["0x50", "80"]);
+        const back = controls.children.find((c) => c.className.includes("hex-back"));
+        assert.equal(back.hidden, true);
         lines.listeners.click({ target: link });
         await settle();
         assert.equal(asked.at(-1).address, 80);
         assert.match(note.textContent, /^The 20 bytes from 0x50;/);
+        assert.equal(back.hidden, false);
+        // Back restores the selection that followed the link.
+        await back.listeners.click();
+        await settle();
+        assert.equal(asked.at(-1).address, 48);
+        assert.equal(back.hidden, true);
         valuesTab.listeners.click();
         assert.equal(inspector.dataset.tab, "values");
     } finally {
@@ -1173,7 +1204,7 @@ test("editing RISC-V: assembled as its mode, of two bytes or four; c.nop fills w
     try {
         // The worker's own script (riscv-asm.js), as the worker calls it.
         const context = {};
-        runInNewContext(readFileSync(new URL("../tabtopd/riscv-asm.js", import.meta.url), "utf8"), { self: context });
+        for (const file of ["asm-common.js", "riscv-asm.js"]) runInNewContext(readFileSync(new URL(`../tabtopd/${file}`, import.meta.url), "utf8"), { self: context });
         const { riscv } = context;
         // addi a0, a0, 1; c.nop; ret; c.nop; and three bytes that aren't one.
         const code = Uint8Array.from([0x13, 0x05, 0x15, 0x00, 0x01, 0x00, 0x67, 0x80, 0x00, 0x00, 0x01, 0x00, 0xff, 0xff, 0xff, 0x00]);
@@ -1243,7 +1274,7 @@ test("editing MIPS: assembled as its mode, four bytes over four in its byte orde
     try {
         // The worker's own script (mips-asm.js), as the worker calls it.
         const context = {};
-        runInNewContext(readFileSync(new URL("../tabtopd/mips-asm.js", import.meta.url), "utf8"), { self: context });
+        for (const file of ["asm-common.js", "mips-asm.js"]) runInNewContext(readFileSync(new URL(`../tabtopd/${file}`, import.meta.url), "utf8"), { self: context });
         const { mips } = context;
         // Little-endian: addiu $v0, $zero, 1; jr $ra; nop; then three bytes that aren't one.
         const code = Uint8Array.from([0x01, 0x00, 0x02, 0x24, 0x08, 0x00, 0xe0, 0x03, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc]);
@@ -1317,7 +1348,7 @@ test("an instruction the selection ends inside is listed whole, and written over
         // push rbp at 0; a 5-byte call at 1-5; a 3-byte mov at 6-8; ret at 9.
         // Bytes 0-2 selected: the selection ends inside the call.
         const code = Uint8Array.from([0x55, 0xe8, 1, 2, 3, 4, 0x48, 0x89, 0xe5, 0xc3, 0, 0, 0, 0, 0, 0]);
-        const all = [{ offset: 0, length: 1, text: "push rbp" }, { offset: 1, length: 5, text: "call 0000000004030207h" },
+        const all = [{ offset: 0, length: 1, text: "push rbp" }, { offset: 1, length: 5, text: "call 0x4030207" },
             { offset: 6, length: 3, text: "mov rbp,rsp" }, { offset: 9, length: 1, text: "ret" }];
         const asked = [];
         // As the worker: whole instructions of the bytes it's given.
@@ -1345,7 +1376,7 @@ test("an instruction the selection ends inside is listed whole, and written over
         assert.deepEqual(asked.at(-1), [0, 16]);
         assert.equal(lines.children.length, 2);
         const [at, raw, text] = lines.children[1].children;
-        assert.deepEqual([at.textContent, raw.textContent, text.textContent], ["00000001", "e8 01 02 03 04", "call 0000000004030207h"]);
+        assert.deepEqual([at.textContent, raw.textContent, text.textContent], ["00000001", "e8 01 02 03 04", "call 0x4030207"]);
         // push rbp changed to 7 bytes: over the call, and into the mov after
         // it, the rest of which is nops; the ret after that is as it was.
         lines.listeners.click({ target: lines.children[0] });
@@ -1547,7 +1578,7 @@ test("a 64-bit program's addresses are shown whole, and a long name cut to fit, 
         const info = { ...programInfo(), mode: "x86-64", sections: [{ name: ".text", offset: 16, size: 16, address: base, memSize: 16, flags: "r-x" }],
             symbols: [{ name: long, address: base, size: 0, kind: "func" }] };
         const view = hexView(Uint8Array.from({ length: 64 }, (_, i) => i), { executable: async () => info,
-            disassemble: async (bytes, address) => [{ offset: address, length: 5, text: "call 0000000140001000h", targets: [base] }, { offset: address + 5, length: 1, text: "ret", targets: [] }] });
+            disassemble: async (bytes, address) => [{ offset: address, length: 5, text: "call 0x140001000", targets: [base] }, { offset: address + 5, length: 1, text: "ret", targets: [] }] });
         const { inspector } = parts(view);
         const [programAt, , disasm] = inspector.children.slice(-3);
         const settle = () => new Promise((r) => setTimeout(r, 200));
@@ -1561,7 +1592,7 @@ test("a 64-bit program's addresses are shown whole, and a long name cut to fit, 
         const cut = `${long.slice(0, 60)}…${long.slice(-16)}`;
         assert.deepEqual([label.textContent, label.title], [`${cut}:`, long]);
         const [, link, name] = call.children[2].children;
-        assert.deepEqual([link.textContent, link.value, name.textContent, name.title], ["0000000140001000h", "16", ` <${cut}>`, long]);
+        assert.deepEqual([link.textContent, link.value, name.textContent, name.title], ["0x140001000", "16", ` <${cut}>`, long]);
         assert.deepEqual([programAt.textContent, programAt.title], [`.text · address 0x140001000 · ${cut}`, long]);
         view.stop();
     } finally {

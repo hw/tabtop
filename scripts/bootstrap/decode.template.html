@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Local decode — audit this file</title>
+<!--
+  AUDIT SURFACE: this file, including the inlined noble PBKDF2+AES-GCM fallback
+  (for file:// where Chrome leaves crypto.subtle undefined). Intended use:
+    1) Save this decoder from <base>/bootstrap and the sealed pack from
+       <base>/bootstrap/pack (application/json).
+    2) Over a trusted channel, get: passcode + SHA-256 of decoder and/or pack.
+    3) Open this file (file:// is OK) , choose the pack JSON, enter the passcode.
+    4) Wrong/tampered pack => hard failure; nothing is run.
+
+  No fetch()/import() of network URLs (except optional same-document hash over http).
+-->
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  code, pre { font-family: ui-monospace, monospace; font-size: 13px; }
+  label { display: block; margin: 1rem 0 .35rem; }
+  input, button { font: inherit; padding: .4rem .6rem; }
+  input[type=password] { width: min(28rem, 100%); box-sizing: border-box; }
+  input[type=file] { max-width: 100%; }
+  #err { color: #b00020; white-space: pre-wrap; }
+  #ok { color: #0d6b0d; }
+  #meta { color: #444; font-size: 0.95em; }
+  iframe { width: 100%; height: 16rem; border: 1px solid #ccc; margin-top: 1rem; }
+</style>
+<h1>Local decode</h1>
+<p>This decoder has <strong>no client embedded</strong>. Download
+<code>&lt;base&gt;/bootstrap/pack</code>, verify hashes out of band, then unlock
+that JSON here. Works as <code>file://</code> (uses an inlined noble crypto
+fallback when WebCrypto is missing).</p>
+
+<label for="packFile">Sealed pack file (<code>tabtop-client.pack.json</code>)</label>
+<input id="packFile" type="file" accept=".pack,.txt,.json,text/plain,application/json">
+<p id="meta" hidden></p>
+
+<label for="pass">Passcode (from trusted channel)</label>
+<input id="pass" type="password" autocomplete="off" spellcheck="false">
+<p>
+  <button type="button" id="go">Unlock</button>
+  <button type="button" id="hashPage">Hash this page…</button>
+  <button type="button" id="hashPack">Hash pack file…</button>
+</p>
+<p id="err" hidden></p>
+<p id="ok" hidden></p>
+<p id="saveWrap" hidden>
+  <button type="button" id="saveFolder">Save to folder…</button>
+  <button type="button" id="saveZip">Download ZIP…</button>
+</p>
+<pre id="hashOut" hidden></pre>
+<iframe id="view" sandbox="allow-scripts" hidden title="Decrypted payload"></iframe>
+<!-- PACK_CRYPTO: @noble/ciphers AES-GCM + @noble/hashes PBKDF2 (MIT). Audit with the rest of this file. -->
+<script>
+/*PACK_CRYPTO_FALLBACK*/
+</script>
+<script type="module">
+// ----- BEGIN AUDIT: decoder logic; no remote loads -----
+const PACK = "/*PACK*/";
+
+let lastClient = null;
+
+function fail(msg) {
+  const err = document.getElementById("err");
+  err.hidden = false;
+  err.textContent = msg;
+  document.getElementById("ok").hidden = true;
+  document.getElementById("view").hidden = true;
+  document.getElementById("saveWrap").hidden = true;
+  lastClient = null;
+}
+
+function clientFileBytes(body) {
+  if (body && typeof body === "object" && typeof body.base64 === "string") {
+    return b64dec(body.base64);
+  }
+  return new TextEncoder().encode(String(body ?? ""));
+}
+
+/** Uncompressed ZIP (store), so a file:// unlock can still expand into a folder. */
+function zipStore(entries) {
+  const enc = new TextEncoder();
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  const u16 = (n) => {
+    const b = new Uint8Array(2);
+    new DataView(b.buffer).setUint16(0, n, true);
+    return b;
+  };
+  const u32 = (n) => {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setUint32(0, n >>> 0, true);
+    return b;
+  };
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      t[i] = c >>> 0;
+    }
+    return t;
+  })();
+  const crc32 = (data) => {
+    let c = 0xffffffff;
+    for (let i = 0; i < data.length; i++) c = crcTable[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  for (const { name, data } of entries) {
+    const nameBytes = enc.encode(name.replace(/\\/g, "/"));
+    const crc = crc32(data);
+    const local = new Uint8Array(30 + nameBytes.length + data.length);
+    local.set([0x50, 0x4b, 0x03, 0x04], 0);
+    local.set(u16(20), 4);
+    local.set(u16(0), 8); // method: store
+    local.set(u32(crc), 14);
+    local.set(u32(data.length), 18);
+    local.set(u32(data.length), 22);
+    local.set(u16(nameBytes.length), 26);
+    local.set(nameBytes, 30);
+    local.set(data, 30 + nameBytes.length);
+    const central = new Uint8Array(46 + nameBytes.length);
+    central.set([0x50, 0x4b, 0x01, 0x02], 0);
+    central.set(u16(20), 4);
+    central.set(u16(20), 6);
+    central.set(u16(0), 10);
+    central.set(u32(crc), 16);
+    central.set(u32(data.length), 20);
+    central.set(u32(data.length), 24);
+    central.set(u16(nameBytes.length), 28);
+    central.set(u32(offset), 42);
+    central.set(nameBytes, 46);
+    locals.push(local);
+    centrals.push(central);
+    offset += local.length;
+  }
+  const centralSize = centrals.reduce((n, c) => n + c.length, 0);
+  const end = new Uint8Array(22);
+  end.set([0x50, 0x4b, 0x05, 0x06], 0);
+  end.set(u16(entries.length), 8);
+  end.set(u16(entries.length), 10);
+  end.set(u32(centralSize), 12);
+  end.set(u32(offset), 16);
+  const out = new Uint8Array(offset + centralSize + end.length);
+  let i = 0;
+  for (const p of locals) { out.set(p, i); i += p.length; }
+  for (const p of centrals) { out.set(p, i); i += p.length; }
+  out.set(end, i);
+  return out;
+}
+
+function clientEntries(client) {
+  return Object.entries(client.files).map(([name, body]) => ({
+    name,
+    data: clientFileBytes(body),
+  }));
+}
+
+async function writeClientToDirectory(client, root) {
+  for (const { name, data } of clientEntries(client)) {
+    const parts = name.replace(/\\/g, "/").split("/").filter(Boolean);
+    let dir = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(parts[i], { create: true });
+    }
+    const file = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+    const w = await file.createWritable();
+    await w.write(data);
+    await w.close();
+  }
+}
+
+function downloadBlob(name, blob) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+}
+
+async function saveClientToFolder(client) {
+  if (typeof showDirectoryPicker !== "function") {
+    throw new Error("Saving to a folder needs a browser directory picker (unavailable here). Use Download ZIP…");
+  }
+  const root = await showDirectoryPicker({ mode: "readwrite" });
+  await writeClientToDirectory(client, root);
+  return root.name || "folder";
+}
+
+function saveClientZip(client) {
+  const zip = zipStore(clientEntries(client));
+  const base = client.name || "tabtop-client";
+  downloadBlob(base + ".zip", new Blob([zip], { type: "application/zip" }));
+  return base + ".zip";
+}
+
+function b64dec(s) {
+  const clean = String(s).replace(/\s+/g, "");
+  if (!clean) throw new Error("Empty base64 field in pack.");
+  if (typeof Uint8Array.fromBase64 === "function") {
+    try { return Uint8Array.fromBase64(clean); }
+    catch { throw new Error("Pack field is not valid base64."); }
+  }
+  let bin;
+  try { bin = atob(clean); }
+  catch { throw new Error("Pack field is not valid base64."); }
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function hasSubtle() {
+  return !!(globalThis.isSecureContext && crypto?.subtle);
+}
+
+/** Decrypt with WebCrypto when available; else inlined noble (file://). */
+async function decryptPackBytes(pass, salt, iterations, iv, ct) {
+  if (hasSubtle()) {
+    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+      base,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"],
+    );
+    return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+  }
+  const fallback = globalThis.TabTopPackCrypto;
+  if (!fallback?.decryptPack) {
+    throw new Error("No WebCrypto and no inlined fallback. Re-download /bootstrap.");
+  }
+  // Sync PBKDF2 (~1s for 210k iters); yields via await so the click handler can paint.
+  await new Promise((r) => setTimeout(r, 0));
+  return fallback.decryptPack(pass, salt, iterations, iv, ct);
+}
+
+async function sha256Hex(buf) {
+  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+  if (hasSubtle()) {
+    const dig = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(dig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  if (!globalThis.TabTopPackCrypto?.sha256Hex) {
+    throw new Error("SHA-256 unavailable (re-download /bootstrap).");
+  }
+  return TabTopPackCrypto.sha256Hex(bytes);
+}
+
+function parsePackText(text) {
+  const t = text.replace(/^\uFEFF/, "").trim();
+  if (!t) throw new Error("Pack file is empty.");
+  let pack;
+  if (t.startsWith("{")) {
+    try { pack = JSON.parse(t); }
+    catch { throw new Error("Pack file looks like JSON but is not valid."); }
+  } else {
+    try { pack = JSON.parse(new TextDecoder().decode(b64dec(t))); }
+    catch (e) {
+      throw new Error(e.message?.includes("base64") ? e.message : "Pack file is not valid base64 JSON.");
+    }
+  }
+  if (pack.v !== 1 || pack.kdf !== "PBKDF2-SHA256" || pack.iter !== 210000)
+    throw new Error("Unsupported pack version or parameters.");
+  if (typeof pack.salt !== "string" || typeof pack.iv !== "string" || typeof pack.ct !== "string")
+    throw new Error("Pack is missing salt, iv, or ct.");
+  return pack;
+}
+
+async function loadPack() {
+  const file = document.getElementById("packFile").files?.[0];
+  if (file) return parsePackText(await file.text());
+  if (PACK.includes("/*PACK") || PACK.length < 20) {
+    throw new Error(
+      "Choose the sealed pack JSON from <base>/bootstrap/pack " +
+      "(this page does not embed the full client).",
+    );
+  }
+  return parsePackText(PACK);
+}
+
+async function unlock(pass) {
+  const pack = await loadPack();
+  const salt = b64dec(pack.salt);
+  const iv = b64dec(pack.iv);
+  const ct = b64dec(pack.ct);
+  if (salt.length !== 16 || iv.length !== 12) {
+    throw new Error(`Unexpected salt/iv sizes (${salt.length}/${iv.length}); pack may be truncated.`);
+  }
+  let plain;
+  try {
+    plain = await decryptPackBytes(pass, salt, pack.iter, iv, ct);
+  } catch (e) {
+    if (/unsupported state|OperationError|decrypt failed|aes/i.test(String(e.message || e))) {
+      throw new Error(
+        "Decrypt failed (wrong passcode or tampered/truncated pack). Nothing was run.\n" +
+        `Pack ciphertext is ${(ct.length / 1e6).toFixed(2)} MB; passcode is trimmed of surrounding spaces.`,
+      );
+    }
+    throw e;
+  }
+  return new TextDecoder().decode(plain);
+}
+
+function clientSummaryHTML(client, note) {
+  const n = client.files ? Object.keys(client.files).length : 0;
+  const entry = client.entry || "vnc.html";
+  return `<!DOCTYPE html><meta charset="utf-8"><title>Unlocked client</title>
+<body style="font:15px/1.45 system-ui;max-width:40rem;margin:2rem auto;padding:0 1rem">
+<h1>TabTop client unlocked</h1>
+<p><code>${client.format}</code> · <strong>${client.name || "client"}</strong> · ${n} files</p>
+<p>Entry: <code>${entry}</code>.</p>
+<p>${note || "Use Save to folder… or Download ZIP… above the frame."}</p>
+</body>`;
+}
+
+function syncPackMeta() {
+  const meta = document.getElementById("meta");
+  const file = document.getElementById("packFile").files?.[0];
+  if (!file) {
+    meta.hidden = true;
+    meta.textContent = "";
+    return;
+  }
+  meta.hidden = false;
+  const mode = hasSubtle() ? "WebCrypto" : "noble fallback (file://)";
+  meta.textContent = `Selected: ${file.name} (${(file.size / 1e6).toFixed(2)} MB). Crypto: ${mode}.`;
+}
+
+document.getElementById("packFile").addEventListener("change", syncPackMeta);
+syncPackMeta();
+
+async function expandUnlockedClient(client) {
+  // Prefer a real folder when the browser allows it; file:// Chrome usually does not.
+  try {
+    if (typeof showDirectoryPicker === "function" && globalThis.isSecureContext) {
+      const name = await saveClientToFolder(client);
+      return { how: "folder", detail: `Wrote ${Object.keys(client.files).length} files into “${name}/”.` };
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    // fall through to ZIP
+  }
+  const zipName = saveClientZip(client);
+  return {
+    how: "zip",
+    detail: `Saved ${zipName} (${Object.keys(client.files).length} files). Unzip it, then open ${client.entry || "vnc.html"}.`,
+  };
+}
+
+document.getElementById("saveFolder").onclick = async () => {
+  if (!lastClient) return;
+  try {
+    const name = await saveClientToFolder(lastClient);
+    document.getElementById("ok").textContent =
+      `Wrote ${Object.keys(lastClient.files).length} files into “${name}/”.`;
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    fail(String(e.message || e));
+  }
+};
+
+document.getElementById("saveZip").onclick = () => {
+  if (!lastClient) return;
+  const zipName = saveClientZip(lastClient);
+  document.getElementById("ok").textContent =
+    `Saved ${zipName}. Unzip it, then open ${lastClient.entry || "vnc.html"}.`;
+};
+
+document.getElementById("go").onclick = async () => {
+  document.getElementById("err").hidden = true;
+  document.getElementById("saveWrap").hidden = true;
+  lastClient = null;
+  const pass = document.getElementById("pass").value.trim();
+  if (!pass) return fail("Enter the passcode.");
+  const go = document.getElementById("go");
+  go.disabled = true;
+  try {
+    const text = await unlock(pass);
+    const frame = document.getElementById("view");
+    const ok = document.getElementById("ok");
+    let show = text;
+    let client = null;
+    if (text.trimStart().startsWith("{")) {
+      try {
+        const obj = JSON.parse(text);
+        if (obj?.format === "tabtop-client/v1" && obj.files) client = obj;
+      } catch { /* treat as html/text */ }
+    }
+    if (client) {
+      lastClient = client;
+      document.getElementById("saveWrap").hidden = false;
+      let note = "Use Save to folder… or Download ZIP…";
+      try {
+        note = (await expandUnlockedClient(client)).detail;
+      } catch (e) {
+        if (!(e && e.name === "AbortError")) throw e;
+        note = "Save cancelled — use Save to folder… or Download ZIP…";
+      }
+      show = clientSummaryHTML(client, note);
+      ok.textContent = `Unlocked. ${note}`;
+    } else {
+      ok.textContent = "Unlocked. Payload shown below (sandboxed).";
+    }
+    frame.src = URL.createObjectURL(new Blob([show], { type: "text/html" }));
+    frame.hidden = false;
+    ok.hidden = false;
+  } catch (e) {
+    fail(String(e.message || e));
+  } finally {
+    go.disabled = false;
+  }
+};
+
+async function hashBytes(label, buf) {
+  const out = document.getElementById("hashOut");
+  const hex = await sha256Hex(buf);
+  out.hidden = false;
+  out.textContent = `SHA-256 (${label}):\n${hex}\n\nCompare to the decoder hash from your trusted channel.`;
+}
+
+document.getElementById("hashPage").onclick = async () => {
+  const out = document.getElementById("hashOut");
+  try {
+    // file:// cannot fetch itself; pick the saved file so the digest matches sha256sum.
+    if (location.protocol === "file:") {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".html,.htm,.txt,text/html,text/plain";
+      input.onchange = async () => {
+        try {
+          const file = input.files?.[0];
+          if (!file) return;
+          await hashBytes(file.name, await file.arrayBuffer());
+        } catch (e) {
+          out.hidden = false;
+          out.textContent = `Could not hash file: ${e.message}`;
+        }
+      };
+      out.hidden = false;
+      out.textContent = "Choose the saved decoder HTML (the file you opened) to hash it…";
+      input.click();
+      return;
+    }
+    const res = await fetch(location.href, { cache: "no-store" });
+    if (!res.ok) throw new Error(String(res.status));
+    await hashBytes("this page's body", await res.arrayBuffer());
+  } catch (e) {
+    out.hidden = false;
+    out.textContent = `Hash failed (${e.message}). On disk run:\n  sha256sum <saved-bootstrap.html>`;
+  }
+};
+
+document.getElementById("hashPack").onclick = async () => {
+  const out = document.getElementById("hashOut");
+  const file = document.getElementById("packFile").files?.[0];
+  if (!file) {
+    out.hidden = false;
+    out.textContent = "Choose the sealed pack file first, then hash it.";
+    return;
+  }
+  try {
+    const hex = await sha256Hex(await file.arrayBuffer());
+    out.hidden = false;
+    out.textContent = `SHA-256 (${file.name}):\n${hex}\n\nCompare to the pack hash from your trusted channel.`;
+  } catch (e) {
+    out.hidden = false;
+    out.textContent = `Could not hash pack file: ${e.message}`;
+  }
+};
+
+document.getElementById("pass").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("go").click();
+});
+// ----- END AUDIT -----
+</script>
+<!-- EMBEDDED PACK: opaque ciphertext; do not "audit" it — verify file hash instead. -->

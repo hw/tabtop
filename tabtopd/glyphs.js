@@ -18,6 +18,8 @@ const microphone = '<rect x="8" y="3" width="6" height="11" rx="3" fill="current
     + '<path d="M5 11.5a6 6 0 0 0 12 0M11 17.5v4m-3 0h6"/>';
 
 const icons = {
+    passkey: '<circle cx="8" cy="9" r="4"/><path d="M11 12l9 9m-4-4 3-3m-6 0 3-3"/>',
+    exif: '<rect x="3" y="6" width="18" height="15" rx="2"/><path d="M7 6l2-3h6l2 3M12 10v2m0 2v4"/>',
     delta: '<path d="M12 3L2 21h20z"/>',
     "compare-slider": '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M12 2v20M5 12h4m6 0h4M7 10l2 2-2 2m10-4-2 2 2 2"/>',
     compare: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M12 4v16M6 9h3m-3 4h3m6-4h3m-3 4h3"/>',
@@ -88,6 +90,8 @@ const icons = {
     "fit-page": '<rect x="3" y="1" width="18" height="22" rx="1"/><path stroke-width="1.5" d="M10 9L6 5m0 3V5h3M14 9l4-4m-3 0h3v3M10 15l-4 4m0-3v3h3M14 15l4 4m-3 0h3v-3"/>',
     "fit-width": '<path d="M3 5v14m18-14v14M5 12h14M8 9l-3 3 3 3m8-6l3 3-3 3"/>',
     "actual-size": '<rect x="2" y="4" width="20" height="16" rx="1"/><text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-family="system-ui, sans-serif" font-size="6" font-weight="600" textLength="16" lengthAdjust="spacingAndGlyphs" fill="currentColor" stroke="none">100%</text>',
+    // Printer: paper with a feed slot and a sheet coming out.
+    print: '<rect x="4" y="9" width="16" height="8" rx="1"/><path d="M7 9V5.5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1V9M8 17v3h8v-3M7 12.5h2"/>',
     "audio-off": speaker + '<path d="M15.5 10l5 5m0-5l-5 5"/>',
     "audio-connecting": speaker + '<path d="M15 12.5h.01m3 0h.01m3 0h.01"/>',
     "audio-on": speaker + '<path d="M15 9.5a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/>',
@@ -108,10 +112,12 @@ const icons = {
 // Most navigation/desktop icons use the original 25px noVNC-style grid.
 // Preview icons retain their own grids, sizes, and stroke weights.
 const metrics = {
+    passkey: [24, 24, 1.8],
+    exif: [18, 24, 1.8],
     "external-none": [18, 24, 1.8], "external-proxy": [18, 24, 1.8], "external-direct": [18, 24, 1.8],
     download: [18, 24, 1.8], "download-direct": [18, 24, 1.8], extract: [18, 24, 1.8],
     syntax: [18, 24, 1.8], binary: [18, 24, 1.8], preview: [18, 24, 1.8], back: [18, 24, 1.8], "fold-all": [18, 24, 1.8], "fit-page": [18, 24, 1.8],
-    "fit-width": [18, 24, 1.8], "actual-size": [28, 24, 1.8], "close-circle": [18, 24, 1.8], copy: [14, 24, 2], check: [14, 24, 2.2], inspector: [18, 24, 1.8],
+    "fit-width": [18, 24, 1.8], "actual-size": [28, 24, 1.8], print: [18, 24, 1.8], "close-circle": [18, 24, 1.8], copy: [14, 24, 2], check: [14, 24, 2.2], inspector: [18, 24, 1.8],
     "find-hex": [18, 24, 2], "find-ascii": [18, 24, 2],
     "zoom-in": [18, 24, 1.8], "zoom-out": [18, 24, 1.8], "rotate-left": [18, 24, 1.8], "rotate-right": [18, 24, 1.8],
     "flip-h": [18, 24, 1.8], "flip-v": [18, 24, 1.8], crop: [18, 24, 1.8], inpaint: [18, 24, 1.8], resize: [18, 24, 1.8], "remove-background": [18, 24, 1.8],

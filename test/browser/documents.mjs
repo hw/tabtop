@@ -566,6 +566,28 @@ export async function checkPDF(checks) {
         await waitFor(`${report}?.pages === 40 && ${report}.drawn.includes(1)`, "big.pdf's first page", 60000);
         if (!(await inFrame("pdf-frame.html", `!!document.querySelector("#bar button.zoom-in svg") && !!document.querySelector("#bar button.zoom-out svg") && document.querySelector("#bar button.zoom-in").getAttribute("aria-label") === "Zoom in" && document.querySelector("#bar button.zoom-out").getAttribute("aria-label") === "Zoom out"`))) throw new Error("PDF zoom glyphs or labels missing");
         if (!(await inFrame("pdf-frame.html", `["zoom-in","zoom-out"].every(cls => { const button=document.querySelector("#bar button."+cls), b=button.getBoundingClientRect(), s=button.querySelector("svg").getBoundingClientRect(); return Math.abs((b.left+b.right-s.left-s.right)/2)<1 && Math.abs((b.top+b.bottom-s.top-s.bottom)/2)<1; })`))) throw new Error("PDF zoom glyphs are not centred");
+        if (!(await inFrame("pdf-frame.html", `!!document.querySelector("#bar button.print svg") && document.querySelector("#bar button.print").getAttribute("aria-label") === "Print"`))) throw new Error("PDF print control missing");
+        await ev(`(() => {
+            window.__pdfPrintOpened = [];
+            const origOpen = window.open;
+            window.open = (url) => {
+                window.__pdfPrintOpened.push(String(url));
+                return {
+                    closed: false,
+                    print() { window.__pdfPrintOpened.push("print"); },
+                    close() { this.closed = true; },
+                    addEventListener(type, fn) { if (type === "load") setTimeout(fn, 0); },
+                };
+            };
+            window.__pdfPrintRestore = () => { window.open = origOpen; };
+        })()`);
+        await inFrame("pdf-frame.html", `document.querySelector("#bar button.print").click()`);
+        // Large PDFs ask before fetching the whole file for print.
+        const printAsk = `([...document.querySelectorAll("dialog[open]")].find((d) => !d.classList.contains("preview") && /Printing fetches/.test(d.textContent)))`;
+        await waitFor(`window.__pdfPrintOpened.some((x) => String(x).startsWith("blob:")) || !!${printAsk}`, "PDF print started or asked", 60000);
+        if (await ev(`!!${printAsk}`)) await ev(`${printAsk}.querySelector("button.primary").click()`);
+        await waitFor(`window.__pdfPrintOpened.some((x) => String(x).startsWith("blob:")) && window.__pdfPrintOpened.includes("print")`, "PDF print opened a blob and called print", 120000);
+        await ev(`window.__pdfPrintRestore?.()`);
 
         const first = await ev(fetched);
         const r1 = await ev(report);

@@ -588,11 +588,16 @@ async function readMachO(get, start, length) {
     if (indirect && named.length) await part(async () => {
         if (indirect.count > MAX_TABLE / 4) fail("too many indirect symbols");
         const list = fields(await within(indirect.offset, indirect.count * 4), little);
+        // (Each entry of the table is one section's: all the sections' are
+        // no more than there are entries. A file whose sections each say
+        // the whole table is theirs isn't gone through for each.)
+        let left = indirect.count;
         for (const s of raw) {
             // Stubs, each as long as the section says; pointers, each a pointer.
             const each = s.kind === 8 ? s.second : [6, 7, 0x10, 0x14].includes(s.kind) ? word : 0;
             if (!each || !(s.address >= 0) || !(s.size > 0)) continue;
             for (let i = 0; i < Math.floor(s.size / each) && s.first + i < indirect.count; i++) {
+                if (left-- <= 0) fail("more stubs and slots than there are indirect symbols");
                 // (Not a symbol's number: one of its own, or none.)
                 const number = list.u32((s.first + i) * 4);
                 if (number & 0xc0000000 || number >= named.length || !named[number]) continue;
@@ -660,6 +665,7 @@ export async function readExecutable(read, size, { slice = 0 } = {}) {
 // (bytes that aren't loaded; an address with no bytes in the file, as
 // .bss's); sectionAt(offset) and sectionOf(address); and symbolAt(address),
 // the symbol there or the one it's inside, {name, delta, symbol}, or null.
+const DEEP = 1024; // how many symbols around one, each inside the next, are looked through for the one an address is in
 export function programMap(info) {
     const filed = info.sections.filter((s) => s.size > 0), mapped = filed.filter((s) => s.address != null);
     const loaded = info.sections.filter((s) => s.address != null && s.memSize > 0);
@@ -671,8 +677,24 @@ export function programMap(info) {
     };
     const symbols = info.symbols;
     const sectionOf = (address) => within(loaded, address, "address", "memSize");
+    // around[i]: the nearest symbol before symbols[i] that says how long it
+    // is and hasn't ended where symbols[i] begins (-1: none): the one it's
+    // inside, if any. Found once, going through them in order with those
+    // still open kept; so an address past a small symbol that's inside a
+    // larger is found in the larger without going back through every
+    // symbol between.
+    const around = new Int32Array(symbols.length).fill(-1), open = [];
+    symbols.forEach((s, i) => {
+        while (open.length && symbols[open.at(-1)].address + symbols[open.at(-1)].size <= s.address) open.pop();
+        if (open.length) around[i] = open.at(-1);
+        if (s.size > 0) open.push(i);
+    });
+    const inside = (symbol, address) => ({ name: symbol.name, delta: address - symbol.address, symbol });
     return {
-        sectionAt: (offset) => within(filed, offset, "offset", "size"),
+        // (One that's loaded, where there is one: the one addressOf goes by,
+        // so a place's section and its address are the same section's even
+        // where one that isn't loaded lies over it.)
+        sectionAt: (offset) => within(mapped, offset, "offset", "size") ?? within(filed, offset, "offset", "size"),
         sectionOf,
         addressOf(offset) {
             const s = within(mapped, offset, "offset", "size");
@@ -692,12 +714,22 @@ export function programMap(info) {
             // The first of those at that address (the best named; see the sort).
             let at = low - 1;
             while (at > 0 && symbols[at - 1].address === symbols[at].address) at--;
-            const symbol = symbols[at], delta = address - symbol.address;
-            if (delta === 0) return { name: symbol.name, delta, symbol };
-            // Inside it, by its size; where no size is given (a PE's have
-            // none), by being in its section, and not far.
-            if (symbol.size ? delta >= symbol.size : delta >= 65536 || sectionOf(address) !== sectionOf(symbol.address) || !sectionOf(address)) return null;
-            return { name: symbol.name, delta, symbol };
+            const nearest = symbols[at], delta = address - nearest.address;
+            if (delta === 0) return inside(nearest, address);
+            // Inside one of those at that address, by its size: the best
+            // named of them that it's in, as at its start.
+            for (let k = at; k < low; k++) if (symbols[k].size > delta) return inside(symbols[k], address);
+            // Inside the nearest, where it gives no size (a PE's and a
+            // Mach-O's have none; a label in a function has none either), by
+            // being in its section, and not far; and, where it's inside one
+            // that says how long it is, no further than that one's end.
+            const held = around[at] < 0 || address - symbols[around[at]].address < symbols[around[at]].size;
+            if (!nearest.size && held && delta < 65536 && sectionOf(address) && sectionOf(address) === sectionOf(nearest.address)) return inside(nearest, address);
+            // Inside one around those: the nearest of them it's in (see around).
+            for (let k = around[at], steps = 0; k >= 0 && steps < DEEP; k = around[k], steps++) {
+                if (address - symbols[k].address < symbols[k].size) return inside(symbols[k], address);
+            }
+            return null;
         },
     };
 }

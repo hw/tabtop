@@ -1,4 +1,5 @@
 import { login, passkeyLogin, passkeysUsable } from "./tunnel-protocol.js";
+import { iconSVG } from "./glyphs.js";
 import { saveSession } from "./session-state.js";
 
 export function loginForm(title, cancellable = false) {
@@ -65,13 +66,45 @@ export function loginForm(title, cancellable = false) {
             row.append(cancel);
         }
         // With a passkey, where this page can use one (see passkey.go).
-        let usePasskey = false;
+        let usePasskey = false, passkey = null;
         if (passkeysUsable()) {
-            const passkey = document.createElement("button");
-            Object.assign(passkey, { type: "submit", className: "passkey-login", textContent: "Use a passkey" });
-            look(passkey, false);
+            const style = document.createElement("style");
+            style.textContent = `
+                #tabtop_login .passkey-option { max-width: 26rem; margin: 1.2rem 0; }
+                #tabtop_login .passkey-divider { display: flex; align-items: center; gap: .8rem; margin: 0 0 1rem; color: #9aa0a6; font-size: .8rem; }
+                #tabtop_login .passkey-divider::before, #tabtop_login .passkey-divider::after { content: ""; flex: 1; height: 1px; background: #3c4043; }
+                #tabtop_login .passkey-login { all: revert; box-sizing: border-box; display: flex; align-items: center; gap: .85rem; width: 100%; min-height: 4.5rem; padding: .8rem 1rem; border: 1px solid #6385b3; border-radius: 12px; font: inherit; color: #e8f0fe; background: #222e3d; cursor: pointer; text-align: left; transition: background .15s, border-color .15s; }
+                #tabtop_login .passkey-login:hover:not(:disabled) { background: #2b3d53; border-color: #aecbfa; }
+                #tabtop_login .passkey-login:active:not(:disabled) { background: #334b68; }
+                #tabtop_login .passkey-login:focus-visible { outline: 3px solid #aecbfa; outline-offset: 3px; }
+                #tabtop_login .passkey-login:disabled { opacity: .6; cursor: wait; }
+                #tabtop_login .passkey-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 2.5rem; height: 2.5rem; border-radius: 10px; background: #344c6a; color: #aecbfa; }
+                #tabtop_login .passkey-icon svg { display: block; }
+                #tabtop_login .passkey-copy { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+                #tabtop_login .passkey-copy strong { font-size: 1rem; font-weight: 600; }
+                #tabtop_login .passkey-copy small { font-size: .8rem; color: #bdc9da; }
+                #tabtop_login .passkey-arrow { margin-left: auto; color: #aecbfa; font-size: 1.3rem; }
+                @media (prefers-reduced-motion: reduce) { #tabtop_login .passkey-login { transition: none; } }
+            `;
+            box.append(style);
+            passkey = document.createElement("button");
+            Object.assign(passkey, { type: "submit", className: "passkey-login" });
+            const icon = document.createElement("span");
+            icon.className = "passkey-icon";
+            icon.setAttribute("aria-hidden", "true");
+            icon.innerHTML = iconSVG("passkey");
+            const copy = document.createElement("span");
+            copy.className = "passkey-copy";
+            const heading = document.createElement("strong"); heading.textContent = "Use a passkey";
+            const hint = document.createElement("small"); hint.textContent = "Use your device or security key";
+            copy.append(heading, hint);
+            const arrow = document.createElement("span"); arrow.className = "passkey-arrow"; arrow.textContent = "›"; arrow.setAttribute("aria-hidden", "true");
+            passkey.append(icon, copy, arrow);
             passkey.addEventListener("click", () => { usePasskey = true; input.required = false; });
-            row.append(passkey);
+            const option = document.createElement("div"); option.className = "passkey-option";
+            const divider = document.createElement("div"); divider.className = "passkey-divider"; divider.textContent = "or";
+            option.append(divider, passkey);
+            form.insertBefore(option, note);
         }
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
@@ -80,6 +113,7 @@ export function loginForm(title, cancellable = false) {
             input.required = true;
             if (cancelled || button.disabled) { return; }
             button.disabled = true;
+            if (passkey) { passkey.disabled = true; passkey.setAttribute("aria-busy", String(withPasskey)); }
             button.style.opacity = ".6";  // busy agreeing on keys
             error.textContent = "";
             try {
@@ -98,6 +132,7 @@ export function loginForm(title, cancellable = false) {
             } finally {
                 if (!cancelled) {
                     button.disabled = false;
+                    if (passkey) { passkey.disabled = false; passkey.setAttribute("aria-busy", "false"); }
                     button.style.opacity = "";
                 }
             }

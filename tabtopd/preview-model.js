@@ -38,7 +38,7 @@ export const binaryChunkSize = 1_000_000;
 // rest is there in the binary view, read as it's looked at).
 export const unknownTextSize = 10_000_000;
 
-export const limits = { image: 50e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, hex: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER, sqlite: Number.MAX_SAFE_INTEGER };
+export const limits = { image: 50e6, model: 100e6, video: Number.MAX_SAFE_INTEGER, audio: Number.MAX_SAFE_INTEGER, text: 2e6, hex: 2e6, pdf: Number.MAX_SAFE_INTEGER, epub: Number.MAX_SAFE_INTEGER, zip: Number.MAX_SAFE_INTEGER, sqlite: Number.MAX_SAFE_INTEGER };
 
 export function typeOf(name) {
     const dot = name.lastIndexOf(".");
@@ -50,6 +50,12 @@ export function typeOf(name) {
     // Names without an extension, as README and Makefile, are mostly text;
     // a file that isn't says so when it's shown.
     return !ext || textExtensions.has(ext) ? { kind: "text", type: "text/plain" } : null;
+}
+
+// textModel reports whether a file named name is a 3D model that's text
+// worth reading as such too (G-code, OBJ): its preview offers that.
+export function textModel(name) {
+    return /\.(?:gcode|gco|obj)$/i.test(name);
 }
 
 // binaryNamed reports whether name is a binary's (.bin, .dll, .exe, .so,

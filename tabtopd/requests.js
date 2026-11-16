@@ -7,7 +7,7 @@ import * as tunnel from "./tunnel.js";
 import { filesystemRoot, filesystemRoots, ensureFilesystemRoots, assertWritableRoot, onFilesPage, rootPath, uploadRoot, setUploadRoot, uploadRootPath } from "./fs-context.js";
 
 // The login form's title, if one is needed: the page's name.
-let title = "Downloads";
+let title = "Sign in to TabTop";
 
 export function setLoginTitle(t) {
     title = t;
@@ -299,6 +299,25 @@ export async function collect(t, size, progress, type = "application/octet-strea
         throw new Error(t.closeReason || "connection lost");
     }
     return new Blob(chunks, { type });
+}
+
+// SERVER_DECODED are the types of pictures most browsers can't show, which
+// tabtopd decodes for them (see heif.go): HEIC and HEIF. (AVIF, they show.)
+export const SERVER_DECODED = new Set(["image/heic", "image/heif"]);
+
+// serverDecoded resolves to the picture at path decoded by the server, a
+// JPEG or a PNG Blob: of the version {mtime, size} says, if given; with
+// thumbnail, the file's own thumbnail where it has one big enough.
+export async function serverDecoded(path, { mtime, size, thumbnail = false, signal } = {}) {
+    const t = await call({ type: "image-decode", path, if_mtime: mtime, if_size: size, thumbnail }, { signal });
+    const abort = () => t.close();
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+        return await collect(t, t.reply.length, () => {}, t.reply.type);
+    } finally {
+        signal?.removeEventListener("abort", abort);
+        t.close();
+    }
 }
 
 // saveBlob saves blob as a download named name. The link that does it goes

@@ -1,11 +1,11 @@
-import { call, collect } from "./requests.js";
+import { call, collect, SERVER_DECODED } from "./requests.js";
 import { el, maximizeButton } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 import { typeOf } from "./preview-model.js";
 import { MAX_IMAGE_DIFF_BYTES, imageDiffGeometry } from "./image-diff.js";
 
 export function comparableImages(entries) {
-    return entries.length === 2 && entries.every(entry => !entry.dir && typeOf(entry.name)?.kind === "image" && (entry.bytes ?? 0) <= MAX_IMAGE_DIFF_BYTES);
+    return entries.length === 2 && entries.every(entry => !entry.dir && typeOf(entry.name)?.kind === "image" && !SERVER_DECODED.has(typeOf(entry.name).type) && (entry.bytes ?? 0) <= MAX_IMAGE_DIFF_BYTES);
 }
 
 async function loadImage(side, signal) {

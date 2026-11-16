@@ -19,6 +19,8 @@
 | `NOBLE_HASHES_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/hashes/-/hashes-<version>.tgz`. |
 | `HIGHLIGHT_VERSION` | `11.12.0` | highlight.js release from npm (`@highlightjs/cdn-assets`), which colours text previews on the files page. |
 | `HIGHLIGHT_SHA256` | *(checksum of 11.12.0)* | SHA-256 of `https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-<version>.tgz`. |
+| `THREE_VERSION` | `0.187.0` | three.js release from npm (`three`), which draws 3D models and G-code in the files page's previews. `scripts/three/vendor.sh` copies what's used into one folder, its imports pointing within it; `scripts/three/check.mjs` and `test/model-worker.test.mjs` check it at build time. |
+| `THREE_SHA256` | *(checksum of 0.187.0)* | SHA-256 of `https://registry.npmjs.org/three/-/three-<version>.tgz`. |
 | `PDFJS_VERSION` | `6.4.299` | pdf.js release from npm (`pdfjs-dist`), its legacy build, which shows PDFs in the files page's previews. |
 | `PDFJS_SHA256` | *(checksum of 6.4.299)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
 | `ICED_X86_VERSION` | `1.22.0` | iced-x86 release from npm (`iced-x86`), which disassembles x86 code in the hex preview's data inspector. `scripts/disasm/build.mjs` makes its Node build loadable in a browser worker, without its documentation comments, and checks it at build time. |
@@ -64,6 +66,12 @@ The gateway uses libopus (audio), liboath (logins) and libsqlite3 (database
 previews) through cgo, so
 building it needs a C compiler and their headers
 (`apt install gcc libopus-dev liboath-dev libsqlite3-dev` on Debian).
+
+HEIC previews also need libheif: the image builds with `-tags heif`
+(`apt install libheif-dev libheif-plugin-libde265`, then
+`go build -tags heif` or `go test -tags heif`). Without the tag, the gateway
+builds without it and says it can't show HEIC pictures; `TestHEIFDecode` is
+then skipped.
 
 mise installs that Go version, and the Node version the browser check
 uses, and runs the tasks defined in `mise.toml`:
@@ -347,7 +355,7 @@ remembered in your browser. **Disassembly** shows the selected bytes as
 instructions, a line each: its offset, its bytes and the instruction. Choose
 **x86-64**, **x86 (32-bit)**, **x86 (16-bit)**, **ARM64**, **ARM32**,
 **ARM32-T (Thumb)**, **MIPS32/64 LE/BE**, or **RISC-V 32/64** at the right of the tabs; this
-choice is remembered too. x86 uses Intel syntax. ARM modes use little-endian
+choice is remembered too. x86 uses Intel syntax, with numbers as every instruction set here has them (`0x1f`, not `1Fh`). ARM modes use little-endian
 instructions; Thumb includes both 16-bit and 32-bit instructions and tracks
 IT state within the selection. MIPS modes use standard 4-byte instructions,
 with the floating-point, DSP and MSA ones (and Octeon's in MIPS64);
@@ -356,10 +364,13 @@ little-endian RV32G and RV64G with the compressed (16-bit) instructions,
 which have names of their own (`c.addi`); a branch is shown with where it
 goes, not how far. The Values tab's byte
 order does not change the instruction set. Bytes that aren't an instruction show
-as `(bad)`. An address an instruction goes to or names (`jmp short 018Ch`,
+as `(bad)`. An address an instruction goes to or names (`jmp short 0x18c`,
 `call`, or memory read by its address alone, `[rip+…]` shown as where that is)
 is a link when it's within the file: click it to select that byte and see its
-code. With one byte selected, it's the 64 bytes from it; at most 4 KB, or
+code. **Back** (← in the hex bar) returns to the previous selection after
+following such a link, or a section or symbol in the Program tab; up to 100
+places are kept until the preview closes. Typing an offset or Find does not
+add history. With one byte selected, it's the 64 bytes from it; at most 4 KB, or
 512 instructions, are shown at a time. Addresses are file offsets, except in
 a program's loaded sections (see below). Decoding starts at the exact selected byte;
 unaligned ARM/MIPS/RISC-V starts are labelled rather than rounded. ARM, MIPS
@@ -386,7 +397,7 @@ file, the view is as above. With it:
   names is the program's address. That matters because addresses and offsets
   differ by a different amount in each section. A destination is a link to
   where it is in the file, when it's there (`.bss` isn't), followed by its
-  symbol (`call 0000000000401030h <puts@plt>`); the name of what begins at a
+  symbol (`call 0x401030 <puts@plt>`); the name of what begins at a
   line is over it (`main:`). Bytes that aren't in a loaded section are
   disassembled at their offsets, as before. An instruction is still written
   where it is in the file, assembled for its address.
@@ -449,9 +460,10 @@ longer than fits a line is cut in the middle, whole on hovering.
 iced-x86 handles x86; fARM64 handles ARM64, its disassembly and its
 assembler in one module (737,518 bytes of WASM, 233,504 with gzip);
 Capstone.js handles ARM32 and Thumb; RISC-V and MIPS are tabtop's own
-`riscv-asm.js` and `mips-asm.js`, scripts of 28,221 bytes (8,885 with gzip)
-and 57,972 bytes (12,891 with gzip) that both disassemble and assemble,
-with no WebAssembly. Each backend is fetched
+`riscv-asm.js` and `mips-asm.js`, scripts of 25,891 bytes (8,238 with gzip)
+and 55,243 bytes (12,076 with gzip) that both disassemble and assemble, with
+`asm-common.js` (5,089 bytes; 2,015 with gzip), what the two have the same,
+and no WebAssembly. Each backend is fetched
 only when first used and runs in the existing worker (the page
 itself isn't allowed to run WebAssembly). The Capstone subset adds 418,201
 bytes of JS/WASM, or 141,463 bytes with gzip, at the pinned versions. Browser
@@ -499,8 +511,8 @@ at the bytes, undoes such a value whole.
 
 Editing x86 code, a click on an instruction in **Disassembly** opens a box with it, to
 type another over it in Intel syntax, as the list shows them (`mov rbp,rsp`,
-`jmp short 1012h`, `mov eax,dword ptr fs:[28h]`, `vaddps zmm0{k1}{z},zmm1,[rax]{1to16}`)
-or as other assemblers take them (`0x1f`, `jz`, `qword [rax]`, `'A'`, `rep stosb`),
+`jmp short 0x1012`, `mov eax,fs:[0x28]`, `vaddps zmm0{k1}{z},zmm1,[rax]{1to16}`)
+or as other assemblers take them (`1Fh` for `0x1f`, decimal, `jz`, `qword [rax]`, `'A'`, `rep stosb`),
 in the instruction set chosen. Enter writes its bytes there, as one change:
 one shorter than what was there is followed by `nop`s (`90`) up to the next
 instruction, and one longer goes over the next, the last of those it ends
@@ -508,7 +520,7 @@ inside filled out with `nop`s, so the code after it still reads as it did
 (the status says how many). Branch targets are addresses as listed, file
 offsets; so is `[addr]`, which in 64-bit code is RIP-relative, as most are,
 unless it's through `fs` or `gs` (thread-local, as the stack guard at
-`fs:[28h]`), or the instruction there before had an absolute address, or it's
+`fs:[0x28]`), or the instruction there before had an absolute address, or it's
 `[abs addr]`, or it's too far for RIP-relative; `[rel addr]` is always
 RIP-relative. (The disassembly shows both kinds the same way.) Memory with no register to give its
 size needs one (`inc dword ptr [rax]`). A line that can't be assembled says
@@ -540,6 +552,9 @@ are in `sysreg_names.rs`. That list is written by
 `scripts/disasm/list-arm64-sysregs.mjs` from what that Capstone names; the
 build checks every system register against it, and says to write the list
 again if the pinned Capstone has come to differ.
+A four-byte RISC-V instruction of an extension that isn't read (the vector
+ones, say) shows as `(bad)` for all four of its bytes, so its second half
+isn't read as an instruction of its own.
 RISC-V instructions can be changed too. One is two bytes (those named
 `c.`) or four, so what's typed says which: a shorter one is followed by a
 `c.nop`, and a longer one goes over the next, as with x86. It is typed as
@@ -768,6 +783,33 @@ changing the marks. Fills are stored as row spans, so Undo removes a fill as a
 single operation, without retaining a full-size bitmap. The same vector shapes
 and spans drive the SVG mask overlay and the actual canvas mask.
 
+## 3D previews
+
+Both images bundle three.js as `/opt/three`: its core, orbit controls,
+the STL, OBJ, PLY and AMF loaders, and fflate, flattened into one folder
+by `scripts/three/vendor.sh`. `-three-dir` locates it; tabtopd serves its
+files under a hashed path and points `model-view.js` and
+`model-worker.js` at it. G-code is read by tabtopd's own `gcode.js`, not
+three.js's `GCodeLoader`, so the preview can show layers, feature kinds
+and arcs; 3MF by `model-3mf.js`, not three.js's loader, which needs
+DOMParser (so the page, which a big model froze for seconds) and keys
+objects by id across a project's model files, which Bambu Studio's and
+Orca's may reuse.
+
+To run the worker's test locally, vendor a copy and point `THREE_ASSETS`
+at it:
+
+```sh
+npm pack three@0.187.0 && tar -xzf three-0.187.0.tgz
+sh scripts/three/vendor.sh package /tmp/three && node scripts/three/check.mjs /tmp/three
+THREE_ASSETS=/tmp/three node --test test/model-worker.test.mjs
+```
+
+Without `THREE_ASSETS`, that test is skipped. `test/gcode.test.mjs` uses
+G-code that PrusaSlicer 2.9.2 and CuraEngine 5.0.0 made of
+`test/data/3d/prism.stl`, and `test/model-3mf.test.mjs` PrusaSlicer's 3MF
+of it. The browser check's `models` group draws them in the app.
+
 ## Magic select
 
 Both images bundle MobileSAM as `/opt/segment`: Acly's ONNX export of its
@@ -944,3 +986,12 @@ selection, read-only uploads and reading-position separation. Run
 read-only Documents mount. It checks startup, the chooser, readonly previews,
 backend denial, shares/activity, writes, Trash, cross-root drag/move denial and
 independent folder memory. The test image can be the lite image.
+
+Image EXIF inspection and metadata-only editing use `image-exif.js` for
+bounded TIFF directory reads and typed field edits (all twelve classic
+TIFF value types, Unicode user comments, and linked EXIF/GPS/Interop groups), `image-meta.js` for lossless JPEG,
+PNG and WebP container replacement, and `image-exif-view.js` for the dialog.
+`node --test test/image-exif.test.mjs test/image-meta.test.mjs` checks both
+byte orders, field/date validation, GPS removal, unknown-tag and orientation
+preservation, malformed/overlapping offsets, and unchanged compressed image
+data. The images browser group also edits EXIF before editing pixels.

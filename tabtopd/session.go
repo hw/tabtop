@@ -353,6 +353,8 @@ func (g *server) nameSession(handle, asking, label string) (found, own bool) {
 // when the warnings were last marked as seen, if they have been: failed
 // logins and addresses from before then don't need looking at again.
 func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
+	// Seal outside g.mu: PBKDF2 for a new day's pack can take ~1s.
+	bootPass, bootHash := g.bootstrapInfo()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.clock.Now()
@@ -376,6 +378,11 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	}
 	if !g.seen.IsZero() {
 		res["seen"] = g.seen
+	}
+	if bootPass != "" {
+		res["bootstrap_passcode"] = bootPass
+		res["bootstrap_pack_sha256"] = bootHash
+		res["bootstrap_decoder_sha256"] = bootstrapDecoderSHA256()
 	}
 	if t := tabtopBuildTime(); t != "" {
 		res["build_time"] = t

@@ -4,7 +4,7 @@ import { glyphs, iconSVG } from "./glyphs.js";
 import { askYes } from "./ui.js";
 import { previewView } from "./preview-view.js";
 import { el, join } from "./preview-dom.js";
-import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize } from "./preview-model.js";
+import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize, textModel } from "./preview-model.js";
 import { previewWide, setPreviewWide, THEMES, readingTheme, setReadingTheme, VIEWS, viewShown, setViewShown } from "./preview-settings.js";
 import { loadPreview } from "./preview-loaders.js";
 import { renderPreview } from "./preview-renderers.js";
@@ -203,6 +203,10 @@ export function preview(dir, files, index, download, opts = {}) {
             return b;
         }));
     };
+    const exif = button("", "EXIF information", "image-exif-info glyph");
+    exif.innerHTML = iconSVG("exif");
+    exif.hidden = true;
+    exif.addEventListener("click", () => { if (!editing) frame?.element.openExif?.(); });
     const edit = button(glyphs.edit, "Edit this file", "edit glyph");
     edit.hidden = true;
     // The file's earlier versions, kept as saves replaced it.
@@ -231,7 +235,7 @@ export function preview(dir, files, index, download, opts = {}) {
     versions.addEventListener("click", async () => {
         if (!current || !(await leaveEditing())) return;
         const { dir, name } = current;
-        openVersions({ path: join(dir, name), name, text: current.kind === "text",
+        openVersions({ path: join(dir, name), name, text: current.kind === "text" || textModel(name),
             restored: () => display(dir, name), closed: checkVersions });
     });
     const saveStatus = el("button", { type: "button", className: "hint save-status", hidden: true });
@@ -258,7 +262,7 @@ export function preview(dir, files, index, download, opts = {}) {
     });
     const setMode = async mode => {
         if (mode === "text" && current?.textAvailable === false) return;
-        if (!current || typeOf(current.name) && !current.sqlite || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
+        if (!current || typeOf(current.name) && !current.sqlite && !modelAlternative() || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
         previewMode = mode;
         if (blob && ["text", "hex"].includes(current.kind) && ["text", "hex"].includes(mode) &&
                 (mode !== "text" || blob.size >= Math.min(current.size, unknownTextSize))) {
@@ -274,15 +278,24 @@ export function preview(dir, files, index, download, opts = {}) {
         if (!current) return;
         // A database: its tables, or its bytes.
         if (current.sqlite) return setMode(current.kind === "sqlite" ? "hex" : "sqlite");
+        // A model: drawn, or as text (G-code, OBJ) or bytes.
+        if (shownAsModel()) return setMode(current.kind === "model" ? modelAlternative() : null);
         if (typeOf(current.name)) return;
         setMode(current.kind === "hex" ? "text" : "hex");
     });
+    // modelAlternative is how a 3D model, by its name, is shown other than
+    // drawn: as text (G-code, OBJ) or its bytes; null if it isn't one.
+    const modelAlternative = () => (current && typeOf(current.name)?.kind === "model" ? (textModel(current.name) ? "text" : "hex") : null);
+    // shownAsModel reports whether what's shown is a model, drawn or the
+    // other way: so the toggle goes between the two (not back to a drawing
+    // it can't be: too big, or a .obj that's a compiler's).
+    const shownAsModel = () => !!modelAlternative() && (current.kind === "model" || current.kind === modelAlternative() && !current.modelUnavailable);
     const previewNotice = el("p", { className: "hint preview-limit", role: "status", hidden: true });
     const body = el("div", { className: "body" });
     const dialog = el("dialog", { className: "preview" },
         el("div", { className: "head", role: "toolbar", ariaLabel: "Preview actions" }, name, back, where,
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
-            el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, versions, saveStatus, store, done),
+            el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, exif, edit, versions, saveStatus, store, done),
             el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle),
             externalGroup, saveGroup, widen, close), previewNotice, body);
     showWide();
@@ -395,7 +408,7 @@ export function preview(dir, files, index, download, opts = {}) {
         prev.hidden = next.hidden = following || files.length < 2;
         prev.disabled = index === 0;
         next.disabled = index === files.length - 1;
-        edit.hidden = versions.hidden = view.hidden = theme.hidden = modeToggle.hidden = previewNotice.hidden = true;
+        exif.hidden = edit.hidden = versions.hidden = view.hidden = theme.hidden = modeToggle.hidden = previewNotice.hidden = true;
         versionsAsked++; // one asked for the file before isn't this one's
         const status = el("p", { className: "hint", textContent: "Loading…", role: "status" });
         body.replaceChildren(status);
@@ -435,11 +448,14 @@ export function preview(dir, files, index, download, opts = {}) {
         const binary = kind === "hex";
         // Not offered where there's no other view: a known type, or bytes
         // that aren't text; but a database has its tables.
-        modeToggle.hidden = current.sqlite ? false : !!typeOf(current.name) || (binary && current.textAvailable === false);
-        modeToggle.innerHTML = iconSVG(binary ? "preview" : "binary");
-        modeToggle.title = binary ? (current.sqlite ? "Show tables" : "Show text view") : "Show binary view";
+        const model = shownAsModel();
+        const alternative = model && modelAlternative();
+        modeToggle.hidden = current.sqlite || model ? false : !!typeOf(current.name) || (binary && current.textAvailable === false);
+        modeToggle.innerHTML = iconSVG(model ? (kind === "model" ? (alternative === "text" ? "syntax" : "binary") : "preview") : binary ? "preview" : "binary");
+        modeToggle.title = model ? (kind === "model" ? (alternative === "text" ? "Show text view" : "Show binary view") : "Show 3D view")
+            : binary ? (current.sqlite ? "Show tables" : "Show text view") : "Show binary view";
         modeToggle.setAttribute("aria-label", modeToggle.title);
-        modeToggle.setAttribute("aria-pressed", String(binary));
+        modeToggle.setAttribute("aria-pressed", String(model ? kind !== "model" : binary));
         previewNotice.hidden = binary || !current.truncated;
         previewNotice.textContent = current.truncated ? `Showing the first ${unknownTextSize / 1e6} MB (${current.previewSize.toLocaleString()} bytes) of ${current.size.toLocaleString()} bytes.` : "";
         const format = kind === "text" ? formatOf(current.name) : "";
@@ -463,9 +479,19 @@ export function preview(dir, files, index, download, opts = {}) {
         frame = null;
         rendererAbort?.abort();
         rendererAbort = new AbortController();
+        const metadataFile = current;
         const shownAs = await renderPreview({ file: current, path: join(current.dir, current.name), blob, url,
             kind: kind === "text" && format && viewShown(format) ? format : kind,
             fragment, location, open: follow, navigate: remember, signal: rendererAbort.signal, externalMode,
+            saveMetadata: readOnlyRoot() ? null : async (next, signal) => {
+                const reply = await uploadFile(new File([next], metadataFile.name, { type: next.type }), () => {}, metadataFile.dir,
+                    signal, true, { expect: { mtime: metadataFile.mtime, size: metadataFile.size } });
+                signal.throwIfAborted();
+                metadataFile.mtime = reply.mtime; metadataFile.size = reply.size;
+                if (current === metadataFile) {
+                    URL.revokeObjectURL(url); blob = next; url = URL.createObjectURL(blob); checkVersions();
+                }
+            },
             externalFound: count => { if (!stale()) { externalCount = count; showExternal(); } } });
         const rendered = previewView(shownAs);
         if (stale()) {
@@ -481,6 +507,7 @@ export function preview(dir, files, index, download, opts = {}) {
         reveal = null;
         // A picture: editable if it can be written again as it is.
         if (kind === "image") {
+            exif.hidden = !rendered.element.openExif;
             edit.hidden = !rendered.element.editable || readOnlyRoot();
             edit.title = "Edit the picture: rotate, flip, crop, resize; save it smaller, without its metadata, or as another format";
             edit.setAttribute("aria-label", edit.title);
@@ -587,7 +614,7 @@ export function preview(dir, files, index, download, opts = {}) {
     // Save, Done and how saving stands; not Edit, the save-as group, the
     // arrows to the others, nor what else is given (the view toggle, say).
     const showEditing = (alsoHidden = []) => {
-        for (const control of [edit, saveGroup, prev, next, ...alsoHidden]) control.hidden = true;
+        for (const control of [exif, edit, saveGroup, prev, next, ...alsoHidden]) control.hidden = true;
         store.disabled = editing.canSave?.() === false;
         store.hidden = done.hidden = false;
         saveStatus.hidden = false;

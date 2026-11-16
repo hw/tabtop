@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { gzipSync } from "node:zlib";
 
@@ -20,6 +20,8 @@ const self = { postMessage: (message) => { result = JSON.parse(JSON.stringify(me
 runInNewContext(readFileSync(workerFile, "utf8"), {
     self, Uint8Array, BigInt,
     importScripts(path) {
+        // (What it has the same as RISC-V's, beside it, first.)
+        if (path === "./asm-common.js") return runInNewContext(readFileSync(resolve(dirname(scriptFile), "asm-common.js"), "utf8"), { self });
         assert.equal(path, "./mips-asm.js");
         imports++;
         runInNewContext(script, { self });

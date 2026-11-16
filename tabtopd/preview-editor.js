@@ -1,7 +1,7 @@
 // Text/table editors and EPUB metadata editing. Preview orchestration supplies
 // the current-file checks; editors own their save snapshots and UI resources.
 import { glyphs, iconSVG } from "./glyphs.js";
-import { call, collect, uploadFile, saveBlob } from "./requests.js";
+import { call, collect, uploadFile, saveBlob, SERVER_DECODED } from "./requests.js";
 import { humanBytes } from "./file-format.js";
 import { rootLabel } from "./fs-context.js";
 import { askBookDetails, askYes, askLine, statusRow } from "./ui.js";
@@ -707,7 +707,7 @@ function pickPicture(start) {
         }
         const byName = (a, b) => collator.compare(a.name, b.name);
         const folders = entries.filter((e) => e.dir).sort(byName);
-        const pictures = entries.filter((e) => !e.dir && typeOf(e.name)?.kind === "image" && (e.bytes ?? 0) <= limits.image).sort(byName);
+        const pictures = entries.filter((e) => !e.dir && typeOf(e.name)?.kind === "image" && !SERVER_DECODED.has(typeOf(e.name).type) && (e.bytes ?? 0) <= limits.image).sort(byName);
         p.listed([
             ...(dir ? [p.entry(`${glyphs.upFolder} Up`, "picker-up", () => show(dir.split("/").slice(0, -1).join("/")))] : []),
             ...folders.map((e) => p.entry(`${glyphs.folder} ${e.name}/`, "picker-folder", () => show(join(dir, e.name)))),

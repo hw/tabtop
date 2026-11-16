@@ -78,6 +78,9 @@ type tunnelRequest struct {
 	Item string `json:"item,omitempty"`
 	// epub: what uses each of the book's pictures, rather than the book
 	Uses bool `json:"uses,omitempty"`
+	// image-decode: a picture small enough for a thumbnail will do (the
+	// file's own, where it has one; see heif.go)
+	Thumbnail bool `json:"thumbnail,omitempty"`
 	// epub-edit: the book's new title and author (see epub_edit.go);
 	// RegenerateTOC rebuilds the contents list from chapter headings
 	Title         string `json:"title,omitempty"`

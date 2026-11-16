@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const context = {};
-new Function("self", readFileSync(new URL("../tabtopd/riscv-asm.js", import.meta.url), "utf8"))(context);
+// (With what it has the same as MIPS's, which the worker loads before it.)
+for (const file of ["asm-common.js", "riscv-asm.js"]) new Function("self", readFileSync(new URL(`../tabtopd/${file}`, import.meta.url), "utf8"))(context);
 const { riscv } = context;
 const hex = (bytes) => Buffer.from(bytes).toString("hex");
 const shown = (bytes, xlen = 64, address = 0x1000) => riscv.disassemble(Uint8Array.from(bytes), address, xlen, 512).lines.map((l) => l.text);
@@ -22,6 +23,17 @@ test("instructions of two bytes and four, by the names each has; what isn't one 
     assert.deepEqual(shown([0x13, 0, 0, 0, 0x01, 0, 0x82, 0x80, 0x67, 0x80, 0, 0]), ["nop", "c.nop", "c.jr ra", "ret"]);
     assert.deepEqual(shown([0x13, 0x85, 0x05, 0x00, 0x13, 0xc5, 0xf5, 0xff, 0x33, 0x05, 0xb0, 0x40]), ["mv a0, a1", "not a0, a1", "neg a0, a1"]);
     assert.deepEqual(shown([0xff, 0xff, 0xff, 0xff, 0x01]), ["(bad)", "(bad)", "(bad)"]);
+    // A four-byte one of an extension that isn't read (vsetvli; sh1add) is
+    // (bad) for all four bytes: its second half isn't an instruction of its own.
+    const lines = (bytes) => riscv.disassemble(Uint8Array.from(bytes), 0x1000, 64, 8).lines.map((l) => [l.offset, l.length, l.text]);
+    assert.deepEqual(lines([0xd7, 0x72, 0x05, 0x01, 0x13, 0x05, 0x05, 0x00]), [[0x1000, 4, "(bad)"], [0x1004, 4, "mv a0, a0"]]);
+    assert.deepEqual(lines([0x33, 0xa5, 0xc5, 0x20, 0x82, 0x80]), [[0x1000, 4, "(bad)"], [0x1004, 2, "c.jr ra"]]);
+    // (Cut short, it's the two bytes there are, then the one.)
+    assert.deepEqual(lines([0xd7, 0x72, 0x05]), [[0x1000, 2, "(bad)"], [0x1002, 1, "(bad)"]]);
+    // c.lui of 0 is kept for other uses: not shown as one, nor assembled.
+    assert.deepEqual([shown([0x01, 0x65])[0], shown([0x05, 0x65])[0]], ["(bad)", "c.lui a0, 1"]);
+    assert.throws(() => riscv.assemble("c.lui a0, 0", 0x1000, 64), /"0" isn't one c\.lui can have there/);
+    assert.equal(hex(riscv.assemble("c.lui a0, 0xfffff", 0x1000, 64).bytes), "7d75");
     assert.deepEqual(riscv.disassemble(Uint8Array.of(0xef, 0xf0, 0x9f, 0xff), 0x1000, 32, 1).lines, [{ offset: 0x1000, length: 4, text: "jal 0xff8", targets: [0xff8] }]);
     // To before the start: where, as 64 bits wrap, and nowhere to go.
     assert.deepEqual(riscv.disassemble(Uint8Array.of(0xfd, 0xbf), 0, 64, 1).lines, [{ offset: 0, length: 2, text: "c.j 0xfffffffffffffffe", targets: [] }]);

@@ -120,7 +120,7 @@ test("a disassembler the server has turned off is refused, before anything of it
         fetch: async (path) => { fetched.push(path); return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) }; } });
     for (const message of [{ mode: "x86-64" }, { bitness: 32 }, { mode: "x86-64", assemble: "nop", bytes: undefined }, { mode: "arm32" }, { mode: "thumb" }, { mode: "mips64-be" }, { mode: "riscv32" }, { mode: "riscv64", assemble: "nop", bytes: undefined }, { mode: "mips32-le", assemble: "nop", bytes: undefined }]) {
         await self.onmessage({ data: { id: 1, address: 0, bytes: new Uint8Array(4), max: 1, ...message } });
-        assert.match(answer.error, /turned off on this server/, JSON.stringify(message));
+        assert.match(answer.error, /isn't available on this server \(it's turned off, or its files are missing\)/, JSON.stringify(message));
     }
     assert.deepEqual(fetched, []);
     // The one that's on still answers.
@@ -258,7 +258,7 @@ test("names to demangle: a line each to its own module and back, whichever disas
 
 test("RISC-V is tabtop's own script: loaded when first asked, with nothing fetched; it disassembles and assembles", async () => {
     const source = readFileSync(new URL("../tabtopd/disasm-worker.js", import.meta.url), "utf8");
-    const script = readFileSync(new URL("../tabtopd/riscv-asm.js", import.meta.url), "utf8");
+    const script = readFileSync(new URL("../tabtopd/riscv-asm.js", import.meta.url), "utf8"), common = readFileSync(new URL("../tabtopd/asm-common.js", import.meta.url), "utf8");
     let answer, up = false;
     const imports = [];
     const self = { postMessage: (m) => { answer = JSON.parse(JSON.stringify(m)); } };
@@ -267,7 +267,7 @@ test("RISC-V is tabtop's own script: loaded when first asked, with nothing fetch
         importScripts: (path) => {
             imports.push(path);
             if (!up) throw new Error("NetworkError: riscv-asm.js");
-            runInNewContext(script, { self });
+            runInNewContext(path === "./asm-common.js" ? common : script, { self });
         },
         fetch: () => { throw new Error("RISC-V fetched something"); },
     });
@@ -293,12 +293,13 @@ test("RISC-V is tabtop's own script: loaded when first asked, with nothing fetch
     assert.match(answer.error, /^"ld" is only in RV64\.$/);
     await ask({ mode: "riscv64", assemble: "addi a0, a0, 0x1000" });
     assert.match(answer.error, /^"0x1000" isn't one addi can have there\.$/);
-    assert.deepEqual(imports, ["./riscv-asm.js", "./riscv-asm.js"]);
+    // (What it has the same as MIPS's first, each time it's asked for; then itself, once.)
+    assert.deepEqual(imports, ["./asm-common.js", "./asm-common.js", "./riscv-asm.js"]);
 });
 
 test("MIPS is tabtop's own script too: loaded when first asked, with nothing fetched; it disassembles and assembles in each byte order", async () => {
     const source = readFileSync(new URL("../tabtopd/disasm-worker.js", import.meta.url), "utf8");
-    const script = readFileSync(new URL("../tabtopd/mips-asm.js", import.meta.url), "utf8");
+    const script = readFileSync(new URL("../tabtopd/mips-asm.js", import.meta.url), "utf8"), common = readFileSync(new URL("../tabtopd/asm-common.js", import.meta.url), "utf8");
     let answer, up = false;
     const imports = [];
     const self = { postMessage: (m) => { answer = JSON.parse(JSON.stringify(m)); } };
@@ -307,7 +308,7 @@ test("MIPS is tabtop's own script too: loaded when first asked, with nothing fet
         importScripts: (path) => {
             imports.push(path);
             if (!up) throw new Error("NetworkError: mips-asm.js");
-            runInNewContext(script, { self });
+            runInNewContext(path === "./asm-common.js" ? common : script, { self });
         },
         fetch: () => { throw new Error("MIPS fetched something"); },
     });
@@ -334,5 +335,5 @@ test("MIPS is tabtop's own script too: loaded when first asked, with nothing fet
     assert.match(answer.error, /^"daddiu" is only in MIPS64\.$/);
     await ask({ mode: "mips32-be", assemble: "addiu $v0, $zero, 0x8000" });
     assert.match(answer.error, /^"0x8000" isn't one addiu can have there\.$/);
-    assert.deepEqual(imports, ["./mips-asm.js", "./mips-asm.js"]);
+    assert.deepEqual(imports, ["./asm-common.js", "./asm-common.js", "./mips-asm.js"]);
 });

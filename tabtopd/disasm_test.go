@@ -49,19 +49,27 @@ func TestDisasmAssets(t *testing.T) {
 	if w := get(g, m[1]+"/LICENSE.iced"); w.Code != http.StatusNotFound {
 		t.Errorf("a file not listed: %d", w.Code)
 	}
-	// Both backends use the hashed asset path and the same restricted CSP.
-	if !strings.Contains(w.Body.String(), `"./`+m[1]+`/capstone.js"`) || !strings.Contains(w.Body.String(), `"./`+m[1]+`/capstone.wasm"`) {
-		t.Error("the ARM32 backend doesn't use the versioned asset path")
-	}
-	if !strings.Contains(w.Body.String(), `"./`+m[1]+`/arm64-asm.wasm"`) {
-		t.Error("ARM64's module doesn't use the versioned asset path")
-	}
+	// Each backend's files are under a hashed path of its own (so one's
+	// being missing isn't another's), with the same restricted CSP.
+	paths := map[string]bool{m[1]: true}
 	for _, file := range []string{"capstone.js", "capstone.wasm", "arm64-asm.wasm"} {
-		if w := get(g, m[1]+"/"+file); w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
+		p := regexp.MustCompile(`"\./(disasm-[^/"]+)/` + regexp.QuoteMeta(file) + `"`).FindStringSubmatch(w.Body.String())
+		if p == nil || p[1] == "disasm-missing" {
+			t.Fatalf("%s doesn't use a versioned asset path: %v", file, p)
+		}
+		paths[p[1]] = true
+		if w := get(g, p[1]+"/"+file); w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
 			t.Errorf("%s: %d, %q", file, w.Code, w.Header().Get("Cache-Control"))
 		} else if strings.HasSuffix(file, ".wasm") && w.Header().Get("Content-Type") != "application/wasm" {
 			t.Errorf("%s: %q", file, w.Header().Get("Content-Type"))
 		}
+		// (Not under another's path.)
+		if w := get(g, m[1]+"/"+file); w.Code != http.StatusNotFound {
+			t.Errorf("%s under iced-x86's path: %d", file, w.Code)
+		}
+	}
+	if len(paths) != 3 {
+		t.Errorf("the three backends' paths: %v", paths)
 	}
 	// The assembler it imports, beside it.
 	if !strings.Contains(w.Body.String(), `"./x86-asm.js"`) {

@@ -1,6 +1,6 @@
 // The versions of a file kept as saves replaced it (see versions.go):
 // listed, compared with the file as it is, and put back.
-import { call } from "./requests.js";
+import { call, SERVER_DECODED } from "./requests.js";
 import { el } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 import { askYes } from "./ui.js";
@@ -15,7 +15,8 @@ const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: "medi
 // says whether it's text; images are detected by name. restored() runs once
 // a version is put back; closed(), once the dialog is closed.
 export function openVersions({ path, name, text, restored, closed }) {
-    const image = typeOf(name)?.kind === "image";
+    // (Not a HEIC: browsers can't decode one to compare.)
+    const image = typeOf(name)?.kind === "image" && !SERVER_DECODED.has(typeOf(name).type);
     const focus = document.activeElement;
     const close = el("button", { type: "button", className: "versions-close close-glyph", title: "Close (Esc)", ariaLabel: "Close" });
     close.innerHTML = iconSVG("close-circle");

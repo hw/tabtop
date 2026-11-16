@@ -5,6 +5,7 @@ import { askChangeLink, askChangeLinks, askCode, askPasskey, askSessionName, ask
 import { logOut } from "./nav.js";
 import { humanBytes } from "./file-format.js";
 import { store, stored } from "./stored.js";
+import { iconSVG } from "./glyphs.js";
 
 const SECURITY_TITLE = "Sessions and Activity";
 
@@ -153,6 +154,39 @@ export function createSessionView({ security, formatTime }) {
         // Not something to mark as seen: it lasts till the setup is fixed.
         const ipWarning = r.ip_warning ? [el("p", { className: "attention ip-warning" }, r.ip_warning)] : [];
         const marked = newSince(r);
+        const reseal = el("button", {
+            type: "button",
+            className: "bootstrap-reseal glyph",
+            title: "Reseal the local client pack with a new passcode",
+            ariaLabel: "Reseal local client pack",
+        });
+        reseal.innerHTML = iconSVG("redo");
+        reseal.addEventListener("click", async () => {
+            reseal.disabled = true;
+            const row = statusRow("Resealing the local client pack…");
+            try {
+                (await call({ type: "bootstrap-reseal" })).close();
+                row.set("Resealed the local client pack");
+                row.finish();
+                await showSessions(box);
+            } catch (err) {
+                reseal.disabled = false;
+                row.set(`Pack wasn't resealed: ${err.message}`, true);
+                row.finish();
+            }
+        });
+        const bootPass = typeof r.bootstrap_passcode === "string" && r.bootstrap_passcode
+            ? el("p", { className: "hint bootstrap-pack" }, "Local client pack passcode: ",
+                el("code", { textContent: r.bootstrap_passcode }), " ", reseal)
+            : null;
+        const bootDecoder = typeof r.bootstrap_decoder_sha256 === "string" && r.bootstrap_decoder_sha256
+            ? el("p", { className: "hint bootstrap-pack" }, "Local decode SHA-256: ",
+                el("code", { textContent: r.bootstrap_decoder_sha256 }))
+            : null;
+        const bootHash = typeof r.bootstrap_pack_sha256 === "string" && r.bootstrap_pack_sha256
+            ? el("p", { className: "hint bootstrap-pack" }, "Local client pack SHA-256: ",
+                el("code", { textContent: r.bootstrap_pack_sha256 }))
+            : null;
         const built = typeof r.build_time === "string" && r.build_time
             ? el("p", { className: "hint build-time", textContent: `TabTop built ${when(r.build_time)}` })
             : null;
@@ -175,9 +209,10 @@ export function createSessionView({ security, formatTime }) {
         const activity = el("section", { className: "activity" });
         box.append(activity);
         await showActivity(activity, when, field);
-        if (built) {
-            box.append(built);
-        }
+        if (bootPass) box.append(bootPass);
+        if (bootDecoder) box.append(bootDecoder);
+        if (bootHash) box.append(bootHash);
+        if (built) box.append(built);
     }
 
     // showPasskeys lists in box the passkeys added (see passkey.go), each
@@ -347,7 +382,7 @@ export function createSessionView({ security, formatTime }) {
     // How many entries of the activity log are shown at first.
     const ACTIVITY_SHOWN = 25;
     // The activity log's kinds of entry, in groups to filter by.
-    const ACTIVITY_KINDS = [["", "Everything"], ["login logout logout-all end-session session login-failed passkey", "Logins, sessions and passkeys"],
+    const ACTIVITY_KINDS = [["", "Everything"], ["login logout logout-all end-session session login-failed passkey bootstrap", "Logins, sessions and passkeys"],
         ["login-failed", "Failed logins"], ["share share-used", "Share and upload links"], ["upload", "Files received"],
         ["fetch", "Fetches"], ["cleanup cleared", "Cleaning up"]];
     // What the log is filtered by, kept as it's listed again.

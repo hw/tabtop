@@ -3,17 +3,18 @@
 import { call, collect } from "./requests.js";
 import { el, maximizeButton } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
-import { binaryNamed, languageOf, probablyDatabase, typeOf } from "./preview-model.js";
+import { binaryNamed, languageOf, probablyDatabase, textModel, typeOf } from "./preview-model.js";
 import { colour } from "./preview-content.js";
 import { MAX_DIFF_BYTES, lineText } from "./text-diff.js";
 
 const PAGE_ROWS = 500;
 // textNamed reports whether name may well be a text file's: one shown as
-// text, or of a type that isn't known (notes.bak), unless it's a binary's
-// or a database's name. What isn't text after all says so when compared.
+// text, a model that's text (G-code, OBJ), or of a type that isn't known
+// (notes.bak), unless it's a binary's or a database's name. What isn't
+// text after all says so when compared.
 const textNamed = (name) => {
     const type = typeOf(name);
-    return type ? type.kind === "text" : !binaryNamed(name) && !probablyDatabase(name);
+    return type ? type.kind === "text" || textModel(name) : !binaryNamed(name) && !probablyDatabase(name);
 };
 // comparableText reports whether entries (a folder's, selected) are two
 // text files, each small enough to compare.

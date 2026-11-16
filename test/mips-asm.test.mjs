@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const context = {};
-new Function("self", readFileSync(new URL("../tabtopd/mips-asm.js", import.meta.url), "utf8"))(context);
+// (With what it has the same as RISC-V's, which the worker loads before it.)
+for (const file of ["asm-common.js", "mips-asm.js"]) new Function("self", readFileSync(new URL(`../tabtopd/${file}`, import.meta.url), "utf8"))(context);
 const { mips } = context;
 const hex = (bytes) => Buffer.from(bytes).toString("hex");
 const shown = (bytes, mode = "mips32-be", address = 0x1000) => mips.disassemble(Uint8Array.from(Buffer.from(bytes, "hex")), address, mode, 512).lines.map((l) => l.text);
@@ -42,6 +43,12 @@ test("a field put in or taken out: where it begins and its size, past a doublewo
     // One that would end before it begins is none.
     assert.deepEqual(shown("7c8210c4"), ["(bad)"]);
     assert.throws(() => mips.assemble("ins $v0, $a0, 30, 5", 0, "mips32-be"), /"5" isn't one ins can have there/);
+    // A number past its field is refused, however far past: not taken as its low bits.
+    for (const [text, said] of [["ori $a0, $a0, 0x100000005", "0x100000005"], ["ori $a0, $a0, 0x10005", "0x10005"], ["lui $a0, 0x100001234", "0x100001234"],
+        ["sll $a0, $a0, 0x100000001", "0x100000001"], ["break 0x100000001", "0x100000001"]]) {
+        assert.throws(() => mips.assemble(text, 0x1000, "mips32-be"), new RegExp(`"${said}" isn't one`), text);
+    }
+    assert.equal(hex(mips.assemble("ori $a0, $a0, 0xffff", 0x1000, "mips32-be").bytes), "3484ffff");
 });
 
 test("a line assembles to its bytes; another name for it is what's shown; what's there is kept", () => {

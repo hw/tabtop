@@ -2,14 +2,57 @@
 // at a time, asked of the server, which reads it with SQLite (see
 // sqlite.go). Sorting a column, or filtering the rows (by column, as the
 // CSV table does, or by what's in them), asks the server to, so it's of
-// every row, not only those loaded.
+// every row, not only those loaded. Export CSV / Export JSON downloads the
+// filtered, sorted result (same value limits as the preview) without
+// changing the database.
 import { el } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 import { resizeHandle, widthRule, MIN_WIDTH, MAX_WIDTH, FILTER_OPS, FILTER_KIND_NAMES, openFilterPopup } from "./table-view.js";
 
 const PAGE = 200;          // rows asked for at a time
 const MAX_SHOWN = 50_000;  // rows loaded into the page, at most
+const MAX_EXPORT = MAX_SHOWN; // and exported, at most
 let views = 0;             // for each one's width rules
+
+// exportCell is a value as CSV/JSON text: NULL empty, integers exact, cut
+// text kept cut, blobs as hex of what the preview showed.
+export function exportCell(v) {
+    if (v == null) return "";
+    if (v.i != null) return v.i;
+    if (v.r != null) return typeof v.r === "number" ? String(v.r) : String(v.r).replace(/^\+/, "");
+    if (v.t != null) return v.cut ? `${v.t}…` : v.t;
+    if (v.b != null) return v.b;
+    return "";
+}
+
+// csvEscape quotes a CSV field when it needs it.
+export function csvEscape(text) {
+    const s = String(text);
+    return /["\r\n,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// rowsToCSV is columns + rows (each cell a sqlite value) as a CSV string.
+export function rowsToCSV(columns, rows) {
+    const lines = [columns.map(csvEscape).join(",")];
+    for (const row of rows) lines.push(row.map((v) => csvEscape(exportCell(v))).join(","));
+    return lines.join("\r\n") + "\r\n";
+}
+
+// rowsToJSON is columns + rows as a JSON array of objects.
+export function rowsToJSON(columns, rows) {
+    return JSON.stringify(rows.map((row) => {
+        const o = {};
+        columns.forEach((name, i) => { o[name] = exportCell(row[i] ?? null); });
+        return o;
+    }), null, 2) + "\n";
+}
+
+// exportFileName is stem-table.csv / .json, with unsafe name characters gone.
+export function exportFileName(dbName, table, ext) {
+    const stem = String(dbName || "database").replace(/\.[^.]+$/, "") || "database";
+    const safe = String(table || "table").replace(/[^\w.-]+/g, "_").replace(/^\.+/, "") || "table";
+    return `${stem}-${safe}.${ext}`;
+}
 
 // columnKind is how a column declared as decl (its type in the schema,
 // or "" for an expression's) is filtered: as a number, a date or text, as
@@ -68,7 +111,11 @@ export function sqliteView({ name, schema, wal = false, ask }) {
     const searchIn = el("select", { className: "table-column" });
     searchIn.setAttribute("aria-label", "In which column");
     const clearFilters = el("button", { type: "button", className: "table-clear-filters", textContent: "Clear filters", hidden: true });
-    const bar = el("div", { className: "table-bar sqlite-bar" }, pick, search, searchIn, clearFilters, count, schemaToggle,
+    const exportCSV = el("button", { type: "button", className: "sqlite-export", textContent: "Export CSV", disabled: true });
+    const exportJSON = el("button", { type: "button", className: "sqlite-export", textContent: "Export JSON", disabled: true });
+    exportCSV.title = "Download this table or view as CSV (filters and sort included)";
+    exportJSON.title = "Download this table or view as JSON (filters and sort included)";
+    const bar = el("div", { className: "table-bar sqlite-bar" }, pick, search, searchIn, clearFilters, count, exportCSV, exportJSON, schemaToggle,
         el("span", { className: "hint sqlite-facts", textContent: facts }));
     const notes = el("div", { className: "sqlite-notes" });
     if (wal) {
@@ -93,6 +140,75 @@ export function sqliteView({ name, schema, wal = false, ask }) {
         bar.replaceChildren(el("span", { className: "hint", textContent: "This database has no tables or views." }), schemaToggle);
         scroll.hidden = true;
     }
+
+    let exporting = false, exportAsking = null;
+    const setExportEnabled = () => {
+        const on = !!(current && !current.error && !exporting && !stopped);
+        exportCSV.disabled = !on;
+        exportJSON.disabled = !on;
+    };
+    const collectExportRows = async (signal) => {
+        const table = current.name;
+        const names = columns.slice();
+        const out = [];
+        let offset = 0, after = null, more = true;
+        while (more && out.length < MAX_EXPORT) {
+            signal.throwIfAborted();
+            const q = filtered({ op: "rows", table, limit: Math.min(PAGE, MAX_EXPORT - out.length) });
+            if (order != null) { q.order = order; q.desc = desc; }
+            if (current.rowid && order == null) { if (after != null) q.after = after; } else q.offset = offset;
+            const got = await ask(q, signal);
+            if (current?.name !== table) throw new Error("The table changed while exporting.");
+            if (!out.length && got.columns) names.splice(0, names.length, ...(got.columns ?? names));
+            const batch = got.rows ?? [];
+            out.push(...batch);
+            offset = out.length;
+            if (got.rowids?.length) after = got.rowids.at(-1);
+            more = !!got.more;
+            exportCSV.textContent = `Exporting… ${out.length.toLocaleString()}`;
+            exportJSON.textContent = exportCSV.textContent;
+        }
+        return { columns: names, rows: out, truncated: more };
+    };
+    const runExport = async (format) => {
+        if (!current || current.error || exporting || stopped) return;
+        const { askYes } = await import("./ui.js");
+        const { saveBlob } = await import("./requests.js");
+        if (total != null && (total < 0 || total > MAX_EXPORT)) {
+            const label = filtering() ? "matching rows" : "rows";
+            const howMany = total < 0 ? `many ${label}` : `${total.toLocaleString()} ${label}`;
+            if (!(await askYes(`Only the first ${MAX_EXPORT.toLocaleString()} of ${howMany} will be exported. Continue?`, "Export"))) return;
+        }
+        exporting = true;
+        setExportEnabled();
+        const mine = asked;
+        exportAsking = new AbortController();
+        const signal = exportAsking.signal;
+        const beforeCSV = exportCSV.textContent, beforeJSON = exportJSON.textContent;
+        exportCSV.textContent = "Exporting…";
+        exportJSON.textContent = "Exporting…";
+        try {
+            const { columns: names, rows, truncated } = await collectExportRows(signal);
+            if (mine !== asked || stopped) return;
+            const body = format === "json" ? rowsToJSON(names, rows) : rowsToCSV(names, rows);
+            saveBlob(new Blob([body], { type: format === "json" ? "application/json" : "text/csv" }),
+                exportFileName(name, current.name, format === "json" ? "json" : "csv"));
+            count.textContent = truncated
+                ? `Exported the first ${rows.length.toLocaleString()} rows (${format.toUpperCase()})`
+                : `Exported ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"} (${format.toUpperCase()})`;
+        } catch (err) {
+            if (mine !== asked || stopped || signal.aborted) return;
+            count.textContent = `Export failed: ${err.message}`;
+        } finally {
+            if (exportAsking?.signal === signal) exportAsking = null;
+            exporting = false;
+            exportCSV.textContent = beforeCSV;
+            exportJSON.textContent = beforeJSON;
+            setExportEnabled();
+        }
+    };
+    exportCSV.addEventListener("click", () => runExport("csv"));
+    exportJSON.addEventListener("click", () => runExport("json"));
 
     // What's shown: the table, its columns, rows so far, and where the
     // next page starts; each choice numbered, so a slow answer to an
@@ -284,6 +400,7 @@ export function sqliteView({ name, schema, wal = false, ask }) {
         showWidths();
         showSQL();
         count.textContent = "";
+        setExportEnabled();
         if (!current) return;
         countAsking?.abort();
         countAsking = null;
@@ -295,10 +412,12 @@ export function sqliteView({ name, schema, wal = false, ask }) {
             done = true; loading = false;
             thead.replaceChildren(); tbody.replaceChildren();
             more.textContent = `${current.name} can't be read: ${current.error}`;
+            setExportEnabled();
             return;
         }
         await reload();
         if (current?.name !== table || stopped) return;
+        setExportEnabled();
         recount();
     };
 
@@ -335,6 +454,8 @@ export function sqliteView({ name, schema, wal = false, ask }) {
         asked++;
         rowsAsking?.abort();
         countAsking?.abort();
+        exportAsking?.abort();
+        setExportEnabled();
     };
     if (browsable.length) {
         // The first table that isn't SQLite's own, if there is one.

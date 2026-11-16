@@ -1,7 +1,7 @@
 // Preview rendering is a map of adapters; orchestration lives in preview.js.
 // Each renderer returns a DOM element adapted to PreviewView by the controller.
 import { kaitaiView } from "./kaitai-view.js";
-import { call, collect } from "./requests.js";
+import { call, collect, serverDecoded, SERVER_DECODED } from "./requests.js";
 import { createRangedFileReader } from "./ranged-file.js";
 import { binaryChunkSize } from "./preview-model.js";
 const readBinaryRange = createRangedFileReader({ call, collect });
@@ -46,9 +46,30 @@ const renderers = {
     table: ({ file, blob, url }) => structured("table", blob, url, file.name, file.tableOptions),
     json: ({ file, blob, url }) => structured("json", blob, url, file.name),
     // Zoomed and panned, and edited (see image-view.js).
-    image: async ({ file, blob, url }) => {
+    // 3D printing's models and G-code, drawn (see model-view.js).
+    model: async ({ file, blob, signal }) => {
+        const { modelView } = await import("./model-view.js");
+        return modelView({ file, blob, signal });
+    },
+    // A HEIC picture, which most browsers can't decode, is shown as the
+    // server decodes it; the file itself is what its EXIF is of.
+    image: async ({ file, path, blob, url, saveMetadata, signal }) => {
         const { imageView } = await import("./image-view.js");
-        return imageView({ file, blob, url });
+        const type = blob?.type || file.type;
+        let shown = null;
+        if (SERVER_DECODED.has(type)) {
+            try {
+                shown = await serverDecoded(path, { mtime: file.mtime, size: file.size, signal });
+            } catch (err) {
+                // Given up on: nothing, quietly (what's drawn now is another's).
+                if (signal?.aborted) return el("p");
+                // The server's reasons are sentences; the tunnel's ("connection lost") aren't.
+                const said = String(err?.message || "");
+                const why = /[.!?]$/.test(said) ? said : `This picture couldn't be decoded${said ? ` (${said})` : ""}.`;
+                return el("p", { className: "error", textContent: `${why} Download it instead.` });
+            }
+        }
+        return imageView({ file, blob, url, shown, saveMetadata });
     },
     hex: async ({ file, path, blob, signal }) => kaitaiView(new Uint8Array(await blob.slice(0, binaryChunkSize).arrayBuffer()), {
         signal, size: file.size, format: file.sqlite ? "sqlite3" : "",

@@ -101,11 +101,63 @@ downloaded at `http://<host>:6080/fs/`:
   checkerboard where they can be seen through, with what they are above:
   `1920×1080 · JPEG · 2.1 MB`, "animated" for a GIF, APNG or WebP that
   moves, and what metadata it has (`EXIF, XMP`). Phone photos stand as their EXIF orientation says.
+  - **HEIC and AVIF** (iPhone photos and the like): AVIF is shown as the
+    browser decodes it. HEIC, which most browsers can't decode, is decoded
+    by the server (with libheif) and shown and edited as that; a file that
+    has a thumbnail of its own gives the folder's card. The file itself is
+    what's downloaded, and what the EXIF glyph reads and writes. These
+    pictures are turned by their own rotation, not their EXIF orientation,
+    so changing that changes only what's noted. Neither can be written
+    over: editing saves a copy, as PNG, JPEG, WebP or PDF. A server built
+    without libheif (see [development](development.md)) says it can't
+    show HEIC pictures.
   - **Zoom:** the mouse wheel (or a trackpad's pinch) zooms at the
     pointer, as do the **+** and **−** buttons (and + and − keys); drag to
     move about a picture bigger than the window. **Fit** (0) fits it again,
     **100%** (1) shows a pixel for a pixel, and a double-click goes between
     the two.
+  - **EXIF information:** the EXIF glyph before **Edit** in the top bar of
+    JPEG, PNG, WebP, HEIC and AVIF previews opens what the picture says of itself. At
+    the top, what most people look for: when it was taken, the camera and
+    lens, the exposure (`f/2.8 · 1/125 s · ISO 200 · 50 mm`), where, and
+    which way up. Below, every field, by group (Image, Camera settings,
+    Location…), with **Find a field** to narrow them; values are shown as
+    they're read (`Rotated 90° clockwise`, `12 Mar 2026, 14:32:05`), with
+    the stored value under **Advanced** when a field is open.
+    - **Changing a field:** click its value. Orientation is a list, dates a
+      date-and-time box, and other fields take text, numbers (commas between
+      several; fractions as `1/125` or decimals), hex bytes, or, for a user
+      comment, any text. What's wrong is said under the field as you type.
+      **Done** closes the box; Escape puts the field back as it was. Its
+      trash glyph removes a field, and the undo glyph beside a changed,
+      added or removed field puts it back.
+    - **Dates and place:** **Change** beside *Taken* opens its date;
+      **Shift all dates…** moves every date by an amount (`+1h 30m`, `-2d`,
+      `45s`) for a camera whose clock was wrong (GPS time, which is UTC,
+      isn't moved). **Change** or **Set** beside *Location* takes a latitude
+      and longitude as a map gives them (`1.3521, 103.8198`, or
+      `33.8688 S 151.2093 E`).
+    - **Adding:** type some of a field's name in **Add a field** and choose
+      it; **Other field…** adds one by group, tag number and type.
+    - **Privacy:** **Remove location** takes out the whole GPS group;
+      **Remove serial numbers and owner** takes out the camera's and lens's
+      serial numbers, the owner's name and the maker's notes (which often
+      repeat the serial); **Remove everything but orientation** writes a new
+      EXIF block with only the orientation, so nothing of the old one,
+      embedded thumbnail included, is kept. Location or other details kept
+      separately in XMP or IPTC are unchanged, and the dialog says when there's XMP.
+    - **Saving:** what's changed and not saved is counted in a bar at the
+      foot, with **Save** (Ctrl S) and **Discard**. Saving with a value
+      that's wrong opens that field and says what's wrong. Closing with
+      changes not saved asks first. Saving rewrites the metadata only: the
+      compressed image, unchanged fields and the embedded thumbnail stay as
+      they were, and a change of orientation turns the preview at once.
+      Saves check for external changes and keep an earlier version.
+      Directory and thumbnail links are kept right automatically, and can't
+      be changed.
+    - Read-only roots allow looking only; finish pixel editing before
+      opening EXIF. A block that's malformed, or whose values overlap, can
+      be read but says it can't be changed.
   - **Editing** a picture that doesn't move (**✎**): turn it left or right
     (L, R), flip it (H, V), crop it (C: drag over what to keep, then
     **Apply**, or Enter; Escape stops cropping), or resize it (**Resize…**, S:
@@ -251,9 +303,10 @@ downloaded at `http://<host>:6080/fs/`:
   finding fetches as much of the file as scrolling through it would: in a
   PDF of scans or photos, nearly all of it. So it stops to ask before
   going on (**Keep looking**) once it has fetched 32 MB, or when the first
-  8 pages have no text at all, as in a scan without recognised text. Not
-  yet: printing (**⤓** downloads the file). Scripts in a PDF never
-  run.
+  8 pages have no text at all, as in a scan without recognised text.
+  **Print** fetches the whole PDF through the tunnel and opens the
+  browser's print dialog (for a file over 32 MB it asks first). Scripts in
+  a PDF never run.
   The **Edit or export pages as images** glyph opens a batch editor. Enter page
   ranges such as `1-3, 5`, choose a resolution, and tick the pages to process.
   Thumbnails let you open any page for the regular crop, resize, inpainting,
@@ -276,6 +329,42 @@ downloaded at `http://<host>:6080/fs/`:
   PDF is never overwritten. A batch allows up to 200 pages, 16 megapixels per
   page and 256 MiB of edited images or exported image data. Export copies before
   leaving the session to retain your work.
+- **3D models and G-code** for 3D printing (`.stl`, `.obj`, `.3mf`, `.amf`,
+  `.ply`, `.gcode`, `.gco`, up to 100 MB) are drawn with
+  [three.js](https://threejs.org/). Drag to turn the model, right-drag (or
+  Shift-drag) to move it, and use the wheel to zoom. **Fit** (0) shows it
+  all again. **Z up** switches which axis points up: Z, as printers have
+  it, is the default except for OBJ and PLY, which are usually Y up.
+  **Wireframe** shows the triangles' edges. Above the model, its size in
+  millimetres, how many triangles it has, and the volume it encloses
+  (`12 × 12 × 6 mm · 96 triangles · 0.67 cm³`). A 3MF shows its build
+  plate's objects where they're placed, including Bambu Studio's and
+  Orca's projects (objects in model files of their own), in their colours
+  (base materials and colour groups; not textures). A sliced 3MF
+  (`.gcode.3mf`) shows its first plate's G-code. A PLY with no faces is
+  shown as a point cloud. An OBJ's materials (`.mtl`) aren't read, so
+  it's all one colour.
+  - **G-code** is drawn as the nozzle's path, coloured by what each part is
+    (outer and inner walls, infill, solid infill, top and bottom, bridges and
+    overhangs, support, skirt and brim), from the comments PrusaSlicer,
+    Cura, Orca, Bambu Studio and Simplify3D write; a legend shows the
+    colours in use. The slider shows the layers up to the one chosen;
+    **This layer only** shows that one; **Travel** adds the moves that
+    don't extrude. Above, its size, layers, the filament it uses, the
+    slicer's time estimate, and which slicer made it. Arcs (G2/G3) are
+    drawn; files with more than 12 million moves are shown in part.
+    Binary G-code (`.bgcode`) isn't supported.
+  - **Text and bytes:** G-code and OBJ files have **Show text view** to
+    read them as text (the first 2 MB of a bigger file), and the other
+    formats **Show binary view**; **Show 3D view** goes back. A file too
+    big to draw opens as text (G-code, OBJ) or in hex. A `.obj` that's a
+    compiler's object file, not a model, is shown in hex. G-code and OBJ
+    files can be compared as text (**Compare text**).
+  - Models are read in a worker, so a big one doesn't freeze the page,
+    except AMF, whose loader needs the page, and is read only up to 32 MB.
+    A 3MF that unpacks to more than 400 MB, or has more than 20 million
+    triangles, isn't read. A server without three.js (`-three-dir`) says
+    3D previews aren't available.
 - **EPUB books** (`.epub`) are shown a chapter at a time, set for
   reading, light or dark as your browser is: **☰** lists the contents,
   **‹** and **›** (or ← and →) go to the previous and next chapter (as
@@ -427,6 +516,11 @@ downloaded at `http://<host>:6080/fs/`:
   - **Values:** NULL is shown as such; integers exactly, even past what
     JavaScript can count; text past 2,000 characters is cut short (its
     size is in its tooltip); a blob shows its size and first 32 bytes.
+  - **Export:** **Export CSV** and **Export JSON** download the table or
+    view as filtered and sorted, with the same value limits as the
+    preview (cut text, short blob hex). At most 50,000 rows; if more
+    match, it asks before exporting the first 50,000. The database file
+    is unchanged.
   - **The bytes:** the binary view switch shows the file in hex, with the
     `sqlite3` structure decoder; switch back for its tables.
   - **Read-only:** the database is opened read-only and as unchanging, in
@@ -458,9 +552,10 @@ downloaded at `http://<host>:6080/fs/`:
   for Markdown. The choice is remembered in your browser.
 - **Back:** HTML, Markdown, EPUB and PDF previews show a Back arrow after following
   an internal link. It restores the previous reading position, across Markdown
-  files and EPUB chapters, and the PDF zoom setting. Up to 100 locations are
-  kept until the preview closes or its previous/next file controls select
-  another file. Scrolling adds no history.
+  files and EPUB chapters, and the PDF zoom setting. The hex view's Back
+  returns after following a disassembly address link or a Program section or
+  symbol. Up to 100 locations are kept until the preview closes or its
+  previous/next file controls select another file. Scrolling adds no history.
 - **Light or dark:** rendered HTML, Markdown and books have **◐** in the preview,
   which goes from following your system (◐) to light (☀) to dark (☾). The
   choice is remembered in your browser.

@@ -4,3 +4,6 @@
 # Kaitai's build dependencies and generated parser assets.
 /scripts/kaitai/node_modules/
 /scripts/kaitai/dist/
+
+# Bootstrap client pack build cache
+/scripts/bootstrap/.client-build/
