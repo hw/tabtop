@@ -990,7 +990,7 @@ try {
             && document.querySelector(".tabtop-nav button.security").getAttribute("aria-pressed") === "true"
             && document.querySelector(".tabtop-nav button.shares").getAttribute("aria-pressed") === "false"`, "Sessions and Activity");
         const headings = await ev(`[...document.querySelectorAll("#sessions h2")].map((h) => h.textContent)`);
-        if (headings.join() !== "Sessions,Recent logins,Passkeys,Activity" || await ev(`!!document.querySelector("#sessions .shares-table, #sessions .cleanup")`)) {
+        if (headings.join() !== "Sessions,Recent logins,Passkeys,Activity,Backup" || await ev(`!!document.querySelector("#sessions .shares-table, #sessions .cleanup")`)) {
             throw new Error(`the sessions tab's sections: ${headings}`);
         }
         await open("fs/#sessions", `!!document.querySelector("#sessions .activity-table") && document.title === "Sessions and Activity"`, "Sessions and Activity, opened directly");
