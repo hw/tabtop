@@ -594,10 +594,18 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         }
         await ev(`document.querySelector("dialog.preview button.edit").click()`);
         await waitFor(`!!document.querySelector(".hex-dump.editing") && ${shown} === "b 0x50"`, "MIPS while editing bytes");
-        // ARM32 is only shown: no box for its instructions. (Its bytes are
-        // before the selection, and Find looks after it: found looking back.)
+        // Editing puts the caret where the selection was, once the page is
+        // drawn again (it may not be yet): each search below starts from
+        // the first byte, clicked, so it starts from a place known.
+        const fromStart = async () => {
+            const at = await ev(`(() => { const r = document.querySelector('.hex-byte[data-offset="0"]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+            for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+            await waitFor(`[...document.querySelectorAll(".hex-byte.selected")].map((b) => b.dataset.offset).join() === "0"`, "the caret at the first byte");
+        };
+        // ARM32 is only shown: no box for its instructions.
         await choose("arm32");
-        await ev(`document.querySelector(".hex-find-input").value = "02 00 00 ea"; document.querySelector(".hex-find-previous").click()`);
+        await fromStart();
+        await ev(`document.querySelector(".hex-find-input").value = "02 00 00 ea"; document.querySelector(".hex-find").requestSubmit()`);
         // (Said, if it doesn't come: what's shown instead, to see why.)
         try {
             await waitFor(`${shown} === "b #0x20"`, "ARM32 while editing bytes");
@@ -635,9 +643,10 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         await waitFor(`document.querySelector(".edit-status").textContent === "There's no instruction called bogus." && !!document.querySelector(".hex-disasm-input")`, "a line that isn't a RISC-V instruction", 30000);
         await press("Escape");
         await waitFor(`!document.querySelector(".hex-disasm-input") && ${shown} === "jal 0x5c"`, "the RISC-V box put back");
-        // And MIPS's, likewise (before the RISC-V selected: looking back).
+        // And MIPS's, likewise.
         await choose("mips64-be");
-        await ev(`document.querySelector(".hex-find-input").value = "10 00 00 03"; document.querySelector(".hex-find-previous").click()`);
+        await fromStart();
+        await ev(`document.querySelector(".hex-find-input").value = "10 00 00 03"; document.querySelector(".hex-find").requestSubmit()`);
         await waitFor(`${shown} === "b 0x50" && document.querySelector(".hex-disasm").classList.contains("editable")`, "MIPS code, to change");
         await ev(`document.querySelector(".hex-disasm-lines li").click()`);
         await waitFor(`document.activeElement?.classList.contains("hex-disasm-input")`, "the box for a MIPS instruction");
