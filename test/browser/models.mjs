@@ -96,5 +96,7 @@ export async function checkModels(checks) {
         await waitFor(`!!document.querySelector("dialog.preview .hex-view")`, "a compiler's .obj, in hex");
         await close();
         execFileSync("docker", ["exec", container, "rm", "-r", "/home/user/Downloads/models"]);
+        // Back to the top: the checks after this one upload to the folder shown.
+        await open("fs/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
     });
 }
