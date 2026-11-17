@@ -255,11 +255,12 @@ export async function checkImages(checks) {
         if (await ev(`document.querySelector("dialog.preview button.edit").hidden`)) throw new Error("the HEIC not offered for editing");
         await checks.click('document.querySelector("dialog.preview .head .image-exif-info")');
         await waitFor(`!!document.querySelector(".exif-content")`, "the HEIC's EXIF shown");
-        await ev(`(()=>{const choice=document.querySelector('.exif-add-choice');choice.value=[...document.querySelectorAll('datalist option')].map(o=>o.value).find(v=>v.includes(' — Artist ('));choice.dispatchEvent(new Event('change'));document.querySelector('tr[data-field="Image:315"] textarea').value='HEIC photographer';})()`);
+        // (It has an Artist already: a field it hasn't, added.)
+        await ev(`(()=>{const choice=document.querySelector('.exif-add-choice');choice.value=[...document.querySelectorAll('datalist option')].map(o=>o.value).find(v=>v.includes(' — Copyright ('));choice.dispatchEvent(new Event('change'));document.querySelector('tr[data-field="Image:33432"] textarea').value='HEIC copyright holder';})()`);
         await checks.click('document.querySelector(".exif-save")');
         await waitFor(`document.querySelector(".exif-status")?.textContent.startsWith("EXIF saved")`, "the HEIC's EXIF saved");
         const heicTagged = execFileSync("docker", ["exec", container, "cat", "/home/user/Downloads/media/turned.heic"]);
-        if (!heicTagged.includes("HEIC photographer") || !heicTagged.subarray(0, 4).equals(heic.subarray(0, 4))) throw new Error("the HEIC's EXIF edit lost the artist");
+        if (!heicTagged.includes("HEIC copyright holder") || !heicTagged.subarray(0, 4).equals(heic.subarray(0, 4))) throw new Error("the HEIC's EXIF edit lost the copyright added");
         await checks.click('document.querySelector("dialog.image-exif .close-glyph")');
         await waitFor(`/^120×160 · HEIC · .* · EXIF/.test(${info})`, "the HEIC, still standing as it did");
         await close();
