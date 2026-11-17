@@ -34,7 +34,7 @@ Compatibility is measured against these:
 | Option | Compatibility | Isolation | Cost | Status |
 |---|---|---|---|---|
 | **D. Lightpanda DOM snapshot**: Lightpanda (headless, V8, no rendering) on the host, driven by tabtopd over CDP; the client renders a sanitized DOM snapshot and its mutations | Most script-driven pages (about 80% of Chrome’s WPT subtests); gaps in CSS, editing, SVG; layout APIs approximate | Foreign code runs on the host in V8 with no process sandbox of its own; TabTop must supply one | Medium: CDP bridge, host sandbox, client renderer and sanitizer | Phase 0 candidate. Preferred if its host sandbox is acceptable. |
-| **E. Kitesurf engine**: Cloudflare’s experimental browser engine (Boa JavaScript in WASM, Blitz/Stylo layout, Vello painting), either **E1** self-hosted beside tabtopd on `workerd`, or **E2** its Rust core compiled to WASM and run in a client worker | Unknown; full layout and partial CDP, experimental | E1: foreign code runs on the host, but inside WASM in a per-page isolate. E2: on the client, inside WASM in a worker | E1: medium. E2: high (effectively a fork) | Phase 0 candidate behind a short feasibility check. |
+| **E. Kitesurf engine**: Cloudflare’s experimental browser engine (page scripts as native V8 modules in per-page `workerd` isolates, Boa for dynamic code, Blitz/Stylo layout, Vello painting), self-hosted beside tabtopd on `workerd` (**E1**). The client-side variant **E2** is ruled out (section 0, feasibility check) | Unknown; full layout and partial CDP, experimental | Foreign code runs on the host in V8 inside `workerd` isolates; `workerd` is not a hardened sandbox, so TabTop must supply one, as for D | Medium | Phase 0 candidate; feasibility check in progress. |
 
 Phase 0 runs E’s feasibility check, then compares D and (if feasible) E on the target-class fixtures and records which one proceeds.
 
@@ -50,18 +50,18 @@ Recorded so they are not re-proposed without new information:
 
 Figures are estimates or vendor claims, not measurements; Phase 0 replaces them with measured values.
 
-| | D: Lightpanda DOM snapshot | E: Kitesurf engine (E1 host, E2 client) |
+| | D: Lightpanda DOM snapshot | E: Kitesurf engine (E1, on the host) |
 |---|---|---|
 | Sites that work | Most script-driven pages; gaps in CSS, editing, SVG; layout APIs approximate | Unknown; experimental engine with full layout and partial CDP. Measure on the target-class fixtures |
-| Where untrusted code runs | TabTop host, in V8, without a process sandbox of its own | E1: TabTop host, in Boa inside WASM, one Worker isolate per page. E2: client, in WASM inside a worker |
-| If it is compromised | A V8 exploit runs on the server, contained only by the sandbox TabTop builds around it | E1: needs a Boa bug plus a WASM or isolate escape to reach the server. E2: confined to the client worker |
-| What the client receives | Real, sanitized DOM (snapshot plus mutations): selectable, accessible, responsive | Probably a recorded scene of draw commands rasterized on the client (inferred from package names, unverified). E2 renders to a canvas: no selectable text or accessibility |
-| Network leaks | Page fetching happens on the host; resources the client renders go through the broker and frame CSP | E1: fetching happens on the host, if its egress can be forced through `fetch.go`’s policy. E2: relies on the broker |
-| Host load | Low to moderate: tens of MB per page (vendor benchmark: 123 MB peak for 100 pages versus 2 GB for Chrome) | E1: moderate; WASM interpreter per page, memory growth reported without `--expose-gc`. E2: low |
-| Client load | Low to moderate: renderer only | E1: low to moderate (scene rasterizer). E2: high: full engine in WASM, interpreted JavaScript |
-| Bandwidth | Low: serialized DOM, mutations, and brokered resources | E1: low to moderate (scenes). E2: low, plus a large one-time engine download |
-| Lite build | Adds the Lightpanda binary (size unpublished; V8 is linked in, so likely tens of MB), installed separately | E1: `workerd` plus the engine. E2: probably several MB of WASM (Stylo, Blitz, Boa, Vello; estimate) |
-| Engineering effort | Medium: CDP bridge, snapshot and mutation streaming, host sandbox, renderer and sanitizer | E1: medium: authentication, resource and egress sandbox, client scene renderer, `workerd` deployment. E2: high: separating the Rust core from Workers-specific code amounts to a fork |
+| Where untrusted code runs | TabTop host, in V8, without a process sandbox of its own | TabTop host: page scripts as native V8 modules in one `workerd` isolate per page; Boa (in WASM) only for `eval`, `new Function`, and other generated code |
+| If it is compromised | A V8 exploit runs on the server, contained only by the sandbox TabTop builds around it | A V8 or `workerd` isolate escape runs on the server, contained only by the sandbox TabTop builds around it (as D); `workerd` warns it “is not a hardened sandbox” |
+| What the client receives | Real, sanitized DOM (snapshot plus mutations): selectable, accessible, responsive | Recorded vector scenes (“Clients get recorded vector scenes, not pixels”, `packages/engine/src/rbi.ts`), rasterized on the client by `scene-host-wasm` into a canvas: no selectable text or accessibility |
+| Network leaks | Page fetching happens on the host; resources the client renders go through the broker and frame CSP | Fetching happens on the host. All page and isolate traffic passes the engine’s `SandboxOutbound` and then `fetch`, which `workerd` can route to an external forward proxy (to be confirmed by running it) |
+| Host load | Low to moderate: tens of MB per page (vendor benchmark: 123 MB peak for 100 pages versus 2 GB for Chrome) | Moderate: an isolate per page plus the WASM layout engine; memory growth reported without `--expose-gc` |
+| Client load | Low to moderate: renderer only | Low to moderate: scene rasterizer (WASM) |
+| Bandwidth | Low: serialized DOM, mutations, and brokered resources | Low to moderate: scenes and resource batches, with acknowledgement-based backpressure |
+| Lite build | Adds the Lightpanda binary (size unpublished; V8 is linked in, so likely tens of MB), installed separately | `workerd` plus the engine (“a few megabytes of compressed WebAssembly behind a small TypeScript layer”, per its `AGENTS.md`) |
+| Engineering effort | Medium: CDP bridge, snapshot and mutation streaming, host sandbox, renderer and sanitizer | Medium: admission via `EngineHost.admit`, host sandbox and egress proxy (as D), client scene renderer, `workerd` deployment; building needs Bazel and a pinned nightly Rust |
 | Ongoing upkeep | Fast-moving young project (1.0 in October 2026); pinned updates, including V8 security fixes | Experimental, weeks old, calendar-tagged releases; pin a tag and expect breaking changes |
 | License | AGPL-3.0 (see below) | Apache-2.0 (Stylo dependency MPL-2.0) |
 
@@ -82,28 +82,31 @@ Figures are estimates or vendor claims, not measurements; Phase 0 replaces them 
 
 **E: Kitesurf engine**
 
-[Kitesurf](https://github.com/cloudflare/kitesurf) describes itself as "an experimental browser engine that runs on Cloudflare Workers" that "parses HTML, applies CSS, runs page JavaScript, and renders screenshots without Chrome or a browser container." It exposes a partial CDP endpoint for Puppeteer. Page JavaScript runs in Boa inside WebAssembly; Blitz handles the DOM, layout, and painting, Stylo handles CSS, Parley and Vello handle text and graphics, and Krilla produces PDFs. Each page gets its own isolate through Cloudflare Dynamic Workers (the Worker Loader binding). It is built with Rust, TypeScript, Bazel, and Wrangler, licensed Apache-2.0 (Stylo is MPL-2.0), and was at tag `2026.11.9` (13 November 2026) when reviewed.
+[Kitesurf](https://github.com/cloudflare/kitesurf) describes itself as "an experimental browser engine that runs on Cloudflare Workers" that "parses HTML, applies CSS, runs page JavaScript, and renders screenshots without Chrome or a browser container." It exposes a partial CDP endpoint for Puppeteer. Page scripts are bundled as modules into a per-page isolate loaded through the Worker Loader, so they run natively in `workerd`’s V8; Boa (inside WebAssembly) runs only runtime-generated code (`eval`, `new Function`, `Runtime.evaluate`, computed `import()`). Blitz handles the DOM, layout, and painting, Stylo handles CSS, Parley and Vello handle text and graphics, and Krilla produces PDFs. Each page gets its own isolate through Cloudflare Dynamic Workers (the Worker Loader binding). It is built with Rust, TypeScript, Bazel, and Wrangler, licensed Apache-2.0 (Stylo is MPL-2.0), and was at tag `2026.11.9` (13 November 2026) when reviewed.
 
-What it sends to clients and how input returns are undocumented; the `page-renderer` ("renderer for recorded page scenes") and `scene-host-wasm` packages suggest recorded draw scenes rasterized on the client. This is inferred from package names and must be confirmed from the source.
+Confirmed from the source (`packages/engine/src/rbi.ts`): "Clients get recorded vector scenes, not pixels, and rasterize them with the scene-host wasm." Scene frames, partial frames, and resource batches stream with acknowledgement-based backpressure, base64-encoded in `Kitesurf.sceneFrame` CDP events. Input travels as ordinary CDP input commands.
 
-- **E1, on the host:** run Kitesurf on `workerd` (the open-source Workers runtime that `wrangler dev` uses) beside tabtopd. Foreign JavaScript stays inside WASM in a per-page isolate, so reaching the host needs a Boa bug plus a WASM or isolate escape — stronger than D’s native V8.
+`workerd`’s README is explicit that it "is not a hardened sandbox": it "on its own does not contain suitable defense-in-depth against the possibility of implementation bugs", and possibly-malicious code must run "inside an appropriate secure sandbox", "such as a virtual machine". Kitesurf’s `SECURITY.md` adds that the engine "has no authentication or rate limit of its own" and that an embedder must supply admission through `EngineHost.admit` or a gateway.
+
+- **E1, on the host:** run Kitesurf on `workerd` (the open-source Workers runtime that `wrangler dev` uses) beside tabtopd. Page scripts run natively in V8 inside per-page `workerd` isolates, so the engine needs the same host sandbox as D (section 3); isolates add a layer inside it, not a replacement for it.
   - Host: `workerd` plus the engine; memory per page to be measured. The README reports local engines running out of memory after about 300 pages without `--expose-gc`, so per-session process recycling is required.
-  - Isolation work: Kitesurf "has no authentication of its own", so it must listen only on a private socket reachable from tabtopd; otherwise as section 3.
-  - Client: a scene renderer (Kitesurf’s, if usable in a browser) or, if a DOM can be extracted over CDP, the sanitizing renderer as in D.
+  - Isolation work: the engine has no authentication of its own, so it must listen only on a private socket reachable from tabtopd, with `EngineHost.admit` as a second check; the host sandbox and egress proxy are as section 3. Its `EngineHost.egress` hook and `workerd`’s `globalOutbound` give two places to route traffic to the proxy.
+  - Client: Kitesurf’s `scene-host-wasm` rasterizer drawing to a canvas in the sandboxed frame. Pages lose selectable text, accessibility, and native scaling.
   - Engineering: medium, mostly deployment, sandboxing, and the client renderer.
-- **E2, on the client:** compile the Rust core (Boa, Blitz, Stylo, Vello) to WASM and run it in a client worker, with all fetches routed through the tunnel broker.
-  - Keeps foreign code off the host entirely.
-  - Output is a canvas: no selectable text, accessibility, or native scaling.
-  - Client: probably several MB of WASM (estimate) and interpreted JavaScript; slow on phones.
-  - Engineering: high. The core is not packaged for use outside Workers, so separating it from the Workers-specific TypeScript and Worker Loader code amounts to a fork.
+- **E2, on the client (ruled out):** the Rust core imports only basic JavaScript functions (`console`, `Error`, `Reflect`, and a fetch bridge), so it is not tied to Workers. But the engine runs page scripts as native modules in isolates created by the Worker Loader. In a browser, those scripts would run natively in a worker — the native-execution model this plan rejected with the QuickJS option — and avoiding that would mean a fork.
 - **Hard requirement:** E is acceptable only if it runs fully self-hosted. Any dependency on a Cloudflare account or Cloudflare-hosted services would send browsing through a third party and break TabTop’s self-hosted, E2E design.
-- **Risks:** experimental and weeks old, partial CDP, active redesign likely; pin a tag. Its `SECURITY.md`, documentation site, client protocol, and `workerd` support for Dynamic Workers were not reviewed.
+- **Risks:** experimental and weeks old (its `AGENTS.md`: "a proof of concept and many parts are incomplete"), partial CDP, active redesign likely; pin a tag. Its documentation site was not reviewed.
 - **Feasibility check (Phase 0, one to two days):**
   1. Does it run on `workerd` without a Cloudflare account, including per-page isolates?
   2. Can all of its outbound traffic be forced through the egress proxy (section 3)?
   3. Can its Rust core build and run in a browser worker without Workers APIs?
 
-  If 1 and 2 pass, evaluate E1 against D. If only 3 passes, evaluate E2 against D. If none pass, keep E as a reference only.
+  Status (17 November 2026, at commit `39feadf`):
+  1. Promising, not yet demonstrated: `workerd`’s open-source config schema includes the `workerLoader` binding, and Kitesurf’s `EngineHost` interface supports embedding. Running the built engine is pending.
+  2. Promising, not yet demonstrated: all traffic passes `SandboxOutbound` then `fetch`, and `workerd` can send `fetch` to an external server in forward-proxy style (`HttpOptions.style = proxy`). A logging-proxy test is pending.
+  3. Fails in practice (see E2 above).
+
+  If 1 and 2 pass, evaluate E1 against D. If either fails, keep E as a reference only. Because E1 needs the same host sandbox as D, the comparison now turns on compatibility, resource use, and maturity, and on whether canvas output is acceptable.
 
 ### Industry reference: Cloudflare Browser Isolation
 
@@ -118,19 +121,19 @@ The NVR details come from the 2020 post; the current product pages do not mentio
 What this means here:
 
 - Per-session disposal and controlled egress are the baseline hardening for any host-side engine (section 3).
-- Draw-command streaming from a patched Chromium is not realistic for TabTop; Kitesurf’s scene output (E1), if confirmed, is the closest available equivalent.
+- Draw-command streaming from a patched Chromium is not realistic for TabTop; Kitesurf’s vector-scene output (E1) is the closest available equivalent.
 - TabTop does not need TLS interception: in `/browser` the user enters the URL, so the engine fetches it directly.
 
 ## 1. Architecture
 
-Host-side engine (D and E1):
+Both options run the engine on the host:
 
 ```text
 client: /browser — trusted UI
   ├─ Address bar, history, reload, stop, errors
   └─ Sandboxed rendering iframe
        ├─ Trusted rendering agent
-       ├─ Sanitized DOM (D) or scene (E1), with brokered resources
+       ├─ Sanitized DOM (D) or vector scene on a canvas (E), with brokered resources
        └─ Events by node ID → host; snapshot and mutations ← host
           ⇅ existing E2E tunnel
 host: tabtopd
@@ -140,25 +143,16 @@ host: tabtopd
   └─ Resource broker for the renderer (images, stylesheets, fonts)
 ```
 
-Client-side engine (E2):
-
-```text
-client: /browser — trusted UI
-  ├─ Kitesurf WASM core in a dedicated worker (page JavaScript, DOM, layout)
-  │    └─ all fetches → resource broker → E2E tunnel → fetch.go’s client
-  └─ Canvas output in the trusted UI; input events → worker
-```
-
-Keep session secrets, tunnel objects, and filesystem capabilities in the trusted UI. The rendering frame and any client-side engine receive only serialized content and narrowly scoped messages.
+Keep session secrets, tunnel objects, and filesystem capabilities in the trusted UI. The rendering frame receives only serialized content and narrowly scoped messages.
 
 E2E protects the client-to-TabTop connection. The engine or broker fetches the destination through HTTP or HTTPS; the destination and gateway see the requested content, and the destination sees the TabTop host’s IP address.
 
 ### Security layers and which one is load-bearing
 
-- **Host containment (load-bearing for D and E1):** the engine’s process sandbox, network namespace, and resource limits (section 3). A fully compromised engine must be unable to read TabTop’s files or state, reach tabtopd except through its CDP socket, or connect anywhere except the egress proxy.
-- **Client containment (load-bearing):** the rendering iframe’s sandbox and CSP. Even with a completely broken sanitizer, snapshot content must be unable to reach the parent DOM, TabTop storage, the tunnel, or the network. For E2, the engine worker gets no network access except the broker.
+- **Host containment (load-bearing):** the engine’s process sandbox, network namespace, and resource limits (section 3). A fully compromised engine must be unable to read TabTop’s files or state, reach tabtopd except through its CDP socket, or connect anywhere except the egress proxy.
+- **Client containment (load-bearing):** the rendering iframe’s sandbox and CSP. Even with a completely broken sanitizer, snapshot or scene content must be unable to reach the parent DOM, TabTop storage, the tunnel, or the network.
 - **Broker enforcement (load-bearing for "no direct traffic"):** the frame CSP permits no network origins at all — only `'self'` for the trusted renderer, `blob:`, and `data:`. A URL the rewriter misses fails to load rather than leaking a request.
-- **Sanitizer and rewriter (correctness and defence in depth):** removes active content from snapshots and rewrites resource URLs to broker-backed `blob:` URLs. A sanitizer bug should cause broken rendering, not an escape or a leak; tests confirm this by disabling the sanitizer and checking that the layers above still hold.
+- **Sanitizer and rewriter (correctness and defence in depth):** removes active content from snapshots (D) and rewrites resource URLs to broker-backed `blob:` URLs. A sanitizer bug should cause broken rendering, not an escape or a leak; tests confirm this by disabling the sanitizer and checking that the layers above still hold.
 
 ## 2. Reuse existing TabTop components
 
@@ -175,7 +169,7 @@ Add dedicated browser routes rather than broadening `preview-resource`, whose ac
 
 **Do not reuse the existing preview frame settings.** `frameSandbox` (`page_assets.go`) and `sandboxFrame` (`preview-frames.js`) grant `allow-popups allow-popups-to-escape-sandbox`, and `directFrameCSP` allows `http:` and `https:` loads. Both would let page content bypass the broker. `/browser` gets its own sandbox string (`allow-scripts` only), its own CSP constant, and its own frame helper, with a test asserting their exact values.
 
-## 3. Engine service and host sandbox (D and E1)
+## 3. Engine service and host sandbox
 
 tabtopd owns the engine’s lifecycle:
 
@@ -214,8 +208,6 @@ The resource broker enforces:
 - Per-request and per-context limits on time, bytes, redirects, concurrency, and decompressed size.
 - Accepted resource types: images, stylesheets, and fonts only.
 
-For E2, the client engine’s fetches use the same broker with methods limited to GET and HEAD, plus POST with small bodies (for example, 1 MiB) under a per-session rate limit.
-
 ### Cookies
 
 The engine keeps cookies in memory for the life of its context only; nothing is persisted, and the cookie jar is destroyed with the engine. The resource broker sends no cookies. Whether logins are a goal, and whether cookies may persist across contexts, is decided in Phase 3. Never inherit TabTop’s authentication.
@@ -243,7 +235,7 @@ Snapshots and mutations from the engine are untrusted. Before rendering:
 
 Apply the same checks to every mutation batch, not only the initial snapshot.
 
-For E1 with scene output, the renderer draws scenes to a canvas in the same sandboxed frame; DOM sanitization is replaced by validation of the scene format. For E2, the engine’s output is drawn in the trusted UI from a worker that has no network access.
+For E, the renderer draws scenes to a canvas in the same sandboxed frame with Kitesurf’s scene rasterizer; DOM sanitization is replaced by validation of the scene format.
 
 ## 6. Interaction and requests
 
@@ -259,7 +251,7 @@ The feature flag exists from the first commit, so incomplete phases ship disable
 
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
-| 0 | Time-boxed evaluation (2 weeks) of D and E. First E’s one-to-two-day feasibility check; then a throwaway spike per remaining option running the interactive fixture: for D, sandboxed Lightpanda + chromedp + snapshot to a crude renderer; for E, E1 or E2 as the feasibility check allows | Decision between D and E recorded, with licenses, pinned revisions, measured fixture behaviour, start-up time, host and client memory, and the sandbox design |
+| 0 | Time-boxed evaluation (2 weeks) of D and E. First E’s one-to-two-day feasibility check; then a throwaway spike per remaining option running the interactive fixture: for D, sandboxed Lightpanda + chromedp + snapshot to a crude renderer; for E, Kitesurf on `workerd` in the same sandbox if the feasibility check passes | Decision between D and E recorded, with licenses, pinned revisions, measured fixture behaviour, start-up time, host and client memory, and the sandbox design |
 | 1 | Engine service, host sandbox, egress proxy, and `/browser` UI with read-only rendering | Target class 1 renders; navigation, history, reload, stop, cancellation; sandbox escape and egress tests pass; frame CSP and sandbox tests; no direct remote requests |
 | 2 | Interaction: events by node ID, form input, mutation streaming | Target classes 2–4 work on fixtures; engine-side `preventDefault` respected; stale generations dropped |
 | 3 | Compatibility and policy | Target class 5 measured; cookie and login decision; downloads; diagnostics for unsupported features; rate limits tuned |
@@ -279,7 +271,7 @@ Use local fixture sites and browser automation to verify:
 - Logout, session expiry, and tunnel loss kill the engine and delete its scratch directory.
 - Exact sandbox and CSP values for the `/browser` frame.
 
-First milestone (end of Phase 0): one interactive fixture, loaded by the sandboxed engine, that reads the DOM, handles a click, performs a `fetch`, and updates the client’s rendering. That tests the riskiest assumptions — that the engine can be contained on the host (or run on the client for E2) and that its output can drive an interactive client rendering — before broader work.
+First milestone (end of Phase 0): one interactive fixture, loaded by the sandboxed engine, that reads the DOM, handles a click, performs a `fetch`, and updates the client’s rendering. That tests the riskiest assumptions — that the engine can be contained on the host and that its output can drive an interactive client rendering — before broader work.
 
 ## 9. Existing projects and reuse candidates
 
@@ -288,7 +280,7 @@ These candidates were reviewed at the documentation level. Their security proper
 | Project | Relevant capabilities | Gaps relative to this plan |
 |---|---|---|
 | [Lightpanda](https://github.com/lightpanda-io/browser) (for option D) | Headless browser in Zig with V8, html5ever, and its own DOM; no graphical rendering; CDP and WebDriver BiDi (Puppeteer, Playwright, chromedp); about 80% of Chrome’s WPT subtests; private-network blocking, proxy, cookie jar; 1.0 released October 2026 | Runs foreign JavaScript on the host with no process sandbox; AGPL-3.0; telemetry on by default; built for automation rather than long interactive sessions; partial layout only |
-| [Kitesurf](https://github.com/cloudflare/kitesurf) (for option E) | Experimental engine for Cloudflare Workers: Boa JavaScript in WASM, Blitz DOM/layout/paint, Stylo CSS, Vello graphics; per-page isolates via Dynamic Workers; partial CDP; Apache-2.0 | Weeks old and experimental; built around Workers and Wrangler, with self-hosting on `workerd` unconfirmed; no authentication of its own; client protocol undocumented; reported memory growth without `--expose-gc`; client-side use would mean a fork and canvas output |
+| [Kitesurf](https://github.com/cloudflare/kitesurf) (for option E) | Experimental engine for Cloudflare Workers: page scripts as native V8 modules in per-page isolates (Worker Loader), Boa for generated code, Blitz DOM/layout/paint, Stylo CSS, Vello graphics; vector-scene output with a WASM rasterizer; `EngineHost` embedding hooks; partial CDP; Apache-2.0 | Proof of concept; `workerd` is not a hardened sandbox, so it needs TabTop’s host sandbox; no authentication of its own; canvas output; self-hosting on `workerd` not yet demonstrated; reported memory growth without `--expose-gc`; Bazel and nightly Rust build |
 | [chromedp](https://github.com/chromedp/chromedp) | Go CDP client for driving either engine from tabtopd | Engines implement only part of CDP; confirm the domains used against each engine |
 | [bubblewrap](https://github.com/containers/bubblewrap) / [nsjail](https://github.com/google/nsjail) | Unprivileged process sandboxing with namespaces and seccomp | Requires user namespaces or container privileges; confirm availability in TabTop’s container deployments |
 
