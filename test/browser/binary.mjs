@@ -598,7 +598,15 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         // before the selection, and Find looks after it: found looking back.)
         await choose("arm32");
         await ev(`document.querySelector(".hex-find-input").value = "02 00 00 ea"; document.querySelector(".hex-find-previous").click()`);
-        await waitFor(`${shown} === "b #0x20"`, "ARM32 while editing bytes");
+        // (Said, if it doesn't come: what's shown instead, to see why.)
+        try {
+            await waitFor(`${shown} === "b #0x20"`, "ARM32 while editing bytes");
+        } catch (err) {
+            const state = await ev(`JSON.stringify({ mode: document.querySelector(".hex-disasm-bitness")?.value, shown: ${shown},
+                note: document.querySelector(".hex-disasm-note")?.textContent, status: document.querySelector(".hex-controls [role=status]")?.textContent,
+                selected: [...document.querySelectorAll(".hex-byte.selected")].map((b) => b.dataset.offset).join(","), editing: !!document.querySelector(".hex-dump.editing") })`);
+            throw new Error(`${err.message}: ${state}`);
+        }
         await ev(`document.querySelector(".hex-disasm-lines li").click()`);
         if (await ev(`!!document.querySelector(".hex-disasm-input") || document.querySelector(".hex-disasm").classList.contains("editable")`)) throw new Error("ARM32 entered the instruction editor");
         // ARM64's can be changed: a line that isn't an instruction, said by
