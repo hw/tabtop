@@ -86,6 +86,7 @@ export async function checkModels(checks) {
         await close();
         // A model's overhangs, and its check.
         await show("prism.stl");
+        await waitFor(`${info} === "STL · 12 × 12 × 6 mm · 96 triangles · 0.67 cm³ · watertight"`, "the STL, drawn again");
         await ev(`${view}.querySelector(".model-look").click(); ${view}.querySelector('.model-look-menu [data-value="overhang"]').click()`);
         await waitFor(`!${view}.querySelector(".model-angle-box").hidden`, "the overhang angle offered");
         if (!(await ev(`${info}.endsWith("· watertight")`))) throw new Error("the prism's check");
