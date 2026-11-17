@@ -218,9 +218,18 @@ export function preview(dir, files, index, download, opts = {}) {
     // again after a save (which may have kept one) and once the list of
     // them is closed (they may have been deleted). Whether it can be edited
     // here doesn't say: an upload over it keeps a version too.
-    let versionsAsked = 0;
-    const checkVersions = async () => {
+    // The file asked about last, and the answer: drawn again (another view
+    // of it, as text or bytes), it isn't asked again (each asking is a
+    // connection of its own); a save, closing the list, or another version
+    // of the file is (again, with ask).
+    let versionsAsked = 0, versionsKnown = null;
+    const checkVersions = async (ask = true) => {
         const mine = ++versionsAsked, file = current;
+        const key = file && `${join(file.dir, file.name)}\n${file.mtime ?? ""}\n${file.size ?? ""}`;
+        if (!ask && key && versionsKnown?.key === key) {
+            versions.hidden = !versionsKnown.any;
+            return;
+        }
         let any = false;
         if (file && !readOnlyRoot()) {
             try {
@@ -231,13 +240,16 @@ export function preview(dir, files, index, download, opts = {}) {
                 // Not known: not offered.
             }
         }
-        if (mine === versionsAsked && current === file) versions.hidden = !any;
+        if (mine === versionsAsked && current === file) {
+            versions.hidden = !any;
+            versionsKnown = { key, any };
+        }
     };
     versions.addEventListener("click", async () => {
         if (!current || !(await leaveEditing())) return;
         const { dir, name } = current;
         openVersions({ path: join(dir, name), name, text: current.kind === "text" || textModel(name),
-            restored: () => display(dir, name), closed: checkVersions });
+            restored: () => display(dir, name), closed: () => checkVersions() });
     });
     const saveStatus = el("button", { type: "button", className: "hint save-status", hidden: true });
     saveStatus.addEventListener("click", () => editing?.compareSaved?.());
@@ -486,7 +498,7 @@ export function preview(dir, files, index, download, opts = {}) {
         setView(format);
         theme.hidden = !(kind === "epub" || (format === "markdown" || format === "html") && viewShown(format));
         edit.hidden = !editable || readOnlyRoot();
-        checkVersions();
+        checkVersions(false);
         edit.title = kind === "epub" ? "Edit the book's title, author and cover" : kind === "hex" ? "Edit bytes: type over them" : "Edit this file";
         edit.setAttribute("aria-label", edit.title);
         frame?.stop();
