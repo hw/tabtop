@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +109,7 @@ func (g *server) usersFileOK() error {
 type check struct {
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail"`
+	Fix    string `json:"fix,omitempty"`
 }
 
 // Public diagnostics share one batch of network probes for ten seconds,
@@ -205,10 +208,103 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	report := g.collectDoctorReport(r)
+	g.annotateDoctorFixes(&report)
+	wantHTML := strings.Contains(r.Header.Get("Accept"), "text/html")
+	if wantHTML {
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+		if r.Method == http.MethodHead {
+			return
+		}
+		writeDoctorHTML(w, report)
+		return
+	}
 	h.Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(report)
+}
+
+func (g *server) annotateDoctorFixes(report *doctorReport) {
+	for name, c := range report.Checks {
+		if c.OK || c.Fix != "" {
+			continue
+		}
+		switch {
+		case name == "vnc":
+			c.Fix = "Check WEB_VNC / VNC_ADDR and that the VNC server is running. For TigerVNC sockets, confirm the path exists and is listening. See the container log for upstream login failures (VNC_UPSTREAM_PASSWORD / VNC_X509)."
+		case name == "login":
+			c.Fix = "Ensure the TOTP users file is readable and valid (WEB_USERS_FILE / default under ~/.config/tabtop). Clock skew also breaks codes — check the clock section."
+		case name == "novnc":
+			c.Fix = "Point -novnc-dir / WEB_NOVNC_DIR at a noVNC tree that contains vnc.html, or set WEB_VNC=0 if the desktop is unused."
+		case name == "downloads" || strings.HasPrefix(name, "root:"):
+			c.Fix = "Check WEB_FS_ROOTS paths exist and are readable by the TabTop user; fix permissions or remove broken roots."
+		case name == "audio":
+			c.Fix = "Confirm PipeWire is running and the TabTop sink is available, or disable audio if unused."
+		case name == "terminal":
+			c.Fix = "Ensure tmux and ghostty-web assets are installed, or set WEB_TTY=0. For lite SSH terminals, check WEB_TTY_COMMAND."
+		case name == "tunnel":
+			c.Fix = "Rebuild/redeploy so /tabtop/ tunnel scripts and noble crypto libraries are present beside the binary."
+		default:
+			c.Fix = "See detail above and docs/health-checks.md / docs/environment.md for the matching setting."
+		}
+		report.Checks[name] = c
+	}
+	if diag, _ := report.Proxy["diagnosis"].(string); diag != "" && !report.Healthy {
+		// Proxy tips already live in diagnosis; leave checks alone.
+		_ = diag
+	}
+}
+
+func writeDoctorHTML(w http.ResponseWriter, report doctorReport) {
+	io.WriteString(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`)
+	io.WriteString(w, `<title>TabTop doctor</title><style>
+body{font:15px/1.45 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;color:#1f2328;background:#f6f8fa}
+@media(prefers-color-scheme:dark){body{color:#e8e8ea;background:#12151c}}
+h1{font-size:1.4rem;margin:0 0 .4rem} .lead{color:#59636e;margin:0 0 1.2rem}
+@media(prefers-color-scheme:dark){.lead{color:#9aa8bc}}
+.ok{color:#1a7f37}.bad{color:#cf222e}
+@media(prefers-color-scheme:dark){.ok{color:#3fb950}.bad{color:#f85149}}
+.check{border:1px solid #d1d9e0;border-radius:10px;padding:.85rem 1rem;margin:0 0 .7rem;background:#fff}
+@media(prefers-color-scheme:dark){.check{border-color:#30363d;background:#161b22}}
+.check h2{margin:0 0 .35rem;font-size:1rem;display:flex;gap:.5rem;align-items:center}
+.check p{margin:.25rem 0;font-size:.92rem} .fix{margin-top:.45rem;padding:.55rem .7rem;border-radius:8px;background:#ddf4ff;color:#0550ae}
+@media(prefers-color-scheme:dark){.fix{background:#0d419d33;color:#79c0ff}}
+.meta{font-size:.85rem;color:#59636e;margin-top:1.5rem}
+@media(prefers-color-scheme:dark){.meta{color:#9aa8bc}}
+code{font:85% ui-monospace,monospace}
+a{color:#0969da}@media(prefers-color-scheme:dark){a{color:#58a6ff}}
+</style>`)
+	status := "Problems found"
+	statusClass := "bad"
+	if report.Healthy {
+		status = "All checks passed"
+		statusClass = "ok"
+	}
+	fmt.Fprintf(w, `<h1>TabTop doctor</h1><p class="lead %s">%s</p>`, statusClass, status)
+	names := make([]string, 0, len(report.Checks))
+	for name := range report.Checks {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		c := report.Checks[name]
+		mark, class := "OK", "ok"
+		if !c.OK {
+			mark, class = "Fail", "bad"
+		}
+		fmt.Fprintf(w, `<section class="check"><h2><span class="%s">%s</span> <code>%s</code></h2><p>%s</p>`,
+			class, mark, html.EscapeString(name), html.EscapeString(c.Detail))
+		if !c.OK && c.Fix != "" {
+			fmt.Fprintf(w, `<p class="fix"><strong>Fix:</strong> %s</p>`, html.EscapeString(c.Fix))
+		}
+		io.WriteString(w, `</section>`)
+	}
+	if diag, _ := report.Proxy["diagnosis"].(string); diag != "" {
+		fmt.Fprintf(w, `<section class="check"><h2>Proxy</h2><p>%s</p></section>`, html.EscapeString(diag))
+	}
+	fmt.Fprintf(w, `<p class="meta">Clock UTC %s · TOTP step %d · JSON: add <code>Accept: application/json</code> or open with curl. Docs: health-checks.md</p></html>`,
+		html.EscapeString(report.Clock.UTC), report.Clock.TOTPStep)
 }
 
 type doctorReport struct {

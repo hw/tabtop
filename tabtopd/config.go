@@ -11,8 +11,11 @@ import (
 // serverConfig contains settings fixed before serving. Runtime services and
 // mutable state belong to server, rather than the flag parser.
 type serverConfig struct {
-	remoteApprovalURL                     string
-	vncOff, fsOff                         bool
+	remoteApprovalURL string
+	vncOff, fsOff     bool
+	// offlineClient lets the offline client (bootstrap's tabtop.html, opened
+	// as a file, its origin "null") open the tunnel; see tunnelWS.
+	offlineClient                         bool
 	base                                  string
 	novncDir                              string
 	vncAddr                               string
@@ -25,6 +28,7 @@ type serverConfig struct {
 	trustedProxies                        []netip.Prefix
 	trustNProxies                         int
 	termDir, ttyCommand                   string
+	ttyTmuxHost, ttyTmuxSession           string
 	doctorOn                              bool
 	nobleDir, timeZone                    string
 	highlightDir                          string // highlight.js, for text previews' colours; "" for none
@@ -55,6 +59,9 @@ func defaultServerConfig() serverConfig {
 }
 
 func newServer(c serverConfig) (*server, error) {
+	if err := validateRemoteTTY(&c); err != nil {
+		return nil, err
+	}
 	if c.remoteApprovalURL != "" && !validApprovalURL(c.remoteApprovalURL) {
 		return nil, fmt.Errorf("-remote-approval-url must be an HTTPS URL without credentials, query or fragment (HTTP is allowed only on localhost)")
 	}

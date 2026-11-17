@@ -4,7 +4,8 @@ import { glyphs, iconSVG } from "./glyphs.js";
 import { askYes } from "./ui.js";
 import { previewView } from "./preview-view.js";
 import { el, join } from "./preview-dom.js";
-import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize, textModel } from "./preview-model.js";
+import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize, textModel, limits } from "./preview-model.js";
+import { humanBytes } from "./file-format.js";
 import { previewWide, setPreviewWide, THEMES, readingTheme, setReadingTheme, VIEWS, viewShown, setViewShown } from "./preview-settings.js";
 import { loadPreview } from "./preview-loaders.js";
 import { renderPreview } from "./preview-renderers.js";
@@ -428,8 +429,21 @@ export function preview(dir, files, index, download, opts = {}) {
                 retry.addEventListener("click", () => display(d, fname, fragment, location));
                 const downloadButton = button("Download", "Download this file", "download-fallback");
                 downloadButton.addEventListener("click", () => download(path));
+                const hexButton = button("Show as hex", "Open this file in the hex viewer", "hex-fallback");
+                hexButton.addEventListener("click", () => {
+                    previewMode = "hex";
+                    display(d, fname, fragment, location);
+                });
+                const kind = typeOf(fname)?.kind;
+                const limit = kind && limits[kind];
+                const hint = /too big/i.test(err.message) && limit
+                    ? ` Previews of this type are limited to ${humanBytes(limit)}.`
+                    : /isn't supported/i.test(err.message)
+                        ? " Download it, open it on the desktop, or view the bytes as hex."
+                        : "";
                 body.replaceChildren(el("div", { className: "preview-failure" },
-                    el("p", { className: "error", textContent: `${fname} can't be shown: ${err.message}` }), retry, downloadButton));
+                    el("p", { className: "error", textContent: `${fname} can't be shown: ${err.message}.${hint}` }),
+                    el("p", { className: "preview-failure-actions" }, retry, hexButton, downloadButton)));
             }
         }
     };
@@ -584,7 +598,7 @@ export function preview(dir, files, index, download, opts = {}) {
         drawing++;  // what's being drawn now isn't to be shown over the editor
         const start = formatOf(file.name) === "table" && viewShown("table") ? startTableEditing : startEditing;
         editing = await start({
-            body, current: editorFile, blob, markdown: languageOf(file.name) === "markdown",
+            body, current: editorFile, blob, markdown: formatOf(file.name) === "markdown",
             saved(newBlob, reply) {
                 checkVersions();
                 editorFile.mtime = reply.mtime;

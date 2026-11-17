@@ -121,12 +121,9 @@ export function glbJSON(buffer) {
     return JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 20, length)));
 }
 
-// UNSUPPORTED is what glTF extensions, required, it can't show, by why.
-export const UNSUPPORTED = {
-    KHR_draco_mesh_compression: "Draco-compressed meshes",
-    EXT_meshopt_compression: "meshopt-compressed meshes",
-    KHR_texture_basisu: "KTX2 (Basis) textures",
-};
+// COMPRESSED are the glTF extensions model-decode.js decodes (in a worker:
+// Draco's meshes, meshopt's buffers, KTX2 textures).
+export const COMPRESSED = new Set(["KHR_draco_mesh_compression", "EXT_meshopt_compression", "KHR_meshopt_compression", "KHR_texture_basisu"]);
 
 // fbxText is an FBX's text, if it's a text (ASCII) one, not binary, made
 // what three.js's FBX loader reads; else null. That loader turns the first

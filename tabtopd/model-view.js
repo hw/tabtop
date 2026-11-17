@@ -1,13 +1,13 @@
 // The 3D preview: models for 3D printing (STL, OBJ, 3MF, AMF, PLY),
-// G-code, and scenes (glTF, FBX), drawn with three.js, turned with the
+// G-code, and scenes (glTF, FBX, Collada and KMZ, VRML), drawn with three.js, turned with the
 // mouse (drag to orbit, right-drag or Shift-drag to pan, the wheel to zoom).
 //
-// glTF's, FBX's and OBJ's materials and textures are shown: the files they
-// refer to (glTF's buffers and pictures, an OBJ's .mtl and its textures,
-// an FBX's textures) read from beside them (see model-resources.js).
-// glTF and FBX are read on the page, as their loaders need it (an FBX, so,
-// only up to MAX_FBX); an OBJ's shapes in the worker, its materials on the
-// page.
+// glTF's, FBX's, Collada's and OBJ's materials and textures are shown: the
+// files they refer to (glTF's buffers and pictures, an OBJ's .mtl and its
+// textures, an FBX's or a Collada file's textures) read from beside them
+// (see model-resources.js). glTF, FBX and Collada are read on the page, as
+// their loaders need it (an FBX or Collada file, so, only up to MAX_FBX or
+// MAX_DAE); an OBJ's shapes in the worker, its materials on the page.
 //
 // Models are read in a worker (model-worker.js), so a big one doesn't
 // freeze the page: STL, OBJ and PLY by three.js's loaders, 3MF by
@@ -22,17 +22,21 @@
 // preview says it isn't available.
 import { el } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
-import { meshFacts, combine, describeMesh, missingText, sizeText, zipTooBig, meshCheck, meshCheckText, combineChecks } from "./model-info.js";
+import { meshFacts, combine, describeMesh, missingText, sizeText, zipTooBig, meshCheck, meshCheckText, combineChecks, MAX_ZIP_ENTRIES } from "./model-info.js";
 import { gcodeContent } from "./model-gcode.js";
 import { lookTools } from "./model-looks.js";
-import { fetchResources, gltfReferences, glbJSON, UNSUPPORTED, BLANK, fbxText, fbxTextVersion } from "./model-resources.js";
+import { checkCollada } from "./model-limits.js";
+import { fetchResources, gltfReferences, glbJSON, COMPRESSED, BLANK, fbxText, fbxTextVersion } from "./model-resources.js";
 
 const MODEL = 0x8fa8c8;          // a model's colour, where it hasn't its own
 const FORMATS = { stl: "STL", obj: "OBJ", "3mf": "3MF", amf: "AMF", ply: "PLY", gcode: "G-code", gco: "G-code",
-    gltf: "glTF", glb: "glTF", fbx: "FBX", bgcode: "Binary G-code" };
+    gltf: "glTF", glb: "glTF", fbx: "FBX", dae: "Collada", kmz: "KMZ", wrl: "VRML", vrml: "VRML", wrz: "VRML", bgcode: "Binary G-code" };
 // Those most often made with Y up (scans, and models from 3D software;
 // glTF's is, always); the rest, for printing, have Z up.
-const Y_UP = new Set(["obj", "ply", "gltf", "glb", "fbx"]);
+const Y_UP = new Set(["obj", "ply", "gltf", "glb", "fbx", "dae", "kmz", "wrl", "vrml", "wrz"]);
+// The unit each format's sizes are in, where it says ("": its own, unsaid).
+const VRML = new Set(["wrl", "vrml", "wrz"]);
+const unitOf = (format) => (["gltf", "glb", "dae", "kmz"].includes(format) ? "m" : format === "fbx" || VRML.has(format) ? "" : "mm");
 
 // modelFormat is the format a file named name is shown as, by its
 // extension ("stl", "gcode"…), or "" if it isn't one.
@@ -47,8 +51,9 @@ const failed = (message) => el("p", { className: "error", textContent: message }
 // resolves to the view (with .stop), or to a note that it can't be shown.
 // Aborting signal stops reading it. read(path, signal) reads a file it
 // refers to (see model-resources.js; model-read.js's, from the server, if
-// not given).
-export async function modelView({ file, blob, signal = null, read = null }) {
+// not given). saveFile(blob, name), if given, saves a file made of it (as
+// "Save as STL" makes), resolving to what to say of it ("Saved as a.stl.").
+export async function modelView({ file, blob, signal = null, read = null, saveFile = null }) {
     const format = modelFormat(file.name);
     let THREE, OrbitControls;
     try {
@@ -71,6 +76,10 @@ export async function modelView({ file, blob, signal = null, read = null }) {
             content = await gltfContent(around, format, blob);
         } else if (format === "fbx") {
             content = await fbxContent(around, blob);
+        } else if (format === "dae") {
+            content = await daeContent(around, blob);
+        } else if (format === "kmz") {
+            content = await kmzContent(around, blob);
         } else {
             const reply = await fromWorker(format, blob, worker, file.name);
             if (reply.gcode) {
@@ -79,7 +88,7 @@ export async function modelView({ file, blob, signal = null, read = null }) {
                 const names = new Set(reply.parts.flatMap((p) => p.materials ?? []));
                 const materials = reply.libraries?.length ? await objMaterials(around, reply.libraries, names) : null;
                 try {
-                    content = partsContent(THREE, reply, materials);
+                    content = partsContent(THREE, reply, materials, unitOf(format));
                 } catch (err) {
                     materials?.release();
                     throw err;
@@ -248,8 +257,29 @@ export async function modelView({ file, blob, signal = null, read = null }) {
     // (An STL's and a 3MF's are flat facets only: shown so, till smoothed.)
     looks = content.meshes.length ? lookTools(THREE, content.meshes, { renderer, redraw, button, toggle, faceted: format === "stl" || format === "3mf" || !!content.faceted }) : null;
     if (looks) tools.push(...looks.tools);
+    // Save as STL: its meshes as shown (not G-code's lines, nor a sliced 3MF's).
+    const said = el("span", { className: "hint model-saved", role: "status" });
+    if (saveFile && content.meshes.length && !["gcode", "gco", "bgcode"].includes(format) && !content.label) {
+        const name = file.name.replace(/\.[^.]*$/, "") + ".stl";
+        const save = button("", `Save as STL: ${name}, as shown (its up as Z${unitOf(format) === "m" ? ", in millimetres" : ""})`, async () => {
+            save.disabled = true;
+            said.textContent = "Saving…";
+            try {
+                turned.updateMatrixWorld(true);
+                const { stlFrom } = await import("./model-export.js");
+                const stl = new Blob([stlFrom(THREE, content.meshes, { scale: unitOf(format) === "m" ? 1000 : 1 })], { type: "model/stl" });
+                said.textContent = await saveFile(stl, name);
+            } catch (err) {
+                said.textContent = `It couldn't be saved: ${String(err?.message || err).replace(/^it /, "")}`;
+            } finally {
+                save.disabled = false;
+            }
+        }, "download");
+        save.classList.add("model-save-stl");
+        tools.push(save);
+    }
     const info = el("span", { className: "hint model-info", textContent: `${content.label ?? FORMATS[format]} · ${content.info}` });
-    const bar = el("div", { className: "model-bar" }, ...tools, ...(content.tools?.(redraw, { toggle }) ?? []), info);
+    const bar = el("div", { className: "model-bar" }, ...tools, ...(content.tools?.(redraw, { toggle }) ?? []), said, info);
     const view = el("div", { className: "model-view" }, bar, stage);
     if (content.legend) view.append(content.legend);
     stage.addEventListener("keydown", (e) => {
@@ -288,16 +318,22 @@ function dispose(object) {
 }
 
 // fromWorker is what model-worker.js makes of blob, a file of format named name.
+// How long the model worker may take to read one file.
+const WORKER_TIMEOUT = 120_000;
+
 async function fromWorker(format, blob, worker, name) {
     const bytes = await blob.arrayBuffer();
     const w = new Worker(new URL("./model-worker.js", import.meta.url), { type: "module" });
     worker.current = w;
     const { signal } = worker;
     return new Promise((resolve, reject) => {
-        const abort = () => { w.terminate(); reject(signal.reason); };
+        let late = null;
+        const abort = () => { clearTimeout(late); w.terminate(); reject(signal.reason); };
         if (signal?.aborted) return abort();
         signal?.addEventListener("abort", abort, { once: true });
-        const done = (f) => (v) => { signal?.removeEventListener("abort", abort); f(v); };
+        const done = (f) => (v) => { clearTimeout(late); signal?.removeEventListener("abort", abort); f(v); };
+        // (One that takes too long, as a file made to: ended, said so.)
+        late = setTimeout(() => { w.terminate(); done(reject)(new Error("it took too long to read (more than 2 minutes)")); }, WORKER_TIMEOUT);
         w.onmessage = ({ data }) => (data.error ? done(reject)(new Error(data.error)) : done(resolve)(data));
         w.onerror = (e) => { e.preventDefault?.(); done(reject)(new Error("it couldn't be read")); };
         w.postMessage({ format, bytes, name }, [bytes]);
@@ -310,7 +346,7 @@ const material = (THREE, colours) => new THREE.MeshStandardMaterial({ color: col
 // partsContent is the shapes the worker read (an STL, OBJ, PLY or 3MF):
 // {object, meshes, info}. With materials (an OBJ's, see objMaterials),
 // each mesh has those its parts are made of, by name.
-function partsContent(THREE, { parts, facts }, materials = null) {
+function partsContent(THREE, { parts, facts }, materials = null, unit = "mm") {
     if (!parts.length) throw new Error("it has no shapes in it");
     const object = new THREE.Group(), meshes = [];
     for (const p of parts) {
@@ -340,8 +376,8 @@ function partsContent(THREE, { parts, facts }, materials = null) {
         }
     }
     let info = facts.points && !facts.triangles
-        ? `${describeMesh({ ...facts, triangles: 0, volume: 0 }).replace(/ · 0 triangles$/, "")} · ${facts.points.toLocaleString("en")} points`
-        : describeMesh(facts, { textures: materials ? usedTextures(meshes, materials.missing.length) || null : null });
+        ? `${describeMesh({ ...facts, triangles: 0, volume: 0 }, { unit }).replace(/ · 0 triangles$/, "")} · ${facts.points.toLocaleString("en")} points`
+        : describeMesh(facts, { unit, volume: unit === "mm", textures: materials ? usedTextures(meshes, materials.missing.length) || null : null });
     if (facts.check) info += ` · ${meshCheckText(facts.check)}`;
     if (materials?.missing.length) info += ` · ${missingText(materials.missing)}`;
     // (Materials not used by a mesh: let go of now.)
@@ -534,8 +570,8 @@ async function gltfContent(around, format, blob) {
     const { THREE, dir, read, signal } = around;
     const buffer = await blob.arrayBuffer();
     const json = format === "glb" ? glbJSON(buffer) : JSON.parse(new TextDecoder().decode(buffer));
-    const unsupported = (json.extensionsRequired ?? []).filter((e) => Object.hasOwn(UNSUPPORTED, e));
-    if (unsupported.length) throw new Error(`it has ${unsupported.map((e) => UNSUPPORTED[e]).join(" and ")}, which this preview can't show`);
+    // Compressed (Draco's meshes, meshopt's buffers, KTX2 textures): decoded in a worker of their own.
+    const compressed = (json.extensionsUsed ?? []).some((e) => COMPRESSED.has(e));
     const found = await fetchResources(dir, gltfReferences(json), read, { uri: true, signal });
     try {
         const lost = (json.buffers ?? []).map((b) => b?.uri).filter((u) => u && found.missing.includes(u));
@@ -543,7 +579,13 @@ async function gltfContent(around, format, blob) {
         if (big.length) throw new Error(`its data, ${big.join(", ")}, is too big to read here`);
         if (lost.length) throw new Error(`its data, ${lost.join(", ")}, isn't here beside it`);
         const { GLTFLoader } = await import("./three/GLTFLoader.js");
-        const gltf = await new GLTFLoader(await managerFor(THREE, found.urls, around.changed)).parseAsync(buffer, "");
+        const manager = await managerFor(THREE, found.urls, around.changed);
+        const loader = new GLTFLoader(manager);
+        if (compressed) {
+            const { draco, meshopt, ktx2 } = (await import("./model-decode.js")).gltfDecoders(THREE, manager);
+            loader.setDRACOLoader(draco).setMeshoptDecoder(meshopt).setKTX2Loader(ktx2);
+        }
+        const gltf = await loader.parseAsync(buffer, "");
         const object = gltf.scene ?? gltf.scenes?.[0];
         if (!object) throw new Error("nothing was found in it");
         const { meshes, facts, textures: all } = sceneFacts(THREE, object);
@@ -587,6 +629,104 @@ async function fbxContent(around, blob) {
         if (missing.length) info += ` · ${missingText(missing)}`;
         return { object, meshes, info, scene: true, revoke };
     } catch (err) {
+        revoke();
+        throw err;
+    }
+}
+
+// The most a Collada file is: it's read on the page (its loader needs
+// DOMParser), which a big one would freeze.
+const MAX_DAE = 32 << 20;
+
+// daeContent reads a Collada (.dae) file, on the page, and the textures
+// it names, beside it: {object, meshes, info, revoke}. Its loader turns it
+// Y-up (if it says it's Z-up) and to metres (its <unit>), so its size is
+// in metres.
+async function daeContent(around, blob) {
+    if (blob.size > MAX_DAE) throw new Error(`it's too big to read here (it's more than ${MAX_DAE >> 20} MB)`);
+    return colladaContent(around, await blob.text(), (make, discard) => withResources(around, make, discard));
+}
+
+// The most a KMZ is, unpacked (it's read on the page, as Collada is).
+const MAX_KMZ = 32 << 20;
+
+// kmzContent reads a KMZ (a zip: KML, which names its Collada model, and
+// that model's textures, inside it), on the page: as daeContent, its
+// textures only from inside it (never fetched from where it says). Its
+// place on Earth (its KML's Location) isn't.
+async function kmzContent(around, blob) {
+    const { THREE } = around;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const why = zipTooBig(bytes, MAX_KMZ);
+    if (why) throw new Error(`it's too big to unpack here (${why})`);
+    const { unzipSync } = await import("./three/fflate.module.js");
+    let count = 0, unpacked = 0;
+    const files = unzipSync(bytes, { filter: (f) => {
+        if (++count > MAX_ZIP_ENTRIES) throw new Error("it holds too many files");
+        if ((unpacked += f.originalSize) > MAX_KMZ) throw new Error(`it's too big to unpack here (it unpacks to more than ${MAX_KMZ >> 20} MB)`);
+        return true;
+    } });
+    // The model its KML names (as Google Earth's are), else the first .dae in it.
+    const names = Object.keys(files);
+    let model = null;
+    const kml = names.find((n) => /\.kml$/i.test(n));
+    if (kml) {
+        const href = new DOMParser().parseFromString(new TextDecoder().decode(files[kml]), "application/xml").querySelector("Model Link href")?.textContent?.trim();
+        if (href) model = names.find((n) => n === href.replace(/^\.\//, "")) ?? null;
+    }
+    model ??= names.find((n) => /\.dae$/i.test(n));
+    if (!model) throw new Error("it has no 3D model in it");
+    const base = model.includes("/") ? model.slice(0, model.lastIndexOf("/") + 1) : "";
+    // Its textures: by their path, relative to the model, else by name alone.
+    const inside = (u) => {
+        const path = base + String(u).replace(/^\.\//, "");
+        if (files[path]) return path;
+        const name = String(u).split(/[\\/]/).pop();
+        return names.find((n) => n.split("/").pop() === name) ?? null;
+    };
+    const load = async (make, discard) => {
+        const urls = new Map(), missing = [];
+        const manager = new THREE.LoadingManager();
+        manager.onProgress = () => around.changed.redraw?.();
+        manager.setURLModifier((u) => {
+            if (/^(blob|data):/i.test(u)) return u;
+            if (!urls.has(u)) {
+                const found = inside(u);
+                urls.set(u, found ? URL.createObjectURL(new Blob([files[found]])) : BLANK);
+                if (!found) missing.push(u);
+            }
+            return urls.get(u);
+        });
+        const revoke = () => { for (const url of urls.values()) if (url.startsWith("blob:")) URL.revokeObjectURL(url); };
+        try {
+            return { made: make(manager), missing, revoke };
+        } catch (err) {
+            revoke();
+            throw err;
+        }
+    };
+    return colladaContent(around, new TextDecoder().decode(files[model]), load);
+}
+
+// colladaContent reads Collada text (a .dae's, or a KMZ's), its textures
+// by load(make, discard) ({made, missing, revoke}).
+async function colladaContent(around, text, load) {
+    const { THREE } = around;
+    if (!/<COLLADA\b/.test(text.slice(0, 4096))) throw new Error("it isn't a Collada file");
+    // (What it makes, counted first: its loader copies a shared part each time it's used.)
+    checkCollada(text);
+    const { ColladaLoader } = await import("./three/ColladaLoader.js");
+    const { made, missing, revoke } = await load((manager) => new ColladaLoader(manager).parse(text, "")?.scene, (scene) => scene && dispose(scene));
+    try {
+        if (!made) throw new Error("nothing was found in it");
+        const { meshes, facts, textures: all } = sceneFacts(THREE, made);
+        const textures = Math.max(0, all - missing.length);
+        let info = meshes.length ? describeMesh(facts, { unit: "m", volume: false, textures }) : `${sizeText(facts.min, facts.max, "m")} · ${drawnAs(made)}`;
+        if (missing.length) info += ` · ${missingText(missing)}`;
+        // (A mesh without normals is drawn flat: facets, to smooth if asked.)
+        return { object: made, meshes, info, scene: true, revoke, faceted: meshes.some((m) => !m.geometry.attributes.normal) };
+    } catch (err) {
+        dispose(made);
         revoke();
         throw err;
     }

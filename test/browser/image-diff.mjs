@@ -60,10 +60,10 @@ export async function checkImageDiff({ container, inContainer, open, listed, row
         if (unchangedPixel[3]!==0) throw new Error("unchanged overlay pixel isn't transparent");
         await click(`${dialog}.querySelector('.image-diff-swap')`);
         if (!await ev(`${divider}.getAttribute('aria-valuetext').includes('51% B')`)) throw new Error("slider sides not swapped");
-        await press("d");await waitFor(`${dialog}.querySelector('figure:not([hidden])').dataset.side==='delta'`,"delta-only view");
         await press("a");await waitFor(`${dialog}.querySelector('figure:not([hidden])').dataset.side==='a'`,"A-only view");
         await press("b");await waitFor(`${dialog}.querySelector('figure:not([hidden])').dataset.side==='b'`,"B-only view");
-        await ev(`${dialog}.querySelector('[data-mode="all"]').click();(()=>{const gain=${dialog}.querySelector('.image-diff-gain');gain.value='4';gain.dispatchEvent(new Event('input'));})()`);
+        await press("d");await waitFor(`${dialog}.querySelector('figure:not([hidden])').dataset.side==='delta'`,"delta-only view");
+        await ev(`(()=>{const gain=${dialog}.querySelector('.image-diff-gain');gain.value='4';gain.dispatchEvent(new Event('input'));})()`);
         if(!await ev(`${dialog}.querySelector('[data-side="delta"] canvas').style.filter==='brightness(4)'`))throw new Error("delta gain didn't update");
         await close();
         if(!await ev('document.activeElement.matches("button.compare-images")'))throw new Error("comparison didn't restore focus");

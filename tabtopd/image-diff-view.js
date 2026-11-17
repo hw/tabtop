@@ -1,6 +1,7 @@
 import { call, collect, SERVER_DECODED } from "./requests.js";
 import { el, maximizeButton } from "./preview-dom.js";
-import { iconSVG } from "./glyphs.js";
+import { glyphs, iconSVG } from "./glyphs.js";
+import { choiceMenu } from "./image-mask.js";
 import { typeOf } from "./preview-model.js";
 import { MAX_IMAGE_DIFF_BYTES, imageDiffGeometry } from "./image-diff.js";
 
@@ -100,16 +101,48 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
         controls.push(result); result.addEventListener("click", action); return result;
     };
     let ready = false, stopped = false, result, mode = initialMode, zoom = 1, fitting = true, center = { x: 0, y: 0 };
-    const modeButtons = new Map();
-    for (const [key, label] of [["side", "Side by side"], ["slider", "Slider"], ["delta", "Delta"], ["all", "All"], ["a", "A"], ["b", "B"]]) {
-        const control = button(label, "image-diff-mode", () => setMode(key));
-        if (["side", "slider", "delta"].includes(key)) {
-            control.textContent = ""; control.innerHTML = iconSVG(key === "side" ? "compare" : key === "slider" ? "compare-slider" : "delta");
-            control.title = label; control.setAttribute("aria-label", label); control.classList.add("glyph");
-        }
-        control.dataset.mode = key; control.setAttribute("aria-pressed", String(key === mode));
-        modeButtons.set(key, control); modes.append(control);
-    }
+    const aTitle = a.label ?? a.path ?? a.name, bTitle = b.label ?? b.path ?? b.name;
+    let paneMode = ["side", "a", "b", "delta"].includes(initialMode) ? initialMode : "side";
+    const paneChoices = {
+        side: { icon: "compare", title: "Side by side" },
+        a: { icon: "diff-a", title: aTitle },
+        b: { icon: "diff-b", title: bTitle },
+        delta: { icon: "diff-delta", title: "Delta" },
+    };
+    const paneButton = el("button", { type: "button", className: "glyph image-diff-mode image-diff-pane-current", disabled: true });
+    controls.push(paneButton);
+    paneButton.addEventListener("click", () => setMode(paneMode));
+    const showPaneChoice = (key) => {
+        paneMode = key;
+        const { icon, title } = paneChoices[key];
+        paneButton.innerHTML = iconSVG(icon);
+        paneButton.title = title;
+        paneButton.setAttribute("aria-label", title);
+        paneMenu.set(key);
+    };
+    const paneMenu = choiceMenu({
+        className: "image-diff-pane",
+        label: "Pane view",
+        button: paneButton,
+        onChoose: (key) => { showPaneChoice(key); setMode(key); },
+        choices: [
+            { key: "side", title: "Side by side", icon: "compare", className: "image-diff-pane-side" },
+            { key: "a", title: aTitle, icon: "diff-a", className: "image-diff-pane-a" },
+            { key: "b", title: bTitle, icon: "diff-b", className: "image-diff-pane-b" },
+            { key: "delta", title: "Delta", icon: "diff-delta", className: "image-diff-pane-delta" },
+        ],
+    });
+    showPaneChoice(paneMode);
+    const modeButtons = new Map([["pane", paneButton]]);
+    modes.append(paneMenu.group);
+    const sliderMode = button("Slider", "image-diff-mode glyph", () => setMode("slider"));
+    sliderMode.textContent = ""; sliderMode.innerHTML = iconSVG("compare-slider");
+    sliderMode.title = "Slider"; sliderMode.setAttribute("aria-label", "Slider");
+    sliderMode.dataset.mode = "slider"; sliderMode.setAttribute("aria-pressed", String(mode === "slider"));
+    modeButtons.set("slider", sliderMode); modes.append(sliderMode);
+    paneButton.dataset.mode = "pane";
+    paneButton.setAttribute("aria-pressed", String(["side", "a", "b", "delta"].includes(mode)));
+    paneMenu.disable(true);
     const zoomLabel = el("output", { className: "image-diff-zoom" });
     const zoomControls = el("div", { className: "image-diff-zoom-tools" },
         button("−", "image-diff-zoom-out", () => setZoom(zoom / 1.25)),
@@ -151,20 +184,77 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
         overlay.hidden = !overlay.hidden; overlayToggle.setAttribute("aria-pressed", String(!overlay.hidden));
     });
     overlayToggle.innerHTML = iconSVG("delta"); overlayToggle.title = "Show differences"; overlayToggle.setAttribute("aria-label", "Show differences"); overlayToggle.setAttribute("aria-pressed", "false");
-    const opacity = el("input", { type: "range", min: "0", max: "100", value: "60", disabled: true, ariaLabel: "Difference overlay opacity" });
+    const opacity = el("input", { type: "range", min: "0", max: "100", value: "60", disabled: true, className: "image-diff-opacity", ariaLabel: "Difference overlay opacity" });
+    const opacityValue = el("output", { textContent: "60%" });
     controls.push(opacity); overlay.style.opacity = ".6";
-    opacity.addEventListener("input", () => { overlay.style.opacity = String(Number(opacity.value) / 100); });
-    const sliderTools = el("div", { className: "image-diff-slider-tools", hidden: true }, overlayToggle, el("label", {}, "Opacity", opacity));
+    opacity.addEventListener("input", () => {
+        overlay.style.opacity = String(Number(opacity.value) / 100);
+        opacityValue.textContent = `${opacity.value}%`;
+    });
+    const opacityPanel = el("div", { className: "mask-brush-options image-diff-opacity-options", role: "dialog", ariaLabel: "Difference overlay opacity" },
+        el("label", {}, "Opacity ", opacity, opacityValue));
+    opacityPanel.setAttribute("popover", "auto");
+    const opacityArrow = el("button", { type: "button", className: "mask-size-toggle image-diff-opacity-toggle", textContent: glyphs.chevronDown,
+        title: "Overlay opacity", ariaLabel: "Overlay opacity", disabled: true });
+    opacityArrow.setAttribute("aria-haspopup", "dialog"); opacityArrow.setAttribute("aria-expanded", "false");
+    controls.push(opacityArrow);
+    const positionOpacity = () => {
+        if (!opacityPanel.matches(":popover-open")) return;
+        const rect = opacityArrow.getBoundingClientRect(), box = opacityPanel.getBoundingClientRect();
+        opacityPanel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - box.width - 8))}px`;
+        opacityPanel.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - box.height - 8))}px`;
+    };
+    opacityArrow.addEventListener("click", () => { opacityPanel.togglePopover(); positionOpacity(); });
+    opacityPanel.addEventListener("toggle", (event) => opacityArrow.setAttribute("aria-expanded", String(event.newState === "open")));
+    opacityPanel.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") { event.preventDefault(); opacityPanel.hidePopover(); opacityArrow.focus(); }
+        event.stopPropagation();
+    });
+    window.addEventListener("resize", positionOpacity);
+    const sliderTools = el("div", { className: "image-diff-slider-tools", hidden: true },
+        el("span", { className: "mask-paint-group image-diff-opacity-group" }, overlayToggle, opacityArrow, opacityPanel));
+    const gain = el("input", { type: "range", min: "1", max: "16", step: "1", value: "1", disabled: true, className: "image-diff-gain" });
+    gain.setAttribute("aria-label", "Delta gain"); controls.push(gain);
+    const gainValue = el("output", { textContent: "1×" });
+    gain.addEventListener("input", () => { gainValue.textContent = `${gain.value}×`; canvases[2].style.filter = `brightness(${gain.value})`; });
+    const gainPanel = el("div", { className: "mask-brush-options image-diff-gain-options", role: "dialog", ariaLabel: "Delta gain" },
+        el("label", {}, "Delta gain ", gain, gainValue));
+    gainPanel.setAttribute("popover", "auto");
+    const gainButton = el("button", { type: "button", className: "glyph image-diff-gain-current", disabled: true, title: "Delta gain", ariaLabel: "Delta gain" });
+    gainButton.innerHTML = iconSVG("delta");
+    gainButton.setAttribute("aria-haspopup", "dialog"); gainButton.setAttribute("aria-expanded", "false");
+    controls.push(gainButton);
+    const gainArrow = el("button", { type: "button", className: "mask-size-toggle image-diff-gain-toggle", textContent: glyphs.chevronDown,
+        title: "Delta gain", ariaLabel: "Delta gain", disabled: true });
+    gainArrow.setAttribute("aria-haspopup", "dialog"); gainArrow.setAttribute("aria-expanded", "false");
+    controls.push(gainArrow);
+    const positionGain = () => {
+        if (!gainPanel.matches(":popover-open")) return;
+        const rect = gainArrow.getBoundingClientRect(), box = gainPanel.getBoundingClientRect();
+        gainPanel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - box.width - 8))}px`;
+        gainPanel.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - box.height - 8))}px`;
+    };
+    const openGain = () => { gainPanel.togglePopover(); positionGain(); };
+    gainButton.addEventListener("click", openGain);
+    gainArrow.addEventListener("click", openGain);
+    gainPanel.addEventListener("toggle", (event) => {
+        const open = event.newState === "open";
+        gainArrow.setAttribute("aria-expanded", String(open));
+        gainButton.setAttribute("aria-expanded", String(open));
+    });
+    gainPanel.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") { event.preventDefault(); gainPanel.hidePopover(); gainArrow.focus(); }
+        event.stopPropagation();
+    });
+    window.addEventListener("resize", positionGain);
+    const gainTools = el("span", { className: "mask-paint-group image-diff-gain-group", hidden: true }, gainButton, gainArrow, gainPanel);
     const swap = button("⇄", "image-diff-swap glyph", () => {
         swapped = !swapped;
         figures[0].style.order = swapped ? "1" : "0"; figures[1].style.order = swapped ? "0" : "1";
         refreshSlider(); updateReveal(reveal);
+        if (mode === "a" || mode === "b") setMode(mode === "a" ? "b" : "a");
     });
     swap.title = "Swap sides"; swap.setAttribute("aria-label", "Swap sides");
-    const gain = el("input", { type: "range", min: "1", max: "16", step: "1", value: "1", disabled: true, className: "image-diff-gain" });
-    gain.setAttribute("aria-label", "Delta gain"); controls.push(gain);
-    const gainLabel = el("output", { textContent: "1×" });
-    gain.addEventListener("input", () => { gainLabel.value = `${gain.value}×`; canvases[2].style.filter = `brightness(${gain.value})`; });
     const panes = el("div", { className: "image-diff-panes" });
     for (const [i, label] of [a.label ?? a.path ?? a.name, b.label ?? b.path ?? b.name, "Pixel difference", "A / B — drag the divider"].entries()) {
         const name = ["A", "B", "Delta", "Slider"][i];
@@ -204,7 +294,7 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
     }
     const dialog = el("dialog", { className: "image-diff", ariaLabel: "Compare images" },
         el("div", { className: "image-diff-head" }, el("strong", { textContent: "Compare images" }), closeButton),
-        el("div", { className: "image-diff-tools" }, modes, swap, zoomControls, sliderTools, el("label", { className: "image-diff-gain-control" }, "Delta gain", gain, gainLabel)),
+        el("div", { className: "image-diff-tools" }, modes, gainTools, sliderTools, swap, zoomControls),
         panes, summary, el("p", { className: "image-diff-legend", textContent: "Black = unchanged · Brighter = different · Magenta = present in only one image. Top-left alignment, no resizing. Animation uses a still frame." }));
     closeButton.before(maximizeButton(dialog, "image-diff-maximize"));
     function refreshSlider() {
@@ -241,12 +331,18 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
     }
     function setMode(value) {
         mode = value;
-        for (const [key, control] of modeButtons) control.setAttribute("aria-pressed", String(key === mode));
-        figures.forEach(figure => { figure.hidden = mode === "all" ? figure.dataset.side === "slider" : mode === "side" ? !["a", "b"].includes(figure.dataset.side) : figure.dataset.side !== mode; });
-        panes.classList.toggle("single", !["all", "side"].includes(mode));
+        const pane = ["side", "a", "b", "delta"].includes(mode);
+        if (pane) showPaneChoice(mode);
+        for (const [key, control] of modeButtons) {
+            control.setAttribute("aria-pressed", String(key === "pane" ? pane : key === mode));
+        }
+        figures.forEach(figure => { figure.hidden = mode === "side" ? !["a", "b"].includes(figure.dataset.side) : figure.dataset.side !== mode; });
+        panes.classList.toggle("single", mode !== "side");
         panes.classList.toggle("two", mode === "side");
         sliderTools.hidden = mode !== "slider";
-        gain.closest("label").hidden = mode !== "delta" && mode !== "all";
+        if (mode !== "slider") opacityPanel.hidePopover();
+        gainTools.hidden = mode !== "delta";
+        if (mode !== "delta") gainPanel.hidePopover();
         if (ready) { if (fitting) fit(); else applyZoom(); }
     }
     const resize = new ResizeObserver(() => { if (fitting) fit(); else if (ready) syncScroll(); });
@@ -255,6 +351,11 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
         if (stopped) return;
         stopped = true; controller.abort(); resize.disconnect(); sources.forEach(bitmap => bitmap?.close());
         for (const canvas of [...canvases, sliderB, overlay]) { canvas.width = 0; canvas.height = 0; }
+        paneMenu.stop();
+        opacityPanel.hidePopover(); gainPanel.hidePopover();
+        window.removeEventListener("resize", positionOpacity);
+        window.removeEventListener("resize", positionGain);
+        opacityPanel.remove(); gainPanel.remove();
         if (dialog.open) dialog.close(); dialog.remove();
         if (focus?.isConnected) focus.focus({ preventScroll: true });
     };
@@ -299,7 +400,7 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
             figures[2].querySelector("small").textContent = `${result.width}×${result.height} · Maximum delta ${result.maxDelta}/255`;
             summary.textContent = result.changed ? `${result.changed.toLocaleString()} of ${result.pixels.toLocaleString()} pixels differ (${(100 * result.changed / result.pixels).toFixed(2)}%).` : "Images have identical decoded pixels.";
             if (result.aWidth !== result.bWidth || result.aHeight !== result.bHeight) summary.textContent += " Dimensions differ; extra areas are marked magenta.";
-            refreshSlider(); controls.forEach(control => { control.disabled = false; }); ready = true; fit();
+            refreshSlider(); controls.forEach(control => { control.disabled = false; }); paneMenu.disable(false); ready = true; fit();
         } catch (err) {
             if (signal.aborted) return;
             controller.abort(); sources.forEach(bitmap => bitmap?.close());

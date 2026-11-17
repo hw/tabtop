@@ -4,7 +4,7 @@
 //
 //   node scripts/bootstrap/unlock-pack.mjs --pass 'OOB_PASS' --pack tabtop-client.pack.json --out ./client
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { webcrypto } from "node:crypto";
 
 const args = new Map();
@@ -58,13 +58,15 @@ if (args.has("plain-out")) {
 }
 
 const client = JSON.parse(plain.toString("utf8"));
-if (client.format !== "tabtop-client/v1" || !client.files) {
-	throw new Error("plaintext is not a tabtop-client/v1 tree (refusing to unpack)");
+if (client.format !== "tabtop-pack/v1" || !client.files) {
+	throw new Error("plaintext is not a tabtop-pack/v1 tree (refusing to unpack)");
 }
 
 let n = 0;
 for (const [rel, body] of Object.entries(client.files)) {
-	const dest = join(outDir, rel);
+	// (Inside outDir only: a pack's "../x" or "/etc/x" isn't written.)
+	const dest = resolve(outDir, rel);
+	if (!dest.startsWith(resolve(outDir) + sep)) throw new Error(`refusing to write ${JSON.stringify(rel)}: it's outside ${outDir}`);
 	mkdirSync(dirname(dest), { recursive: true });
 	if (body && typeof body === "object" && typeof body.base64 === "string") {
 		writeFileSync(dest, Buffer.from(body.base64, "base64"));
@@ -74,5 +76,5 @@ for (const [rel, body] of Object.entries(client.files)) {
 	n++;
 }
 console.error(`unlocked ${client.name || "client"}: ${n} files → ${outDir}/`);
-console.error(`entry: ${join(outDir, client.entry || "vnc.html")}`);
+console.error(`open: ${join(outDir, "tabtop.html")}`);
 console.error(`plaintext sha256: ${Buffer.from(await subtle.digest("SHA-256", plain)).toString("hex")}`);

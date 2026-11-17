@@ -96,8 +96,10 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"name-session":     other((*server).routeNameSession),
 	"seen":             other((*server).routeSeen),
 	"bootstrap-reseal": other((*server).routeBootstrapReseal),
-	"activity":         other((*server).routeActivity),
-	"activity-clear":   other((*server).routeActivityClear),
+	// The offline client's viewers, fetched as it needs them.
+	"asset":          other((*server).routeAsset),
+	"activity":       other((*server).routeActivity),
+	"activity-clear": other((*server).routeActivityClear),
 
 	// Files.
 	"roots":         files(func(g *server, c *tunnelCall) { c.r.finish(map[string]any{"roots": g.rootReport()}) }),
@@ -180,7 +182,7 @@ func (g *server) routeTTY(c *tunnelCall) {
 	defer g.closeTTY(c.session)
 	c.t.c.SetReadLimit(maxTTYMessage + tunnelOverhead)
 	// search: whether there's tmux's history to search (see tty.go).
-	if c.r.accept(map[string]any{"search": g.ttyCommand == ""}) {
+	if c.r.accept(map[string]any{"search": g.ttyTmuxHost == "" && g.ttyCommand == ""}) {
 		g.serveTTY(c.t, c.session, c.ip)
 	}
 }
@@ -317,16 +319,16 @@ func (g *server) routeSeen(c *tunnelCall) {
 	c.r.finish(nil)
 }
 
-// routeBootstrapReseal seals a new local-client pack with a fresh passcode
+// routeBootstrapReseal seals a new offline-client pack with a fresh passcode
 // (shown on the Sessions page next to today's pack hash).
 func (g *server) routeBootstrapReseal(c *tunnelCall) {
 	pass, hash, err := g.resealBootstrapPack()
 	if err != nil {
 		log.Printf("bootstrap reseal from %s: %v", c.ip, err)
-		c.r.fail("Couldn't reseal the local client pack.")
+		c.r.fail("Couldn't reseal the offline client pack.")
 		return
 	}
-	g.act(c.session, "bootstrap", c.ip, "resealed the local client pack")
+	g.act(c.session, "bootstrap", c.ip, "resealed the offline client pack")
 	c.r.finish(map[string]any{
 		"bootstrap_passcode":    pass,
 		"bootstrap_pack_sha256": hash,

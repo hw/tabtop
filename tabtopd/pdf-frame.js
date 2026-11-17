@@ -33,8 +33,13 @@
 
 (async () => {
     // Where tabtopd serves pdf.js (it rewrites this path).
-    const PDFJS = new URL("./pdfjs/", document.currentScript.src).href;
-    const { glyphs, iconSVG } = await import(new URL("./glyphs.js", document.currentScript.src).href);
+    // In the offline client, which built this frame (see scripts/bootstrap/
+    // file-launcher.mjs's frameHTML), pdf.js's files are asked of the page,
+    // which checks them: its modules (as data: URLs), and what it fetches,
+    // from offline.base (which this frame's fetch() answers so).
+    const offline = window.tabtopFrame ?? null;
+    const PDFJS = offline ? offline.base + "pdfjs/" : new URL("./pdfjs/", document.currentScript.src).href;
+    const { glyphs, iconSVG } = await import(offline?.modules["glyphs.js"] ?? new URL("./glyphs.js", document.currentScript.src).href);
     // The most pages kept drawn at once, and how much bigger than the page's
     // width they're drawn at most.
     const KEEP_DRAWN = 12;
@@ -109,7 +114,7 @@
     async function loadPDFJS() {
         report.stage = "loading pdf.js";
         tell();
-        return import(PDFJS + "pdf.min.mjs");
+        return import(offline ? await offline.moduleURL("pdfjs/pdf.min.mjs") : PDFJS + "pdf.min.mjs");
     }
 
     // startWorker starts pdf.js's worker from a data: URL, which a frame at
@@ -209,7 +214,7 @@
             worker.terminate();
             lib.GlobalWorkerOptions.workerPort = null;
         }
-        lib.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.mjs";
+        lib.GlobalWorkerOptions.workerSrc = offline ? await offline.moduleURL("pdfjs/pdf.worker.min.mjs") : PDFJS + "pdf.worker.min.mjs";
         report.worker = "none";
         const { doc: d } = await read(lib, size, initial);
         return shown(d);
@@ -246,6 +251,8 @@
             iccUrl: PDFJS + "iccs/",
             enableXfa: false,
             isEvalSupported: false,
+            // (Offline, this frame fetches what pdf.js needs, as its worker can't.)
+            ...(offline ? { useWorkerFetch: false } : {}),
         });
         return { doc: await task.promise, task };
     }

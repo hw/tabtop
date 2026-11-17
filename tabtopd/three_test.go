@@ -19,7 +19,7 @@ func TestThreeAssets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ColladaLoader.js"), []byte("//"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "GCodeLoader.js"), []byte("//"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	g := &server{serverConfig: serverConfig{threeDir: dir}}
@@ -35,9 +35,14 @@ func TestThreeAssets(t *testing.T) {
 	if csp := get(g, "model-worker.js").Header().Get("Content-Security-Policy"); csp != modelWorkerCSP {
 		t.Fatalf("the model worker's CSP: %q", csp)
 	}
+	// The decoder worker may run WebAssembly; the model worker, and the page, may not.
+	if csp := get(g, "model-decode-worker.js").Header().Get("Content-Security-Policy"); csp != modelDecodeWorkerCSP || !strings.Contains(csp, "'wasm-unsafe-eval'") || strings.Contains(modelWorkerCSP, "wasm") {
+		t.Fatalf("the decoder worker's CSP: %q", csp)
+	}
 	for name, want := range map[string]string{
-		"model-view.js":   `import("./` + path + `/three.module.js")`,
-		"model-worker.js": `import("./` + path + `/STLLoader.js")`,
+		"model-view.js":          `import("./` + path + `/three.module.js")`,
+		"model-worker.js":        `import("./` + path + `/STLLoader.js")`,
+		"model-decode-worker.js": `script("./` + path + `/draco_wasm_wrapper.js")`,
 	} {
 		w := get(g, name)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), want) || strings.Contains(w.Body.String(), `"./three/`) {
@@ -53,7 +58,7 @@ func TestThreeAssets(t *testing.T) {
 			t.Fatalf("%s served as %q", name, w.Header().Get("Content-Type"))
 		}
 	}
-	if get(g, path+"/ColladaLoader.js").Code != 404 {
+	if get(g, path+"/GCodeLoader.js").Code != 404 {
 		t.Fatal("a file not listed was served")
 	}
 	for _, name := range []string{"gcode.js", "model-info.js"} {

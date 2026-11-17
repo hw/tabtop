@@ -80,12 +80,12 @@ export async function checkModels(checks) {
         // Binary G-code: as its text; coloured by speed, its legend saying so.
         await show("part.bgcode");
         await waitFor(`/^Binary G-code · .* · 20 layers · .* · PrusaSlicer 2\\.9\\.2/.test(${info})`, "the binary G-code, drawn");
-        await ev(`(s => { s.value = "speed"; s.dispatchEvent(new Event("change")); })(${view}.querySelector(".model-colour"))`);
+        await ev(`${view}.querySelector(".model-colour").click(); ${view}.querySelector('.model-colour-menu [data-value="speed"]').click()`);
         await waitFor(`${view}.querySelector(".model-ramp-name")?.textContent === "Speed (mm/s)"`, "coloured by speed");
         await close();
         // A model's overhangs, and its check.
         await show("prism.stl");
-        await ev(`(s => { s.value = "overhang"; s.dispatchEvent(new Event("change")); })(${view}.querySelector(".model-look"))`);
+        await ev(`${view}.querySelector(".model-look").click(); ${view}.querySelector('.model-look-menu [data-value="overhang"]').click()`);
         await waitFor(`!${view}.querySelector(".model-angle-box").hidden`, "the overhang angle offered");
         if (!(await ev(`${info}.endsWith("· watertight")`))) throw new Error("the prism's check");
         await close();

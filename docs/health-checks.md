@@ -19,7 +19,9 @@ says the gateway itself can serve. The doctor report shows how the
 gateway's last login to that server went.
 
 `/doctor` is for troubleshooting and is off unless
-`WEB_DOCTOR_ENDPOINT=1`. It returns a JSON report:
+`WEB_DOCTOR_ENDPOINT=1`. Browsers get an HTML checklist with a **Fix**
+hint for each failed check; `curl` and other clients that prefer JSON
+still get a JSON report (`fix` on failed checks):
 
 Socket status and audio probe results are shared for ten seconds, including
 failures, with only one probe batch running at a time. Clock, proxy, session

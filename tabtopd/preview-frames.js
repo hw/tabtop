@@ -25,6 +25,15 @@ function sandboxFrame(className, title, source, externalMode = "none") {
     const frame = el("iframe", { className, title });
     frame.setAttribute("sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox");
     frame.setAttribute("referrerpolicy", "no-referrer");
+    // The offline client (see nav.js) builds the frame itself, from its
+    // own files: none from the server. (Nor from the web: its frames can't
+    // load anything, so they've no Direct mode.)
+    const offline = globalThis.tabtopOffline?.frameHTML?.(source);
+    if (offline) {
+        frame.srcdoc = offline;
+        frame.external = "";
+        return frame;
+    }
     const url = new URL(source, import.meta.url);
     if (externalMode === "direct") url.searchParams.set("external", "direct");
     frame.src = url.href;
@@ -35,6 +44,14 @@ function bindFrame(frame, answer, opts, ready, themed = false) {
     const message = (event) => {
         if (event.source !== frame.contentWindow || !event.data || typeof event.data !== "object") return;
         const m = event.data;
+        // The offline client's frame asking for a file it needs (pdf.js,
+        // KaTeX and the like): given only one the client lists, checked.
+        if (m.type === "tabtop-offline-file" && globalThis.tabtopOffline?.frameFile) {
+            globalThis.tabtopOffline.frameFile(m.path, m.kind).then(
+                (answer) => frame.contentWindow?.postMessage({ type: m.type, id: m.id, answer }, "*", answer instanceof Uint8Array ? [answer.buffer] : []),
+                (err) => frame.contentWindow?.postMessage({ type: m.type, id: m.id, error: String(err?.message ?? err) }, "*"));
+            return;
+        }
         // A frame that navigated itself to another CSP mode than the one
         // asked for is sent back, not answered.
         if (m.type === "ready" && (m.external ?? "") !== (frame.external ?? "")) { frame.src = frame.src; return; }

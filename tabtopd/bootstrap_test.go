@@ -96,7 +96,7 @@ func TestBootstrapResealSameDay(t *testing.T) {
 }
 
 func TestSealBootstrapPackRoundTrip(t *testing.T) {
-	plain := []byte(`{"format":"tabtop-client/v1","name":"t","files":{"a.txt":"hi"}}`)
+	plain := []byte(`{"format":"tabtop-pack/v1","name":"t","files":{"a.txt":"hi"}}`)
 	packText, hash, err := sealBootstrapPack(plain, "test-pass-code")
 	if err != nil {
 		t.Fatal(err)

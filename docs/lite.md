@@ -319,6 +319,16 @@ host beyond what host audio does.
 - **Turning it off:** [`WEB_MIC=0`](environment.md#web_mic), and nothing is
   added to the host.
 
+## A remote tmux terminal
+
+Set `WEB_TTY_TMUX_HOST=alice@server` (or an SSH config alias). TabTop connects
+interactively, so password and TOTP authentication work without an identity
+file. It attaches to remote session `tabtop`, creating it if needed. Set
+`WEB_TTY_TMUX_SESSION` to choose another name and `WEB_TTY_COMMAND` to run
+an initial command such as `htop` only when that session is created.
+History search becomes available after login and uses the same authenticated
+SSH connection. See [remote tmux settings](environment.md#web_tty_tmux_host-and-web_tty_tmux_session).
+
 ## An SSH terminal
 
 `WEB_TTY_COMMAND` is a shell command each terminal tab runs instead of

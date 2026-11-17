@@ -1,12 +1,13 @@
 // Preview rendering is a map of adapters; orchestration lives in preview.js.
 // Each renderer returns a DOM element adapted to PreviewView by the controller.
 import { kaitaiView } from "./kaitai-view.js";
-import { call, collect, serverDecoded, SERVER_DECODED } from "./requests.js";
+import { call, collect, serverDecoded, SERVER_DECODED, uploadFile, saveBlob } from "./requests.js";
 import { createRangedFileReader } from "./ranged-file.js";
-import { binaryChunkSize } from "./preview-model.js";
+import { binaryChunkSize, offlineUnavailable } from "./preview-model.js";
 const readBinaryRange = createRangedFileReader({ call, collect });
 import { fetchZipEntries } from "./download.js";
 import { el } from "./preview-dom.js";
+import { readOnlyRoot } from "./fs-context.js";
 import { render, structured, zipListing } from "./preview-content.js";
 import { markdownFrame, epubFrame, pdfFrame } from "./preview-frames.js";
 
@@ -47,9 +48,19 @@ const renderers = {
     json: ({ file, blob, url }) => structured("json", blob, url, file.name),
     // Zoomed and panned, and edited (see image-view.js).
     // 3D printing's models and G-code, drawn (see model-view.js).
+    // ("Save as STL" saves beside it, under a name not taken, where it can
+    // be written; else it's downloaded.)
     model: async ({ file, blob, signal }) => {
         const { modelView } = await import("./model-view.js");
-        return modelView({ file, blob, signal });
+        const saveFile = async (made, name) => {
+            if (readOnlyRoot()) {
+                saveBlob(made, name);
+                return `Downloaded ${name}.`;
+            }
+            const reply = await uploadFile(new File([made], name, { type: made.type }), () => {}, file.dir, new AbortController().signal, false);
+            return `Saved beside it as ${reply?.name ?? name}.`;
+        };
+        return modelView({ file, blob, signal, saveFile });
     },
     // A HEIC picture, which most browsers can't decode, is shown as the
     // server decodes it; the file itself is what its EXIF is of.
@@ -98,5 +109,7 @@ const renderers = {
 };
 export function renderPreview(options) {
     if (!Object.hasOwn(renderers, options.kind)) throw new Error("this file can't be rendered");
+    // (Its viewer would come from the server: see preview-model.js.)
+    if (offlineUnavailable(options.kind)) throw new Error("this kind of file isn't supported by the offline client");
     return renderers[options.kind](options);
 }

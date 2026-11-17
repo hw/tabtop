@@ -87,7 +87,7 @@ type server struct {
 	shares          *shareStore // nil when share links are off
 	passkeys        *passkeyStore
 	activity        *activityLog
-	bootPack        bootstrapState // daily sealed local-client pack + OOB passcode
+	bootPack        bootstrapState // daily sealed offline-client pack + OOB passcode
 
 	mu       sync.Mutex
 	sessions map[string]*session // session id -> session
@@ -144,7 +144,9 @@ func main() {
 	sessionIdle := flag.String("session-idle", c.sessionIdle.String(),
 		"how long a login lasts with nothing open, in whole minutes, e.g. 1h; 0 for no limit")
 	flag.StringVar(&c.termDir, "term-dir", c.termDir, "ghostty-web files for the terminal at "+ttyPrefix+"; empty turns it off")
-	flag.StringVar(&c.ttyCommand, "tty-command", c.ttyCommand, "shell command each terminal runs instead of tmux, e.g. ssh -t host; empty for tmux")
+	flag.StringVar(&c.ttyTmuxHost, "tty-tmux-host", "", "remote tmux SSH target (user@host or SSH config alias); empty for local terminal")
+	flag.StringVar(&c.ttyTmuxSession, "tty-tmux-session", "", "remote tmux session; defaults to tabtop when tty-tmux-host is set")
+	flag.StringVar(&c.ttyCommand, "tty-command", c.ttyCommand, "shell command each terminal runs locally; with tty-tmux-host, initial command for a new remote tmux session")
 	flag.BoolVar(&c.micCreate, "mic-create", c.micCreate,
 		"make the microphone's devices (TabTop Mic) on the audio server, not as its default, and remove them on stopping; for a host's sound server")
 	flag.StringVar(&c.micSink, "mic-sink", c.micSink, "PulseAudio sink browsers' microphones play into, for the desktop to record from its monitor; empty turns the microphone off")
@@ -155,6 +157,7 @@ func main() {
 	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
 	flag.StringVar(&c.passkeysFile, "passkeys-file", c.passkeysFile, "where passkeys added to log in with are kept; empty keeps them in memory, till a restart")
 	flag.StringVar(&c.remoteApprovalURL, "remote-approval-url", "", "trusted HTTPS approval page URL; empty uses this deployment at /auth/approve")
+	flag.BoolVar(&c.offlineClient, "offline-client", false, "accept the tunnel from the offline client (tabtop.html from the bootstrap pack, opened as a file: origin \"null\")")
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,

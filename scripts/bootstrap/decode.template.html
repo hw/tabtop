@@ -9,37 +9,27 @@
   input[type=password] { width: min(28rem, 100%); box-sizing: border-box; }
   input[type=file] { max-width: 100%; }
   #err { color: #b00020; white-space: pre-wrap; }
-  #ok { color: #0d6b0d; }
-  #meta { color: #444; font-size: 0.95em; }
-  iframe { width: 100%; height: 16rem; border: 1px solid #ccc; margin-top: 1rem; }
+  #ok { color: #0d6b0d; white-space: pre-wrap; }
 </style>
 <h1>TabTop Bootstrap</h1>
-<p>Choose the sealed pack from <code>&lt;base&gt;/auth/pack</code>, enter the
-passcode from your trusted channel, then unlock.</p>
-
-<label for="packFile">Sealed pack (<code>tabtop-client.pack.json</code>)</label>
-<input id="packFile" type="file" accept=".pack,.txt,.json,text/plain,application/json">
-<p id="meta" hidden></p>
+<p>Enter the passcode from your trusted channel, then unlock: choose the
+sealed pack from <code>&lt;base&gt;/auth/pack</code> when asked.</p>
 
 <label for="pass">Passcode</label>
 <input id="pass" type="password" autocomplete="off" spellcheck="false">
 <p>
-  <button type="button" id="go">Unlock</button>
+  <button type="button" id="go">Unlock…</button>
+  <input id="packFile" type="file" accept=".pack,.txt,.json,text/plain,application/json" hidden>
   <button type="button" id="hashAny">Hash file…</button>
   <input id="hashFile" type="file" hidden>
 </p>
 <p id="err" hidden></p>
 <p id="ok" hidden></p>
 <p id="saveWrap" hidden>
-  <button type="button" id="saveLocal">Download tabtop-local.html…</button>
-  <button type="button" id="saveFolder">Save to folder…</button>
-  <button type="button" id="saveZip">Download ZIP…</button>
+  <button type="button" id="saveLocal">Download tabtop.html…</button>
+  <button type="button" id="saveFolder" hidden>Save to folder…</button>
 </p>
 <pre id="hashOut" hidden></pre>
-<iframe id="view" sandbox="allow-scripts" hidden title="Decrypted payload"></iframe>
-<script>
-/*PACK_CRYPTO_FALLBACK*/
-</script>
 <script type="module">
 let lastClient = null;
 
@@ -48,109 +38,8 @@ function fail(msg) {
   err.hidden = false;
   err.textContent = msg;
   document.getElementById("ok").hidden = true;
-  document.getElementById("view").hidden = true;
   document.getElementById("saveWrap").hidden = true;
   lastClient = null;
-}
-
-function clientFileBytes(body) {
-  if (body && typeof body === "object" && typeof body.base64 === "string") {
-    return b64dec(body.base64);
-  }
-  return new TextEncoder().encode(String(body ?? ""));
-}
-
-function zipStore(entries) {
-  const enc = new TextEncoder();
-  const locals = [];
-  const centrals = [];
-  let offset = 0;
-  const u16 = (n) => {
-    const b = new Uint8Array(2);
-    new DataView(b.buffer).setUint16(0, n, true);
-    return b;
-  };
-  const u32 = (n) => {
-    const b = new Uint8Array(4);
-    new DataView(b.buffer).setUint32(0, n >>> 0, true);
-    return b;
-  };
-  const crcTable = (() => {
-    const t = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-      let c = i;
-      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-      t[i] = c >>> 0;
-    }
-    return t;
-  })();
-  const crc32 = (data) => {
-    let c = 0xffffffff;
-    for (let i = 0; i < data.length; i++) c = crcTable[(c ^ data[i]) & 0xff] ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
-  for (const { name, data } of entries) {
-    const nameBytes = enc.encode(name.replace(/\\/g, "/"));
-    const crc = crc32(data);
-    const local = new Uint8Array(30 + nameBytes.length + data.length);
-    local.set([0x50, 0x4b, 0x03, 0x04], 0);
-    local.set(u16(20), 4);
-    local.set(u16(0), 8);
-    local.set(u32(crc), 14);
-    local.set(u32(data.length), 18);
-    local.set(u32(data.length), 22);
-    local.set(u16(nameBytes.length), 26);
-    local.set(nameBytes, 30);
-    local.set(data, 30 + nameBytes.length);
-    const central = new Uint8Array(46 + nameBytes.length);
-    central.set([0x50, 0x4b, 0x01, 0x02], 0);
-    central.set(u16(20), 4);
-    central.set(u16(20), 6);
-    central.set(u16(0), 10);
-    central.set(u32(crc), 16);
-    central.set(u32(data.length), 20);
-    central.set(u32(data.length), 24);
-    central.set(u16(nameBytes.length), 28);
-    central.set(u32(offset), 42);
-    central.set(nameBytes, 46);
-    locals.push(local);
-    centrals.push(central);
-    offset += local.length;
-  }
-  const centralSize = centrals.reduce((n, c) => n + c.length, 0);
-  const end = new Uint8Array(22);
-  end.set([0x50, 0x4b, 0x05, 0x06], 0);
-  end.set(u16(entries.length), 8);
-  end.set(u16(entries.length), 10);
-  end.set(u32(centralSize), 12);
-  end.set(u32(offset), 16);
-  const out = new Uint8Array(offset + centralSize + end.length);
-  let i = 0;
-  for (const p of locals) { out.set(p, i); i += p.length; }
-  for (const p of centrals) { out.set(p, i); i += p.length; }
-  out.set(end, i);
-  return out;
-}
-
-function clientEntries(client) {
-  return Object.entries(client.files).map(([name, body]) => ({
-    name,
-    data: clientFileBytes(body),
-  }));
-}
-
-async function writeClientToDirectory(client, root) {
-  for (const { name, data } of clientEntries(client)) {
-    const parts = name.replace(/\\/g, "/").split("/").filter(Boolean);
-    let dir = root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      dir = await dir.getDirectoryHandle(parts[i], { create: true });
-    }
-    const file = await dir.getFileHandle(parts[parts.length - 1], { create: true });
-    const w = await file.createWritable();
-    await w.write(data);
-    await w.close();
-  }
 }
 
 function downloadBlob(name, blob) {
@@ -159,22 +48,6 @@ function downloadBlob(name, blob) {
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
-}
-
-async function saveClientToFolder(client) {
-  if (typeof showDirectoryPicker !== "function") {
-    throw new Error("Saving to a folder needs a browser directory picker (unavailable here). Use Download ZIP…");
-  }
-  const root = await showDirectoryPicker({ mode: "readwrite" });
-  await writeClientToDirectory(client, root);
-  return root.name || "folder";
-}
-
-function saveClientZip(client) {
-  const zip = zipStore(clientEntries(client));
-  const base = client.name || "tabtop-client";
-  downloadBlob(base + ".zip", new Blob([zip], { type: "application/zip" }));
-  return base + ".zip";
 }
 
 function b64dec(s) {
@@ -192,40 +65,33 @@ function b64dec(s) {
   return out;
 }
 
-function hasSubtle() {
-  return !!(globalThis.isSecureContext && crypto?.subtle);
+// The browser's own cryptography (WebCrypto), which this page needs: it
+// has it opened as a file (file:///…), over HTTPS, or on localhost; not
+// over plain HTTP elsewhere, nor (perhaps) as some phones open a download.
+const NO_SUBTLE = "This browser doesn't offer this page its cryptography here. Open the file directly " +
+  "(file:///…) in a current Chrome, Edge, Firefox or Safari, or from https://, then try again.";
+function needSubtle() {
+  if (!(globalThis.isSecureContext && crypto?.subtle)) throw new Error(NO_SUBTLE);
+  return crypto.subtle;
 }
 
 async function decryptPackBytes(pass, salt, iterations, iv, ct) {
-  if (hasSubtle()) {
-    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
-    const key = await crypto.subtle.deriveKey(
-      { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
-      base,
-      { name: "AES-GCM", length: 256 },
-      false,
-      ["decrypt"],
-    );
-    return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
-  }
-  const fallback = globalThis.TabTopPackCrypto;
-  if (!fallback?.decryptPack) {
-    throw new Error("No WebCrypto and no inlined fallback. Re-download /auth/bootstrap.");
-  }
-  await new Promise((r) => setTimeout(r, 0));
-  return fallback.decryptPack(pass, salt, iterations, iv, ct);
+  const subtle = needSubtle();
+  const base = await subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+  const key = await subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
+  );
+  return new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
 }
 
 async function sha256Hex(buf) {
   const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
-  if (hasSubtle()) {
-    const dig = await crypto.subtle.digest("SHA-256", bytes);
-    return [...new Uint8Array(dig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  if (!globalThis.TabTopPackCrypto?.sha256Hex) {
-    throw new Error("SHA-256 unavailable (re-download /auth/bootstrap).");
-  }
-  return TabTopPackCrypto.sha256Hex(bytes);
+  const dig = await needSubtle().digest("SHA-256", bytes);
+  return [...new Uint8Array(dig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function parsePackText(text) {
@@ -248,14 +114,8 @@ function parsePackText(text) {
   return pack;
 }
 
-async function loadPack() {
-  const file = document.getElementById("packFile").files?.[0];
-  if (!file) throw new Error("Choose the sealed pack JSON from <base>/auth/pack.");
-  return parsePackText(await file.text());
-}
-
-async function unlock(pass) {
-  const pack = await loadPack();
+async function unlock(pass, file) {
+  const pack = parsePackText(await file.text());
   const salt = b64dec(pack.salt);
   const iv = b64dec(pack.iv);
   const ct = b64dec(pack.ct);
@@ -274,135 +134,115 @@ async function unlock(pass) {
   return new TextDecoder().decode(plain);
 }
 
-function clientSummaryHTML(client, note) {
-  const n = client.files ? Object.keys(client.files).length : 0;
-  const entry = client.entry || "tabtop-local.html";
-  return `<!DOCTYPE html><meta charset="utf-8"><title>Unlocked client</title>
-<body style="font:15px/1.45 system-ui;max-width:40rem;margin:2rem auto;padding:0 1rem">
-<h1>TabTop client unlocked</h1>
-<p><code>${client.format}</code> · <strong>${client.name || "client"}</strong> · ${n} files</p>
-<p>Open <code>${entry}</code>.</p>
-<p>${note || "Use the save buttons above the frame."}</p>
-</body>`;
-}
-
-function saveLocalHTML(client) {
-  const html = client.files["tabtop-local.html"];
-  if (typeof html !== "string" || !html) {
-    throw new Error("This pack has no tabtop-local.html; re-download /auth/pack after the server rebuilds.");
-  }
-  downloadBlob("tabtop-local.html", new Blob([html], { type: "text/html; charset=utf-8" }));
-}
-
-function syncPackMeta() {
-  const meta = document.getElementById("meta");
-  const file = document.getElementById("packFile").files?.[0];
-  if (!file) {
-    meta.hidden = true;
-    meta.textContent = "";
-    return;
-  }
-  meta.hidden = false;
-  meta.textContent = `Selected: ${file.name} (${(file.size / 1e6).toFixed(2)} MB)`;
-}
-
-document.getElementById("packFile").addEventListener("change", syncPackMeta);
-syncPackMeta();
-
-async function expandUnlockedClient(client) {
-  if (location.protocol === "file:" || typeof showDirectoryPicker !== "function" || !globalThis.isSecureContext) {
-    saveLocalHTML(client);
-    return {
-      how: "local-html",
-      detail: "Saved tabtop-local.html — open that file.",
-    };
-  }
+function parseClient(text) {
+  if (!text.trimStart().startsWith("{")) return null;
   try {
-    const name = await saveClientToFolder(client);
-    return {
-      how: "folder",
-      detail: `Wrote ${Object.keys(client.files).length} files into “${name}/”. Open tabtop-local.html inside it.`,
-    };
-  } catch (e) {
-    if (e && e.name === "AbortError") throw e;
-    saveLocalHTML(client);
-    return { how: "local-html", detail: "Saved tabtop-local.html — open that file." };
+    const obj = JSON.parse(text);
+    if (obj?.format === "tabtop-pack/v1" && obj.files) return obj;
+  } catch { /* not a client pack */ }
+  return null;
+}
+
+// The one file saved, under a name fixed here, never one a pack gives:
+// tabtop.html, the client, with all the rest of it inside.
+function saveLocalHTML(client) {
+  const html = client.files["tabtop.html"];
+  if (typeof html !== "string" || !html) {
+    throw new Error("This pack has no tabtop.html; re-download /auth/pack after the server rebuilds.");
   }
+  downloadBlob("tabtop.html", new Blob([html], { type: "text/html; charset=utf-8" }));
+}
+
+// Each file of the client, into a folder chosen: its path in the pack split
+// into folders, each a plain name (none "", ".", "..", nor with "\\" or
+// ":"), so nothing's written outside the folder. All checked first: a pack
+// with one such name writes nothing.
+async function saveToFolder(client) {
+  const files = Object.entries(client.files).map(([path, body]) => {
+    const parts = String(path).split("/");
+    if (parts.some((p) => !p || p === "." || p === ".." || /[\\:]/.test(p))) throw new Error(`This pack has a file named ${JSON.stringify(path)}, which can't be saved in a folder. Nothing was saved.`);
+    const bytes = body && typeof body === "object" && typeof body.base64 === "string" ? b64dec(body.base64) : new TextEncoder().encode(String(body ?? ""));
+    return { parts, bytes };
+  });
+  const root = await showDirectoryPicker({ mode: "readwrite" });
+  for (const { parts, bytes } of files) {
+    let dir = root;
+    for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create: true });
+    const w = await (await dir.getFileHandle(parts.at(-1), { create: true })).createWritable();
+    await w.write(bytes);
+    await w.close();
+  }
+  return { count: files.length, name: root.name };
 }
 
 document.getElementById("saveLocal").onclick = () => {
   if (!lastClient) return;
   try {
     saveLocalHTML(lastClient);
-    document.getElementById("ok").textContent = "Saved tabtop-local.html — open that file.";
+    document.getElementById("ok").textContent = "Saved tabtop.html — open that file.";
   } catch (e) {
     fail(String(e.message || e));
   }
 };
 
+// (A browser without a folder picker, as Firefox and Safari: not offered.)
+document.getElementById("saveFolder").hidden = typeof showDirectoryPicker !== "function";
 document.getElementById("saveFolder").onclick = async () => {
   if (!lastClient) return;
   try {
-    const name = await saveClientToFolder(lastClient);
-    document.getElementById("ok").textContent =
-      `Wrote ${Object.keys(lastClient.files).length} files into “${name}/”. Open tabtop-local.html.`;
+    const { count, name } = await saveToFolder(lastClient);
+    document.getElementById("ok").textContent = `Wrote ${count} files into “${name}”. Open tabtop.html in it.`;
   } catch (e) {
-    if (e && e.name === "AbortError") return;
+    if (e?.name === "AbortError") return;
     fail(String(e.message || e));
   }
 };
 
-document.getElementById("saveZip").onclick = () => {
-  if (!lastClient) return;
-  const zipName = saveClientZip(lastClient);
-  document.getElementById("ok").textContent =
-    `Saved ${zipName}. Unzip it, then open tabtop-local.html.`;
+// Unlock asks for the pack (as Hash file… asks for its file), then
+// decrypts it with the passcode entered.
+document.getElementById("go").onclick = () => {
+  document.getElementById("err").hidden = true;
+  if (!document.getElementById("pass").value.trim()) return fail("Enter the passcode.");
+  document.getElementById("packFile").click();
 };
 
-document.getElementById("go").onclick = async () => {
+document.getElementById("packFile").addEventListener("change", async () => {
+  const input = document.getElementById("packFile");
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
   document.getElementById("err").hidden = true;
   document.getElementById("saveWrap").hidden = true;
   lastClient = null;
   const pass = document.getElementById("pass").value.trim();
   if (!pass) return fail("Enter the passcode.");
   const go = document.getElementById("go");
+  const ok = document.getElementById("ok");
   go.disabled = true;
+  ok.hidden = false;
+  ok.textContent = `Unlocking ${file.name} (${(file.size / 1e6).toFixed(2)} MB)…`;
   try {
-    const text = await unlock(pass);
-    const frame = document.getElementById("view");
-    const ok = document.getElementById("ok");
-    let show = text;
-    let client = null;
-    if (text.trimStart().startsWith("{")) {
-      try {
-        const obj = JSON.parse(text);
-        if (obj?.format === "tabtop-client/v1" && obj.files) client = obj;
-      } catch { /* treat as html/text */ }
+    const client = parseClient(await unlock(pass, file));
+    if (!client) throw new Error("Decrypted, but this isn't a tabtop-pack/v1 client. Nothing was saved.");
+    const html = client.files["tabtop.html"];
+    if (typeof html !== "string" || !html) {
+      throw new Error("This pack has no tabtop.html; re-download /auth/pack after the server rebuilds.");
     }
-    if (client) {
-      lastClient = client;
-      document.getElementById("saveWrap").hidden = false;
-      let note = "Use the save buttons above.";
-      try {
-        note = (await expandUnlockedClient(client)).detail;
-      } catch (e) {
-        if (!(e && e.name === "AbortError")) throw e;
-        note = "Save cancelled — use the save buttons above.";
-      }
-      show = clientSummaryHTML(client, note);
-      ok.textContent = `Unlocked. ${note}`;
-    } else {
-      ok.textContent = "Unlocked. Payload shown below (sandboxed).";
-    }
-    frame.src = URL.createObjectURL(new Blob([show], { type: "text/html" }));
-    frame.hidden = false;
+    lastClient = client;
+    document.getElementById("saveWrap").hidden = false;
+    saveLocalHTML(client);
+    const n = Object.keys(client.files).length;
+    const hash = await sha256Hex(new TextEncoder().encode(html));
+    const note = "Saved tabtop.html — open that file.";
+    ok.textContent = `Unlocked ${client.format} · ${client.name || "client"} · ${n} files.\n`
+      + `tabtop.html SHA-256: ${hash}\n${note}`;
     ok.hidden = false;
   } catch (e) {
     fail(String(e.message || e));
   } finally {
     go.disabled = false;
   }
-};
+});
 
 async function hashChosenFile(file) {
   const out = document.getElementById("hashOut");
@@ -427,6 +267,8 @@ document.getElementById("hashFile").addEventListener("change", async () => {
   if (!file) return;
   await hashChosenFile(file);
 });
+
+try { needSubtle(); } catch (e) { fail(e.message); }
 
 document.getElementById("pass").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("go").click();

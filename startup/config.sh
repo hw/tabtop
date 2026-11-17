@@ -19,6 +19,7 @@ WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
 WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_MIC="${WEB_MIC:-1}"
 WEB_SHARE="${WEB_SHARE:-1}"
+WEB_OFFLINE_CLIENT="${WEB_OFFLINE_CLIENT:-0}"
 WEB_FETCH="${WEB_FETCH:-1}"
 WEB_FETCH_PRIVATE="${WEB_FETCH_PRIVATE:-0}"
 WEB_PREVIEW_FETCH_PRIVATE="${WEB_PREVIEW_FETCH_PRIVATE:-0}"
@@ -145,6 +146,10 @@ esac
 case "$WEB_SHARE" in
     0|1) ;;
     *) echo "WEB_SHARE must be 0 or 1 (got '${WEB_SHARE}')." >&2; exit 1 ;;
+esac
+case "$WEB_OFFLINE_CLIENT" in
+    0|1) ;;
+    *) echo "WEB_OFFLINE_CLIENT must be 0 or 1 (got '${WEB_OFFLINE_CLIENT}')." >&2; exit 1 ;;
 esac
 case "$WEB_FETCH" in
     0|1) ;;

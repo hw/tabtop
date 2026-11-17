@@ -35,7 +35,11 @@ downloaded at `http://<host>:6080/fs/`:
   by it, and again to turn the order round; folders stay first, and the
   order is remembered in this browser. **Grid** (beside the box) shows the
   folder as cards instead, with thumbnails of the pictures in it (up to
-  40 MB each), made in the browser as they scroll into view, a few at a
+  40 MB each), and of 3D printing files with a picture of their own: a
+  3MF's (`Metadata/thumbnail.png`, or a plate's), G-code's (the
+  `; thumbnail begin` comments PrusaSlicer, Cura, Orca and Bambu Studio
+  write at its start) and binary G-code's (only those parts of the file
+  are read, however big it is). They're made in the browser as they scroll into view, a few at a
   time, and kept only while the page is open (in memory: nothing of the
   pictures is left in the browser after); **List** goes back. Everything else works as
   in the list: ticking, the menu, dragging, the keyboard. Times are shown as "Today 9:34",
@@ -330,13 +334,15 @@ downloaded at `http://<host>:6080/fs/`:
   page and 256 MiB of edited images or exported image data. Export copies before
   leaving the session to retain your work.
 - **3D models, scenes and G-code** (`.stl`, `.obj`, `.3mf`, `.amf`,
-  `.ply`, `.gltf`, `.glb`, `.fbx`, `.gcode`, `.gco`, `.bgcode`, up to 100 MB) are
+  `.ply`, `.gltf`, `.glb`, `.fbx`, `.dae`, `.kmz`, `.wrl`, `.vrml`, `.wrz`, `.gcode`,
+  `.gco`, `.bgcode`, up to 100 MB) are
   drawn with [three.js](https://threejs.org/). Drag to turn the model,
   right-drag (or Shift-drag) to move it, and use the wheel to zoom. The
   glyphs above it: **Fit** (0) shows it all again; the **up axis** glyph
   shows which axis points up (Z or Y) and switches it: Z, as printers have
-  it, is the default except for OBJ, PLY, glTF and FBX, which are usually
-  Y up. Above the model, its size in millimetres, how many triangles it
+  it, is the default except for OBJ, PLY, glTF, FBX, Collada, KMZ and VRML,
+  which are usually Y up (a Collada file that says it's Z up is turned
+  upright). Above the model, its size in millimetres, how many triangles it
   has, the volume it encloses, and, for models to print (STL, OBJ, 3MF,
   AMF, PLY), whether its surface is closed: `watertight`, or its open
   edges (holes), non-manifold edges (more than two faces on one) and
@@ -364,7 +370,22 @@ downloaded at `http://<host>:6080/fs/`:
     (physically based) materials and textures, its data (`.bin`) and
     pictures read from beside a `.gltf`, or from inside a `.glb`; an FBX,
     binary or text (ASCII, version 7.0 and later; an older one says so),
-    in its materials, with its textures, inside it or beside it (TGA too).
+    in its materials, with its textures, inside it or beside it (TGA too);
+    a Collada (`.dae`) file in its materials, with the textures it names
+    beside it, in metres (by its `<unit>`), up to 32 MB; a KMZ (SketchUp's,
+    Google Earth's: the Collada model its KML names) with the textures
+    inside it, never fetched from elsewhere, up to 32 MB unpacked (where on
+    Earth it's placed isn't shown); a VRML (97) file (`.wrl`, as KiCad and
+    CAD programs export, or `.wrz`, gzip'd) in its materials' colours, its
+    sizes in its own units, up to 16 MB (unpacked): its textures, lights and
+    background aren't shown, and VRML 1.0 isn't read.
+  - **Save as STL** (the download glyph, for models and scenes, not G-code)
+    saves what's shown as a binary STL beside it (under a name not taken;
+    downloaded instead where the folder can't be written): placed on the
+    plate, its up (as chosen with the up axis glyph) as the STL's Z, as
+    slicers expect; a glTF's, Collada file's or KMZ's metres made
+    millimetres. Each instance of a repeated mesh is written, and an
+    animated character in its rest pose. Up to 5 million triangles.
     The files a model names are looked for where it says, relative to it,
     then by name alone in its folder (as one made elsewhere names them
     where they were: `C:\Users\…\wood.png`), never outside the files'
@@ -373,8 +394,11 @@ downloaded at `http://<host>:6080/fs/`:
     it; a glTF without its data can't be drawn. A glTF's or FBX's size is in
     its own units (glTF's are metres), without a volume, with how many
     textures it has. Animations aren't played: a model is shown as it
-    stands (an animated character, in its rest pose). glTF compressed with
-    Draco or meshopt, or with KTX2 textures, isn't shown (it says so).
+    stands (an animated character, in its rest pose). Compressed glTF is
+    shown too: Draco's meshes, meshopt's buffers and KTX2 (Basis)
+    textures are decoded in a worker of their own. A KTX2 texture is shown
+    at most 4096 × 4096 (a bigger one at a smaller mip level, where it has
+    one); HDR KTX2 textures aren't shown.
   - **G-code** (and Prusa's binary G-code, `.bgcode`: compressed with
     Deflate or Heatshrink, packed with MeatPack) is drawn as the lines the
     printer lays down, each as wide and as high as it is: the width the
@@ -737,23 +761,35 @@ downloaded at `http://<host>:6080/fs/`:
   They're kept in Trash's folder
   (`.tabtop-trash/versions`), out of reach as Trash is, but aren't listed in
   Trash, nor removed by emptying it. A read-only root keeps none.
+- **Starred and Recent:** each row's menu can **Star** a file or folder.
+  Starred items and recently opened paths appear above the filter across
+  all filesystem roots (kept in this browser only). Unavailable roots are
+  shown disabled until they return.
+- **Batch on selection:** with writable roots, selecting images offers
+  **Strip EXIF**, **Rotate right**, and **HEIC → JPEG** (writes a `.jpg`
+  beside each HEIC). Selecting ZIP archives offers **Extract ZIP**. Progress
+  appears in the transfers panel; at most 50 files per run.
 - **Compare images:** select two images and choose **Compare images**,
   which is offered only for two images of at most 50 MB each.
   Direct comparisons start **Side by side**; versions and comparisons with
-  saved images start in **Slider**. Drag the slider divider to reveal A or B
-  (arrow keys adjust it, Shift for larger steps, Home/End for either image).
-  **Swap sides** reverses their positions. The slider's **Show differences**
-  glyph overlays changed pixels in orange and missing areas in magenta,
-  leaving unchanged pixels clear; **Opacity** adjusts the highlight strength.
-  Zoom and pan are shared across views.
-  **All** shows **A**, **B** and **Delta** together; the view buttons or
-  A, B and D keys show one at a time. Zoom and scrolling stay in sync.
+  saved images start in **Slider**. The pane-view control (icon for the
+  current choice, with a menu for Side by side, each image alone by name,
+  and Delta) sits beside **Slider**. Drag the
+  slider divider to reveal A or B (arrow keys adjust it, Shift for larger
+  steps, Home/End for either image). **Swap sides** reverses their positions, or
+  switches between A and B when one of those alone is shown.
+  The slider's **Show differences** glyph overlays changed pixels in orange
+  and missing areas in magenta, leaving unchanged pixels clear; its arrow
+  opens **Opacity** for the highlight strength. Zoom and pan are shared
+  across views. A, B and D keys show one pane at a time. Zoom and scrolling
+  stay in sync.
   Use **Fit** (0), **100%** (1), **+** / **−**, Ctrl+wheel, or drag to pan.
   Images align at the top left at their decoded pixel size, without resizing;
   EXIF orientation is applied as in the picture viewer. Delta is black where
   pixels match, brighter where colour or transparency differs, and magenta
-  where only one image has pixels. **Delta gain** makes subtle changes
-  brighter without changing the reported differing-pixel count. Hidden RGB
+  where only one image has pixels. In Delta view, **Delta gain** (beside
+  Swap) makes subtle changes brighter without changing the reported
+  differing-pixel count. Hidden RGB
   in fully transparent pixels is ignored. The summary counts pixels covered
   by either image, excluding empty corners outside both images. Comparisons
   use browser-decoded sRGB pixels, so different encodings or metadata can
@@ -1149,7 +1185,9 @@ boundaries are documented in [preview sanitizers](preview-security.md).
 
 Closing a preview restores focus to its original file and keeps the row in
 view. Preview navigation, editing, appearance and download controls are grouped
-consistently. Failed previews retain **Retry preview** and **Download** actions;
+consistently. Failed previews retain **Retry preview**, **Show as hex** and
+**Download**, with a short hint when the file is over the preview size limit
+or the type isn't supported;
 buffered previews show byte progress while loading.
 
 The file-selection bar stays visible while scrolling and shows the total size

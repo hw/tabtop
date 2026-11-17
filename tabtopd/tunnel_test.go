@@ -1175,3 +1175,32 @@ func TestTunnelLoginSlowed(t *testing.T) {
 		t.Fatalf("login once its turn came: %v", status)
 	}
 }
+
+// TestTunnelOfflineClientOrigin: a page opened as a file (the offline client,
+// tabtop.html) has the origin "null": refused by default, as any other
+// site's; with -offline-client, accepted (that origin only).
+func TestTunnelOfflineClientOrigin(t *testing.T) {
+	g, srv := newE2EServer(t)
+	ctx := testCtx(t)
+	dial := func(origin string) (int, error) {
+		c, resp, err := websocket.Dial(ctx, wsURL(srv.URL), &websocket.DialOptions{HTTPHeader: http.Header{"Origin": {origin}}})
+		if err == nil {
+			c.CloseNow()
+			return http.StatusSwitchingProtocols, nil
+		}
+		if resp == nil {
+			return 0, err
+		}
+		return resp.StatusCode, err
+	}
+	if code, _ := dial("null"); code != http.StatusForbidden {
+		t.Fatalf(`"null" origin by default: %d, want 403`, code)
+	}
+	g.offlineClient = true
+	if code, err := dial("null"); code != http.StatusSwitchingProtocols {
+		t.Fatalf(`"null" origin with -offline-client: %d (%v)`, code, err)
+	}
+	if code, _ := dial("https://evil.example"); code != http.StatusForbidden {
+		t.Fatalf("another site's origin with -offline-client: %d, want 403", code)
+	}
+}

@@ -9,17 +9,25 @@
 // rather than a new one opened each time.
 
 import { forgetSession, request, storedSession } from "./tunnel.js";
+import { handOffSession } from "./session-state.js";
 import { iconSVG } from "./glyphs.js";
 
 const root = new URL("../", import.meta.url);  // the site's root, under any base path
 
+// The offline client (tabtop.html from the bootstrap pack, opened as a
+// file; see scripts/bootstrap/file-launcher.mjs) has each page itself:
+// offline.href(id) is its address of it, never the server's copy.
+const offline = globalThis.tabtopOffline ?? null;
+
 // Replaced by the gateway to match its enabled services.
 const enabledPages = { desktop: true, terminal: true, files: true };
 export const pages = [
-    { id: "desktop", label: "Desktop", href: new URL("vnc.html?autoconnect=1", root).href },
-    { id: "terminal", label: "Terminal", href: new URL("tty/", root).href },
-    { id: "files", label: "Files", href: new URL("fs/", root).href },
-].filter((page) => enabledPages[page.id]);
+    { id: "desktop", label: "Desktop", href: offline?.href("desktop") ?? new URL("vnc.html?autoconnect=1", root).href },
+    { id: "terminal", label: "Terminal", href: offline?.href("terminal") ?? new URL("tty/", root).href },
+    { id: "files", label: "Files", href: offline?.href("files") ?? new URL("fs/", root).href },
+    // (The offline client's own: what it has fetched of the viewers.)
+    { id: "components", label: "Offline components", href: offline?.href("components") ?? "", offlineOnly: true },
+].filter((page) => (page.offlineOnly || enabledPages[page.id]) && (offline ? offline.has(page.id) : !page.offlineOnly));
 
 const tabName = (id) => `tabtop-${id}:${root.href}`;
 
@@ -32,14 +40,16 @@ export function nameTab(id) {
 export function openPage(id, hash = "") {
     const page = pages.find((p) => p.id === id);
     if (!page) return;
-    window.open(page.href + hash, tabName(id))?.focus();
+    handOffSession(() => window.open(page.href + hash, tabName(id)))?.focus();
 }
 
 // terminalOn resolves to whether the site serves a terminal: it can be
 // turned off (WEB_TTY=0).
 let terminal = null;
 export function terminalOn() {
-    terminal ??= fetch(new URL("tty/", root), { method: "HEAD", cache: "no-store" }).then((r) => r.ok, () => true);
+    // (Offline, the server's pages aren't asked for: its terminal, if it has
+    // none, says so when opened.)
+    terminal ??= offline ? Promise.resolve(true) : fetch(new URL("tty/", root), { method: "HEAD", cache: "no-store" }).then((r) => r.ok, () => true);
     return terminal;
 }
 
@@ -95,6 +105,14 @@ export function navBar(current, { logOutIcon = false } = {}) {
             item.title = `${page.label} (opens in its own tab)`;
             if (page.id === "terminal") {
                 terminalOn().then((on) => (item.hidden = !on));
+            }
+            // (The offline client hands the page its session: see openPage.)
+            if (offline) {
+                item.addEventListener("click", (e) => {
+                    if (e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+                    e.preventDefault();
+                    openPage(page.id);
+                });
             }
         }
         item.className = "page";

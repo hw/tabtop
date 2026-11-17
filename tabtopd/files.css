@@ -40,8 +40,9 @@ p.space { margin-top: -.25rem; }
 #sessions button.end, #sessions button.name-session { font: inherit; font-size: 13px; }
 #shares .shares-table button { font: inherit; font-size: 13px; }
 .shares-table td.act { white-space: nowrap; }
-#sessions .activity .bar .buttons { display: flex; gap: .5rem; }
-#sessions .activity button, #shares .cleanup button, #shares .shares-bar button { font: inherit; font-size: 13px; }
+#sessions .activity .bar .buttons, #sessions .security-backup .bar .buttons { display: flex; gap: .5rem; }
+#sessions .activity button, #sessions .security-backup button, #shares .cleanup button, #shares .shares-bar button { font: inherit; font-size: 13px; }
+#sessions .security-backup { margin: 1.25rem 0; }
 #shares .shares-bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
 #sessions .activity .find select { font: inherit; padding: .25rem .4rem; }
 .activity-table td:first-child { white-space: nowrap; }
@@ -70,6 +71,18 @@ h1.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .1
 .tabtop-nav :is(button.logout, button.security, button.shares, button.trash) { display: inline-flex; align-items: center; justify-content: center;
        padding: 3px 6px; }
 .tabtop-nav :is(button.logout, button.security, button.shares, button.trash) svg { display: block; width: 22px; height: 22px; }
+/* The Starred and Recent menus, at the end of the heading's row. */
+.crumbs-row { display: flex; align-items: center; gap: .5rem; margin: .75rem 0 .5rem; }
+.crumbs-row h1.crumbs { flex: 1 1 auto; min-width: 0; margin: 0; }
+.files-pins { display: flex; flex: none; align-items: center; gap: .15rem; margin-left: auto; }
+details.files-pin-menu summary { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; color: var(--muted, #59636e); }
+details.files-pin-menu summary svg { display: block; }
+details.files-pin-menu .items { min-width: 14rem; max-width: min(24rem, calc(100vw - 2rem)); max-height: 60vh; overflow-y: auto; }
+details.files-pin-menu .items .hint { margin: .4rem .6rem; font-size: .85rem; }
+details.files-pin-menu .files-pin-link { display: flex; align-items: baseline; gap: .5rem; width: 100%; }
+details.files-pin-menu .files-pin-link span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.files-pin-menu .files-pin-link small { flex: none; color: var(--muted, #59636e); font-size: .75rem; }
+details.files-pin-menu .files-pin-link:disabled { opacity: .5; cursor: not-allowed; }
 .find { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .find button:is(.search-files, .view-toggle) { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; padding: 0 .5rem; }
 .find button:is(.search-files, .view-toggle) svg { display: block; }
@@ -300,14 +313,14 @@ dialog.preview .body > .model-view { align-self: stretch; flex: 1; display: flex
 .glyph-caption { font-size: .58rem; line-height: 1; font-weight: 400; }
 .mask-paint-group { display: inline-flex; align-items: stretch; }
 .mask-paint-group > button.glyph { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.image-view button.mask-size-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 1.1rem;
+:is(.image-view, .image-diff) button.mask-size-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 1.1rem;
     width: 1.1rem; padding: 0 .15rem; border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; font-size: .75rem; }
 .mask-brush-options, .mask-shape-options { position: fixed; inset: auto; margin: 0; box-sizing: border-box; max-width: calc(100vw - 16px); padding: .65rem;
     border: 1px solid var(--line); border-radius: .4rem; background: var(--raised); color: var(--fg); box-shadow: 0 .3rem 1rem #0003; }
 .mask-brush-options label { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; }
 .mask-brush-options input[type="range"] { width: 7rem; accent-color: var(--accent); }
 .mask-brush-options output { min-width: 3rem; font-variant-numeric: tabular-nums; }
-.image-view .mask-shape-options button.glyph { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; width: 100%; padding: .4rem .6rem; border: 0; }
+:is(.image-view, .image-diff) .mask-shape-options button.glyph { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; width: 100%; padding: .4rem .6rem; border: 0; }
 .mask-shape-options button[aria-checked="true"] { background: var(--hover); color: var(--accent); }
 .image-scan-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .image-scan-tools[hidden], .image-scan-corner[hidden], .image-scan-curve-point[hidden], .image-scan-result[hidden] { display: none; }
@@ -675,7 +688,8 @@ dialog.preview :is(.download-menu, .external-menu) button { display: flex; align
 dialog.preview :is(.download-menu, .external-menu) { min-width: 17rem; }
 dialog.preview :is(.download-menu, .external-menu) svg { flex-shrink: 0; }
 dialog.preview .preview-failure { padding: 1rem; overflow-wrap: anywhere; }
-dialog.preview .preview-failure button { margin-right: .5rem; }
+dialog.preview .preview-failure-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 0; }
+dialog.preview .preview-failure button { margin-right: 0; }
 dialog.preview .download-changes { align-self: flex-start; margin: .25rem .75rem; }
 
 dialog.preview .head :is(.download-menu, .external-menu) { flex-direction: column; max-width: calc(100vw - 2rem); }
@@ -997,13 +1011,23 @@ dialog.text-diff[open] { display: flex; flex-direction: column; }
 .text-diff .diff-removed { background: color-mix(in srgb, #e24b4b 16%, var(--bg)); }
 .text-diff .diff-added { background: color-mix(in srgb, #229c56 16%, var(--bg)); }
 .text-diff .diff-gap { background: var(--hover); }
-.text-diff .diff-current { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The change shown: one rectangle round its rows. Each cell draws its part
+   (inset, so nothing moves): the sides on the first and last cells, the top
+   on the first row's, the bottom on the last's. */
+.text-diff .diff-current > td { --t: 0px; --b: 0px; --l: 0px; --r: 0px;
+    box-shadow: inset 0 var(--t) var(--accent), inset 0 calc(-1 * var(--b)) var(--accent), inset var(--l) 0 var(--accent), inset calc(-1 * var(--r)) 0 var(--accent); }
+.text-diff .diff-current > td:first-child { --l: 2px; }
+.text-diff .diff-current > td:last-child { --r: 2px; }
+.text-diff .diff-current-first > td { --t: 2px; }
+.text-diff .diff-current-last > td { --b: 2px; }
 .text-diff .diff-pages { justify-content: center; }
 dialog.preview .editing .compare-saved { margin: .4rem .75rem; }
 @media (max-width: 40rem) { dialog.text-diff { width: 100vw; height: 100dvh; max-width: none; margin: 0; border-radius: 0; }
     .text-diff col.diff-number { width: 3.5rem; }
     .text-diff td.diff-number { padding-inline: .25rem; font-size: 11px; } }
-@media (forced-colors: active) { .text-diff .diff-removed, .text-diff .diff-added { border-bottom: 1px solid CanvasText; } }
+@media (forced-colors: active) { .text-diff .diff-removed, .text-diff .diff-added { border-bottom: 1px solid CanvasText; }
+    /* (No shadows here: the rectangle as an outline round each row.) */
+    .text-diff .diff-current { outline: 2px solid Highlight; outline-offset: -2px; } }
 
 html:has(dialog.image-diff[open]) { overflow: hidden; }
 dialog.image-diff { width: calc(100vw - 2rem); max-width: 110rem; height: calc(100dvh - 2rem); max-height: none; padding: 0; }
@@ -1011,11 +1035,9 @@ dialog.image-diff[open] { display: flex; flex-direction: column; }
 .image-diff .image-diff-head, .image-diff .image-diff-tools { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; padding: .5rem .75rem; }
 .image-diff .image-diff-head { border-bottom: 1px solid var(--line); }
 .image-diff .image-diff-head strong { margin-right: auto; }
-.image-diff :is(.image-diff-modes, .image-diff-zoom-tools, .image-diff-gain-control) { display: flex; align-items: center; gap: .3rem; }
+.image-diff :is(.image-diff-modes, .image-diff-zoom-tools) { display: flex; align-items: center; gap: .3rem; }
 .image-diff button[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
-.image-diff .image-diff-gain-control { margin-left: auto; font-size: .85rem; white-space: nowrap; }
-.image-diff input.image-diff-gain { width: 6rem; padding: 0; }
-.image-diff .image-diff-gain-control output { min-width: 2rem; }
+.image-diff .image-diff-gain-group[hidden] { display: none; }
 .image-diff .image-diff-zoom { min-width: 3rem; text-align: center; font-size: .85rem; }
 .image-diff .image-diff-summary, .image-diff .image-diff-legend { margin: 0; padding: .4rem .75rem; font-size: .85rem; }
 .image-diff .image-diff-legend { border-top: 1px solid var(--line); }
@@ -1033,7 +1055,6 @@ dialog.image-diff[open] { display: flex; flex-direction: column; }
     dialog.image-diff { width: 100vw; height: 100dvh; max-width: none; margin: 0; border-radius: 0; }
     .image-diff .image-diff-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, minmax(0, 1fr)); }
     .image-diff .image-diff-panes.single { grid-template-rows: minmax(0, 1fr); }
-    .image-diff .image-diff-gain-control { margin-left: 0; }
     .image-diff figcaption { padding: .25rem .5rem; }
 }
 /* The roots' switch and the read-only mark, at the start of the heading's
@@ -1110,10 +1131,11 @@ dialog:is(.text-diff, .image-diff).wide { width: 100vw; height: 100dvh; max-widt
 .image-diff-slider-stage > .image-diff-overlay[hidden] { display: none; }
 .image-diff .image-diff-divider { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); width: 4px; min-width: 4px; padding: 0; border: 0; border-radius: 0; background: white; box-shadow: 0 0 0 1px #222; cursor: ew-resize; touch-action: none; }
 .image-diff-divider::after { content: "↔"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: .3rem; color: #111; background: white; border: 1px solid #222; border-radius: .25rem; }
-.image-diff .image-diff-slider-tools, .image-diff-slider-tools label { display: flex; align-items: center; gap: .4rem; }
+.image-diff .image-diff-slider-tools { display: flex; align-items: center; gap: .4rem; }
 .image-diff .image-diff-slider-tools[hidden], .image-diff label[hidden] { display: none; }
-.image-diff-slider-tools input { width: 5rem; padding: 0; }
+.image-diff .image-diff-modes .mask-paint-group { margin-right: .1rem; }
 .image-diff button.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; }
+.image-diff .mask-paint-group > button.glyph { min-width: 2rem; min-height: 2rem; }
 dialog.preview .head button.save-status { font: inherit; font-size: .8rem; padding: .2rem .4rem; }
 @media (max-width: 40rem) { .image-diff .image-diff-panes.two { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); } }
 
@@ -1196,3 +1218,11 @@ dialog.preview .head button.image-exif-info svg { display: block; }
     .exif-table th { width: 40%; }
     .exif-table td.exif-row-tools { width: 3.6rem; }
 }
+
+.glyph-choice { display: inline-flex; align-items: center; }
+.glyph-choice-menu { position: fixed; inset: auto; margin: 0; box-sizing: border-box; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: .65rem;
+    border: 1px solid var(--line); border-radius: .4rem; background: var(--raised); color: var(--fg); box-shadow: 0 .3rem 1rem #0003; }
+.model-bar .glyph-choice-menu button.glyph { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; width: 100%; padding: .4rem .6rem; border: 0; }
+.glyph-choice-menu button[aria-checked="true"] { background: var(--hover); color: var(--accent); }
+
+.glyph-choice-arrow { font-size: .65rem; margin-left: .2rem; }

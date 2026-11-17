@@ -5,7 +5,7 @@
 // width, layer height, nozzle temperature or fan, a legend saying which;
 // up to the layer the slider says (or that layer alone); the moves
 // between, if asked for.
-import { el } from "./preview-dom.js";
+import { el, glyphChoice } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 import { featureCategory } from "./gcode.js";
 import { describeGCode } from "./model-info.js";
@@ -222,14 +222,11 @@ export function gcodeContent(THREE, g) {
     const tools = (redraw, { toggle }) => {
         const slider = el("input", { type: "range", className: "model-layer", min: "0", max: String(layers - 1), value: String(upTo), step: "1", ariaLabel: "Layers shown, up to" });
         slider.addEventListener("input", () => { upTo = Number(slider.value); show(); redraw(); });
-        const check = (text, title, on, change) => {
-            const box = el("input", { type: "checkbox", checked: on });
-            box.addEventListener("change", () => { change(box.checked); show(); redraw(); });
-            return el("label", { className: "model-check", title }, box, ` ${text}`);
-        };
-        const by = el("select", { className: "model-colour", ariaLabel: "Colour lines by", title: "Colour lines by" },
-            ...Object.entries(COLOURINGS).map(([k, c]) => el("option", { value: k, textContent: c.name })));
-        by.addEventListener("change", () => { colour(by.value); redraw(); });
+        const colourIcons = { feature: "materials", speed: "speed", flow: "flow", width: "fit-width", height: "layer-only", temp: "temperature", fan: "fan" };
+        const by = glyphChoice({ className: "model-colour", title: "Colour lines by", value: "feature",
+            choices: Object.entries(COLOURINGS).map(([value, c]) => ({ value, label: c.name, icon: colourIcons[value] })),
+            change(value) { colour(value); redraw(); },
+        });
         const shape = toggle("", asTubes ? "Lines as laid: their width and height (click for thin lines)" : "Thin lines (click for lines as laid: their width and height)", asTubes, function (on) {
             asTubes = on;
             tubes.visible = on;
@@ -240,8 +237,8 @@ export function gcodeContent(THREE, g) {
         shape.classList.add("model-tubes");
         if (n > MAX_TUBES) shape.title += ` (slow: it has ${n.toLocaleString("en")} of them)`;
         return [by, shape, el("span", { className: "model-layers" }, slider, label),
-            check("This layer only", "Show only the layer the slider is at", false, (on) => { only = on; }),
-            check("Travel", "Show the moves that don't extrude", false, (on) => { travel.visible = on; })];
+            toggle("", "Show only the layer the slider is at", false, (on) => { only = on; show(); }, "layer-only"),
+            toggle("", "Show the moves that don't extrude", false, (on) => { travel.visible = on; }, "travel")];
     };
     const notes = [g.truncated ? "only the first part is shown: it has too many moves" : "", g.skipped ? `${g.skipped.toLocaleString("en")} moves out of range left out` : ""].filter(Boolean);
     return {

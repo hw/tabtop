@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resourceCandidates, fetchResources, gltfReferences, glbJSON, UNSUPPORTED, MAX_RESOURCE_FILES, MAX_RESOURCE, MAX_RESOURCE_LOOKUPS, fbxText, fbxTextVersion } from "../tabtopd/model-resources.js";
+import { resourceCandidates, fetchResources, gltfReferences, glbJSON, COMPRESSED, MAX_RESOURCE_FILES, MAX_RESOURCE, MAX_RESOURCE_LOOKUPS, fbxText, fbxTextVersion } from "../tabtopd/model-resources.js";
 
 test("where a model's files are looked for: relative to it, then by name beside it; never outside the root, nor the web", () => {
     assert.deepEqual(resourceCandidates("models/car", "textures/paint.png"), ["models/car/textures/paint.png", "models/car/paint.png"]);
@@ -79,7 +79,7 @@ test("glTF: what it refers to; a .glb's JSON; extensions it can't show", () => {
     glb.set(json, 20);
     assert.deepEqual(glbJSON(glb.buffer), { asset: { version: "2.0" } });
     assert.throws(() => glbJSON(new ArrayBuffer(8)), /isn't a binary glTF/);
-    assert.ok(UNSUPPORTED.KHR_draco_mesh_compression);
+    assert.ok(COMPRESSED.has("KHR_draco_mesh_compression") && COMPRESSED.has("EXT_meshopt_compression") && COMPRESSED.has("KHR_texture_basisu"));
 });
 
 test("text (ASCII) FBX: its property values without spaces after commas, as three.js reads them; its version", () => {

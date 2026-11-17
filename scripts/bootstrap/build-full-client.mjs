@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Assemble the TabTop desktop (+ tunnel) local client as plaintext JSON for
+// Assemble the TabTop desktop (+ tunnel) offline client as plaintext JSON for
 // tabtopd to embed (bootstrap.client.json). tabtopd reseals it daily with a
 // fresh passcode for /auth/pack.
 //
@@ -7,7 +7,7 @@
 //   node scripts/bootstrap/build-full-client.mjs --pass 'OOB_PASS' --out tabtopd/bootstrap.pack.json
 //
 // Versions match the Dockerfile's novnc / noble stages. Plaintext is JSON:
-//   { "format": "tabtop-client/v1", "name": "desktop", "files": { "path": "text"|{"base64":"..."} } }
+//   { "format": "tabtop-pack/v1", "name": "desktop", "files": { "path": "text"|{"base64":"..."} } }
 import {
 	createWriteStream,
 	mkdirSync,
@@ -19,7 +19,7 @@ import {
 	readdirSync,
 	statSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { execFileSync } from "node:child_process";
@@ -114,6 +114,64 @@ async function ensureNovnc(dir) {
 	let ui = readFileSync(join(dir, "app/ui.js"), "utf8");
 	ui = ui.replace(/^(\s*)url\.href,$/m, "$1window.tabtopChannel ? window.tabtopChannel() : url.href,");
 	writeFileSync(join(dir, "app/ui.js"), ui);
+	writeFileSync(stamp, "ok\n");
+}
+
+// The terminal's files, as the Dockerfile's terminal stage makes them (its
+// versions and checksums read from there): ghostty-web's module and the
+// stub it imports, and JetBrains Mono Nerd Font (NL Mono), regular and
+// bold, as WOFF2 where woff2_compress or Python's fontTools can make it,
+// else as the TrueType it comes as (tty/index.html is told which).
+const dockerArg = (name) => {
+	const m = new RegExp(`^ARG ${name}=(\\S+)$`, "m").exec(readFileSync(join(repoRoot, "Dockerfile"), "utf8"));
+	if (!m) throw new Error(`the Dockerfile has no ARG ${name}`);
+	return m[1];
+};
+const GHOSTTY_STUB = "__vite-browser-external-2447137e.js";
+async function ensureTerminal(dir) {
+	const ghostty = dockerArg("GHOSTTY_WEB_VERSION"), fonts = dockerArg("NERD_FONTS_VERSION");
+	const stamp = join(dir, `.terminal-${ghostty}-${fonts}`);
+	if (existsSync(stamp)) return;
+	rmSync(dir, { recursive: true, force: true });
+	mkdirSync(dir, { recursive: true });
+	const fetchChecked = async (url, dest, sha) => {
+		if (!existsSync(dest) || await sha256File(dest) !== sha) {
+			console.error(`fetch ${url}`);
+			await fetchTo(url, dest);
+		}
+		const hex = await sha256File(dest);
+		if (hex !== sha) throw new Error(`${url}: sha256 ${hex}, want ${sha}`);
+	};
+	const tgz = join(work, `ghostty-web-${ghostty}.tgz`);
+	await fetchChecked(`https://registry.npmjs.org/ghostty-web/-/ghostty-web-${ghostty}.tgz`, tgz, dockerArg("GHOSTTY_WEB_SHA256"));
+	const src = join(work, "ghostty-src");
+	rmSync(src, { recursive: true, force: true });
+	mkdirSync(src, { recursive: true });
+	execFileSync("tar", ["-xzf", tgz, "-C", src, "--strip-components=1"]);
+	if (!readFileSync(join(src, "dist/ghostty-web.js"), "utf8").includes(GHOSTTY_STUB)) throw new Error(`ghostty-web ${ghostty} no longer imports ${GHOSTTY_STUB}`);
+	for (const f of ["ghostty-web.js", GHOSTTY_STUB]) cpSync(join(src, "dist", f), join(dir, f));
+	cpSync(join(src, "LICENSE"), join(dir, "LICENSE.ghostty-web"));
+	const xz = join(work, `JetBrainsMono-${fonts}.tar.xz`);
+	await fetchChecked(`https://github.com/ryanoasis/nerd-fonts/releases/download/${fonts}/JetBrainsMono.tar.xz`, xz, dockerArg("NERD_FONT_SHA256"));
+	const fontSrc = join(work, "font-src");
+	rmSync(fontSrc, { recursive: true, force: true });
+	mkdirSync(fontSrc, { recursive: true });
+	execFileSync("tar", ["-xJf", xz, "-C", fontSrc, "JetBrainsMonoNLNerdFontMono-Regular.ttf", "JetBrainsMonoNLNerdFontMono-Bold.ttf", "OFL.txt"]);
+	cpSync(join(fontSrc, "OFL.txt"), join(dir, "LICENSE.jetbrains-mono-nerd-font"));
+	for (const w of ["Regular", "Bold"]) {
+		const ttf = join(fontSrc, `JetBrainsMonoNLNerdFontMono-${w}.ttf`), woff2 = join(dir, `JetBrainsMonoNerdFont-${w}.woff2`);
+		try {
+			execFileSync("woff2_compress", [ttf], { stdio: "ignore" });
+			cpSync(ttf.replace(/\.ttf$/, ".woff2"), woff2);
+		} catch {
+			try {
+				execFileSync("python3", ["-I", "-c", "import sys; from fontTools.ttLib import woff2; woff2.compress(sys.argv[1], sys.argv[2])", ttf, woff2], { stdio: "ignore" });
+			} catch {
+				console.error(`no woff2_compress or fontTools: the terminal's ${w} font is TrueType`);
+				cpSync(ttf, join(dir, `JetBrainsMonoNerdFont-${w}.ttf`));
+			}
+		}
+	}
 	writeFileSync(stamp, "ok\n");
 }
 
@@ -214,10 +272,12 @@ mkdirSync(stage, { recursive: true });
 
 const novncDir = join(work, "novnc");
 const nobleDir = join(work, "noble");
+const terminalDir = join(work, "terminal");
 if (!args.has("skip-fetch")) {
 	await ensureNovnc(novncDir);
 	await ensureNoble(nobleDir);
-} else if (!existsSync(join(novncDir, "vnc.html")) || !existsSync(nobleDir)) {
+	await ensureTerminal(terminalDir);
+} else if (!existsSync(join(novncDir, "vnc.html")) || !existsSync(nobleDir) || !existsSync(join(terminalDir, "ghostty-web.js"))) {
 	throw new Error("--skip-fetch needs a prior build in --work");
 }
 
@@ -230,25 +290,155 @@ for (const f of desktopFiles) {
 	writeFileSync(join(stage, "tabtop", f), readFileSync(src));
 }
 copyTree(nobleDir, join(stage, "tabtop", "noble"));
+// The desktop's stylesheet, as the gateway serves it at tabtop/desktop.css
+// (styles.go's desktopCSS): novnc.js links it; the client has it itself.
+writeFileSync(join(stage, "tabtop", "desktop.css"),
+	["desktop-base.css", "transfers.css", "desktop-notices.css"].map((f) => readFileSync(join(tabtopd, f), "utf8")).join(""));
 
-writeFileSync(join(stage, "README-LOCAL-CLIENT.txt"), `TabTop local desktop client (${clientName})
+// The terminal (tty/), as the gateway serves it at /tty/: its page, with
+// its fonts' names as they are here, its script, and ghostty-web's.
+mkdirSync(join(stage, "tty"), { recursive: true });
+{
+	let page = readFileSync(join(tabtopd, "tty.html"), "utf8");
+	for (const w of ["Regular", "Bold"]) {
+		if (existsSync(join(terminalDir, `JetBrainsMonoNerdFont-${w}.ttf`))) {
+			page = page.replace(`url("JetBrainsMonoNerdFont-${w}.woff2") format("woff2")`, `url("JetBrainsMonoNerdFont-${w}.ttf") format("truetype")`);
+		}
+	}
+	writeFileSync(join(stage, "tty", "index.html"), page);
+	cpSync(join(tabtopd, "tty.js"), join(stage, "tty", "tty.js"));
+	copyTree(terminalDir, join(stage, "tty"));
+}
+// The files page (fs/), as the gateway serves it at /fs/ (filesPage, with
+// styles.go's pageHead).
+mkdirSync(join(stage, "fs"), { recursive: true });
+writeFileSync(join(stage, "fs", "index.html"), '<!doctype html><html lang="en"><meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<style>' +
+	["files.css", "transfers.css", "highlight.css"].map((f) => readFileSync(join(tabtopd, f), "utf8")).join("") +
+	'</style>\n<title>Downloads</title><body>\n<p>Loading…</p>\n<script type="module" src="../tabtop/files.js"></script>');
+writeFileSync(join(stage, "tabtop", "files.js"), readFileSync(join(tabtopd, "files.js")));
+// The previews' frames (the Markdown and HTML one, the book's, the PDF's),
+// as the gateway serves them (page_assets.go's mdFrameHTML, epub.go's
+// epubFrameHTML, pdf.go's pdfFrameHTML; TestOfflineFrames checks they're
+// the same), and their scripts: the offline client builds each frame from
+// them (file-launcher.mjs's frameHTML).
+{
+	const head = (title, css) => '<!doctype html><html lang="en"><meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+		`<title>${title}</title>\n<style>` + css.map((f) => readFileSync(join(tabtopd, f), "utf8")).join("") + "</style>\n";
+	const frames = {
+		"md-frame.html": head("Markdown", ["md-frame.css", "highlight.css"]) + '<main id="doc"></main>\n<script src="third-party/css-tree.js"></script><script src="preview-css.js"></script><script src="preview-html-links.js"></script><script src="preview-html-resources.js"></script><script src="md-frame.js"></script>\n',
+		"epub-frame.html": head("Book", ["epub-frame.css"]) + '<div id="bar"></div><nav id="contents" hidden aria-label="Contents"></nav><main id="doc"></main><nav id="ends" aria-label="Chapters"></nav>\n<script src="epub-frame.js"></script>\n',
+		"pdf-frame.html": head("PDF", ["pdf-frame.css"]) + '<div id="bar"></div><main id="pages"></main>\n<script src="pdf-frame.js"></script>\n',
+	};
+	for (const [name, html] of Object.entries(frames)) {
+		writeFileSync(join(stage, "tabtop", name), html);
+		for (const m of html.matchAll(/<script src="([^"]+)"><\/script>/g)) {
+			mkdirSync(dirname(join(stage, "tabtop", m[1])), { recursive: true });
+			cpSync(join(tabtopd, m[1]), join(stage, "tabtop", m[1]));
+		}
+	}
+	for (const f of ["third-party/css-tree.LICENSE", "third-party/mdn-data.LICENSE", "third-party/source-map-js.LICENSE"]) cpSync(join(tabtopd, f), join(stage, "tabtop", f));
+}
 
-Open tabtop-local.html (double-click / file://). Chrome blocks ES modules in
-plain vnc.html on file://; tabtop-local.html embeds the tree and loads it via
-blob URLs. Point the gateway at your TabTop server when logging in.
+// The offline client's own page (components/): the viewers it fetches when
+// needed, and what of them this browser keeps (see components.js).
+mkdirSync(join(stage, "components"), { recursive: true });
+writeFileSync(join(stage, "components", "index.html"), '<!doctype html><html lang="en"><meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<style>' +
+	["files.css", "transfers.css"].map((f) => readFileSync(join(tabtopd, f), "utf8")).join("") +
+	'.components-summary { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; } .components-table td { vertical-align: top; } .components-table td.act { white-space: nowrap; } .components-table td.act button + button { margin-left: .4rem; }' +
+	'</style>\n<title>Offline components</title><body>\n<p>Loading…</p>\n<script type="module" src="components.js"></script>');
+cpSync(join(__dirname, "components.js"), join(stage, "components", "components.js"));
 
-Files under tabtop/ are the gateway's desktop + E2E tunnel scripts; tabtop/noble/
-is the crypto the tunnel needs. noVNC's app/, core/, and vendor/ are upstream.
+// What the client's modules import, and what those import, all of it in
+// the tree: TabTop's own modules (tabtop/…) brought from tabtopd as they're
+// needed (desktopFiles names where it starts, not all it needs); any other
+// that's missing fails the build, rather than a client that can't start.
+// So are the workers, worklets and other files they name by new URL(…,
+// import.meta.url) or importScripts(), and what they import dynamically;
+// but those may be missing where they're a viewer's that the offline
+// client leaves out (left), which it shows it hasn't (see preview-model.js's
+// offlineOff) and never loads from the server (see file-launcher.mjs's csp).
+const left = /^(three|pdfjs|highlight|preview|kaitai|disasm|demangle|background|segment|inpaint|stream)(\/|$)|^(md|pdf|epub)-frame\.html$|^((x86|riscv|mips)-asm|asm-common)\.js$/;
+{
+	const walkJS = (d) => readdirSync(d).flatMap((n) => {
+		const p = join(d, n);
+		return statSync(p).isDirectory() ? walkJS(p) : /\.m?js$/.test(n) ? [p] : [];
+	});
+	const importsOf = (code) => {
+		// (Not what's in comments: "import … from" in a doc comment isn't one.)
+		const bare = code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+		const out = [];
+		for (const m of bare.matchAll(/\b(?:import|export)\s*(?:[\w$*\s{},]*?\s*from\s*)?(["'])([^"'\n]+)\1/g)) out.push({ spec: m[2], must: true });
+		for (const m of bare.matchAll(/\bimport\s*\(\s*(["'])([^"'\n]+)\1\s*\)|\bnew\s+URL\s*\(\s*(["'])([^"'\n]+)\3\s*,\s*import\.meta\.url|\bimportScripts\s*\(\s*(["'])([^"'\n]+)\5/g)) {
+			out.push({ spec: m[2] ?? m[4] ?? m[6], must: false });
+		}
+		return out.filter(({ spec }) => /^\.{1,2}\//.test(spec));
+	};
+	const queue = walkJS(stage), seen = new Set(queue), missing = [], leftOut = new Set();
+	while (queue.length) {
+		const file = queue.pop();
+		for (const { spec, must } of importsOf(readFileSync(file, "utf8"))) {
+			const target = join(dirname(file), spec.split(/[?#]/)[0]);
+			if (existsSync(target)) continue;
+			const rel = relative(join(stage, "tabtop"), target).split(sep).join("/");
+			const own = join(tabtopd, rel);
+			if (!must && left.test(rel)) leftOut.add(rel.replace(/\/.*/, (m) => "/"));
+			else if (!rel.startsWith("..") && existsSync(own) && statSync(own).isFile()) {
+				mkdirSync(dirname(target), { recursive: true });
+				writeFileSync(target, readFileSync(own));
+				if (/\.m?js$/.test(target) && !seen.has(target)) { seen.add(target); queue.push(target); }
+			}
+			// (The server's own addresses, above the client's files: the
+			// tunnel's, new URL("../session", import.meta.url).)
+			else if (!must && rel.startsWith("../") && !/\.\w+$/.test(rel)) continue;
+			else missing.push(`${relative(stage, file)} ${must ? "imports" : "names"} ${spec}`);
+		}
+	}
+	if (missing.length) throw new Error(`the client imports what isn't in it:\n  ${missing.join("\n  ")}`);
+	console.error(`left out of the offline client: ${[...leftOut].sort().join(" ")}`);
+}
+
+// The disassemblers, all left out (x86's, ARM's and ARM64's files, and
+// RISC-V's and MIPS's scripts), turned off as the gateway turns off those
+// it hasn't (page_assets.go's disasmOffJS).
+for (const f of ["hex-view.js", "disasm-worker.js"]) {
+	const path = join(stage, "tabtop", f);
+	if (!existsSync(path)) continue;
+	const js = readFileSync(path, "utf8");
+	if (!js.includes("const DISASM_OFF = [];")) throw new Error(`${f} no longer has "const DISASM_OFF = [];"`);
+	writeFileSync(path, js.replace("const DISASM_OFF = [];", 'const DISASM_OFF = ["x86", "capstone", "arm64", "riscv", "mips"];'));
+}
+
+writeFileSync(join(stage, "README-OFFLINE-CLIENT.txt"), `TabTop offline client (${clientName})
+
+Open tabtop.html (double-click: it runs as a file, its scripts from your
+disk), enter the address you open TabTop at, and connect. The server must
+allow it: WEB_OFFLINE_CLIENT=1. (vnc.html can't run as a file itself:
+browsers won't load modules from one file into another; tabtop.html holds
+the whole tree, and loads it from blob: URLs.)
+
+It has the desktop (vnc.html), the terminal (tty/), the files page (fs/),
+and its own page of components (components/), which link to each other:
+tabtop.html?page=terminal, ?page=files and ?page=components.
+Syntax colouring, the disassemblers, Kaitai, the 3D viewer, pdf.js, KaTeX
+and Mermaid, and the AI image tools are fetched through the tunnel when
+first needed, checked against the SHA-256 the gateway wrote into
+tabtop.html when it sealed the pack, and kept in the browser. The
+previews' frames (Markdown and HTML, EPUB, PDF) are built from the
+client's own files. Nothing else is loaded from the server: only the
+tunnel connects to it.
+
+Files under tabtop/ are the gateway's scripts; tabtop/noble/ is the crypto
+the tunnel needs; tty/ has ghostty-web and JetBrains Mono Nerd Font (their
+licences beside them). noVNC's app/, core/, and vendor/ are upstream.
 `);
 
 const files = collectFiles(stage);
-console.error("building tabtop-local.html (file:// launcher)…");
-files["tabtop-local.html"] = buildFileLauncherHTML(files);
+console.error("building tabtop.html (file:// launcher)…");
+files["tabtop.html"] = buildFileLauncherHTML(files);
 const plaintextObj = {
-	format: "tabtop-client/v1",
+	format: "tabtop-pack/v1",
 	name: clientName,
 	created: new Date().toISOString(),
-	entry: "tabtop-local.html",
 	files,
 };
 const plain = Buffer.from(JSON.stringify(plaintextObj), "utf8");

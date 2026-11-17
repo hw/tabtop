@@ -28,6 +28,7 @@ import { openTextDiff, loadDiffText, comparableText } from "./text-diff-view.js"
 import { FolderModel } from "./folder-model.js";
 import { createTimeFormatter, humanBytes } from "./file-format.js";
 import { createSessionView } from "./sessions-view.js";
+import { handOffSession } from "./session-state.js";
 import { deleteFiles, dropUploads } from "./drop.js";
 import { askName, askYes, rowMenu, statusRow } from "./ui.js";
 import { nameTab, navBar } from "./nav.js";
@@ -40,6 +41,9 @@ import { binaryNamed, probablyDatabase, typeOf, unknownTextSize } from "./previe
 import { reconnect, reconnected } from "./reconnect.js";
 import { warnExpiry } from "./expiry.js";
 import { storeJSON, storedJSON, stored, store } from "./stored.js";
+import { batchStripExif, batchRotateRight, batchHeicToJpeg, batchExtractZips,
+    rewritableImages, batchableHeic, batchableZips } from "./files-batch.js";
+import { rememberRecent, isStarred, toggleStar, pinsBar, takePendingOpen, PENDING_EVENT } from "./files-pins.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -234,10 +238,28 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     // Each comparison is offered only while what's selected can be compared
     // so (see updateSelection): two text files, or two images.
     compare.hidden = compareImages.hidden = true;
+    const stripExif = button("batch-strip-exif", "Strip EXIF", () => {
+        batchStripExif(dir, [...selected.values()], show).catch(() => {});
+    });
+    stripExif.title = "Remove metadata from the selected images and save over them";
+    const rotateRight = button("batch-rotate", "Rotate right", () => {
+        batchRotateRight(dir, [...selected.values()], show).catch(() => {});
+    });
+    rotateRight.title = "Rotate the selected images 90° clockwise and save over them";
+    const heicJpeg = button("batch-heic", "HEIC → JPEG", () => {
+        batchHeicToJpeg(dir, [...selected.values()], show).catch(() => {});
+    });
+    heicJpeg.title = "Convert the selected HEIC/HEIF images to JPEG beside them";
+    const extractZip = button("batch-unzip", "Extract ZIP", () => {
+        batchExtractZips(dir, [...selected.values()], show).catch(() => {});
+    });
+    extractZip.title = "Extract the selected ZIP archives into new folders";
+    stripExif.hidden = rotateRight.hidden = heicJpeg.hidden = extractZip.hidden = true;
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
         compare, compareImages,
-        ...(!readOnlyRoot() ? [button("move", "Move to…", () => askMove(dir, [...selected.keys()]))] : []),
+        ...(!readOnlyRoot() ? [stripExif, rotateRight, heicJpeg, extractZip,
+            button("move", "Move to…", () => askMove(dir, [...selected.keys()]))] : []),
         ...(otherRoots().length ? [button("copy-to", "Copy to…", () => askCopy(dir, [...selected.keys()]))] : []),
         ...(!readOnlyRoot() ? [button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show))] : []),
         button("", "Clear selection", () => {
@@ -256,13 +278,20 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         folder.filter = filter.value;
         drawRows();
     });
+    const pins = pinsBar();
     const all = el("input", { type: "checkbox", title: "Select all filtered files", ariaLabel: "Select all filtered files" });
     const updateSelection = () => {
         const picked = visible.filter((e) => selected.has(e.name)).length;
         selection.hidden = !selected.size;
-        compare.hidden = !comparableText([...selected.values()]);
-        compareImages.hidden = !comparableImages([...selected.values()]);
-        const pickedFiles = [...selected.values()].filter(e => !e.dir);
+        const pickedEntries = [...selected.values()];
+        compare.hidden = !comparableText(pickedEntries);
+        compareImages.hidden = !comparableImages(pickedEntries);
+        if (!readOnlyRoot()) {
+            stripExif.hidden = rotateRight.hidden = !rewritableImages(pickedEntries).length;
+            heicJpeg.hidden = !batchableHeic(pickedEntries).length;
+            extractZip.hidden = !batchableZips(pickedEntries).length;
+        }
+        const pickedFiles = pickedEntries.filter(e => !e.dir);
         const bytes = pickedFiles.reduce((n, e) => n + (e.bytes ?? 0), 0);
         const folders = selected.size - pickedFiles.length;
         count.textContent = `${selected.size} selected · ${humanBytes(bytes)}${folders ? " + folder contents" : ""}` +
@@ -320,6 +349,8 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         // alone: just it, not stepping through the rest.
         const open = (e, mode = null, alone = !!mode) => {
             const position = { x: scrollX, y: scrollY };
+            rememberRecent({ path: join(dir, e.name), name: e.name, dir: !!e.dir });
+            pins.refresh();
             preview(dir, alone ? [e] : previews, alone ? 0 : previews.indexOf(e), fetchFile, { mode, direct: reply.share ? directDownload : null,
                 restoreFocus: () => {
                     if (onSecurity() || onShares() || onTrash() || currentDir() !== dir) return;
@@ -361,6 +392,11 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
                 ["move", "Move to…", () => askMove(dir, [e.name])]] : []),
                 ...(otherRoots().length ? [["copy-to", "Copy to…", () => askCopy(dir, [e.name])]] : []),
                 ["copy", "Copy path", () => copyPath(path)],
+                [isStarred({ path }) ? "unstar" : "star", isStarred({ path }) ? "Unstar" : "Star", () => {
+                    toggleStar({ path, name: e.name, dir: !!e.dir });
+                    pins.refresh();
+                    drawRows();
+                }],
                 ...(reply.share ? [["share", "Share…", () => share(path, e.dir)]] : []),
                 ...(!readOnlyRoot() ? [["delete", "Delete…", () => deleteFiles([deletion(dir, e)], show)]] : []),
             ]);
@@ -428,8 +464,10 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     for (const a of crumbs.querySelectorAll("a")) {
         moveTarget(a, dir, a.dataset.dir);
     }
+    rememberRecent({ path: dir, name: dir.split("/").pop() || rootLabel(), dir: true });
+    pins.refresh();
     page.replaceChildren(
-        crumbs,
+        el("div", { className: "crumbs-row" }, crumbs, pins.node),
         el("div", { className: "find" }, filter, searchButton(dir), viewButton(), matches),
         selection,
         el("table", { className: "file-table" + (gridView() ? " grid" : "") }, el("thead", {}, head), tbody),
@@ -455,9 +493,36 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         keyboardArrived = false;
         tbody.querySelector("td.name a")?.focus();
     }
+    openPending(dir);
     watchChanges(dir);
     return true;
 }
+
+// openPending opens the file a recent or starred pin asked for (see
+// files-pins.js), if it's in dir, the folder just drawn: as clicking it in
+// the list does, its filter cleared if that hid it.
+function openPending(dir) {
+    const name = takePendingOpen(dir);
+    if (name === null) return;
+    const row = () => [...page.querySelectorAll(".file-table tbody tr")].find((tr) => tr.dataset.name === name);
+    if (!row() && folder.filter && folder.dir === dir) {
+        const box = page.querySelector("input.filter");
+        if (box) {
+            box.value = "";
+            box.dispatchEvent(new Event("input"));
+        }
+    }
+    const link = row()?.querySelector("td.name a");
+    if (link) link.click();
+    else {
+        const row = statusRow("");
+        row.set(`${name}: not in this folder any more`, true);
+        row.finish();
+    }
+}
+addEventListener(PENDING_EVENT, () => {
+    if (folder.dir !== null && !onSecurity() && !onShares() && !onTrash()) openPending(folder.dir);
+});
 
 // keepState is what the folder shown has typed in its filter box, ticked,
 // and focused, to keep when it's drawn again.
@@ -811,7 +876,7 @@ function drawRoots() {
     for (const root of roots) select.append(el("option", { value: root.id, textContent: root.label + (root.read_only ? " (read-only)" : ""), selected: root.id === filesystemRoot().id }));
     select.addEventListener("change", () => {
         const target = new URL(location.href); target.searchParams.set("root", select.value); target.hash = "";
-        location.assign(target.href);
+        handOffSession(() => location.assign(target.href), true);
     });
     const several = roots.length > 1 || select.options.length > roots.length;
     select.title = "Switch folder";

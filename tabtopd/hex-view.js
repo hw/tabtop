@@ -311,8 +311,8 @@ const DISASM_KEY = "tabtop.hex-disasm";
 const DISASM_MODES = [
     ["x86-64", "x86-64"], ["x86-32", "x86 (32-bit)"], ["x86-16", "x86 (16-bit)"],
     ["arm64", "ARM64"], ["arm32", "ARM32"], ["thumb", "ARM32-T (Thumb)"],
-    ["mips32-le", "MIPS32 LE"], ["mips32-be", "MIPS32 BE"], ["mips64-le", "MIPS64 LE"], ["mips64-be", "MIPS64 BE"],
-    ["riscv32", "RISC-V 32"], ["riscv64", "RISC-V 64"],
+    ["riscv64", "RISC-V 64"], ["riscv32", "RISC-V 32"],
+    ["mips64-le", "MIPS64 LE"], ["mips64-be", "MIPS64 BE"], ["mips32-le", "MIPS32 LE"], ["mips32-be", "MIPS32 BE"],
 ];
 // The disassemblers this server has turned off (WEB_DISASM_DISABLE): of
 // "x86", "arm64", "capstone" (ARM32 and Thumb), "riscv" and "mips". tabtopd

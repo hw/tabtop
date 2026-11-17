@@ -10,7 +10,7 @@
 //   - a section: the model cut away above a height, what's cut filled.
 // Every material it has is given the same small addition to its shader
 // (see patch): its look, and the cut, as uniforms all share.
-import { el } from "./preview-dom.js";
+import { el, glyphChoice } from "./preview-dom.js";
 
 export const LOOKS = { materials: "Materials", overhang: "Overhangs", inside: "Faces inside out", xray: "X-ray" };
 const CREASE = 30;            // degrees: an edge sharper than this is drawn, and kept sharp, smooth
@@ -97,16 +97,14 @@ export function lookTools(THREE, meshes, { renderer, redraw, button, toggle, fac
     };
 
     // The look, and the overhang's angle (shown for overhangs).
-    const pick = el("select", { className: "model-look", ariaLabel: "Look", title: "How its surfaces are shown" },
-        ...Object.entries(LOOKS).map(([k, name]) => el("option", { value: k, textContent: name })));
+    const lookIcons = { materials: "materials", overhang: "overhang", inside: "inside", xray: "xray" };
+    const pick = glyphChoice({ className: "model-look", title: "How its surfaces are shown", value: look,
+        choices: Object.entries(LOOKS).map(([value, label]) => ({ value, label, icon: lookIcons[value] })),
+        change(value) { look = value; angleBox.hidden = look !== "overhang"; apply(); },
+    });
     const angle = el("input", { type: "number", className: "model-angle", min: "1", max: "89", step: "1", value: "45", ariaLabel: "Overhang angle, degrees from straight down",
         title: "Faces facing down more steeply than this many degrees from level are overhangs" });
     const angleBox = el("label", { className: "model-angle-box", hidden: true, title: angle.title }, angle, "°");
-    pick.addEventListener("change", () => {
-        look = pick.value;
-        angleBox.hidden = look !== "overhang";
-        apply();
-    });
     angle.addEventListener("input", () => {
         const a = Math.max(1, Math.min(89, Number(angle.value) || 45));
         // Overhanging: facing down more than a degrees from level, so its normal's within (90 - a) of straight down.

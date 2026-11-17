@@ -8,7 +8,7 @@ export const filesystemRoot = () => current;
 // onFilesPage is whether this is the files page, bound to a root it shows;
 // any other (the desktop, the terminal) works with Downloads, as the
 // server has it at its default place, and uploads into a root it asks for.
-export const onFilesPage = () => typeof location === "undefined" || /\/fs\/?$/.test(location.pathname);
+export const onFilesPage = () => typeof location === "undefined" || /\/fs\/?$/.test(location.pathname) || globalThis.tabtopOffline?.page === "files";
 export const filesystemRoots = () => roots;
 export const rootLabel = () => current.label;
 export const rootPath = () => current.shell_path ?? current.path ?? current.label;

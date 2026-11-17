@@ -1011,7 +1011,7 @@ test("instruction sets migrate old preferences, persist ARM/MIPS choices, and gu
         const [tabs, mode] = inspector.children[0].children;
         const disasm = inspector.children.at(-1), lines = disasm.children[0];
         assert.equal(mode.value, "x86-32");
-        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "arm32", "thumb", "mips32-le", "mips32-be", "mips64-le", "mips64-be", "riscv32", "riscv64"]);
+        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "arm32", "thumb", "riscv64", "riscv32", "mips64-le", "mips64-be", "mips32-le", "mips32-be"]);
         view.startEditing({ save: async () => ({}) });
         content.listeners.pointerdown({ button: 0, pointerId: 1, target: content.children[0].children[1].children[0], preventDefault() {} });
         content.listeners.pointerup({});
@@ -1638,7 +1638,7 @@ test("the instruction sets of a disassembler turned off aren't offered; with all
         view.stop();
         // Capstone's off: its instruction sets aren't there; the first of the rest.
         ({ view, inspector, tabGroup, mode } = await open(["capstone"]));
-        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "mips32-le", "mips32-be", "mips64-le", "mips64-be", "riscv32", "riscv64"]);
+        assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "riscv64", "riscv32", "mips64-le", "mips64-be", "mips32-le", "mips32-be"]);
         assert.deepEqual([inspector.dataset.tab, mode.value, tabGroup.children[1].hidden], ["disasm", "x86-64", false]);
         view.stop();
         // (RISC-V and MIPS are disassemblers of their own, not Capstone's.)

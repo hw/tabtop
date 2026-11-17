@@ -137,6 +137,14 @@
 
     const loaded = new Map();
     function load(src) {
+        // In the offline client, which built this frame (see
+        // scripts/bootstrap/file-launcher.mjs's frameHTML), the libraries
+        // are asked of the page, which checks them, and run as written.
+        if (!loaded.has(src) && window.tabtopFrame) {
+            loaded.set(src, window.tabtopFrame.script(src).catch(() => {
+                throw new Error(`couldn't load ${src.split("/").pop()}`);
+            }));
+        }
         if (!loaded.has(src)) {
             loaded.set(src, new Promise((resolve, reject) => {
                 const s = Object.assign(document.createElement("script"), { src });

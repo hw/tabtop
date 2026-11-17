@@ -20,6 +20,7 @@ import { Osc } from "../tabtop/osc.js";
 import { store, stored } from "../tabtop/stored.js";
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
+import { handOffSession } from "../tabtop/session-state.js";
 import { nameTab, navBar, pages } from "../tabtop/nav.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
@@ -275,6 +276,13 @@ function connect() {
             resolve(true);
         };
         s.onmessage = (e) => {
+            if (typeof e.data === "string") {
+                try {
+                    const notice = JSON.parse(e.data);
+                    if (ws === s && notice.type === "tty-capabilities") search.offer(notice.search === true);
+                } catch { /* Ignore unknown control messages. */ }
+                return;
+            }
             const bytes = new Uint8Array(e.data);
             osc.scan(bytes);
             term.write(bytes);
@@ -382,7 +390,7 @@ term.onData((data) => {
         send(encoder.encode(modified(data)));
     } else if (data.includes("\r") && !connecting && !document.getElementById("tabtop_reconnect")) {
         // Reloading also shows the login form if the session has ended.
-        location.reload();
+        handOffSession(() => location.reload(), true);
     }
 });
 term.onResize(sendSize);

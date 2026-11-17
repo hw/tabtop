@@ -2,7 +2,7 @@
 // diff computation is isolated in a disposable worker, with bounded input.
 import { call, collect } from "./requests.js";
 import { el, maximizeButton } from "./preview-dom.js";
-import { iconSVG } from "./glyphs.js";
+import { glyphs, iconSVG } from "./glyphs.js";
 import { binaryNamed, languageOf, probablyDatabase, textModel, typeOf } from "./preview-model.js";
 import { colour } from "./preview-content.js";
 import { MAX_DIFF_BYTES, lineText } from "./text-diff.js";
@@ -108,8 +108,8 @@ export function openTextDiff({ left, right }) {
     closeButton.innerHTML = iconSVG("close-circle");
     const summary = el("p", { className: "diff-summary", textContent: "Loading text files…" });
     summary.setAttribute("role", "status");
-    const previous = el("button", { type: "button", className: "diff-previous", textContent: "Previous change", disabled: true });
-    const next = el("button", { type: "button", className: "diff-next", textContent: "Next change", disabled: true });
+    const previous = el("button", { type: "button", className: "diff-previous glyph", textContent: glyphs.chevronUp, title: "Previous change", ariaLabel: "Previous change", disabled: true });
+    const next = el("button", { type: "button", className: "diff-next glyph", textContent: glyphs.chevronDown, title: "Next change", ariaLabel: "Next change", disabled: true });
     const position = el("span", { className: "diff-position" });
     position.setAttribute("aria-live", "polite");
     const earlier = el("button", { type: "button", className: "diff-page-back", textContent: "Previous rows", disabled: true });
@@ -181,6 +181,13 @@ export function openTextDiff({ left, right }) {
                     line.append(...codeCell(side, index, true)); body.append(line);
                 }
             }
+        }
+        // The change shown: one rectangle round all its rows (on this page),
+        // its first row's top and its last's bottom drawn, and the sides.
+        const current = body.querySelectorAll("tr.diff-current");
+        if (current.length) {
+            current[0].classList.add("diff-current-first");
+            current[current.length - 1].classList.add("diff-current-last");
         }
         const heading = (side, doc) => el("th", { colSpan: 2, scope: "colgroup" }, el("strong", { textContent: side.label ?? side.name }), el("small", { textContent: metadata(doc) }));
         const headings = unified ? [el("th", { colSpan: 2 }, el("strong", { textContent: `${left.label ?? left.name} → ${right.label ?? right.name}` }), el("small", { textContent: `${metadata(model.left)} → ${metadata(model.right)}` }))] : [heading(left, model.left), heading(right, model.right)];

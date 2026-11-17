@@ -30,7 +30,7 @@ import (
 //go:embed bootstrap.html
 var bootstrapPage string
 
-// bootstrapClientJSON is the plaintext tabtop-client/v1 tree. tabtopd seals it
+// bootstrapClientJSON is the plaintext tabtop-pack/v1 tree. tabtopd seals it
 // each calendar day (server TZ) with a fresh passcode for /auth/pack.
 // Built by scripts/bootstrap/build-full-client.mjs.
 //
@@ -139,7 +139,13 @@ func (g *server) bootstrapSnapshot(force bool) (pack, pass, hash string, err err
 	if err != nil {
 		return "", "", "", err
 	}
-	pack, hash, err = sealBootstrapPack(bootstrapClientJSON, pass)
+	plain, err := g.offlineClientPlain()
+	if err != nil {
+		// (The client without its manifest: it fetches nothing, as built.)
+		log.Printf("bootstrap pack: no manifest of the offline client's assets: %v", err)
+		plain = bootstrapClientJSON
+	}
+	pack, hash, err = sealBootstrapPack(plain, pass)
 	if err != nil {
 		return "", "", "", err
 	}

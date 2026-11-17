@@ -30,13 +30,34 @@ function alphaMask(prediction) {
     return alpha;
 }
 
+// The offline client (scripts/bootstrap/file-launcher.mjs) runs this from
+// a blob: URL, which no path can be resolved against, and fetches its files
+// through the tunnel: script loads a script as importScripts does, when
+// it's done; at is a file's address, as fetch() is to be given it.
+const offline = !!self.tabtopImportScripts;
+const script = (url) => (offline ? self.tabtopImportScripts(url) : importScripts(url));
+const at = (url) => (offline ? url : new URL(url, self.location.href).href);
+
+// ONNX Runtime, set up to run here: on one thread (no SharedArrayBuffer or
+// cross-origin isolation required), not proxied. Offline, it's given its
+// module (which it would otherwise import from the server) and its
+// WebAssembly, as the client fetched them.
+async function runtime() {
+    await script("./background/ort.wasm.min.js");
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.proxy = false;
+    if (offline) {
+        ort.env.wasm.wasmPaths = { mjs: await self.tabtopModuleURL("./background/ort-wasm-simd-threaded.mjs") };
+        ort.env.wasm.wasmBinary = await (await fetch("./background/ort-wasm-simd-threaded.wasm")).arrayBuffer();
+    } else {
+        ort.env.wasm.wasmPaths = new URL("./background/", self.location.href).href;
+    }
+}
+
 let session = null;
 const load = () => session ??= (async () => {
-    importScripts("./background/ort.wasm.min.js");
-    ort.env.wasm.numThreads = 1; // no SharedArrayBuffer or cross-origin isolation required
-    ort.env.wasm.proxy = false;
-    ort.env.wasm.wasmPaths = new URL("./background/", self.location.href).href;
-    return ort.InferenceSession.create(new URL("./background/u2netp.onnx", self.location.href).href, { executionProviders: ["wasm"] });
+    await runtime();
+    return ort.InferenceSession.create(at("./background/u2netp.onnx"), { executionProviders: ["wasm"] });
 })().catch((err) => { session = null; throw err; });
 
 self.onmessage = async ({ data: { rgba } }) => {

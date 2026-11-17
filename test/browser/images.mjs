@@ -213,7 +213,7 @@ export async function checkImages(checks) {
         await waitFor(`${listed}.includes("photo.jpg")`, "the photo listed");
         await ev(`[...document.querySelectorAll("td.name a")].find((a) => a.textContent === "photo.jpg").click()`);
         await waitFor(`/^75×100 · JPEG · .* · EXIF, comment$/.test(${info})`, "the photo, standing as its EXIF says, with what metadata it has");
-        if (!await ev(`document.querySelector("dialog.preview .head .image-exif-info")?.nextElementSibling===document.querySelector("dialog.preview .head button.edit") && !${view}.querySelector(".image-exif-info")`)) throw new Error("EXIF isn't before Edit in the preview header");
+        if (!await ev(`document.querySelector("dialog.preview .head button.edit")?.nextElementSibling===document.querySelector("dialog.preview .head .image-exif-info") && !${view}.querySelector(".image-exif-info")`)) throw new Error("EXIF isn't after Edit in the preview header");
         await checks.click('document.querySelector("dialog.preview .head .image-exif-info")');
         await waitFor(`document.querySelector(".exif-content")?.textContent.includes("SecretCa")`, "camera EXIF shown");
         if (!await ev(`document.querySelector(".exif-summary")?.textContent.includes("Rotated 90° clockwise")`)) throw new Error("EXIF orientation not displayed");

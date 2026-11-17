@@ -308,5 +308,5 @@ func (g *server) approvePage(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve a TabTop login</title><body style="font:15px/1.5 system-ui,sans-serif;color:#e8e8ea;background:#1c1c1e;margin:0"><main id="approval" style="max-width:36rem;margin:3rem auto;padding:0 1rem"></main><script type="module" src="%s"></script></html>`, g.abs("/tabtop/remote-approve.js"))
+	fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve a TabTop login</title><body style="margin:0;min-height:100dvh;font:15px/1.5 system-ui,sans-serif;color:#e8f0fe;background:#12151c"><main id="approval"></main><script type="module" src="%s"></script></html>`, g.abs("/tabtop/remote-approve.js"))
 }

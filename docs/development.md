@@ -59,6 +59,34 @@ curl -sL https://registry.npmjs.org/ghostty-web/-/ghostty-web-0.4.0.tgz | sha256
 
 ## Development
 
+### Docker build cache
+
+Build with BuildKit (`docker buildx build --load -t tabtop .`, or a
+BuildKit-enabled `docker build`). The Dockerfile uses cache mounts for Go
+modules and compiled packages, Cargo registry downloads, and npm downloads.
+These caches stay on the builder and are not included in the runtime image.
+Rust build outputs remain in their source stage to avoid reusing stale
+artifacts after source changes.
+
+The `.dockerignore` excludes local binaries, dependency directories, Rust
+targets, bootstrap build caches, documentation, and repository metadata.
+Keep checked-in runtime assets such as `tabtopd/bootstrap.client.json` in
+the context. Third-party asset preparation runs before application-specific
+checks, so editing a viewer reruns its checks without re-extracting three.js.
+Stable shell configuration also precedes application copies in the final
+stage. Existing checks and checksum verification still run when their inputs
+change.
+
+To build only the gateway during development:
+
+```sh
+docker buildx build --load --target tabtopd -t tabtop-gateway-build .
+```
+
+Cache mounts are local to the selected builder; a new or pruned builder
+starts cold. A complete image build is still required to validate runtime
+packaging and startup.
+
 The Go version for the gateway is pinned in `mise.toml`. Keep it in sync with
 the `golang` image in the Dockerfile's tabtopd build stage.
 
@@ -786,11 +814,26 @@ and spans drive the SVG mask overlay and the actual canvas mask.
 ## 3D previews
 
 Both images bundle three.js as `/opt/three`: its core, orbit controls,
-the STL, OBJ, PLY, AMF, glTF, FBX, MTL and TGA loaders, the room
+the STL, OBJ, PLY, AMF, glTF, FBX, Collada, VRML (with chevrotain), MTL and TGA loaders, the room
 environment, and what they import (fflate among them), flattened into one
-folder by `scripts/three/vendor.sh`. `-three-dir` locates it; tabtopd serves its
-files under a hashed path and points `model-view.js` and
-`model-worker.js` at it. G-code is read by tabtopd's own `gcode.js`, not
+folder by `scripts/three/vendor.sh`; and, for compressed glTF, the Draco
+(glTF build), Basis Universal (KTX2) and meshoptimizer decoders, the last
+made a plain script. `-three-dir` locates it; tabtopd serves its
+files under a hashed path and points `model-view.js`,
+`model-worker.js` and `model-decode-worker.js` at it.
+
+Compressed glTF isn't decoded by three.js's `DRACOLoader`, `KTX2Loader`
+or its `MeshoptDecoder`: they run WebAssembly on the page, or in workers
+made from `blob:` URLs, and the files page's CSP allows neither.
+`model-decode.js` gives `GLTFLoader` stand-ins for them that ask
+`model-decode-worker.js`, a classic worker served with its own CSP
+(`script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'`), which loads
+each decoder with `importScripts` when first needed. Its Draco decoding is
+DRACOLoader's worker's, ported; KTX2 is transcoded to RGBA at the first
+mip level of at most 4096 × 4096; each answer is at most 256 MB, and one
+that takes over 60 s ends the worker. `test/model-decode.test.mjs` runs
+the worker in Node against the vendored decoders, with Khronos sample
+models (`test/data/3d/CREDITS.md`). G-code is read by tabtopd's own `gcode.js`, not
 three.js's `GCodeLoader`, so the preview can show layers, feature kinds
 and arcs; 3MF by `model-3mf.js`, not three.js's loader, which needs
 DOMParser (so the page, which a big model froze for seconds) and keys
@@ -803,7 +846,7 @@ at it:
 ```sh
 npm pack three@0.187.0 && tar -xzf three-0.187.0.tgz
 sh scripts/three/vendor.sh package /tmp/three && node scripts/three/check.mjs /tmp/three
-THREE_ASSETS=/tmp/three node --test test/model-worker.test.mjs
+THREE_ASSETS=/tmp/three node --test test/model-worker.test.mjs test/model-decode.test.mjs
 ```
 
 Without `THREE_ASSETS`, that test is skipped. `test/gcode.test.mjs` uses

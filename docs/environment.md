@@ -31,7 +31,10 @@
 | [WEB_SESSION_MAX](#web_session_max-and-web_session_idle) | `12h` | How long a login lasts at most, in hours and minutes, such as `12h` or `90m`. See [Sessions](encryption.md#sessions). |
 | [WEB_SESSION_IDLE](#web_session_max-and-web_session_idle) | `1h` | How long a login lasts with nothing open (no desktop, terminal or download), such as `1h` or `30m`. `0` for no limit. |
 | [WEB_TTY](#web_tty) | `1` | `1` serves a terminal at `/tty/`. `0` turns it off. |
-| [WEB_TTY_COMMAND](#web_tty_command) | *(empty)* | A command each terminal tab runs instead of tmux, such as `ssh -t me@host.docker.internal`. See [WEB_TTY_COMMAND](#web_tty_command). |
+| [WEB_TTY_TMUX_HOST](#web_tty_tmux_host-and-web_tty_tmux_session) | *(empty)* | SSH target (`user@host` or SSH config alias) for remote tmux, with interactive authentication and history search. |
+| [WEB_TTY_TMUX_SESSION](#web_tty_tmux_host-and-web_tty_tmux_session) | `tabtop` remotely | Remote tmux session to attach/create; requires `WEB_TTY_TMUX_HOST`. |
+| [WEB_TTY_COMMAND](#web_tty_command) | *(empty)* | Without a tmux host, a command each terminal tab runs instead of local tmux, such as `ssh -t me@host.docker.internal`. See [WEB_TTY_COMMAND](#web_tty_command). |
+| [WEB_OFFLINE_CLIENT](#web_offline_client) | `0` | `1` lets the offline client (`tabtop.html`, unlocked from the bootstrap pack and opened as a file) connect. |
 | [WEB_SHARE](#web_share) | `1` | `1` lets the files page make [share links](downloads.md#share-links) and [upload links](downloads.md#upload-links): plain URLs for downloading files and folders, or uploading into a folder, for `wget`, `curl` or someone without a login, outside the encrypted tunnel. `0` turns them off. |
 | [WEB_FETCH](#web_fetch-and-web_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
 | [WEB_FETCH_PRIVATE](#web_fetch-and-web_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
@@ -49,7 +52,7 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_SHARE`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
@@ -682,13 +685,69 @@ desktop, terminal or download. Both take hours and minutes, such as `12h`,
 With `1`, `/tty/` is a terminal; see [Terminal](terminal.md). With `0`, it
 returns 404.
 
+## `WEB_TTY_TMUX_HOST` and `WEB_TTY_TMUX_SESSION`
+
+Set `WEB_TTY_TMUX_HOST` to an SSH target, such as `alice@server` or an
+alias from the container user's `~/.ssh/config`, to run the terminal in
+remote tmux. `WEB_TTY_TMUX_SESSION` names the remote session; unset means
+`tabtop`. Names may contain 1–64 letters, digits, underscores or hyphens.
+Setting a session without a host is an error.
+
+```sh
+WEB_TTY_TMUX_HOST=alice@server
+WEB_TTY_TMUX_SESSION=monitor
+WEB_TTY_COMMAND=htop
+```
+
+TabTop starts an interactive OpenSSH connection. Password, keyboard-interactive
+and TOTP prompts appear in the terminal; no SSH identity file is required.
+The remote server must permit your chosen authentication method. Host-key
+checking uses OpenSSH's normal configuration and `known_hosts`; mount or
+persist the container user's `.ssh` directory as appropriate. Configure ports,
+jump hosts and authentication preferences through SSH config aliases.
+
+Each tab owns a private SSH control socket. After authentication and tmux
+attachment, **Find** becomes available and searches the pane that tab is
+viewing. Control requests reuse the authenticated connection and never start
+an independent login. The remote host must allow additional SSH exec channels
+and have `tmux` and a POSIX-compatible `sh` installed. A short-lived,
+private directory under remote `/tmp` identifies the attached client and is
+removed on normal shutdown.
+
+Closing a tab or losing its connection closes that tab's SSH connection; the
+remote tmux session remains. Reconnecting authenticates again and reattaches.
+Tabs using the same session share it. Logging out closes the SSH connection,
+not the remote tmux session. `WEB_TTY_COMMAND` is used only when the session is
+created; it is ignored on attachment to an existing session. With no command,
+the session starts the remote user's default shell.
+
+With no host configured, terminal behaviour is unchanged: local tmux session
+`web` by default, or the locally executed `WEB_TTY_COMMAND`. The corresponding
+gateway flags are `-tty-tmux-host` and `-tty-tmux-session`.
+
 ## `WEB_TTY_COMMAND`
 
-A shell command each terminal tab runs instead of tmux, run with the
+With `WEB_TTY_TMUX_HOST` set, this is the initial command for a newly
+created remote tmux session (see above). Otherwise, it is a shell command
+each terminal tab runs instead of tmux, run with the
 user's shell (`bash -c`), such as `ssh -t me@host.docker.internal` to make
 the terminal a login on another machine. Each tab runs its own copy, and
 there's no tmux history to search. See
 [An SSH terminal](lite.md#an-ssh-terminal).
+
+## `WEB_OFFLINE_CLIENT`
+
+With `1`, the gateway accepts the encrypted tunnel from the offline client:
+`tabtop.html`, which the bootstrap decoder (`/auth/bootstrap`) unlocks from
+the sealed pack (`/auth/pack`), opened as a file, so its scripts come from
+your disk, not the network. A page opened as a file has the origin `null`,
+which the gateway otherwise refuses, as it refuses every other site's.
+The tunnel uses no cookies (it authenticates with the password, or the
+session the page holds), so this lets that page do only what any program
+could. It's off by default because any website can make a `null` origin (a
+sandboxed frame) and so try logins against a gateway on its visitors' own
+network; the usual login limits still apply. The equivalent gateway flag is
+`-offline-client`.
 
 ## `WEB_SHARE`
 

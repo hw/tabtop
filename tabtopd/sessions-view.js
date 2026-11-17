@@ -6,6 +6,7 @@ import { logOut } from "./nav.js";
 import { humanBytes } from "./file-format.js";
 import { store, stored } from "./stored.js";
 import { iconSVG } from "./glyphs.js";
+import { exportSecurityBackup, importSecurityBackup } from "./security-backup.js";
 
 const SECURITY_TITLE = "Sessions and Activity";
 
@@ -157,16 +158,16 @@ export function createSessionView({ security, formatTime }) {
         const reseal = el("button", {
             type: "button",
             className: "bootstrap-reseal glyph",
-            title: "Reseal the local client pack with a new passcode",
-            ariaLabel: "Reseal local client pack",
+            title: "Reseal the offline client pack with a new passcode",
+            ariaLabel: "Reseal offline client pack",
         });
         reseal.innerHTML = iconSVG("redo");
         reseal.addEventListener("click", async () => {
             reseal.disabled = true;
-            const row = statusRow("Resealing the local client pack…");
+            const row = statusRow("Resealing the offline client pack…");
             try {
                 (await call({ type: "bootstrap-reseal" })).close();
-                row.set("Resealed the local client pack");
+                row.set("Resealed the offline client pack");
                 row.finish();
                 await showSessions(box);
             } catch (err) {
@@ -190,7 +191,7 @@ export function createSessionView({ security, formatTime }) {
         }
         const bootSection = bootLines.length
             ? el("details", { className: "bootstrap-pack" },
-                el("summary", { textContent: "Local client pack" }),
+                el("summary", { textContent: "Offline client pack" }),
                 el("div", { className: "bootstrap-pack-body" }, ...bootLines))
             : null;
         const built = typeof r.build_time === "string" && r.build_time
@@ -215,8 +216,30 @@ export function createSessionView({ security, formatTime }) {
         const activity = el("section", { className: "activity" });
         box.append(activity);
         await showActivity(activity, when, field);
+        box.append(securityBackupSection(async () => showSessions(box)));
         if (bootSection) box.append(bootSection);
         if (built) box.append(built);
+    }
+
+    // securityBackupSection is Export / Import for the security inventory
+    // (see security-backup.js), beside the offline client pack.
+    function securityBackupSection(reload) {
+        const exportBtn = button("security-export", "Export…", async () => {
+            try { await exportSecurityBackup(); } catch { /* statusRow already said */ }
+        });
+        const importBtn = button("security-import", "Import…", async () => {
+            try {
+                if (await importSecurityBackup()) await reload();
+            } catch { /* statusRow already said */ }
+        });
+        exportBtn.title = "Download activity, passkey names, share inventory, and this browser's starred/recent paths";
+        importBtn.title = "Merge starred/recent and restore the session name from a backup file";
+        return el("section", { className: "security-backup" },
+            el("div", { className: "bar" }, el("h2", { textContent: "Backup" }),
+                el("span", { className: "buttons" }, exportBtn, " ", importBtn)),
+            el("p", { className: "hint", textContent: "Export a JSON copy of the activity log, passkey names, share-link inventory (without tokens), "
+                + "and this browser's starred and recent paths. Import merges pins and can restore the session name; "
+                + "it cannot recreate passkeys or share URLs from the file alone." }));
     }
 
     // showPasskeys lists in box the passkeys added (see passkey.go), each

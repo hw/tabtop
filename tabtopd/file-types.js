@@ -26,6 +26,10 @@ export const FILE_TYPES = Object.freeze({
     "kind": "image",
     "mime": "image/bmp"
   },
+  "dae": {
+    "kind": "model",
+    "mime": "model/vnd.collada+xml"
+  },
   "db3": {
     "kind": "sqlite",
     "mime": "application/vnd.sqlite3"
@@ -88,6 +92,10 @@ export const FILE_TYPES = Object.freeze({
     "epubPicture": true,
     "kind": "image",
     "mime": "image/jpeg"
+  },
+  "kmz": {
+    "kind": "model",
+    "mime": "application/vnd.google-earth.kmz"
   },
   "m4a": {
     "kind": "audio",
@@ -163,6 +171,10 @@ export const FILE_TYPES = Object.freeze({
     "kind": "image",
     "mime": "image/svg+xml"
   },
+  "vrml": {
+    "kind": "model",
+    "mime": "model/vrml"
+  },
   "wav": {
     "kind": "audio",
     "mime": "audio/wav"
@@ -175,6 +187,14 @@ export const FILE_TYPES = Object.freeze({
     "epubPicture": true,
     "kind": "image",
     "mime": "image/webp"
+  },
+  "wrl": {
+    "kind": "model",
+    "mime": "model/vrml"
+  },
+  "wrz": {
+    "kind": "model",
+    "mime": "model/vrml"
   },
   "zip": {
     "kind": "zip",

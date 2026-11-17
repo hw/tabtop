@@ -81,6 +81,7 @@ as_user /usr/local/bin/tabtopd \
     -activity-file "$USER_HOME/.config/tabtop/activity.jsonl" \
     -passkeys-file "$USER_HOME/.config/tabtop/passkeys.json" \
     -remote-approval-url "${WEB_REMOTE_APPROVAL_URL:-}" \
+    -offline-client="$WEB_OFFLINE_CLIENT" \
     -fetch="$WEB_FETCH" \
     -fetch-private="$WEB_FETCH_PRIVATE" \
     -preview-fetch-private="$WEB_PREVIEW_FETCH_PRIVATE" \
@@ -94,6 +95,8 @@ as_user /usr/local/bin/tabtopd \
     -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \
     -tty-command "$WEB_TTY_COMMAND" \
+    -tty-tmux-host "${WEB_TTY_TMUX_HOST:-}" \
+    -tty-tmux-session "${WEB_TTY_TMUX_SESSION:-}" \
     -doctor="$DOCTOR" \
     &
 TABTOPD_PID=$!

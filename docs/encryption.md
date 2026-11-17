@@ -135,8 +135,68 @@ connection against an active TLS interceptor when both clients are genuine
 and the approving device uses a trusted path. It does not establish the
 integrity of JavaScript delivered through an intercepting proxy. Malicious
 requesting code, browser extensions, or a compromised endpoint can still
-steal the resulting session and plaintext. Use a verified local client when
+steal the resulting session and plaintext. Use the [offline client](#the-offline-client) when
 the requesting connection cannot be trusted to deliver genuine scripts.
+
+## The offline client
+
+A page the gateway serves is only as trustworthy as the connection that
+delivered it. The offline client is TabTop's desktop, terminal and files
+page in one file, run from your disk, so an intercepting proxy can't change
+their scripts:
+
+1. Download the decoder (`<base>/auth/bootstrap`) and the sealed pack
+   (`<base>/auth/pack`). Get the pack's passcode and SHA-256 through a
+   channel you trust: **Sessions** shows both while you're logged in, from
+   a device you trust, and the gateway's log has the SHA-256 of each day's
+   pack.
+2. Open the decoder as a file, enter the passcode, and click **Unlock…**,
+   which asks for the pack. It decrypts the pack with the browser's own cryptography (it says so where
+   the browser doesn't offer it to the page) and saves `tabtop.html`; or,
+   with **Save to folder…** (Chrome, Edge), every file of the client.
+3. Open `tabtop.html` as a file, enter the address you open TabTop at, and
+   **Connect**. It's remembered in this browser.
+
+The desktop, terminal and files page link to each other as they do when
+served: each opens `tabtop.html?page=desktop`, `?page=terminal` or
+`?page=files`, in a tab of its own, which connects to the server you last
+entered. Each page may reach the server only by the tunnel's WebSocket: its
+Content-Security-Policy refuses any script, style, picture, frame or
+request from anywhere else, so nothing the server sends can run in it.
+
+To keep the file small (about 7.5 MB), some of the files page's viewers
+aren't in it:
+
+- Syntax colouring, the disassemblers (x86, ARM, ARM64, RISC-V and MIPS),
+  the demangler, Kaitai structures, the 3D viewer (three.js and its
+  decoders, about 4 MB), the PDF viewer (pdf.js, about 5 MB), the maths
+  and diagrams in rendered Markdown (KaTeX and Mermaid, about 5.5 MB), and
+  the AI image tools (background removal, magic select and inpainting:
+  ONNX Runtime and their models, about 90 MB) are fetched through the
+  tunnel the first time they're needed, and kept in the browser
+  (IndexedDB). When the
+  gateway seals the pack it writes into `tabtop.html` the SHA-256 of each
+  file it may fetch, so the pack's own SHA-256, which you check, covers
+  them: a file whose bytes don't match, fetched or kept, isn't run. After
+  the gateway is upgraded, download the pack again. The offline client's
+  own **Offline components** page (`tabtop.html?page=components`, the box
+  in the bar at the top of the terminal and files page) shows which of
+  them this gateway offers and which this browser keeps, and downloads
+  them beforehand, or removes them.
+- Rendered Markdown and HTML, EPUB books and PDFs are shown in frames the
+  client builds itself, from its own files, sandboxed as the gateway's
+  are, with a policy that lets them load nothing at all: what they need
+  (pdf.js, KaTeX, Mermaid) they ask the page for, which gives them only
+  files on the list, checked. So they've no **Direct** mode: pictures and
+  styles from the web are blocked, or fetched through the gateway.
+
+The gateway accepts the client's tunnel only with
+[`WEB_OFFLINE_CLIENT=1`](environment.md#web_offline_client): a page opened as a
+file has the origin `null`, which it otherwise refuses. Log in with the
+password and code: passkeys don't work from a page opened as a file (they're
+tied to a web address), and approval from another device needs
+`WEB_REMOTE_APPROVAL_URL`, as the client has no address of its own to send. The client checks nothing with the gateway
+before connecting: what it runs is what you unlocked.
 
 ## Sessions
 
@@ -209,6 +269,13 @@ ended separately.
   such as "work laptop" or "phone", shown in the list and the activity
   log. This browser's own name is kept in the browser, and given to each
   of its next logins too; another session's lasts as long as it does.
+- **Backup:** **Export…** downloads a JSON inventory (`tabtop-security-backup/v1`)
+  of the activity log, passkey names (not credentials), share-link
+  inventory without tokens, bootstrap decoder/pack hashes, and this
+  browser's session name plus starred/recent paths. **Import…** merges
+  starred/recent and can restore the session name after confirmation.
+  It cannot recreate passkeys or share URLs from the file; those stay on
+  the device and server as they were.
 - **The activity log,** below them, lists what's been done that matters
   for security, newest first, with when and from which address: logins
   (failed ones too), logging out, **End…** and **Log out everywhere**,

@@ -53,10 +53,10 @@ export function typeOf(name) {
 }
 
 // textModel reports whether a file named name is a 3D model that's text
-// worth reading as such too (G-code, OBJ, glTF's JSON): its preview offers
+// worth reading as such too (G-code, OBJ, glTF's JSON, Collada's XML, VRML): its preview offers
 // that.
 export function textModel(name) {
-    return /\.(?:gcode|gco|obj|gltf)$/i.test(name);
+    return /\.(?:gcode|gco|obj|gltf|dae|wrl|vrml)$/i.test(name);
 }
 
 // binaryNamed reports whether name is a binary's (.bin, .dll, .exe, .so,
@@ -74,18 +74,26 @@ export function probablyDatabase(name) {
 
 // previewable reports whether a file named name, of size bytes, is
 // previewed.
+// What the offline client (tabtop.html, see nav.js) hasn't the viewers
+// for, which would come from the server: 3D and PDF, if the gateway
+// doesn't offer it three.js and pdf.js; and, with a pack built without the
+// previews' frames, EPUB and
+// and text's rendered views (Markdown, HTML). Those are downloaded instead.
+const offlineOff = new Set(globalThis.tabtopOffline?.off ?? []);
+export const offlineUnavailable = (kind) => offlineOff.has(kind);
+
 export function previewable(name, bytes) {
     const t = typeOf(name);
-    return !!t && bytes <= limits[t.kind];
+    return !!t && bytes <= limits[t.kind] && !offlineOff.has(t.kind);
 }
 
 // formatOf is the format a text file named name has another view for:
 // HTML, Markdown, table (CSV, TSV) or JSON (JSON, JSON Lines); or "".
 export function formatOf(name) {
     const ext = name.toLowerCase().split(".").pop();
-    if (ext === "html" || ext === "htm") return "html";
+    if (ext === "html" || ext === "htm") return offlineOff.has("html") ? "" : "html";
     if (languageOf(name) === "markdown") {
-        return "markdown";
+        return offlineOff.has("markdown") ? "" : "markdown";
     }
     return ext === "csv" || ext === "tsv" ? "table" : ext === "json" || ext === "jsonl" || ext === "ndjson" ? "json" : "";
 }

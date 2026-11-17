@@ -16,7 +16,7 @@ const here = new URL("../tabtopd/", import.meta.url);
 // worker is the worker's onmessage, answering as a promise.
 async function worker() {
     const dir = mkdtempSync(join(tmpdir(), "model-worker-"));
-    for (const f of ["gcode.js", "model-info.js", "model-3mf.js", "bgcode.js"]) copyFileSync(new URL(f, here), join(dir, f));
+    for (const f of ["gcode.js", "model-info.js", "model-3mf.js", "bgcode.js", "model-limits.js"]) copyFileSync(new URL(f, here), join(dir, f));
     const js = readFileSync(new URL("model-worker.js", here), "utf8").replaceAll('"./three/', `"${pathToFileURL(resolve(assets)).href}/`);
     writeFileSync(join(dir, "model-worker.js"), js);
     let answer;
@@ -125,4 +125,35 @@ test("the worker reads files made to be slow to parse quickly", { skip: !assets 
         if (format === "3mf") assert.equal(r.error, "it has no shapes in it", what);
         else assert.ok(r.gcode, what);
     }
+});
+
+// VRML (97): each shape placed by its transforms (a shape used twice, twice),
+// its material's colour in its vertices; its Background not shown; gzip'd
+// too; VRML 1.0, and one too big, said so.
+test("the worker reads VRML", { skip: !assets && "THREE_ASSETS isn't set" }, async () => {
+    const { gzipSync } = await import("node:zlib");
+    const read = await worker();
+    const wrl = readFileSync(new URL("../test/data/3d/board.wrl", import.meta.url));
+    const buf = (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+    let r = await read("wrl", buf(wrl), "board.wrl");
+    assert.equal(r.error, undefined);
+    // The board (a box), the chip twice, the capacitor (a cylinder): no sky, nor ground.
+    assert.equal(r.parts.length, 4);
+    assert.ok(r.parts.every((p) => p.kind === "mesh" && p.color));
+    // As placed: the board 80 × 50, the chips on it, the capacitor up to 1.6.
+    const [min, max] = [r.facts.min, r.facts.max];
+    assert.deepEqual([min[0], max[0], min[2], max[2]].map((v) => Math.round(v)), [-40, 40, -25, 25]);
+    assert.ok(Math.abs(max[1] - 4.5) < 1e-6, `top ${max[1]}`);
+    // The board's green, the chip's near black (linear: as three.js draws them).
+    const first = (p) => [...p.color.subarray(0, 3)].map((v) => Math.round(v * 1000) / 1000);
+    const greens = r.parts.filter((p) => first(p)[1] > first(p)[0] * 3);
+    assert.equal(greens.length, 1);
+    r = await read("wrz", buf(gzipSync(wrl)), "board.wrz");
+    assert.equal(r.parts.length, 4);
+    r = await read("wrl", buf(Buffer.from("#VRML V1.0 ascii\nSeparator { }\n")), "old.wrl");
+    assert.match(r.error, /VRML 1\.0/);
+    r = await read("wrl", buf(Buffer.from("solid x\nendsolid x\n")), "not.wrl");
+    assert.match(r.error, /isn't a VRML 2\.0 file/);
+    r = await read("wrl", buf(gzipSync(Buffer.alloc(17 << 20, 32))), "big.wrl");
+    assert.match(r.error, /too big/);
 });

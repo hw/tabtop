@@ -26,13 +26,18 @@
 // one asked for all the same is refused here.
 const DISASM_OFF = [];
 
+// script loads a script, as importScripts does; in the offline client
+// (see scripts/bootstrap/file-launcher.mjs), which fetches it through the
+// tunnel first, when it's done (so each load awaits it).
+const script = (url) => (self.tabtopImportScripts ? self.tabtopImportScripts(url) : importScripts(url));
+
 // Loaded once; but a load that failed (the network, say) is forgotten, so
 // the next question tries again rather than failing for good.
 let iced = null, capstone = null, assembler = null;
-const load = () => iced ??= Promise.resolve().then(() => {
+const load = () => iced ??= Promise.resolve().then(async () => {
     // Each only if it isn't here: one may have loaded when the other failed.
-    if (!self.icedInit) importScripts("./disasm/iced.js");
-    if (!self.makeAssembler) importScripts("./x86-asm.js");
+    if (!self.icedInit) await script("./disasm/iced.js");
+    if (!self.makeAssembler) await script("./x86-asm.js");
     return fetch("./disasm/iced_x86_bg.wasm");
 })
     .then((r) => {
@@ -45,8 +50,8 @@ const load = () => iced ??= Promise.resolve().then(() => {
         throw err;
     });
 
-const loadCapstone = () => capstone ??= Promise.resolve().then(() => {
-    if (!self.MCapstone) importScripts("./disasm/capstone.js");
+const loadCapstone = () => capstone ??= Promise.resolve().then(async () => {
+    if (!self.MCapstone) await script("./disasm/capstone.js");
     return fetch("./disasm/capstone.wasm");
 }).then((r) => {
     if (!r.ok) throw new Error("the ARM32 disassembler isn't available here");
@@ -60,15 +65,15 @@ const loadCapstone = () => capstone ??= Promise.resolve().then(() => {
 // WebAssembly to fetch. One that failed to load is asked for again.
 // (What it and MIPS's have the same, asm-common.js, is loaded before either.)
 const loadRiscv = async () => {
-    if (!self.asmCommon) importScripts("./asm-common.js");
-    if (!self.riscv) importScripts("./riscv-asm.js");
+    if (!self.asmCommon) await script("./asm-common.js");
+    if (!self.riscv) await script("./riscv-asm.js");
     return self.riscv;
 };
 const riscvXlen = (mode) => ({ riscv32: 32, riscv64: 64 }[mode]);
 // MIPS's (mips-asm.js), likewise; it takes the mode as it's named.
 const loadMips = async () => {
-    if (!self.asmCommon) importScripts("./asm-common.js");
-    if (!self.mips) importScripts("./mips-asm.js");
+    if (!self.asmCommon) await script("./asm-common.js");
+    if (!self.mips) await script("./mips-asm.js");
     return self.mips;
 };
 const mipsModes = new Set(["mips32-le", "mips32-be", "mips64-le", "mips64-be"]);

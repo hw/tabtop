@@ -2,8 +2,8 @@
 // so a big one doesn't freeze it: G-code by gcode.js (binary G-code,
 // .bgcode, unpacked by bgcode.js first); 3MF by
 // model-3mf.js (a sliced one, .gcode.3mf, by its plate's G-code); STL,
-// OBJ and PLY by three.js's loaders. (AMF's loader reads XML with
-// DOMParser, which workers haven't: the page reads those.)
+// OBJ, PLY and VRML by three.js's loaders. (AMF's and Collada's loaders
+// read XML with DOMParser, which workers haven't: the page reads those.)
 //
 // Given {format, bytes, name}, it answers with {gcode} (what parseGCode
 // makes of it), or {parts, facts}: each shape's kind ("mesh", "lines",
@@ -18,6 +18,11 @@ import { parseGCode } from "./gcode.js";
 import { meshFacts, combine, meshCheck, combineChecks, zipTooBig, MAX_UNZIPPED, MAX_ZIP_ENTRIES } from "./model-info.js";
 import { read3MF, slicedGCode } from "./model-3mf.js";
 import { readBGCode } from "./bgcode.js";
+import { vrmlMade } from "./model-limits.js";
+
+// The most a VRML file is (unpacked, if gzip'd): three.js's loader takes
+// some 50 times that in memory, and a second for each 4 MB.
+export const MAX_VRML = 16 << 20;
 
 self.onmessage = async ({ data }) => {
     try {
@@ -69,6 +74,8 @@ self.onmessage = async ({ data }) => {
                 p.materials = [o.material].flat().map((m) => m?.name ?? "");
                 parts.push(p);
             });
+        } else if (format === "wrl" || format === "vrml" || format === "wrz") {
+            parts.push(...await vrmlParts(new Uint8Array(bytes)));
         } else {
             throw new Error("its format isn't known");
         }
@@ -85,6 +92,54 @@ self.onmessage = async ({ data }) => {
         self.postMessage({ error: err?.message || String(err) });
     }
 };
+
+// vrmlParts is a VRML (97) file's shapes, each placed as its transforms
+// place it, its material's colour as its vertices' (VRML's lights,
+// viewpoints and backgrounds aren't shown; nor its textures, which a worker
+// can't make pictures of). A gzip'd one (as .wrz, or .wrl) is unpacked first.
+async function vrmlParts(bytes) {
+    const THREE = await import("./three/three.module.js");
+    if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        const { Gunzip } = await import("./three/fflate.module.js");
+        const chunks = [];
+        let n = 0;
+        const gunzip = new Gunzip((chunk) => {
+            if ((n += chunk.length) > MAX_VRML) throw new Error(`it's too big to read here (it unpacks to more than ${MAX_VRML >> 20} MB)`);
+            chunks.push(chunk);
+        });
+        for (let at = 0; at < bytes.length; at += 65536) gunzip.push(bytes.subarray(at, Math.min(bytes.length, at + 65536)), at + 65536 >= bytes.length);
+        bytes = new Uint8Array(n);
+        let at = 0;
+        for (const c of chunks) { bytes.set(c, at); at += c.length; }
+    }
+    if (bytes.length > MAX_VRML) throw new Error(`it's too big to read here (it's more than ${MAX_VRML >> 20} MB)`);
+    // (Its Backgrounds made WorldInfo, which isn't drawn: a background is
+    // spheres round it all, not what it shows, and three.js's loader fails
+    // on one with a ground colour but no angle for it.)
+    const text = new TextDecoder().decode(bytes).replace(/\bBackground(?=\s*\{)/g, "WorldInfo");
+    if (!/^#VRML V2\.0/.test(text)) throw new Error(/^#VRML V1\.0/.test(text) ? "it's VRML 1.0, which this preview doesn't read (2.0 only)" : "it isn't a VRML 2.0 file");
+    // (What it makes, counted first: its loader copies what each USE uses.)
+    vrmlMade(text);
+    // (Its textures: none, here, rather than the picture a worker can't make.)
+    THREE.TextureLoader.prototype.load = () => new THREE.Texture();
+    const { VRMLLoader } = await import("./three/VRMLLoader.js");
+    const scene = new VRMLLoader().parse(text, "");
+    scene.updateMatrixWorld(true);
+    const parts = [];
+    scene.traverse((o) => {
+        if (!(o.isMesh || o.isLine || o.isPoints) || !o.geometry?.attributes?.position) return;
+        const geometry = o.geometry.clone().applyMatrix4(o.matrixWorld);
+        const material = [o.material].flat()[0];
+        if (!geometry.attributes.color && material?.color && !o.isLine) {
+            const c = material.color, n = geometry.attributes.position.count, colors = new Float32Array(n * 3);
+            for (let i = 0; i < n; i++) { colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b; }
+            geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+        }
+        parts.push(part(o.isMesh ? "mesh" : o.isPoints ? "points" : "lines", geometry));
+    });
+    if (!parts.length) throw new Error("it has no shapes in it");
+    return parts;
+}
 
 function partsReply(parts, facts, libraries = []) {
     const moved = parts.flatMap((p) => [p.position, p.normal, p.color, p.uv, p.index].filter(Boolean).map((a) => a.buffer));

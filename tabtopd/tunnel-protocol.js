@@ -25,7 +25,7 @@ const DATA = 0;
 const TEXT = 1;
 const CLOSE_LOGIN = 4001;  // no such session: log in
 const CONNECT_TIMEOUT = 20000;  // ms for the WebSocket to open
-import { storedSession } from "./session-state.js";
+import { storedSession, handOffSession } from "./session-state.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -402,7 +402,7 @@ globalThis.addEventListener?.("pagehide", () => {
 });
 globalThis.addEventListener?.("pageshow", (e) => {
     if (e.persisted) {
-        location.reload();
+        handOffSession(() => location.reload(), true);
     }
 });
 

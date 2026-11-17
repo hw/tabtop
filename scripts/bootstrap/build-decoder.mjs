@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// Assemble tabtopd/bootstrap.html from decode.template.html + pack-crypto.iife.js.
+// Write tabtopd/bootstrap.html (and decode.html, beside this) from
+// decode.template.html. The page decrypts with the browser's WebCrypto
+// only: there's no JavaScript fallback inlined in it.
 //
 //   node scripts/bootstrap/build-decoder.mjs
 import { readFileSync, writeFileSync } from "node:fs";
@@ -7,12 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const dir = dirname(fileURLToPath(import.meta.url));
-const template = readFileSync(join(dir, "decode.template.html"), "utf8");
-const crypto = readFileSync(join(dir, "pack-crypto.iife.js"), "utf8");
-if (!template.includes("/*PACK_CRYPTO_FALLBACK*/")) {
-	throw new Error("decode.template.html needs /*PACK_CRYPTO_FALLBACK*/");
-}
-const html = template.replace("/*PACK_CRYPTO_FALLBACK*/", () => crypto);
+const html = readFileSync(join(dir, "decode.template.html"), "utf8");
 const outProto = join(dir, "decode.html");
 const outEmbed = join(dir, "../../tabtopd/bootstrap.html");
 writeFileSync(outProto, html);

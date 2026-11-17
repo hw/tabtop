@@ -1,5 +1,6 @@
-// Thumbnails of pictures for the files page's grid: made in the browser
-// from the file, small, and kept for the visit, in memory only (what they
+// Thumbnails of pictures for the files page's grid, and of 3D printing
+// files (3MF, G-code, binary G-code: the pictures their slicers put in
+// them; see model-thumbnails.js): made in the browser from the file, small, and kept for the visit, in memory only (what they
 // show is private: nothing of it is left in the browser once the page is
 // closed), by the file's root, path, size and time, so a file changed gets
 // a new one. Only a few are made at once, and only for what's shown.
@@ -7,6 +8,7 @@ import { call, collect, serverDecoded, SERVER_DECODED } from "./requests.js";
 import { typeOf } from "./preview-model.js";
 import { rootStorageScope } from "./fs-context.js";
 import { THUMBNAIL_CACHE } from "./session-state.js";
+import { MODEL_THUMBNAIL, modelThumbnail } from "./model-thumbnails.js";
 
 export const THUMB_SIZE = 192;      // the longer side, in pixels
 const MAX_SOURCE = 40e6;            // larger pictures aren't read for one
@@ -25,7 +27,10 @@ let running = 0;
 // thumbnailable reports whether a thumbnail can be made of the file e.
 export function thumbnailable(e) {
     const t = !e.dir && typeOf(e.name);
-    return !!t && t.kind === "image" && (e.bytes ?? 0) > 0 && (e.bytes ?? 0) <= MAX_SOURCE;
+    if (!t || !((e.bytes ?? 0) > 0)) return false;
+    // (A 3D file of any size: only the parts that have its picture are read.)
+    if (MODEL_THUMBNAIL.test(e.name)) return true;
+    return t.kind === "image" && e.bytes <= MAX_SOURCE;
 }
 
 // keyOf is the thumbnail's key: by the file's path, its size and time
@@ -102,6 +107,10 @@ function turn(signal) {
 // browsers can't decode, is decoded by the server: its own thumbnail, if
 // it has one.
 async function make(path, e, signal) {
+    if (MODEL_THUMBNAIL.test(e.name)) {
+        const found = await modelThumbnail(e.name, e.bytes, (offset, length) => readRange(path, offset, length, signal)).catch((err) => { signal.throwIfAborted(); return null; });
+        return found ? draw(new Blob([found.bytes], { type: found.type }), signal) : null;
+    }
     const blob = SERVER_DECODED.has(typeOf(e.name).type)
         // (One that can't be decoded has none; one given up on, or not
         // decoded now, the server busy, isn't remembered: it's tried again.)
@@ -125,6 +134,21 @@ async function read(path, e, signal) {
         t.close();
     }
     return blob;
+}
+
+// readRange is length bytes of the file at path, from offset (fewer at its end).
+async function readRange(path, offset, length, signal) {
+    // (A length of 0 asks the server for all of it: nothing's asked for instead.)
+    if (!(length > 0)) return new Uint8Array(0);
+    const t = await call({ type: "file", path, offset, length }, { signal });
+    const abort = () => t.close();
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+        return new Uint8Array(await (await collect(t, t.reply.length, () => {}, "application/octet-stream")).arrayBuffer());
+    } finally {
+        signal.removeEventListener("abort", abort);
+        t.close();
+    }
 }
 
 // draw is the picture in blob, at most THUMB_SIZE on its longer side, as WebP.

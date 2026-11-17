@@ -160,7 +160,13 @@ type fileEntry struct {
 
 // tunnelWS accepts a tunnel and runs its handshake: a login, or a
 // session's request. Accept rejects cross-origin requests, as for every
-// WebSocket here.
+// WebSocket here; but, with -offline-client, not one from the "null" origin,
+// which the offline client (tabtop.html, opened as a file) has. The tunnel
+// takes nothing a browser sends by itself (no cookie: it authenticates
+// inside, with what the page holds), so that page gets no more than any
+// program could; the check is kept by default as any website can make a
+// "null" origin (a sandboxed frame), and so try logins against a gateway
+// on its visitors' own network.
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	ip := g.clientIP(r)
 	handshaken, ok := g.handshakes.start(limitKey(ip))
@@ -169,7 +175,11 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer handshaken()
-	c, err := websocket.Accept(w, r, nil)
+	var accept *websocket.AcceptOptions
+	if g.offlineClient && r.Header.Get("Origin") == "null" {
+		accept = &websocket.AcceptOptions{InsecureSkipVerify: true}
+	}
+	c, err := websocket.Accept(w, r, accept)
 	if err != nil {
 		return
 	}

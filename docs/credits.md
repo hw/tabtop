@@ -29,6 +29,9 @@ files, except Ghostty's, which comes compiled into ghostty-web.
 | [highlight.js](https://github.com/highlightjs/highlight.js) | The colours of text previews, and of code in Markdown previews, on the files page | BSD-3-Clause |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | Math in Markdown previews | MIT |
 | [three.js](https://github.com/mrdoob/three.js) (`three`) | 3D previews of models and G-code, with the [fflate](https://github.com/101arrowz/fflate) module 3MF and AMF are unzipped with | MIT (`/opt/three/LICENSE.three`; fflate's MIT notice is in its file) |
+| [Draco](https://github.com/google/draco), [Basis Universal](https://github.com/BinomialLLC/basis_universal), [meshoptimizer](https://github.com/zeux/meshoptimizer) (as three.js ships them) | Decoding compressed glTF: Draco meshes, KTX2 textures, meshopt buffers | Apache-2.0, Apache-2.0 (`/opt/three/LICENSE.decoders`), MIT (meshoptimizer's notice is in its file) |
+| [chevrotain](https://github.com/Chevrotain/chevrotain) 9.0.1, with [regexp-to-ast](https://github.com/bd82/regexp-to-ast) (as three.js ships them) | Parsing VRML for its 3D preview | Apache-2.0, MIT (`/opt/three/LICENSE.decoders`) |
+| [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) (Box; a Stained Glass Lamp texture) | Test models for compressed glTF (`test/data/3d/CREDITS.md`) | CC BY 4.0 |
 | [pdf.js](https://github.com/mozilla/pdf.js) (`pdfjs-dist`) | PDF previews, with its OpenJPEG, JBIG2 and QCMS decoders and the Foxit and Liberation standard fonts it ships | Apache-2.0 (the decoders and fonts under their own licences, in `/opt/pdfjs`) |
 | [Mermaid](https://github.com/mermaid-js/mermaid) | Diagrams in Markdown previews | MIT |
 | [goldmark](https://github.com/yuin/goldmark) | Turning Markdown into HTML for previews, in tabtopd | MIT |

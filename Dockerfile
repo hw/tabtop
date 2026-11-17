@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Web-accessible XFCE desktop with Chromium.
 #
 # TigerVNC (Xvnc) provides the X display, listening only on a Unix socket.
@@ -67,6 +69,9 @@ RUN sed -i 's|</head>|    <script type="module" src="tabtop/audio.js"></script>\
 # points at). The stub module it imports (only used outside browsers) must
 # keep its name; the build fails if a release changes it.
 FROM debian:trixie-slim AS terminal
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends woff2 xz-utils \
+ && rm -rf /var/lib/apt/lists/*
 ARG GHOSTTY_WEB_VERSION=0.4.0
 ARG GHOSTTY_WEB_SHA256=90bf473b6c7f43ab5e52ee98d8295e04fb1c6b07b928e9795489df1e8cb8802e
 ADD --checksum=sha256:${GHOSTTY_WEB_SHA256} \
@@ -82,9 +87,6 @@ ARG NERD_FONTS_VERSION=v3.5.1
 ARG NERD_FONT_SHA256=04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf
 ADD --checksum=sha256:${NERD_FONT_SHA256} \
     https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VERSION}/JetBrainsMono.tar.xz /jetbrains-mono.tar.xz
-RUN apt-get update \
- && apt-get install -y --no-install-recommends woff2 xz-utils \
- && rm -rf /var/lib/apt/lists/*
 RUN mkdir /src /font /terminal \
  && tar -xzf /ghostty-web.tgz -C /src --no-same-owner \
  && cp /src/package/dist/ghostty-web.js /src/package/dist/__vite-browser-external-2447137e.js /terminal/ \
@@ -235,11 +237,14 @@ RUN mkdir -p /src/capstone /capstone-out /capstone-check \
 # Cargo.lock (--locked); bump the Rust image and the lock together. Its
 # tests run here; what it shows and assembles is checked against Capstone
 # in the disasm stage.
-FROM rust:1.100.0-slim-trixie AS arm64asm
+FROM rust:1.100.0-slim-trixie AS rust-wasm
+RUN rustup target add wasm32-unknown-unknown
+
+FROM rust-wasm AS arm64asm
 COPY scripts/disasm/arm64-asm /src/arm64-asm
 COPY scripts/disasm/wasm-reply /src/wasm-reply
-RUN rustup target add wasm32-unknown-unknown \
- && cd /src/arm64-asm \
+RUN --mount=type=cache,id=tabtop-arm64-registry,target=/usr/local/cargo/registry,sharing=locked \
+    cd /src/arm64-asm \
  && cargo test --release --locked \
  && cargo build --release --locked --lib --target wasm32-unknown-unknown \
  && mkdir -p /arm64-out \
@@ -252,11 +257,11 @@ RUN rustup target add wasm32-unknown-unknown \
 # msvc-demangler, one WebAssembly module. From crates.io at the versions and
 # checksums in its Cargo.lock (--locked), as fARM64 is. Its tests run here;
 # the module is checked through the worker in the disasm stage.
-FROM rust:1.100.0-slim-trixie AS demangle
+FROM rust-wasm AS demangle
 COPY scripts/disasm/demangle /src/demangle
 COPY scripts/disasm/wasm-reply /src/wasm-reply
-RUN rustup target add wasm32-unknown-unknown \
- && cd /src/demangle \
+RUN --mount=type=cache,id=tabtop-demangle-registry,target=/usr/local/cargo/registry,sharing=locked \
+    cd /src/demangle \
  && cargo test --release --locked \
  && cargo build --release --locked --lib --target wasm32-unknown-unknown \
  && mkdir -p /demangle-out \
@@ -335,29 +340,35 @@ ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf3
 ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/facebookresearch/segment-anything/${SAM_REV}/LICENSE /segment/LICENSE.segment-anything
 RUN chmod -R u=rwX,go=rX /segment
 
-# three.js, for 3D previews of models (STL, OBJ, 3MF, AMF, PLY, glTF, FBX)
+# three.js, for 3D previews of models (STL, OBJ, 3MF, AMF, PLY, glTF, FBX,
+# Collada and KMZ, VRML)
 # and G-code on the files page (see model-view.js in tabtopd): its
-# core, orbit controls, the STL, OBJ, PLY, AMF, glTF, FBX, MTL and TGA
+# core, orbit controls, the STL, OBJ, PLY, AMF, glTF, FBX, Collada, VRML, MTL and TGA
 # loaders, the room environment and what they import (3MF and G-code are
-# tabtopd's own), in one folder, their
+# tabtopd's own), and the Draco, Basis (KTX2) and meshopt decoders for
+# compressed glTF (tabtopd's model-decode-worker.js), in one folder, their
 # imports pointing within it (scripts/three/vendor.sh; tabtopd's
 # threeFiles lists the same files). Checked here: each loads, and the
-# loaders and tabtopd's model-worker.js read small models. From npm; bump
+# loaders, tabtopd's model-worker.js and its compressed glTF decoders
+# read small models. From npm; bump
 # the version together with its checksum.
 FROM node:24-trixie-slim AS three
 ARG THREE_VERSION=0.187.0
 ARG THREE_SHA256=ff540832ded0cfe919764d24a3d88f3e2a05f23303f876423e4f893841e90728
 ADD --checksum=sha256:${THREE_SHA256} https://registry.npmjs.org/three/-/three-${THREE_VERSION}.tgz /three.tgz
 WORKDIR /check
-COPY scripts/three/vendor.sh scripts/three/check.mjs ./
-COPY tabtopd/model-worker.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js tabtopd/bgcode.js tabtopd/model-resources.js tabtopd/preview-model.js tabtopd/file-types.js ./tabtopd/
-COPY test/model-worker.test.mjs test/model-fbx.test.mjs ./test/
-COPY test/data/3d/prism.stl test/data/3d/cura.gcode test/data/3d/prusa.3mf test/data/3d/turned-ascii.fbx test/data/3d/prism.bgcode ./test/data/3d/
+COPY scripts/three/vendor.sh scripts/three/LICENSE.regexp-to-ast ./
+COPY LICENSE ./LICENSE.apache
 RUN mkdir /src \
  && tar -xzf /three.tgz -C /src --no-same-owner \
- && sh vendor.sh /src/package /three \
- && node check.mjs /three \
- && THREE_ASSETS=/three node --test test/model-worker.test.mjs test/model-fbx.test.mjs
+ && sh vendor.sh /src/package /three LICENSE.apache
+COPY scripts/three/check.mjs ./
+COPY tabtopd/model-worker.js tabtopd/model-decode.js tabtopd/model-decode-worker.js tabtopd/model-export.js tabtopd/model-limits.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js tabtopd/bgcode.js tabtopd/model-resources.js tabtopd/preview-model.js tabtopd/file-types.js ./tabtopd/
+COPY test/model-worker.test.mjs test/model-fbx.test.mjs test/model-decode.test.mjs test/model-export.test.mjs ./test/
+COPY test/data/3d/prism.stl test/data/3d/cura.gcode test/data/3d/prusa.3mf test/data/3d/turned-ascii.fbx test/data/3d/prism.bgcode \
+     test/data/3d/box-draco.gltf test/data/3d/box-draco.bin test/data/3d/box-meshopt.glb test/data/3d/lamp-occlusion.ktx2 test/data/3d/board.wrl ./test/data/3d/
+RUN node check.mjs /three \
+ && THREE_ASSETS=/three node --test test/model-worker.test.mjs test/model-fbx.test.mjs test/model-decode.test.mjs test/model-export.test.mjs
 
 # All Kaitai gallery schemas are compiled with byte-position metadata at build
 # time. The final image contains parsers and notices, without Node or the compiler.
@@ -368,7 +379,8 @@ ADD --checksum=sha256:${KAITAI_FORMATS_SHA256} \
     https://codeload.github.com/kaitai-io/kaitai_struct_formats/tar.gz/${KAITAI_FORMATS_COMMIT} /formats.tar.gz
 WORKDIR /build
 COPY scripts/kaitai/package.json scripts/kaitai/package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --ignore-scripts --no-audit --no-fund
 COPY scripts/kaitai/build.mjs scripts/kaitai/runtime.mjs scripts/kaitai/instrument.mjs scripts/kaitai/sources.json ./
 COPY test/kaitai-budget.test.mjs ./
 RUN mkdir /formats \
@@ -389,13 +401,16 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY tabtopd/go.mod tabtopd/go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY tabtopd/*.go tabtopd/*.js tabtopd/*.json tabtopd/*.html tabtopd/*.css ./
 COPY tabtopd/third-party/ ./third-party/
 # BUILD_TIME stamps Sessions and Activity (UTC RFC3339). Empty uses the
 # time this stage runs.
 ARG BUILD_TIME=
-RUN BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
  && go build -tags heif -trimpath -ldflags="-s -w -X main.buildTime=${BUILD_TIME}" -o /tabtopd .
 
 # What every build has: the gateway's libraries, the terminal and its
@@ -503,24 +518,6 @@ RUN update-alternatives --install /usr/bin/x-www-browser x-www-browser \
 # reinstall the desktop.
 FROM desktop-${DESKTOP}
 
-COPY --from=novnc /novnc /opt/novnc
-COPY --from=terminal /terminal /opt/terminal
-COPY --from=noble /noble /opt/noble
-COPY --from=highlight /highlight /opt/highlight
-COPY --from=preview /preview /opt/preview
-COPY --from=pdfjs /pdfjs /opt/pdfjs
-COPY --from=kaitai /kaitai /opt/kaitai
-COPY --from=disasm /disasm /opt/disasm
-COPY --from=background /background /opt/background
-COPY --from=inpaint /inpaint /opt/inpaint
-COPY --from=segment /segment /opt/segment
-COPY --from=three /three /opt/three
-COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
-COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
-COPY --chmod=755 config/notify /usr/local/bin/notify
-COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
-
 # VNC_USER: the desktop's Linux user, and the account name shown in the
 # authenticator app. Logins take only a TOTP code (or password + code). VNC_TOTP_SECRET sets the TOTP key: Base32 is used as it is, and
 # any other string has a key derived from it, printed at startup for the
@@ -565,6 +562,9 @@ COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 # the desktop and /fs/; 0 turns it off.
 # WEB_TTY_COMMAND: a shell command each terminal tab runs instead of tmux,
 # e.g. ssh -t me@host.docker.internal; empty (default) for tmux.
+# WEB_TTY_TMUX_HOST: SSH target (user@host or config alias) for remote tmux.
+# WEB_TTY_TMUX_SESSION: remote session, default tabtop when a host is set.
+# With a host, WEB_TTY_COMMAND runs only when creating the remote session.
 # WEB_AUDIO=1 (default) streams the desktop's sound to the browser; 0 turns
 # it off and doesn't start PipeWire. WEB_AUDIO_BITRATE: its Opus bitrate in
 # kbit/s, 32 to 256 (default 64); sent at a constant rate even in silence.
@@ -615,6 +615,25 @@ RUN chmod -R u=rwX,go=rX /etc/skel
 RUN sed -i 's/\\u@\\h/\\u/g' /etc/skel/.bashrc /etc/bash.bashrc \
  && ! grep -q '\\h' /etc/skel/.bashrc /etc/bash.bashrc \
  && grep -q 'PS1=.*\\u' /etc/skel/.bashrc
+
+# Keep changing assets and application code after stable system setup.
+COPY --from=novnc /novnc /opt/novnc
+COPY --from=terminal /terminal /opt/terminal
+COPY --from=noble /noble /opt/noble
+COPY --from=highlight /highlight /opt/highlight
+COPY --from=preview /preview /opt/preview
+COPY --from=pdfjs /pdfjs /opt/pdfjs
+COPY --from=kaitai /kaitai /opt/kaitai
+COPY --from=disasm /disasm /opt/disasm
+COPY --from=background /background /opt/background
+COPY --from=inpaint /inpaint /opt/inpaint
+COPY --from=segment /segment /opt/segment
+COPY --from=three /three /opt/three
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
+COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck
+COPY --chmod=755 config/notify /usr/local/bin/notify
+COPY --from=tabtopd /tabtopd /usr/local/bin/tabtopd
 
 EXPOSE 6080
 

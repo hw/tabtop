@@ -6,7 +6,9 @@ package main
 // ("web"), so shells keep running when a tab is closed and the next tab
 // picks them up. With -tty-command, each tab runs that command instead,
 // as ssh to another machine, without tmux: it ends when its tab closes,
-// and there's no tmux history to search.
+// and there's no tmux history to search. With -tty-tmux-host, SSH attaches
+// to a remote tmux session (tabtop by default) and authenticated control
+// channels search that client's pane; see tty_remote.go.
 
 import (
 	"bytes"
@@ -19,6 +21,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -134,17 +137,17 @@ type ttyMessage struct {
 // The longest text a search looks for, in bytes.
 const maxSearch = 256
 
-// searchTerminal searches tmux's history for the page, with its copy
+// tmuxSearchArgs builds commands to search tmux's history with its copy
 // mode, which marks the match and shows how many there are: "find" looks
 // for m.Text from the newest output back, "older" and "newer" go to the
 // next match either way, and "stop" leaves copy mode.
-func searchTerminal(m ttyMessage) {
-	t := []string{"-t", "web"}
+func tmuxSearchArgs(m ttyMessage, target string) []string {
+	t := []string{"-t", target}
 	var args []string
 	switch m.Do {
 	case "find":
 		if m.Text == "" || len(m.Text) > maxSearch || !utf8.ValidString(m.Text) || strings.ContainsFunc(m.Text, unicode.IsControl) {
-			return
+			return nil
 		}
 		// tmux takes an argument ending in ";" as the end of a command,
 		// unless the ";" has a backslash before it.
@@ -161,18 +164,25 @@ func searchTerminal(m ttyMessage) {
 	case "stop":
 		args = slices.Concat([]string{"send-keys"}, t, []string{"-X", "cancel"})
 	default:
+		return nil
+	}
+	return args
+}
+func searchTerminal(m ttyMessage) {
+	args := tmuxSearchArgs(m, "web")
+	if len(args) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	tmuxCommand(ctx, args...).Run() // one that finds nothing, or isn't in copy mode, fails quietly
+	tmuxCommand(ctx, args...).Run()
 }
 
 // serveTTY runs a terminal over the tunnel c until either side ends it or
 // token's session does. Input arrives as data messages, and resizes as JSON
 // text messages.
 func (g *server) serveTTY(c msgConn, token, ip string) {
-	process, err := startTerminal(g.ttyCommand)
+	process, remote, err := g.startTTY()
 	if err != nil {
 		log.Printf("terminal for %s: %v", ip, err)
 		c.Close(websocket.StatusInternalError, "cannot start the terminal")
@@ -183,6 +193,26 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 	// message, so reads use none; closing the WebSocket ends them instead.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var remoteReady atomic.Bool
+	if remote != nil {
+		defer os.RemoveAll(remote.dir)
+		go func() {
+			timer := time.NewTicker(500 * time.Millisecond)
+			defer timer.Stop()
+			for {
+				if remote.ready(ctx) {
+					remoteReady.Store(true)
+					c.Write(ctx, websocket.MessageText, []byte(`{"type":"tty-capabilities","search":true}`))
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+				}
+			}
+		}()
+	}
 
 	go func() {
 		buf := make([]byte, 32<<10)
@@ -217,7 +247,11 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 		switch {
 		case m.Type == "resize" && m.Cols > 0 && m.Cols <= 1000 && m.Rows > 0 && m.Rows <= 1000:
 			process.Resize(m.Cols, m.Rows)
-		case m.Type == "search" && g.ttyCommand == "":
+		case m.Type == "search" && remote != nil && remoteReady.Load():
+			if err := remote.search(ctx, m); err != nil {
+				log.Printf("remote tmux search from %s failed: %v", ip, err)
+			}
+		case m.Type == "search" && remote == nil && g.ttyCommand == "":
 			searchTerminal(m)
 		}
 	}
@@ -225,6 +259,9 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 	// Closing the PTY hangs up tmux's client, which detaches; the tmux
 	// session and its shells keep running for the next tab.
 	cancel()
+	if remote != nil {
+		remote.close()
+	}
 	process.Close()
 	c.Close(websocket.StatusNormalClosure, "terminal closed") // no-op if already closed
 	log.Printf("terminal from %s closed", ip)
