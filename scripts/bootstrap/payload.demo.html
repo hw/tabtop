@@ -3,9 +3,8 @@
 <title>Sealed demo payload</title>
 <body style="font:16px/1.4 system-ui;max-width:36rem;margin:2rem auto;padding:0 1rem">
 <h1>Offline client unlocked</h1>
-<p>This HTML was AES-GCM–sealed inside <code>decode.html</code>. A MITM who
-swapped the download cannot produce this page without the out-of-band passcode
-(and a forged file would fail the hash check).</p>
-<p>Next step in a real build: the payload would be the TabTop client that only
-talks to your gateway over the E2E tunnel.</p>
+<p>This HTML was AES-GCM–sealed like <code>/auth/pack</code> (plaintext is the
+page itself). A MITM who swapped the download cannot produce it without the
+out-of-band passcode (and a forged file would fail the hash check).</p>
+<p>The real pack's plaintext is <code>tabtop.html</code>, the offline client.</p>
 </body>

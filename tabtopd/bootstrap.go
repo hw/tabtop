@@ -30,8 +30,9 @@ import (
 //go:embed bootstrap.html
 var bootstrapPage string
 
-// bootstrapClientJSON is the plaintext tabtop-pack/v1 tree. tabtopd seals it
-// each calendar day (server TZ) with a fresh passcode for /auth/pack.
+// bootstrapClientJSON is the embedded tabtop-pack/v1 tree (build artifact).
+// tabtopd seals only its tabtop.html (after ASSETS injection when
+// -offline-client) each calendar day with a fresh passcode for /auth/pack.
 // Built by scripts/bootstrap/build-full-client.mjs.
 //
 //go:embed bootstrap.client.json
@@ -39,20 +40,24 @@ var bootstrapClientJSON []byte
 
 const bootstrapPBKDF2Iter = 210000
 
-// bootstrapDecoderSHA256 is the SHA-256 of /auth/bootstrap (the decoder HTML), for
-// out-of-band comparison after download.
+// bootstrapDecoderHash is the SHA-256 hex of bootstrap.html (/auth/bootstrap),
+// set at link time (-X main.bootstrapDecoderHash=…, as the Dockerfile and
+// mise build do) for out-of-band comparison after download. Empty if unset.
+var bootstrapDecoderHash string
+
+// bootstrapDecoderSHA256 is the stamped decoder hash, or "".
 func bootstrapDecoderSHA256() string {
-	sum := sha256.Sum256([]byte(bootstrapPage))
-	return hex.EncodeToString(sum[:])
+	return strings.TrimSpace(bootstrapDecoderHash)
 }
 
 // bootstrapState holds today's sealed pack and its OOB passcode.
 type bootstrapState struct {
-	mu   sync.Mutex
-	day  string // YYYY-MM-DD in the server's TZ
-	pass string
-	pack string // JSON object + trailing newline, as served
-	hash string // SHA-256 hex of pack
+	mu         sync.Mutex
+	day        string // YYYY-MM-DD in the server's TZ
+	pass       string
+	pack       string // JSON object + trailing newline, as served
+	hash       string // SHA-256 hex of pack
+	clientHash string // SHA-256 hex of sealed plaintext (tabtop.html)
 }
 
 // bootstrap serves the offline decoder as plain text, or today's sealed client
@@ -105,56 +110,58 @@ func (g *server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, body)
 }
 
-// bootstrapInfo returns today's pack passcode and SHA-256 (regenerating the
-// pack when the calendar day in the server's TZ has changed).
-func (g *server) bootstrapInfo() (pass, hash string) {
-	_, pass, hash, err := g.bootstrapSnapshot(false)
+// bootstrapInfo returns today's pack passcode, pack SHA-256, and tabtop.html
+// SHA-256 (regenerating the pack when the calendar day in the server's TZ
+// has changed).
+func (g *server) bootstrapInfo() (pass, packHash, clientHash string) {
+	_, pass, packHash, clientHash, err := g.bootstrapSnapshot(false)
 	if err != nil {
 		log.Printf("bootstrap pack: %v", err)
-		return "", ""
+		return "", "", ""
 	}
-	return pass, hash
+	return pass, packHash, clientHash
 }
 
 func (g *server) ensureBootstrapPack() (pack, pass string, err error) {
-	pack, pass, _, err = g.bootstrapSnapshot(false)
+	pack, pass, _, _, err = g.bootstrapSnapshot(false)
 	return pack, pass, err
 }
 
 // resealBootstrapPack seals a new pack with a fresh passcode, even on the
 // same calendar day (for the Sessions page control).
-func (g *server) resealBootstrapPack() (pass, hash string, err error) {
-	_, pass, hash, err = g.bootstrapSnapshot(true)
-	return pass, hash, err
+func (g *server) resealBootstrapPack() (pass, packHash, clientHash string, err error) {
+	_, pass, packHash, clientHash, err = g.bootstrapSnapshot(true)
+	return pass, packHash, clientHash, err
 }
 
-func (g *server) bootstrapSnapshot(force bool) (pack, pass, hash string, err error) {
+func (g *server) bootstrapSnapshot(force bool) (pack, pass, hash, clientHash string, err error) {
 	day := g.bootstrapDay(g.clock.Now())
 	g.bootPack.mu.Lock()
 	defer g.bootPack.mu.Unlock()
 	if !force && g.bootPack.day == day && g.bootPack.pack != "" {
-		return g.bootPack.pack, g.bootPack.pass, g.bootPack.hash, nil
+		return g.bootPack.pack, g.bootPack.pass, g.bootPack.hash, g.bootPack.clientHash, nil
 	}
 	pass, err = randomBootstrapPasscode()
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	plain, err := g.offlineClientPlain()
 	if err != nil {
-		// (The client without its manifest: it fetches nothing, as built.)
-		log.Printf("bootstrap pack: no manifest of the offline client's assets: %v", err)
-		plain = bootstrapClientJSON
+		return "", "", "", "", err
 	}
+	sum := sha256.Sum256(plain)
+	clientHash = hex.EncodeToString(sum[:])
 	pack, hash, err = sealBootstrapPack(plain, pass)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	g.bootPack.day = day
 	g.bootPack.pass = pass
 	g.bootPack.pack = pack
 	g.bootPack.hash = hash
-	log.Printf("bootstrap pack sealed for %s (sha256 %s)", day, hash)
-	return pack, pass, hash, nil
+	g.bootPack.clientHash = clientHash
+	log.Printf("bootstrap pack sealed for %s (pack sha256 %s, tabtop.html sha256 %s)", day, hash, clientHash)
+	return pack, pass, hash, clientHash, nil
 }
 
 func (g *server) bootstrapDay(now time.Time) string {

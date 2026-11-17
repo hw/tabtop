@@ -30,9 +30,9 @@ td.name { overflow-wrap: anywhere; }
 .bootstrap-pack-body { margin-top: .65rem; text-align: center; }
 .bootstrap-pack-line { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: .35rem .5rem; margin: .35rem 0; }
 .bootstrap-pack-line code { word-break: break-all; }
-button.bootstrap-reseal.glyph { display: inline-flex; align-items: center; justify-content: center;
+button.bootstrap-pack-action.glyph { display: inline-flex; align-items: center; justify-content: center;
 	min-width: 1.6rem; min-height: 1.6rem; padding: .1rem .25rem; vertical-align: middle; }
-button.bootstrap-reseal.glyph svg { display: block; width: 14px; height: 14px; }
+button.bootstrap-pack-action.glyph svg { display: block; width: 14px; height: 14px; }
 .build-time { text-align: center; }
 p.upload { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 p.upload button { font: inherit; }
@@ -697,7 +697,8 @@ dialog.preview .head :is(.download-menu, .external-menu) { flex-direction: colum
 /* Keep address, bytes and ASCII in separate columns; scroll on narrow screens. */
 dialog.preview .body > .hex-view { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 dialog.preview .hex-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
-dialog.preview .hex-controls button.hex-back { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; padding: .15rem .35rem; }
+/* Back: as tall as the buttons beside it (its arrow is drawn, not text), and as wide as < and >. */
+dialog.preview .hex-controls button.hex-back { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; min-width: 2.3rem; padding: 0 .5rem; }
 dialog.preview .hex-controls button.hex-back[hidden] { display: none; }
 dialog.preview .hex-controls button.hex-back svg { display: block; }
 /* The status takes what room there is, on one line, cut short if need be:
@@ -944,16 +945,24 @@ dialog.pdf-image-editor[open] { display: flex; flex-direction: column; overflow:
 dialog.pdf-image-editor.wide { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border-radius: 0; }
 .pdf-batch-heading, .pdf-batch-settings, .pdf-batch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .7rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
 .pdf-batch-heading > strong { flex: 1; overflow-wrap: anywhere; }
+/* Close: the size of Fill the window beside it. */
+.pdf-batch-heading button.close-glyph { align-self: stretch; min-width: 2.3rem; }
 .pdf-batch-settings label, .pdf-batch-exports label { display: inline-flex; align-items: center; gap: .4rem; }
 .pdf-image-editor :is(input, select, button) { font: inherit; }
 /* The page range, resolution, export format and quality: one height. */
 .pdf-image-editor :is(.pdf-batch-range, .pdf-batch-dpi, .pdf-batch-format, .pdf-batch-quality) { box-sizing: border-box; height: 2rem; padding: 0 .4rem; }
 .pdf-batch-range { width: 9rem; }
 .pdf-batch-quality { width: 3.5rem; }
-.pdf-batch-quality-label[hidden] { display: none; }
+.pdf-batch-quality-label[hidden], .pdf-batch-settings label[hidden], .pdf-batch-exports label[hidden] { display: none; }
+.pdf-batch-strip-label { white-space: nowrap; }
+.pdf-batch-strip-label input { width: auto; margin: 0; }
 .pdf-batch-workspace { display: flex; flex: 1; min-height: 0; }
 .pdf-batch-sidebar { display: flex; flex-direction: column; flex: 0 0 10rem; min-height: 0; border-right: 1px solid var(--line); }
-.pdf-batch-selection { display: flex; gap: .4rem; padding: .4rem; }
+.pdf-batch-selection { display: flex; flex-wrap: wrap; gap: .4rem; padding: .4rem; }
+/* What's hidden stays so, whatever its row's display. */
+.pdf-image-editor [hidden] { display: none; }
+.pdf-batch-ops .pdf-batch-clear { margin: .3rem 0; }
+.pdf-batch-save-options { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem .7rem; }
 .pdf-batch-pages { overflow: auto; flex: 1; padding: .25rem; }
 .pdf-batch-card { display: flex; align-items: flex-start; gap: .2rem; margin-bottom: .5rem; }
 .pdf-batch-open-page { display: flex; flex-direction: column; align-items: center; gap: .2rem; padding: .3rem; flex: 1; min-width: 0; }

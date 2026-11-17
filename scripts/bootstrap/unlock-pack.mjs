@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// Decrypt a /auth/pack JSON object and expand the client onto disk.
+// Decrypt a /auth/pack JSON object. Plaintext is tabtop.html (UTF-8).
 // No browser required (uses Node's WebCrypto).
 //
 //   node scripts/bootstrap/unlock-pack.mjs --pass 'OOB_PASS' --pack tabtop-client.pack.json --out ./client
+//   node scripts/bootstrap/unlock-pack.mjs --pass 'OOB_PASS' --pack tabtop-client.pack.json --plain-out tabtop.html
+//
+// To expand the full build tree (bootstrap.client.json), use unpack-client.mjs.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { webcrypto } from "node:crypto";
 
 const args = new Map();
@@ -18,17 +21,12 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 const pass = args.get("pass")?.trim();
 const packPath = args.get("pack");
-const outDir = args.get("out") || "client";
 if (!pass) throw new Error("need --pass");
 if (!packPath) throw new Error("need --pack <tabtop-client.pack.json>");
 
 const text = readFileSync(packPath, "utf8").replace(/^\uFEFF/, "").trim();
-let pack;
-if (text.startsWith("{")) {
-	pack = JSON.parse(text);
-} else {
-	pack = JSON.parse(Buffer.from(text.replace(/\s+/g, ""), "base64").toString("utf8"));
-}
+if (!text.startsWith("{")) throw new Error("pack file must be JSON from /auth/pack");
+const pack = JSON.parse(text);
 if (pack.v !== 1 || pack.kdf !== "PBKDF2-SHA256" || pack.iter !== 210000) {
 	throw new Error("unsupported pack version or parameters");
 }
@@ -52,29 +50,13 @@ try {
 	throw new Error("decrypt failed (wrong passcode or tampered/truncated pack)");
 }
 
-if (args.has("plain-out")) {
-	writeFileSync(args.get("plain-out"), plain);
-	console.error(`wrote plaintext ${args.get("plain-out")} (${plain.length} bytes)`);
+const head = plain.toString("utf8", 0, Math.min(plain.length, 64)).trimStart().toLowerCase();
+if (!head.startsWith("<!doctype html") && !head.startsWith("<html")) {
+	throw new Error("plaintext isn't tabtop.html (old tree packs aren't supported; use unpack-client.mjs on bootstrap.client.json)");
 }
 
-const client = JSON.parse(plain.toString("utf8"));
-if (client.format !== "tabtop-pack/v1" || !client.files) {
-	throw new Error("plaintext is not a tabtop-pack/v1 tree (refusing to unpack)");
-}
-
-let n = 0;
-for (const [rel, body] of Object.entries(client.files)) {
-	// (Inside outDir only: a pack's "../x" or "/etc/x" isn't written.)
-	const dest = resolve(outDir, rel);
-	if (!dest.startsWith(resolve(outDir) + sep)) throw new Error(`refusing to write ${JSON.stringify(rel)}: it's outside ${outDir}`);
-	mkdirSync(dirname(dest), { recursive: true });
-	if (body && typeof body === "object" && typeof body.base64 === "string") {
-		writeFileSync(dest, Buffer.from(body.base64, "base64"));
-	} else {
-		writeFileSync(dest, String(body), "utf8");
-	}
-	n++;
-}
-console.error(`unlocked ${client.name || "client"}: ${n} files → ${outDir}/`);
-console.error(`open: ${join(outDir, "tabtop.html")}`);
+const outFile = args.get("plain-out") || join(args.get("out") || ".", "tabtop.html");
+mkdirSync(dirname(outFile), { recursive: true });
+writeFileSync(outFile, plain);
+console.error(`wrote ${outFile} (${plain.length} bytes)`);
 console.error(`plaintext sha256: ${Buffer.from(await subtle.digest("SHA-256", plain)).toString("hex")}`);

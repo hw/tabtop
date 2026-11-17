@@ -362,7 +362,7 @@ func (g *server) nameSession(handle, asking, label string) (found, own bool) {
 // logins and addresses from before then don't need looking at again.
 func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	// Seal outside g.mu: PBKDF2 for a new day's pack can take ~1s.
-	bootPass, bootHash := g.bootstrapInfo()
+	bootPass, bootPackHash, bootClientHash := g.bootstrapInfo()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.clock.Now()
@@ -389,7 +389,8 @@ func (g *server) sessionsReport(current string, asking *tunnel) map[string]any {
 	}
 	if bootPass != "" {
 		res["bootstrap_passcode"] = bootPass
-		res["bootstrap_pack_sha256"] = bootHash
+		res["bootstrap_pack_sha256"] = bootPackHash
+		res["bootstrap_tabtop_sha256"] = bootClientHash
 		res["bootstrap_decoder_sha256"] = bootstrapDecoderSHA256()
 	}
 	if t := tabtopBuildTime(); t != "" {

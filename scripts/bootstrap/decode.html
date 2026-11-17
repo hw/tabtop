@@ -25,21 +25,29 @@ sealed pack from <code>&lt;base&gt;/auth/pack</code> when asked.</p>
 </p>
 <p id="err" hidden></p>
 <p id="ok" hidden></p>
-<p id="saveWrap" hidden>
-  <button type="button" id="saveLocal">Download tabtop.html…</button>
-  <button type="button" id="saveFolder" hidden>Save to folder…</button>
-</p>
 <pre id="hashOut" hidden></pre>
 <script type="module">
-let lastClient = null;
+const $ = (id) => document.getElementById(id);
 
 function fail(msg) {
-  const err = document.getElementById("err");
-  err.hidden = false;
-  err.textContent = msg;
-  document.getElementById("ok").hidden = true;
-  document.getElementById("saveWrap").hidden = true;
-  lastClient = null;
+  $("err").hidden = false;
+  $("err").textContent = msg;
+  $("ok").hidden = true;
+}
+
+// WebCrypto is required for unlock and hashing. Fail before wiring controls
+// that need it (file:///…, https://, or localhost — not plain HTTP elsewhere).
+const NO_SUBTLE = "This browser doesn't offer this page its cryptography here. Open the file directly "
+  + "(file:///…) in a current Chrome, Edge, Firefox or Safari, or from https://, then try again.";
+let subtle;
+try {
+  if (!(globalThis.isSecureContext && crypto?.subtle)) throw new Error(NO_SUBTLE);
+  subtle = crypto.subtle;
+} catch (e) {
+  fail(e.message);
+  $("pass").disabled = true;
+  $("go").disabled = true;
+  $("hashAny").disabled = true;
 }
 
 function downloadBlob(name, blob) {
@@ -65,18 +73,13 @@ function b64dec(s) {
   return out;
 }
 
-// The browser's own cryptography (WebCrypto), which this page needs: it
-// has it opened as a file (file:///…), over HTTPS, or on localhost; not
-// over plain HTTP elsewhere, nor (perhaps) as some phones open a download.
-const NO_SUBTLE = "This browser doesn't offer this page its cryptography here. Open the file directly " +
-  "(file:///…) in a current Chrome, Edge, Firefox or Safari, or from https://, then try again.";
-function needSubtle() {
-  if (!(globalThis.isSecureContext && crypto?.subtle)) throw new Error(NO_SUBTLE);
-  return crypto.subtle;
+async function sha256Hex(buf) {
+  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+  const dig = await subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(dig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function decryptPackBytes(pass, salt, iterations, iv, ct) {
-  const subtle = needSubtle();
   const base = await subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
   const key = await subtle.deriveKey(
     { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
@@ -88,25 +91,13 @@ async function decryptPackBytes(pass, salt, iterations, iv, ct) {
   return new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
 }
 
-async function sha256Hex(buf) {
-  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
-  const dig = await needSubtle().digest("SHA-256", bytes);
-  return [...new Uint8Array(dig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function parsePackText(text) {
   const t = text.replace(/^\uFEFF/, "").trim();
   if (!t) throw new Error("Pack file is empty.");
+  if (!t.startsWith("{")) throw new Error("Pack file must be JSON from /auth/pack.");
   let pack;
-  if (t.startsWith("{")) {
-    try { pack = JSON.parse(t); }
-    catch { throw new Error("Pack file looks like JSON but is not valid."); }
-  } else {
-    try { pack = JSON.parse(new TextDecoder().decode(b64dec(t))); }
-    catch (e) {
-      throw new Error(e.message?.includes("base64") ? e.message : "Pack file is not valid base64 JSON.");
-    }
-  }
+  try { pack = JSON.parse(t); }
+  catch { throw new Error("Pack file looks like JSON but is not valid."); }
   if (pack.v !== 1 || pack.kdf !== "PBKDF2-SHA256" || pack.iter !== 210000)
     throw new Error("Unsupported pack version or parameters.");
   if (typeof pack.salt !== "string" || typeof pack.iv !== "string" || typeof pack.ct !== "string")
@@ -122,155 +113,67 @@ async function unlock(pass, file) {
   if (salt.length !== 16 || iv.length !== 12) {
     throw new Error(`Unexpected salt/iv sizes (${salt.length}/${iv.length}); pack may be truncated.`);
   }
-  let plain;
   try {
-    plain = await decryptPackBytes(pass, salt, pack.iter, iv, ct);
+    return new TextDecoder().decode(await decryptPackBytes(pass, salt, pack.iter, iv, ct));
   } catch (e) {
     if (/unsupported state|OperationError|decrypt failed|aes/i.test(String(e.message || e))) {
       throw new Error("Decrypt failed (wrong passcode or tampered/truncated pack). Nothing was run.");
     }
     throw e;
   }
-  return new TextDecoder().decode(plain);
 }
 
-function parseClient(text) {
-  if (!text.trimStart().startsWith("{")) return null;
-  try {
-    const obj = JSON.parse(text);
-    if (obj?.format === "tabtop-pack/v1" && obj.files) return obj;
-  } catch { /* not a client pack */ }
-  return null;
-}
+if (subtle) {
+  // Unlock asks for the pack (as Hash file… asks for its file), then
+  // decrypts it with the passcode entered.
+  $("go").onclick = () => {
+    $("err").hidden = true;
+    if (!$("pass").value.trim()) return fail("Enter the passcode.");
+    $("packFile").click();
+  };
 
-// The one file saved, under a name fixed here, never one a pack gives:
-// tabtop.html, the client, with all the rest of it inside.
-function saveLocalHTML(client) {
-  const html = client.files["tabtop.html"];
-  if (typeof html !== "string" || !html) {
-    throw new Error("This pack has no tabtop.html; re-download /auth/pack after the server rebuilds.");
-  }
-  downloadBlob("tabtop.html", new Blob([html], { type: "text/html; charset=utf-8" }));
-}
-
-// Each file of the client, into a folder chosen: its path in the pack split
-// into folders, each a plain name (none "", ".", "..", nor with "\\" or
-// ":"), so nothing's written outside the folder. All checked first: a pack
-// with one such name writes nothing.
-async function saveToFolder(client) {
-  const files = Object.entries(client.files).map(([path, body]) => {
-    const parts = String(path).split("/");
-    if (parts.some((p) => !p || p === "." || p === ".." || /[\\:]/.test(p))) throw new Error(`This pack has a file named ${JSON.stringify(path)}, which can't be saved in a folder. Nothing was saved.`);
-    const bytes = body && typeof body === "object" && typeof body.base64 === "string" ? b64dec(body.base64) : new TextEncoder().encode(String(body ?? ""));
-    return { parts, bytes };
-  });
-  const root = await showDirectoryPicker({ mode: "readwrite" });
-  for (const { parts, bytes } of files) {
-    let dir = root;
-    for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create: true });
-    const w = await (await dir.getFileHandle(parts.at(-1), { create: true })).createWritable();
-    await w.write(bytes);
-    await w.close();
-  }
-  return { count: files.length, name: root.name };
-}
-
-document.getElementById("saveLocal").onclick = () => {
-  if (!lastClient) return;
-  try {
-    saveLocalHTML(lastClient);
-    document.getElementById("ok").textContent = "Saved tabtop.html — open that file.";
-  } catch (e) {
-    fail(String(e.message || e));
-  }
-};
-
-// (A browser without a folder picker, as Firefox and Safari: not offered.)
-document.getElementById("saveFolder").hidden = typeof showDirectoryPicker !== "function";
-document.getElementById("saveFolder").onclick = async () => {
-  if (!lastClient) return;
-  try {
-    const { count, name } = await saveToFolder(lastClient);
-    document.getElementById("ok").textContent = `Wrote ${count} files into “${name}”. Open tabtop.html in it.`;
-  } catch (e) {
-    if (e?.name === "AbortError") return;
-    fail(String(e.message || e));
-  }
-};
-
-// Unlock asks for the pack (as Hash file… asks for its file), then
-// decrypts it with the passcode entered.
-document.getElementById("go").onclick = () => {
-  document.getElementById("err").hidden = true;
-  if (!document.getElementById("pass").value.trim()) return fail("Enter the passcode.");
-  document.getElementById("packFile").click();
-};
-
-document.getElementById("packFile").addEventListener("change", async () => {
-  const input = document.getElementById("packFile");
-  const file = input.files?.[0];
-  input.value = "";
-  if (!file) return;
-  document.getElementById("err").hidden = true;
-  document.getElementById("saveWrap").hidden = true;
-  lastClient = null;
-  const pass = document.getElementById("pass").value.trim();
-  if (!pass) return fail("Enter the passcode.");
-  const go = document.getElementById("go");
-  const ok = document.getElementById("ok");
-  go.disabled = true;
-  ok.hidden = false;
-  ok.textContent = `Unlocking ${file.name} (${(file.size / 1e6).toFixed(2)} MB)…`;
-  try {
-    const client = parseClient(await unlock(pass, file));
-    if (!client) throw new Error("Decrypted, but this isn't a tabtop-pack/v1 client. Nothing was saved.");
-    const html = client.files["tabtop.html"];
-    if (typeof html !== "string" || !html) {
-      throw new Error("This pack has no tabtop.html; re-download /auth/pack after the server rebuilds.");
-    }
-    lastClient = client;
-    document.getElementById("saveWrap").hidden = false;
-    saveLocalHTML(client);
-    const n = Object.keys(client.files).length;
-    const hash = await sha256Hex(new TextEncoder().encode(html));
-    const note = "Saved tabtop.html — open that file.";
-    ok.textContent = `Unlocked ${client.format} · ${client.name || "client"} · ${n} files.\n`
-      + `tabtop.html SHA-256: ${hash}\n${note}`;
+  $("packFile").addEventListener("change", async () => {
+    const file = $("packFile").files?.[0];
+    $("packFile").value = "";
+    if (!file) return;
+    $("err").hidden = true;
+    const pass = $("pass").value.trim();
+    if (!pass) return fail("Enter the passcode.");
+    const go = $("go");
+    const ok = $("ok");
+    go.disabled = true;
     ok.hidden = false;
-  } catch (e) {
-    fail(String(e.message || e));
-  } finally {
-    go.disabled = false;
-  }
-});
+    ok.textContent = `Unlocking ${file.name} (${(file.size / 1e6).toFixed(2)} MB)…`;
+    try {
+      const html = await unlock(pass, file);
+      const bytes = new TextEncoder().encode(html);
+      downloadBlob("tabtop.html", new Blob([bytes], { type: "text/html; charset=utf-8" }));
+      const hash = await sha256Hex(bytes);
+      ok.textContent = `Unlocked tabtop.html (${(bytes.length / 1e6).toFixed(2)} MB).\nSHA-256: ${hash}`;
+    } catch (e) {
+      fail(String(e.message || e));
+    } finally {
+      go.disabled = false;
+    }
+  });
 
-async function hashChosenFile(file) {
-  const out = document.getElementById("hashOut");
-  out.hidden = false;
-  out.textContent = `Hashing ${file.name}…`;
-  try {
-    const hex = await sha256Hex(await file.arrayBuffer());
-    out.textContent = `SHA-256 (${file.name}):\n${hex}`;
-  } catch (e) {
-    out.textContent = `Could not hash ${file.name}: ${e.message || e}`;
-  }
+  $("hashAny").onclick = () => $("hashFile").click();
+  $("hashFile").addEventListener("change", async () => {
+    const file = $("hashFile").files?.[0];
+    $("hashFile").value = "";
+    if (!file) return;
+    const out = $("hashOut");
+    out.hidden = false;
+    out.textContent = `Hashing ${file.name}…`;
+    try {
+      out.textContent = `SHA-256 (${file.name}):\n${await sha256Hex(await file.arrayBuffer())}`;
+    } catch (e) {
+      out.textContent = `Could not hash ${file.name}: ${e.message || e}`;
+    }
+  });
+
+  $("pass").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("go").click();
+  });
 }
-
-document.getElementById("hashAny").onclick = () => {
-  document.getElementById("hashFile").click();
-};
-
-document.getElementById("hashFile").addEventListener("change", async () => {
-  const input = document.getElementById("hashFile");
-  const file = input.files?.[0];
-  input.value = "";
-  if (!file) return;
-  await hashChosenFile(file);
-});
-
-try { needSubtle(); } catch (e) { fail(e.message); }
-
-document.getElementById("pass").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("go").click();
-});
 </script>

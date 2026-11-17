@@ -39,6 +39,7 @@ async function gatherExport() {
             bootstrap: {
                 decoder_sha256: s.bootstrap_decoder_sha256 ?? null,
                 pack_sha256: s.bootstrap_pack_sha256 ?? null,
+                tabtop_sha256: s.bootstrap_tabtop_sha256 ?? null,
             },
             passkeys: keys.map((k) => ({
                 id: k.id,

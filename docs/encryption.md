@@ -146,14 +146,17 @@ page in one file, run from your disk, so an intercepting proxy can't change
 their scripts:
 
 1. Download the decoder (`<base>/auth/bootstrap`) and the sealed pack
-   (`<base>/auth/pack`). Get the pack's passcode and SHA-256 through a
-   channel you trust: **Sessions** shows both while you're logged in, from
-   a device you trust, and the gateway's log has the SHA-256 of each day's
-   pack.
+   (`<base>/auth/pack`). Get the pack's passcode and hashes through a
+   channel you trust: **Sessions** shows the passcode, decoder SHA-256,
+   pack SHA-256, and `tabtop.html` SHA-256 while you're logged in, from
+   a device you trust, and the gateway's log has the pack and
+   `tabtop.html` hashes of each day's pack.
 2. Open the decoder as a file, enter the passcode, and click **Unlock…**,
-   which asks for the pack. It decrypts the pack with the browser's own cryptography (it says so where
-   the browser doesn't offer it to the page) and saves `tabtop.html`; or,
-   with **Save to folder…** (Chrome, Edge), every file of the client.
+   which asks for the pack. The pack's plaintext is `tabtop.html` itself
+   (AES-GCM under the passcode); the decoder decrypts it with the browser's
+   own cryptography (it says so where the browser doesn't offer it to the
+   page) and saves that file. Older packs that encrypted the full client
+   tree instead of `tabtop.html` will not unlock.
 3. Open `tabtop.html` as a file, enter the address you open TabTop at, and
    **Connect**. It's remembered in this browser.
 
@@ -185,7 +188,9 @@ aren't in it:
   them beforehand, or removes them.
 - Rendered Markdown and HTML, EPUB books and PDFs are shown in frames the
   client builds itself, from its own files, sandboxed as the gateway's
-  are, with a policy that lets them load nothing at all: what they need
+  are, with a policy that lets them load nothing at all, and run only their
+  own scripts, each listed by its SHA-256 (so nothing in a document shown
+  can run): what they need
   (pdf.js, KaTeX, Mermaid) they ask the page for, which gives them only
   files on the list, checked. So they've no **Direct** mode: pictures and
   styles from the web are blocked, or fetched through the gateway.

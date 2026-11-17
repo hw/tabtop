@@ -708,7 +708,7 @@ test("the inspector disassembles the selection (or from a byte), as chosen, once
         const [lines, note] = disasm.children;
         // Values | Disassembly, and the instruction set at their right.
         const [tabGroup, bitness] = inspector.children[0].children;
-        const [valuesTab, disasmTab] = tabGroup.children;
+        const [valuesTab, , disasmTab] = tabGroup.children;
         assert.equal(inspector.dataset.tab, "values");
         disasmTab.listeners.click();
         const hex = (row) => content.children[row].children[1].children;
@@ -928,7 +928,7 @@ test("editing, an instruction typed over one in the disassembly writes its bytes
         const { controls, content, inspector } = parts(view);
         const disasm = inspector.children.at(-1);
         const lines = disasm.children[0];
-        inspector.children[0].children[0].children[1].listeners.click();
+        inspector.children[0].children[0].children[2].listeners.click();
         const cell = (at) => content.children[0].children[1].children[at];
         const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
         const settle = () => new Promise((r) => setTimeout(r, 200));
@@ -1015,7 +1015,7 @@ test("instruction sets migrate old preferences, persist ARM/MIPS choices, and gu
         view.startEditing({ save: async () => ({}) });
         content.listeners.pointerdown({ button: 0, pointerId: 1, target: content.children[0].children[1].children[0], preventDefault() {} });
         content.listeners.pointerup({});
-        tabs.children[1].listeners.click();
+        tabs.children[2].listeners.click();
         const settle = () => new Promise((r) => setTimeout(r, 200));
         await settle();
         assert.equal(pending[0].mode, "x86-32");
@@ -1170,7 +1170,7 @@ test("editing ARM64: assembled as arm64, four bytes over four; not over fewer", 
         const disasm = inspector.children.at(-1);
         const [lines, note] = disasm.children;
         const [tabGroup, mode] = inspector.children[0].children;
-        tabGroup.children[1].listeners.click();
+        tabGroup.children[2].listeners.click();
         const cell = (at) => content.children[0].children[1].children[at];
         const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
         const settle = () => new Promise((r) => setTimeout(r, 200));
@@ -1233,7 +1233,7 @@ test("editing RISC-V: assembled as its mode, of two bytes or four; c.nop fills w
         const disasm = inspector.children.at(-1);
         const [lines, note] = disasm.children;
         const [tabGroup, mode] = inspector.children[0].children;
-        tabGroup.children[1].listeners.click();
+        tabGroup.children[2].listeners.click();
         const cell = (at) => content.children[0].children[1].children[at];
         const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
         const settle = () => new Promise((r) => setTimeout(r, 200));
@@ -1302,7 +1302,7 @@ test("editing MIPS: assembled as its mode, four bytes over four in its byte orde
         const disasm = inspector.children.at(-1);
         const [lines, note] = disasm.children;
         const [tabGroup, mode] = inspector.children[0].children;
-        tabGroup.children[1].listeners.click();
+        tabGroup.children[2].listeners.click();
         const cell = (at) => content.children[0].children[1].children[at];
         const bytes = (from, to) => Array.from({ length: to - from }, (_, i) => cell(from + i).textContent).join(" ");
         const settle = () => new Promise((r) => setTimeout(r, 200));
@@ -1372,7 +1372,7 @@ test("an instruction the selection ends inside is listed whole, and written over
         const view = hexView(code, { disassemble, assemble });
         const { content, inspector } = parts(view);
         const lines = inspector.children.at(-1).children[0];
-        inspector.children[0].children[0].children[1].listeners.click();
+        inspector.children[0].children[0].children[2].listeners.click();
         const cell = (at) => content.children[0].children[1].children[at];
         const settle = () => new Promise((r) => setTimeout(r, 200));
         // Editing, before the selection (starting places the caret, a byte).
@@ -1421,7 +1421,7 @@ test("editing, an instruction longer than those listed after it: the next one, p
         const view = hexView(code, { disassemble, assemble });
         const { content, inspector } = parts(view);
         const lines = inspector.children.at(-1).children[0];
-        inspector.children[0].children[0].children[1].listeners.click();
+        inspector.children[0].children[0].children[2].listeners.click();
         const cell = (at) => content.children[0].children[1].children[at];
         const settle = () => new Promise((r) => setTimeout(r, 200));
         content.listeners.pointerdown({ button: 0, pointerId: 1, target: cell(0), preventDefault() {} });
@@ -1494,16 +1494,16 @@ test("a program's code is read at its addresses and written at its offsets, with
         const [lines, note] = disasm.children;
         const settle = () => new Promise((r) => setTimeout(r, 200));
         // Not till it's read: as for any file.
-        assert.equal(tabGroup.children[2].hidden, true);
+        assert.equal(tabGroup.children[1].hidden, true);
         assert.equal(mode.value, "x86-64");
         await settle();
         assert.deepEqual(read, [[0, 1, 2, 3], 64]);
-        assert.equal(tabGroup.children[2].hidden, false);
-        assert.equal(tabGroup.children[2].textContent, "Structure");
+        assert.equal(tabGroup.children[1].hidden, false);
+        assert.equal(tabGroup.children[1].textContent, "Structure");
         // Its instruction set, chosen for it; not remembered as a choice.
         assert.equal(mode.value, "arm64");
         assert.equal(programAt.textContent, "ELF 64-bit ARM64 executable");
-        tabGroup.children[1].listeners.click();
+        tabGroup.children[2].listeners.click();
         assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "x86-64" });
         view.startEditing({ save: async () => ({}) });
         await view.jump(16, 32);
@@ -1551,7 +1551,7 @@ test("a program's code is read at its addresses and written at its offsets, with
         assert.equal(programAt.textContent, ".data · address 0x403002 · table+0x2");
 
         // The Structure tab: what it is, its sections and its symbols, each a way there.
-        tabGroup.children[2].listeners.click();
+        tabGroup.children[1].listeners.click();
         assert.equal(inspector.dataset.tab, "program");
         assert.deepEqual(JSON.parse(kept.get("tabtop.hex-disasm")), { tab: "disasm", mode: "x86-64" });
         const [summary, table, filter, list, said] = panel.children;
@@ -1595,7 +1595,7 @@ test("a 64-bit program's addresses are shown whole, and a long name cut to fit, 
         const [programAt, , disasm] = inspector.children.slice(-3);
         const settle = () => new Promise((r) => setTimeout(r, 200));
         await settle();
-        inspector.children[0].children[0].children[1].listeners.click();
+        inspector.children[0].children[0].children[2].listeners.click();
         await view.jump(16, 22);
         await settle();
         const [label, call, ret] = disasm.children[0].children;
@@ -1634,12 +1634,12 @@ test("the instruction sets of a disassembler turned off aren't offered; with all
         };
         // None off: as remembered.
         let { view, inspector, tabGroup, mode } = await open([]);
-        assert.deepEqual([inspector.dataset.tab, mode.value, mode.children.length, mode.hidden, tabGroup.children[1].hidden], ["disasm", "thumb", 12, false, false]);
+        assert.deepEqual([inspector.dataset.tab, mode.value, mode.children.length, mode.hidden, tabGroup.children[2].hidden], ["disasm", "thumb", 12, false, false]);
         view.stop();
         // Capstone's off: its instruction sets aren't there; the first of the rest.
         ({ view, inspector, tabGroup, mode } = await open(["capstone"]));
         assert.deepEqual(mode.children.map((o) => o.value), ["x86-64", "x86-32", "x86-16", "arm64", "riscv64", "riscv32", "mips64-le", "mips64-be", "mips32-le", "mips32-be"]);
-        assert.deepEqual([inspector.dataset.tab, mode.value, tabGroup.children[1].hidden], ["disasm", "x86-64", false]);
+        assert.deepEqual([inspector.dataset.tab, mode.value, tabGroup.children[2].hidden], ["disasm", "x86-64", false]);
         view.stop();
         // (RISC-V and MIPS are disassemblers of their own, not Capstone's.)
         ({ view, mode } = await open(["x86", "arm64", "riscv", "mips"]));
@@ -1656,13 +1656,13 @@ test("the instruction sets of a disassembler turned off aren't offered; with all
         view.stop();
         // All off: no tab for it, nothing to choose, and nothing asked.
         ({ view, inspector, tabGroup, mode, asked } = await open(["x86", "capstone", "arm64", "riscv", "mips"], async () => programInfo()));
-        assert.deepEqual([inspector.dataset.tab, tabGroup.children[0].hidden, tabGroup.children[1].hidden, tabGroup.children[2].hidden, mode.hidden, mode.children.length],
+        assert.deepEqual([inspector.dataset.tab, tabGroup.children[0].hidden, tabGroup.children[2].hidden, tabGroup.children[1].hidden, mode.hidden, mode.children.length],
             ["values", false, true, false, true, 0]);
         await view.jump(16, 32);
         await settle();
         assert.deepEqual(asked, []);
         // (The program's own tab is still there.)
-        tabGroup.children[2].listeners.click();
+        tabGroup.children[1].listeners.click();
         assert.equal(inspector.dataset.tab, "program");
         view.stop();
     } finally {
@@ -1695,7 +1695,7 @@ test("a program's C++ and Rust names are shown as they were written, once read b
         assert.deepEqual(asked, [["_ZN3Foo3barEi", "_ZN4core3fmt5write17h0123456789abcdefE", "?get@Foo@@QEAAHXZ", "_Zebra"]]);
         // Until they're read back, as they are.
         assert.equal(list.children[0].children[1].textContent, "_ZN3Foo3barEi");
-        inspector.children[0].children[0].children[1].listeners.click();
+        inspector.children[0].children[0].children[2].listeners.click();
         await view.jump(16, 32);
         await settle();
         assert.equal(disasm.children[0].children[0].textContent, "_ZN3Foo3barEi:");
@@ -1770,7 +1770,7 @@ test("a universal file's other program is read when it's chosen; its code is wri
         assert.equal(mode.value, "arm64");
         assert.equal(panel.children[3].children[0].children[1].textContent, "_arm_main");
         // Its code is where it is in the file (80), at its own address; and written there.
-        tabGroup.children[1].listeners.click();
+        tabGroup.children[2].listeners.click();
         view.startEditing({ save: async () => ({}) });
         await view.jump(80, 96);
         await settle();
@@ -1828,10 +1828,10 @@ test("a file that isn't a program, or one that can't be read as one, is shown as
             const [tabGroup, mode] = inspector.children[0].children;
             const settle = () => new Promise((r) => setTimeout(r, 200));
             await settle();
-            assert.equal(tabGroup.children[2].hidden, true);
+            assert.equal(tabGroup.children[1].hidden, true);
             assert.equal(inspector.children.at(-3).hidden, true);
             assert.equal(mode.value, "x86-64");
-            tabGroup.children[1].listeners.click();
+            tabGroup.children[2].listeners.click();
             await view.jump(16, 32);
             await settle();
             assert.deepEqual(asked.at(-1), { address: 16, mode: "x86-64" });

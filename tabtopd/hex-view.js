@@ -968,8 +968,8 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // The panel shows the values or the disassembly, a tab each, the one
     // given all of its height (the instruction set chosen at the right of
     // the tabs); which, remembered. A program has a third, of what it says
-    // of itself (not remembered: other files have none).
-    const TABS = [["values", "Values"], ["disasm", "Disassembly"], ["program", "Structure"]];
+    // of itself (not remembered: other files have none), between them.
+    const TABS = [["values", "Values"], ["program", "Structure"], ["disasm", "Disassembly"]];
     const tabButtons = TABS.map(([tab, label]) => {
         const b = el("button", { type: "button", className: `hex-inspector-tab-${tab}`, textContent: label, hidden: tab === "program" || (tab === "disasm" && !modes.length) });
         b.addEventListener("click", () => showTab(tab));
@@ -1714,7 +1714,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             if (!info || stopped || mine !== programAsked) return;
             program = { info, map: programMap(info) };
             symbolKeys = null;
-            tabButtons[2].hidden = programAt.hidden = false;
+            tabButtons[TABS.findIndex(([tab]) => tab === "program")].hidden = programAt.hidden = false;
             if (modes.some(([mode]) => mode === info.mode) && disasmBitness.value === modeGiven && modeChosen === opened) disasmBitness.value = modeGiven = info.mode;
             showProgram();
             disasmKey = null;

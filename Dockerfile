@@ -406,12 +406,18 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY tabtopd/*.go tabtopd/*.js tabtopd/*.json tabtopd/*.html tabtopd/*.css ./
 COPY tabtopd/third-party/ ./third-party/
 # BUILD_TIME stamps Sessions and Activity (UTC RFC3339). Empty uses the
-# time this stage runs.
+# time this stage runs. BOOTSTRAP_DECODER_SHA256 is the SHA-256 of
+# bootstrap.html (/auth/bootstrap) shown on Sessions; empty hashes the
+# file copied into this stage.
 ARG BUILD_TIME=
+ARG BOOTSTRAP_DECODER_SHA256=
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
- && go build -tags heif -trimpath -ldflags="-s -w -X main.buildTime=${BUILD_TIME}" -o /tabtopd .
+ && BOOTSTRAP_DECODER_SHA256="${BOOTSTRAP_DECODER_SHA256:-$(sha256sum bootstrap.html | cut -d' ' -f1)}" \
+ && go build -tags heif -trimpath \
+      -ldflags="-s -w -X main.buildTime=${BUILD_TIME} -X main.bootstrapDecoderHash=${BOOTSTRAP_DECODER_SHA256}" \
+      -o /tabtopd .
 
 # What every build has: the gateway's libraries, the terminal and its
 # tools. pulseaudio-utils (pactl) checks a host's sound server

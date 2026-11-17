@@ -157,7 +157,7 @@ export function createSessionView({ security, formatTime }) {
         const marked = newSince(r);
         const reseal = el("button", {
             type: "button",
-            className: "bootstrap-reseal glyph",
+            className: "bootstrap-pack-action glyph",
             title: "Reseal the offline client pack with a new passcode",
             ariaLabel: "Reseal offline client pack",
         });
@@ -178,8 +178,27 @@ export function createSessionView({ security, formatTime }) {
         });
         const bootLines = [];
         if (typeof r.bootstrap_passcode === "string" && r.bootstrap_passcode) {
+            const pass = r.bootstrap_passcode;
+            const copy = el("button", {
+                type: "button",
+                className: "bootstrap-pack-action glyph",
+                title: "Copy passcode",
+                ariaLabel: "Copy passcode",
+            });
+            copy.innerHTML = iconSVG("copy");
+            copy.addEventListener("click", async () => {
+                try {
+                    await copyText(pass);
+                    copy.innerHTML = iconSVG("check");
+                    setTimeout(() => { if (copy.isConnected) copy.innerHTML = iconSVG("copy"); }, 1000);
+                } catch {
+                    const row = statusRow("Couldn't copy the passcode");
+                    row.set("Couldn't copy the passcode", true);
+                    row.finish();
+                }
+            });
             bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "Passcode: ",
-                el("code", { textContent: r.bootstrap_passcode }), " ", reseal));
+                el("code", { textContent: pass }), " ", copy, " ", reseal));
         }
         if (typeof r.bootstrap_decoder_sha256 === "string" && r.bootstrap_decoder_sha256) {
             bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "Bootstrap SHA-256: ",
@@ -188,6 +207,10 @@ export function createSessionView({ security, formatTime }) {
         if (typeof r.bootstrap_pack_sha256 === "string" && r.bootstrap_pack_sha256) {
             bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "Pack SHA-256: ",
                 el("code", { textContent: r.bootstrap_pack_sha256 })));
+        }
+        if (typeof r.bootstrap_tabtop_sha256 === "string" && r.bootstrap_tabtop_sha256) {
+            bootLines.push(el("p", { className: "hint bootstrap-pack-line" }, "tabtop.html SHA-256: ",
+                el("code", { textContent: r.bootstrap_tabtop_sha256 })));
         }
         const bootSection = bootLines.length
             ? el("details", { className: "bootstrap-pack" },

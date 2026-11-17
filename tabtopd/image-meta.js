@@ -539,3 +539,66 @@ function webpExifChunk(kind, data) {
     out.set(text(kind)); new DataView(out.buffer).setUint32(4, data.length, true); out.set(data, 8);
     return out;
 }
+
+// The quality a JPEG was saved at, about (1–100), from its luminance
+// quantization table: the libjpeg quality whose table (its standard one,
+// scaled as libjpeg scales it) is nearest; or null if it has none. (Exact
+// for pictures libjpeg and its kind wrote; near enough for others.)
+const STD_LUMINANCE = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99];
+// (Tables are stored in zigzag order: the natural index of each place.)
+const ZIGZAG = [0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56,
+    57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63];
+export function jpegQuality(bytes) {
+    const j = jpegSegments(bytes);
+    if (!j) return null;
+    let table = null;
+    for (const s of j.segs) {
+        if (s.marker !== 0xdb) continue;
+        for (let at = s.start + 4; at < s.end && !table;) {
+            const precision = bytes[at] >> 4, id = bytes[at] & 15, size = precision ? 128 : 64;
+            if (at + 1 + size > s.end) return null;
+            if (id === 0) table = Array.from({ length: 64 }, (_, i) => (precision ? (bytes[at + 1 + 2 * i] << 8) | bytes[at + 2 + 2 * i] : bytes[at + 1 + i]));
+            at += 1 + size;
+        }
+        if (table) break;
+    }
+    if (!table) return null;
+    let best = null, bestError = Infinity;
+    for (let q = 1; q <= 100; q++) {
+        const scale = q < 50 ? 5000 / q : 200 - 2 * q;
+        let error = 0;
+        for (let i = 0; i < 64; i++) {
+            const want = Math.min(255, Math.max(1, Math.floor((STD_LUMINANCE[ZIGZAG[i]] * scale + 50) / 100)));
+            error += Math.abs(want - table[i]);
+        }
+        if (error < bestError) [best, bestError] = [q, error];
+    }
+    return best;
+}
+
+// webpLossless is whether a WebP is lossless (its picture VP8L, not VP8).
+export function webpLossless(bytes) {
+    if (bytes.length < 16 || !ascii(bytes, 0, "RIFF") || !ascii(bytes, 8, "WEBP")) return false;
+    for (let at = 12; at + 8 <= bytes.length;) {
+        if (ascii(bytes, at, "VP8L")) return true;
+        if (ascii(bytes, at, "VP8 ")) return false;
+        const size = (bytes[at + 4] | (bytes[at + 5] << 8) | (bytes[at + 6] << 16) | (bytes[at + 7] << 24)) >>> 0;
+        at += 8 + size + (size & 1);
+    }
+    return false;
+}
+
+// savingQuality is the quality (a percentage) to write a picture of type,
+// as it is (bytes), again in its own format: a JPEG at about its own
+// (60–98: neither worse than it was, nor bigger for nothing); a lossless
+// WebP losslessly (100); else 92.
+export const DEFAULT_QUALITY = 92;
+export function savingQuality(bytes, type) {
+    if (type === "image/jpeg") {
+        const q = jpegQuality(bytes);
+        return q === null ? DEFAULT_QUALITY : Math.min(98, Math.max(60, q));
+    }
+    if (type === "image/webp" && webpLossless(bytes)) return 100;
+    return DEFAULT_QUALITY;
+}

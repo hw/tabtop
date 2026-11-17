@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Seal a UTF-8 payload for the local decoder (PBKDF2-SHA-256 + AES-GCM).
-// Pack is a separate file; decoder HTML is built with build-decoder.mjs.
+// Pack is JSON matching /auth/pack; decoder HTML is built with build-decoder.mjs.
 //
 //   node seal.mjs --pass 'YOUR_OOB_PASS' --in payload.demo.html --pack demo.pack.json
-//   node seal.mjs --pass 'x' --text 'hello'          # prints base64 pack line
+//   node seal.mjs --pass 'x' --text 'hello' --pack -   # prints pack JSON
 import { readFileSync, writeFileSync } from "node:fs";
 import { webcrypto } from "node:crypto";
 
@@ -46,17 +46,21 @@ const packObj = {
 	iv: b64(iv),
 	ct: b64(ct),
 };
-const pack = b64(new TextEncoder().encode(JSON.stringify(packObj)));
+const packText = JSON.stringify(packObj) + "\n";
 
 console.error(`plaintext sha256: ${Buffer.from(await subtle.digest("SHA-256", plain)).toString("hex")}`);
-console.error(`pack length: ${pack.length} chars`);
+console.error(`pack length: ${packText.length} chars`);
 
 if (args.has("pack")) {
 	const packPath = args.get("pack");
-	writeFileSync(packPath, pack + "\n");
-	const packHash = Buffer.from(await subtle.digest("SHA-256", Buffer.from(pack + "\n"))).toString("hex");
-	console.error(`wrote ${packPath}`);
-	console.error(`pack sha256 (give this out-of-band with the passcode): ${packHash}`);
+	if (packPath === "-") {
+		process.stdout.write(packText);
+	} else {
+		writeFileSync(packPath, packText);
+		const packHash = Buffer.from(await subtle.digest("SHA-256", Buffer.from(packText))).toString("hex");
+		console.error(`wrote ${packPath}`);
+		console.error(`pack sha256 (give this out-of-band with the passcode): ${packHash}`);
+	}
 } else {
-	console.log(pack);
+	process.stdout.write(packText);
 }

@@ -39,7 +39,7 @@
     // from offline.base (which this frame's fetch() answers so).
     const offline = window.tabtopFrame ?? null;
     const PDFJS = offline ? offline.base + "pdfjs/" : new URL("./pdfjs/", document.currentScript.src).href;
-    const { glyphs, iconSVG } = await import(offline?.modules["glyphs.js"] ?? new URL("./glyphs.js", document.currentScript.src).href);
+    const { glyphs, iconSVG } = offline?.glyphs ?? await import(new URL("./glyphs.js", document.currentScript.src).href);
     // The most pages kept drawn at once, and how much bigger than the page's
     // width they're drawn at most.
     const KEEP_DRAWN = 12;

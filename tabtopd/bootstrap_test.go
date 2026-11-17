@@ -38,16 +38,36 @@ func TestBootstrapPackJSON(t *testing.T) {
 	}
 	sum := sha256.Sum256(body)
 	wantHash := hex.EncodeToString(sum[:])
-	pass, hash := g.bootstrapInfo()
+	pass, hash, clientHash := g.bootstrapInfo()
 	if pass == "" || !strings.Contains(pass, "-") {
 		t.Fatalf("passcode %q", pass)
 	}
 	if hash != wantHash {
 		t.Fatalf("hash %q, want %q", hash, wantHash)
 	}
-	sumPage := sha256.Sum256([]byte(bootstrapPage))
-	if got := bootstrapDecoderSHA256(); got != hex.EncodeToString(sumPage[:]) {
-		t.Fatalf("decoder sha256 %q", got)
+	plain, err := g.offlineClientPlain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sumPlain := sha256.Sum256(plain)
+	if clientHash != hex.EncodeToString(sumPlain[:]) {
+		t.Fatalf("tabtop.html sha256 %q, want %q", clientHash, hex.EncodeToString(sumPlain[:]))
+	}
+}
+
+func TestBootstrapDecoderSHA256(t *testing.T) {
+	was := bootstrapDecoderHash
+	t.Cleanup(func() { bootstrapDecoderHash = was })
+
+	bootstrapDecoderHash = ""
+	if got := bootstrapDecoderSHA256(); got != "" {
+		t.Fatalf("unstamped: %q", got)
+	}
+	sum := sha256.Sum256([]byte(bootstrapPage))
+	want := hex.EncodeToString(sum[:])
+	bootstrapDecoderHash = " " + want + " "
+	if got := bootstrapDecoderSHA256(); got != want {
+		t.Fatalf("stamped %q, want %q", got, want)
 	}
 }
 
@@ -82,15 +102,15 @@ func TestBootstrapResealSameDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pass2, hash2, err := g.resealBootstrapPack()
+	pass2, hash2, client2, err := g.resealBootstrapPack()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pass2 == pass1 || hash2 == "" {
+	if pass2 == pass1 || hash2 == "" || client2 == "" {
 		t.Fatal("reseal should mint a new passcode")
 	}
-	pass3, hash3 := g.bootstrapInfo()
-	if pass3 != pass2 || hash3 != hash2 {
+	pass3, hash3, client3 := g.bootstrapInfo()
+	if pass3 != pass2 || hash3 != hash2 || client3 != client2 {
 		t.Fatal("info should match the resealed pack")
 	}
 }

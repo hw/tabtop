@@ -322,7 +322,7 @@ func (g *server) routeSeen(c *tunnelCall) {
 // routeBootstrapReseal seals a new offline-client pack with a fresh passcode
 // (shown on the Sessions page next to today's pack hash).
 func (g *server) routeBootstrapReseal(c *tunnelCall) {
-	pass, hash, err := g.resealBootstrapPack()
+	pass, packHash, clientHash, err := g.resealBootstrapPack()
 	if err != nil {
 		log.Printf("bootstrap reseal from %s: %v", c.ip, err)
 		c.r.fail("Couldn't reseal the offline client pack.")
@@ -330,8 +330,9 @@ func (g *server) routeBootstrapReseal(c *tunnelCall) {
 	}
 	g.act(c.session, "bootstrap", c.ip, "resealed the offline client pack")
 	c.r.finish(map[string]any{
-		"bootstrap_passcode":    pass,
-		"bootstrap_pack_sha256": hash,
+		"bootstrap_passcode":      pass,
+		"bootstrap_pack_sha256":   packHash,
+		"bootstrap_tabtop_sha256": clientHash,
 	})
 }
 

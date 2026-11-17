@@ -1,9 +1,7 @@
-// Batch actions for the files selection bar: strip EXIF, rotate, convert
+// Batch actions for the files selection bar: edit pictures together, convert
 // HEIC to JPEG, extract ZIP — using the same helpers as image/preview tools.
 import { call, collect, serverDecoded, SERVER_DECODED, uploadFile } from "./requests.js";
 import { typeOf } from "./preview-model.js";
-import { stripped, withMetadata } from "./image-meta.js";
-import { transform } from "./image-view.js";
 import { encodePage } from "./image-export.js";
 import { join } from "./preview-dom.js";
 import { statusRow } from "./ui.js";
@@ -12,17 +10,9 @@ import { assertWritableRoot } from "./fs-context.js";
 const MAX_BATCH = 50;
 const MAX_EXTRACT = 1000;        // a zip-extract request's entries, at most (zip_extract.go)
 const MAX_IMAGE = 50e6;
-const WRITABLE = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export function batchableImages(entries) {
     return entries.filter((e) => !e.dir && typeOf(e.name)?.kind === "image" && (e.bytes ?? 0) <= MAX_IMAGE);
-}
-
-// Those whose bytes can be cleaned or written again as they are (JPEG, PNG,
-// WebP): Strip EXIF and Rotate change only these; others (GIF, BMP, AVIF,
-// SVG, HEIC…) would be lost, or saved in another format under their name.
-export function rewritableImages(entries) {
-    return batchableImages(entries).filter((e) => WRITABLE.has(typeOf(e.name)?.type));
 }
 
 export function batchableHeic(entries) {
@@ -44,15 +34,6 @@ async function loadBlob(path, signal, type = "application/octet-stream") {
 
 async function saveBlob(blob, name, dir, signal, replace) {
     return uploadFile(new File([blob], name, { type: blob.type || "application/octet-stream" }), () => {}, dir, signal, replace);
-}
-
-function canvasBlob(canvas, type) {
-    return new Promise((resolve, reject) => {
-        canvas.toBlob((blob) => {
-            if (!blob) reject(new Error("This browser couldn't encode the image."));
-            else resolve(blob);
-        }, type, type === "image/png" ? undefined : 0.92);
-    });
 }
 
 async function runEach(label, items, work) {
@@ -95,41 +76,54 @@ async function runEach(label, items, work) {
     }
 }
 
-export async function batchStripExif(dir, entries, refresh) {
-    const images = rewritableImages(entries);
-    await runEach("Strip EXIF", images, async (entry, signal) => {
-        const path = join(dir, entry.name);
-        const type = typeOf(entry.name).type;
-        const bytes = new Uint8Array(await (await loadBlob(path, signal, type)).arrayBuffer());
-        // (One it can't clean as it is, a WebP turned by its EXIF, a JPEG it
-        // can't read: failed, and left as it was.)
-        const out = stripped(bytes, type);
-        if (!out) throw new Error("its metadata can't be removed without changing the picture");
-        await saveBlob(new Blob([out], { type }), entry.name, dir, signal, true);
+// Those Edit together opens: pictures the browser can draw (not HEIC, which
+// only the server can, nor SVG).
+export function editableImages(entries) {
+    return batchableImages(entries).filter((e) => {
+        const type = typeOf(e.name)?.type;
+        return !SERVER_DECODED.has(type) && type !== "image/svg+xml";
     });
-    await refresh?.();
 }
 
-export async function batchRotateRight(dir, entries, refresh) {
-    const images = rewritableImages(entries);
-    await runEach("Rotate right", images, async (entry, signal) => {
-        const path = join(dir, entry.name);
-        const type = typeOf(entry.name).type;
-        const blob = await loadBlob(path, signal, type);
-        const bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
-        try {
+// batchEditTogether opens the pictures selected in the editor (see
+// pdf-image-editor.js), each a card, to be rotated, cropped, resized, their
+// metadata removed, and the rest, together; saved beside them or over them
+// (if the root can be written), or downloaded. The files are fetched first.
+export async function batchEditTogether(dir, entries, refresh, writable) {
+    const items = editableImages(entries);
+    if (!items.length) return;
+    const say = (text) => {
+        const row = statusRow(text);
+        row.set(text, true);
+        row.finish();
+    };
+    if (items.length > MAX_BATCH) return say(`Edit together: choose at most ${MAX_BATCH} pictures (${items.length} are chosen).`);
+    const MAX_BYTES = 256 * 1024 * 1024;
+    if (items.reduce((n, e) => n + (e.bytes ?? 0), 0) > MAX_BYTES) return say("Edit together: the pictures chosen are over 256 MiB in all. Choose fewer.");
+    const row = statusRow(`Edit together: opening 0 of ${items.length}`, true);
+    const { signal } = row;
+    const images = [];
+    try {
+        for (const entry of items) {
             signal.throwIfAborted();
-            const { canvas } = transform(bitmap, bitmap.width, bitmap.height, ["right"]);
-            const encoded = new Uint8Array(await (await canvasBlob(canvas, type)).arrayBuffer());
-            // Its metadata (when it was taken, where…) kept, said upright at its new size.
-            const next = withMetadata(encoded, new Uint8Array(await blob.arrayBuffer()), type, canvas.width, canvas.height);
-            canvas.width = canvas.height = 0;
-            await saveBlob(new Blob([next], { type }), entry.name, dir, signal, true);
-        } finally {
-            bitmap.close();
+            row.set(`Edit together: opening ${images.length + 1} of ${items.length} · ${entry.name}`);
+            row.progress(images.length / items.length);
+            const type = typeOf(entry.name).type;
+            images.push({ name: entry.name, type, blob: await loadBlob(join(dir, entry.name), signal, type) });
         }
+        row.finish();
+    } catch (err) {
+        row.set(signal.aborted ? "Edit together: cancelled" : `Edit together: ${err.message || err}`, true);
+        row.finish();
+        return;
+    }
+    const { pdfImageEditor } = await import("./pdf-image-editor.js");
+    const where = dir ? dir.split("/").pop() : "this folder";
+    pdfImageEditor({
+        name: `${images.length} ${images.length === 1 ? "picture" : "pictures"} in ${where}`, count: 0, images,
+        save: writable ? (blob, name, replace, signal) => saveBlob(blob, name, dir, signal, replace) : null,
+        closed: () => refresh?.(),
     });
-    await refresh?.();
 }
 
 export async function batchHeicToJpeg(dir, entries, refresh) {

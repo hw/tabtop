@@ -762,13 +762,25 @@ downloaded at `http://<host>:6080/fs/`:
   (`.tabtop-trash/versions`), out of reach as Trash is, but aren't listed in
   Trash, nor removed by emptying it. A read-only root keeps none.
 - **Starred and Recent:** each row's menu can **Star** a file or folder.
-  Starred items and recently opened paths appear above the filter across
-  all filesystem roots (kept in this browser only). Unavailable roots are
-  shown disabled until they return.
-- **Batch on selection:** with writable roots, selecting images offers
-  **Strip EXIF**, **Rotate right**, and **HEIC → JPEG** (writes a `.jpg`
-  beside each HEIC). Selecting ZIP archives offers **Extract ZIP**. Progress
-  appears in the transfers panel; at most 50 files per run.
+  The star and clock at the right of the folder's heading list the starred
+  items and the recently opened ones, across all filesystem roots (kept in
+  this browser only); a file opens as clicking it in its folder does.
+  Unavailable roots are shown disabled until they return.
+- **Editing pictures together:** selecting pictures (up to 50, 256 MB in all, each at
+  most 16 megapixels) offers **Edit…**, which opens them in the
+  page editor, a card each. Edit one (rotate, flip, crop, resize, masks,
+  brush, fill), and **Apply to N** gives its steps (listed under **Steps**) to those
+  selected. **Save** writes them as copies beside the originals
+  (`…-edited`), over the originals, or downloads them as a ZIP or a PDF,
+  each in its own format or one chosen. **Remove metadata** drops EXIF
+  (camera, place, time): from a picture not otherwise edited, its pixels
+  untouched; otherwise an edited picture keeps its metadata, made fit
+  for it (upright, its new size, no old thumbnail). In a read-only root,
+  only the downloads are offered.
+- **Batch on selection:** with writable roots, selecting HEIC images offers
+  **HEIC → JPEG** (writes a `.jpg` beside each). Selecting ZIP archives
+  offers **Extract ZIP**. Progress appears in the transfers panel; at most
+  50 files per run.
 - **Compare images:** select two images and choose **Compare images**,
   which is offered only for two images of at most 50 MB each.
   Direct comparisons start **Side by side**; versions and comparisons with

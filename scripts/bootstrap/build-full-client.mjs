@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// Assemble the TabTop desktop (+ tunnel) offline client as plaintext JSON for
-// tabtopd to embed (bootstrap.client.json). tabtopd reseals it daily with a
-// fresh passcode for /auth/pack.
+// Assemble the TabTop desktop (+ tunnel) offline client as a tabtop-pack/v1
+// tree for tabtopd to embed (bootstrap.client.json). tabtopd seals only
+// tabtop.html from that tree (after ASSETS injection) daily with a fresh
+// passcode for /auth/pack.
 //
 //   node scripts/bootstrap/build-full-client.mjs
 //   node scripts/bootstrap/build-full-client.mjs --pass 'OOB_PASS' --out tabtopd/bootstrap.pack.json
 //
-// Versions match the Dockerfile's novnc / noble stages. Plaintext is JSON:
+// Versions match the Dockerfile's novnc / noble stages. Embed tree is JSON:
 //   { "format": "tabtop-pack/v1", "name": "desktop", "files": { "path": "text"|{"base64":"..."} } }
+// Optional --out seals tabtop.html bytes, not the whole tree.
 import {
 	createWriteStream,
 	mkdirSync,
@@ -411,10 +413,9 @@ for (const f of ["hex-view.js", "disasm-worker.js"]) {
 writeFileSync(join(stage, "README-OFFLINE-CLIENT.txt"), `TabTop offline client (${clientName})
 
 Open tabtop.html (double-click: it runs as a file, its scripts from your
-disk), enter the address you open TabTop at, and connect. The server must
-allow it: WEB_OFFLINE_CLIENT=1. (vnc.html can't run as a file itself:
-browsers won't load modules from one file into another; tabtop.html holds
-the whole tree, and loads it from blob: URLs.)
+disk), enter the address you open TabTop at, and connect. (vnc.html can't
+run as a file itself: browsers won't load modules from one file into
+another; tabtop.html holds the whole tree, and loads it from blob: URLs.)
 
 It has the desktop (vnc.html), the terminal (tty/), the files page (fs/),
 and its own page of components (components/), which link to each other:
@@ -434,25 +435,28 @@ licences beside them). noVNC's app/, core/, and vendor/ are upstream.
 
 const files = collectFiles(stage);
 console.error("building tabtop.html (file:// launcher)…");
-files["tabtop.html"] = buildFileLauncherHTML(files);
+const tabtopHTML = buildFileLauncherHTML(files);
+files["tabtop.html"] = tabtopHTML;
 const plaintextObj = {
 	format: "tabtop-pack/v1",
 	name: clientName,
 	created: new Date().toISOString(),
 	files,
 };
-const plain = Buffer.from(JSON.stringify(plaintextObj), "utf8");
-console.error(`plaintext: ${Object.keys(files).length} files, ${plain.length} bytes`);
-console.error(`plaintext sha256: ${Buffer.from(await webcrypto.subtle.digest("SHA-256", plain)).toString("hex")}`);
+const tree = Buffer.from(JSON.stringify(plaintextObj), "utf8");
+const htmlBytes = Buffer.from(tabtopHTML, "utf8");
+console.error(`tree: ${Object.keys(files).length} files, ${tree.length} bytes`);
+console.error(`tabtop.html: ${htmlBytes.length} bytes (what /auth/pack seals)`);
+console.error(`tabtop.html sha256: ${Buffer.from(await webcrypto.subtle.digest("SHA-256", htmlBytes)).toString("hex")}`);
 
-// tabtopd embeds the plaintext and reseals it daily with a fresh passcode.
+// tabtopd embeds the tree and seals only tabtop.html daily with a fresh passcode.
 const clientPath = args.get("plain-out") || join(tabtopd, "bootstrap.client.json");
 mkdirSync(dirname(clientPath), { recursive: true });
-writeFileSync(clientPath, plain);
-console.error(`wrote ${clientPath} (${plain.length} bytes)`);
+writeFileSync(clientPath, tree);
+console.error(`wrote ${clientPath} (${tree.length} bytes)`);
 
 if (outPath) {
-	const pack = await seal(plain, pass);
+	const pack = await seal(htmlBytes, pass);
 	const packText = JSON.stringify(pack) + "\n";
 	mkdirSync(dirname(outPath), { recursive: true });
 	writeFileSync(outPath, packText);
@@ -460,5 +464,5 @@ if (outPath) {
 	console.error(`wrote ${outPath} (${packText.length} bytes)`);
 	console.error(`pack sha256 (give OOB with the passcode): ${packHash}`);
 } else {
-	console.error("skip sealed pack (tabtopd reseals bootstrap.client.json daily)");
+	console.error("skip sealed pack (tabtopd reseals tabtop.html from bootstrap.client.json daily)");
 }

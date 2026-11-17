@@ -1,13 +1,18 @@
 // A local working copy of PDF pages. The PDF stays in its opaque sandbox;
 // only requested raster pages cross the bridge. Nothing writes to the source.
 import { el } from "./preview-dom.js";
-import { glyphs } from "./glyphs.js";
+import { glyphs, iconSVG } from "./glyphs.js";
 import { saveBlob } from "./requests.js";
 import { askYes } from "./ui.js";
 import { imageView } from "./image-view.js";
 import { pageRange, batchProcessor, describeStep, stepsFor, pageList, MAX_BATCH_PAGES, MAX_BATCH_BYTES } from "./image-batch.js";
 import { stored, store } from "./stored.js";
 import { encodePage, imageZIP, rasterPDF } from "./image-export.js";
+import { stripped, withMetadata, savingQuality, DEFAULT_QUALITY } from "./image-meta.js";
+
+// The formats a picture can be written back in as it was (Edit together).
+const WRITABLE = new Set(["image/jpeg", "image/png", "image/webp"]);
+const EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
 
 const PDF_PAGE_DRAG = "application/x-tabtop-pdf-page";
 
@@ -61,7 +66,14 @@ async function localPDF(file, host, signal) {
     }
 }
 
-export function pdfImageEditor({ name, count, current = 1, renderPage, closed }) {
+// pdfImageEditor edits a PDF's pages as images, or, given images (Edit
+// together, from the files page's selection: [{name, type, blob}]), those
+// pictures, each a card of its own: the same tools, the same operations
+// list applied to those selected, and saved (save(blob, name, replace,
+// signal)) beside the originals as copies, over them, or downloaded.
+export function pdfImageEditor({ name, count, current = 1, renderPage, closed, images = null, save = null }) {
+    const pictures = !!images;
+    if (pictures) count = 0;
     let stopped = false, busy = false, loading = false, editor = null, image = null, imageURL = null;
     let active = current, original = null, undo = null, operation = null, pageAbort = null;
     // The operations list: each step applied to a page, in order, as
@@ -77,33 +89,50 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
     const added = new Map(), importedDocuments = new Set();
     let importedBytes = 0;
     const position = n => order.indexOf(n) + 1;
+    // What a card is called: its file's name, or its page's number.
+    const label = n => added.get(n)?.file?.name ?? `Page ${position(n)}`;
     const stem = name.replace(/\.pdf$/i, "") || "pages";
-    const pageName = (n, extension = "png") => `page-${String(position(n)).padStart(Math.max(3,String(order.length).length),"0")}.${extension}`;
+    const pageName = (n, extension = "png") => {
+        const file = added.get(n)?.file;
+        if (file) return `${file.name.replace(/\.[^.]*$/, "") || "image"}.${extension}`;
+        return `page-${String(position(n)).padStart(Math.max(3,String(order.length).length),"0")}.${extension}`;
+    };
     const button = (text, cls, action) => {
         const control=el("button",{type:"button",className:cls,textContent:text});
         control.addEventListener("click",()=>Promise.resolve().then(action).catch(error));
         return control;
     };
-    const note=el("p",{className:"pdf-batch-note hint",role:"status",textContent:"Select pages, then edit one page and reuse its active mask across the selection."});
+    const note=el("p",{className:"pdf-batch-note hint",role:"status",textContent:pictures?"Edit one picture, then Apply its steps (rotation, cropping, resizing, masks) to those selected.":"Select pages, then edit one page and reuse its active mask across the selection."});
     const say=(message,bad=false)=>{if(stopped)return;note.textContent=message;note.classList.toggle("error",bad);};
     const error=err=>{if(!stopped)say(err.message||String(err),true);};
     const range=el("input",{className:"pdf-batch-range",value:count<=MAX_BATCH_PAGES?`1-${count}`:String(current),ariaLabel:"Page numbers or ranges",placeholder:"1-3, 5"});
-    const choose=button("Select pages","pdf-batch-choose",()=>{
+    const choose=button(pictures?"Select":"Select pages","pdf-batch-choose",()=>{
         if(editor?.pending())throw new Error("Apply or cancel the current tool before changing pages.");
         const numbers=pageRange(range.value,order.length).map(n=>order[n-1]);working=order.filter(n=>numbers.includes(n));selected=new Set(numbers);buildCards();update();
         say(`${numbers.length} pages selected. Masks use relative page coordinates; review pages with different layouts.`);
     });
     const dpi=el("select",{className:"pdf-batch-dpi",ariaLabel:"Render resolution"},...[72,96,144,200,300].map(value=>el("option",{value:String(value),textContent:`${value} DPI`,selected:value===144})));
     dpi.addEventListener("change",()=>{info.clear();original=null;openPage(active,true).catch(error);});
-    const output=el("select",{className:"pdf-batch-format",ariaLabel:"Export format"},
-        ...[["png","PNG images (ZIP)"],["jpeg","JPEG images (ZIP)"],["webp","WebP images (ZIP)"],["pdf","PDF with image pages"]].map(([value,label])=>el("option",{value,textContent:label})));
-    const quality=el("input",{type:"number",min:"1",max:"100",value:"92",className:"pdf-batch-quality",ariaLabel:"Export quality"});
-    const qualityLabel=el("label",{className:"pdf-batch-quality-label",hidden:true},"Quality % ",quality);
-    output.addEventListener("change",()=>{qualityLabel.hidden=output.value==="png";});
+    const output=el("select",{className:"pdf-batch-format",ariaLabel:pictures?"Save to":"Export format"},
+        ...(pictures?[...(save?[["beside","Save copies"],["replace","Replace originals"]]:[]),["zip","ZIP"],["pdf","PDF"]]
+            :[["png","PNG images (ZIP)"],["jpeg","JPEG images (ZIP)"],["webp","WebP images (ZIP)"],["pdf","PDF with image pages"]]).map(([value,text])=>el("option",{value,textContent:text})));
+    // (Pictures: blank, each at its own quality, as savingQuality has it:
+    // a JPEG's, from it, so saving it again loses as little as it can.)
+    const quality=el("input",{type:"number",min:"1",max:"100",value:pictures?"":"92",placeholder:pictures?"own":"",className:"pdf-batch-quality",ariaLabel:"Export quality"});
+    const ownQuality=el("small",{className:"hint pdf-batch-own-quality",hidden:!pictures});
+    const qualityLabel=el("label",{className:"pdf-batch-quality-label",hidden:!pictures,title:pictures?"Blank: each picture at its own quality (a JPEG's as it was saved; a lossless WebP losslessly), so saving it again loses as little as it can. A number: all at that.":""},"Quality % ",quality,ownQuality);
+    // Pictures: in their own formats, or one chosen; and their metadata
+    // (EXIF: camera, place, time) kept, or removed.
+    const format=el("select",{className:"pdf-batch-image-format",ariaLabel:"Format",hidden:!pictures},
+        ...[["same","Same format"],["jpeg","JPEG"],["png","PNG"],["webp","WebP"]].map(([value,text])=>el("option",{value,textContent:text})));
+    const strip=el("input",{type:"checkbox",className:"pdf-batch-strip"});
+    const stripLabel=el("label",{className:"pdf-batch-strip-label",hidden:!pictures,title:"Remove EXIF and other metadata: camera, location, time. Pictures that aren't otherwise changed keep their pixels as they are."},strip," Remove metadata");
+    const showQuality=()=>{qualityLabel.hidden=pictures?(output.value!=="pdf"&&format.value==="png"):output.value==="png";format.hidden=!pictures||output.value==="pdf";};
+    output.addEventListener("change",showQuality);format.addEventListener("change",showQuality);quality.addEventListener("input",()=>update());
     const pageTitle=el("strong",{className:"pdf-batch-page-title",textContent:`Page ${active}`});
     const all=button("All","pdf-batch-all",()=>{selected=new Set(working);update();});
     const none=button("None","pdf-batch-none",()=>{selected.clear();update();});
-    const keep=button("Keep page","pdf-batch-keep",async()=>{await keepPage();say(`Page ${position(active)} kept in this session. Export when ready.`);});
+    const keep=button(pictures?"Keep edits":"Keep page","pdf-batch-keep",async()=>{await keepPage();say(`${label(active)} kept in this session. ${pictures?"Save":"Export"} when ready.`);});
     const apply=button("Batch apply","pdf-batch-apply",()=>runBatch());
     apply.title="Apply the operations list to the selected pages, in order: exact masks, brush strokes, rotation, cropping and resizing, scaled to each page. A page isn't given an operation it already has.";
     const OPS_SHOWN="tabtop.pdf-operations-shown";
@@ -119,7 +148,8 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
     clearOps.title="Empty the operations list; pages keep the edits they have";
     const opsList=el("ol",{className:"pdf-batch-ops-list"});
     const opsEmpty=el("p",{className:"hint pdf-batch-ops-empty",textContent:"No operations yet. Edit a page: each step applied is added here."});
-    const opsPanel=el("section",{className:"pdf-batch-ops",ariaLabel:"Operations list",hidden:stored(OPS_SHOWN)!=="1"},opsEmpty,opsList);
+    // (Pictures: Clear in the list it clears, not beside it.)
+    const opsPanel=el("section",{className:"pdf-batch-ops",ariaLabel:"Operations list",hidden:stored(OPS_SHOWN)!=="1"},opsEmpty,opsList,...(pictures?[clearOps]:[]));
     const undoButton=button("Undo batch","pdf-batch-undo",async()=>{
         if(!undo)return;
         const previous=undo;undo=null;edits.clear();for(const [n,blob]of previous)edits.set(n,blob);
@@ -129,9 +159,9 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
     });
     const cancel=button("Cancel processing","pdf-batch-cancel",()=>{operation?.abort();processor.cancel();});
     cancel.hidden=true;
-    const exportButton=button("Export selected","pdf-batch-export",()=>exportPages());
-    const close=button("Back to PDF","pdf-batch-close",async()=>{
-        if((pageUndo||order.some((n,i)=>n!==i+1)||added.size||edits.size||editor?.dirty()||editor?.pending())&&!await askYes("Leave the page editor? Exported copies are kept; changes in this session will be discarded.","Leave"))return;
+    const exportButton=button("Export selected","pdf-batch-export",()=>(pictures?savePictures():exportPages()));
+    const close=button("","pdf-batch-close close-glyph",async()=>{
+        if((pageUndo||order.some((n,i)=>n!==i+1)||(!pictures&&added.size)||edits.size||editor?.dirty()||editor?.pending())&&!await askYes("Leave the page editor? Exported copies are kept; changes in this session will be discarded.","Leave"))return;
         stop();
     });
     const widen=button(glyphs.expand,"pdf-batch-widen glyph",()=>{
@@ -142,7 +172,10 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
         widen.setAttribute("aria-pressed",String(wide));
     });
     widen.title="Fill the window";widen.setAttribute("aria-label",widen.title);widen.setAttribute("aria-pressed","false");
-    const heading=el("header",{className:"pdf-batch-heading"},el("strong",{textContent:`${name} — pages as images`}),widen,close);
+    // (The close button every dialog has: back to the PDF, for its pages.)
+    close.innerHTML=iconSVG("close-circle");
+    close.title=pictures?"Close (Esc)":"Back to the PDF (Esc)";close.setAttribute("aria-label",pictures?"Close":"Back to the PDF");
+    const heading=el("header",{className:"pdf-batch-heading"},el("strong",{textContent:pictures?name:`${name} — pages as images`}),widen,close);
     const pdfInput=el("input",{type:"file",accept:"application/pdf,.pdf",multiple:true,hidden:true,className:"pdf-batch-pdf-input"});
     const imageInput=el("input",{type:"file",accept:"image/*",multiple:true,hidden:true,className:"pdf-batch-image-input"});
     const merge=button("Merge PDF", "pdf-batch-merge",()=>pdfInput.click());
@@ -151,7 +184,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
         const files=[...input.files];input.value="";
         if(files.length)importFiles(files).catch(error);
     });
-    const undoPages=button("Undo page change","pdf-batch-undo-pages",async()=>{
+    const undoPages=button(pictures?"Undo reorder":"Undo page change","pdf-batch-undo-pages",async()=>{
         if(!pageUndo)return;
         if(editor?.pending())throw new Error("Apply or cancel the current tool before changing pages.");
         loading=true;update();
@@ -172,15 +205,33 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
             say("Last page change undone.");
         }finally{loading=false;update();}
     });
-    const settings=el("div",{className:"pdf-batch-settings"},el("label",{},"Pages ",range),choose,merge,addImage,undoPages,pdfInput,imageInput,el("label",{},"Resolution ",dpi),el("span",{className:"hint",textContent:`Up to ${MAX_BATCH_PAGES} pages and 16 megapixels per page.`}));
+    if(pictures)merge.hidden=addImage.hidden=dpi.hidden=true;
+    // Pictures: no row of these (the cards' boxes choose them), and Undo
+    // reorder under All and None, once there's one to undo.
+    const settings=el("div",{className:"pdf-batch-settings"},el("label",{},pictures?"Pictures ":"Pages ",range),choose,merge,addImage,undoPages,pdfInput,imageInput,el("label",{hidden:pictures},"Resolution ",dpi),el("span",{className:"hint",textContent:pictures?"Up to 16 megapixels per picture.":`Up to ${MAX_BATCH_PAGES} pages and 16 megapixels per page.`}));
+    if(pictures)settings.hidden=true;
     const list=el("div",{className:"pdf-batch-pages",ariaLabel:"PDF pages"});
-    const sidebar=el("aside",{className:"pdf-batch-sidebar"},el("div",{className:"pdf-batch-selection"},all,none),el("small",{className:"pdf-batch-order-hint hint",textContent:"Drag pages to reorder."}),list);
+    const sidebar=el("aside",{className:"pdf-batch-sidebar"},el("div",{className:"pdf-batch-selection"},all,none,...(pictures?[undoPages]:[])),el("small",{className:"pdf-batch-order-hint hint",textContent:pictures?"Drag to reorder (the order of a ZIP or PDF).":"Drag pages to reorder."}),list);
     const host=el("div",{className:"pdf-batch-image"});
-    const exports=el("span",{className:"pdf-batch-exports"},output,qualityLabel,exportButton);
-    const actions=el("div",{className:"pdf-batch-actions"},pageTitle,keep,opsToggle,apply,clearOps,undoButton,cancel,exports);
+    // Pictures: Format, Quality and Remove metadata folded behind Save
+    // options (open or closed as it was last left).
+    const SAVE_SHOWN="tabtop.picture-save-options-shown";
+    const saveOptions=el("span",{className:"pdf-batch-save-options",hidden:pictures&&stored(SAVE_SHOWN)!=="1"},format,qualityLabel,stripLabel);
+    const saveToggle=button("Save options ▾","pdf-batch-save-toggle",()=>{
+        saveOptions.hidden=!saveOptions.hidden;store(SAVE_SHOWN,saveOptions.hidden?null:"1");
+        saveToggle.textContent=`Save options ${saveOptions.hidden?"▾":"▴"}`;saveToggle.setAttribute("aria-expanded",String(!saveOptions.hidden));
+    });
+    saveToggle.hidden=!pictures;saveToggle.setAttribute("aria-expanded",String(!saveOptions.hidden));
+    if(!saveOptions.hidden)saveToggle.textContent="Save options ▴";
+    const exports=el("span",{className:"pdf-batch-exports"},output,saveToggle,saveOptions,exportButton);
+    // Pictures: no Keep (a picture's edits are kept as another's opened, a
+    // batch run, or they're saved).
+    if(pictures)keep.hidden=true;
+    const actions=el("div",{className:"pdf-batch-actions"},pageTitle,keep,opsToggle,apply,...(pictures?[]:[clearOps]),undoButton,cancel,exports);
     const workspace=el("div",{className:"pdf-batch-workspace"},sidebar,el("section",{className:"pdf-batch-editor"},actions,opsPanel,host));
     const exportHint=el("small",{className:"pdf-batch-export-hint hint",textContent:"PDF exports contain image pages; selectable text and links are not retained. Transparent areas are white in JPEG and PDF."});
-    const dialog=el("dialog",{className:"pdf-image-editor",ariaLabel:"Edit PDF pages as images"},heading,settings,workspace,note,exportHint);
+    if(pictures)exportHint.textContent="Copies are named …-edited; replacing writes over each original. A picture saved in another format is saved beside it under the new extension. Metadata goes only with pictures saved in their own format.";
+    const dialog=el("dialog",{className:"pdf-image-editor",ariaLabel:pictures?"Edit pictures together":"Edit PDF pages as images"},heading,settings,workspace,note,exportHint);
     document.body.append(dialog);dialog.showModal();
     dialog.addEventListener("cancel",event=>{event.preventDefault();if(busy){operation?.abort();processor.cancel();}else close.click();});
 
@@ -233,23 +284,26 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
         if(stopped)return;
         const blocked=busy||loading, pending=!!editor?.pending();
         const currentRecipe=editor?.batchRecipe(),shown=listed(currentRecipe);
-        for(const control of [range,choose,output,quality,all,none,exportButton])control.disabled=blocked;
+        for(const control of [range,choose,output,format,quality,strip,all,none,exportButton])control.disabled=blocked;
         merge.disabled=addImage.disabled=blocked||pending;
         undoPages.disabled=blocked||pending||!pageUndo;
         range.setAttribute("aria-label",`Page numbers or ranges (1–${order.length})`);
-        pageTitle.textContent=`Page ${position(active)}`;
+        pageTitle.textContent=label(active);
         dpi.disabled=blocked||edits.size>0||!!editor?.dirty()||pending;
         keep.disabled=blocked||!editor||pending;
         exportButton.disabled=blocked||!selected.size||pending;
         // A tool still in use is applied with the rest, once it can be.
         const toDo=[...selected].some(n=>stepsFor(shown,n).length>0);
         apply.disabled=blocked||!toDo||(pending&&!currentRecipe);
-        apply.textContent=`Batch apply to ${selected.size} selected`;
+        apply.textContent=pictures?`Apply to ${selected.size}`:`Batch apply to ${selected.size} selected`;
         clearOps.disabled=blocked||!operations.length&&!shown.some(op=>!op.pending);
-        opsToggle.textContent=`Operations (${shown.length})`;
+        opsToggle.textContent=`${pictures?"Steps":"Operations"} (${shown.length})`;
         opsToggle.setAttribute("aria-expanded",String(!opsPanel.hidden));
         if(!opsPanel.hidden)showOperations(shown);
         undoButton.disabled=blocked||!undo||pending;
+        // (Pictures: shown once there's a batch to undo, and Undo reorder
+        // once there's a reorder.)
+        if(pictures){undoButton.hidden=!undo;undoPages.hidden=!pageUndo;}
         close.disabled=busy;
         cancel.hidden=!busy;
         host.inert=blocked;
@@ -260,7 +314,8 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
             card.open.setAttribute("aria-current",String(n===active));
             card.status.textContent=failures.has(n)?`Failed: ${failures.get(n)}`:edits.has(n)?"Edited":"Original";
         }
-        exportButton.textContent=`Export ${selected.size} selected`;
+        exportButton.textContent=`${pictures?"Save":"Export"} ${selected.size} selected`;
+        if(pictures){const own=added.get(active)?.file?.own;ownQuality.textContent=quality.value===""&&own?`(${label(active)}: ${own})`:"";}
     }
     // listed is the operations list as shown: those recorded, then the
     // open page's steps not yet recorded (from its recipe, live), the last
@@ -290,7 +345,9 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
             const done=[...op.done].filter(n=>order.includes(n)).map(position).sort((a,b)=>a-b);
             return el("li",{className:op.pending?"pending":""},
                 el("span",{className:"pdf-batch-op-name",textContent:describeStep(op.step)}),
-                el("small",{className:"hint",textContent:op.pending?`in progress on page ${position(op.page)}`
+                el("small",{className:"hint",textContent:pictures
+                    ?(op.pending?`in progress on ${label(op.page)}`:`from ${label(op.page)}${done.length?`; done on ${done.length} of ${order.length}`:""}`)
+                    :op.pending?`in progress on page ${position(op.page)}`
                     :`from page ${position(op.page)}${done.length?`; done on ${done.length===1?"page":"pages"} ${pageList(done)}`:""}`}));
         }));
     }
@@ -336,7 +393,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
             if(stopped)return;
         }
         loading=true;pageAbort?.abort();pageAbort=new AbortController();const signal=pageAbort.signal;
-        disposeImage();active=n;pageTitle.textContent=`Page ${n}`;update();
+        disposeImage();active=n;pageTitle.textContent=label(n);update();
         try{
             const blob=await source(n,signal);signal.throwIfAborted();
             original=edits.has(n)?null:{number:n,blob};imageURL=URL.createObjectURL(blob);
@@ -365,7 +422,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
             await keepPage(true);signal.throwIfAborted();
             undo=new Map(edits);undoDone=new Map(operations.map(op=>[op,new Set(op.done)]));
             for(const n of order.filter(n=>selected.has(n))){
-                signal.throwIfAborted();say(`Processing page ${position(n)} (${done+failed+1} of ${selected.size})…`);
+                signal.throwIfAborted();say(`Processing ${pictures?label(n):`page ${position(n)}`} (${done+failed+1} of ${selected.size})…`);
                 try{
                     const todo=operations.filter(op=>!op.done.has(n));
                     if(todo.length){
@@ -384,7 +441,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
         if(busy||loading||stopped)return;
         if(editor?.pending())throw new Error("Apply or cancel the current tool before exporting.");
         if(!selected.size)throw new Error("Select pages to export.");
-        const q=Number(quality.value)/100;if(!Number.isFinite(q)||q<.01||q>1)throw new Error("Choose a quality from 1 to 100.");
+        const q=(quality.value===""?DEFAULT_QUALITY:Number(quality.value))/100;if(!Number.isFinite(q)||q<.01||q>1)throw new Error("Choose a quality from 1 to 100.");
         busy=true;operation=new AbortController();const signal=operation.signal;update();
         const entries=[],pdfPages=[];let bytes=0;
         try{
@@ -401,9 +458,84 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
                 }else entries.push({name:pageName(n,output.value==="jpeg"?"jpg":output.value),blob:encoded.blob});
             }
             const blob=output.value==="pdf"?rasterPDF(pdfPages):await imageZIP(entries,signal);
-            signal.throwIfAborted();saveBlob(blob,`${stem}-edited.${output.value==="pdf"?"pdf":"zip"}`);say(`Exported ${selected.size} pages. The source PDF is unchanged.`);
+            signal.throwIfAborted();saveBlob(blob,`${stem}-edited.${output.value==="pdf"?"pdf":"zip"}`);say(pictures?`Downloaded ${selected.size} pictures as a PDF. The originals are unchanged.`:`Exported ${selected.size} pages. The source PDF is unchanged.`);
         }catch(err){if(signal.aborted)say("Export cancelled. Page edits are kept.");else throw err;}
         finally{busy=false;operation=null;update();}
+    }
+
+    // savePictures saves the pictures selected (Edit together): one edited,
+    // encoded again, in its own format or the one chosen, with its metadata
+    // (made fit for it: upright, its size, no old thumbnail) unless that's
+    // to be removed; one not edited, only if there's something to change:
+    // its metadata removed (its pixels as they are), or another format.
+    // Beside the originals as copies (…-edited), over them, or downloaded.
+    async function savePictures(){
+        if(busy||loading||stopped)return;
+        if(output.value==="pdf")return exportPages();
+        if(editor?.pending())throw new Error("Apply or cancel the current tool before saving.");
+        if(!selected.size)throw new Error("Select pictures to save.");
+        const typed=quality.value===""?null:Number(quality.value);
+        if(typed!==null&&(!Number.isFinite(typed)||typed<1||typed>100))throw new Error("Choose a quality from 1 to 100, or leave it blank for each picture's own.");
+        const to=output.value;
+        if(to==="replace"&&!await askYes(`Write over the ${selected.size} selected ${selected.size===1?"picture":"pictures"}? The originals can't be got back from here.`,"Replace"))return;
+        busy=true;operation=new AbortController();const signal=operation.signal;update();
+        const entries=[];let saved=0,unchanged=0,failed=0,bytes=0;
+        try{
+            await keepPage();signal.throwIfAborted();
+            for(const n of order.filter(n=>selected.has(n))){
+                signal.throwIfAborted();
+                const {file}=added.get(n);
+                say(`Saving ${file.name} (${saved+unchanged+failed+1} of ${selected.size})…`);
+                try{
+                    const type=format.value==="same"?(WRITABLE.has(file.type)?file.type:"image/png"):`image/${format.value}`;
+                    const original=new Uint8Array(await file.blob.arrayBuffer());
+                    let out=null;
+                    if(!edits.has(n)&&type===file.type){
+                        if(strip.checked){const clean=stripped(original,type);if(clean)out=new Blob([clean],{type});}
+                        else if(to==="zip")out=file.blob;
+                        else{unchanged++;continue;}
+                    }
+                    if(!out){
+                        // (At the quality typed, else its own, in its own format; else 92.)
+                        const q=(typed??(type===file.type?file.own:DEFAULT_QUALITY))/100;
+                        const encoded=await encodePage(await source(n,signal),type,q);signal.throwIfAborted();
+                        let data=new Uint8Array(await encoded.blob.arrayBuffer());
+                        if(!strip.checked&&type===file.type)data=withMetadata(data,original,type,encoded.width,encoded.height)??data;
+                        out=new Blob([data],{type});
+                    }
+                    const own=type===file.type, base=file.name.replace(/\.[^.]*$/,"")||"image", ext=EXTENSIONS[type];
+                    if(to==="zip"){
+                        bytes+=out.size;if(bytes>MAX_BATCH_BYTES)throw new Error("The download exceeds 256 MiB. Choose fewer pictures.");
+                        entries.push({name:own?file.name:`${base}.${ext}`,blob:out});
+                    }else await save(out,to==="replace"&&own?file.name:`${base}${to==="beside"?"-edited":""}.${ext}`,to==="replace"&&own,signal);
+                    failures.delete(n);saved++;
+                }catch(err){if(signal.aborted)throw err;failures.set(n,err.message);failed++;update();}
+            }
+            if(entries.length){const blob=await imageZIP(entries,signal);signal.throwIfAborted();saveBlob(blob,`${stem}-edited.zip`);}
+            say(`${saved} ${saved===1?"picture":"pictures"} ${to==="zip"?"downloaded":"saved"}${unchanged?`; ${unchanged} not edited, so not saved again`:""}${failed?`; ${failed} failed, marked in the list`:""}.`,failed>0);
+        }catch(err){if(signal.aborted)say("Saving cancelled. What was saved stays saved; the edits are kept.");else throw err;}
+        finally{busy=false;operation=null;update();}
+    }
+    // loadPictures makes a card of each picture given (Edit together): one
+    // that can't be read (or is over 16 megapixels) is said, and left out.
+    async function loadPictures(){
+        loading=true;update();
+        const left=[];
+        for(const file of images){
+            if(stopped)return;
+            say(`Opening ${file.name}…`);
+            try{
+                const page=await rasterImage(file.blob);
+                file.own=savingQuality(new Uint8Array(await file.blob.arrayBuffer()),file.type);
+                const n=nextPage++;added.set(n,{...page,widthPt:page.width*.75,heightPt:page.height*.75,file});
+                order.push(n);working.push(n);selected.add(n);
+            }catch(err){left.push(`${file.name} (${err.message})`);}
+        }
+        loading=false;if(stopped)return;
+        range.value=working.map(position).join(", ");
+        if(!order.length){update();say(`None of them could be opened: ${left.join("; ")}`,true);return;}
+        active=order[0];buildCards();await openPage(active,true);
+        say(left.length?`Left out: ${left.join("; ")}`:`${order.length} ${order.length===1?"picture":"pictures"}. Edit one, then Apply its steps to those selected.`,left.length>0);
     }
 
     // Thumbnails are requested only when visible, one at a time. Edited
@@ -454,10 +586,10 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
     function buildCards(){
         clearCards();
         for(const n of working){
-            const check=el("input",{type:"checkbox",checked:selected.has(n),ariaLabel:`Select page ${position(n)}`});
+            const check=el("input",{type:"checkbox",checked:selected.has(n),ariaLabel:`Select ${label(n)}`});
             check.addEventListener("change",()=>{check.checked?selected.add(n):selected.delete(n);update();});
-            const img=el("img",{alt:`Page ${position(n)} preview`,draggable:false}),status=el("small",{className:"hint",textContent:edits.has(n)?"Edited":"Original"});
-            const open=button("","pdf-batch-open-page",()=>openPage(n));open.append(img,el("span",{textContent:`Page ${position(n)}`}),status);
+            const img=el("img",{alt:`${label(n)} preview`,draggable:false}),status=el("small",{className:"hint",textContent:edits.has(n)?"Edited":"Original"});
+            const open=button("","pdf-batch-open-page",()=>openPage(n));open.append(img,el("span",{textContent:label(n)}),status);
             const card=el("div",{className:"pdf-batch-card",draggable:true},check,open);card.dataset.page=String(n);
             bindPageDrag(card,n);
             cards.set(n,{element:card,check,open,img,status,url:null,version:0});list.append(card);observer.observe(card);
@@ -473,6 +605,8 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed })
         importedDocuments.clear();added.clear();edits.clear();undo=null;pageUndo=null;
         dialog.close();dialog.remove();closed?.();
     }
-    buildCards();openPage(active,true).catch(error);update();
+    if(pictures)loadPictures().catch(error);
+    else{buildCards();openPage(active,true).catch(error);}
+    update();
     return{stop,focus:()=>dialog.focus()};
 }

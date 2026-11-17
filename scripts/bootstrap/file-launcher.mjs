@@ -225,49 +225,75 @@ self.tabtopModuleURL = (url) => { const p = pathOf(url); return p && files.has(p
     // pdf-frame.html, as the gateway serves them), for an iframe's srcdoc:
     // the frame can't load the tree's files from its blob: URLs (it's at an
     // origin of its own, sandboxed as the gateway's is), so its scripts are
-    // written in it, and glyphs.js given it as a data: URL. First in it: its
-    // policy, as strict as the gateway's (no network at all), and
-    // tabtopFrame, by which it asks this page for the other files it needs
-    // (pdf.js, KaTeX, Mermaid, highlight.js's classic build; see
-    // frameFile), and which answers its fetch()es of tabtopFrame.base.
+    // written in it (and glyphs.js, made a classic script). First in it: its
+    // policy, which lets it load nothing at all, and run only the scripts
+    // written in it and those it injects (md-frame.js: KaTeX, Mermaid,
+    // highlight.js's classic build), each by its SHA-256 (the latter's from
+    // ASSETS): nothing a document shown in it could add. (The PDF's frame
+    // also runs pdf.js, as modules from blob: URLs it makes itself, and its
+    // worker from a data: URL.) Then tabtopFrame, by which it asks this page
+    // for the files it needs (see frameFile), and which answers its
+    // fetch()es of tabtopFrame.base. The frames are made as the page starts
+    // (prepareFrames), their hashes taking a moment to work out.
     const FRAME_BASE = "https://tabtop.offline/tabtop/";
-    const frameCSP = "default-src 'none'; script-src 'unsafe-inline' data: 'wasm-unsafe-eval'; worker-src data:; style-src 'unsafe-inline'; " +
-        "img-src blob: data:; media-src blob:; font-src blob: data:; base-uri 'none'; form-action 'none'";
+    const INJECTED = { "tabtop/md-frame.html": /^tabtop\/(preview\/[^/]+\.js|highlight\/classic\/.+\.js)$/ };
     const framePrelude = () => `window.tabtopFrame = (() => {
 const page = window.parent, asked = new Map(), base = ${JSON.stringify(FRAME_BASE)}; let n = 0;
 addEventListener("message", (e) => { const m = e.data; if (e.source !== page || !m || m.type !== "tabtop-offline-file") return;
   e.stopImmediatePropagation(); const a = asked.get(m.id); if (!a) return; asked.delete(m.id); m.error ? a.no(new Error(m.error)) : a.ok(m.answer); });
-const ask = (path, kind) => new Promise((ok, no) => { const id = ++n; asked.set(id, { ok, no }); page.postMessage({ type: "tabtop-offline-file", id, path, kind }, "*"); });
+const ask = (path) => new Promise((ok, no) => { const id = ++n; asked.set(id, { ok, no }); page.postMessage({ type: "tabtop-offline-file", id, path }, "*"); });
 const at = (src) => String(src).replace(/^\\.\\//, "").replace(base, "");
+const text = (bytes) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => { const u = String(typeof input === "string" ? input : input && input.url ? input.url : input);
-  return u.startsWith(base) ? ask(at(u), "bytes").then((b) => new Response(b, { status: 200, headers: { "Content-Type": /\\.wasm$/.test(u) ? "application/wasm" : "application/octet-stream" } })) : realFetch(input, init); };
-return Object.freeze({ base, modules: Object.freeze(${JSON.stringify({ "glyphs.js": has("tabtop/glyphs.js") ? toDataURL(new TextEncoder().encode(textOf("tabtop/glyphs.js")), "text/javascript") : null })}),
-  moduleURL: (path) => ask(at(path), "module"),
-  script: async (src) => { const code = new TextDecoder().decode(await ask(at(src), "bytes")); const s = document.createElement("script"); s.textContent = code; document.head.append(s); s.remove(); } });
+  return u.startsWith(base) ? ask(at(u)).then((b) => new Response(b, { status: 200, headers: { "Content-Type": /\\.wasm$/.test(u) ? "application/wasm" : "application/octet-stream" } })) : realFetch(input, init); };
+return Object.freeze({ base,
+  glyphs: typeof __tabtopModules === "undefined" ? undefined : __tabtopModules["tabtop/glyphs.js"],
+  // A module (pdf.js's), from a blob: URL of this frame's; its import.meta.url where it's fetched from here.
+  moduleURL: async (path) => { const p = at(path); const code = text(await ask(p)).replace(/\\bimport\\.meta\\.url\\b/g, JSON.stringify(base + p));
+    return URL.createObjectURL(new Blob([code], { type: "text/javascript" })); },
+  // A script, run as written (allowed by its hash: see the policy).
+  script: async (src) => { const s = document.createElement("script"); s.textContent = text(await ask(at(src))); document.head.append(s); s.remove(); } });
 })();`;
-    const frames = new Map();
-    const frameHTML = (source) => {
-        const path = "tabtop/" + source;
-        if (!has(path)) return null;
-        if (!frames.has(path)) {
-            const inline = (code) => code.replace(/<\/script/gi, "<\\/script");
-            let html = textOf(path).replace(/<script src="([^"]+)"><\/script>/g, (m, src) => {
-                const p = resolve(path, src);
-                return has(p) ? `<script>${inline(textOf(p))}</script>` : "";
-            });
-            const first = `<meta http-equiv="Content-Security-Policy" content="${frameCSP}"><script>${inline(framePrelude())}</script>`;
-            html = /<meta charset="utf-8">/i.test(html) ? html.replace(/<meta charset="utf-8">/i, (h) => h + first) : first + html;
-            frames.set(path, html);
-        }
-        return frames.get(path);
+    // (A script's text as it's written in a page, and as the page will have
+    // it, line ends made \n as the parser makes them: what its hash is of.)
+    const scriptText = (code) => code.replace(/\r\n?/g, "\n").replace(/\0/g, "�").replace(/<\/script/gi, "<\\/script");
+    const hashOf = async (t) => {
+        const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t)));
+        return `'sha256-${btoa(String.fromCharCode(...d))}'`;
     };
+    const frames = new Map();
+    const prepareFrames = async () => {
+        for (const source of ["md-frame.html", "epub-frame.html", "pdf-frame.html"]) {
+            const path = "tabtop/" + source, pdf = source === "pdf-frame.html";
+            if (!has(path)) continue;
+            const first = [...(source !== "md-frame.html" && has("tabtop/glyphs.js") ? [bundle("tabtop/glyphs.js")] : []), framePrelude()].map(scriptText);
+            const written = [...first];
+            const body = textOf(path).replace(/<script src="([^"]+)"><\/script>/g, (m, src) => {
+                const p = resolve(path, src);
+                if (!has(p)) return "";
+                const t = scriptText(textOf(p));
+                written.push(t);
+                return `<script>${t}</script>`;
+            });
+            const hashes = await Promise.all(written.map(hashOf));
+            for (const [p, f] of Object.entries(ASSETS?.files ?? {})) {
+                if (INJECTED[path]?.test(p)) hashes.push(`'sha256-${btoa(String.fromCharCode(...f.sha256.match(/../g).map((h) => parseInt(h, 16))))}'`);
+            }
+            const csp = ["default-src 'none'", `script-src ${hashes.join(" ")}${pdf ? " blob: 'wasm-unsafe-eval'" : ""}`,
+                `worker-src ${pdf ? "data: blob:" : "'none'"}`, "style-src 'unsafe-inline'", "img-src blob: data:", "media-src blob:",
+                "font-src blob: data:", "base-uri 'none'", "form-action 'none'"].join("; ");
+            const top = `<meta http-equiv="Content-Security-Policy" content="${csp}">` + first.map((t) => `<script>${t}</script>`).join("");
+            frames.set(path, /<meta charset="utf-8">/i.test(body) ? body.replace(/<meta charset="utf-8">/i, (h) => h + top) : top + body);
+        }
+    };
+    const frameHTML = (source) => frames.get("tabtop/" + source) ?? null;
     // frameFile answers a frame's question (see framePrelude) for a file
-    // ASSETS lists, under tabtop/: its bytes, or a module's data: URL.
-    const frameFile = async (path, kind) => {
+    // ASSETS lists, under tabtop/: its bytes.
+    const frameFile = async (path) => {
         const p = "tabtop/" + String(path);
         if (!known(p)) throw new Error(`${path} isn't one this offline client can fetch`);
-        return kind === "module" ? moduleURL(p, "data") : (await asset(p)).slice();
+        return (await asset(p)).slice();
     };
     // What the components page (components.js) shows and does: the files
     // ASSETS lists ({path, sha256, size}; null without it); each one's
@@ -469,7 +495,7 @@ return Object.freeze({ base, modules: Object.freeze(${JSON.stringify({ "glyphs.j
         ].join("; ");
     };
 
-    const start = () => {
+    const start = async () => {
         $("err").hidden = true;
         let server;
         try {
@@ -546,6 +572,7 @@ return Object.freeze({ base, modules: Object.freeze(${JSON.stringify({ "glyphs.j
                 href: (id) => `${thisFile}?page=${encodeURIComponent(id)}${id === "desktop" ? "&autoconnect=1" : ""}`,
             });
             const html = rewriteHTML(textOf(entry), entry, imports, cspFor(server));
+            await prepareFrames();
             document.open();
             document.write(html);
             document.close();
@@ -600,9 +627,9 @@ export function buildFileLauncherHTML(files) {
 <title>TabTop</title>
 <style>
   body { font: 15px/1.45 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; color: #1c1c1e; }
-  form { display: flex; gap: .5rem; align-items: stretch; }
-  input { box-sizing: border-box; flex: 1; min-width: 0; font: inherit; padding: .5rem .6rem; border: 1px solid #aaa; border-radius: 8px; }
-  button { flex: none; font: inherit; padding: .5rem 1rem; border-radius: 8px; border: 1px solid #1a73e8; background: #1a73e8; color: #fff; cursor: pointer; }
+  form { display: flex; flex-flow: row nowrap; gap: .5rem; align-items: stretch; }
+  input { box-sizing: border-box; flex: 1 1 auto; min-width: 0; font: inherit; padding: .5rem .6rem; border: 1px solid #aaa; border-radius: 8px; }
+  button { flex: 0 0 auto; font: inherit; padding: .5rem 1rem; border-radius: 8px; border: 1px solid #1a73e8; background: #1a73e8; color: #fff; cursor: pointer; white-space: nowrap; }
   button:disabled { opacity: .5; cursor: default; }
   #err { color: #b00020; white-space: pre-wrap; }
 </style>

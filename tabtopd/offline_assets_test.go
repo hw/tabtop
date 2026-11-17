@@ -66,14 +66,7 @@ func TestOfflineAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var pack struct {
-		Files map[string]json.RawMessage `json:"files"`
-	}
-	if err := json.Unmarshal(plain, &pack); err != nil {
-		t.Fatal(err)
-	}
-	var html string
-	json.Unmarshal(pack.Files["tabtop.html"], &html)
+	html := string(plain)
 	if strings.Contains(html, offlineAssetsSentinel) {
 		t.Fatal("the manifest wasn't written into tabtop.html")
 	}
@@ -160,17 +153,28 @@ func TestOfflineFrames(t *testing.T) {
 	}
 }
 
-// A gateway that doesn't accept the offline client seals its pack as it's
-// built, and reads none of the viewers' files to; one that does reads
-// them from their folders, not into the sets its own pages are served from.
+// A gateway that doesn't accept the offline client seals tabtop.html as
+// built (no ASSETS injection), and reads none of the viewers' files; one
+// that does reads them from their folders, not into the sets its own pages
+// are served from.
 func TestOfflineManifestLoadsNothing(t *testing.T) {
 	g, _ := newE2EServer(t)
 	g.threeDir = t.TempDir()
 	for _, name := range threeFiles {
 		os.WriteFile(filepath.Join(g.threeDir, name), []byte("// "+name), 0o644)
 	}
-	if plain, err := g.offlineClientPlain(); err != nil || string(plain) != string(bootstrapClientJSON) {
-		t.Fatalf("without -offline-client, the pack isn't as built: %v", err)
+	var pack struct {
+		Files map[string]json.RawMessage `json:"files"`
+	}
+	if err := json.Unmarshal(bootstrapClientJSON, &pack); err != nil {
+		t.Fatal(err)
+	}
+	var builtHTML string
+	if err := json.Unmarshal(pack.Files["tabtop.html"], &builtHTML); err != nil {
+		t.Fatal(err)
+	}
+	if plain, err := g.offlineClientPlain(); err != nil || string(plain) != builtHTML {
+		t.Fatalf("without -offline-client, plaintext isn't the built tabtop.html: %v", err)
 	}
 	g.offlineClient = true
 	if _, err := g.offlineClientPlain(); err != nil {

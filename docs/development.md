@@ -42,6 +42,8 @@
 | `KAITAI_FORMATS_COMMIT` | `7d175667527372eb0c521045c1dac212230d9779` | Pinned Kaitai format library snapshot (191 formats). |
 | `KAITAI_FORMATS_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the format library archive. |
 | `MERMAID_SHA256` | *(checksum of 12.2.0)* | SHA-256 of `https://registry.npmjs.org/mermaid/-/mermaid-<version>.tgz`. |
+| `BUILD_TIME` | *(UTC now)* | When this tabtopd was built (UTC RFC3339), shown on Sessions and Activity. Linked into the binary as `main.buildTime`. |
+| `BOOTSTRAP_DECODER_SHA256` | *(sha256 of `tabtopd/bootstrap.html`)* | SHA-256 of the offline decoder (`/auth/bootstrap`), shown on Sessions. Linked in as `main.bootstrapDecoderHash`; empty hashes the `bootstrap.html` copied into the tabtopd stage. |
 
 The build adds two `<script>` tags to noVNC's `vnc.html`, for the audio
 button and the encrypted tunnel, and changes one line of `app/ui.js` so the

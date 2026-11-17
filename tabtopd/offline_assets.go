@@ -151,14 +151,11 @@ func (g *server) offlineManifest() (offlineManifest, error) {
 	return m, nil
 }
 
-// offlineClientPlain is the pack's plaintext (bootstrap.client.json) with
-// this gateway's manifest of assets in its tabtop.html; as it is, without
-// one, if the gateway doesn't accept the offline client (-offline-client),
-// which then has no use for it.
+// offlineClientPlain is the UTF-8 tabtop.html sealed as /auth/pack plaintext.
+// It is taken from the embedded tabtop-pack/v1 tree (bootstrap.client.json).
+// With -offline-client, this gateway's ASSETS manifest is written into it;
+// without, the built HTML is sealed as-is (the pack then has no use for connect).
 func (g *server) offlineClientPlain() ([]byte, error) {
-	if !g.offlineClient {
-		return bootstrapClientJSON, nil
-	}
 	var pack map[string]json.RawMessage
 	if err := json.Unmarshal(bootstrapClientJSON, &pack); err != nil {
 		return nil, err
@@ -170,6 +167,9 @@ func (g *server) offlineClientPlain() ([]byte, error) {
 	var html string
 	if err := json.Unmarshal(files["tabtop.html"], &html); err != nil {
 		return nil, fmt.Errorf("the pack's tabtop.html: %w", err)
+	}
+	if !g.offlineClient {
+		return []byte(html), nil
 	}
 	if n := strings.Count(html, offlineAssetsSentinel); n != 1 {
 		return nil, fmt.Errorf("the pack's tabtop.html has %d places for the manifest of assets, not 1", n)
@@ -184,13 +184,7 @@ func (g *server) offlineClientPlain() ([]byte, error) {
 		return nil, err
 	}
 	html = strings.Replace(html, offlineAssetsSentinel, string(manifest), 1)
-	if files["tabtop.html"], err = json.Marshal(html); err != nil {
-		return nil, err
-	}
-	if pack["files"], err = json.Marshal(files); err != nil {
-		return nil, err
-	}
-	return json.Marshal(pack)
+	return []byte(html), nil
 }
 
 // routeAsset sends one of offlineAssets' files, by its path: an exact

@@ -13,7 +13,7 @@ import { openExif } from "./image-exif-view.js";
 import { el } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { humanBytes } from "./file-format.js";
-import { knownFrom, metadataOf, stripped, withMetadata } from "./image-meta.js";
+import { knownFrom, metadataOf, stripped, withMetadata, savingQuality } from "./image-meta.js";
 import { HEIF_TYPES } from "./image-heif.js";
 import { clipSelection, maskPath, newMaskMark, extendMaskMark, enclosedFill, glyphCaption, brushControls, imageMaskPoint } from "./image-mask.js";
 import { inpaintTool } from "./image-inpaint.js";
@@ -229,11 +229,12 @@ export function copyName(name, type) {
 // target, q} and: "copy" (another format, a copy beside it, with its
 // name, from name), "strip" (only metadata removed, losslessly), "encode"
 // (written again, with kept: its metadata kept), or null (nothing to do).
-export function saveIntent({ type, target, quality, kinds, keep, edited, dirty, name }) {
+// (own is the quality it starts at, its own: see savingQuality.)
+export function saveIntent({ type, target, quality, kinds, keep, edited, dirty, name, own = Math.round(QUALITY * 100) }) {
     const q = quality;
     if (target !== type) return { how: "copy", target, q, name: copyName(name, target) };
     const strip = kinds.length > 0 && !keep;
-    if (!edited && q === Math.round(QUALITY * 100) && strip) return { how: "strip", target, q };
+    if (!edited && q === own && strip) return { how: "strip", target, q };
     if (!dirty) return { how: null, target, q };
     return { how: "encode", target, q, kept: kinds.length > 0 && target !== "image/webp" && keep };
 }
@@ -519,7 +520,10 @@ export async function imageView({ file, blob, url, shown = null, saveMetadata = 
         if (WRITABLE.has(type)) format.append(el("option", { value: type, textContent: `${FORMATS[type]} (as it is)` }));
         for (const t of WRITABLE) if (t !== type) format.append(el("option", { value: t, textContent: `${FORMATS[t]} (a copy)` }));
         format.append(el("option", { value: "application/pdf", textContent: "PDF (a copy)" }));
-        const quality = el("input", { type: "range", className: "image-quality", min: "10", max: "100", step: "1", value: String(Math.round(QUALITY * 100)) });
+        // Quality: the picture's own, to start (written again at it, it
+        // loses no more than it must, nor grows for nothing: savingQuality).
+        let own = savingQuality(bytes, type);
+        const quality = el("input", { type: "range", className: "image-quality", min: "10", max: "100", step: "1", value: String(own) });
         quality.setAttribute("aria-label", "Quality");
         const qualityText = el("span", { className: "hint image-quality-value" });
         const qualityLabel = el("label", { className: "image-quality-label" }, "Quality ", quality, qualityText);
@@ -561,11 +565,11 @@ export async function imageView({ file, blob, url, shown = null, saveMetadata = 
         const dirty = () => state() !== savedState;
         // What Save will do: {how: "strip" | "encode" | "copy" | null, …}.
         const intent = () => saveIntent({ type, target: format.value, quality: Number(quality.value), kinds: meta.kinds,
-            keep: keep.checked, edited: ops.length > 0, dirty: dirty(), name: file.name });
+            keep: keep.checked, edited: ops.length > 0, dirty: dirty(), name: file.name, own });
         const showOptions = () => {
             const target = format.value, same = target === type;
             qualityLabel.hidden = target === "image/png";
-            qualityText.textContent = `${quality.value}%`;
+            qualityText.textContent = `${quality.value}%${same && Number(quality.value) === own && type !== "image/png" ? " (as it was)" : ""}`;
             keepLabel.hidden = !same || !meta.kinds.length;
             keep.title = target === "image/webp" ? "A WebP's metadata is kept only if it isn't written again (re-encoded)" : "";
             plan.textContent = savePlan(intent(), { type, kinds: meta.kinds, orientation: meta.orientation });
@@ -1485,7 +1489,8 @@ export async function imageView({ file, blob, url, shown = null, saveMetadata = 
                         blob = out;
                         file.size = out.size;
                         keep.checked = true;
-                        quality.value = String(Math.round(QUALITY * 100));
+                        own = savingQuality(bytes, type);
+                        quality.value = String(own);
                         savedState = state();
                         redraw();
                         say(`Saved: ${describe({ width, height, type, size: out.size })}${meta.kinds.length ? ` · ${meta.kinds.join(", ")}` : ""}.`);

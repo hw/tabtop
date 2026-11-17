@@ -20,8 +20,8 @@
 "use strict";
 
 (async () => {
-    // (In the offline client, which built this frame, glyphs.js is given it.)
-    const { glyphs } = await import(window.tabtopFrame?.modules["glyphs.js"] ?? new URL("./glyphs.js", document.currentScript.src).href);
+    // (In the offline client, which built this frame, glyphs.js is in it.)
+    const { glyphs } = window.tabtopFrame?.glyphs ?? await import(new URL("./glyphs.js", document.currentScript.src).href);
     const page = window.parent;
     let externalMode = "none";
     // A chapter's links and pictures are paths in the book, as relative

@@ -41,8 +41,8 @@ import { binaryNamed, probablyDatabase, typeOf, unknownTextSize } from "./previe
 import { reconnect, reconnected } from "./reconnect.js";
 import { warnExpiry } from "./expiry.js";
 import { storeJSON, storedJSON, stored, store } from "./stored.js";
-import { batchStripExif, batchRotateRight, batchHeicToJpeg, batchExtractZips,
-    rewritableImages, batchableHeic, batchableZips } from "./files-batch.js";
+import { batchEditTogether, batchHeicToJpeg, batchExtractZips,
+    editableImages, batchableHeic, batchableZips } from "./files-batch.js";
 import { rememberRecent, isStarred, toggleStar, pinsBar, takePendingOpen, PENDING_EVENT } from "./files-pins.js";
 
 // The page draws into its own element, so the login form and summary
@@ -238,14 +238,13 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     // Each comparison is offered only while what's selected can be compared
     // so (see updateSelection): two text files, or two images.
     compare.hidden = compareImages.hidden = true;
-    const stripExif = button("batch-strip-exif", "Strip EXIF", () => {
-        batchStripExif(dir, [...selected.values()], show).catch(() => {});
+    // Rotating, cropping, resizing, removing metadata and the rest, for
+    // the pictures selected at once (see files-batch.js): saved beside them
+    // or over them, or (in a root that can't be written) downloaded.
+    const editTogether = button("batch-edit-together", "Edit…", () => {
+        batchEditTogether(dir, [...selected.values()], show, !readOnlyRoot()).catch(() => {});
     });
-    stripExif.title = "Remove metadata from the selected images and save over them";
-    const rotateRight = button("batch-rotate", "Rotate right", () => {
-        batchRotateRight(dir, [...selected.values()], show).catch(() => {});
-    });
-    rotateRight.title = "Rotate the selected images 90° clockwise and save over them";
+    editTogether.title = "Edit the selected pictures together: rotate, crop, resize, remove metadata, and more, then save";
     const heicJpeg = button("batch-heic", "HEIC → JPEG", () => {
         batchHeicToJpeg(dir, [...selected.values()], show).catch(() => {});
     });
@@ -254,11 +253,11 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         batchExtractZips(dir, [...selected.values()], show).catch(() => {});
     });
     extractZip.title = "Extract the selected ZIP archives into new folders";
-    stripExif.hidden = rotateRight.hidden = heicJpeg.hidden = extractZip.hidden = true;
+    editTogether.hidden = heicJpeg.hidden = extractZip.hidden = true;
     const selection = el("div", { className: "selection", hidden: true }, count,
         button("zip", "Download as .zip", () => fetchZip(dir, [...selected.keys()])),
-        compare, compareImages,
-        ...(!readOnlyRoot() ? [stripExif, rotateRight, heicJpeg, extractZip,
+        compare, compareImages, editTogether,
+        ...(!readOnlyRoot() ? [heicJpeg, extractZip,
             button("move", "Move to…", () => askMove(dir, [...selected.keys()]))] : []),
         ...(otherRoots().length ? [button("copy-to", "Copy to…", () => askCopy(dir, [...selected.keys()]))] : []),
         ...(!readOnlyRoot() ? [button("delete", "Delete", () => deleteFiles([...selected.values()].map((e) => deletion(dir, e)), show))] : []),
@@ -286,8 +285,8 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
         const pickedEntries = [...selected.values()];
         compare.hidden = !comparableText(pickedEntries);
         compareImages.hidden = !comparableImages(pickedEntries);
+        editTogether.hidden = !editableImages(pickedEntries).length;
         if (!readOnlyRoot()) {
-            stripExif.hidden = rotateRight.hidden = !rewritableImages(pickedEntries).length;
             heicJpeg.hidden = !batchableHeic(pickedEntries).length;
             extractZip.hidden = !batchableZips(pickedEntries).length;
         }
