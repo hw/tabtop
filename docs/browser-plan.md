@@ -1,10 +1,10 @@
 # `/browser` implementation plan
 
-Implement `/browser` as a remote browser: a headless browser engine loads and runs each page, and the client displays a sanitized rendering of the result. All destination traffic leaves from the TabTop host, and everything between the client and TabTop travels through TabTop’s authenticated E2E tunnel.
+Implement `/browser` as a remote browser: [Lightpanda](https://github.com/lightpanda-io/browser), a headless browser engine, loads and runs each page on the TabTop host inside a sandbox, and the client displays a sanitized rendering of the resulting DOM. All destination traffic leaves from the TabTop host, and everything between the client and TabTop travels through TabTop’s authenticated E2E tunnel.
 
-Two engines are candidates: **D, Lightpanda** and **E, Kitesurf**. Phase 0 chooses between them. Both are young projects, and neither ships the session handling, sandboxing, transport, or client renderer this plan needs; those remain TabTop’s work.
+Lightpanda (option D) was chosen in Phase 0 over Kitesurf (option E); the measurements and reasons are in section 0. Lightpanda supplies page loading, script execution, and the DOM. The session handling, sandbox, egress control, transport, and client renderer remain TabTop’s work.
 
-## 0. Goals, non-goals, and options
+## 0. Goals, decision, and Phase 0 results
 
 ### Goals
 
@@ -12,7 +12,7 @@ Two engines are candidates: **D, Lightpanda** and **E, Kitesurf**. Phase 0 choos
 - Keep website code away from TabTop’s session, tunnel, files, and host, even when the website is hostile.
 - Make unsupported features visible rather than silently broken.
 
-### Target page classes (proposed — confirm before Phase 0 ends)
+### Target page classes (proposed — confirm before Phase 1 ends)
 
 Compatibility is measured against these:
 
@@ -20,126 +20,96 @@ Compatibility is measured against these:
 2. Pages with progressive enhancement: menus, tabs, disclosure widgets, client-side search.
 3. GET/POST forms (search boxes, basic submissions).
 4. Interactive pages and internal tools whose scripts use common DOM APIs and `fetch`.
-5. Moderate single-page applications, as far as the chosen engine supports them.
+5. Moderate single-page applications, as far as Lightpanda supports them.
 
 ### Non-goals
 
-- Content that cannot be carried by a DOM snapshot or scene: `canvas` drawing, WebGL, video and audio playback, WebRTC.
+- Content that cannot be carried by a DOM snapshot: `canvas` drawing, WebGL, video and audio playback, WebRTC.
 - Logins and persistent destination sessions until Phase 3 decides cookie handling (see section 4).
 - Service workers, browser extensions, and nested browsing contexts initially.
 - Filesystem access for pages.
 
-### Options
+### Decision
 
-| Option | Compatibility | Isolation | Cost | Status |
-|---|---|---|---|---|
-| **D. Lightpanda DOM snapshot**: Lightpanda (headless, V8, no rendering) on the host, driven by tabtopd over CDP; the client renders a sanitized DOM snapshot and its mutations | Most script-driven pages (about 80% of Chrome’s WPT subtests); gaps in CSS, editing, SVG; layout APIs approximate | Foreign code runs on the host in V8 with no process sandbox of its own; TabTop must supply one | Medium: CDP bridge, host sandbox, client renderer and sanitizer | Phase 0 candidate. Preferred if its host sandbox is acceptable. |
-| **E. Kitesurf engine**: Cloudflare’s experimental browser engine (page scripts as native V8 modules in per-page `workerd` isolates, Boa for dynamic code, Blitz/Stylo layout, Vello painting), self-hosted beside tabtopd on `workerd` (**E1**). The client-side variant **E2** is ruled out (section 0, feasibility check) | Unknown; full layout and partial CDP, experimental | Foreign code runs on the host in V8 inside `workerd` isolates; `workerd` is not a hardened sandbox, so TabTop must supply one, as for D | Medium | Phase 0 candidate; feasibility check in progress. |
+**Lightpanda, driven over CDP, with a DOM snapshot rendered by the client.** Recorded 17 November 2026 after the Phase 0 checks below.
 
-Phase 0 runs E’s feasibility check, then compares D and (if feasible) E on the target-class fixtures and records which one proceeds.
+Reasons, from the measurements:
 
-### Dropped alternatives
+- 3–40× faster page loads (Hacker News 3×, GitHub 3–10×, MDN 21×, Wikipedia 40×) and 5–15× less memory than Kitesurf on the same pages.
+- The client receives a real DOM, so text stays selectable and accessible; Kitesurf sends vector scenes drawn on a canvas.
+- A page stuck in an infinite loop does not stop the engine answering CDP, so the watchdog can see the problem and kill it. In Kitesurf on open-source `workerd`, one looping page froze the whole engine and its configured CPU and wall-clock caps were not enforced.
+- One 77.6 MB binary with no build step, against `workerd` plus a 35 MB bundle and 22 MB of assets built with Bazel and nightly Rust, relying on a `workerd` feature marked experimental.
+- Version 1.0 (October 2026), against a self-described proof of concept.
+
+Accepted costs: Lightpanda is AGPL-3.0 (handled by keeping it an unmodified, optional, separately installed component; see section 3), it bypasses its HTTP proxy for localhost (contained by the network namespace; see section 3), and it does not emit CDP DOM mutation events (handled with an isolated-world observer; see section 6).
+
+### Phase 0 results
+
+Both engines were tested on 17 November 2026 on an x86_64 Debian host (6 cores, 11 GB RAM), each inside the same bubblewrap sandbox with all traffic through a logging egress proxy, using a local interactive fixture and six real sites (example.com, Wikipedia, Hacker News, TodoMVC React, GitHub, MDN). The harness lives outside the repository; its scripts and raw results were kept under `~/.cache/tabtop-eval/` on the test machine.
+
+| | D: Lightpanda 1.0.4 | E: Kitesurf at `39feadf` on `workerd` 2026-09-11 |
+|---|---|---|
+| Start-up to CDP ready, sandboxed | 41 ms | 273–650 ms |
+| Memory, idle | 12 MB | 189 MB |
+| Memory after loading sites | 25 MB after the fixture; 108 MB (peak 116 MB) after six sites in one process | 579 MB after the fixture and two sites |
+| Load times | example.com 44 ms, Wikipedia 99 ms, MDN 178 ms, Hacker News 719 ms, TodoMVC 912 ms, GitHub 1.9 s | example.com 0.6 s, TodoMVC 2.1 s, Hacker News 2.2 s, MDN 3.7 s, Wikipedia 4.0 s, GitHub 5.8–19 s |
+| Compatibility on these pages | All loaded with no script exceptions; TodoMVC renders and typing adds a to-do | Same |
+| Fixture interaction | DOM snapshot, click by node ID, `preventDefault` reported, page `fetch` and DOM update in 52 ms | Same, update in 95–121 ms |
+| Output to the client | DOM | Vector scenes on a canvas |
+| Egress | All page traffic through the proxy except localhost, which Lightpanda connects to directly (contained by the network namespace) | All traffic through the proxy, including localhost, as full URLs; the proxy makes the TLS connection |
+| Private and metadata probes from page JavaScript | Refused by the proxy; localhost probes failed inside the empty namespace | Refused by the proxy |
+| Infinite-loop page | Engine at 99% CPU, but a second CDP session still answered in 22 ms; kill took 5 ms | Whole engine unresponsive (no answer in 30–45 s), even with `KITESURF_PAGE_CPU_MS_CAP=2000` and `KITESURF_PAGE_WALL_MS_CAP=5000` |
+| Memory-exhaustion page | Killed by the cgroup `MemoryMax` (512 MB); nothing else affected | Killed by the cgroup `MemoryMax` (1 GB) |
+| CDP DOM mutation events | Not emitted (only `DOM.setChildNodes` and `DOM.documentUpdated`); an isolated-world `MutationObserver` reporting through `Runtime.addBinding` delivered every change and could not be reached or replaced by page scripts | `Page.createIsolatedWorld` and `Runtime.addBinding` supported |
+| Packaging | One binary, 77.6 MB (x86_64), needs only libc and libm; CDP on a Unix socket (`--unix-socket`) | `workerd` with `--experimental` (Worker Loader “may change or go away”), a 35 MB bundle (10.7 MB gzipped), 22 MB of assets; 16-minute Bazel build |
+| License | AGPL-3.0 | Apache-2.0 (Stylo MPL-2.0) |
+
+Sandbox escape probes (a shell run in place of a compromised engine, same sandbox as both engines): reading the home directory, `/home`, `/etc/passwd`, and the TabTop checkout, connecting to the host’s loopback, connecting directly to the internet or the metadata address, and seeing host processes were all blocked. The sandboxed process saw 5 processes, ran with no capabilities, and shared only the run directory holding the CDP and egress sockets.
+
+Other Phase 0 observations:
+
+- **Layout is approximate in Lightpanda.** `DOM.getBoxModel` returned a 5×5 box for a button, so events must be addressed by node ID, not coordinates.
+- **Memory stays allocated across sessions in one Lightpanda process** (108 MB after six sites), which supports one disposable engine per browsing context.
+- **In `serve` mode, Lightpanda does not fetch images or stylesheets unless `--load-resources` asks for them**; scripts are always fetched. Images and stylesheets for display are fetched by the client’s resource broker instead (section 4). Pages whose scripts depend on computed styles may need `--load-resources stylesheet`, decided in Phase 3.
+- **Lightpanda sends HTTPS through `CONNECT` tunnels**, so the egress proxy sees host and port, not the full URL, and cannot apply URL-level rules to HTTPS traffic. Destination address policy still applies at dial time.
+- **chromedp v0.23 changed to a generic API**; the spike used v0.14.2. Choose and pin one for tabtopd in Phase 1.
+- **Kitesurf runs page scripts natively in V8** inside per-page `workerd` isolates, with Boa (in WASM) only for generated code, so it needed the same host sandbox as Lightpanda. `workerd`’s README states it “is not a hardened sandbox”. Running Kitesurf in the client (E2) was ruled out because page scripts would run natively in a browser worker.
+
+Not yet covered by Phase 0, and carried into Phase 1:
+
+- Running the sandbox inside TabTop’s own container image (user namespaces and seccomp without extra privileges).
+- A seccomp filter and a minimal filesystem view (the spike bound all of `/usr` read-only).
+- Form submission, navigation events after following a link, and reliability over long interactive sessions.
+- arm64.
+
+### Evaluated and not chosen
 
 Recorded so they are not re-proposed without new information:
 
-- **Static sanitized browser (no page JavaScript)**: dropped; most target classes need scripts.
-- **Headless Chromium on the host**: dropped; heavy per-session host cost and a large dependency. The default image (`DESKTOP=xfce`) already offers Chromium on the streamed desktop for pages that need full compatibility.
-- **QuickJS virtual browser** (page scripts in QuickJS/WASM on the client against a hand-written DOM): dropped; writing and maintaining the DOM and browser APIs is the dominant cost, and compatibility would remain narrow.
-
-### D and E in detail
-
-Figures are estimates or vendor claims, not measurements; Phase 0 replaces them with measured values.
-
-| | D: Lightpanda DOM snapshot | E: Kitesurf engine (E1, on the host) |
-|---|---|---|
-| Sites that work | Most script-driven pages; gaps in CSS, editing, SVG; layout APIs approximate | Unknown; experimental engine with full layout and partial CDP. Measure on the target-class fixtures |
-| Where untrusted code runs | TabTop host, in V8, without a process sandbox of its own | TabTop host: page scripts as native V8 modules in one `workerd` isolate per page; Boa (in WASM) only for `eval`, `new Function`, and other generated code |
-| If it is compromised | A V8 exploit runs on the server, contained only by the sandbox TabTop builds around it | A V8 or `workerd` isolate escape runs on the server, contained only by the sandbox TabTop builds around it (as D); `workerd` warns it “is not a hardened sandbox” |
-| What the client receives | Real, sanitized DOM (snapshot plus mutations): selectable, accessible, responsive | Recorded vector scenes (“Clients get recorded vector scenes, not pixels”, `packages/engine/src/rbi.ts`), rasterized on the client by `scene-host-wasm` into a canvas: no selectable text or accessibility |
-| Network leaks | Page fetching happens on the host; resources the client renders go through the broker and frame CSP | Fetching happens on the host. All page and isolate traffic passes the engine’s `SandboxOutbound` and then `fetch`, which `workerd` can route to an external forward proxy (to be confirmed by running it) |
-| Host load | Low to moderate: tens of MB per page (vendor benchmark: 123 MB peak for 100 pages versus 2 GB for Chrome) | Moderate: an isolate per page plus the WASM layout engine; memory growth reported without `--expose-gc` |
-| Client load | Low to moderate: renderer only | Low to moderate: scene rasterizer (WASM) |
-| Bandwidth | Low: serialized DOM, mutations, and brokered resources | Low to moderate: scenes and resource batches, with acknowledgement-based backpressure |
-| Lite build | Adds the Lightpanda binary (size unpublished; V8 is linked in, so likely tens of MB), installed separately | `workerd` plus the engine (“a few megabytes of compressed WebAssembly behind a small TypeScript layer”, per its `AGENTS.md`) |
-| Engineering effort | Medium: CDP bridge, snapshot and mutation streaming, host sandbox, renderer and sanitizer | Medium: admission via `EngineHost.admit`, host sandbox and egress proxy (as D), client scene renderer, `workerd` deployment; building needs Bazel and a pinned nightly Rust |
-| Ongoing upkeep | Fast-moving young project (1.0 in October 2026); pinned updates, including V8 security fixes | Experimental, weeks old, calendar-tagged releases; pin a tag and expect breaking changes |
-| License | AGPL-3.0 (see below) | Apache-2.0 (Stylo dependency MPL-2.0) |
-
-### Resources required
-
-**D: Lightpanda DOM snapshot**
-
-- Host disk: the Lightpanda binary (size unpublished; measure in Phase 0). Linux x86_64 and arm64 builds need glibc 2.35+ (x86_64) or 2.38+ (arm64); Debian trixie meets both. No Alpine/musl support.
-- Host memory and CPU: tens of MB per page, one process per session; V8 can still spend a core on heavy scripts.
-- Isolation work (mandatory, the main cost): see section 3.
-- tabtopd side: a CDP client (`chromedp`) that navigates, serializes the DOM, streams mutations (via CDP `DOM.*` events or an injected `MutationObserver`), and dispatches events to elements by node ID rather than by coordinates (Lightpanda has only partial layout).
-- Client: a sanitizing renderer in a sandboxed frame (section 5).
-- Engineering: roughly 6–10 weeks for the CDP bridge, snapshot and mutation streaming, host sandbox, and renderer.
-- Dependencies: Lightpanda (pinned release), `chromedp`, a sandbox tool (bubblewrap or nsjail).
-- License: Lightpanda is AGPL-3.0; TabTop is Apache-2.0. Running an unmodified Lightpanda as a separate process over CDP does not place TabTop under the AGPL. Any patched Lightpanda must have its source offered to network users, and bundling it in the image distributes AGPL software with its source obligations. Keep it an optional, separately installed component, and do not patch it without a licensing decision.
-- Telemetry is on by default; always run with `LIGHTPANDA_DISABLE_TELEMETRY=true`.
-- Open questions for Phase 0: reliability over long interactive sessions (Lightpanda targets scraping and agents), CDP coverage for mutation streaming and event dispatch, start-up time per session, and binary size.
-
-**E: Kitesurf engine**
-
-[Kitesurf](https://github.com/cloudflare/kitesurf) describes itself as "an experimental browser engine that runs on Cloudflare Workers" that "parses HTML, applies CSS, runs page JavaScript, and renders screenshots without Chrome or a browser container." It exposes a partial CDP endpoint for Puppeteer. Page scripts are bundled as modules into a per-page isolate loaded through the Worker Loader, so they run natively in `workerd`’s V8; Boa (inside WebAssembly) runs only runtime-generated code (`eval`, `new Function`, `Runtime.evaluate`, computed `import()`). Blitz handles the DOM, layout, and painting, Stylo handles CSS, Parley and Vello handle text and graphics, and Krilla produces PDFs. Each page gets its own isolate through Cloudflare Dynamic Workers (the Worker Loader binding). It is built with Rust, TypeScript, Bazel, and Wrangler, licensed Apache-2.0 (Stylo is MPL-2.0), and was at tag `2026.11.9` (13 November 2026) when reviewed.
-
-Confirmed from the source (`packages/engine/src/rbi.ts`): "Clients get recorded vector scenes, not pixels, and rasterize them with the scene-host wasm." Scene frames, partial frames, and resource batches stream with acknowledgement-based backpressure, base64-encoded in `Kitesurf.sceneFrame` CDP events. Input travels as ordinary CDP input commands.
-
-`workerd`’s README is explicit that it "is not a hardened sandbox": it "on its own does not contain suitable defense-in-depth against the possibility of implementation bugs", and possibly-malicious code must run "inside an appropriate secure sandbox", "such as a virtual machine". Kitesurf’s `SECURITY.md` adds that the engine "has no authentication or rate limit of its own" and that an embedder must supply admission through `EngineHost.admit` or a gateway.
-
-- **E1, on the host:** run Kitesurf on `workerd` (the open-source Workers runtime that `wrangler dev` uses) beside tabtopd. Page scripts run natively in V8 inside per-page `workerd` isolates, so the engine needs the same host sandbox as D (section 3); isolates add a layer inside it, not a replacement for it.
-  - Host: `workerd` plus the engine; memory per page to be measured. The README reports local engines running out of memory after about 300 pages without `--expose-gc`, so per-session process recycling is required.
-  - Isolation work: the engine has no authentication of its own, so it must listen only on a private socket reachable from tabtopd, with `EngineHost.admit` as a second check; the host sandbox and egress proxy are as section 3. Its `EngineHost.egress` hook and `workerd`’s `globalOutbound` give two places to route traffic to the proxy.
-  - Client: Kitesurf’s `scene-host-wasm` rasterizer drawing to a canvas in the sandboxed frame. Pages lose selectable text, accessibility, and native scaling.
-  - Engineering: medium, mostly deployment, sandboxing, and the client renderer.
-- **E2, on the client (ruled out):** the Rust core imports only basic JavaScript functions (`console`, `Error`, `Reflect`, and a fetch bridge), so it is not tied to Workers. But the engine runs page scripts as native modules in isolates created by the Worker Loader. In a browser, those scripts would run natively in a worker — the native-execution model this plan rejected with the QuickJS option — and avoiding that would mean a fork.
-- **Hard requirement:** E is acceptable only if it runs fully self-hosted. Any dependency on a Cloudflare account or Cloudflare-hosted services would send browsing through a third party and break TabTop’s self-hosted, E2E design.
-- **Risks:** experimental and weeks old (its `AGENTS.md`: "a proof of concept and many parts are incomplete"), partial CDP, active redesign likely; pin a tag. Its documentation site was not reviewed.
-- **Feasibility check (Phase 0, one to two days):**
-  1. Does it run on `workerd` without a Cloudflare account, including per-page isolates?
-  2. Can all of its outbound traffic be forced through the egress proxy (section 3)?
-  3. Can its Rust core build and run in a browser worker without Workers APIs?
-
-  Status (17 November 2026, at commit `39feadf`):
-  1. Promising, not yet demonstrated: `workerd`’s open-source config schema includes the `workerLoader` binding, and Kitesurf’s `EngineHost` interface supports embedding. Running the built engine is pending.
-  2. Promising, not yet demonstrated: all traffic passes `SandboxOutbound` then `fetch`, and `workerd` can send `fetch` to an external server in forward-proxy style (`HttpOptions.style = proxy`). A logging-proxy test is pending.
-  3. Fails in practice (see E2 above).
-
-  If 1 and 2 pass, evaluate E1 against D. If either fails, keep E as a reference only. Because E1 needs the same host sandbox as D, the comparison now turns on compatibility, resource use, and maturity, and on whether canvas output is acceptable.
+- **Kitesurf (option E)**, Cloudflare’s experimental engine for Workers, self-hosted on `workerd`: works without a Cloudflare account and routes egress cleanly, but is slower, heavier, canvas-only, freezes entirely on a looping page, and depends on an experimental `workerd` feature (see the results above). Revisit if it matures and open-source `workerd` enforces per-isolate CPU limits.
+- **Static sanitized browser (no page JavaScript)**: most target classes need scripts.
+- **Headless Chromium on the host**: heavy per-session host cost and a large dependency. The default image (`DESKTOP=xfce`) already offers Chromium on the streamed desktop for pages that need full compatibility.
+- **QuickJS virtual browser** (page scripts in QuickJS/WASM on the client against a hand-written DOM): writing and maintaining the DOM and browser APIs is the dominant cost, and compatibility would remain narrow.
 
 ### Industry reference: Cloudflare Browser Isolation
 
-[Cloudflare Browser Isolation](https://www.cloudflare.com/sase/products/browser-isolation/) is a commercial remote browser. Per its [developer documentation](https://developers.cloudflare.com/cloudflare-one/policies/browser-isolation/) and the [2020 S2 Systems acquisition post](https://blog.cloudflare.com/cloudflare-and-remote-browser-isolation/):
-
-- Each user gets a disposable, containerized headless Chromium in Cloudflare’s network, treated as compromised and destroyed after each session.
-- It streams Chromium’s Skia draw commands before rasterization ("Network Vector Rendering"), compressed and encrypted; a cached WebAssembly build of Skia in the user’s browser replays them. Input events go back to the remote browser.
-- Isolation is applied by Gateway HTTP policies, with Cloudflare decrypting the user’s HTTPS traffic through its own root certificate.
-
-The NVR details come from the 2020 post; the current product pages do not mention NVR, so the shipping product may differ.
-
-What this means here:
-
-- Per-session disposal and controlled egress are the baseline hardening for any host-side engine (section 3).
-- Draw-command streaming from a patched Chromium is not realistic for TabTop; Kitesurf’s vector-scene output (E1) is the closest available equivalent.
-- TabTop does not need TLS interception: in `/browser` the user enters the URL, so the engine fetches it directly.
+[Cloudflare Browser Isolation](https://www.cloudflare.com/sase/products/browser-isolation/) gives each user a disposable, containerized headless Chromium, treated as compromised and destroyed after each session, and (per the [2020 S2 Systems acquisition post](https://blog.cloudflare.com/cloudflare-and-remote-browser-isolation/)) streams Chromium’s draw commands to a WebAssembly renderer in the user’s browser. Per-session disposal and controlled egress are the same baseline hardening this plan adopts in section 3. TabTop needs no TLS interception: the user enters the URL in `/browser`, so the engine fetches it directly.
 
 ## 1. Architecture
-
-Both options run the engine on the host:
 
 ```text
 client: /browser — trusted UI
   ├─ Address bar, history, reload, stop, errors
   └─ Sandboxed rendering iframe
        ├─ Trusted rendering agent
-       ├─ Sanitized DOM (D) or vector scene on a canvas (E), with brokered resources
+       ├─ Sanitized DOM, with brokered images, stylesheets and fonts
        └─ Events by node ID → host; snapshot and mutations ← host
           ⇅ existing E2E tunnel
 host: tabtopd
-  ├─ Browser session manager (one engine per browsing context)
-  ├─ CDP client (chromedp) ── engine in sandbox (Lightpanda, or Kitesurf on workerd)
-  ├─ Egress proxy using fetch.go’s client and address policy ← all engine traffic
+  ├─ Browser session manager (one Lightpanda process per browsing context)
+  ├─ CDP client over a Unix socket ── Lightpanda in its sandbox
+  │                                     └─ isolated-world MutationObserver → Runtime.addBinding
+  ├─ Egress proxy dialling through fetch.go’s address policy ← all engine traffic
   └─ Resource broker for the renderer (images, stylesheets, fonts)
 ```
 
@@ -149,10 +119,10 @@ E2E protects the client-to-TabTop connection. The engine or broker fetches the d
 
 ### Security layers and which one is load-bearing
 
-- **Host containment (load-bearing):** the engine’s process sandbox, network namespace, and resource limits (section 3). A fully compromised engine must be unable to read TabTop’s files or state, reach tabtopd except through its CDP socket, or connect anywhere except the egress proxy.
-- **Client containment (load-bearing):** the rendering iframe’s sandbox and CSP. Even with a completely broken sanitizer, snapshot or scene content must be unable to reach the parent DOM, TabTop storage, the tunnel, or the network.
+- **Host containment (load-bearing):** the engine’s process sandbox, network namespace, and resource limits (section 3). A fully compromised engine must be unable to read TabTop’s files or state, reach tabtopd except through its CDP socket, or connect anywhere except the egress proxy. Phase 0 showed that the network namespace, not Lightpanda’s `--http-proxy`, is what stops localhost traffic.
+- **Client containment (load-bearing):** the rendering iframe’s sandbox and CSP. Even with a completely broken sanitizer, snapshot content must be unable to reach the parent DOM, TabTop storage, the tunnel, or the network.
 - **Broker enforcement (load-bearing for "no direct traffic"):** the frame CSP permits no network origins at all — only `'self'` for the trusted renderer, `blob:`, and `data:`. A URL the rewriter misses fails to load rather than leaking a request.
-- **Sanitizer and rewriter (correctness and defence in depth):** removes active content from snapshots (D) and rewrites resource URLs to broker-backed `blob:` URLs. A sanitizer bug should cause broken rendering, not an escape or a leak; tests confirm this by disabling the sanitizer and checking that the layers above still hold.
+- **Sanitizer and rewriter (correctness and defence in depth):** removes active content from snapshots and rewrites resource URLs to broker-backed `blob:` URLs. A sanitizer bug should cause broken rendering, not an escape or a leak; tests confirm this by disabling the sanitizer and checking that the layers above still hold.
 
 ## 2. Reuse existing TabTop components
 
@@ -171,19 +141,38 @@ Add dedicated browser routes rather than broadening `preview-resource`, whose ac
 
 ## 3. Engine service and host sandbox
 
-tabtopd owns the engine’s lifecycle:
+### Lightpanda as a component
 
-- One engine process per browsing context, started on `browser-open`, killed on `browser-close`, logout, session expiry, tunnel loss, or idle timeout. No engine state outlives its context.
-- A dedicated unprivileged user; a process sandbox (bubblewrap or nsjail) with a seccomp filter; a private, empty filesystem view apart from the engine binary and a per-context scratch directory deleted on exit. No access to `$HOME`, `/fs`, roots, tabtopd’s state, its sockets, or the X display.
-- Its own network namespace whose only route is the egress proxy. The CDP connection to tabtopd uses a dedicated Unix socket or socketpair passed into the sandbox.
-- External limits on memory, CPU, process count, and wall-clock time (cgroups or `prlimit`), plus a watchdog that kills an unresponsive engine.
-- The engine’s own controls (Lightpanda’s `--block-private-networks` and `--block-cidrs`, telemetry disabled; Kitesurf’s isolates) are additional layers only, since they are enforced inside the untrusted process.
+- Pin a release (1.0.4 at the time of Phase 0) and verify its published SHA-256 on install. Linux x86_64 needs glibc 2.35+, arm64 2.38+; Debian trixie meets both. No Alpine/musl support.
+- Optional and separately installed, never bundled into the image by default, and never patched without a licensing decision: Lightpanda is AGPL-3.0 and TabTop is Apache-2.0. Running an unmodified Lightpanda as a separate process over CDP does not place TabTop under the AGPL; distributing it, or a patched version, carries AGPL source obligations. `/browser` reports itself unavailable when the binary is absent.
+- Always run with `LIGHTPANDA_DISABLE_TELEMETRY=true`; telemetry is on by default.
+- Run as `lightpanda serve --unix-socket <path> --http-proxy http://127.0.0.1:<port>`, adding `--block-private-networks` as an extra layer once confirmed compatible with the proxy.
+
+### Lifecycle
+
+- One Lightpanda process per browsing context, started on `browser-open`, killed on `browser-close`, logout, session expiry, tunnel loss, or idle timeout. No engine state outlives its context. Start-up measured at 41 ms, so there is no need to pool engines.
+- A watchdog pings the engine over CDP and watches its CPU. A looping page keeps a core busy while CDP still answers, so the watchdog kills an engine that stays at its CPU limit beyond a page budget, as well as one that stops answering.
+
+### Sandbox
+
+Phase 0 used bubblewrap, which worked without root on the test host:
+
+- `--unshare-all` (new user, PID, IPC, UTS, cgroup, and network namespaces), `--cap-drop ALL`, `--die-with-parent`, `--new-session`, `--clearenv`.
+- A read-only view of the binary, its libraries, and CA certificates; a private `/tmp`; a run directory holding only the CDP and egress sockets. No access to `$HOME`, roots, tabtopd’s state or other sockets, or the X display.
+- Phase 1 adds a seccomp filter and narrows the read-only binds from all of `/usr` to what the binary needs, and confirms both inside TabTop’s container image.
+
+### Resource limits
+
+Phase 0 used a systemd user scope (`systemd-run --user --scope -p MemoryMax=… -p MemorySwapMax=0 -p CPUQuota=100% -p TasksMax=64`), which killed a memory-exhaustion page at the limit without affecting anything else. Inside containers without systemd, use the cgroup directly or `prlimit`; do not use `RLIMIT_AS`, which breaks V8’s address-space reservations.
 
 ### Egress proxy
 
-tabtopd runs an HTTP forward proxy (including `CONNECT` for HTTPS) reachable only from the engine’s namespace. Every connection is dialled through `fetch.go`’s client and address policy, so the engine gets the same destination rules as every other TabTop fetch:
+The engine’s network namespace contains only loopback. A small bridge inside the sandbox connects `127.0.0.1:<port>` (Lightpanda’s `--http-proxy`) to tabtopd’s egress proxy on a Unix socket bound into the sandbox.
+
+The proxy handles plain proxied requests and `CONNECT`, and dials every connection through `fetch.go`’s address policy, checked on the socket actually opened:
 
 - HTTP/HTTPS only; public destinations by default; private networks only when separately configured (a browser-specific flag alongside `-fetch-private`/`previewFetchPrivate`, defaulting off); loopback, link-local, metadata, and the host’s own addresses never.
+- `CONNECT` only to ports 80 and 443 initially. HTTPS passes through `CONNECT` tunnels, so rules are per host and port; URL-level rules apply only to plain HTTP.
 - `WEB_FETCH=0` disables `/browser`.
 - Per-context limits on connections, bytes, and request rate, since all traffic originates from the TabTop host’s IP.
 - Logging matching `fetch.go`: the destination host only, never the full URL.
@@ -210,7 +199,7 @@ The resource broker enforces:
 
 ### Cookies
 
-The engine keeps cookies in memory for the life of its context only; nothing is persisted, and the cookie jar is destroyed with the engine. The resource broker sends no cookies. Whether logins are a goal, and whether cookies may persist across contexts, is decided in Phase 3. Never inherit TabTop’s authentication.
+The engine keeps cookies in memory for the life of its context only; nothing is persisted (no `--cookie-jar`), and the cookie jar is destroyed with the engine. The resource broker sends no cookies. Whether logins are a goal, and whether cookies may persist across contexts, is decided in Phase 3. Never inherit TabTop’s authentication.
 
 ## 5. Rendering and sanitization
 
@@ -235,11 +224,20 @@ Snapshots and mutations from the engine are untrusted. Before rendering:
 
 Apply the same checks to every mutation batch, not only the initial snapshot.
 
-For E, the renderer draws scenes to a canvas in the same sandboxed frame with Kitesurf’s scene rasterizer; DOM sanitization is replaced by validation of the scene format.
+## 6. Interaction and DOM streaming
 
-## 6. Interaction and requests
+### Snapshot and mutations
 
-- The renderer cancels every native default action (following a link, submitting a form, toggling a control) and sends the event to the engine. The engine dispatches it, runs page handlers, and performs any default action itself; resulting navigations and DOM changes come back as messages.
+- On each navigation, take the initial snapshot with `DOM.getDocument` (depth −1) or the document’s outer HTML.
+- Lightpanda does not emit CDP DOM mutation events. Instead, create an isolated world (`Page.createIsolatedWorld`), add a binding (`Runtime.addBinding`), and run a `MutationObserver` in that world that reports batches through the binding. Phase 0 confirmed that page scripts can neither see nor replace the observer, and that every change arrived.
+- The observer reports enough to rebuild changes on the client: node identities, attribute changes, text changes, and added subtrees serialized for the sanitizer. Its exact format is designed in Phase 2.
+- Page scripts can still produce mutations quickly; the server coalesces batches and applies the per-context byte limits.
+
+### Events
+
+- The renderer cancels every native default action (following a link, submitting a form, toggling a control) and sends the event to the engine by node ID.
+- tabtopd resolves the node (`DOM.resolveNode`) and dispatches a cancelable event on it (`Runtime.callFunctionOn`), which returns whether the page called `preventDefault()`. Coordinate-based input (`Input.dispatchMouseEvent`) is not used, because Lightpanda’s layout is approximate.
+- The engine performs any default action itself; resulting navigations and DOM changes come back as messages.
 - Input values are sent with `input` and `change` events, so the engine’s form state matches what the user sees.
 - Navigations always go through the trusted UI’s history and address bar, never through the frame.
 - Downloads are reported to the trusted UI, which can hand them to the existing fetch-to-Downloads flow in `fetch.go` with user confirmation.
@@ -251,11 +249,11 @@ The feature flag exists from the first commit, so incomplete phases ship disable
 
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
-| 0 | Time-boxed evaluation (2 weeks) of D and E. First E’s one-to-two-day feasibility check; then a throwaway spike per remaining option running the interactive fixture: for D, sandboxed Lightpanda + chromedp + snapshot to a crude renderer; for E, Kitesurf on `workerd` in the same sandbox if the feasibility check passes | Decision between D and E recorded, with licenses, pinned revisions, measured fixture behaviour, start-up time, host and client memory, and the sandbox design |
-| 1 | Engine service, host sandbox, egress proxy, and `/browser` UI with read-only rendering | Target class 1 renders; navigation, history, reload, stop, cancellation; sandbox escape and egress tests pass; frame CSP and sandbox tests; no direct remote requests |
-| 2 | Interaction: events by node ID, form input, mutation streaming | Target classes 2–4 work on fixtures; engine-side `preventDefault` respected; stale generations dropped |
-| 3 | Compatibility and policy | Target class 5 measured; cookie and login decision; downloads; diagnostics for unsupported features; rate limits tuned |
-| 4 | Integration | Packaging as an optional component (and AGPL handling if D), documentation, session cleanup; flag on by default |
+| 0 | Evaluation of Lightpanda and Kitesurf — **done** (section 0) | Decision recorded: Lightpanda |
+| 1 | Engine service, host sandbox (with seccomp and minimal binds, inside TabTop’s container), egress proxy, and `/browser` UI with read-only rendering | Target class 1 renders; navigation, history, reload, stop, cancellation; sandbox escape and egress tests pass inside the container; frame CSP and sandbox tests; no direct remote requests |
+| 2 | Interaction: events by node ID, form input, isolated-world mutation streaming | Target classes 2–4 work on fixtures; engine-side `preventDefault` respected; stale generations dropped; long-session reliability measured |
+| 3 | Compatibility and policy | Target class 5 measured; cookie and login decision; `--load-resources` decision; downloads; diagnostics for unsupported features; rate limits tuned |
+| 4 | Integration | Optional install of a pinned Lightpanda with checksum, AGPL notice, documentation, session cleanup; flag on by default |
 
 ## 8. Verification
 
@@ -265,32 +263,20 @@ Use local fixture sites and browser automation to verify:
 - No destination traffic leaves the client directly, including with the sanitizer and rewriter disabled (CSP alone must block it).
 - Sanitizer bypasses through HTML, CSS, SVG, and mutation batches.
 - Attempts from snapshot content to access the parent DOM, session storage, tunnel credentials, or files.
-- From inside the engine sandbox: reading `$HOME`, `/fs`, or TabTop state; reaching tabtopd sockets other than CDP; connecting to private, loopback, metadata, or host addresses directly or via redirects and DNS rebinding through the egress proxy.
-- Resource exhaustion: infinite loops, memory growth, process forks, oversized and compressed responses; the watchdog kills the engine.
+- From inside the engine sandbox: reading `$HOME`, roots, or TabTop state; reaching tabtopd sockets other than CDP; connecting to private, loopback, metadata, or host addresses directly, via the proxy, or via redirects and DNS rebinding. Include page requests to `localhost`, which Lightpanda sends outside its proxy.
+- Resource exhaustion: infinite loops (the watchdog kills the engine while CDP still answers), memory growth (the cgroup limit kills it), process forks, oversized and compressed responses.
 - Stale navigation generations are dropped by the server.
 - Logout, session expiry, and tunnel loss kill the engine and delete its scratch directory.
 - Exact sandbox and CSP values for the `/browser` frame.
+- Telemetry stays disabled: no traffic to Lightpanda’s telemetry endpoint appears in the egress proxy log.
 
-First milestone (end of Phase 0): one interactive fixture, loaded by the sandboxed engine, that reads the DOM, handles a click, performs a `fetch`, and updates the client’s rendering. That tests the riskiest assumptions — that the engine can be contained on the host and that its output can drive an interactive client rendering — before broader work.
+## 9. Dependencies and references
 
-## 9. Existing projects and reuse candidates
-
-These candidates were reviewed at the documentation level. Their security properties, maintenance, licensing, and suitability must be checked against a pinned revision before adoption.
-
-| Project | Relevant capabilities | Gaps relative to this plan |
+| Project | Role | Notes |
 |---|---|---|
-| [Lightpanda](https://github.com/lightpanda-io/browser) (for option D) | Headless browser in Zig with V8, html5ever, and its own DOM; no graphical rendering; CDP and WebDriver BiDi (Puppeteer, Playwright, chromedp); about 80% of Chrome’s WPT subtests; private-network blocking, proxy, cookie jar; 1.0 released October 2026 | Runs foreign JavaScript on the host with no process sandbox; AGPL-3.0; telemetry on by default; built for automation rather than long interactive sessions; partial layout only |
-| [Kitesurf](https://github.com/cloudflare/kitesurf) (for option E) | Experimental engine for Cloudflare Workers: page scripts as native V8 modules in per-page isolates (Worker Loader), Boa for generated code, Blitz DOM/layout/paint, Stylo CSS, Vello graphics; vector-scene output with a WASM rasterizer; `EngineHost` embedding hooks; partial CDP; Apache-2.0 | Proof of concept; `workerd` is not a hardened sandbox, so it needs TabTop’s host sandbox; no authentication of its own; canvas output; self-hosting on `workerd` not yet demonstrated; reported memory growth without `--expose-gc`; Bazel and nightly Rust build |
-| [chromedp](https://github.com/chromedp/chromedp) | Go CDP client for driving either engine from tabtopd | Engines implement only part of CDP; confirm the domains used against each engine |
-| [bubblewrap](https://github.com/containers/bubblewrap) / [nsjail](https://github.com/google/nsjail) | Unprivileged process sandboxing with namespaces and seccomp | Requires user namespaces or container privileges; confirm availability in TabTop’s container deployments |
-
-### Evaluation sequence (Phase 0, time-boxed)
-
-1. Check licenses and maintenance status of both engines and the sandbox tools.
-2. Confirm the sandbox tool runs inside TabTop’s container image (user namespaces, seccomp) without extra privileges, or record what it needs.
-3. Run Lightpanda (pinned release, telemetry off) inside the sandbox with its own network namespace and the egress proxy. Drive it from Go with `chromedp`: load the fixture, serialize the DOM, stream mutations, and dispatch a click by node ID. Measure start-up time, memory per session, and binary size, and confirm that the sandboxed process cannot read `$HOME` or `/fs`, reach other tabtopd sockets, or connect to private or metadata addresses.
-4. Run E’s feasibility check (section 0): self-hosting on `workerd` without a Cloudflare account, egress forced through the egress proxy, and a standalone browser-worker build of the Rust core. Read its `SECURITY.md` and confirm what it sends to clients. Stop after two days if none of the checks pass.
-5. Build the interactive fixture with D, and with E if feasible: DOM reads and writes, a click callback with `preventDefault`, a script `fetch`, and a resource-bearing mutation, rendered in the sandboxed client frame.
-6. Record the decision between D and E.
+| [Lightpanda](https://github.com/lightpanda-io/browser) | Page engine | Zig, V8, html5ever, own DOM; no graphical rendering; CDP and WebDriver BiDi; about 80% of Chrome’s WPT subtests per its 1.0 announcement; AGPL-3.0; telemetry on by default |
+| [chromedp](https://github.com/chromedp/chromedp) / [cdproto](https://github.com/chromedp/cdproto) | Go CDP client in tabtopd | v0.23 introduced a generic API; Phase 0 used v0.14.2. Lightpanda implements only part of CDP; the domains used are `Page`, `DOM`, and `Runtime` |
+| [bubblewrap](https://github.com/containers/bubblewrap) / [nsjail](https://github.com/google/nsjail) | Engine sandbox | bubblewrap 0.12.0 worked unprivileged on the test host; container support to confirm in Phase 1 |
+| [Kitesurf](https://github.com/cloudflare/kitesurf) | Evaluated, not chosen | See section 0 |
 
 The expected result is a contained engine, a sanitized client renderer, and TabTop’s E2E broker. Combining them does not by itself establish broad website compatibility or a secure isolation boundary; both must be demonstrated by the verification above.
