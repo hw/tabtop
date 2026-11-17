@@ -308,7 +308,7 @@ export function preview(dir, files, index, download, opts = {}) {
     const dialog = el("dialog", { className: "preview" },
         el("div", { className: "head", role: "toolbar", ariaLabel: "Preview actions" }, name, back, where,
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
-            el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, exif, edit, versions, saveStatus, store, done),
+            el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, exif, versions, saveStatus, store, done),
             el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle),
             externalGroup, saveGroup, widen, close), previewNotice, body);
     showWide();
