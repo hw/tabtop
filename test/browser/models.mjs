@@ -71,10 +71,11 @@ export async function checkModels(checks) {
         await waitFor(`${info} === "glTF · 1 × 1 × 0 m · 2 triangles · 1 texture"`, "the glTF, its data and texture found");
         await close();
         await show("square.obj");
-        await waitFor(`${info} === "OBJ · 1 × 1 × 0 mm · 2 triangles · 1 texture"`, "the OBJ, its material and texture found");
+        // (A mesh for printing is checked too: a flat square's edges are open.)
+        await waitFor(`${info} === "OBJ · 1 × 1 × 0 mm · 2 triangles · 1 texture · 4 open edges"`, "the OBJ, its material and texture found");
         await close();
         await show("lost.obj");
-        await waitFor(`${info} === "OBJ · 1 × 1 × 0 mm · 1 triangle · a file it refers to isn't here: gone.png"`, "a texture that isn't there, said");
+        await waitFor(`${info} === "OBJ · 1 × 1 × 0 mm · 1 triangle · 3 open edges · a file it refers to isn't here: gone.png"`, "a texture that isn't there, said");
         await close();
 
         // Binary G-code: as its text; coloured by speed, its legend saying so.
