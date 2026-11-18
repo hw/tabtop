@@ -658,6 +658,9 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
         await waitFor(`!document.querySelector(".hex-disasm-input") && ${shown} === "b 0x50"`, "the MIPS box put back");
         await choose("mips64-be");
         await ev(`document.querySelector("dialog.preview button.close").click()`);
+        // Closing waits to leave editing first: reopened before it's gone,
+        // the waits below would find the old preview's parts.
+        await waitFor(`!document.querySelector("dialog.preview")`, "the preview closed");
         await preview();
         await waitFor(`!!document.querySelector(".hex-disasm-bitness")`, "the instruction set chooser, reopened");
         if (await ev(`document.querySelector(".hex-disasm-bitness").value`) !== "mips64-be") throw new Error("the MIPS instruction set wasn't remembered");
