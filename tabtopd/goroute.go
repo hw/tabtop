@@ -8,7 +8,8 @@ package main
 //
 // The page sends JSON text:
 //
-//	{"op":"navigate","url":...}  {"op":"stop"}
+//	{"op":"navigate","url":...,"view":{"w":...,"h":...,"dpr":...}}  {"op":"stop"}
+//	{"op":"viewport","view":{...}}  the frame's size changed: the engine's window follows
 //	{"op":"event","gen":N,"kind":"click"|"input"|"change"|"key"|"submit"|"focus","id":...}
 //	{"op":"dialog","accept":...,"text":...}  {"op":"resync","gen":N}
 //

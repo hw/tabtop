@@ -20,7 +20,7 @@
 // the connection is lost, the page tries again by itself (see
 // reconnect.js), with a new engine, loading the page that was shown.
 
-import { navBar, nameTab, pages } from "../tabtop/nav.js";
+import { navBar, nameTab, pages, openPage } from "../tabtop/nav.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
@@ -86,6 +86,7 @@ let connecting = null;  // a connect() going
 let gen = 0;    // the newest generation, as the server numbers them (see goroute.go)
 let shown = 0;  // the generation whose document the frame has
 let loading = false;
+let rendering = false; // snapshot received; the frame is preparing styles and resources
 let spent = 0;  // bytes fetched for the frame for the page shown
 
 // target turns what was typed into an address: one as it is, a host
@@ -102,17 +103,22 @@ function show(text) {
     status.textContent = text;
 }
 
-function warn(message, { retry = null, error = true, label = "Try again" } = {}) {
+function warn(message, { retry = null, error = true, label = "Try again", edit = false } = {}) {
     notice.querySelector("p").textContent = message;
     notice.classList.toggle("error", error);
-    const button = notice.querySelector("button");
+    const button = notice.querySelector(".primary");
     button.textContent = label;
     button.hidden = !retry;
     button.onclick = retry ? () => { notice.hidden = true; retry(); } : null;
+    notice.querySelector(".edit").hidden = !edit;
     notice.hidden = false;
 }
+notice.querySelector(".dismiss").addEventListener("click", () => { notice.hidden = true; });
+notice.querySelector(".edit").addEventListener("click", () => { notice.hidden = true; address.focus(); address.select(); });
 
 function update() {
+    $("go_progress").hidden = !(loading || rendering);
+    frame.setAttribute("aria-busy", String(loading || rendering));
     back.disabled = at <= 0;
     forward.disabled = at >= entries.length - 1;
     reload.disabled = at < 0;
@@ -121,6 +127,7 @@ function update() {
     reload.setAttribute("aria-label", reload.title);
     const entry = entries[at];
     if (entry && document.activeElement !== address) address.value = entry.url;
+    frame.title = entry ? entry.title || hostOf(entry.url) : "Page";
     document.title = entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
     if (entry) {
         history.replaceState(null, "", "#" + entry.url);
@@ -144,18 +151,50 @@ function load(url, { push = true } = {}) {
     start.hidden = true;
     notice.hidden = true;
     loading = true;
+    rendering = false;
+    show(`Loading ${hostOf(url)}…`);
     update();
     if (!ws) {
         connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
         return;
     }
-    ws.send(JSON.stringify({ op: "navigate", url }));
+    sentView = view();
+    ws.send(JSON.stringify({ op: "navigate", url, view: sentView }));
 }
+
+// The page's window in the engine is the size of the frame here (and its
+// pixel ratio), so a page laying itself out for a phone or a wide screen,
+// or measuring where its parts are, does so as it's shown. Measured here,
+// on the frame element, not asked of what's in it; sent with each
+// navigation, and again when it changes.
+let sentView = null;
+function view() {
+    const r = frame.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), dpr: Math.round((window.devicePixelRatio || 1) * 100) / 100 };
+}
+let viewTimer = 0;
+new ResizeObserver(() => {
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(() => {
+        const v = view();
+        if (!ws || !v.w || !v.h || (sentView && v.w === sentView.w && v.h === sentView.h && v.dpr === sentView.dpr)) return;
+        sentView = v;
+        ws.send(JSON.stringify({ op: "viewport", view: v }));
+    }, 250);
+}).observe(frame);
+// Mobile keyboards resize the visual viewport even when the layout viewport
+// stays unchanged. Keep the toolbar and the remaining page in that space.
+function fitViewport() {
+    document.body.style.height = window.visualViewport ? `${window.visualViewport.height}px` : "100dvh";
+}
+window.visualViewport?.addEventListener("resize", fitViewport);
+fitViewport();
 
 function stop() {
     if (!ws || !loading) return;
     ws.send(JSON.stringify({ op: "stop" }));
     loading = false;
+    rendering = false;
     show("");
     update();
 }
@@ -168,11 +207,13 @@ function stop() {
 function connect() {
     return new Promise((resolve) => {
         const s = new TunnelSocket({ type: "go" }, { title: "Browser" });
-        show("Connecting…");
+        show("Connecting to TabTop…");
+        $("go_progress").hidden = false;
         s.onopen = () => {
             ws = s;
             gen = shown = 0;
             show("");
+            $("go_progress").hidden = true;
             if (at >= 0) load(entries[at].url, { push: false });
             resolve(true);
         };
@@ -187,16 +228,17 @@ function connect() {
         s.onclose = (e) => {
             const was = ws === s;
             ws = null;
-            loading = false;
+            loading = rendering = false;
+            closeDialog();
             update();
             if (e.login) {
                 forgetSession(s.session);
                 storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
             } else if (e.lost) {
-                if (was) reconnect("The browser lost its connection.", connect);
+                if (was) reconnect("Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
             } else {
                 show("");
-                warn(e.reason || "The browser's engine was closed.", { retry: () => connect() });
+                warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0 });
             }
             resolve(!e.lost);
         };
@@ -213,6 +255,7 @@ function message(m) {
                 at = entries.length - 1;
             }
             loading = true;
+            rendering = false;
             notice.hidden = true;
             closeDialog();
             show(`Loading ${hostOf(m.url)}…`);
@@ -220,13 +263,14 @@ function message(m) {
             break;
         case "go-snapshot": {
             loading = false;
+            rendering = true;
             const entry = entries[at];
             if (entry) {
                 entry.url = typeof m.url === "string" && /^https?:/i.test(m.url) ? m.url : entry.url;
                 entry.title = typeof m.title === "string" ? m.title : "";
             }
             if (!m.again) spent = 0;
-            show(m.again ? "" : "Showing…");
+            show("Preparing images and styles…");
             shown = m.gen;
             lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again };
             toFrame(lastRender);
@@ -253,15 +297,15 @@ function message(m) {
             closeDialog();
             break;
         case "go-file":
-            loading = false;
+            loading = rendering = false;
             show("");
             offerFile(m.url, m.mime);
             update();
             break;
         case "go-error":
-            loading = false;
+            loading = rendering = false;
             show("");
-            warn(m.message || "The page couldn't be loaded.", { retry: at >= 0 ? () => load(entries[at].url, { push: false }) : null });
+            warn(m.message || "The page couldn’t be loaded.", { retry: at >= 0 ? () => load(entries[at].url, { push: false }) : null, label: "Retry", edit: true });
             update();
             break;
     }
@@ -356,7 +400,14 @@ window.addEventListener("message", (e) => {
             }
             break;
         case "rendered":
-            if (m.gen === gen) show(m.report?.error ? `The page couldn't be shown: ${m.report.error}` : "");
+            if (m.gen === shown && !loading) {
+                rendering = false;
+                show("");
+                if (m.report?.error) warn(`The page couldn’t be shown: ${m.report.error}`, {
+                    retry: () => load(entries[at].url, { push: false }), label: "Reload page", edit: true,
+                });
+                update();
+            }
             break;
     }
 });
@@ -415,15 +466,22 @@ async function saveFile(url) {
             if (m.text === undefined) continue;
             const res = JSON.parse(m.text);
             if (res.error) throw new Error(res.error);
+            if (res.fetch && !res.fetch.done) {
+                const { got, total, name } = res.fetch;
+                const amount = Number.isFinite(got) && got >= 0 ? `${(got / 1048576).toFixed(1)} MB` : "";
+                const progress = Number.isFinite(total) && total > 0 && amount
+                    ? `${Math.min(100, Math.floor(got / total * 100))}% · ${amount}` : amount;
+                show(`Saving ${name || "file"} from ${hostOf(url)}${progress ? ` · ${progress}` : ""}…`);
+            }
             if (res.fetch?.done) {
                 show("");
-                warn(`Saved ${res.fetch.name} into Downloads.`, { error: false });
+                warn(`Saved ${res.fetch.name} into Downloads.`, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
                 return;
             }
         }
     } catch (err) {
         show("");
-        warn(`Not saved: ${err.message}`);
+        warn(`Not saved: ${err.message}`, { retry: () => saveFile(url), label: "Retry save" });
     } finally {
         t?.close();
     }
@@ -443,6 +501,10 @@ back.addEventListener("click", () => { if (at > 0) { at--; load(entries[at].url,
 forward.addEventListener("click", () => { if (at < entries.length - 1) { at++; load(entries[at].url, { push: false }); } });
 reload.addEventListener("click", () => (loading ? stop() : at >= 0 && load(entries[at].url, { push: false })));
 document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && document.activeElement === address) {
+        address.value = entries[at]?.url || "";
+        address.blur();
+    }
     if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); back.click(); }
     if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); forward.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") { e.preventDefault(); address.focus(); address.select(); }

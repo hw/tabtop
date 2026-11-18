@@ -199,7 +199,7 @@ func TestGoSandboxArgs(t *testing.T) {
 		}
 	}
 	moli := goMoliArgs(9222, "http://127.0.0.1:3128", "")
-	if !slices.Equal(moli, []string{"serve", "--host", "127.0.0.1", "--port", "9222", "--http-proxy", "http://127.0.0.1:3128", "--log-level", "warn"}) {
+	if !slices.Equal(moli, []string{"serve", "--host", "127.0.0.1", "--port", "9222", "--http-proxy", "http://127.0.0.1:3128", "--log-level", "warn", "--layout"}) {
 		t.Errorf("Moli's arguments: %q", moli)
 	}
 }

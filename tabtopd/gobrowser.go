@@ -112,6 +112,7 @@ type goBrowser struct {
 	lastChange time.Time // when the document last changed
 	dialog     bool      // a dialog is open
 	popups     map[string]bool
+	view       goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops
@@ -169,22 +170,42 @@ func (q *goQueue) run(stop <-chan struct{}) {
 }
 
 type goClientMsg struct {
-	Op        string `json:"op"`
-	URL       string `json:"url"`
-	Gen       int    `json:"gen"`
-	Kind      string `json:"kind"`
-	ID        int    `json:"id"`
-	Value     string `json:"value"`
-	Checked   bool   `json:"checked"`
-	Key       string `json:"key"`
-	Code      string `json:"code"`
-	Shift     bool   `json:"shift"`
-	Ctrl      bool   `json:"ctrl"`
-	Alt       bool   `json:"alt"`
-	Meta      bool   `json:"meta"`
-	Submitter int    `json:"submitter"`
-	Accept    bool   `json:"accept"`
-	Text      string `json:"text"`
+	Op        string  `json:"op"`
+	URL       string  `json:"url"`
+	Gen       int     `json:"gen"`
+	Kind      string  `json:"kind"`
+	ID        int     `json:"id"`
+	Value     string  `json:"value"`
+	Checked   bool    `json:"checked"`
+	Key       string  `json:"key"`
+	Code      string  `json:"code"`
+	Shift     bool    `json:"shift"`
+	Ctrl      bool    `json:"ctrl"`
+	Alt       bool    `json:"alt"`
+	Meta      bool    `json:"meta"`
+	Submitter int     `json:"submitter"`
+	Accept    bool    `json:"accept"`
+	Text      string  `json:"text"`
+	View      *goView `json:"view"` // navigate, viewport: the frame's size
+}
+
+// goView is the size of the person's frame, which the engine's window is
+// made: CSS pixels, and the device pixel ratio.
+type goView struct {
+	W   int     `json:"w"`
+	H   int     `json:"h"`
+	DPR float64 `json:"dpr"`
+}
+
+// clamped is v within what's sensible to lay a page out at.
+func (v goView) clamped() goView {
+	v.W = min(max(v.W, 160), 7680)
+	v.H = min(max(v.H, 160), 4320)
+	if !(v.DPR >= 0.5) { // NaN too
+		v.DPR = 1
+	}
+	v.DPR = min(v.DPR, 4)
+	return v
 }
 
 func newGoBrowser(t msgConn, e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
@@ -270,6 +291,9 @@ func (b *goBrowser) run() {
 			}
 			switch m.Op {
 			case "navigate":
+				if m.View != nil {
+					b.setView(*m.View) // before the page loads, at its size
+				}
 				u, err := goURL(m.URL)
 				if err != nil {
 					b.gen++
@@ -294,6 +318,10 @@ func (b *goBrowser) run() {
 			case "resync":
 				if m.Gen == b.shown && b.loading == 0 {
 					b.readAgain(b.gen)
+				}
+			case "viewport":
+				if m.View != nil {
+					b.setView(*m.View)
 				}
 			case "dialog":
 				if b.dialog {
@@ -385,6 +413,37 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 		}
 	}, func(r any) { r.(func())() })
 	return time.After(goLoadTimeout)
+}
+
+// setView makes the engine's window v's size, if it isn't already: the
+// page sees it (innerWidth, media queries, resize events) and is laid out
+// at it. Its layout is computed again (a screenshot of one pixel does
+// that; a resize alone doesn't), and what the page changed is read. An
+// engine that can't is left as it was.
+func (b *goBrowser) setView(v goView) {
+	v = v.clamped()
+	if v == b.view {
+		return
+	}
+	b.view = v
+	b.job(func() any {
+		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+		defer cancel()
+		err := b.cdp.call(ctx, b.page, "Emulation.setDeviceMetricsOverride", map[string]any{
+			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
+			// The screen is the window: the person's own isn't told.
+			"screenWidth": v.W, "screenHeight": v.H,
+		}, nil)
+		if err == nil {
+			err = b.cdp.call(ctx, b.page, "Page.captureScreenshot", map[string]any{
+				"format": "png", "clip": map[string]any{"x": 0, "y": 0, "width": 1, "height": 1, "scale": 1},
+			}, nil)
+		}
+		return err
+	}, func(r any) {
+		goDebugf("view %dx%d at %g: %v", v.W, v.H, v.DPR, r)
+		b.changed(goChangesEvery)
+	})
 }
 
 // event handles one of the engine's events.

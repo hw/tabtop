@@ -794,8 +794,11 @@ back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` names the engine; the
 image has Moli at `/opt/moli/moli` (its licences are beside it).
 
 What isn't shown: videos, sounds, and what scripts draw (canvas, WebGL).
-Moli has no layout, so a page that needs one to work (one that measures
-itself, or reacts to where you click within an element) may not work. A
+The page is laid out at your window's size (sites see that size, not your
+screen's), so pages made for phones or wide screens, and menus placed by
+measuring the page, work; the engine's fonts aren't the site's, so such
+places can be a little off. Pages that load more as you scroll down to it,
+and those that react to where you click within an element, may not work. A
 file the site sends (a PDF, an archive) is offered to save into Downloads
 (`WEB_FS=1`), as fetches are saved, but from private networks only when
 both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`. Pictures, stylesheets and fonts are

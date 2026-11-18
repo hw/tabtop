@@ -3,7 +3,8 @@ package main
 // A small Chrome DevTools Protocol client, for the remote browser's engine
 // (goengine.go): commands and their results, and events, over the engine's
 // WebSocket, reached through its socket. Only what /go uses: Target, Page,
-// DOM and Runtime, with sessions flattened onto the one connection.
+// DOM, Emulation, Network and Runtime, with sessions flattened onto the one
+// connection.
 import (
 	"context"
 	"encoding/json"

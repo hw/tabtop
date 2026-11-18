@@ -100,6 +100,13 @@ $("openask").onclick = () => { window.open(location.protocol + "//" + location.h
 setTimeout(() => { const p = document.createElement("p"); p.id = "late"; p.textContent = "late"; document.body.append(p); }, 1500);
 </script>`,
         "result.html": `<!doctype html><title>Result</title><p id="p"></p><script>document.getElementById("p").textContent = "query " + new URLSearchParams(location.search).get("q");</script>`,
+        "view.html": `<!doctype html><title>View</title><style>body { margin: 0 } #hd { height: 123px; background: #eee } .wide-only { display: none } @media (min-width: 900px) { .wide-only { display: block } }</style>
+<header id="hd"><button id="menu">Menu</button></header><p id="w"></p><p id="mq"></p><p class="wide-only" id="wide">wide</p>
+<script>
+const show = () => { document.getElementById("w").textContent = "width " + innerWidth; document.getElementById("mq").textContent = matchMedia("(min-width: 900px)").matches ? "wide" : "narrow"; };
+show(); addEventListener("resize", show);
+document.getElementById("menu").onclick = () => { const o = document.createElement("div"); o.id = "overlay"; o.style.cssText = "position: fixed; left: 0; right: 0; bottom: 0; background: #def"; o.style.top = document.getElementById("hd").getBoundingClientRect().bottom + "px"; o.textContent = "menu"; document.body.append(o); };
+</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
@@ -215,6 +222,26 @@ async function check(base, port, site) {
         const code = await totp();
         await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
         await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page");
+    });
+
+    await step("the browser toolbar fits a mobile viewport", async () => {
+        try {
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 700, deviceScaleFactor: 1, mobile: true });
+            await waitFor(`document.getElementById("go_view").getBoundingClientRect().width === 390`, "mobile layout");
+            const layout = await ev(`(() => {
+                const input = document.getElementById("go_url"), bar = document.getElementById("go_bar");
+                const view = document.getElementById("go_view").getBoundingClientRect();
+                return { font: parseFloat(getComputedStyle(input).fontSize), radius: parseFloat(getComputedStyle(input).borderRadius),
+                    targets: [...bar.querySelectorAll("button")].every(b => b.getBoundingClientRect().height >= 44 && b.getBoundingClientRect().width >= 44),
+                    top: view.top, barBottom: bar.getBoundingClientRect().bottom, bottom: view.bottom, height: visualViewport.height,
+                    overflow: document.documentElement.scrollWidth > innerWidth };
+            })()`);
+            if (layout.font < 16 || layout.radius > 6 || !layout.targets || layout.overflow || layout.top !== layout.barBottom || Math.abs(layout.bottom - layout.height) > 1) {
+                throw new Error(JSON.stringify(layout));
+            }
+        } finally {
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
     });
 
     await step("load a page through the engine", async () => {
@@ -337,7 +364,11 @@ async function check(base, port, site) {
     await step("this machine's addresses are refused", async () => {
         await ev(`(() => { const i = document.getElementById("go_url"); i.value = "http://127.0.0.1:9/"; i.form.requestSubmit(); })()`);
         await waitFor(`!document.getElementById("go_notice").hidden`, "the error", 30000);
-        return await ev(`document.querySelector("#go_notice p").textContent`);
+        const message = await ev(`document.querySelector("#go_notice p").textContent`);
+        if (!(await ev(`document.getElementById("go_progress").hidden && !document.querySelector("#go_notice .edit").hidden`))) throw new Error("missing recovery controls");
+        await ev(`document.querySelector("#go_notice .edit").click()`);
+        if (!(await ev(`document.activeElement.id === "go_url" && document.activeElement.value === "http://127.0.0.1:9/" && document.getElementById("go_notice").hidden`))) throw new Error("Edit address lost the attempted URL");
+        return message;
     });
 
     await step("reloading the tab carries on where it was", async () => {
@@ -349,8 +380,9 @@ async function check(base, port, site) {
 
     await step("an address in a link from elsewhere waits for Enter", async () => {
         const url = site + "result.html?q=linked";
-        await ev(`sessionStorage.clear(); location.hash = ${JSON.stringify(url)}`);
-        await cdp("Page.reload");
+        // In one go, to a new address: the page there before can't put its
+        // own address back in between.
+        await ev(`sessionStorage.clear(); location.replace(location.pathname + "?linked#" + ${JSON.stringify(url)})`);
         await waitFor(`!!document.getElementById("go_url") && document.getElementById("go_url").value === ${JSON.stringify(url)}`, "the address waiting", 30000);
         await sleep(1500);
         if (await ev(`document.title.startsWith("Result")`)) throw new Error("it loaded without Enter");
@@ -461,6 +493,7 @@ async function check(base, port, site) {
         } else {
             await ev(`document.querySelector("#go_notice button").click()`);
             await waitFor(`document.querySelector("#go_notice p").textContent.startsWith("Saved doc.pdf")`, "the file saved", 30000);
+            if (!(await ev(`document.querySelector("#go_notice .primary").textContent === "Open Downloads" && !document.querySelector("#go_notice .primary").hidden`))) throw new Error("no action to open Downloads");
         }
         return await ev(`document.querySelector("#go_notice p").textContent`);
     });
@@ -472,6 +505,25 @@ async function check(base, port, site) {
         if (!(n > 10)) throw new Error(`the counter shows ${n}`);
         await goTo(site + "second.html", "Second");
         return `counter seen at ${n}`;
+    });
+
+    await step("the page is laid out at the frame's size, and follows it", async () => {
+        await goTo(site + "view.html", "View");
+        const frameWidth = () => ev(`Math.round(document.getElementById("go_view").getBoundingClientRect().width)`);
+        let fw = await frameWidth();
+        await frameWait(`document.getElementById("w")?.textContent === "width ${fw}" && document.getElementById("mq").textContent === "wide"`, `the page at ${fw} wide`);
+        // Narrower: the page's own resize handler and media query follow.
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 600, height: 800, deviceScaleFactor: 1, mobile: false });
+        try {
+            fw = await frameWidth();
+            await frameWait(`document.getElementById("w")?.textContent === "width ${fw}" && document.getElementById("mq").textContent === "narrow"`, `the page at ${fw} wide`);
+            // A menu placed by measuring its header lands under it.
+            await frameClick("#menu");
+            await frameWait(`document.getElementById("overlay")?.style.top === "123px"`, "the menu under the header");
+        } finally {
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
+        return `${fw} wide`;
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with

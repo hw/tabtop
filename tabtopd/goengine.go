@@ -194,10 +194,13 @@ func goSandboxArgs(engine, tabtopd, run string) []string {
 
 // goMoliArgs are Moli's arguments: CDP on port, everything fetched through
 // the proxy, and nothing kept (no profile, no cookie jar) or fetched for
-// display (images, fonts: the client's broker fetches those).
+// display (images, fonts: the client's broker fetches those). With
+// --layout, pages that measure themselves (a menu placed below its header)
+// get real sizes and places, at the size of the person's window (see
+// gobrowser.go's viewport).
 func goMoliArgs(port int, proxy, userAgent string) []string {
 	args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
-		"--http-proxy", proxy, "--log-level", "warn"}
+		"--http-proxy", proxy, "--log-level", "warn", "--layout"}
 	if userAgent != "" {
 		args = append(args, "--user-agent", userAgent)
 	}
