@@ -10,13 +10,19 @@
 //                        snapshot, so a missed batch shows
 //   __tabtop.act(json)   does what the person did, in the page: a click,
 //                        typing, a key, a form sent
+//   __tabtop.io(json)    what the person's browser saw of elements the page
+//                        observes, [{o, i, hit, ratio}], handed to the page
+//                        (see goobserve.js)
 //
 // Changes are watched with a MutationObserver here, and tabtopd asks for
 // them often (polling: a CDP binding to signal by stops Moli following links
 // within a page); ops are {o: "c", i, c} (a node's children, those
 // already numbered as {i, r: 1}), {o: "a", i, n, v} (an attribute, v null if
 // removed), {o: "t", i, v} (text), {o: "v", i, v} (a form field's value,
-// changed by script).
+// changed by script). Snapshots and batches carry the page's
+// IntersectionObserver targets too, io: [{op: "+", o, i, m, t, r}] (its
+// observer's number, the element's, rootMargin, thresholds, root element
+// or 0) and {op: "-", o, i}; a snapshot, all of them.
 (() => {
     const w = globalThis;
     if (!w.__tabtop) {
@@ -28,6 +34,65 @@
         let parents = new Set(), attrs = new Map(), texts = new Set();
         const watched = new Map();   // fields acted on -> the value last reported
         let lastURL = "";
+
+        // The page's observed elements, held by element until it's one the
+        // shown copy has (numbered: numbering one would make later batches
+        // name a node never sent).
+        const ioTargets = new Map();  // element -> Map(observer -> {m, t, root})
+        const ioRoots = new Map();    // observer -> its root element
+        let ioSent = new Set();       // "o:i" the shown copy observes
+        let ioOut = [];               // what's to go with the next batch
+        const ioLast = new Map();     // "o:i" -> what was last handed over
+        document.addEventListener("__tabtop_io", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            const el = e.target;
+            if (!d || !Number.isSafeInteger(d.o) || !(el instanceof Element)) return;
+            if (d.op === "r") {
+                ioRoots.set(d.o, el);
+            } else if (d.op === "+") {
+                if (!ioTargets.has(el)) {
+                    if (ioTargets.size >= 5000) return;
+                    ioTargets.set(el, new Map());
+                }
+                ioTargets.get(el).set(d.o, { m: String(d.m), t: Array.isArray(d.t) ? d.t : [0], root: d.r ? ioRoots.get(d.o) ?? null : null });
+            } else if (d.op === "-") {
+                ioTargets.get(el)?.delete(d.o);
+                if (ioTargets.get(el)?.size === 0) ioTargets.delete(el);
+                if (known(el)) {
+                    const key = d.o + ":" + ids.get(el);
+                    ioLast.delete(key);
+                    if (ioSent.delete(key)) ioOut.push({ op: "-", o: d.o, i: ids.get(el) });
+                }
+            }
+        }, true);
+        // ioNew adds to ioOut what's observed of elements now shown.
+        function ioNew() {
+            for (const [el, regs] of ioTargets) {
+                if (!el.isConnected || !known(el)) continue;
+                const i = ids.get(el);
+                for (const [o, r] of regs) {
+                    const key = o + ":" + i;
+                    if (ioSent.has(key) || (r.root && !(r.root.isConnected && known(r.root)))) continue;
+                    ioSent.add(key);
+                    ioOut.push({ op: "+", o, i, m: r.m, t: r.t, r: r.root ? ids.get(r.root) : 0 });
+                }
+            }
+        }
+        function io(json) {
+            let list;
+            try { list = JSON.parse(json); } catch { return "bad"; }
+            for (const e of Array.isArray(list) ? list : []) {
+                const el = node(e?.i);
+                const key = e?.o + ":" + e?.i;
+                if (!el || !ioSent.has(key)) continue;
+                const now = (e.hit ? "1" : "0") + ":" + Number(e.ratio).toFixed(3);
+                if (ioLast.get(key) === now) continue;  // as it was: not again
+                ioLast.set(key, now);
+                el.dispatchEvent(new CustomEvent("__tabtop_io_entry", { detail: JSON.stringify({ o: e.o, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: e.b, r: e.r, rb: e.rb }) }));
+            }
+            return "ok";
+        }
 
         const known = (n) => ids.has(n);
         function id(n) {
@@ -99,7 +164,14 @@
             const doc = ser(document, 0);
             observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
             lastURL = document.URL;
-            return JSON.stringify({ url: document.URL, base: document.baseURI, title: document.title, type: document.contentType, doc });
+            // All of what's observed, for the copy built from this.
+            ioSent = new Set();
+            ioOut = [];
+            ioLast.clear();
+            ioNew();
+            const ioAll = ioOut;
+            ioOut = [];
+            return JSON.stringify({ url: document.URL, base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll });
         }
 
         function changes() {
@@ -151,9 +223,12 @@
             parents = new Set(); attrs = new Map(); texts = new Set();
             const moved = document.URL !== lastURL;
             lastURL = document.URL;
-            if (!ops.length && !moved) return "";
+            ioNew();
+            const ioNow = ioOut;
+            ioOut = [];
+            if (!ops.length && !moved && !ioNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: document.URL, title: document.title, ops });
+            return JSON.stringify({ seq, url: document.URL, title: document.title, ops, io: ioNow });
         }
 
         function watch(el) {
@@ -231,7 +306,9 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act };
+        w.__tabtop = { snapshot, changes, act, io };
+        // What the page observed before this world was made (as it loaded).
+        document.dispatchEvent(new CustomEvent("__tabtop_io_sync"));
     }
     return w.__tabtop.snapshot();
 })()

@@ -107,6 +107,32 @@ const show = () => { document.getElementById("w").textContent = "width " + inner
 show(); addEventListener("resize", show);
 document.getElementById("menu").onclick = () => { const o = document.createElement("div"); o.id = "overlay"; o.style.cssText = "position: fixed; left: 0; right: 0; bottom: 0; background: #def"; o.style.top = document.getElementById("hd").getBoundingClientRect().bottom + "px"; o.textContent = "menu"; document.body.append(o); };
 </script>`,
+        "lazy.html": `<!doctype html><title>Lazy</title><p id="state">waiting</p><p id="feature"></p>
+<div style="height:3000px">down there</div><img id="lazy" data-src="pic.png" width="10" height="10" alt="lazy">
+<script>
+document.getElementById("feature").textContent = "intersectionRatio" in IntersectionObserverEntry.prototype ? "feature yes" : "feature no";
+const img = document.getElementById("lazy"), state = document.getElementById("state");
+let calls = 0;
+new IntersectionObserver((entries, observer) => {
+    for (const e of entries) {
+        calls++;
+        // As YouTube's thumbnails go by: only what has a visible area.
+        if (e.isIntersecting && e.intersectionRect.height > 0) { img.src = img.dataset.src; observer.unobserve(img); state.textContent = "loaded, call " + calls; }
+        else state.textContent = "not visible";
+    }
+}).observe(img);
+</script>`,
+        "ioalert.html": `<!doctype html><title>Observed alert</title><p id="seen">here</p><p id="after"></p>
+<script>
+const seen = document.getElementById("seen");
+const o = new IntersectionObserver((entries) => {
+    if (!entries.some((e) => e.isIntersecting)) return;
+    o.disconnect();
+    alert("seen it");
+    document.getElementById("after").textContent = "after the alert";
+});
+o.observe(seen);
+</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
@@ -524,6 +550,26 @@ async function check(base, port, site) {
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }
         return `${fw} wide`;
+    });
+
+    await step("what the page observes is seen as it's shown here: a picture loads once scrolled to", async () => {
+        await goTo(site + "lazy.html", "Lazy");
+        await frameWait(`document.getElementById("feature")?.textContent === "feature yes"`, "the feature test passing");
+        await frameWait(`document.getElementById("state")?.textContent === "not visible"`, "the picture seen as not visible");
+        const before = await frame(`document.getElementById("lazy").getAttribute("src") || ""`);
+        if (before) throw new Error(`the picture loaded before it was scrolled to: ${before.slice(0, 40)}`);
+        await frame(`document.getElementById("lazy").scrollIntoView()`);
+        await frameWait(`(document.getElementById("lazy").getAttribute("src") || "").startsWith("blob:") && document.getElementById("state").textContent.startsWith("loaded")`, "the picture loaded once scrolled to");
+        return await frame(`document.getElementById("state").textContent`);
+    });
+
+    await step("an observer's callback can ask a question, and the page carries on", async () => {
+        await goTo(site + "ioalert.html", "Observed alert");
+        await waitFor(`document.getElementById("go_dialog").open`, "the alert");
+        const said = await ev(`document.querySelector("#go_dialog p").textContent`);
+        if (!said.includes("seen it")) throw new Error(`the alert said ${said}`);
+        await ev(`document.querySelector("#go_dialog .ok").click()`);
+        await frameWait(`document.getElementById("after")?.textContent === "after the alert"`, "the page carrying on");
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with

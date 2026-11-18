@@ -258,6 +258,7 @@
             styleOf: new Map(),    // a stylesheet's text node's id -> its <style>
             waits: [],
             report: { elements: 0, left: {}, resources: 0, failed: 0 },
+            io: new Map(),         // the page's observer's number -> {observer, ids}
         };
     }
     const alive = (d) => () => d.gen === current;
@@ -485,7 +486,9 @@
             // (Document.replaceChildren refuses a second element even as
             // it replaces the first.)
             document.documentElement ? document.documentElement.replaceWith(root) : document.append(root);
+            unobserveAll(doc);
             doc = d;
+            observeAll(d, m.io);
             if (m.again) {
                 scrollTo(at.x, at.y);  // the same document, read again
             } else {
@@ -494,6 +497,79 @@
             }
             tell({ type: "rendered", gen: d.gen, report: d.report });
         })();
+    }
+
+    // --- What the page observes -------------------------------------------
+    //
+    // The page's IntersectionObserver (in the engine, see goobserve.js) has
+    // this copy's elements observed here, by this browser's own, which sees
+    // them as they're laid out and scrolled here; what it sees goes back.
+
+    const MAX_IO = 5000;
+    let ioSeen = [];
+    let ioTimer = 0;
+    let ioCount = 0;
+    function observeAll(d, list) {
+        if (!Array.isArray(list)) return;
+        for (const x of list) {
+            if (!x || typeof x !== "object" || !Number.isSafeInteger(x.o) || !Number.isSafeInteger(x.i)) continue;
+            const el = d.nodes.get(x.i);
+            if (!el || el.nodeType !== 1) continue;
+            let rec = d.io.get(x.o);
+            if (x.op === "-") {
+                if (rec?.ids.has(el)) {
+                    rec.observer.unobserve(el);
+                    rec.ids.delete(el);
+                    ioCount--;
+                }
+                continue;
+            }
+            if (x.op !== "+" || ioCount >= MAX_IO) continue;
+            if (!rec) {
+                const root = x.r ? d.nodes.get(x.r) : null;
+                if (x.r && !(root?.nodeType === 1)) continue;
+                const o = x.o;
+                try {
+                    const observer = new IntersectionObserver((entries) => seen(d, o, entries), {
+                        root, rootMargin: String(x.m), threshold: Array.isArray(x.t) ? x.t.map(Number) : 0,
+                    });
+                    rec = { observer, ids: new WeakMap() };
+                } catch {
+                    continue;  // options this browser won't take
+                }
+                d.io.set(o, rec);
+            }
+            if (rec.ids.has(el)) continue;
+            rec.ids.set(el, x.i);
+            rec.observer.observe(el);
+            ioCount++;
+        }
+    }
+    function seen(d, o, entries) {
+        const rec = d.io.get(o);
+        if (!rec || d !== doc) return;
+        for (const e of entries) {
+            const i = rec.ids.get(e.target);
+            // Its places too, as shown here: a page may go by them (only
+            // what has a visible area, say), and the engine's own differ.
+            const box = (r) => (r ? [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10) : null);
+            if (i) ioSeen.push({ o, i, hit: e.isIntersecting, ratio: Math.round(e.intersectionRatio * 1000) / 1000,
+                b: box(e.boundingClientRect), r: box(e.intersectionRect), rb: box(e.rootBounds) });
+        }
+        if (ioTimer) return;
+        // Together, a little later: scrolling past many at once is one message.
+        ioTimer = setTimeout(() => {
+            ioTimer = 0;
+            const list = ioSeen;
+            ioSeen = [];
+            if (doc === d && list.length) tell({ type: "io", gen: d.gen, entries: list });
+        }, 100);
+    }
+    function unobserveAll(d) {
+        for (const rec of d?.io.values() ?? []) rec.observer.disconnect();
+        d?.io.clear();
+        ioCount = 0;
+        ioSeen = [];
     }
 
     // --- Changes -------------------------------------------------------------
@@ -550,6 +626,7 @@
         }
         // Stylesheets of what was added load as they come.
         d.waits = [];
+        observeAll(d, m.io);
         if (typeof m.title === "string") tell({ type: "title", gen: d.gen, title: m.title });
     }
 

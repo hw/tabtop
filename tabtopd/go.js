@@ -272,13 +272,13 @@ function message(m) {
             if (!m.again) spent = 0;
             show("Preparing images and styles…");
             shown = m.gen;
-            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again };
+            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io };
             toFrame(lastRender);
             update();
             break;
         }
         case "go-changes":
-            if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title });
+            if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io });
             break;
         case "go-url":
             // The page changed its address itself (history.pushState, a
@@ -393,6 +393,19 @@ window.addEventListener("message", (e) => {
         case "resync":
             if (ws && m.gen === shown) ws.send(JSON.stringify({ op: "resync", gen: m.gen }));
             break;
+        case "io": {
+            const rect = (r) => (Array.isArray(r) && r.length === 4 && r.every(Number.isFinite) ? r : null);
+            // What this browser saw of the elements the page observes: on to
+            // the engine, in pieces well within a message's limit.
+            if (ws && m.gen === shown && Array.isArray(m.entries)) {
+                const entries = m.entries.filter((e) => e && Number.isSafeInteger(e.o) && Number.isSafeInteger(e.i))
+                    .map((e) => ({ o: e.o, i: e.i, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: rect(e.b), r: rect(e.r), rb: rect(e.rb) }));
+                for (let at = 0; at < entries.length; at += 500) {
+                    ws.send(JSON.stringify({ op: "io", gen: m.gen, entries: entries.slice(at, at + 500) }));
+                }
+            }
+            break;
+        }
         case "title":
             if (m.gen === shown && entries[at] && typeof m.title === "string" && m.title !== entries[at].title) {
                 entries[at].title = m.title;

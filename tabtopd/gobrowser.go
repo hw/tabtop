@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,12 @@ import (
 
 //go:embed goagent.js
 var goAgentJS string
+
+// goObserveJS is the page's IntersectionObserver, run before its scripts
+// (see goobserve.js).
+//
+//go:embed goobserve.js
+var goObserveJS string
 
 // goDebug (TABTOP_GO_DEBUG=1) logs what each tab does, for finding out why
 // a page misbehaves: the person's requests by kind, navigations,
@@ -112,7 +119,12 @@ type goBrowser struct {
 	lastChange time.Time // when the document last changed
 	dialog     bool      // a dialog is open
 	popups     map[string]bool
-	view       goView // the engine's window, as last set (zero: its own)
+	// What the person's browser saw of observed elements, waiting to be
+	// handed to the page (newest per element), and whether a handing over
+	// is queued: one at a time, so they can't fill the acts' queue.
+	ioWaiting map[[2]int]goIOEntry
+	ioQueued  bool
+	view      goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops
@@ -187,6 +199,83 @@ type goClientMsg struct {
 	Accept    bool    `json:"accept"`
 	Text      string  `json:"text"`
 	View      *goView `json:"view"` // navigate, viewport: the frame's size
+	// io: what the person's browser saw of the elements the page observes.
+	Entries []goIOEntry `json:"entries"`
+}
+
+// goIO is one of a page's IntersectionObserver targets, for the client to
+// observe: added ("+", with its options) or no longer ("-").
+type goIO struct {
+	Op string    `json:"op"`
+	O  int       `json:"o"`
+	I  int       `json:"i"`
+	M  string    `json:"m,omitempty"`
+	T  []float64 `json:"t,omitempty"`
+	R  int       `json:"r,omitempty"`
+}
+
+// goIOEntry is what the client saw of one: whether it shows, and how much.
+type goIOEntry struct {
+	O     int     `json:"o"`
+	I     int     `json:"i"`
+	Hit   bool    `json:"hit"`
+	Ratio float64 `json:"ratio"`
+	// Where it is, what of it shows and the root's bounds, as shown there:
+	// x, y, width, height (nil if not known).
+	B  []float64 `json:"b,omitempty"`
+	R  []float64 `json:"r,omitempty"`
+	RB []float64 `json:"rb,omitempty"`
+}
+
+// goRect is r if it's a rectangle within reason, or nil.
+func goRect(r []float64) []float64 {
+	if len(r) != 4 {
+		return nil
+	}
+	for _, v := range r {
+		if !(v > -1e6 && v < 1e6) { // NaN too
+			return nil
+		}
+	}
+	return r
+}
+
+const (
+	maxGoIO        = 5000 // targets in a snapshot or batch
+	maxGoIOEntries = 1000 // entries in one message from the client
+)
+
+var goIOMargin = regexp.MustCompile(`^(-?(\d+(\.\d+)?|\.\d+)(px|%)( |$)){1,4}$`)
+
+// goCleanIO keeps what's well formed of a page's observed targets: it's the
+// page's (its own script could send anything), and goes to the client's
+// real IntersectionObserver.
+func goCleanIO(list []goIO) []goIO {
+	out := []goIO{}
+	for _, x := range list {
+		if len(out) >= maxGoIO {
+			break
+		}
+		if x.O <= 0 || x.I <= 0 || x.R < 0 {
+			continue
+		}
+		switch x.Op {
+		case "-":
+			out = append(out, goIO{Op: "-", O: x.O, I: x.I})
+		case "+":
+			if len(x.M) > 64 || !goIOMargin.MatchString(x.M) || len(x.T) == 0 || len(x.T) > 101 {
+				continue
+			}
+			ok := true
+			for _, t := range x.T {
+				ok = ok && t >= 0 && t <= 1
+			}
+			if ok {
+				out = append(out, goIO{Op: "+", O: x.O, I: x.I, M: x.M, T: x.T, R: x.R})
+			}
+		}
+	}
+	return out
 }
 
 // goView is the size of the person's frame, which the engine's window is
@@ -263,6 +352,13 @@ func (b *goBrowser) run() {
 	}()
 	go b.jobs.run(stop)
 	go b.acts.run(stop)
+	// The page's IntersectionObserver, in every document from now on, before
+	// its own scripts: queued before any navigation.
+	b.job(func() any {
+		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+		defer cancel()
+		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": goObserveJS}, nil)
+	}, func(r any) { goDebugf("observer stand-in: %v", r) })
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	b.cdp.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
 	cancel()
@@ -322,6 +418,13 @@ func (b *goBrowser) run() {
 			case "viewport":
 				if m.View != nil {
 					b.setView(*m.View)
+				}
+			case "io":
+				// Not the person's doing as such: a page can make what it
+				// observes come and go by itself, and mustn't keep the
+				// watchdog from seeing it busy.
+				if m.Gen == b.shown && m.Gen == b.gen {
+					b.giveIO(m.Entries)
 				}
 			case "dialog":
 				if b.dialog {
@@ -413,6 +516,50 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 		}
 	}, func(r any) { r.(func())() })
 	return time.After(goLoadTimeout)
+}
+
+// giveIO hands what the person's browser saw of the page's observed
+// elements to the page, on the acts' queue (the page's callbacks run then,
+// and may open a dialog): at most one handing over queued, the rest
+// waiting for it, newest kept.
+func (b *goBrowser) giveIO(entries []goIOEntry) {
+	if b.ioWaiting == nil {
+		b.ioWaiting = map[[2]int]goIOEntry{}
+	}
+	for _, e := range entries[:min(len(entries), maxGoIOEntries)] {
+		if e.O > 0 && e.I > 0 && len(b.ioWaiting) < maxGoIO {
+			e.Ratio = min(max(e.Ratio, 0), 1)
+			e.B, e.R, e.RB = goRect(e.B), goRect(e.R), goRect(e.RB)
+			b.ioWaiting[[2]int{e.O, e.I}] = e
+		}
+	}
+	if b.ioQueued || len(b.ioWaiting) == 0 || b.world == 0 {
+		return
+	}
+	list := make([]goIOEntry, 0, len(b.ioWaiting))
+	for _, e := range b.ioWaiting {
+		list = append(list, e)
+	}
+	b.ioWaiting = nil
+	b.ioQueued = true
+	a, _ := json.Marshal(list)
+	arg, _ := json.Marshal(string(a))
+	world, gen := b.world, b.gen
+	b.acts.add(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), goActTimeout)
+		defer cancel()
+		_, res, err := b.evaluate(ctx, world, "__tabtop.io("+string(arg)+")")
+		goDebugf("io: %d entries, %s %v", len(list), res, err)
+		b.post(func() {
+			b.ioQueued = false
+			if gen != b.gen {
+				b.ioWaiting = nil
+				return
+			}
+			b.changed(goChangesEvery) // what the page's callbacks did
+			b.giveIO(nil)             // and what came meanwhile
+		})
+	})
 }
 
 // setView makes the engine's window v's size, if it isn't already: the
@@ -673,6 +820,7 @@ type goSnapshot struct {
 	Title string  `json:"title"`
 	Type  string  `json:"type"`
 	Doc   *goNode `json:"doc"`
+	IO    []goIO  `json:"io"`
 }
 
 // goShownTypes are the documents shown as pages; anything else (a PDF, a
@@ -728,7 +876,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				b.send(map[string]any{"type": "go-file", "gen": gen, "url": u, "mime": media})
 				return
 			}
-			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again})
+			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return
@@ -748,6 +896,7 @@ type goChanges struct {
 	URL   string            `json:"url"`
 	Title string            `json:"title"`
 	Ops   []json.RawMessage `json:"ops"`
+	IO    []goIO            `json:"io"`
 }
 
 // readChanges reads what's changed in the document since it was last
@@ -788,10 +937,10 @@ func (b *goBrowser) readChanges() {
 					b.send(map[string]any{"type": "go-url", "gen": gen, "url": u, "title": goTitleOf(c.Title)})
 				}
 			}
-			if len(c.Ops) > 0 {
+			if io := goCleanIO(c.IO); len(c.Ops) > 0 || len(io) > 0 {
 				ops := goCleanOps(c.Ops)
-				goDebugf("changes gen %d seq %d: %d ops", gen, c.Seq, len(ops))
-				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops})
+				goDebugf("changes gen %d seq %d: %d ops, %d observed", gen, c.Seq, len(ops), len(io))
+				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io})
 				b.t.Write(context.Background(), websocket.MessageText, p)
 			}
 			if b.dirty {
