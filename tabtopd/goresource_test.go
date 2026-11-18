@@ -84,6 +84,15 @@ func TestGoResource(t *testing.T) {
 		case "/page.html":
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte("<script>x</script>"))
+		case "/unlabelled.png":
+			w.Header().Set("Content-Type", "binary/octet-stream")
+			w.Write(png)
+		case "/unlabelled.html":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write([]byte("<!doctype html><script>x</script>"))
+		case "/unlabelled.svg":
+			w.Header().Set("Content-Type", "binary/octet-stream")
+			w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>x</script></svg>`))
 		case "/other-port.png":
 			http.Redirect(w, r, "http://127.0.0.1:1/pic.png", http.StatusFound)
 		case "/huge.png":
@@ -116,7 +125,8 @@ func TestGoResource(t *testing.T) {
 	}{
 		{"image", "/pic.png", "image/png", png},
 		{"image", "/moved.png", "image/png", png},
-		{"css", "/style.css", "text/css", css}, // decompressed
+		{"image", "/unlabelled.png", "image/png", png}, // labelled as bytes, seen to be a PNG
+		{"css", "/style.css", "text/css", css},         // decompressed
 		{"font", "/font.woff2", "font/woff2", woff2},
 	} {
 		reply, conn := fetch(tc.kind, tc.path)
@@ -137,6 +147,8 @@ func TestGoResource(t *testing.T) {
 		{"css", "/brotli.css", "encoding"},
 		{"font", "/fake-font.woff2", "font"},
 		{"image", "/page.html", "type"},
+		{"image", "/unlabelled.html", "type"},
+		{"image", "/unlabelled.svg", "type"},
 		{"css", "/pic.png", "type"},
 		{"image", "/huge.png", "too large"},
 		{"image", "/missing.png", "HTTP 404"},

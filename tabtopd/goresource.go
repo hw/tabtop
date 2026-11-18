@@ -115,6 +115,26 @@ func goPortAllowed(u *url.URL) bool {
 	return goProxyPorts[port]
 }
 
+// goUnlabelled is whether a media type says nothing of what the bytes are.
+func goUnlabelled(media string) bool {
+	switch media {
+	case "", "application/octet-stream", "binary/octet-stream", "application/binary", "application/unknown":
+		return true
+	}
+	return false
+}
+
+// goSniffImage is the type of a raster picture the bytes are (PNG, JPEG,
+// GIF, WebP, BMP or icon), or "" for anything else: never SVG or HTML,
+// which only a label lets through.
+func goSniffImage(data []byte) string {
+	switch t := http.DetectContentType(data); t {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon":
+		return t
+	}
+	return ""
+}
+
 func (g *server) routeGoResource(c *tunnelCall) {
 	switch {
 	case !g.goOn:
@@ -183,7 +203,11 @@ func (g *server) routeGoResource(c *tunnelCall) {
 		return
 	}
 	media, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if !previewResourceType(kind, media) {
+	// A picture labelled as just bytes (some storage services say
+	// binary/octet-stream for everything) is looked at, as browsers do:
+	// below, once it's read.
+	sniff := kind == "image" && goUnlabelled(media)
+	if !sniff && !previewResourceType(kind, media) {
 		c.r.fail("The resource isn't of the type asked for.")
 		return
 	}
@@ -199,6 +223,12 @@ func (g *server) routeGoResource(c *tunnelCall) {
 	if int64(len(data)) > limit {
 		c.r.fail("The resource is too large (over " + strconv.FormatInt(limit>>20, 10) + " MB).")
 		return
+	}
+	if sniff {
+		if media = goSniffImage(data); media == "" {
+			c.r.fail("The resource isn't of the type asked for.")
+			return
+		}
 	}
 	if kind == "font" && !previewFont(data) {
 		c.r.fail("The resource isn't a supported font.")
