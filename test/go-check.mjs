@@ -196,6 +196,7 @@ let touches = 0;
 $("tap").addEventListener("touchstart", () => touches++);
 $("tap").onclick = () => status("tapped, touches " + touches);
 </script>`,
+        "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -333,6 +334,31 @@ async function check(base, port, site) {
         await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
         await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page");
     });
+
+    // With GO_VIDEO_URL, only this, after logging in: how a video from the
+    // web loads and plays (GO_LINK="delay,rate" puts a far link between
+    // this browser and the server: see the end of this file).
+    const farVideo = () => step("a video from the web (GO_VIDEO_URL), timed", async () => {
+        const t0 = Date.now();
+        await goTo(site + "far.html", "Far");
+        const tPage = Date.now() - t0;
+        await waitFor(`!!document.querySelector("video")`, "the player", 60000);
+        const tPlayer = Date.now() - t0;
+        await waitFor(`document.querySelector("video").readyState >= 1`, "metadata", 60000);
+        const tMeta = Date.now() - t0;
+        await ev(`(() => { const v = document.querySelector("video"); v.muted = true; window.__w = 0; v.addEventListener("waiting", () => window.__w++); v.play(); })()`);
+        await waitFor(`document.querySelector("video").currentTime > 0`, "playing", 60000);
+        const tPlay = Date.now() - t0;
+        await sleep(15000);
+        const r = await ev(`(() => { const v = document.querySelector("video"); return { t: v.currentTime, stalls: window.__w, bytes: v.dataset.bytes, buf: v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0 }; })()`);
+        return (`page ${tPage} player ${tPlayer} metadata ${tMeta} playing ${tPlay} ms; after 15 s: ${JSON.stringify(r)}`);
+    });
+    if (process.env.GO_VIDEO_URL) {
+        await farVideo().catch(() => { process.exitCode = 1; });
+        ws.close();
+        browser.close();
+        process.exit();  // the link's connections, if any, needn't close
+    }
 
     await step("the browser toolbar fits a mobile viewport", async () => {
         try {
@@ -903,7 +929,36 @@ async function check(base, port, site) {
 if (mode === "site") {
     writeSite(args[0]);
 } else if (mode === "check") {
-    await check(args[0], Number(args[1]), args[2]);
+    let base = args[0];
+    if (process.env.GO_LINK) {
+        // A far link between the browser and the server: one-way delay (ms)
+        // and bytes a second each way, pipelined as a network's are.
+        const [delay, rate] = process.env.GO_LINK.split(",").map(Number);
+        const net = await import("node:net");
+        const target = new URL(base);
+        const port = Number(target.port), host = target.hostname;
+        const shaped = (from, to) => {
+            let busy = 0;
+            from.on("data", (chunk) => {
+                const now = Date.now();
+                busy = Math.max(now, busy) + chunk.length / rate * 1000;
+                setTimeout(() => to.write(chunk), busy + delay - now);
+            });
+            from.on("end", () => setTimeout(() => to.end(), Math.max(0, busy + delay - Date.now())));
+            from.on("error", () => to.destroy());
+        };
+        const proxy = net.createServer((c) => {
+            const u = net.connect(port, host);
+            shaped(c, u);
+            shaped(u, c);
+        }).listen(0, "127.0.0.1");
+        await new Promise((r) => proxy.on("listening", r));
+        proxy.unref();
+        target.port = String(proxy.address().port);
+        base = target.href;
+        console.log(`link: ${delay} ms each way, ${rate} bytes a second, through ${base}`);
+    }
+    await check(base, Number(args[1]), args[2]);
 } else {
     console.error("usage: go-check.mjs site DIR | check BASE PORT SITE");
     process.exit(2);

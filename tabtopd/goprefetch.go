@@ -12,7 +12,9 @@ package main
 // The page asks {"op":"res","rid":N,"kind":...,"url":...}; the answer is
 // {"type":"go-res","rid":N,"size":...,"mime":...,"url":...} (or "error"),
 // then the bytes, in binary messages of the request's number (4 bytes, big
-// endian) and up to goResChunk of them.
+// endian) and up to goResChunk of them. A player's file comes the same way, a range at a
+// time ({"op":"res","kind":"media",...,"offset","length","if_size",
+// "if_mtime"}; the answer says total_size and validator too: serveMedia).
 
 import (
 	"context"
@@ -23,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -128,12 +131,20 @@ func (b *goBrowser) resource(ctx context.Context, kind, raw string) goFetched {
 // tunnel, from a goroutine of its own: its bytes go between the tab's other
 // messages, a chunk at a time.
 func (b *goBrowser) serveRes(m goClientMsg) {
-	if m.RID <= 0 || b.serving >= goResServesMax {
+	if m.RID <= 0 {
+		return
+	}
+	if b.serving >= goResServesMax {
+		b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": "Too many resources are loading; try again."})
 		return
 	}
 	b.serving++
 	go func() {
 		defer b.post(func() { b.serving-- })
+		if m.Kind == "media" {
+			b.serveMedia(m)
+			return
+		}
 		f := b.resource(b.ctx, m.Kind, m.URL)
 		if f.err != nil {
 			goDebugf("res %s %s: %v", m.Kind, goHost(m.URL), f.err)
@@ -151,6 +162,53 @@ func (b *goBrowser) serveRes(m goClientMsg) {
 			}
 		}
 	}()
+}
+
+// serveMedia answers a player's request for a range of its file (see
+// go-media.js), as a go-resource "media" request is answered, but over the
+// tab's tunnel: a part asked for on a tunnel of its own waited for that
+// tunnel's connection and handshake first, several round trips a part.
+func (b *goBrowser) serveMedia(m goClientMsg) {
+	fail := func(err error) {
+		b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": err.Error()})
+	}
+	u, err := url.Parse(m.URL)
+	if err != nil || len(m.URL) > maxGoURL || !goPortAllowed(u) {
+		fail(errors.New("Media loads only from ports 80 and 443."))
+		return
+	}
+	if b.resources == nil {
+		fail(errGoNoResources)
+		return
+	}
+	// The session's share of the broker's slots, as its pictures' are.
+	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
+	mine, ok := goSessionSlots.acquire(ctx, b.session)
+	cancel()
+	if !ok {
+		fail(errors.New("Too many resources are loading; try again."))
+		return
+	}
+	defer mine()
+	data, reply, err := fetchRemoteResource(b.ctx, tunnelRequest{Resource: "media", URL: m.URL, Offset: m.Offset, Length: m.Length,
+		IfSize: m.IfSize, IfMtime: m.IfMtime}, b.resources, goResourceSlots, goUserAgent)
+	if err != nil {
+		if b.ctx.Err() == nil {
+			fail(err)
+		}
+		return
+	}
+	reply["type"], reply["rid"] = "go-res", m.RID
+	if b.send(reply) != nil {
+		return
+	}
+	for at := 0; at < len(data); at += goResChunk {
+		end := min(at+goResChunk, len(data))
+		p := binary.BigEndian.AppendUint32(make([]byte, 0, 4+end-at), uint32(m.RID))
+		if b.t.Write(b.ctx, websocket.MessageBinary, append(p, data[at:end]...)) != nil {
+			return
+		}
+	}
 }
 
 func goHost(raw string) string {

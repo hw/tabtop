@@ -98,15 +98,40 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 // ranges, "media") the audio and video a preview or the remote browser
 // plays.
 func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, client *http.Client, slots *previewWork, userAgent string) {
+	w := newChunkWriter(t)
+	defer w.stop()
+	data, reply, err := fetchRemoteResource(w.ctx, req, client, slots, userAgent)
+	if err != nil {
+		if w.ctx.Err() == nil { // not the page that stopped waiting
+			r.fail(err.Error())
+		}
+		return
+	}
+	if !r.accept(reply) {
+		return
+	}
+	if _, err := w.Write(data); err != nil {
+		w.fail(err)
+		return
+	}
+	if w.flush() == nil {
+		r.finish(nil)
+	}
+}
+
+// fetchRemoteResource fetches req's resource (in byte ranges, "media"),
+// with client, a slot of slots held, as userAgent if it's set, until ctx
+// ends: its bytes, and what's said of them (size, mime, url; and for media
+// total_size and validator), or why not, said for the person.
+func fetchRemoteResource(ctx context.Context, req tunnelRequest, client *http.Client, slots *previewWork, userAgent string) ([]byte, map[string]any, error) {
+	fail := func(message string) ([]byte, map[string]any, error) { return nil, nil, errors.New(message) }
 	limit := previewResourceLimit(req.Resource)
 	if limit == 0 {
-		r.fail("Unsupported preview resource type.")
-		return
+		return fail("Unsupported preview resource type.")
 	}
 	u, err := url.Parse(req.URL)
 	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		r.fail("Give an HTTP or HTTPS resource URL without credentials.")
-		return
+		return fail("Give an HTTP or HTTPS resource URL without credentials.")
 	}
 	begin, length := req.Offset, req.Length
 	probe := req.Resource == "media" && length == 0
@@ -114,25 +139,20 @@ func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, clien
 		begin, length = 0, 1
 	}
 	if req.Resource == "media" && (begin < 0 || length < 1 || length > maxPreviewMediaRange || begin > 1<<53-1-length || (!probe && (req.IfSize < begin+length || req.IfSize > 1<<53-1))) {
-		r.fail("Invalid media range.")
-		return
+		return fail("Invalid media range.")
 	}
-	w := newChunkWriter(t)
-	defer w.stop()
-	release, ok := slots.acquireContext(w.ctx)
-	if !ok && w.ctx.Err() != nil {
-		return // the page stopped waiting
+	release, ok := slots.acquireContext(ctx)
+	if !ok && ctx.Err() != nil {
+		return nil, nil, ctx.Err() // the page stopped waiting
 	} else if !ok {
-		r.fail("Too many external resources are loading; try again.")
-		return
+		return fail("Too many external resources are loading; try again.")
 	}
 	defer release()
-	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		r.fail("Invalid resource URL.")
-		return
+		return fail("Invalid resource URL.")
 	}
 	request.Header.Set("Accept-Encoding", "identity")
 	if userAgent != "" {
@@ -157,18 +177,15 @@ func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, clien
 	}
 	response, err := c.Do(request)
 	if err != nil {
-		r.fail(fetchError(err).Error())
-		return
+		return nil, nil, fetchError(err)
 	}
 	defer response.Body.Close()
 	if encoded := response.Header.Get("Content-Encoding"); encoded != "" && encoded != "identity" {
-		r.fail("Encoded resources cannot be previewed safely.")
-		return
+		return fail("Encoded resources cannot be previewed safely.")
 	}
 	if response.StatusCode >= 400 {
 		// A refusal (often a page saying so), not a resource of any type.
-		r.fail("The site refused the resource (HTTP " + strconv.Itoa(response.StatusCode) + ").")
-		return
+		return fail("The site refused the resource (HTTP " + strconv.Itoa(response.StatusCode) + ").")
 	}
 	media, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	switch media {
@@ -180,8 +197,7 @@ func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, clien
 		media = "video/mp4"
 	}
 	if !previewResourceType(req.Resource, media) {
-		r.fail("The external resource has an unsupported content type.")
-		return
+		return fail("The external resource has an unsupported content type.")
 	}
 	var total int64
 	validator := previewValidator(response.Header)
@@ -189,61 +205,42 @@ func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, clien
 		// A whole body for a later part, asked for If-Range: the media's
 		// changed since it was opened (the validator no longer matches).
 		if response.StatusCode == http.StatusOK && !probe && req.IfMtime != "" && validator != req.IfMtime {
-			r.fail("The remote media changed; reopen the preview.")
-			return
+			return fail("The remote media changed; reopen the preview.")
 		}
 		if response.StatusCode != http.StatusPartialContent {
-			r.fail("Media streaming requires a server with byte-range support.")
-			return
+			return fail("Media streaming requires a server with byte-range support.")
 		}
 		total, err = previewContentRange(response.Header.Get("Content-Range"), begin, begin+length)
 		if err != nil || total > 1<<53-1 {
-			r.fail("The media server returned an invalid byte range.")
-			return
+			return fail("The media server returned an invalid byte range.")
 		}
 		if !probe && (total != req.IfSize || req.IfMtime != "" && validator != req.IfMtime) {
-			r.fail("The remote media changed; reopen the preview.")
-			return
+			return fail("The remote media changed; reopen the preview.")
 		}
 		limit = length
 	} else if response.StatusCode != http.StatusOK {
-		r.fail("The external resource did not return HTTP 200.")
-		return
+		return fail("The external resource did not return HTTP 200.")
 	}
 	if response.ContentLength > limit {
-		r.fail("External resource exceeds the preview limit (" + strconv.FormatInt(limit, 10) + " bytes).")
-		return
+		return fail("External resource exceeds the preview limit (" + strconv.FormatInt(limit, 10) + " bytes).")
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		r.fail("The external resource could not be read.")
-		return
+		return fail("The external resource could not be read.")
 	}
 	if int64(len(data)) > limit {
-		r.fail("External resource exceeds the preview limit.")
-		return
+		return fail("External resource exceeds the preview limit.")
 	}
 	if req.Resource == "font" && !previewFont(data) {
-		r.fail("The resource is not a supported font.")
-		return
+		return fail("The resource is not a supported font.")
 	}
 	if req.Resource == "media" && int64(len(data)) != length {
-		r.fail("The media range ended early.")
-		return
+		return fail("The media range ended early.")
 	}
 	reply := map[string]any{"size": len(data), "mime": media, "url": response.Request.URL.String()}
 	if req.Resource == "media" {
 		reply["total_size"] = total
 		reply["validator"] = validator
 	}
-	if !r.accept(reply) {
-		return
-	}
-	if _, err := w.Write(data); err != nil {
-		w.fail(err)
-		return
-	}
-	if w.flush() == nil {
-		r.finish(nil)
-	}
+	return data, reply, nil
 }

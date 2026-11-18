@@ -4,19 +4,66 @@
 // service worker doesn't serve): where the page had a player with a file
 // to play, the frame draws a box, and here a native player is laid over it,
 // in this trusted page, its file read from the site by the server in parts
-// as it plays (go-resource "media", ranges through the service worker, as
-// the files page's previews play theirs; see preview-media.js). The site
+// as it plays (ranges through the service worker, as the files page's
+// previews play theirs, see preview-media.js; asked for over the tab's
+// tunnel, a few parts ahead). The site
 // isn't contacted from this device; the player is this page's, not the
 // site's: its script doesn't run here.
 import { call, collect } from "../tabtop/requests.js";
-import { mediaStream } from "../tabtop/media-stream.js";
+import { createMediaSource } from "../tabtop/media-source.js";
+import { mediaWorker } from "../tabtop/stream-worker.js";
 
 const MAX_PLAYERS = 8;
 
 // picture(url) is a picture the page has fetched through the server (a
 // Blob), for a video's poster; sized(key, ratio) is told a video's
 // proportions, once known, for its box.
-export function goMedia(frame, { picture, sized } = {}) {
+// Parts of a player's file asked for before it asks, to be there when it
+// does: the server's fetch of one and its way here overlap the next's, and
+// the round trip to the server is hidden. A part's 1 MiB (media-source.js).
+const AHEAD = 3;
+const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
+
+export function goMedia(frame, { picture, sized, range } = {}) {
+    // The player's parts, over the tab's tunnel (range), as tunnels for
+    // ranged-file.js: what a go-resource request's tunnel would say, and
+    // its bytes. Without range (the tab's tunnel isn't open), one of its own.
+    const ahead = new Map();  // url + " " + offset -> {at, got: Promise}
+    function part(url, offset, length, size, mtime) {
+        const got = range?.(url, { offset, length, if_size: size, if_mtime: mtime });
+        got?.catch(() => {});
+        return got;
+    }
+    function readAhead(url, from, size, mtime, length) {
+        for (let i = 0, at = from; i < AHEAD && at < size; i++, at += length) {
+            const key = url + " " + at;
+            if (ahead.has(key)) continue;
+            const got = part(url, at, Math.min(length, size - at), size, mtime);
+            if (!got) return;
+            ahead.set(key, { got, length: Math.min(length, size - at) });
+            setTimeout(() => ahead.get(key)?.got === got && ahead.delete(key), AHEAD_KEEP);
+        }
+    }
+    async function tabCall(req) {
+        if (req.type !== "go-resource" || req.resource !== "media" || !range) return call(req);
+        const { url, offset = 0, length = 0, if_size: size = 0, if_mtime: mtime = "" } = req;
+        const key = url + " " + offset;
+        let got = ahead.get(key);
+        ahead.delete(key);
+        if (got && got.length !== length) got = null;  // a part cut otherwise (a seek's)
+        if (!got) {
+            // Not what was asked for ahead: the player went elsewhere.
+            for (const k of [...ahead.keys()]) if (k.startsWith(url + " ")) ahead.delete(k);
+            got = { got: part(url, offset, length, size, mtime) };
+            if (!got.got) return call(req);
+        }
+        if (length > 0) readAhead(url, offset + length, size, mtime, length);
+        const { blob, reply } = await got.got;
+        return { reply, blob, close() {}, next: async () => null };
+    }
+    const tabCollect = (t, ...rest) => (t.blob ? Promise.resolve(t.blob) : collect(t, ...rest));
+    const mediaStream = createMediaSource({ call: tabCall, collect: tabCollect, getWorker: mediaWorker });
+
     const players = new Map();  // the frame's box's key -> {element, stopped}
     const abort = new AbortController();
     let layer = null;
@@ -70,10 +117,10 @@ export function goMedia(frame, { picture, sized } = {}) {
             try {
                 // Its size, type and version, asked for first; it's read in
                 // parts as it plays.
-                tunnel = await call({ type: "go-resource", resource: "media", url: src });
+                tunnel = await tabCall({ type: "go-resource", resource: "media", url: src });
                 abort.signal.throwIfAborted();
                 const info = tunnel.reply;
-                await collect(tunnel, 1, () => {});
+                await tabCollect(tunnel, 1, () => {});
                 if (!info.mime?.startsWith(kind + "/") && !(kind === "video" && info.mime?.startsWith("audio/"))) throw new Error("Not a supported media file.");
                 if (!Number.isSafeInteger(info.total_size) || info.total_size < 1) throw new Error("Not a supported media file.");
                 tunnel.close();

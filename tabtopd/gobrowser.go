@@ -272,6 +272,12 @@ type goClientMsg struct {
 	Items []goDragItem `json:"items"`
 	// res: the page's request for a resource, by its number (goprefetch.go).
 	RID int `json:"rid"`
+	// res of media: the range of it (Length 0: its first byte, to learn
+	// of it), and the file as it was opened.
+	Offset  int64  `json:"offset"`
+	Length  int64  `json:"length"`
+	IfSize  int64  `json:"if_size"`
+	IfMtime string `json:"if_mtime"`
 }
 
 // goIO is one of a page's IntersectionObserver targets, for the client to

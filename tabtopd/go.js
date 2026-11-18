@@ -52,6 +52,9 @@ const frame = document.createElement("iframe");
 let media = null;
 const mediaHelp = {
     picture: (url) => cachedResource("image", url),
+    // A part of a player's file, over the tab's tunnel if it's open (null
+    // if not: the player asks on a tunnel of its own).
+    range: (url, part) => (ws?.readyState === TunnelSocket.OPEN ? mediaViaTab(ws, url, part) : null),
     sized: (key, ratio) => frame.contentWindow?.postMessage({ type: "media-state", key, ratio }, "*"),
 };
 frame.id = "go_view";
@@ -433,6 +436,19 @@ function viaTab(s, kind, url, limit) {
         s.send(JSON.stringify({ op: "res", rid, kind, url }));
     });
 }
+// mediaViaTab asks for part of a player's file ({offset, length, if_size,
+// if_mtime}; length 0, its first byte, to learn of it): its bytes as a
+// Blob and the server's word on it, as a go-resource "media" request's.
+// Not counted against the page's budget: a player reads what's played.
+const MEDIA_PART = 1 << 20;
+function mediaViaTab(s, url, part) {
+    return new Promise((resolve, reject) => {
+        const rid = ++lastRid;
+        resWaiting.set(rid, { s, kind: "media", limit: MEDIA_PART, media: true, resolve, reject, parts: [], got: 0, size: -1, mime: "" });
+        s.send(JSON.stringify({ op: "res", rid, kind: "media", url, offset: part.offset ?? 0, length: part.length ?? 0,
+            if_size: part.if_size ?? 0, if_mtime: part.if_mtime ?? "" }));
+    });
+}
 function resFail(rid, message) {
     const r = resWaiting.get(rid);
     resWaiting.delete(rid);
@@ -443,10 +459,17 @@ function resHeader(m) {
     if (!r) return;
     if (typeof m.error === "string") return resFail(m.rid, m.error);
     if (!Number.isSafeInteger(m.size) || m.size < 0 || m.size > r.limit) return resFail(m.rid, "too large");
-    if (spent + m.size > PAGE_BUDGET) return resFail(m.rid, "the page uses too much");
-    spent += m.size;
+    if (!r.media && spent + m.size > PAGE_BUDGET) return resFail(m.rid, "the page uses too much");
+    if (!r.media) spent += m.size;
     r.size = m.size;
     r.mime = r.kind === "css" ? "text/css" : typeof m.mime === "string" ? m.mime : "";
+    if (r.media) r.reply = { size: m.size, mime: r.mime, url: m.url, total_size: m.total_size, validator: m.validator };
+    if (r.size === 0) resDone(m.rid, r);
+}
+function resDone(rid, r) {
+    resWaiting.delete(rid);
+    const blob = new Blob(r.parts, { type: r.mime });
+    r.resolve(r.media ? { blob, reply: r.reply } : blob);
 }
 function resData(buf) {
     if (!(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
@@ -457,10 +480,7 @@ function resData(buf) {
     r.parts.push(part);
     r.got += part.length;
     if (r.got > r.size) return resFail(rid, "more than it said");
-    if (r.got === r.size) {
-        resWaiting.delete(rid);
-        r.resolve(new Blob(r.parts, { type: r.mime }));
-    }
+    if (r.got === r.size) resDone(rid, r);
 }
 // What was asked of a tunnel that's gone won't come.
 function resLost(s) {
