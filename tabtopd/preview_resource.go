@@ -90,6 +90,14 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 		r.fail("External resource proxying is turned off (WEB_GO_FETCH=0).")
 		return
 	}
+	serveRemoteResource(t, req, r, g.resourceClient, previewResourceSlots, "")
+}
+
+// serveRemoteResource answers req, fetched with client, a slot of slots
+// held, as userAgent if it's set: a preview's resource, or (in byte
+// ranges, "media") the audio and video a preview or the remote browser
+// plays.
+func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, client *http.Client, slots *previewWork, userAgent string) {
 	limit := previewResourceLimit(req.Resource)
 	if limit == 0 {
 		r.fail("Unsupported preview resource type.")
@@ -111,7 +119,7 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 	}
 	w := newChunkWriter(t)
 	defer w.stop()
-	release, ok := previewResourceSlots.acquireContext(w.ctx)
+	release, ok := slots.acquireContext(w.ctx)
 	if !ok && w.ctx.Err() != nil {
 		return // the page stopped waiting
 	} else if !ok {
@@ -127,15 +135,18 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 		return
 	}
 	request.Header.Set("Accept-Encoding", "identity")
+	if userAgent != "" {
+		request.Header.Set("User-Agent", userAgent)
+	}
 	if req.Resource == "media" {
 		request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", begin, begin+length-1))
 		if req.IfMtime != "" {
 			request.Header.Set("If-Range", req.IfMtime)
 		}
 	}
-	client := *g.resourceClient
-	redirects := client.CheckRedirect
-	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+	c := *client
+	redirects := c.CheckRedirect
+	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if next.URL.User != nil {
 			return http.ErrUseLastResponse
 		}
@@ -144,7 +155,7 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 		}
 		return nil
 	}
-	response, err := client.Do(request)
+	response, err := c.Do(request)
 	if err != nil {
 		r.fail(fetchError(err).Error())
 		return
@@ -152,6 +163,11 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 	defer response.Body.Close()
 	if encoded := response.Header.Get("Content-Encoding"); encoded != "" && encoded != "identity" {
 		r.fail("Encoded resources cannot be previewed safely.")
+		return
+	}
+	if response.StatusCode >= 400 {
+		// A refusal (often a page saying so), not a resource of any type.
+		r.fail("The site refused the resource (HTTP " + strconv.Itoa(response.StatusCode) + ").")
 		return
 	}
 	media, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))

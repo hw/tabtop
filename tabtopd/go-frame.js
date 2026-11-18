@@ -43,7 +43,10 @@
     const dropped = new Set(["script", "noscript", "template", "iframe", "frame", "frameset", "object", "embed", "applet",
         "base", "meta", "portal", "fencedframe", "param", "source", "track", "slot"]);
     // Shown as a note: what plays, or draws from script.
-    const placeholders = { video: "A video", audio: "A sound", canvas: "A drawing made by script" };
+    const placeholders = { canvas: "A drawing made by script" };
+    // Elements drawn as a box of their own, and the attribute their box has,
+    // which the page's rules for them are rewritten to.
+    const drawnAs = { iframe: "data-go-iframe", video: "data-go-video", audio: "data-go-audio" };
     // Attributes dropped wherever they are: they run script, load or
     // navigate somewhere, or steal focus or input.
     const droppedAttributes = new Set(["srcdoc", "action", "formaction", "ping", "http-equiv", "nonce", "integrity",
@@ -102,6 +105,11 @@
             render(m).catch((err) => tell({ type: "rendered", gen: m.gen, report: { error: String(err?.message || err) } }));
         } else if (m.type === "changes") {
             apply(m);
+        } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
+            const box = media.get(m.key)?.box;
+            if (box && typeof m.error === "string") box.textContent = m.error;
+            // The video's own proportions, which its box takes.
+            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) box.style.setProperty("aspect-ratio", String(m.ratio));
         }
     });
 
@@ -187,10 +195,11 @@
         let font = 0;
         css.walk(ast, {
             enter(node, item, list) {
-                if (node.type === "TypeSelector" && node.name.toLowerCase() === "iframe" && list) {
-                    // An iframe is drawn as a box of its own (embeddedFrame):
-                    // the page's rules for iframes are for it.
-                    list.replace(item, list.createItem({ type: "AttributeSelector", name: { type: "Identifier", name: "data-go-iframe" }, matcher: null, value: null, flags: null }));
+                if (node.type === "TypeSelector" && drawnAs[node.name.toLowerCase()] && list) {
+                    // An iframe, video or audio is drawn as a box of its own
+                    // (embeddedFrame, mediaBox): the page's rules for them
+                    // are for it.
+                    list.replace(item, list.createItem({ type: "AttributeSelector", name: { type: "Identifier", name: drawnAs[node.name.toLowerCase()] }, matcher: null, value: null, flags: null }));
                 } else if (node.type === "Atrule" && node.name.toLowerCase() === "import" && list) {
                     imports.push({ node, item, list });
                 } else if (node.type === "Atrule" && node.name.toLowerCase() === "font-face") {
@@ -347,6 +356,7 @@
         const content = document.createElement("div");
         content.inert = true;
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
+        child.top = d.top ?? d;  // its boxes are its page's
         child.budget = d.budget;
         child.report = d.report;
         children(child, content, frame.c, HTML);
@@ -361,7 +371,7 @@
         el.setAttribute("data-go-iframe", "");  // what the page's iframe rules apply to
         const shadow = el.attachShadow({ mode: "open" });
         const style = document.createElement("style");
-        style.textContent = ":host { display:inline-block; vertical-align:bottom; width:300px; height:150px; max-width:100%; border:2px inset } div[part=viewport] { width:100%; height:100%; overflow:auto; contain:strict }";
+        style.textContent = ":host { display:inline-block; vertical-align:bottom; width:300px; height:150px; max-width:100%; border:2px inset } div[part=viewport] { width:100%; height:100%; overflow:auto; contain:strict } " + MEDIA_DEFAULTS;
         const viewport = document.createElement("div");
         viewport.setAttribute("part", "viewport");
         shadow.append(style, viewport);
@@ -380,6 +390,98 @@
         renderFrame(d, el, n.c);
         return el;
     }
+
+    // --- Audio and video ---------------------------------------------------
+    //
+    // Played by the page above, not here (this frame has no media): a box
+    // where the player was, which the page lays a native player over,
+    // playing the file the page had, read through the server
+    // (go-media.js). The page says if it can't; this keeps telling it where
+    // the boxes are.
+
+    let media = new Map();  // key -> {box, kind, src, ...}, of the document shown
+    // The boxes' sizes but for the page's own rules (which win: :where has
+    // no weight), as a browser's players' are.
+    const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: 300px; height: auto; aspect-ratio: 2 / 1; } " +
+        ":where([data-go-audio]) { display: inline-block; width: 300px; height: 54px; } " +
+        ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; }";
+    let mediaKey = 0;
+    let mediaSoon = false;
+    function mediaBox(d, n, tag) {
+        const box = document.createElement("div");
+        box.setAttribute(drawnAs[tag], "");
+        for (const name of ["id", "class", "title", "style"]) {
+            const value = attrOf(n, name);
+            if (value) attribute(d, box, HTML, "div", name, value);
+        }
+        for (const name of ["width", "height"]) {
+            const value = attrOf(n, name);
+            if (/^\d{1,5}$/.test(value)) box.style.setProperty(name, value + "px");
+        }
+        // Its height from its width, as a video's is, until its own
+        // proportions are known (the page says, below).
+        const w = Number(attrOf(n, "width")), h = Number(attrOf(n, "height"));
+        if (tag === "video") box.style.setProperty("aspect-ratio", w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9");
+        own(d, n.i, box);
+        // Its own file, or its first source's.
+        let src = attrOf(n, "src");
+        if (!src) {
+            for (const k of Array.isArray(n.c) ? n.c : []) {
+                if (k?.t === 1 && String(k.n).toLowerCase() === "source" && attrOf(k, "src")) {
+                    src = attrOf(k, "src");
+                    break;
+                }
+            }
+        }
+        const what = tag === "video" ? "video" : "sound";
+        if (/^blob:/i.test(src)) {
+            // Fed by the page's own player (Media Source): nothing a player
+            // here could read.
+            box.textContent = `This ${what} is streamed by the site's own player, which can't play here.`;
+            leave(d, tag);
+            return box;
+        }
+        const url = src && web(src, d.base);
+        if (!url) {
+            box.textContent = `A ${what} with nothing to play.`;
+            return box;
+        }
+        box.textContent = `Loading the ${what}…`;
+        const key = ++mediaKey;
+        const poster = tag === "video" ? web(attrOf(n, "poster"), d.base) : null;
+        // Of the document it's in once shown (an embedded page's box, of its
+        // page's): not asked for, nor dropped, before that.
+        media.set(key, { top: d.top ?? d, box, kind: tag, src: url, poster, muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), asked: false });
+        mediaLater();
+        return box;
+    }
+    // mediaLater asks the page for players for new boxes, and tells it where
+    // the boxes are, after this task (the box laid out).
+    function mediaLater() {
+        if (mediaSoon) return;
+        mediaSoon = true;
+        requestAnimationFrame(() => {
+            mediaSoon = false;
+            if (!doc) return;
+            const positions = [];
+            for (const [key, m] of media) {
+                if (m.top !== doc) continue;  // a document being built
+                const r = m.box.getBoundingClientRect();
+                const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+                const shown = m.box.isConnected && m.box.getClientRects().length > 0;
+                if (shown && !m.asked) {
+                    m.asked = true;
+                    tell({ type: "media", gen: doc.gen, key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, rect });
+                }
+                if (!m.box.isConnected) media.delete(key);
+                positions.push({ key, rect, shown });
+            }
+            tell({ type: "media-positions", gen: doc.gen, positions });
+        });
+    }
+    window.addEventListener("scroll", mediaLater, { passive: true, capture: true });
+    window.addEventListener("resize", mediaLater);
+    new ResizeObserver(mediaLater).observe(document.documentElement);
 
     function element(d, n, ns) {
         const name = n.n;
@@ -402,6 +504,7 @@
             own(d, n.i, style);
             return style;
         }
+        if (ns === HTML && (tag === "video" || tag === "audio")) return mediaBox(d, n, tag);
         if (ns === HTML && placeholders[tag]) {
             leave(d, tag);
             const note = document.createElement("div");
@@ -540,8 +643,14 @@
             // (Document.replaceChildren refuses a second element even as
             // it replaces the first.)
             document.documentElement ? document.documentElement.replaceWith(root) : document.append(root);
+            const defaults = document.createElement("style");
+            defaults.textContent = MEDIA_DEFAULTS;
+            (root.querySelector("head") ?? root).prepend(defaults);
             unobserveAll(doc);
             doc = d;
+            // Boxes of this document only (the page stops the others').
+            for (const [key, m] of media) if (m.top !== d && m.top.gen <= d.gen || m.top === d && !m.box.isConnected) media.delete(key);
+            mediaLater();
             observeAll(d, m.io);
             if (m.again) {
                 scrollTo(at.x, at.y);  // the same document, read again
@@ -681,6 +790,7 @@
         // Stylesheets of what was added load as they come.
         d.waits = [];
         observeAll(d, m.io);
+        mediaLater();  // boxes added, gone or moved
         if (typeof m.title === "string") tell({ type: "title", gen: d.gen, title: m.title });
     }
 
@@ -725,6 +835,11 @@
         return true;
     }
 
+    function hasAttr(n, name) {
+        const attrs = Array.isArray(n.a) ? n.a : [];
+        for (let i = 0; i + 1 < attrs.length; i += 2) if (typeof attrs[i] === "string" && attrs[i].toLowerCase() === name) return true;
+        return false;
+    }
     function attrOf(n, name) {
         const attrs = Array.isArray(n.a) ? n.a : [];
         for (let i = 0; i + 1 < attrs.length; i += 2) {

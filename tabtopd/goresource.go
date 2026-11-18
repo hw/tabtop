@@ -235,6 +235,18 @@ func (g *server) routeGoResource(c *tunnelCall) {
 		c.r.fail("The remote browser is unavailable: " + g.goWhy + ".")
 		return
 	}
+	if c.req.Resource == "media" {
+		// Audio and video, in byte ranges, for the players the /go page
+		// lays over the copy (go-media.js): where the remote browser may
+		// go, on HTTP's and HTTPS's ports.
+		u, err := url.Parse(c.req.URL)
+		if err != nil || !goPortAllowed(u) {
+			c.r.fail("Media loads only from ports 80 and 443.")
+			return
+		}
+		serveRemoteResource(c.t, c.req, c.r, g.goResources, goResourceSlots, goUserAgent)
+		return
+	}
 	w := newChunkWriter(c.t)
 	defer w.stop()
 	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL)

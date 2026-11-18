@@ -213,3 +213,38 @@ func TestGoSessionSlots(t *testing.T) {
 		t.Fatalf("shares left: %v", s.work)
 	}
 }
+
+// Audio and video for the /go page's players come in byte ranges, where
+// the remote browser may go, on its ports.
+func TestGoResourceMedia(t *testing.T) {
+	clip := bytes.Repeat([]byte("0123456789"), 300)
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("ETag", `"v1"`)
+		http.ServeContent(w, r, "clip.mp4", time.Time{}, bytes.NewReader(clip))
+	}))
+	defer site.Close()
+	goTestPorts(t, portOf(t, site.URL))
+	g, url, s := newGoServer(t, "")
+	g.goResources = newGoResourceClient(allowAll) // the site is on loopback
+	ctx := testCtx(t)
+	ask := func(req tunnelRequest) (map[string]any, *tunnelClient) {
+		tc := openSession(t, ctx, url, s)
+		return tc.request(t, ctx, req), tc
+	}
+	probe, _ := ask(tunnelRequest{Type: "go-resource", Resource: "media", URL: site.URL + "/clip.mp4"})
+	if probe["error"] != nil || probe["mime"] != "video/mp4" || probe["total_size"] != float64(len(clip)) || probe["validator"] != `"v1"` {
+		t.Fatalf("probe: %v", probe)
+	}
+	part, tc := ask(tunnelRequest{Type: "go-resource", Resource: "media", URL: site.URL + "/clip.mp4", Offset: 1000, Length: 25, IfSize: int64(len(clip)), IfMtime: `"v1"`})
+	if part["error"] != nil || part["size"] != float64(25) {
+		t.Fatalf("range: %v", part)
+	}
+	if got := readGoResource(t, ctx, tc); !bytes.Equal(got, clip[1000:1025]) {
+		t.Errorf("range bytes %q", got)
+	}
+	goTestPorts(t)
+	if r, _ := ask(tunnelRequest{Type: "go-resource", Resource: "media", URL: site.URL + "/clip.mp4"}); r["error"] == nil {
+		t.Errorf("another port: %v", r)
+	}
+}

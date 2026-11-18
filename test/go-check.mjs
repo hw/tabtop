@@ -7,6 +7,7 @@
 //
 // Throughout, every request Chrome makes, from the page and from its frames,
 // is recorded: none may go anywhere but the TabTop server.
+import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -161,6 +162,11 @@ $("pad").addEventListener("wheel", (e) => log("wheel " + (e.deltaY > 0 ? "down" 
 $("pad").addEventListener("click", (e) => log("pad " + (e.offsetX < 100 ? "left" : "right")));
 $("under").addEventListener("click", () => log("under clicked"));
 </script>`,
+        "video.html": `<!doctype html><title>Video</title><link rel="stylesheet" href="style.css"><p>a clip:</p>
+<video id="clip" src="clip.mp4" width="320" height="180" poster="pic.png" muted></video>
+<p>streamed by its own player:</p><video id="streamed" width="160" height="90"></video>
+<audio id="silent"></audio>
+<script>document.getElementById("streamed").src = URL.createObjectURL(new Blob(["x"]));</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
@@ -171,7 +177,7 @@ $("under").addEventListener("click", () => log("under clicked"));
 h1 { font-family: "Fixture Font", sans-serif; }`,
         "more.css": `body { background-color: rgb(250, 250, 240); }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path");
-const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf" };
+const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
 http.createServer((req, res) => {
   if (req.method === "POST") {
     let body = "";
@@ -182,7 +188,16 @@ http.createServer((req, res) => {
   const file = path.join("/srv", path.normalize(decodeURIComponent(req.url.split("?")[0])));
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); return res.end(); }
-    res.writeHead(200, { "Content-Type": types[path.extname(file)] || "application/octet-stream" });
+    const type = types[path.extname(file)] || "application/octet-stream";
+    // Byte ranges, as media is read in parts.
+    const range = /^bytes=(\\d+)-(\\d*)$/.exec(req.headers.range || "");
+    if (range) {
+      const first = Number(range[1]), last = Math.min(range[2] ? Number(range[2]) : data.length - 1, data.length - 1);
+      if (first > last) { res.writeHead(416, { "Content-Range": "bytes */" + data.length }); return res.end(); }
+      res.writeHead(206, { "Content-Type": type, "Content-Range": "bytes " + first + "-" + last + "/" + data.length, "Accept-Ranges": "bytes", "ETag": '"clip"' });
+      return res.end(data.subarray(first, last + 1));
+    }
+    res.writeHead(200, { "Content-Type": type, "Accept-Ranges": "bytes" });
     res.end(data);
   });
 }).listen(80);`,
@@ -190,6 +205,9 @@ http.createServer((req, res) => {
     mkdirSync(join(dir, "embedded"), { recursive: true });
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
     writeFileSync(join(dir, "pic.png"), png(4, 4, [200, 30, 30]));
+    // A short clip, for the players the page lays over the copy.
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "5",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", join(dir, "clip.mp4")]);
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
     writeFileSync(join(dir, "font.ttf"), systemFont());
 }
@@ -672,6 +690,22 @@ async function check(base, port, site) {
         await sleep(800);
         const n = await frame(`document.getElementById("n").textContent`);
         if (n !== "4") throw new Error(`counted ${n}, not 4: the press let go outside clicked too`);
+    });
+
+    await step("a video plays in a player laid over the copy, its file read through the server", async () => {
+        await goTo(site + "video.html", "Video");
+        await frameWait(`document.querySelector("#clip[data-go-video]")?.textContent === ""`, "the clip's box, its player made");
+        const notes = await frame(`[document.getElementById("streamed").textContent, document.getElementById("silent").textContent]`);
+        if (!/own player/.test(notes[0]) || !/nothing to play/.test(notes[1])) throw new Error(`the other boxes say ${JSON.stringify(notes)}`);
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1 && Math.abs(v.duration - 5) < 0.5)`, "the player's clip, 5 s", 30000);
+        await ev(`document.querySelector("video").play()`);
+        await waitFor(`document.querySelector("video").currentTime > 0.5`, "the clip playing", 30000);
+        // Over its box, within the frame.
+        const over = await ev(`(() => { const v = document.querySelector("video").getBoundingClientRect(), f = document.getElementById("go_view").getBoundingClientRect();
+            return v.width > 100 && v.left >= f.left && v.right <= f.right + 1 && v.top >= f.top; })()`);
+        if (!over) throw new Error("the player isn't over its box, within the frame");
+        await goTo(site + "second.html", "Second");
+        await waitFor(`!document.querySelector("video")`, "the player gone with its page");
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with

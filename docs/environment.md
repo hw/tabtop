@@ -793,7 +793,10 @@ work; what you do is done in the engine, and what the page changes is sent
 back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` names the engine; the
 image has Moli at `/opt/moli/moli` (its licences are beside it).
 
-What isn't shown: videos, sounds, and what scripts draw (canvas, WebGL).
+Videos and sounds with a file to play are played by a player of this page's,
+laid over the page, the file read from the site by the server as it plays;
+those a site's own player streams (YouTube's, and most streaming sites')
+aren't. What isn't shown: what scripts draw (canvas, WebGL).
 The page is laid out at your window's size (sites see that size, not your
 screen's), so pages made for phones or wide screens, and menus placed by
 measuring the page, work; the engine's fonts aren't the site's, so such

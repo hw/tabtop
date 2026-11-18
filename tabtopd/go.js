@@ -25,6 +25,7 @@ import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js"
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { call, collect, setLoginTitle } from "../tabtop/requests.js";
+import { goMedia } from "./go-media.js";
 
 const SEARCH = "https://html.duckduckgo.com/html/?q=";
 // The address this tab last showed, kept for its reloads (sessionStorage).
@@ -45,6 +46,14 @@ const address = $("go_url"), status = $("go_status"), notice = $("go_notice"), s
 // The frame: sandboxed with scripts only, its document from the server,
 // with a CSP that lets it load nothing from the web (see gopage.go).
 const frame = document.createElement("iframe");
+// The page's players, laid over the copy's boxes (go-media.js): their
+// posters fetched as the page's pictures are; a video's proportions told to
+// its box.
+let media = null;
+const mediaHelp = {
+    picture: (url) => cachedResource("image", url),
+    sized: (key, ratio) => frame.contentWindow?.postMessage({ type: "media-state", key, ratio }, "*"),
+};
 frame.id = "go_view";
 frame.title = "Page";
 frame.setAttribute("sandbox", "allow-scripts");
@@ -77,6 +86,7 @@ frame.addEventListener("load", () => {
 const toFrame = (m) => frameIsReady.then(() => frame.contentWindow?.postMessage(m, "*"));
 resetFrame();
 document.body.append(frame);
+media = goMedia(frame, mediaHelp);
 
 // History: this page's, by address; the engine only loads what it's told.
 let entries = [];  // {url, title}
@@ -280,6 +290,11 @@ function message(m) {
             }
             if (!m.again) spent = 0;
             show("Preparing images and styles…");
+            if (!m.again && shown !== m.gen) {
+                // Another page: its players, not the last one's.
+                media.stop();
+                media = goMedia(frame, mediaHelp);
+            }
             shown = m.gen;
             lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io };
             toFrame(lastRender);
@@ -455,6 +470,26 @@ window.addEventListener("message", (e) => {
             break;
         case "resync":
             if (ws && m.gen === shown) ws.send(JSON.stringify({ op: "resync", gen: m.gen }));
+            break;
+        case "media":
+            // A player for a box in the copy (go-media.js).
+            if (m.gen === shown && Number.isSafeInteger(m.key)) {
+                const owner = media;
+                owner.open({ key: m.key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, rect: m.rect }).then((got) => {
+                    if (owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "" }, "*");
+                });
+            }
+            break;
+        case "media-positions":
+            if (m.gen === shown && Array.isArray(m.positions)) {
+                const keys = new Set();
+                for (const at of m.positions.slice(0, 256)) {
+                    if (!Number.isSafeInteger(at?.key)) continue;
+                    keys.add(at.key);
+                    media.place(at.key, at.rect, !!at.shown);
+                }
+                media.keep(keys);
+            }
             break;
         case "io": {
             const rect = (r) => (Array.isArray(r) && r.length === 4 && r.every(Number.isFinite) ? r : null);
