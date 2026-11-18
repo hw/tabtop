@@ -69,6 +69,7 @@ type fetchJob struct {
 	id, host, dir string
 	real          string // dir, as it really is: links followed (see start)
 	by, ip, who   string // the handle of the session that started it, where from, and what it's called
+	client        *http.Client
 	cancel        context.CancelFunc
 	done          chan struct{}
 
@@ -115,8 +116,13 @@ func (j *fetchJob) set(f func(*fetchJob)) {
 type fetchManager struct {
 	// files is the root fetched into, opened as every other operation on
 	// it opens it.
-	files    *fileService
-	client   *http.Client
+	files  *fileService
+	client *http.Client
+	// goClient fetches files the remote browser led to: a site chose
+	// that address, and may redirect it, so it may reach only where
+	// both fetches and the remote browser may (WEB_GO_FETCH_PRIVATE and
+	// WEB_GO_PRIVATE). nil refuses them.
+	goClient *http.Client
 	activity *activityLog
 	// slots, shared by every root's manager, bounds the fetches going at
 	// once to maxFetches across the gateway (nil: this one's own count).
@@ -233,16 +239,24 @@ func fetchPolicy(private bool) func(netip.Addr) bool {
 	return func(a netip.Addr) bool { return fetchAllowed(a, private) && !localAddr(a) }
 }
 
-// newFetchClient is the client fetches use, connecting only where allow
-// says.
-func newFetchClient(allow func(netip.Addr) bool) *http.Client {
-	dialer := &net.Dialer{Timeout: 20 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+// fetchDialer connects only where allow says, checked on the socket it
+// actually opens: whatever a name resolved to, and after any redirect.
+// Fetches use it, through newFetchClient, and so does the remote
+// browser's egress proxy, for its tunnels (see goproxy.go).
+func fetchDialer(allow func(netip.Addr) bool) *net.Dialer {
+	return &net.Dialer{Timeout: 20 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
 		ap, err := netip.ParseAddrPort(address)
 		if err != nil || !allow(ap.Addr()) {
 			return errFetchAddress
 		}
 		return nil
 	}}
+}
+
+// newFetchClient is the client fetches use, connecting only where allow
+// says.
+func newFetchClient(allow func(netip.Addr) bool) *http.Client {
+	dialer := fetchDialer(allow)
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 nil,
@@ -271,11 +285,24 @@ var errFetchBusy = fmt.Errorf("%d fetches are going already (into all the folder
 
 // start starts fetching u into dir, for the session by.
 func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
+	return m.startWith(m.client, u, dir, by, ip, who)
+}
+
+// startGo starts fetching u, a file the remote browser led to, with
+// goClient.
+func (m *fetchManager) startGo(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
+	if m.goClient == nil {
+		return nil, errors.New("the remote browser is off, so its files can't be saved")
+	}
+	return m.startWith(m.goClient, u, dir, by, ip, who)
+}
+
+func (m *fetchManager) startWith(client *http.Client, u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
 	b := make([]byte, 8)
 	rand.Read(b)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &fetchJob{id: hex.EncodeToString(b), host: u.Host, dir: dir, by: by, ip: ip, who: who, cancel: cancel, done: make(chan struct{}),
-		name: urlName(u), total: -1}
+		name: urlName(u), total: -1, client: client}
 	// Where the folder really is, found once, before m.mu's taken (it can
 	// take a while on a slow disk): what's recorded as written into, and
 	// what's written into, are then the same folder.
@@ -509,7 +536,7 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 			}
 			timer := time.AfterFunc(fetchStall, func() { stall(errFetchStalled) })
 			defer timer.Stop()
-			res, err := m.client.Do(req)
+			res, err := j.client.Do(req)
 			if err != nil {
 				if context.Cause(actx) == errFetchStalled && ctx.Err() == nil {
 					return 0, true, errFetchStalled
@@ -693,7 +720,7 @@ func (g *fileService) noFetches() string {
 	if g.root.ReadOnly && g.resourceClient != nil {
 		return "This folder is read-only."
 	}
-	return "Fetching from URLs is turned off (WEB_FETCH=0)."
+	return "Fetching from URLs is turned off (WEB_GO_FETCH=0)."
 }
 
 // tunnelFetch answers a fetch request: with req.URL, it starts fetching it
@@ -739,7 +766,11 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 		if dir == "" {
 			dir = "."
 		}
-		if j, err = g.root.fetches.start(u, path.Clean(dir), sessionHandle(session), ip, g.sessionName(session)); err != nil {
+		start := g.root.fetches.start
+		if req.FromGo {
+			start = g.root.fetches.startGo
+		}
+		if j, err = start(u, path.Clean(dir), sessionHandle(session), ip, g.sessionName(session)); err != nil {
 			r.fail(err.Error())
 			return
 		}

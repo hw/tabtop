@@ -36,9 +36,13 @@
 | [WEB_TTY_COMMAND](#web_tty_command) | *(empty)* | Without a tmux host, a command each terminal tab runs instead of local tmux, such as `ssh -t me@host.docker.internal`. See [WEB_TTY_COMMAND](#web_tty_command). |
 | [WEB_OFFLINE_CLIENT](#web_offline_client) | `0` | `1` lets the offline client (`tabtop.html`, unlocked from the bootstrap pack and opened as a file) connect. |
 | [WEB_SHARE](#web_share) | `1` | `1` lets the files page make [share links](downloads.md#share-links) and [upload links](downloads.md#upload-links): plain URLs for downloading files and folders, or uploading into a folder, for `wget`, `curl` or someone without a login, outside the encrypted tunnel. `0` turns them off. |
-| [WEB_FETCH](#web_fetch-and-web_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
-| [WEB_FETCH_PRIVATE](#web_fetch-and-web_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
+| [WEB_GO_FETCH](#web_go_fetch-and-web_go_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
+| [WEB_GO_FETCH_PRIVATE](#web_go_fetch-and-web_go_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
 | [WEB_PREVIEW_FETCH_PRIVATE](#web_preview_fetch_private) | `0` | `1` lets previews in Proxy mode load a document's images, styles, fonts and media from private networks too. |
+| [WEB_GO](#web_go) | `0` | `1` serves the remote browser at `/go`: pages run on the server, in a sandboxed engine, and are shown as a copy. |
+| [WEB_GO_ENGINE](#web_go) | `/opt/moli/moli` | Path of the remote browser's page engine, a [Moli](https://github.com/lexmount/moli) binary. The image has one. |
+| [WEB_GO_UNSANDBOXED](#web_go) | `0` | `1` runs the remote browser's engine even where it can't be sandboxed. |
+| [WEB_GO_PRIVATE](#web_go) | `0` | `1` lets the remote browser reach private networks too, not only the internet. |
 | [WEB_DISASM_DISABLE](#web_disasm_disable) | `none` | Turns off disassembly in binary previews: `all` of it, or a comma-separated list of `x86`, `arm64`, `capstone` (ARM32 and Thumb), `riscv` and `mips`. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
@@ -52,7 +56,7 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_FETCH`, `WEB_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_GO_FETCH`, `WEB_GO_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_GO` (or `WEB_GO_ENGINE`, when `WEB_GO=1` and it isn't an executable file), `WEB_GO_UNSANDBOXED`, `WEB_GO_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
@@ -761,15 +765,15 @@ doesn't offer them, the gateway serves no links (those made before are
 kept in `~/.config/tabtop/shares.json`, and work again with `1`), and
 everything goes through the encrypted tunnel.
 
-## `WEB_FETCH` and `WEB_FETCH_PRIVATE`
+## `WEB_GO_FETCH` and `WEB_GO_FETCH_PRIVATE`
 
-With `WEB_FETCH=1` (default), **Fetch from URL…** on the files page has
+With `WEB_GO_FETCH=1` (default), **Fetch from URL…** on the files page has
 the server download a file from the web into `~/Downloads`; see
 [Fetching from a URL](downloads.md#fetching-from-a-url). `0` turns it off.
 
 A fetch only connects to public internet addresses: the server may be
 where the person using it isn't, beside the VNC server, a cloud metadata
-service or a private network. `WEB_FETCH_PRIVATE=1` lets it reach private
+service or a private network. `WEB_GO_FETCH_PRIVATE=1` lets it reach private
 networks too (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
 fc00::/7), such as a NAS on your LAN, and the Docker host's address on
 the container's network, which is private too. The container's own
@@ -777,13 +781,77 @@ addresses (loopback, 127.0.0.1 and ::1, and its address on each of its
 networks, public or private) and link-local ones (169.254.x.x, fe80::/10)
 are never fetched from. Fetches don't use a proxy.
 
+## `WEB_GO`
+
+With `WEB_GO=1` the server serves a browser at `/go` (**Browser** in the
+pages' bar). Each page is loaded and run by a
+[Moli](https://github.com/lexmount/moli) engine on the server, one per tab,
+and shown on your device as a sanitized copy of its document: your device
+never contacts the site, and none of the site's scripts run on it. Links,
+forms, typing, buttons, back, forward, reload and the page's own dialogs
+work; what you do is done in the engine, and what the page changes is sent
+back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` names the engine; the
+image has Moli at `/opt/moli/moli` (its licences are beside it).
+
+What isn't shown: videos, sounds, and what scripts draw (canvas, WebGL).
+Moli has no layout, so a page that needs one to work (one that measures
+itself, or reacts to where you click within an element) may not work. A
+file the site sends (a PDF, an archive) is offered to save into Downloads
+(`WEB_FS=1`), as fetches are saved, but from private networks only when
+both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`. Pictures, stylesheets and fonts are
+fetched by the server for you, without the site's cookies, so those that
+need you logged in to the site don't show. Signing in to a site works for as
+long as the tab is open; nothing is kept after it closes. A site that asks for a password
+with HTTP authentication shows its refusal page. Each engine may use up to
+1 GiB of memory; there are up to 3 tabs per login and 8 in all, and an
+engine that stops answering, or keeps a core busy for a minute, is stopped
+(the tab says so and can load the page again). A tab may make 30 requests a
+second (300 at once) and move 4 GiB in all; after that it's refused.
+
+Each engine runs in a [bubblewrap](https://github.com/containers/bubblewrap)
+sandbox, with no network of its own: it reaches only the server's proxy,
+which connects to public addresses only, on ports 80 and 443 (as fetches
+do; `WEB_GO_PRIVATE=1` adds private networks). Docker's default security
+settings don't let bubblewrap make its sandbox in a container; without the
+options below the server logs that the remote browser is unavailable, and
+why, and `/go` says so. Run the container with:
+
+```sh
+--security-opt seccomp=scripts/go-seccomp/tabtop-go.json \
+--security-opt apparmor=unconfined
+```
+
+The profile is in the image too, to copy out of it:
+
+```sh
+docker run --rm --entrypoint cat ghcr.io/<owner>/tabtop-lite \
+    /opt/moli/tabtop-go-seccomp.json > tabtop-go.json
+```
+
+[`tabtop-go.json`](../scripts/go-seccomp/tabtop-go.json) is Docker's own
+seccomp profile (from Docker 26.1.5) allowing, without `CAP_SYS_ADMIN`, only
+the system calls that make namespaces and mounts; everything else Docker
+refuses, it still refuses. `scripts/go-seccomp/generate.py` makes it again
+from another Docker version's profile. `--security-opt seccomp=unconfined`
+works too, but turns the container's whole filter off. Docker's default
+AppArmor profile also stops bubblewrap, so it has to be unconfined, unless
+you load an AppArmor profile of your own on the host.
+
+`WEB_GO_UNSANDBOXED=1` runs the engine anyway, as a plain process, where it
+can't be sandboxed. Only the proxy then confines what pages request, and a
+page that exploits a bug in the engine runs as the server's user, with its
+files. The engine's control port (CDP) is also on the container's loopback,
+without a password: pages can't reach it (the proxy refuses loopback), but
+any other program in the container could drive the engine. Use it only in a
+container you throw away.
+
 ## `WEB_PREVIEW_FETCH_PRIVATE`
 
 A preview in **Proxy** mode has the server load the images, stylesheets,
 fonts and media an HTML, Markdown or EPUB file refers to (see
-[preview security](preview-security.md)). It needs `WEB_FETCH=1` and uses
+[preview security](preview-security.md)). It needs `WEB_GO_FETCH=1` and uses
 the same rules, except for private networks: the file being previewed, not
-you, picks those addresses, so `WEB_FETCH_PRIVATE` doesn't apply to them.
+you, picks those addresses, so `WEB_GO_FETCH_PRIVATE` doesn't apply to them.
 With `WEB_PREVIEW_FETCH_PRIVATE=1` (default `0`), they may come from private
 networks too, for documents that use pictures on your intranet. Any file
 you preview in Proxy mode can then make the server request addresses on

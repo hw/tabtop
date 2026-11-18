@@ -9,8 +9,9 @@ everything after them use an [encrypted tunnel](docs/encryption.md), so a
 proxy that only decrypts HTTPS can't read them.
 
 One HTTP port (`6080`) serves the desktop (`/`), [files](docs/downloads.md)
-(`/fs/`), [terminal](docs/terminal.md) (`/tty/`), the tunnel, and
-[health checks](docs/health-checks.md).
+(`/fs/`), [terminal](docs/terminal.md) (`/tty/`), a
+[remote browser](docs/environment.md#web_go) (`/go`, off by default), the
+tunnel, and [health checks](docs/health-checks.md).
 
 Two images: `tabtop`, with its own desktop
 ([XFCE](docs/full-image.md)), and `tabtop-lite`, which shows a VNC server

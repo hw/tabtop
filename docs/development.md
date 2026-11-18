@@ -11,6 +11,8 @@
 | `GHOSTTY_WEB_SHA256` | *(checksum of 0.4.0)* | SHA-256 of `https://registry.npmjs.org/ghostty-web/-/ghostty-web-<version>.tgz`. |
 | `NERD_FONTS_VERSION` | `v3.5.1` | Nerd Fonts release that the terminal's font, JetBrains Mono Nerd Font (its `NL Mono` regular and bold, made WOFF2), and its license are taken from. |
 | `NERD_FONT_SHA256` | *(checksum of v3.5.1)* | SHA-256 of `https://github.com/ryanoasis/nerd-fonts/releases/download/<version>/JetBrainsMono.tar.xz`. |
+| `MOLI_VERSION` | `1.1.25` | [Moli](https://github.com/lexmount/moli) release, the remote browser's page engine (`/go`), downloaded from GitHub for the image's architecture (amd64 or arm64). |
+| `MOLI_AMD64_SHA256`, `MOLI_ARM64_SHA256` | *(checksums of 1.1.25)* | SHA-256 of `https://github.com/lexmount/moli/releases/download/v<version>/moli-<x86_64 or aarch64>-unknown-linux-gnu.tar.gz`. CI's tests take the version and the amd64 checksum from the Dockerfile too. |
 | `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses for the [tunnel](encryption.md). |
 | `NOBLE_CIPHERS_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/ciphers/-/ciphers-<version>.tgz`. |
 | `NOBLE_CURVES_VERSION` | `2.4.0` | `@noble/curves` release from npm, whose X25519 the page uses for the [tunnel](encryption.md). |
@@ -228,13 +230,33 @@ container of its own, it becomes healthy, its troubleshooting report has
 no failures and its pages load. It needs Docker and Python 3.
 `mise run lite-check` builds both images and runs it.
 
+`test/go-check.sh` checks the remote browser (`/go`) end to end, in
+headless Chrome, against a test site in a container: pages, stylesheets,
+fonts and pictures through the server, links, history, forms, typing,
+dialogs, files, and that nothing on the page reaches anything but TabTop.
+`MOLI=<moli binary> test/go-check.sh` runs it with tabtopd built from this
+tree; `GO_IMAGE=<image> test/go-check.sh` with an image's own tabtopd, Moli
+and bubblewrap, in a container run with the seccomp profile `/go` needs.
+With `GO_IMAGE`, it first checks that the image, run with Docker's default
+settings and `WEB_GO=1`, starts and says `/go` is unavailable;
+`GO_UNSANDBOXED=1` then checks it that way with `WEB_GO_UNSANDBOXED=1`.
+`GO_NO_FS=1` checks it with files off, `GO_SITES="<address> ..."` loads
+real sites too (with screenshots in `GO_SHOTS`), and `GO_SOAK=<n>` loads
+`n` pages one after another in one tab; it reports the most memory the
+engine and tabtopd used. It needs Docker, Node 22 or later and Chrome. Its
+Go tests with the real engine run when `TABTOP_TEST_MOLI` names a Moli
+binary, and the sandbox's when bubblewrap works (on Ubuntu 24.04 and later,
+after `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`).
+
 ## Continuous integration
 
 `.github/workflows/build.yml` runs on pushes to `main`, on `v*` tags and on
-pull requests. It checks formatting, runs `mise run vet` and `mise run test`,
-then builds the image and runs `test/browser-check.sh` on it, and builds
-the one without a desktop (`DESKTOP=none`) and runs `test/lite-check.sh`
-on it. If all of that passes, it pushes them to `ghcr.io/<owner>/<repo>`
+pull requests. It checks formatting, runs `mise run vet` and `mise run test`
+(with bubblewrap and the image's Moli, so the remote browser's sandbox and
+engine tests run), then builds the image and runs `test/browser-check.sh`
+on it, and builds the one without a desktop (`DESKTOP=none`) and runs
+`test/lite-check.sh` and `test/go-check.sh` (files on and off, and
+unsandboxed) on it. If all of that passes, it pushes them to `ghcr.io/<owner>/<repo>`
 and `ghcr.io/<owner>/<repo>-lite`, each with these tags:
 
 | Event | Tags |

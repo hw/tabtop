@@ -66,9 +66,9 @@ player positions within the preview body. Closing or replacing a render aborts
 all reads, removes native players and releases object URLs. Proxy media requires
 HTTPS/localhost and service workers; there is no whole-file remote fallback.
 
-All proxy resource types need WEB_FETCH and use its DNS, dial and redirect
+All proxy resource types need WEB_GO_FETCH and use its DNS, dial and redirect
 policy, but reach only public addresses unless WEB_PREVIEW_FETCH_PRIVATE=1:
-the document picks these URLs, so WEB_FETCH_PRIVATE never applies to them. They omit credentials, and have a 30-second request deadline and
+the document picks these URLs, so WEB_GO_FETCH_PRIVATE never applies to them. They omit credentials, and have a 30-second request deadline and
 four concurrent responses across the gateway. Static response caps are 20 MiB
 for images, 512 KiB for CSS and 8 MiB for fonts; font signatures are checked.
 Direct frames alone allow native HTTP(S) styles, fonts, images and media; browser

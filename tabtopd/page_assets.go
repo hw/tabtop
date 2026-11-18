@@ -32,7 +32,7 @@ const (
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed remote-auth-view.js remote-approve.js image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js model-thumbnails.js model-export.js model-limits.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-decode.js model-decode-worker.js model-info.js model-3mf.js model-gcode.js model-looks.js bgcode.js model-resources.js model-read.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js files-batch.js files-pins.js security-backup.js security-backup-format.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed remote-auth-view.js remote-approve.js image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js model-thumbnails.js model-export.js model-limits.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-decode.js model-decode-worker.js model-info.js model-3mf.js model-gcode.js model-looks.js bgcode.js model-resources.js model-read.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js files-batch.js files-pins.js security-backup.js security-backup-format.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js glyphs.js pdf-frame.js epub-frame.js md-frame.js go-frame.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var pageFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -369,6 +369,8 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		w.Write(js)
 	case name == "mic-worklet.js" && g.audio != nil:
 		w.Write(micWorkletJS)
+	case name == "go-frame.html" && g.goOn:
+		goFrame(w)
 	case name == "md-frame.html":
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		h.Set("Content-Security-Policy", previewFrameCSP(r))
@@ -397,8 +399,8 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		w.Write(bytes.ReplaceAll(js, []byte(`"./highlight/`), []byte(`"./`+g.highlightPath()+`/`)))
 	case name == "nav.js":
 		js, _ := pageFiles.ReadFile(name)
-		pages, _ := json.Marshal(map[string]bool{"desktop": !g.vncOff, "terminal": g.termDir != "", "files": !g.fsOff})
-		w.Write(bytes.Replace(js, []byte(`{ desktop: true, terminal: true, files: true }`), pages, 1))
+		pages, _ := json.Marshal(map[string]bool{"desktop": !g.vncOff, "terminal": g.termDir != "", "files": !g.fsOff, "go": g.goOn})
+		w.Write(bytes.Replace(js, []byte(`{ desktop: true, terminal: true, files: true, go: true }`), pages, 1))
 	case name == "preview.js" || name == "preview-content.js":
 		js, _ := pageFiles.ReadFile(name)
 		w.Write(bytes.ReplaceAll(js, []byte(`"./highlight/`), []byte(`"./`+g.highlightPath()+`/`)))

@@ -385,7 +385,7 @@ export async function askURL(name) {
     input.setAttribute("aria-label", "The address to fetch");
     const note = el("p", { className: "hint", textContent: "The server downloads it itself, straight into this folder, "
         + "and carries on if you close this page. It only fetches from the internet, not from this machine or a private "
-        + "network (unless WEB_FETCH_PRIVATE=1)." });
+        + "network (unless WEB_GO_FETCH_PRIVATE=1)." });
     return (await ask(`Fetch a file from the web into ${name}:`, "Fetch", input, note)) ? input.value.trim() : null;
 }
 

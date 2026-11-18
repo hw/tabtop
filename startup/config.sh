@@ -20,9 +20,14 @@ WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_MIC="${WEB_MIC:-1}"
 WEB_SHARE="${WEB_SHARE:-1}"
 WEB_OFFLINE_CLIENT="${WEB_OFFLINE_CLIENT:-0}"
-WEB_FETCH="${WEB_FETCH:-1}"
-WEB_FETCH_PRIVATE="${WEB_FETCH_PRIVATE:-0}"
+WEB_GO_FETCH="${WEB_GO_FETCH:-1}"
+WEB_GO_FETCH_PRIVATE="${WEB_GO_FETCH_PRIVATE:-0}"
 WEB_PREVIEW_FETCH_PRIVATE="${WEB_PREVIEW_FETCH_PRIVATE:-0}"
+WEB_GO="${WEB_GO:-0}"
+# The image's Moli (Dockerfile) unless another is named.
+WEB_GO_ENGINE="${WEB_GO_ENGINE:-/opt/moli/moli}"
+WEB_GO_UNSANDBOXED="${WEB_GO_UNSANDBOXED:-0}"
+WEB_GO_PRIVATE="${WEB_GO_PRIVATE:-0}"
 WEB_DISASM_DISABLE="${WEB_DISASM_DISABLE:-none}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
@@ -151,18 +156,33 @@ case "$WEB_OFFLINE_CLIENT" in
     0|1) ;;
     *) echo "WEB_OFFLINE_CLIENT must be 0 or 1 (got '${WEB_OFFLINE_CLIENT}')." >&2; exit 1 ;;
 esac
-case "$WEB_FETCH" in
+case "$WEB_GO_FETCH" in
     0|1) ;;
-    *) echo "WEB_FETCH must be 0 or 1 (got '${WEB_FETCH}')." >&2; exit 1 ;;
+    *) echo "WEB_GO_FETCH must be 0 or 1 (got '${WEB_GO_FETCH}')." >&2; exit 1 ;;
 esac
-case "$WEB_FETCH_PRIVATE" in
+case "$WEB_GO_FETCH_PRIVATE" in
     0|1) ;;
-    *) echo "WEB_FETCH_PRIVATE must be 0 or 1 (got '${WEB_FETCH_PRIVATE}')." >&2; exit 1 ;;
+    *) echo "WEB_GO_FETCH_PRIVATE must be 0 or 1 (got '${WEB_GO_FETCH_PRIVATE}')." >&2; exit 1 ;;
 esac
 case "$WEB_PREVIEW_FETCH_PRIVATE" in
     0|1) ;;
     *) echo "WEB_PREVIEW_FETCH_PRIVATE must be 0 or 1 (got '${WEB_PREVIEW_FETCH_PRIVATE}')." >&2; exit 1 ;;
 esac
+case "$WEB_GO" in
+    0|1) ;;
+    *) echo "WEB_GO must be 0 or 1 (got '${WEB_GO}')." >&2; exit 1 ;;
+esac
+case "$WEB_GO_UNSANDBOXED" in
+    0|1) ;;
+    *) echo "WEB_GO_UNSANDBOXED must be 0 or 1 (got '${WEB_GO_UNSANDBOXED}')." >&2; exit 1 ;;
+esac
+case "$WEB_GO_PRIVATE" in
+    0|1) ;;
+    *) echo "WEB_GO_PRIVATE must be 0 or 1 (got '${WEB_GO_PRIVATE}')." >&2; exit 1 ;;
+esac
+if [ "$WEB_GO" = 1 ] && [ ! -x "$WEB_GO_ENGINE" ]; then
+    echo "WEB_GO=1 needs WEB_GO_ENGINE, the path of a Moli binary (got '${WEB_GO_ENGINE}', which isn't one)." >&2; exit 1
+fi
 # none, all, or some of x86, arm64, capstone, riscv and mips, with commas between.
 if ! [[ "$WEB_DISASM_DISABLE" =~ ^(none|all|(x86|arm64|capstone|riscv|mips)(,(x86|arm64|capstone|riscv|mips))*)$ ]]; then
     echo "WEB_DISASM_DISABLE must be none, all, or a comma-separated list of x86, arm64, capstone, riscv and mips (got '${WEB_DISASM_DISABLE}')." >&2

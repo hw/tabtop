@@ -101,6 +101,16 @@ type server struct {
 	// the user, so -fetch-private doesn't apply: only
 	// -preview-fetch-private lets it reach private networks.
 	resourceClient *http.Client
+	// goMode is how the remote browser's engines run, decided at start-up
+	// (goSandboxProbe), and goWhy why they're not sandboxed; goConfig is
+	// what each is started with (see goengine.go).
+	goMode   goSandboxMode
+	goWhy    string
+	goConfig goEngineConfig
+	// goResources is the client its resource broker fetches with.
+	goResources *http.Client
+	// goEngines counts the remote browser's engines open, by session.
+	goEngines map[string]int
 	// rootProblems are configured roots left out at startup (see
 	// parseFileRootsAll).
 	rootProblems []rootProblem
@@ -118,6 +128,9 @@ func main() {
 	}
 	if len(os.Args) >= 2 && os.Args[1] == heifChildArg {
 		os.Exit(readHEIFChild(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == goBridgeArg {
+		os.Exit(runGoBridge(os.Args[2:]))
 	}
 	c := defaultServerConfig()
 	flag.BoolVar(&c.vncOff, "disable-vnc", false, "disable the desktop page and VNC tunnel")
@@ -162,6 +175,11 @@ func main() {
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,
 		"let previews in Proxy mode load a document's external resources from private networks too; the document picks those URLs")
+	flag.BoolVar(&c.goOn, "go", c.goOn, "serve the remote browser at go: pages run in a sandboxed engine on this machine, shown as a sanitized DOM; needs -go-engine")
+	flag.StringVar(&c.goEngine, "go-engine", c.goEngine, "the remote browser's page engine: a Moli binary; empty turns the remote browser off")
+	flag.BoolVar(&c.goUnsandboxed, "go-unsandboxed", c.goUnsandboxed,
+		"run the remote browser's engine even where bubblewrap can't sandbox it (a container with default security settings): a page exploiting the engine would run as this server's user")
+	flag.BoolVar(&c.goPrivate, "go-private", c.goPrivate, "let the remote browser reach private networks too, not only public addresses")
 	flag.BoolVar(&c.doctorOn, "doctor", c.doctorOn, "serve a troubleshooting report at doctor, without a login")
 	flag.StringVar(&c.kaitaiDir, "kaitai-dir", c.kaitaiDir, "compiled Kaitai formats for binary previews; empty for none")
 	flag.StringVar(&c.pdfjsDir, "pdfjs-dir", c.pdfjsDir, "pdf.js, for PDF previews; empty for none, and PDFs download instead")
@@ -217,6 +235,16 @@ func main() {
 	}
 	if c.fetchOn && !c.fsOff && c.previewFetchPrivate {
 		log.Print("previews' external resources may come from private networks")
+	}
+	if c.goOn {
+		switch g.goMode {
+		case goSandboxed:
+			log.Printf("remote browser on at %s, its engine sandboxed by bubblewrap", g.abs("/go"))
+		case goUnsandboxed:
+			log.Printf("remote browser on at %s, its engine NOT sandboxed (-go-unsandboxed): %s", g.abs("/go"), g.goWhy)
+		default:
+			log.Printf("remote browser unavailable: %s; see WEB_GO in docs/environment.md for the container's settings it needs, or -go-unsandboxed (WEB_GO_UNSANDBOXED)", g.goWhy)
+		}
 	}
 	if g.shares != nil {
 		log.Printf("share links on: %d kept in %s", len(g.shares.list("")), c.sharesFile)

@@ -126,6 +126,9 @@ type tunnelRequest struct {
 	// fetch: the address to fetch into the folder at Path (or, with Name,
 	// the id of a fetch to follow); preview-resource: the resource's
 	URL string `json:"url,omitempty"`
+	// fetch: a file the remote browser (/go) led to, fetched only where
+	// both fetches and the remote browser may go (see fetchManager).
+	FromGo bool `json:"from_go,omitempty"`
 	// preview-resource: image (default), css, font or ranged media.
 	Resource string `json:"resource,omitempty"`
 

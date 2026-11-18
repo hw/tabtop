@@ -22,7 +22,7 @@ const hooks = registerHooks({
         return next(specifier, context);
     },
     load(url, context, next) {
-        const served = url.includes("/files-only/") ? source.replace("{ desktop: true, terminal: true, files: true }", '{"desktop":false,"terminal":false,"files":true}') : source;
+        const served = url.includes("/files-only/") ? source.replace("{ desktop: true, terminal: true, files: true, go: true }", '{"desktop":false,"terminal":false,"files":true,"go":false}') : source;
         return url.startsWith("https://nav.test/") ? { shortCircuit: true, format: "module", source: served } : next(url, context);
     },
 });

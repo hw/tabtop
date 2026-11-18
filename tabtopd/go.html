@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browser</title>
+<style>
+html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; font: 13px system-ui, sans-serif; color: #e8e8ea; }
+.tabtop-nav { position: absolute; top: 0; left: 0; right: 0; height: 30px; box-sizing: border-box; display: flex; align-items: center;
+    gap: .5rem; padding: 0 .75rem; color: #a8a8ad; background: #1c1c1e; border-bottom: 1px solid #2c2c2e; }
+.tabtop-nav .page { display: inline-flex; align-items: center; justify-content: center; padding: 2px; border-radius: 4px; color: #8ab4f8; }
+.tabtop-nav .page svg { display: block; width: 20px; height: 20px; }
+.tabtop-nav a.page:hover { background: #2c2c2e; }
+.tabtop-nav .page[aria-current] { color: #e8e8ea; background: #3a3a3c; }
+.tabtop-nav button { margin-left: auto; font: inherit; color: inherit; background: none; border: 1px solid #3a3a3c;
+    border-radius: 4px; padding: 1px 6px; cursor: pointer; display: inline-flex; align-items: center; }
+.tabtop-nav button svg { display: block; width: 18px; height: 18px; }
+#go_bar { position: absolute; top: 30px; left: 0; right: 0; height: 40px; box-sizing: border-box; display: flex; align-items: center;
+    gap: 4px; padding: 0 8px; background: #2c2c2e; border-bottom: 1px solid #3a3a3c; }
+#go_bar button { flex: 0 0 auto; min-width: 30px; height: 28px; font: 16px system-ui, sans-serif; color: #e8e8ea; background: none;
+    border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+#go_bar button:hover:not(:disabled) { background: #3a3a3c; }
+#go_bar button:disabled { color: #6c6c70; cursor: default; }
+#go_address { flex: 1; min-width: 0; display: flex; }
+#go_address input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 10px; font: 14px system-ui, sans-serif;
+    color: #e8e8ea; background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 14px; }
+#go_mode { flex: 0 0 auto; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+#go_mode.unsandboxed { color: #1c1c1e; background: #f2b84b; }
+#go_mode[hidden] { display: none; }
+#go_view { position: absolute; top: 70px; left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - 70px); border: 0; background: #fff; }
+#go_status { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); box-sizing: border-box; padding: 4px 10px;
+    color: #e8e8ea; background: rgba(44, 44, 46, .92); border: 1px solid #3a3a3c; border-radius: 6px; pointer-events: none; }
+#go_status:empty { display: none; }
+#go_notice { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); width: min(34rem, calc(100% - 24px)); box-sizing: border-box;
+    padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; }
+#go_notice[hidden] { display: none; }
+#go_notice.error { border-color: #d96b6b; }
+#go_notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
+#go_notice button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+#go_dialog { width: min(28rem, calc(100% - 32px)); box-sizing: border-box; padding: 16px; color: #e8e8ea; background: #2c2c2e;
+    border: 1px solid #48484a; border-radius: 8px; }
+#go_dialog::backdrop { background: rgba(0, 0, 0, .45); }
+#go_dialog p { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+#go_dialog input { width: 100%; box-sizing: border-box; margin-bottom: 12px; padding: 6px 8px; font: inherit; color: inherit;
+    background: #1c1c1e; border: 1px solid #48484a; border-radius: 4px; }
+#go_dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+#go_dialog button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
+#go_dialog button.ok { background: #2f5ea8; border-color: #2f5ea8; }
+#go_dialog [hidden] { display: none; }
+#go_start { position: absolute; top: 70px; left: 0; right: 0; bottom: 0; display: grid; place-content: center; padding: 24px;
+    text-align: center; color: #a8a8ad; background: #1c1c1e; }
+#go_start[hidden] { display: none; }
+#go_start h1 { margin: 0 0 8px; font-size: 20px; color: #e8e8ea; }
+#go_start p { margin: 4px 0; max-width: 34rem; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+@media (pointer: coarse) { #go_bar button { min-width: 40px; height: 36px; } #go_address input { height: 36px; } }
+</style>
+<div id="go_bar">
+    <button type="button" id="go_back" title="Back (Alt+←)" aria-label="Back" disabled>←</button>
+    <button type="button" id="go_forward" title="Forward (Alt+→)" aria-label="Forward" disabled>→</button>
+    <button type="button" id="go_reload" title="Reload" aria-label="Reload" disabled>⟳</button>
+    <form id="go_address" role="search">
+        <input id="go_url" type="text" inputmode="url" autocomplete="off" spellcheck="false" aria-label="Address, or words to search for"
+            placeholder="Address, or words to search for">
+    </form>
+    <span id="go_mode" hidden></span>
+</div>
+<div id="go_start">
+    <div>
+        <h1>Browser</h1>
+        <p>Pages open on the server, in an engine of their own, and are shown here as a copy: your device never contacts the site.</p>
+        <p>Videos, sounds and drawings made by scripts aren't shown.</p>
+    </div>
+</div>
+<div id="go_status" role="status" aria-live="polite"></div>
+<div id="go_notice" role="alert" hidden><p></p><button type="button">Try again</button></div>
+<dialog id="go_dialog"><form method="dialog"><p></p><input type="text" aria-label="Answer" hidden>
+    <div class="buttons"><button type="button" class="cancel">Cancel</button><button type="submit" class="ok">OK</button></div></form></dialog>
+<script type="module" src="go.js"></script>
+</html>

@@ -33,6 +33,8 @@ const icons = {
     desktop: '<rect x="2.5" y="4" width="20" height="13.5" rx="1.5"/><path d="M8.5 21h8m-4-3.5v3.5"/>',
     terminal: '<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>',
     files: '<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>',
+    // The remote browser: a globe.
+    go: '<circle cx="12.5" cy="12.5" r="9"/><path d="M3.5 12.5h18M12.5 3.5c-3 3-3 15 0 18m0-18c3 3 3 15 0 18"/>',
     logout: '<path d="M10 4.5h-5v16h5m4-12l4.5 4-4.5 4m4.5-4h-10"/>',
     // The offline client's components (a box, as packages are drawn).
     components: '<path d="M12.5 3l8.5 4.5v10l-8.5 4.5-8.5-4.5v-10zM4 7.5l8.5 4.5 8.5-4.5M12.5 12v10"/>',

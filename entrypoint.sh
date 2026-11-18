@@ -82,9 +82,13 @@ as_user /usr/local/bin/tabtopd \
     -passkeys-file "$USER_HOME/.config/tabtop/passkeys.json" \
     -remote-approval-url "${WEB_REMOTE_APPROVAL_URL:-}" \
     -offline-client="$WEB_OFFLINE_CLIENT" \
-    -fetch="$WEB_FETCH" \
-    -fetch-private="$WEB_FETCH_PRIVATE" \
+    -fetch="$WEB_GO_FETCH" \
+    -fetch-private="$WEB_GO_FETCH_PRIVATE" \
     -preview-fetch-private="$WEB_PREVIEW_FETCH_PRIVATE" \
+    -go="$WEB_GO" \
+    -go-engine "$WEB_GO_ENGINE" \
+    -go-unsandboxed="$WEB_GO_UNSANDBOXED" \
+    -go-private="$WEB_GO_PRIVATE" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
     -session-max "$WEB_SESSION_MAX" \

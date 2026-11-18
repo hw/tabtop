@@ -44,7 +44,7 @@ trap cleanup EXIT
 
 # The secret is the Base32 of "12345678901234567890", which
 # browser-check.mjs makes its codes from.
-# WEB_FETCH_PRIVATE=1: the check fetches from the container's own address.
+# WEB_GO_FETCH_PRIVATE=1: the check fetches from the container's own address.
 service_args=()
 if [[ "$group" == services ]]; then service_args=(-e WEB_VNC=0 -e WEB_FS=0); fi
 if [[ "$group" == diff || "$group" == image-diff ]]; then service_args=(-e WEB_VNC=0 -e WEB_TTY=0 -e WEB_AUDIO=0); fi
@@ -58,7 +58,7 @@ if [[ "$group" == roots ]]; then
     service_args=(-e WEB_VNC=0 -e WEB_TTY=0 -e WEB_AUDIO=0 -e WEB_FS_ROOTS=Downloads:rw,Documents:ro,data=/data:rw
         -v "$work/roots/downloads:/home/user/Downloads" -v "$work/roots/documents:/home/user/Documents:ro" -v "$work/roots/data:/data")
 fi
-docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_FETCH_PRIVATE=1 -e WEB_PREVIEW_FETCH_PRIVATE=1 "${service_args[@]}" \
+docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_GO_FETCH_PRIVATE=1 -e WEB_PREVIEW_FETCH_PRIVATE=1 "${service_args[@]}" \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"
 for ((i = 0; ; i++)); do

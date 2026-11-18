@@ -75,7 +75,7 @@ func TestPreviewResource(t *testing.T) {
 	}
 	g.defaultRoot().fetches = nil
 	if reply := openSession(t, ctx, address, session).request(t, ctx, tunnelRequest{Type: "preview-resource", URL: remote.URL + "/image"}); reply["error"] == nil {
-		t.Fatal("WEB_FETCH=0 bypassed")
+		t.Fatal("WEB_GO_FETCH=0 bypassed")
 	}
 }
 

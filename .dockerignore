@@ -1,0 +1,17 @@
+# Local metadata and credentials are not build inputs.
+.git
+.agents
+.codex
+.aws
+.env
+.env.*
+
+# Host dependencies, compiled outputs, and generated build caches.
+**/node_modules
+**/target
+**/.client-build
+/scripts/kaitai/dist
+/tabtopd/tabtopd
+
+# Documentation is not copied into the image.
+/docs

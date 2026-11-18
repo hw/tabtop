@@ -389,6 +389,30 @@ RUN mkdir /formats \
  && KAITAI_ASSETS=/kaitai node --test kaitai-budget.test.mjs \
  && chmod -R u=rwX,go=rX /kaitai
 
+# Moli, the remote browser's page engine (/go, WEB_GO): a headless browser
+# with V8 and a DOM of its own, but no layout or painting (Apache-2.0 OR MIT;
+# its V8 and DOM come from Chromium, BSD-3-Clause). tabtopd runs it inside
+# bubblewrap; see docs/browser-plan.md. Bump MOLI_VERSION and both checksums
+# together; they are of the release's moli-<arch>-unknown-linux-gnu.tar.gz.
+FROM debian:trixie-slim AS moli
+ARG TARGETARCH
+ARG MOLI_VERSION=1.1.25
+ARG MOLI_AMD64_SHA256=04c73204626054c9ec0064f7fc00abb0dcfa7f8b9c3ec9df5de8e2afc301087f
+ARG MOLI_ARM64_SHA256=95c094a0214431193ee93142dec91cc7affbea79e9b35094213b8b9230ccd134
+ADD --checksum=sha256:${MOLI_AMD64_SHA256} \
+    https://github.com/lexmount/moli/releases/download/v${MOLI_VERSION}/moli-x86_64-unknown-linux-gnu.tar.gz /moli-amd64.tar.gz
+ADD --checksum=sha256:${MOLI_ARM64_SHA256} \
+    https://github.com/lexmount/moli/releases/download/v${MOLI_VERSION}/moli-aarch64-unknown-linux-gnu.tar.gz /moli-arm64.tar.gz
+RUN set -e; case "$TARGETARCH" in amd64|arm64) ;; *) echo "no Moli build for $TARGETARCH" >&2; exit 1 ;; esac \
+ && mkdir /src /moli \
+ && tar -xzf /moli-$TARGETARCH.tar.gz -C /src --strip-components=1 --no-same-owner \
+ && test "$(cat /src/VERSION)" = "$MOLI_VERSION" \
+ && cp /src/moli /moli/moli \
+ && cp /src/LICENSE-APACHE /moli/LICENSE-APACHE.moli \
+ && cp /src/LICENSE-MIT /moli/LICENSE-MIT.moli \
+ && cp /src/licenses/* /src/license-metadata.json /moli/ \
+ && chmod -R u=rwX,go=rX /moli && chmod 755 /moli/moli
+
 # The Go version matches mise.toml, which pins it for local development.
 # tabtopd encodes audio with libopus and checks logins with liboath, through
 # cgo, so it links the system's libraries and glibc; the final stage is the
@@ -436,6 +460,8 @@ RUN apt-get update \
         procps \
         htop \
         libpam-oath \
+        bubblewrap \
+        libfontconfig1 \
         oathtool \
         qrencode \
         libopus0 \
@@ -635,6 +661,10 @@ COPY --from=background /background /opt/background
 COPY --from=inpaint /inpaint /opt/inpaint
 COPY --from=segment /segment /opt/segment
 COPY --from=three /three /opt/three
+COPY --from=moli /moli /opt/moli
+# The seccomp profile a container needs for /go (docs/environment.md, WEB_GO),
+# to copy out of the image.
+COPY --chmod=644 scripts/go-seccomp/tabtop-go.json /opt/moli/tabtop-go-seccomp.json
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=644 startup/*.sh /usr/local/bin/startup/
 COPY --chmod=755 healthcheck.sh /usr/local/bin/healthcheck

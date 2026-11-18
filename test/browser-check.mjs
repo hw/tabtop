@@ -935,7 +935,7 @@ try {
     await step("files: fetch from a URL", async () => {
         // resume.bin, from a server of the check's own on this machine,
         // which the container reaches through Docker's gateway: a private
-        // address, which this container's WEB_FETCH_PRIVATE=1 allows.
+        // address, which this container's WEB_GO_FETCH_PRIVATE=1 allows.
         const server = http.createServer((req, res) => {
             if (req.url !== "/resume.bin") {
                 res.writeHead(404).end();

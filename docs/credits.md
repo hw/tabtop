@@ -49,7 +49,7 @@ Go modules (see `tabtopd/go.mod`), and the C libraries it links.
 | [creack/pty](https://github.com/creack/pty) | The terminal's PTY | MIT |
 | [jfreymuth/pulse](https://github.com/jfreymuth/pulse) | Recording sound over the PulseAudio protocol | MIT |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | ChaCha20-Poly1305 for the tunnel | BSD 3-Clause |
-| [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) | Linux system calls (watching and renaming files) | BSD 3-Clause |
+| [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) | Linux system calls (watching and renaming files) and their numbers, for the remote browser's seccomp filter | BSD 3-Clause |
 | [Opus](https://opus-codec.org/) (libopus) | Encoding the sound for the browser | BSD 3-Clause |
 | [OATH Toolkit](https://www.nongnu.org/oath-toolkit/) (liboath) | Checking TOTP codes | LGPL 2.1 or later |
 | [SQLite](https://sqlite.org/) (libsqlite3) | Reading databases for their previews | Public domain |
@@ -72,6 +72,13 @@ Debian packages, under their own licenses: each one's is in
 - [tmux](https://github.com/tmux/tmux), the terminal's sessions
 - [OATH Toolkit](https://www.nongnu.org/oath-toolkit/) (pam_oath, oathtool) and [libqrencode](https://fukuchi.org/works/qrencode/), the TOTP key and its QR code at startup
 - [tini](https://github.com/krallin/tini), the container's first process
+- [bubblewrap](https://github.com/containers/bubblewrap), the [remote browser](environment.md#web_go)'s sandbox
+
+Not a Debian package: [Moli](https://github.com/lexmount/moli), the remote
+browser's page engine, from its release (Apache-2.0 or MIT; its V8 and DOM
+come from Chromium, BSD-3-Clause), in `/opt/moli` with its licences and
+notices (`LICENSE-APACHE.moli`, `LICENSE-MIT.moli`,
+`Chromium-BSD-3-Clause.txt`, `Selenium-NOTICE.txt`).
 
 `tabtop-lite`, the image without a desktop, leaves out TigerVNC, Xfce,
 Chromium, the themes and PipeWire.

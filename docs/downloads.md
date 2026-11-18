@@ -631,7 +631,7 @@ downloaded at `http://<host>:6080/fs/`:
   embedded web resources. Its glyph shows the current mode; open the dropdown
   to select **No external** (default), **Proxy** (through the E2E tunnel), or
   **Direct** (through your browser). Each newly
-  opened file starts blocked. Proxy follows `WEB_FETCH` address restrictions.
+  opened file starts blocked. Proxy follows `WEB_GO_FETCH` address restrictions.
   Clickable links retain their confirmation dialog and do not show the glyph.
 - **HTML** (`.html`, `.htm`) has **Rendered / Source** views. Rendered HTML
   shows document text, tables, basic inline formatting, and local images.
@@ -1181,7 +1181,7 @@ container rather than through your browser and connection.
   192.168.x and the like), checked on every connection, redirects
   included, so a link can't reach the VNC server, anything else in the
   container, the Docker host or a metadata service. With
-  [`WEB_FETCH_PRIVATE=1`](environment.md#web_fetch-and-web_fetch_private)
+  [`WEB_GO_FETCH_PRIVATE=1`](environment.md#web_go_fetch-and-web_go_fetch_private)
   it fetches from private networks too, such as a NAS, and so from the
   Docker host's address on the container's network, which is private;
   the container's own addresses and link-local ones stay off limits. It
@@ -1190,7 +1190,7 @@ container rather than through your browser and connection.
   everywhere**, and stopping the container cancel it, deleting what it
   had. The gateway's log names the host it fetched from, never the rest of
   the address, which could hold a token.
-  [`WEB_FETCH=0`](environment.md#web_fetch-and-web_fetch_private) turns fetching off.
+  [`WEB_GO_FETCH=0`](environment.md#web_go_fetch-and-web_go_fetch_private) turns fetching off.
 
 The distinct Markdown, EPUB and HTML sanitizer policies and their security
 boundaries are documented in [preview sanitizers](preview-security.md).

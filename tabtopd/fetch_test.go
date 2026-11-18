@@ -467,3 +467,36 @@ func TestFetchSlotsShared(t *testing.T) {
 		t.Fatalf("started with every slot taken: %v", err)
 	}
 }
+
+// A file the remote browser led to is fetched with the manager's goClient
+// (where both fetches and /go may go), not its client: the site chose the
+// address, and may redirect it, so fetches' private networks aren't enough.
+func TestFetchFromGo(t *testing.T) {
+	g, srv, s := newFetchServer(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("pdf"))
+	}))
+	defer remote.Close()
+	fetches := g.defaultRoot().fetches
+	try := func() map[string]any {
+		tc := openSession(t, testCtx(t), srv, s)
+		first := tc.request(t, testCtx(t), tunnelRequest{Type: "fetch", URL: remote.URL + "/doc.pdf", FromGo: true})
+		if first["ok"] != true {
+			return first
+		}
+		return follow(t, tc)
+	}
+	// No remote browser: refused, though fetches may reach it.
+	if last := try(); last["error"] == nil {
+		t.Fatalf("saved with /go off: %v", last)
+	}
+	// Where /go may not go: refused.
+	fetches.goClient = newFetchClient(func(netip.Addr) bool { return false })
+	if last := try(); last["error"] == nil {
+		t.Fatalf("saved where /go may not go: %v", last)
+	}
+	fetches.goClient = newFetchClient(func(netip.Addr) bool { return true })
+	if last := try(); fetchedName(last) != "doc.pdf" {
+		t.Fatalf("not saved: %v", last)
+	}
+}

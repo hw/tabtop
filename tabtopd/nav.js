@@ -1,5 +1,5 @@
-// Links between the site's pages, the desktop, the terminal and the files
-// page, and logging out, served by tabtopd. Each page shows them its own
+// Links between the site's pages, the desktop, the terminal, the files
+// page and the remote browser, and logging out, served by tabtopd. Each page shows them its own
 // way: novnc.js in noVNC's control bar, tty.js and files.js in a bar at
 // the top (see navBar).
 //
@@ -20,11 +20,12 @@ const root = new URL("../", import.meta.url);  // the site's root, under any bas
 const offline = globalThis.tabtopOffline ?? null;
 
 // Replaced by the gateway to match its enabled services.
-const enabledPages = { desktop: true, terminal: true, files: true };
+const enabledPages = { desktop: true, terminal: true, files: true, go: true };
 export const pages = [
     { id: "desktop", label: "Desktop", href: offline?.href("desktop") ?? new URL("vnc.html?autoconnect=1", root).href },
     { id: "terminal", label: "Terminal", href: offline?.href("terminal") ?? new URL("tty/", root).href },
     { id: "files", label: "Files", href: offline?.href("files") ?? new URL("fs/", root).href },
+    { id: "go", label: "Browser", href: offline?.href("go") ?? new URL("go/", root).href },
     // (The offline client's own: what it has fetched of the viewers.)
     { id: "components", label: "Offline components", href: offline?.href("components") ?? "", offlineOnly: true },
 ].filter((page) => (page.offlineOnly || enabledPages[page.id]) && (offline ? offline.has(page.id) : !page.offlineOnly));

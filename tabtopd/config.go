@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"net/netip"
+	"os"
+	"os/exec"
 	"slices"
 	"time"
 )
@@ -48,6 +51,10 @@ type serverConfig struct {
 	sharesFile                            string // where they're kept; "" for in memory
 	fetchOn, fetchPrivate                 bool   // fetching from URLs, and from private networks
 	previewFetchPrivate                   bool   // previews' external resources from private networks too
+	goOn                                  bool   // the remote browser, /go
+	goEngine                              string // its page engine's binary (Moli); "" for none
+	goUnsandboxed                         bool   // run the engine even where it can't be sandboxed
+	goPrivate                             bool   // let the remote browser reach private networks too
 	activityFile                          string // where the activity log is kept; "" for in memory
 	passkeysFile                          string // where passkeys are kept; "" for in memory
 	shareKeyFile                          string // what share links' tokens are sealed with; "" for a key in memory
@@ -68,9 +75,10 @@ func newServer(c serverConfig) (*server, error) {
 	if c.usersFile == "" || !c.fsOff && c.downloadsDir == "" && c.fsRoots == "" || c.nobleDir == "" {
 		return nil, fmt.Errorf("-users-file and -noble-dir are required, and -downloads-dir or -fs-roots (WEB_FS_ROOTS) unless files are off")
 	}
-	if c.vncOff && c.fsOff && c.termDir == "" {
-		return nil, fmt.Errorf("enable at least one of VNC, terminal or files")
+	if c.vncOff && c.fsOff && c.termDir == "" && !c.goOn {
+		return nil, fmt.Errorf("enable at least one of VNC, terminal, files or the remote browser")
 	}
+	fetchOn := c.fetchOn // before files being off turns it off
 	if c.fsOff {
 		c.shareOn, c.fetchOn = false, false
 	}
@@ -154,10 +162,35 @@ func newServer(c serverConfig) (*server, error) {
 		// into the roots that can be written to.
 		g.resourceClient = newFetchClient(fetchPolicy(c.previewFetchPrivate))
 		client := newFetchClient(fetchPolicy(c.fetchPrivate))
+		var goClient *http.Client
+		if c.goOn {
+			goClient = newFetchClient(fetchPolicy(c.fetchPrivate && c.goPrivate))
+		}
 		slots := make(chan struct{}, maxFetches) // across the roots
 		for _, root := range g.roots {
 			if !root.ReadOnly {
-				root.fetches = &fetchManager{files: g.scope(root), activity: g.activity, client: client, slots: slots}
+				root.fetches = &fetchManager{files: g.scope(root), activity: g.activity, client: client, goClient: goClient, slots: slots}
+			}
+		}
+	}
+	if c.goOn {
+		// The remote browser doesn't need files, but WEB_GO_FETCH=0 (no
+		// fetching from URLs at all) turns it off too. Said in the log
+		// (main), not silently.
+		g.goMode = goUnavailable
+		if !fetchOn {
+			g.goWhy = "fetching from URLs is off (WEB_GO_FETCH=0)"
+		} else if c.goEngine == "" {
+			g.goWhy = "no engine is set (-go-engine, WEB_GO_ENGINE)"
+		} else if fi, err := os.Stat(c.goEngine); err != nil || fi.IsDir() || fi.Mode()&0o111 == 0 {
+			g.goWhy = fmt.Sprintf("its engine, %s, isn't an executable file", c.goEngine)
+		} else {
+			bwrap, _ := exec.LookPath("bwrap")
+			g.goMode, g.goWhy = goSandboxProbe(bwrap, c.goUnsandboxed)
+			g.goConfig = goEngineConfig{engine: c.goEngine, mode: g.goMode, bwrap: bwrap, allow: fetchPolicy(c.goPrivate)}
+			if g.goMode != goUnavailable {
+				g.goResources = newGoResourceClient(fetchPolicy(c.goPrivate))
+				sweepGoRunDirs()
 			}
 		}
 	}

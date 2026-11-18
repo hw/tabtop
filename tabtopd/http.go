@@ -26,6 +26,8 @@ func (g *server) handler() http.Handler {
 			target := filesPrefix
 			if g.termDir != "" {
 				target = ttyPrefix
+			} else if g.fsOff && g.goOn {
+				target = goPrefix
 			}
 			http.Redirect(w, r, g.abs(target), http.StatusSeeOther)
 		})
@@ -34,10 +36,11 @@ func (g *server) handler() http.Handler {
 	}
 	mux.HandleFunc(filesPrefix, g.filesPage)
 	mux.HandleFunc(ttyPrefix, g.tty)
+	mux.HandleFunc(goPrefix, g.goPage)
 	// The mux would add the trailing slash itself, but to the path without
 	// the base.
-	for _, p := range []string{filesPrefix, ttyPrefix} {
-		if p == filesPrefix && g.fsOff || p == ttyPrefix && g.termDir == "" {
+	for _, p := range []string{filesPrefix, ttyPrefix, goPrefix} {
+		if p == filesPrefix && g.fsOff || p == ttyPrefix && g.termDir == "" || p == goPrefix && !g.goOn {
 			mux.HandleFunc(strings.TrimSuffix(p, "/"), http.NotFound)
 			continue
 		}

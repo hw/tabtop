@@ -83,6 +83,9 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"tty":   other((*server).routeTTY),
 	"audio": other((*server).routeAudio),
 	"mic":   other((*server).routeMic),
+	// The remote browser: one tunnel, one browsing context (goroute.go).
+	"go":          other((*server).routeGo),
+	"go-resource": other((*server).routeGoResource),
 
 	// Sessions, and the activity log: kept with file support off.
 	"logout":           other((*server).routeLogout),
