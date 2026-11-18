@@ -47,6 +47,14 @@
         // followed since (location's is right in both).
         const here = () => location.href;
         const watched = new Map();   // fields acted on -> the value last reported
+        // What the page asked by alert, confirm and prompt, with an engine
+        // that answered it itself (godialogs.js): sent with the next batch.
+        let asked = [];
+        document.addEventListener("__tabtop_dialog", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (asked.length < 16 && d && typeof d.kind === "string" && typeof d.message === "string") asked.push({ kind: d.kind, message: d.message.slice(0, 2000) });
+        });
         // Players the page started or stopped since the last batch (media
         // events don't bubble: caught on their way down).
         let played = new Set();
@@ -146,6 +154,77 @@
             // A one-line field: Enter there sends its form (given as typed).
             const field = el.localName === "input" && !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/i.test(el.type);
             return field ? "field" : "ok";
+        }
+        // scripted does, for an engine that doesn't (Obscura), what a
+        // browser does with input besides its events (goinput.go asks):
+        //   {kind: "activate", id, key}  "click" if the key (" " or
+        //       "Enter") presses the focused element, to be clicked there
+        //   {kind: "tab", back}  the focus moved on, as Tab does
+        //   {kind: "pointer", type, x, y, button, buttons}  the pointer
+        //       event a mouse event makes, at x, y (the engine's window)
+        //   {kind: "contextmenu", x, y}  a right click's menu event
+        let pointerAt = null;
+        function scripted(json) {
+            let a;
+            try { a = JSON.parse(json); } catch { return "bad"; }
+            const at = (x, y) => document.elementFromPoint(Number(x) || 0, Number(y) || 0);
+            const mouseInit = (x, y, extra) => ({ bubbles: true, cancelable: true, composed: true, view: window, clientX: Number(x) || 0, clientY: Number(y) || 0, ...extra });
+            switch (a.kind) {
+                case "activate": {
+                    const el = document.activeElement;
+                    if (!el || el !== node(a.id) && !el.contains?.(node(a.id))) return "";
+                    const t = (el.type || "").toLowerCase(), name = el.localName;
+                    const button = name === "button" || name === "input" && /^(button|submit|reset|image)$/.test(t);
+                    const byKey = a.key === " " ? button || name === "summary" || name === "input" && /^(checkbox|radio)$/.test(t)
+                        : a.key === "Enter" ? button || name === "summary" || name === "a" && el.hasAttribute("href") : false;
+                    return byKey && !el.disabled ? "click" : "";
+                }
+                case "tab": {
+                    const all = [...document.querySelectorAll("a[href], area[href], button, input, select, textarea, summary, iframe, [tabindex], [contenteditable]")]
+                        .filter((e) => !e.disabled && e.type !== "hidden" && e.tabIndex >= 0 && e.getClientRects().length > 0);
+                    // Positive tab indices first, in order; then the rest, as they come.
+                    const order = [...all.filter((e) => e.tabIndex > 0).sort((x, y) => x.tabIndex - y.tabIndex), ...all.filter((e) => e.tabIndex === 0)];
+                    if (!order.length) return "none";
+                    const i = order.indexOf(document.activeElement);
+                    const to = a.back ? order[i <= 0 ? order.length - 1 : i - 1] : order[i < 0 || i === order.length - 1 ? 0 : i + 1];
+                    to.focus();
+                    return "ok";
+                }
+                case "pointer": {
+                    const el = at(a.x, a.y);
+                    if (!el) return "none";
+                    const init = mouseInit(a.x, a.y, { pointerId: 1, pointerType: "mouse", isPrimary: true, button: Number(a.button) || 0, buttons: Number(a.buttons) || 0 });
+                    if (a.type === "pointermove" && el !== pointerAt) {
+                        // Out of the last, into this, as browsers go: leave and
+                        // enter each element left or entered, not just the one
+                        // under the pointer (Obscura gives mouseenter to that
+                        // one alone, and no mouseleave).
+                        const chain = (e) => { const c = []; for (let n = e; n; n = n.parentElement) c.push(n); return c; };
+                        const before = pointerAt?.isConnected ? chain(pointerAt) : [], after = chain(el);
+                        const left = before.filter((n) => !after.includes(n)), entered = after.filter((n) => !before.includes(n)).reverse();
+                        const still = { ...init, bubbles: false };
+                        if (pointerAt?.isConnected) pointerAt.dispatchEvent(new PointerEvent("pointerout", init));
+                        for (const n of left) {
+                            n.dispatchEvent(new PointerEvent("pointerleave", still));
+                            n.dispatchEvent(new MouseEvent("mouseleave", still));
+                        }
+                        el.dispatchEvent(new PointerEvent("pointerover", init));
+                        for (const n of entered) {
+                            n.dispatchEvent(new PointerEvent("pointerenter", still));
+                            if (n !== el) n.dispatchEvent(new MouseEvent("mouseenter", still));
+                        }
+                        pointerAt = el;
+                    }
+                    if (/^pointer(move|down|up)$/.test(a.type)) el.dispatchEvent(new PointerEvent(a.type, init));
+                    return "ok";
+                }
+                case "contextmenu": {
+                    const el = at(a.x, a.y);
+                    el?.dispatchEvent(new MouseEvent("contextmenu", mouseInit(a.x, a.y, { button: 2, buttons: 0 })));
+                    return "ok";
+                }
+            }
+            return "unknown";
         }
         function io(json) {
             let list;
@@ -316,7 +395,11 @@
                 try { child = el.contentDocument; } catch { /* inaccessible origin */ }
                 if (child !== state.child || state.dirty || state.observer?.takeRecords().length ||
                     !state.observer && child?.documentElement || framePrintChanged(state)) {
-                    ops.push({ o: "c", i: id(el), c: frameKids(el, state.depth) });
+                    const c = frameKids(el, state.depth);
+                    // A frame this world can't read (another origin's) is read
+                    // in a world of its own (goframes.go), which sends it: an
+                    // empty one here would blank it in between.
+                    if (child) ops.push({ o: "c", i: id(el), c });
                 }
             }
             for (const p of parents) {
@@ -361,9 +444,11 @@
             ioNew();
             const ioNow = ioOut;
             ioOut = [];
-            if (!ops.length && !moved && !ioNow.length) return "";
+            const askedNow = asked;
+            asked = [];
+            if (!ops.length && !moved && !ioNow.length && !askedNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow });
         }
 
         function watch(el) {
@@ -464,7 +549,7 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner };
+        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted };
         // What the page observed before this world was made (as it loaded).
         document.dispatchEvent(new CustomEvent("__tabtop_io_sync"));
     }

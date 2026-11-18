@@ -52,6 +52,12 @@ var goObserveJS string
 //go:embed gofetch.js
 var goFetchJS string
 
+// goDialogsJS tells the agent what the page asked by alert, confirm and
+// prompt, for an engine that answers them itself (goAdapter.noDialogs).
+//
+//go:embed godialogs.js
+var goDialogsJS string
+
 // goDebug (TABTOP_GO_DEBUG=1) logs what each tab does, for finding out why
 // a page misbehaves: the person's requests by kind, navigations,
 // snapshots and changes, by size. Never addresses typed or values.
@@ -506,7 +512,11 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": goFetchJS + "\n" + goObserveJS}, nil)
+		source := goFetchJS + "\n" + goObserveJS
+		if b.e != nil && b.e.adapter.noDialogs {
+			source += "\n" + goDialogsJS
+		}
+		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": source}, nil)
 	}, func(r any) { goDebugf("fetch for data:, observer stand-in: %v", r) })
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	b.cdp.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
@@ -580,6 +590,9 @@ func (b *goBrowser) run() {
 					b.giveIO(m.Entries)
 				}
 			case "dialog":
+				if m.Quiet && !b.dialog {
+					b.quiet = b.gen // shown what it asked: no more of it
+				}
 				if b.dialog {
 					if m.Quiet {
 						b.quiet = b.gen
@@ -1128,6 +1141,12 @@ type goChanges struct {
 	Title string            `json:"title"`
 	Ops   []json.RawMessage `json:"ops"`
 	IO    []goIO            `json:"io"`
+	// What the page asked by alert, confirm or prompt, with an engine that
+	// answered it itself (godialogs.js).
+	Asked []struct {
+		Kind    string `json:"kind"`
+		Message string `json:"message"`
+	} `json:"asked"`
 }
 
 // readChanges reads what's changed in the document since it was last
@@ -1167,6 +1186,19 @@ func (b *goBrowser) readChanges() {
 					b.url = u
 					b.send(map[string]any{"type": "go-url", "gen": gen, "url": u, "title": goTitleOf(c.Title)})
 				}
+			}
+			for i, q := range c.Asked {
+				if i == 8 || b.quiet == gen {
+					break // a page asking in a loop: the person said no more
+				}
+				if q.Kind != "alert" && q.Kind != "confirm" && q.Kind != "prompt" {
+					continue
+				}
+				if len(q.Message) > 2000 {
+					q.Message = q.Message[:2000] + "…"
+				}
+				goDebugf("dialog %s asked, answered by the engine", q.Kind)
+				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
 			if io := goCleanIO(c.IO); len(c.Ops) > 0 || len(io) > 0 {
 				ops := goCleanOps(c.Ops)

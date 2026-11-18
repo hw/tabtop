@@ -212,6 +212,15 @@ type goAdapter struct {
 	// the one tabtopd attached (some on both): they're taken from any,
 	// once. An engine runs one page.
 	anySession bool
+	// scriptedInput: it gives the page input's events but not all a
+	// browser does with input (pointer events, a right click's menu, Space
+	// or Enter pressing what has the focus, Tab moving it): the agent does
+	// those (__tabtop.scripted, goinput.go).
+	scriptedInput bool
+	// noDialogs: it answers the page's alert, confirm and prompt itself,
+	// at once, and says nothing (no Page.javascriptDialogOpening): the
+	// person is shown what was asked (godialogs.js), the page not waiting.
+	noDialogs bool
 	// data is its data segment's limit (RLIMIT_DATA) if it isn't its
 	// memory's: V8 counts some of what it reserves (not uses) against it.
 	// The resident memory the watchdog allows is the same for both.
@@ -244,7 +253,7 @@ var goAdapters = map[string]goAdapter{
 	// it uses is held to goEngineMemory by the watchdog, as Moli's is.
 	// Its page's events come on its own session as well as tabtopd's, and
 	// those that input causes (a link clicked) on its own only.
-	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, args: func(port int, proxy, userAgent, _ string) []string {
+	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, scriptedInput: true, noDialogs: true, args: func(port int, proxy, userAgent, _ string) []string {
 		args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
 			"--proxy", proxy, "--quiet", "--allow-private-network"}
 		if userAgent != "" {

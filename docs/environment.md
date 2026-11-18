@@ -795,11 +795,13 @@ work; what you do is done in the engine, and what the page changes is sent
 back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` names the engine; the
 image has Moli at `/opt/moli/moli` and Obscura at `/opt/obscura/obscura` (their
 licences are beside them), chosen by `WEB_GO_ENGINE=moli` (the default) or
-`WEB_GO_ENGINE=obscura`. With Obscura (0.2.7) some of that doesn't work yet:
-the page's `alert`, `confirm` and `prompt` (Obscura answers them itself, at
-once), windows the page opens, a page laid out again when the window's resized,
-keys that press buttons (Space), hovering, double and right clicks, dragging,
-and the page's own play and pause of a video. Obscura keeps no HTTP cache of its
+`WEB_GO_ENGINE=obscura`. With Obscura (0.2.7) some of that doesn't work yet: it
+answers the page's `confirm` and `prompt` itself, at once (Cancel, nothing),
+so you're shown what was asked but can't answer it (an `alert` is shown as
+usual); windows the page opens, a page laid out again when the window's
+resized, dragging within the page, and a video the page starts itself don't
+work. Space and Enter pressing buttons, Tab, hovering, the pointer's events and
+right clicks are done for it by TabTop. Obscura keeps no HTTP cache of its
 own, so `WEB_GO_CACHE` doesn't apply to it.
 
 Videos and sounds with a file to play are played by a player of this page's,

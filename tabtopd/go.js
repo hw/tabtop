@@ -303,7 +303,9 @@ function message(m) {
             loading = true;
             rendering = false;
             notice.hidden = true;
-            closeDialog();
+            // A question the page is waiting on is gone with it; what it
+            // only said (a notice) stays, read or not.
+            if (!noticing) closeDialog();
             show(`Loading ${hostOf(m.url)}…`);
             update();
             break;
@@ -347,7 +349,17 @@ function message(m) {
             }
             break;
         case "go-dialog":
+            noticing = null;
             openDialog(m);
+            break;
+        case "go-dialog-notice":
+            // Asked, and answered by the engine itself (godialogs.js):
+            // shown, one after another, but the page didn't wait.
+            if (m.gen === shown && notices.length < 16) {
+                notices.push(m);
+                noticesSeen.set(m.gen, (noticesSeen.get(m.gen) ?? 0) + 1);
+                if (!dialog.open) showNotice();
+            }
             break;
         case "go-dialog-closed":
             closeDialog();
@@ -614,12 +626,36 @@ function openDialog(m) {
     if (!dialog.open) dialog.showModal();
     (kind === "prompt" ? input : dialog.querySelector(".ok")).focus();
 }
+// What the page asked by alert, confirm or prompt with an engine that
+// answered it itself, to show; the one shown; how many a page has asked.
+let notices = [];
+let noticing = null;
+const noticesSeen = new Map();  // gen -> how many
+function showNotice() {
+    noticing = notices.shift() ?? null;
+    if (!noticing) return;
+    const m = noticing;
+    const note = m.kind === "alert" ? "" : `\n\n(It got no answer: this browser's engine answers ${m.kind === "confirm" ? "such questions with Cancel" : "prompts with nothing"} itself, at once.)`;
+    openDialog({ kind: "alert", message: (m.message ?? "") + note, url: m.url, again: noticesSeen.get(m.gen) > 1 });
+}
 function closeDialog() {
     if (dialog.open) dialog.close();
 }
 function answerDialog(accept) {
     const input = dialog.querySelector("input[type=text]");
     const quiet = dialog.querySelector(".quiet");
+    if (noticing) {
+        // Shown only: nothing to answer, unless it's to show no more.
+        const enough = !quiet.hidden && quiet.querySelector("input").checked;
+        if (enough) {
+            ws?.send(JSON.stringify({ op: "dialog", accept: false, text: "", quiet: true }));
+            notices = [];
+        }
+        noticing = null;
+        closeDialog();
+        showNotice();
+        return;
+    }
     ws?.send(JSON.stringify({ op: "dialog", accept, text: input.hidden ? "" : input.value, quiet: !quiet.hidden && quiet.querySelector("input").checked }));
     closeDialog();
 }

@@ -295,6 +295,32 @@ func (b *goBrowser) at(ctx context.Context, world, id int, fx, fy float64) (x, y
 	return p.X, p.Y, true
 }
 
+// letGoAway lets go of a button pressed in the page away from it (above
+// and left of its window, over nothing): not a click. Obscura takes a
+// release outside its window as one on what was pressed (a click); another
+// button's release ends the press with none (measured).
+func (b *goBrowser) letGoAway(ctx context.Context, button int) {
+	let := goButton(button)
+	if b.e != nil && b.e.adapter.scriptedInput {
+		let = map[bool]string{true: "left", false: "right"}[button == 2]
+	}
+	b.mouse(ctx, "mouseReleased", -1, -1, let, goClientMsg{})
+}
+
+// scripted has the agent do what an engine that doesn't (its adapter's
+// scriptedInput) leaves out of input: see goagent.js's scripted. It
+// returns what the agent said, "" if the engine does it itself.
+func (b *goBrowser) scripted(ctx context.Context, world int, what map[string]any) string {
+	if b.e == nil || !b.e.adapter.scriptedInput {
+		return ""
+	}
+	a, _ := json.Marshal(what)
+	arg, _ := json.Marshal(string(a))
+	_, res, err := b.evaluate(ctx, world, "__tabtop.scripted("+string(arg)+")")
+	goDebugf("scripted %v: %s %v", what["kind"], res, err)
+	return res
+}
+
 // mouse gives the engine one mouse event at x, y. An error that's the
 // engine not answering in time is the event given (a dialog holds it);
 // any other, it wasn't.
@@ -317,7 +343,7 @@ func (in *goInput) release(b *goBrowser) {
 	for button, p := range in.pressed {
 		if p.real {
 			ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
-			b.mouse(ctx, "mouseReleased", -1, -1, goButton(button), goClientMsg{})
+			b.letGoAway(ctx, button)
 			cancel()
 		}
 	}
@@ -453,9 +479,12 @@ func (in *goInput) press(b *goBrowser, world, gen int, m goClientMsg) {
 	switch m.Type {
 	case "down":
 		if old, held := in.pressed[button]; held && old.real {
-			b.mouse(ctx, "mouseReleased", -1, -1, goButton(button), goClientMsg{})
+			b.letGoAway(ctx, button)
 		}
 		x, y, ok := b.at(ctx, world, m.ID, m.FX, m.FY)
+		if ok {
+			b.scripted(ctx, world, map[string]any{"kind": "pointer", "type": "pointerdown", "x": x, "y": y, "button": button, "buttons": m.Buttons})
+		}
 		if ok && b.mouse(ctx, "mousePressed", x, y, goButton(button), m) {
 			in.pressed[button] = goPress{real: true, id: m.ID, x: x, y: y}
 			return
@@ -473,6 +502,10 @@ func (in *goInput) press(b *goBrowser, world, gen int, m goClientMsg) {
 				x, y = p.x, p.y
 			}
 			b.mouse(ctx, "mouseReleased", x, y, goButton(button), m)
+			b.scripted(ctx, world, map[string]any{"kind": "pointer", "type": "pointerup", "x": x, "y": y, "button": button, "buttons": m.Buttons})
+			if button == 2 {
+				b.scripted(ctx, world, map[string]any{"kind": "contextmenu", "x": x, "y": y})
+			}
 			return
 		}
 		// Not given as input (nowhere for it): a click, by script, as
@@ -497,6 +530,7 @@ func (in *goInput) move(b *goBrowser, world, gen int, m goClientMsg) {
 		b.mouse(ctx, "mouseWheel", x, y, "none", m)
 		return
 	}
+	b.scripted(ctx, world, map[string]any{"kind": "pointer", "type": "pointermove", "x": x, "y": y, "buttons": m.Buttons})
 	button := "none"
 	for i, name := range []string{"left", "right", "middle"} {
 		if m.Buttons&(1<<i) != 0 {
@@ -505,6 +539,31 @@ func (in *goInput) move(b *goBrowser, world, gen int, m goClientMsg) {
 		}
 	}
 	b.mouse(ctx, "mouseMoved", x, y, button, m)
+}
+
+// keyScripted does, for an engine that doesn't, what a key does besides
+// its events: Space (on its release) or Enter pressing what has the focus,
+// as a click there, given as input (a trusted click, as a browser's is);
+// Tab moving the focus on.
+func (in *goInput) keyScripted(ctx context.Context, b *goBrowser, world int, m goClientMsg) {
+	if b.e == nil || !b.e.adapter.scriptedInput || goModifiers(m)&^8 != 0 {
+		return
+	}
+	switch {
+	case m.Key == "Tab" && m.Type == "down":
+		b.scripted(ctx, world, map[string]any{"kind": "tab", "back": m.Shift})
+	case m.Key == " " && m.Type == "up", m.Key == "Enter" && m.Type == "down":
+		if b.scripted(ctx, world, map[string]any{"kind": "activate", "id": m.ID, "key": m.Key}) != "click" {
+			return
+		}
+		if x, y, ok := b.at(ctx, world, m.ID, 0.5, 0.5); ok {
+			click := goClientMsg{Buttons: 1, Count: 1}
+			if b.mouse(ctx, "mousePressed", x, y, "left", click) {
+				click.Buttons = 0
+				b.mouse(ctx, "mouseReleased", x, y, "left", click)
+			}
+		}
+	}
 }
 
 func (in *goInput) key(b *goBrowser, world, gen int, m goClientMsg) {
@@ -528,6 +587,9 @@ func (in *goInput) key(b *goBrowser, world, gen int, m goClientMsg) {
 	}
 	err := b.cdp.call(ctx, b.page, "Input.dispatchKeyEvent", p, nil)
 	goDebugf("input key %s %q: %v", p["type"], m.Key, err)
+	if err == nil {
+		in.keyScripted(ctx, b, world, m)
+	}
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && m.Type == "down" {
 		// The engine wouldn't take it: by script, as before.
 		b.actNow(ctx, world, goClientMsg{Kind: "key", ID: m.ID, Key: m.Key, Code: m.Code, Shift: m.Shift, Ctrl: m.Ctrl, Alt: m.Alt, Meta: m.Meta})
