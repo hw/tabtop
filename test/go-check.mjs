@@ -278,8 +278,15 @@ async function check(base, port, site) {
     // The page held in view while the next is built takes nothing (see
     // render in go-frame.js): a click is for the page shown.
     const pageShown = () => waitFor(`document.getElementById("go_view").getAttribute("aria-busy") !== "true"`, "the page shown", 30000);
+    // A click right after a modal dialog closes can be routed by Chrome as
+    // if the dialog's backdrop were still there (the frame is in a process
+    // of its own, found by hit-test data that's updated a frame later): the
+    // frame never gets it. Seen in CI, 2 of 5 runs, never by a person. So
+    // every click waits for the next frames to be drawn.
+    const dialogGone = () => ev(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))`);
     async function frameClick(sel) {
         await pageShown();
+        await dialogGone();
         const r = await frame(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({ block: "center" }); const b = e.getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
         const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
         for (const type of ["mousePressed", "mouseReleased"]) {
