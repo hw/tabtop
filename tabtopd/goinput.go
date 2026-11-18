@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -301,19 +302,32 @@ func (b *goBrowser) at(ctx context.Context, world, id int, fx, fy float64) (x, y
 // button's release ends the press with none (measured).
 func (b *goBrowser) letGoAway(ctx context.Context, button int) {
 	let := goButton(button)
-	if b.e != nil && b.e.adapter.scriptedInput {
+	if b.gaps().letGoClicks {
 		let = map[bool]string{true: "left", false: "right"}[button == 2]
 	}
 	b.mouse(ctx, "mouseReleased", -1, -1, let, goClientMsg{})
 }
 
-// scripted has the agent do what an engine that doesn't (its adapter's
-// scriptedInput) leaves out of input: see goagent.js's scripted. It
+// gaps is what the engine leaves out of input (goInputGaps).
+func (b *goBrowser) gaps() goInputGaps {
+	if b.e == nil {
+		return goInputGaps{}
+	}
+	return b.e.adapter.input
+}
+
+// scripted has the agent do what the engine leaves out of input (pointer
+// events and the like: goInputGaps.pointer): see goagent.js's scripted. It
 // returns what the agent said, "" if the engine does it itself.
 func (b *goBrowser) scripted(ctx context.Context, world int, what map[string]any) string {
-	if b.e == nil || !b.e.adapter.scriptedInput {
+	if !b.gaps().pointer {
 		return ""
 	}
+	return b.agentInput(ctx, world, what)
+}
+
+// agentInput has the agent do one of goagent.js's scripted things.
+func (b *goBrowser) agentInput(ctx context.Context, world int, what map[string]any) string {
 	a, _ := json.Marshal(what)
 	arg, _ := json.Marshal(string(a))
 	_, res, err := b.evaluate(ctx, world, "__tabtop.scripted("+string(arg)+")")
@@ -464,10 +478,25 @@ func (b *goBrowser) touchInput(ctx context.Context, typ string, points []map[str
 	return err == nil || errors.Is(err, context.DeadlineExceeded)
 }
 
+// pressByElement gives a press, release or let go to the element pointed
+// at, by script, for an engine whose places aren't to be trusted
+// (goInputGaps.byElement).
+func (in *goInput) pressByElement(b *goBrowser, world int, m goClientMsg) {
+	ctx, cancel := context.WithTimeout(context.Background(), goInputWait)
+	defer cancel()
+	b.agentInput(ctx, world, map[string]any{"kind": "mouse", "type": m.Type, "id": m.ID, "fx": m.FX, "fy": m.FY,
+		"button": int(goClamp(float64(m.Button), 0, 4)), "buttons": m.Buttons, "count": m.Count,
+		"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
+}
+
 func (in *goInput) press(b *goBrowser, world, gen int, m goClientMsg) {
 	if in.gen != gen {
 		in.release(b)
 		in.gen = gen
+	}
+	if b.gaps().byElement {
+		in.pressByElement(b, world, m)
+		return
 	}
 	if m.Type == "cancel" {
 		in.release(b)
@@ -522,6 +551,15 @@ func (in *goInput) move(b *goBrowser, world, gen int, m goClientMsg) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	defer cancel()
+	if b.gaps().byElement {
+		typ := "move"
+		if m.Type == "wheel" {
+			typ = "wheel"
+		}
+		b.agentInput(ctx, world, map[string]any{"kind": "mouse", "type": typ, "id": m.ID, "fx": m.FX, "fy": m.FY,
+			"buttons": m.Buttons, "dx": goClamp(m.DX, -10000, 10000), "dy": goClamp(m.DY, -10000, 10000)})
+		return
+	}
 	x, y, ok := b.at(ctx, world, m.ID, m.FX, m.FY)
 	if !ok {
 		return
@@ -546,14 +584,19 @@ func (in *goInput) move(b *goBrowser, world, gen int, m goClientMsg) {
 // as a click there, given as input (a trusted click, as a browser's is);
 // Tab moving the focus on.
 func (in *goInput) keyScripted(ctx context.Context, b *goBrowser, world int, m goClientMsg) {
-	if b.e == nil || !b.e.adapter.scriptedInput || goModifiers(m)&^8 != 0 {
+	gaps := b.gaps()
+	if goModifiers(m)&^8 != 0 {
 		return
 	}
 	switch {
-	case m.Key == "Tab" && m.Type == "down":
-		b.scripted(ctx, world, map[string]any{"kind": "tab", "back": m.Shift})
-	case m.Key == " " && m.Type == "up", m.Key == "Enter" && m.Type == "down":
-		if b.scripted(ctx, world, map[string]any{"kind": "activate", "id": m.ID, "key": m.Key}) != "click" {
+	case m.Key == "Tab" && m.Type == "down" && gaps.tab:
+		b.agentInput(ctx, world, map[string]any{"kind": "tab", "back": m.Shift})
+	case (m.Key == " " && m.Type == "up" || m.Key == "Enter" && m.Type == "down") && slices.Contains(gaps.activate, m.Key):
+		if b.agentInput(ctx, world, map[string]any{"kind": "activate", "id": m.ID, "key": m.Key}) != "click" {
+			return
+		}
+		if gaps.byElement {
+			b.agentInput(ctx, world, map[string]any{"kind": "mouse", "type": "click", "id": m.ID, "fx": 0.5, "fy": 0.5, "button": 0, "count": 1})
 			return
 		}
 		if x, y, ok := b.at(ctx, world, m.ID, 0.5, 0.5); ok {

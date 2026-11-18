@@ -48,6 +48,7 @@ func runGoFakeEngine(args []string) int {
 		if err != nil {
 			return
 		}
+		c.SetReadLimit(cdpReadLimit) // as an engine takes: the agent alone is over the default
 		for {
 			_, b, err := c.Read(context.Background())
 			if err != nil {
@@ -227,6 +228,7 @@ func TestGoAdapterFor(t *testing.T) {
 	for _, c := range []struct{ engine, want string }{
 		{"/opt/moli/moli", "Moli"},
 		{"/opt/obscura/obscura", "Obscura"},
+		{"/opt/lightpanda/lightpanda", "Lightpanda"},
 		{says("engine-a", "obscura 0.2.7"), "Obscura"},
 		{says("engine-b", "moli 1.1.25"), "Moli"},
 		{says("engine-c", "something else"), "Moli"},

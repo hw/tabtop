@@ -199,6 +199,26 @@ func goSandboxArgs(engine, tabtopd, run, cache string) []string {
 // goAdapter is what tabtopd needs to know of a page engine to run one:
 // Moli or Obscura, chosen by -go-engine (WEB_GO_ENGINE). The rest (the
 // sandbox, the proxy, CDP, the agent) is the same for both.
+// goInputGaps is what an engine leaves out of what a browser does with
+// input, measured against Moli (which leaves out none).
+type goInputGaps struct {
+	// pointer: pointer events, mouseenter and mouseleave along the
+	// ancestors entered and left, a right click's contextmenu (Obscura).
+	pointer bool
+	// activate: the keys that, given to it, don't press what has the
+	// focus: it's clicked there, as input.
+	activate []string
+	// tab: Tab doesn't move the focus.
+	tab bool
+	// letGoClicks: a release outside its window is a click on what was
+	// pressed: let go with another button (Obscura).
+	letGoClicks bool
+	// byElement: its places aren't a browser's (no layout: Lightpanda's
+	// mouse lands elsewhere), so the mouse is given by script to the
+	// element the person pointed at, not as input at a place.
+	byElement bool
+}
+
 type goAdapter struct {
 	name string
 	// args are its arguments: CDP on port, everything fetched through
@@ -212,15 +232,15 @@ type goAdapter struct {
 	// the one tabtopd attached (some on both): they're taken from any,
 	// once. An engine runs one page.
 	anySession bool
-	// scriptedInput: it gives the page input's events but not all a
-	// browser does with input (pointer events, a right click's menu, Space
-	// or Enter pressing what has the focus, Tab moving it): the agent does
-	// those (__tabtop.scripted, goinput.go).
-	scriptedInput bool
+	// input is what it leaves out of what a browser does with input, for
+	// the agent to do (__tabtop.scripted, goinput.go).
+	input goInputGaps
 	// noDialogs: it answers the page's alert, confirm and prompt itself,
 	// at once, and says nothing (no Page.javascriptDialogOpening): the
 	// person is shown what was asked (godialogs.js), the page not waiting.
 	noDialogs bool
+	// env is what it's run with besides HOME, TMPDIR and PATH.
+	env []string
 	// data is its data segment's limit (RLIMIT_DATA) if it isn't its
 	// memory's: V8 counts some of what it reserves (not uses) against it.
 	// The resident memory the watchdog allows is the same for both.
@@ -253,14 +273,35 @@ var goAdapters = map[string]goAdapter{
 	// it uses is held to goEngineMemory by the watchdog, as Moli's is.
 	// Its page's events come on its own session as well as tabtopd's, and
 	// those that input causes (a link clicked) on its own only.
-	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, scriptedInput: true, noDialogs: true, args: func(port int, proxy, userAgent, _ string) []string {
-		args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
-			"--proxy", proxy, "--quiet", "--allow-private-network"}
-		if userAgent != "" {
-			args = append(args, "--user-agent", userAgent)
-		}
-		return args
-	}},
+	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, noDialogs: true,
+		input: goInputGaps{pointer: true, activate: []string{" ", "Enter"}, tab: true, letGoClicks: true}, args: func(port int, proxy, userAgent, _ string) []string {
+			args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+				"--proxy", proxy, "--quiet", "--allow-private-network"}
+			if userAgent != "" {
+				args = append(args, "--user-agent", userAgent)
+			}
+			return args
+		}},
+	// Lightpanda (AGPL-3.0): stylesheets, iframes and workers loaded (by
+	// default it loads none: a page's frames wouldn't be there), nothing
+	// for display (pictures: the client's broker fetches them), no metrics
+	// endpoint, and no telemetry (it reports usage by default; sandboxed it
+	// couldn't reach out anyway). It refuses a User-Agent saying
+	// "Mozilla", as every browser's does: it says it's Lightpanda.
+	// Its mouse lands where its own layout (none to speak of) says, not on
+	// what the person pointed at: given by script to the element. Enter
+	// doesn't press a button (Space does, and Tab moves on).
+	"lightpanda": {name: "Lightpanda", cache: true, env: []string{"LIGHTPANDA_DISABLE_TELEMETRY=true"},
+		input: goInputGaps{byElement: true, activate: []string{"Enter"}},
+		args: func(port int, proxy, _, cache string) []string {
+			args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+				"--http-proxy", proxy, "--log-level", "warn", "--disable-metrics",
+				"--load-resources", "stylesheet", "--load-resources", "iframe", "--load-resources", "worker"}
+			if cache != "" {
+				args = append(args, "--http-cache-dir", cache)
+			}
+			return args
+		}},
 }
 
 // goAdapterFor is engine's adapter: by its file's name, or else by what it
@@ -431,6 +472,10 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 			defer filterFile.Close()
 			argv = append(argv, "--seccomp", "4")
 		}
+		for _, kv := range adapter.env {
+			k, v, _ := strings.Cut(kv, "=")
+			argv = append(argv, "--setenv", k, v)
+		}
 		argv = append(argv, "/bridge", goBridgeArg, dataLimit,
 			fmt.Sprintf("fd:3=127.0.0.1:%d", goCDPPortInside),
 			fmt.Sprintf("127.0.0.1:%d=/run/tt/egress.sock", goProxyPortInside),
@@ -465,7 +510,7 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 	e.cmd.Dir = run
 	// Nothing of tabtopd's environment: no proxy settings to bypass the
 	// egress proxy with (NO_PROXY), no secrets.
-	e.cmd.Env = []string{"HOME=" + home, "TMPDIR=" + tmp, "PATH=/usr/bin:/bin"}
+	e.cmd.Env = append([]string{"HOME=" + home, "TMPDIR=" + tmp, "PATH=/usr/bin:/bin"}, adapter.env...)
 	if cdpFile != nil {
 		e.cmd.ExtraFiles = []*os.File{cdpFile}
 		if filterFile != nil {

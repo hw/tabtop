@@ -753,6 +753,29 @@
 
     let doc = null;  // the document shown
 
+    // keptFocus is what has the focus in d, to give back once it's read
+    // again (giveFocus): its number, its caret, and its value if what's
+    // typed in it hasn't been sent yet (else the page's, as read: a page
+    // may clear a field itself).
+    function keptFocus(d) {
+        const el = document.activeElement;
+        const id = d && el ? d.ids.get(el) : undefined;
+        if (!id) return null;
+        const kept = { id };
+        if (textLike(el)) {
+            if (pending.has(el)) kept.value = el.value;
+            try { kept.caret = [el.selectionStart, el.selectionEnd]; } catch { /* no caret */ }
+        }
+        return kept;
+    }
+    function giveFocus(d, kept) {
+        const el = d.nodes.get(kept.id);
+        if (!el || el.nodeType !== 1) return;
+        if (kept.value !== undefined && textLike(el)) el.value = kept.value;
+        el.focus({ preventScroll: true });
+        if (kept.caret) try { el.setSelectionRange(...kept.caret); } catch { /* no caret */ }
+    }
+
     function render(m) {
         current = m.gen;
         const d = newDoc(m);
@@ -796,6 +819,11 @@
                 if (!alive(d)()) return;
             }
             d.waits = [];
+            // The same document read again: what has the focus here keeps
+            // it, with its caret and what's typed in it that the engine
+            // hasn't had yet (an engine whose changes come as whole reads,
+            // Lightpanda, reads a page again as the person types).
+            const focused = m.again ? keptFocus(doc) : null;
             // (Document.replaceChildren refuses a second element even as
             // it replaces the first.)
             document.documentElement ? document.documentElement.replaceWith(root) : document.append(root);
@@ -805,11 +833,12 @@
             unobserveAll(doc);
             doc = d;
             // Boxes of this document only (the page stops the others').
-            for (const [key, m] of media) if (m.top !== d && m.top.gen <= d.gen || m.top === d && !m.box.isConnected) media.delete(key);
+            for (const [key, m] of media) if (m.top !== d && m.top.gen <= d.gen || m.top === d && !m.box.isConnected) forgetMedia(key);
             mediaLater();
             observeAll(d, m.io);
             if (m.again) {
                 scrollTo(at.x, at.y);  // the same document, read again
+                if (focused) giveFocus(d, focused);
             } else {
                 const hash = d.url ? new URL(d.url).hash.slice(1) : "";
                 hash ? scrollToFragment(hash) : scrollTo(0, 0);

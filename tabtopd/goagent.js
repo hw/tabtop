@@ -164,6 +164,33 @@
         //       event a mouse event makes, at x, y (the engine's window)
         //   {kind: "contextmenu", x, y}  a right click's menu event
         let pointerAt = null;
+        let pressedAt = null;  // what the mouse was pressed on (byElement)
+        // moveTo has the pointer go from where it was to el, as browsers do:
+        // out of the last, into this, leaving and entering each element
+        // left or entered, not just the one under it; the mouse's own
+        // events too if all (an engine that gives none of them).
+        function moveTo(el, init, all) {
+            if (el === pointerAt) return;
+            const chain = (e) => { const c = []; for (let n = e; n; n = n.parentElement) c.push(n); return c; };
+            const before = pointerAt?.isConnected ? chain(pointerAt) : [], after = chain(el);
+            const left = before.filter((n) => !after.includes(n)), entered = after.filter((n) => !before.includes(n)).reverse();
+            const still = { ...init, bubbles: false };
+            if (pointerAt?.isConnected) {
+                pointerAt.dispatchEvent(new PointerEvent("pointerout", init));
+                if (all) pointerAt.dispatchEvent(new MouseEvent("mouseout", init));
+            }
+            for (const n of left) {
+                n.dispatchEvent(new PointerEvent("pointerleave", still));
+                n.dispatchEvent(new MouseEvent("mouseleave", still));
+            }
+            el.dispatchEvent(new PointerEvent("pointerover", init));
+            if (all) el.dispatchEvent(new MouseEvent("mouseover", init));
+            for (const n of entered) {
+                n.dispatchEvent(new PointerEvent("pointerenter", still));
+                if (all || n !== el) n.dispatchEvent(new MouseEvent("mouseenter", still));
+            }
+            pointerAt = el;
+        }
         function scripted(json) {
             let a;
             try { a = JSON.parse(json); } catch { return "bad"; }
@@ -171,8 +198,11 @@
             const mouseInit = (x, y, extra) => ({ bubbles: true, cancelable: true, composed: true, view: window, clientX: Number(x) || 0, clientY: Number(y) || 0, ...extra });
             switch (a.kind) {
                 case "activate": {
-                    const el = document.activeElement;
-                    if (!el || el !== node(a.id) && !el.contains?.(node(a.id))) return "";
+                    // The element the key was given to (keyTo focused it):
+                    // not document.activeElement, which an engine may give
+                    // as the page's world's (Lightpanda), not this one's.
+                    const el = node(a.id);
+                    if (!el || el.nodeType !== 1) return "";
                     const t = (el.type || "").toLowerCase(), name = el.localName;
                     const button = name === "button" || name === "input" && /^(button|submit|reset|image)$/.test(t);
                     const byKey = a.key === " " ? button || name === "summary" || name === "input" && /^(checkbox|radio)$/.test(t)
@@ -194,27 +224,9 @@
                     const el = at(a.x, a.y);
                     if (!el) return "none";
                     const init = mouseInit(a.x, a.y, { pointerId: 1, pointerType: "mouse", isPrimary: true, button: Number(a.button) || 0, buttons: Number(a.buttons) || 0 });
-                    if (a.type === "pointermove" && el !== pointerAt) {
-                        // Out of the last, into this, as browsers go: leave and
-                        // enter each element left or entered, not just the one
-                        // under the pointer (Obscura gives mouseenter to that
-                        // one alone, and no mouseleave).
-                        const chain = (e) => { const c = []; for (let n = e; n; n = n.parentElement) c.push(n); return c; };
-                        const before = pointerAt?.isConnected ? chain(pointerAt) : [], after = chain(el);
-                        const left = before.filter((n) => !after.includes(n)), entered = after.filter((n) => !before.includes(n)).reverse();
-                        const still = { ...init, bubbles: false };
-                        if (pointerAt?.isConnected) pointerAt.dispatchEvent(new PointerEvent("pointerout", init));
-                        for (const n of left) {
-                            n.dispatchEvent(new PointerEvent("pointerleave", still));
-                            n.dispatchEvent(new MouseEvent("mouseleave", still));
-                        }
-                        el.dispatchEvent(new PointerEvent("pointerover", init));
-                        for (const n of entered) {
-                            n.dispatchEvent(new PointerEvent("pointerenter", still));
-                            if (n !== el) n.dispatchEvent(new MouseEvent("mouseenter", still));
-                        }
-                        pointerAt = el;
-                    }
+                    // (Obscura gives mouseover, mouseout and the mouseenter of
+                    // the element under the pointer itself.)
+                    if (a.type === "pointermove") moveTo(el, init, false);
                     if (/^pointer(move|down|up)$/.test(a.type)) el.dispatchEvent(new PointerEvent(a.type, init));
                     return "ok";
                 }
@@ -222,6 +234,74 @@
                     const el = at(a.x, a.y);
                     el?.dispatchEvent(new MouseEvent("contextmenu", mouseInit(a.x, a.y, { button: 2, buttons: 0 })));
                     return "ok";
+                }
+                case "mouse": {
+                    // The mouse given to the element the person pointed at,
+                    // where within it (fractions), for an engine whose own
+                    // places aren't to be trusted (byElement: Lightpanda).
+                    const el = node(a.id);
+                    if (!el || el.nodeType !== 1) return "gone";
+                    const r = el.getBoundingClientRect();
+                    const x = r.left + Math.min(1, Math.max(0, Number(a.fx) || 0)) * r.width, y = r.top + Math.min(1, Math.max(0, Number(a.fy) || 0)) * r.height;
+                    const button = Number(a.button) || 0;
+                    const keys = { shiftKey: !!a.shift, ctrlKey: !!a.ctrl, altKey: !!a.alt, metaKey: !!a.meta };
+                    const init = mouseInit(x, y, { button, buttons: Number(a.buttons) || 0, detail: Number(a.count) || 0, ...keys });
+                    const pinit = { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true };
+                    switch (a.type) {
+                        case "move":
+                            moveTo(el, pinit, true);
+                            el.dispatchEvent(new PointerEvent("pointermove", pinit));
+                            el.dispatchEvent(new MouseEvent("mousemove", init));
+                            return "ok";
+                        case "down":
+                            moveTo(el, pinit, true);
+                            pressedAt = el;
+                            el.dispatchEvent(new PointerEvent("pointerdown", pinit));
+                            if (el.dispatchEvent(new MouseEvent("mousedown", init))) {
+                                el.closest?.("a[href], area[href], button, input, select, textarea, summary, [tabindex], [contenteditable]")?.focus?.();
+                            }
+                            return "ok";
+                        case "up": {
+                            moveTo(el, pinit, true);
+                            el.dispatchEvent(new PointerEvent("pointerup", pinit));
+                            el.dispatchEvent(new MouseEvent("mouseup", init));
+                            const was = pressedAt;
+                            pressedAt = null;
+                            // A click if let go where it was pressed (or within).
+                            if (!was || !(was === el || was.contains(el) || el.contains(was))) return "ok";
+                            if (button === 0) {
+                                if (typeof el.click === "function") el.click();
+                                else el.dispatchEvent(new MouseEvent("click", init));
+                                if (Number(a.count) === 2) el.dispatchEvent(new MouseEvent("dblclick", init));
+                            } else {
+                                if (button === 2) el.dispatchEvent(new MouseEvent("contextmenu", init));
+                                el.dispatchEvent(new MouseEvent("auxclick", init));
+                            }
+                            return "ok";
+                        }
+                        case "click":  // a key that presses what has the focus
+                            if (typeof el.click === "function") el.click();
+                            return "ok";
+                        case "cancel":
+                            pressedAt = null;
+                            return "ok";
+                        case "wheel": {
+                            moveTo(el, pinit, true);
+                            const dx = Number(a.dx) || 0, dy = Number(a.dy) || 0;
+                            if (!el.dispatchEvent(new WheelEvent("wheel", { ...init, deltaX: dx, deltaY: dy, deltaMode: 0 }))) return "ok";
+                            // Scrolled: the nearest that can be, or the page.
+                            for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+                                const st = getComputedStyle(n);
+                                if (/(auto|scroll)/.test(st.overflowY + st.overflowX) && (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) {
+                                    n.scrollBy(dx, dy);
+                                    return "ok";
+                                }
+                            }
+                            window.scrollBy(dx, dy);
+                            return "ok";
+                        }
+                    }
+                    return "unknown";
                 }
             }
             return "unknown";
@@ -335,8 +415,14 @@
             return c;
         }
 
+        // Records naming nodes of another world (the page's: Lightpanda
+        // gives them when the page's script made the change) aren't this
+        // world's to number, nor to touch (their prototypes are the
+        // page's): the document is read again whole instead.
+        let foreign = false;
         const observer = new MutationObserver((records) => {
             for (const r of records) {
+                if (!(r.target instanceof Node)) { foreign = true; continue; }
                 if (r.type === "childList") parents.add(r.target);
                 else if (r.type === "characterData") texts.add(r.target);
                 else if (r.type === "attributes") {
@@ -372,12 +458,19 @@
 
         function changes() {
             for (const r of observer.takeRecords()) {
+                if (!(r.target instanceof Node)) { foreign = true; continue; }
                 if (r.type === "childList") parents.add(r.target);
                 else if (r.type === "characterData") texts.add(r.target);
                 else if (r.type === "attributes") {
                     if (!attrs.has(r.target)) attrs.set(r.target, new Set());
                     attrs.get(r.target).add(r.attributeName);
                 }
+            }
+            if (foreign) {
+                foreign = false;
+                parents = new Set(); attrs = new Map(); texts = new Set();
+                seq++;
+                return JSON.stringify({ seq, url: here(), title: document.title, again: true });
             }
             const ops = [];
             count = 0;

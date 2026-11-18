@@ -795,7 +795,10 @@ work; what you do is done in the engine, and what the page changes is sent
 back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` names the engine; the
 image has Moli at `/opt/moli/moli` and Obscura at `/opt/obscura/obscura` (their
 licences are beside them), chosen by `WEB_GO_ENGINE=moli` (the default) or
-`WEB_GO_ENGINE=obscura`. With Obscura (0.2.7) some of that doesn't work yet: it
+`WEB_GO_ENGINE=obscura`. A [Lightpanda](https://github.com/lightpanda-io/browser)
+binary (named `lightpanda`) can be given by its path too; the image doesn't
+have one (it's AGPL-3.0), and less of a page works with it (see
+docs/browser-plan.md, Lightpanda). With Obscura (0.2.7) some of that doesn't work yet: it
 answers the page's `confirm` and `prompt` itself, at once (Cancel, nothing),
 so you're shown what was asked but can't answer it (an `alert` is shown as
 usual); windows the page opens, a page laid out again when the window's

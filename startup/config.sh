@@ -191,7 +191,7 @@ case "$WEB_GO_CACHE" in
     *) echo "WEB_GO_CACHE must be 0 or 1 (got '${WEB_GO_CACHE}')." >&2; exit 1 ;;
 esac
 if [ "$WEB_GO" = 1 ] && [ ! -x "$WEB_GO_ENGINE" ]; then
-    echo "WEB_GO=1 needs WEB_GO_ENGINE: moli, obscura, or the path of a Moli or Obscura binary (got '${WEB_GO_ENGINE}', which isn't one)." >&2; exit 1
+    echo "WEB_GO=1 needs WEB_GO_ENGINE: moli, obscura, or the path of a Moli, Obscura or Lightpanda binary (got '${WEB_GO_ENGINE}', which isn't one)." >&2; exit 1
 fi
 # none, all, or some of x86, arm64, capstone, riscv and mips, with commas between.
 if ! [[ "$WEB_DISASM_DISABLE" =~ ^(none|all|(x86|arm64|capstone|riscv|mips)(,(x86|arm64|capstone|riscv|mips))*)$ ]]; then

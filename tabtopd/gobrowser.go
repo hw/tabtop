@@ -131,8 +131,13 @@ type goBrowser struct {
 	againSoon  <-chan time.Time
 	reading    bool // a read of changes is going
 	lastRead   time.Time
-	lastChange time.Time // when the document last changed
-	dialog     bool      // a dialog is open
+	lastChange time.Time      // when the document last changed
+	dialog     bool           // a dialog is open
+	dialogMsg  map[string]any // what was sent of it (go-dialog)
+	// The generation whose load failed (Page.navigate's error), and where
+	// it was to go.
+	failed    int
+	failedURL string
 	// The generation whose document is the proxy's refusal, and why.
 	refused    int
 	refusedWhy string
@@ -647,6 +652,17 @@ func (b *goBrowser) run() {
 	}
 }
 
+// askAgain sends the open dialog again, of the generation now loading: a
+// page that asked and then went (Lightpanda loads a window the page opens
+// in its place, a dialog still open) is still waiting, and the page here
+// closes a dialog when a load starts.
+func (b *goBrowser) askAgain() {
+	if b.dialog && b.dialogMsg != nil {
+		b.dialogMsg["gen"] = b.gen
+		b.send(b.dialogMsg)
+	}
+}
+
 // navigate starts a generation that loads u, by "you" (the person) or "page"
 // (the page itself, as when it opens a window); it returns the generation's
 // load timeout.
@@ -655,6 +671,7 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 	gen := b.gen
 	b.loading, b.navigated, b.world, b.dirty, b.docType = gen, false, 0, false, ""
 	b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
+	b.askAgain()
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goLoadTimeout)
 		defer cancel()
@@ -677,6 +694,7 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 			switch {
 			case err != nil:
 				b.loading = 0
+				b.failed, b.failedURL = gen, u
 				b.fail(gen, goNavError(err))
 			case r.LoaderID == "":
 				// Within the same document (a fragment): no load follows.
@@ -842,7 +860,8 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			from = b.docURL
 		}
 		goDebugf("dialog %s (%d of gen %d) opened", p.Type, b.asked, b.gen)
-		b.send(map[string]any{"type": "go-dialog", "gen": b.gen, "kind": p.Type, "message": p.Message, "default": p.Default, "url": from, "again": b.asked > 1})
+		b.dialogMsg = map[string]any{"type": "go-dialog", "gen": b.gen, "kind": p.Type, "message": p.Message, "default": p.Default, "url": from, "again": b.asked > 1}
+		b.send(b.dialogMsg)
 		dialogTimeout = time.After(goDialogWait)
 	case "Page.frameNavigated":
 		var p struct {
@@ -856,6 +875,17 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		if p.Frame.ParentID != "" {
 			break // a frame's, not the page's
 		}
+		if b.frame != "" && p.Frame.ID != "" && p.Frame.ID != b.frame && !b.popups[p.Frame.ID] {
+			// Another top-level frame: a window the page opened, that an
+			// engine keeps as a frame of this target (Lightpanda), not a
+			// target of its own. Its address is loaded in this tab instead,
+			// as a popup's is (Target.targetCreated, above).
+			if u, err := goURL(p.Frame.URL); err == nil {
+				b.popups[p.Frame.ID] = true
+				loadTimeout = b.navigate(u, "page")
+			}
+			break
+		}
 		goDebugf("frame navigated (loading %d)", b.loading)
 		b.frame = p.Frame.ID
 		b.world, b.dirty = 0, false // a new document, a new world
@@ -867,6 +897,9 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		}
 		if b.loading != 0 {
 			b.navigated = true
+		} else if u, err := goURL(p.Frame.URL); err == nil && b.failed == b.gen && u == b.failedURL {
+			// The engine's own page for the load that failed (Lightpanda
+			// commits one): not the page going anywhere.
 		} else if u, err := goURL(p.Frame.URL); err == nil {
 			// The page went somewhere by itself: a link, a form, a
 			// redirect by script.
@@ -874,6 +907,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			b.loading, b.navigated = b.gen, true
 			b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": "page"})
 			loadTimeout = time.After(goLoadTimeout)
+			b.askAgain()
 		}
 	case "Network.responseReceived":
 		var p struct {
@@ -1082,6 +1116,12 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			if gen != b.gen {
 				return // superseded while it was read
 			}
+			if b.failed == gen {
+				// Failed to load (the person's told): what the engine
+				// shows in its place (Lightpanda commits a page of its
+				// own) isn't shown here.
+				return
+			}
 			if b.refused == gen {
 				// Not a page: the proxy's refusal (see responseReceived).
 				b.loading = 0
@@ -1141,6 +1181,9 @@ type goChanges struct {
 	Title string            `json:"title"`
 	Ops   []json.RawMessage `json:"ops"`
 	IO    []goIO            `json:"io"`
+	// Again: what changed can't be said as changes (the engine named nodes
+	// of the page's world): the document's to be read again whole.
+	Again bool `json:"again"`
 	// What the page asked by alert, confirm or prompt, with an engine that
 	// answered it itself (godialogs.js).
 	Asked []struct {
@@ -1180,6 +1223,10 @@ func (b *goBrowser) readChanges() {
 			}
 			b.seq = c.Seq
 			b.lastChange = time.Now()
+			if c.Again {
+				b.readAgain(gen)
+				return
+			}
 			if c.URL != b.url {
 				if u, err := goURL(c.URL); err == nil {
 					// The page changed its address itself (history.pushState).
