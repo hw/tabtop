@@ -52,6 +52,13 @@ var goObserveJS string
 //go:embed gofetch.js
 var goFetchJS string
 
+// goMediaJS has the page's audio and video say what the person's browser
+// found of their files (their size, their length), for engines that have
+// no media of their own.
+//
+//go:embed gomedia.js
+var goMediaJS string
+
 // goDialogsJS tells the agent what the page asked by alert, confirm and
 // prompt, for an engine that answers them itself (goAdapter.noDialogs).
 //
@@ -517,7 +524,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -1343,7 +1350,7 @@ func (b *goBrowser) act(m goClientMsg) {
 		return
 	}
 	switch m.Kind {
-	case "click", "input", "change", "key", "submit", "focus", "scroll":
+	case "click", "input", "change", "key", "submit", "focus", "scroll", "media-meta":
 	default:
 		return
 	}

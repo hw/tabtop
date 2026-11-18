@@ -55,7 +55,14 @@ const mediaHelp = {
     // A part of a player's file, over the tab's tunnel if it's open (null
     // if not: the player asks on a tunnel of its own).
     range: (url, part) => (ws?.readyState === TunnelSocket.OPEN ? mediaViaTab(ws, url, part) : null),
-    sized: (key, ratio) => frame.contentWindow?.postMessage({ type: "media-state", key, ratio }, "*"),
+    sized: (key, ratio, meta) => frame.contentWindow?.postMessage({ type: "media-state", key, ratio, meta }, "*"),
+    // Scrolling done over a player (go-media.js), for the frame to do in
+    // the page under it: where (in the frame) and by how much.
+    passOn: (x, y, dx, dy, how) => {
+        const f = frame.getBoundingClientRect();
+        frame.contentWindow?.postMessage({ type: "media-scroll", x: x - f.left, y: y - f.top, dx, dy, how }, "*");
+    },
+    failed: (key, error) => frame.contentWindow?.postMessage({ type: "media-state", key, error }, "*"),
 };
 frame.id = "go_view";
 frame.title = "Page";
@@ -482,8 +489,17 @@ function resHeader(m) {
 }
 function resDone(rid, r) {
     resWaiting.delete(rid);
-    const blob = new Blob(r.parts, { type: r.mime });
-    r.resolve(r.media ? { blob, reply: r.reply } : blob);
+    if (r.media) {
+        const bytes = new Uint8Array(r.size);
+        let offset = 0;
+        for (const part of r.parts) {
+            bytes.set(part, offset);
+            offset += part.length;
+        }
+        r.resolve({ bytes: bytes.buffer, reply: r.reply });
+    } else {
+        r.resolve(new Blob(r.parts, { type: r.mime }));
+    }
 }
 function resData(buf) {
     if (!(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
@@ -547,8 +563,8 @@ window.addEventListener("message", (e) => {
             // A player for a box in the copy (go-media.js).
             if (m.gen === shown && Number.isSafeInteger(m.key)) {
                 const owner = media;
-                owner.open({ key: m.key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: !!m.play, rect: m.rect }).then((got) => {
-                    if (owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "" }, "*");
+                owner.open(m).then((got) => {
+                    if (got && owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "" }, "*");
                 });
             }
             break;
@@ -565,7 +581,7 @@ window.addEventListener("message", (e) => {
                 for (const at of m.positions.slice(0, 256)) {
                     if (!Number.isSafeInteger(at?.key)) continue;
                     keys.add(at.key);
-                    media.place(at.key, at.rect, !!at.shown);
+                    media.place(at);
                 }
                 media.keep(keys);
             }

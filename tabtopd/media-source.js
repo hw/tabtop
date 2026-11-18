@@ -5,7 +5,7 @@ import { createRangedFileReader, validFileRange } from "./ranged-file.js";
 const PART = 1 << 20;
 const BUFFER_LIMIT = 200e6;
 
-export function createMediaSource({ call, collect, getWorker,
+export function createMediaSource({ call, collect, getWorker, onError,
     document = globalThis.document, serviceWorker = globalThis.navigator?.serviceWorker,
     randomUUID = () => crypto.randomUUID(), urlAPI = URL, baseURL = import.meta.url }) {
     const readRange = createRangedFileReader({ call, collect });
@@ -100,9 +100,15 @@ export function createMediaSource({ call, collect, getWorker,
             if (objectURL) urlAPI.revokeObjectURL(objectURL);
         };
         const failed = () => {
+            const error = media.dataset.error || `This ${kind} can't be played here. Download it instead.`;
+            if (onError) {
+                media.stop();
+                onError(media, error);
+                return;
+            }
             const note = document.createElement("p");
             note.className = "hint";
-            note.textContent = media.dataset.error || `This ${kind} can't be played here. Download it instead.`;
+            note.textContent = error;
             media.stop();
             media.replaceWith(note);
         };

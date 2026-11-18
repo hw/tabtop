@@ -18,6 +18,10 @@ export function createRangedFileReader({ call, collect }) {
             signal?.throwIfAborted();
             if (file.remote && (tunnel.reply.total_size !== file.size || tunnel.reply.mime !== file.type ||
                 file.mtime && tunnel.reply.validator !== file.mtime)) throw new Error("The remote media changed; reopen the preview.");
+            if (tunnel.bytes instanceof ArrayBuffer) {
+                if (tunnel.bytes.byteLength !== end - begin) throw new Error("Incomplete media range.");
+                return tunnel.bytes;
+            }
             const blob = await collect(tunnel, end - begin, () => {}, file.type ?? "application/octet-stream");
             signal?.throwIfAborted();
             return await blob.arrayBuffer();

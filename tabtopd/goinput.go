@@ -43,9 +43,10 @@ const goInputWait = goDialogWait + 10*time.Second
 // goPress is a mouse button held down: given as input at x, y (real), or
 // left to be a scripted click on release.
 type goPress struct {
-	real bool
-	id   int
-	x, y float64
+	real     bool
+	scripted bool // pressed by the agent's script (goagent.js's mouse): released so too
+	id       int
+	x, y     float64
 }
 
 // goInput is the acts' queue's own: only its functions touch it.
@@ -518,7 +519,13 @@ func (in *goInput) press(b *goBrowser, world, gen int, m goClientMsg) {
 			in.pressed[button] = goPress{real: true, id: m.ID, x: x, y: y}
 			return
 		}
-		in.pressed[button] = goPress{id: m.ID}
+		// Nowhere to give it as input (the engine has the element nowhere,
+		// or something over it): pressed by script, as a press is, with
+		// its pointer and mouse events (a page's own gesture code, as
+		// YouTube's buttons', goes by those, not by the click).
+		b.agentInput(ctx, world, map[string]any{"kind": "mouse", "type": "down", "id": m.ID, "fx": m.FX, "fy": m.FY,
+			"button": button, "buttons": m.Buttons, "count": m.Count, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
+		in.pressed[button] = goPress{id: m.ID, scripted: true}
 	case "up":
 		p, held := in.pressed[button]
 		if !held {
@@ -537,11 +544,9 @@ func (in *goInput) press(b *goBrowser, world, gen int, m goClientMsg) {
 			}
 			return
 		}
-		// Not given as input (nowhere for it): a click, by script, as
-		// before, on what was pressed.
-		if button == 0 {
-			b.actNow(ctx, world, goClientMsg{Kind: "click", ID: p.id})
-		}
+		// Pressed by script: let go so, a click if where it was pressed.
+		b.agentInput(ctx, world, map[string]any{"kind": "mouse", "type": "up", "id": m.ID, "fx": m.FX, "fy": m.FY,
+			"button": button, "buttons": m.Buttons, "count": m.Count, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
 	}
 }
 

@@ -620,6 +620,17 @@
                 case "focus":
                     el.focus?.();
                     return "ok";
+                case "media-meta": {
+                    // What the person's player found of this element's file
+                    // (its size, its length), for the page to be told
+                    // (gomedia.js, in its world): numbers only.
+                    if (!(el instanceof HTMLMediaElement)) return "not media";
+                    let d;
+                    try { d = JSON.parse(a.value); } catch { return "bad"; }
+                    const num = (v) => (Number.isFinite(v) ? v : 0);
+                    el.dispatchEvent(new CustomEvent("__tabtop_media", { detail: JSON.stringify({ w: num(d?.w), h: num(d?.h), duration: num(d?.duration) }) }));
+                    return "ok";
+                }
                 case "scroll": {
                     // Where the person scrolled it to (the page's own
                     // smooth scrolling not used: it's there already). The

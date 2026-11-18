@@ -163,10 +163,14 @@ $("pad").addEventListener("click", (e) => log("pad " + (e.offsetX < 100 ? "left"
 $("under").addEventListener("click", () => log("under clicked"));
 </script>`,
         "video.html": `<!doctype html><title>Video</title><link rel="stylesheet" href="style.css"><p>a clip:</p>
-<video id="clip" src="clip.mp4" width="320" height="180" poster="pic.png" muted></video>
+<div style="position:relative;width:320px;height:180px"><div style="overflow:hidden;width:1px;height:1px">
+<video id="clip" src="clip.mp4" width="320" height="180" poster="pic.png" style="position:absolute;top:0;left:0;object-fit:cover;object-position:75% 25%" muted></video>
+</div></div>
 <p>streamed by its own player:</p><video id="streamed" width="160" height="90"></video>
-<audio id="silent"></audio>
-<script>document.getElementById("streamed").src = URL.createObjectURL(new Blob(["x"]));</script>`,
+<audio id="silent"></audio><p id="meta">no size</p><div style="height:1600px"></div>
+<script>document.getElementById("streamed").src = URL.createObjectURL(new Blob(["x"]));
+const clip = document.getElementById("clip");
+clip.addEventListener("loadedmetadata", () => { document.getElementById("meta").textContent = clip.videoWidth + "x" + clip.videoHeight + " " + Math.round(clip.duration) + " s"; });</script>`,
         "feed.html": `<!doctype html><title>Feed</title><p id="status">ready</p>
 <button id="nextclip">next</button><video id="a" src="clip.mp4" width="320" height="180" muted></video><video id="b" width="320" height="180" muted></video>
 <div id="scroller" style="height:150px;width:300px;overflow:auto"><div style="height:3000px">scroll me</div></div>
@@ -174,6 +178,10 @@ $("under").addEventListener("click", () => log("under clicked"));
 document.getElementById("nextclip").onclick = () => { const b = document.getElementById("b"); b.src = "clip.mp4"; b.play().catch(() => {}); };
 document.getElementById("scroller").onscroll = (e) => { document.getElementById("status").textContent = "at " + Math.round(e.target.scrollTop); };
 </script>`,
+        "long-feed.html": `<!doctype html><title>Long feed</title>
+<style>#clips { width: 320px; height: 180px; overflow: auto; }
+#clips video { display: block; width: 100%; height: 180px; object-fit: cover; }</style>
+<div id="clips">${Array.from({ length: 11 }, (_, i) => `<video id="clip-${i}" src="clip.mp4?clip=${i}" width="120" height="60" muted></video>`).join("")}</div>`,
         "ask-load.html": `<!doctype html><title>Asks</title><p id="before">before</p><script>alert("while loading");</script><p id="after">after</p>`,
         "ask-frame.html": `<!doctype html><title>Frame asks</title><p id="status">ready</p><iframe src="embedded/ask.html"></iframe>`,
         "embedded/ask.html": `<!doctype html><p>asking</p><script>setTimeout(() => { parent.document.getElementById("status").textContent = "answered " + confirm("from the frame"); }, 300);</script>`,
@@ -792,6 +800,22 @@ async function check(base, port, site) {
         const over = await ev(`(() => { const v = document.querySelector("video").getBoundingClientRect(), f = document.getElementById("go_view").getBoundingClientRect();
             return v.width > 100 && v.left >= f.left && v.right <= f.right + 1 && v.top >= f.top; })()`);
         if (!over) throw new Error("the player isn't over its box, within the frame");
+        // The page in the engine told the file's size and length, as a
+        // browser's player would (gomedia.js): the engine has no media.
+        await frameWait(`/^[1-9][0-9]*x[1-9][0-9]* 5 s$/.test(document.getElementById("meta").textContent)`, "the page told the video's size and length");
+        // The wheel turned over the player scrolls the page under it.
+        const y0 = await frame(`scrollY`);
+        const p = await ev(`(() => { const r = document.querySelector("video").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+        await cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: 0, deltaY: 200 });
+        await frameWait(`scrollY > ${y0} + 100`, "the page scrolled by the wheel over the player");
+        await frame(`scrollTo(0, scrollY + document.getElementById("clip").getBoundingClientRect().top + 50)`);
+        await waitFor(`(() => {
+            const video = document.querySelector("video"), view = document.getElementById("go_view");
+            const rect = video.getBoundingClientRect(), style = getComputedStyle(video);
+            return Math.abs(rect.top - view.getBoundingClientRect().top + 50) < 1 &&
+                rect.width === 320 && rect.height === 180 && style.clipPath.startsWith("inset(50px") &&
+                style.objectFit === "cover" && style.objectPosition === "75% 25%";
+        })()`, "the partly scrolled video retains its size and fit");
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
     });
@@ -895,6 +919,20 @@ async function check(base, port, site) {
         await frameClick("#scroller");
         await frame(`document.getElementById("scroller").scrollTop = 300`);
         await frameWait(`/^at [1-9]/.test(document.getElementById("status").textContent)`, "the page told of the scroll");
+    });
+
+    await step("a scrolling video feed releases old players and honors the page's dimensions", async () => {
+        await goTo(site + "long-feed.html", "Long feed");
+        for (let i = 0; i < 11; i++) {
+            await frame(`document.getElementById("clips").scrollTop = ${i * 180}`);
+            await frameWait(`document.getElementById("clip-${i}")?.textContent === ""`, `clip ${i + 1}'s player`);
+            await waitFor(`(() => {
+                const players = document.querySelectorAll("video");
+                const video = players[0];
+                return players.length === 1 && video.readyState >= 1 &&
+                    video.getBoundingClientRect().width > 290 && video.getBoundingClientRect().height === 180;
+            })()`, `only clip ${i + 1} retained at the feed dimensions`);
+        }
     });
 
     await step("a large page, sent compressed, and what it changes as it's shown", async () => {

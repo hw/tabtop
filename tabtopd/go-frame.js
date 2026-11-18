@@ -118,11 +118,23 @@
         } else if (m.type === "net" && Number.isSafeInteger(m.gen)) {
             netGen = m.gen;
             netBusy = !!m.busy;
+        } else if (m.type === "media-scroll" && [m.x, m.y, m.dx, m.dy].every(Number.isFinite)) {
+            scrollUnder(m);
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
             const box = media.get(m.key)?.box;
             if (box && typeof m.error === "string") box.textContent = m.error;
             // The video's own proportions, which its box takes.
-            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) box.style.setProperty("aspect-ratio", String(m.ratio));
+            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) {
+                mediaOf.get(box).size.aspectRatio = String(m.ratio);
+                mediaStyle(box);
+            }
+            // Its size and length, for the page in the engine, which has no
+            // media of its own (gomedia.js): to the element the box is for.
+            const engineId = box && doc?.ids.get(box);
+            if (engineId && m.meta && typeof m.meta === "object") {
+                const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
+                send("media-meta", engineId, { value: JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration) }) });
+            }
         }
     });
 
@@ -348,7 +360,15 @@
             return;
         }
         if (lower === "style") {
-            const p = inlineStyle(value, d.base, d.budget, alive(d)).then((css) => alive(d)() && el.setAttribute("style", css));
+            const p = inlineStyle(value, d.base, d.budget, alive(d)).then((css) => {
+                if (!alive(d)()) return;
+                if (mediaOf.has(el)) {
+                    mediaOf.get(el).style = css;
+                    mediaStyle(el);
+                } else {
+                    el.setAttribute("style", css);
+                }
+            });
             d.waits.push(p);
             later(d, p);
             return;
@@ -456,13 +476,34 @@
     let media = new Map();  // key -> {box, kind, src, ...}, of the document shown
     // The boxes' sizes but for the page's own rules (which win: :where has
     // no weight), as a browser's players' are.
-    const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: 300px; height: auto; aspect-ratio: 2 / 1; } " +
-        ":where([data-go-audio]) { display: inline-block; width: 300px; height: 54px; } " +
+    const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, auto); aspect-ratio: var(--tabtop-media-ratio, 16 / 9); object-fit: contain; } " +
+        ":where([data-go-audio]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, 54px); } " +
         ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
         "[data-go-wait] { visibility: hidden !important; }";
     let mediaKey = 0;
     const mediaOf = new WeakMap();  // a box -> {tag, key, src, poster, muted, loop, play}: the page's player's
+    const mediaVisibility = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            const m = media.get(mediaOf.get(entry.target)?.key);
+            if (m) m.intersection = entry;
+        }
+        mediaLater();
+    }, { root: document, threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
     let mediaSoon = false;
+    function forgetMedia(key) {
+        const m = media.get(key);
+        if (!m) return;
+        mediaVisibility.unobserve(m.box);
+        media.delete(key);
+    }
+    function mediaStyle(box) {
+        const { size, style } = mediaOf.get(box);
+        box.style.cssText = style;
+        box.style.setProperty("--tabtop-media-width", size.width || "initial");
+        box.style.setProperty("--tabtop-media-height", size.height || "initial");
+        box.style.setProperty("--tabtop-media-ratio", size.aspectRatio || "initial");
+        mediaLater();
+    }
     function mediaBox(d, n, tag) {
         const box = document.createElement("div");
         box.setAttribute(drawnAs[tag], "");
@@ -470,20 +511,22 @@
             const value = attrOf(n, name);
             if (value) attribute(d, box, HTML, "div", name, value);
         }
-        for (const name of ["width", "height"]) {
+        const dimension = (name) => {
             const value = attrOf(n, name);
-            if (/^\d{1,5}$/.test(value)) box.style.setProperty(name, value + "px");
-        }
+            return /^\d{1,5}$/.test(value) ? value + "px" : "";
+        };
         // Its height from its width, as a video's is, until its own
         // proportions are known (the page says, below).
         const w = Number(attrOf(n, "width")), h = Number(attrOf(n, "height"));
-        if (tag === "video") box.style.setProperty("aspect-ratio", w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9");
         own(d, n.i, box);
         const info = {
             tag, key: 0, src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
             muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), play: hasAttr(n, "autoplay"),
+            size: { width: dimension("width"), height: dimension("height"), aspectRatio: tag === "video" ? (w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9") : "" },
+            style: "",
         };
         mediaOf.set(box, info);
+        mediaStyle(box);
         mediaSource(d, box, info.src || firstSource(n.c));
         return box;
     }
@@ -500,7 +543,7 @@
     function mediaSource(d, box, src) {
         const info = mediaOf.get(box);
         if (!info) return;
-        if (info.key) media.delete(info.key);  // its player stops (keep, in the page)
+        if (info.key) forgetMedia(info.key);  // its player stops (keep, in the page)
         info.key = 0;
         const what = info.tag === "video" ? "video" : "sound";
         if (/^blob:/i.test(src)) {
@@ -523,6 +566,7 @@
         // Of the document it's in once shown (an embedded page's box, of its
         // page's): not asked for, nor dropped, before that.
         media.set(key, { top: d.top ?? d, box, kind: info.tag, src: url, poster, muted: info.muted, loop: info.loop, play: info.play, asked: false });
+        mediaVisibility.observe(box);
         mediaLater();
     }
     // mediaChanged follows what the page changed of a player (op, a batch's)
@@ -536,15 +580,25 @@
             return true;
         }
         if (op.o === "m") {
+            info.play = op.v === true;
             const m = media.get(info.key);
             if (!m) return true;
-            m.play = op.v === true;
+            m.play = info.play;
             if (m.asked && doc && m.top === doc) tell({ type: "media-play", gen: doc.gen, key: info.key, play: m.play });
             return true;
         }
         if (op.o !== "a") return false;
         const name = String(op.n).toLowerCase(), v = op.v === null ? null : String(op.v);
         switch (name) {
+            case "style":
+                if (v !== null) return false;
+                info.style = "";
+                mediaStyle(box);
+                return true;
+            case "width": case "height":
+                info.size[name] = /^\d{1,5}$/.test(v ?? "") ? v + "px" : "";
+                mediaStyle(box);
+                return true;
             case "src":
                 info.src = v;
                 mediaSource(d, box, v ?? "");
@@ -561,6 +615,18 @@
         }
         return false;
     }
+    // Match the browser's clipping, including the containing block of an
+    // absolutely positioned video. Keep the clip relative to the box while
+    // it moves between intersection callbacks.
+    function mediaClip(rect, entry) {
+        if (!entry?.isIntersecting) return null;
+        const box = entry.boundingClientRect, visible = entry.intersectionRect;
+        const x = Math.max(0, rect.left + visible.left - box.left);
+        const y = Math.max(0, rect.top + visible.top - box.top);
+        const right = Math.min(innerWidth, rect.right - (box.right - visible.right));
+        const bottom = Math.min(innerHeight, rect.bottom - (box.bottom - visible.bottom));
+        return { x, y, width: right - x, height: bottom - y };
+    }
     // mediaLater asks the page for players for new boxes, and tells it where
     // the boxes are, after this task (the box laid out).
     function mediaLater() {
@@ -570,19 +636,32 @@
             mediaSoon = false;
             if (!doc) return;
             const positions = [];
+            const opening = [];
             for (const [key, m] of media) {
                 if (m.top !== doc) continue;  // a document being built
+                if (!m.box.isConnected) {
+                    forgetMedia(key);
+                    continue;
+                }
                 const r = m.box.getBoundingClientRect();
                 const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
-                const shown = m.box.isConnected && m.box.getClientRects().length > 0;
-                if (shown && !m.asked) {
-                    m.asked = true;
-                    tell({ type: "media", gen: doc.gen, key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play, rect });
+                const clip = mediaClip(r, m.intersection);
+                const { objectFit: fit, objectPosition: position, visibility } = getComputedStyle(m.box);
+                const shown = visibility === "visible" && clip !== null && clip.width >= 8 && clip.height >= 8;
+                if (m.kind === "video" && !shown) {
+                    if (m.asked) m.box.textContent = "";
+                    m.asked = false;
+                    continue;
                 }
-                if (!m.box.isConnected) media.delete(key);
-                positions.push({ key, rect, shown });
+                const at = { key, rect, clip, shown, fit, position };
+                if (!m.asked && shown) {
+                    m.asked = true;
+                    opening.push({ ...at, type: "media", gen: doc.gen, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
+                }
+                if (m.asked) positions.push(at);
             }
             tell({ type: "media-positions", gen: doc.gen, positions });
+            for (const message of opening) tell(message);
         });
     }
     window.addEventListener("scroll", mediaLater, { passive: true, capture: true });
@@ -1334,6 +1413,31 @@
         wheel = { phase: "wheel", id: w.id, fx: w.fx, fy: w.fy, dx: (wheel?.dx ?? 0) + e.deltaX * unit, dy: (wheel?.dy ?? 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, { capture: true, passive: true });
+
+    // scrollUnder does a wheel turn, or a finger's drag, done over a player
+    // laid over a box here (go-media.js): the page under it scrolls, the
+    // nearest that can, as the person's (given to the engine as their
+    // scrolling is); a wheel goes to the engine as a wheel too.
+    function scrollUnder(m) {
+        lastInput = performance.now();
+        const at = document.elementFromPoint(m.x, m.y);
+        let scroller = null;
+        for (let n = at; n && n !== document.documentElement; n = n.parentElement) {
+            const st = getComputedStyle(n);
+            if ((/(auto|scroll)/.test(st.overflowY) && n.scrollHeight > n.clientHeight) || (/(auto|scroll)/.test(st.overflowX) && n.scrollWidth > n.clientWidth)) {
+                scroller = n;
+                break;
+            }
+        }
+        (scroller ?? window).scrollBy(m.dx, m.dy);
+        if (m.how === "wheel") {
+            const w = whereAt(m.x, m.y);
+            if (w) {
+                wheel = { phase: "wheel", id: w.id, fx: w.fx, fy: w.fy, dx: (wheel?.dx ?? 0) + m.dx, dy: (wheel?.dy ?? 0) + m.dy, buttons: 0 };
+                pointerSoon();
+            }
+        }
+    }
 
     // --- Scrolling: where the person scrolled to, given to the engine --------
     //
