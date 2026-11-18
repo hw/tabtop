@@ -240,10 +240,20 @@ func (g *server) routeGoResource(c *tunnelCall) {
 		// lays over the copy (go-media.js): where the remote browser may
 		// go, on HTTP's and HTTPS's ports.
 		u, err := url.Parse(c.req.URL)
-		if err != nil || !goPortAllowed(u) {
+		if err != nil || len(c.req.URL) > maxGoURL || !goPortAllowed(u) {
 			c.r.fail("Media loads only from ports 80 and 443.")
 			return
 		}
+		// The session's share of the broker's slots, as its pictures'
+		// are (goSessionSlots): one session's players can't hold them all.
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		mine, ok := goSessionSlots.acquire(ctx, c.session)
+		cancel()
+		if !ok {
+			c.r.fail("Too many resources are loading; try again.")
+			return
+		}
+		defer mine()
 		serveRemoteResource(c.t, c.req, c.r, g.goResources, goResourceSlots, goUserAgent)
 		return
 	}

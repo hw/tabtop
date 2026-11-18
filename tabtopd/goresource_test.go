@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -242,6 +243,28 @@ func TestGoResourceMedia(t *testing.T) {
 	}
 	if got := readGoResource(t, ctx, tc); !bytes.Equal(got, clip[1000:1025]) {
 		t.Errorf("range bytes %q", got)
+	}
+	if r, _ := ask(tunnelRequest{Type: "go-resource", Resource: "media", URL: site.URL + "/" + strings.Repeat("x", maxGoURL)}); r["error"] == nil {
+		t.Errorf("an address too long: %v", r)
+	}
+	// A session holding its share of slots waits for one (here, until its
+	// request gives up), whatever others hold.
+	var held []func()
+	for range goResourcePerSession {
+		release, _ := goSessionSlots.acquire(context.Background(), s.id)
+		held = append(held, release)
+	}
+	slowCtx, slowCancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer slowCancel()
+	tcSlow := openSession(t, ctx, url, s)
+	slow, _ := json.Marshal(tunnelRequest{Type: "go-resource", Resource: "media", URL: site.URL + "/clip.mp4"})
+	if err := tcSlow.write(slowCtx, msgText, slow); err == nil {
+		if _, _, err := tcSlow.read(slowCtx); err == nil {
+			t.Error("answered while its session held all its slots")
+		}
+	}
+	for _, release := range held {
+		release()
 	}
 	goTestPorts(t)
 	if r, _ := ask(tunnelRequest{Type: "go-resource", Resource: "media", URL: site.URL + "/clip.mp4"}); r["error"] == nil {
