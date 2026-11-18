@@ -194,7 +194,7 @@ At start-up tabtopd probes whether bubblewrap can create its namespaces, and `/g
 
 1. **Sandboxed** (probe passes): the engine runs in bubblewrap as below.
 2. **Unavailable** (probe fails, no override): `/go` reports that it is unavailable and why, and how to enable it.
-3. **Unsandboxed** (probe fails and `WEB_GO_UNSANDBOXED=1` / `-go-unsandboxed` is set): the engine runs as a plain child process of tabtopd. tabtopd logs this at start-up and the page shows a notice. Never chosen silently.
+3. **Unsandboxed** (probe fails and `WEB_GO_UNSANDBOXED=1` / `-go-unsandboxed` is set): the engine runs as a plain child process of tabtopd. tabtopd logs this at start-up and for each tab opened. Never chosen silently.
 
 The override exists because most full TabTop containers are disposable. Its risks:
 

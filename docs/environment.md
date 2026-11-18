@@ -802,7 +802,9 @@ both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`. Pictures, stylesheets 
 fetched by the server for you, without the site's cookies, so those that
 need you logged in to the site don't show. Signing in to a site works for as
 long as the tab is open; nothing is kept after it closes. A site that asks for a password
-with HTTP authentication shows its refusal page. Each engine may use up to
+with HTTP authentication shows its refusal page. Sites behind a bot check that
+wants a full browser (such as Cloudflare's "security verification") show
+that check and go no further. Each engine may use up to
 1 GiB of memory; there are up to 3 tabs per login and 8 in all, and an
 engine that stops answering, or keeps a core busy for a minute, is stopped
 (the tab says so and can load the page again). A tab may make 30 requests a

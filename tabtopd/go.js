@@ -40,7 +40,7 @@ warnExpiry();
 
 const $ = (id) => document.getElementById(id);
 const back = $("go_back"), forward = $("go_forward"), reload = $("go_reload");
-const address = $("go_url"), status = $("go_status"), notice = $("go_notice"), start = $("go_start"), mode = $("go_mode");
+const address = $("go_url"), status = $("go_status"), notice = $("go_notice"), start = $("go_start");
 
 // The frame: sandboxed with scripts only, its document from the server,
 // with a CSP that lets it load nothing from the web (see gopage.go).
@@ -172,11 +172,6 @@ function connect() {
         s.onopen = () => {
             ws = s;
             gen = shown = 0;
-            const unsandboxed = s.reply?.sandboxed === false;
-            mode.hidden = !unsandboxed;
-            mode.className = unsandboxed ? "unsandboxed" : "";
-            mode.textContent = unsandboxed ? "Not sandboxed" : "";
-            mode.title = unsandboxed ? "The server runs the page engine without its sandbox (WEB_GO_UNSANDBOXED)." : "";
             show("");
             if (at >= 0) load(entries[at].url, { push: false });
             resolve(true);

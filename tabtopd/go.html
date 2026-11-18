@@ -23,9 +23,6 @@ html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; fon
 #go_address { flex: 1; min-width: 0; display: flex; }
 #go_address input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 10px; font: 14px system-ui, sans-serif;
     color: #e8e8ea; background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 14px; }
-#go_mode { flex: 0 0 auto; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
-#go_mode.unsandboxed { color: #1c1c1e; background: #f2b84b; }
-#go_mode[hidden] { display: none; }
 #go_view { position: absolute; top: 70px; left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - 70px); border: 0; background: #fff; }
 #go_status { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); box-sizing: border-box; padding: 4px 10px;
     color: #e8e8ea; background: rgba(44, 44, 46, .92); border: 1px solid #3a3a3c; border-radius: 6px; pointer-events: none; }
@@ -63,7 +60,6 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         <input id="go_url" type="text" inputmode="url" autocomplete="off" spellcheck="false" aria-label="Address, or words to search for"
             placeholder="Address, or words to search for">
     </form>
-    <span id="go_mode" hidden></span>
 </div>
 <div id="go_start">
     <div>

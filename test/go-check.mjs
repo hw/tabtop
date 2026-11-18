@@ -216,13 +216,6 @@ async function check(base, port, site) {
         await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page");
     });
 
-    await step("the page says whether the engine is sandboxed", async () => {
-        const badge = await ev(`document.getElementById("go_mode").hidden ? "" : document.getElementById("go_mode").textContent`);
-        const want = process.env.GO_UNSANDBOXED === "1" ? "Not sandboxed" : "";
-        if (badge !== want) throw new Error(`it says ${JSON.stringify(badge)}, not ${JSON.stringify(want)}`);
-        return badge || "sandboxed: no badge";
-    });
-
     await step("load a page through the engine", async () => {
         await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "index.html")}; i.form.requestSubmit(); })()`);
         await waitFor(`document.title.startsWith("Fixture")`, "the page's title", 30000);
