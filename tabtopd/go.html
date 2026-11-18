@@ -45,6 +45,8 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--nav-height) var(
 #go_dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; }
 #go_dialog button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
 #go_dialog button.ok { background: #2f5ea8; border-color: #2f5ea8; }
+#go_dialog .quiet { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; font-size: .9em; color: #b8b8bd; }
+#go_dialog .quiet input { width: auto; margin: 0; }
 #go_dialog [hidden] { display: none; }
 #go_start { grid-row: 3; grid-column: 1; z-index: 1; display: grid; place-content: center; padding: 24px;
     text-align: center; color: #a8a8ad; background: #1c1c1e; }
@@ -90,6 +92,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 <div id="go_notice" role="alert" hidden><p></p><div class="actions"><button type="button" class="primary">Try again</button>
     <button type="button" class="edit" hidden>Edit address</button><button type="button" class="dismiss">Dismiss</button></div></div>
 <dialog id="go_dialog"><form method="dialog"><p></p><input type="text" aria-label="Answer" hidden>
+    <label class="quiet" hidden><input type="checkbox"> Don’t let this page ask again</label>
     <div class="buttons"><button type="button" class="cancel">Cancel</button><button type="submit" class="ok">OK</button></div></form></dialog>
 <script type="module" src="go.js"></script>
 </html>

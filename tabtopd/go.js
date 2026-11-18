@@ -565,8 +565,13 @@ function openDialog(m) {
     // tab, and ask straight after, before its own document has gone.
     const from = typeof m.url === "string" && /^https?:/i.test(m.url) ? hostOf(m.url) : "The page";
     dialog.querySelector("p").textContent = `${from} says: ${m.message ?? ""}`;
-    const input = dialog.querySelector("input");
+    const input = dialog.querySelector("input[type=text]");
     input.hidden = kind !== "prompt";
+    // Asked before by this page: it may be asking in a loop, which this
+    // stops (answered by the server from then on).
+    const quiet = dialog.querySelector(".quiet");
+    quiet.hidden = !m.again;
+    quiet.querySelector("input").checked = false;
     input.value = typeof m.default === "string" ? m.default : "";
     dialog.querySelector(".cancel").hidden = kind === "alert";
     if (!dialog.open) dialog.showModal();
@@ -576,8 +581,9 @@ function closeDialog() {
     if (dialog.open) dialog.close();
 }
 function answerDialog(accept) {
-    const input = dialog.querySelector("input");
-    ws?.send(JSON.stringify({ op: "dialog", accept, text: input.hidden ? "" : input.value }));
+    const input = dialog.querySelector("input[type=text]");
+    const quiet = dialog.querySelector(".quiet");
+    ws?.send(JSON.stringify({ op: "dialog", accept, text: input.hidden ? "" : input.value, quiet: !quiet.hidden && quiet.querySelector("input").checked }));
     closeDialog();
 }
 // (OK is the form's submit button: answered by the submit, below, once.)

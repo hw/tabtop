@@ -174,6 +174,13 @@ $("under").addEventListener("click", () => log("under clicked"));
 document.getElementById("nextclip").onclick = () => { const b = document.getElementById("b"); b.src = "clip.mp4"; b.play().catch(() => {}); };
 document.getElementById("scroller").onscroll = (e) => { document.getElementById("status").textContent = "at " + Math.round(e.target.scrollTop); };
 </script>`,
+        "ask-load.html": `<!doctype html><title>Asks</title><p id="before">before</p><script>alert("while loading");</script><p id="after">after</p>`,
+        "ask-frame.html": `<!doctype html><title>Frame asks</title><p id="status">ready</p><iframe src="embedded/ask.html"></iframe>`,
+        "embedded/ask.html": `<!doctype html><p>asking</p><script>setTimeout(() => { parent.document.getElementById("status").textContent = "answered " + confirm("from the frame"); }, 300);</script>`,
+        "ask-prompt.html": `<!doctype html><title>Prompts</title><p id="status">ready</p><button id="ask">Ask</button>
+<script>document.getElementById("ask").onclick = () => { document.getElementById("status").textContent = "prompted " + prompt("your name?", "nobody"); };</script>`,
+        "ask-loop.html": `<!doctype html><title>Loop</title><p id="status">ready</p><button id="loop">Loop</button>
+<script>document.getElementById("loop").onclick = () => { for (let i = 0; i < 1000; i++) alert("again " + i); document.getElementById("status").textContent = "done"; };</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -722,6 +729,40 @@ async function check(base, port, site) {
         if (!over) throw new Error("the player isn't over its box, within the frame");
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
+    });
+
+    await step("prompt, a page asking as it loads, a frame asking, and a page asking in a loop", async () => {
+        const answer = async (text, ok = true) => {
+            await waitFor(`document.getElementById("go_dialog").open`, "the dialog", 30000);
+            if (text !== undefined) await ev(`document.querySelector("#go_dialog input[type=text]").value = ${JSON.stringify(text)}`);
+            await ev(`document.querySelector("#go_dialog ${ok ? ".ok" : ".cancel"}").click()`);
+        };
+        await goTo(site + "ask-prompt.html", "Prompts");
+        await frameClick("#ask");
+        await waitFor(`document.getElementById("go_dialog").open && document.querySelector("#go_dialog input[type=text]").value === "nobody"`, "the prompt, its default", 30000);
+        await answer("Ann");
+        await frameWait(`document.getElementById("status").textContent === "prompted Ann"`, "the answer typed");
+        await frameClick("#ask");
+        await answer(undefined, false);
+        await frameWait(`document.getElementById("status").textContent === "prompted null"`, "no answer");
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "ask-load.html")}; i.form.requestSubmit(); })()`);
+        await answer();
+        await waitFor(`document.title.startsWith("Asks")`, "the page", 30000);
+        await frameWait(`!!document.getElementById("after")`, "the rest of the page, once answered");
+        await goTo(site + "ask-frame.html", "Frame asks");
+        await answer();
+        await frameWait(`document.getElementById("status").textContent === "answered true"`, "the frame's answer");
+        // A page asking in a loop: from its second, the person may stop it.
+        await goTo(site + "ask-loop.html", "Loop");
+        await frameClick("#loop");
+        await waitFor(`document.getElementById("go_dialog").open`, "the first", 30000);
+        if (!(await ev(`document.querySelector("#go_dialog .quiet").hidden`))) throw new Error("offered to stop it at its first");
+        await ev(`document.querySelector("#go_dialog .ok").click()`);
+        await waitFor(`document.getElementById("go_dialog").open && !document.querySelector("#go_dialog .quiet").hidden`, "the second, offering to stop it", 30000);
+        await ev(`document.querySelector("#go_dialog .quiet input").click()`);
+        await ev(`document.querySelector("#go_dialog .ok").click()`);
+        await frameWait(`document.getElementById("status").textContent === "done"`, "the loop through, unasked", 30000);
+        if (await ev(`document.getElementById("go_dialog").open`)) throw new Error("still asking");
     });
 
     await step("a feed: a video the page gives a file and plays plays here, and a swipe scrolls the page", async () => {

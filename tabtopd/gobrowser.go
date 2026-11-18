@@ -127,7 +127,10 @@ type goBrowser struct {
 	lastRead   time.Time
 	lastChange time.Time // when the document last changed
 	dialog     bool      // a dialog is open
-	popups     map[string]bool
+	// The dialogs the page shown (of gen askedGen) has opened, and the gen
+	// of the page the person said may ask no more (answered here instead).
+	asked, askedGen, quiet int
+	popups                 map[string]bool
 	// What the person's browser saw of observed elements, waiting to be
 	// handed to the page (newest per element), and whether a handing over
 	// is queued: one at a time, so they can't fill the acts' queue.
@@ -236,6 +239,7 @@ type goClientMsg struct {
 	Meta      bool    `json:"meta"`
 	Submitter int     `json:"submitter"`
 	Accept    bool    `json:"accept"`
+	Quiet     bool    `json:"quiet"` // dialog: let this page ask no more
 	Text      string  `json:"text"`
 	View      *goView `json:"view"` // navigate, viewport: the frame's size
 	// io: what the person's browser saw of the elements the page observes.
@@ -548,6 +552,9 @@ func (b *goBrowser) run() {
 				}
 			case "dialog":
 				if b.dialog {
+					if m.Quiet {
+						b.quiet = b.gen
+					}
 					b.answer(m.Accept, m.Text)
 					dialogTimeout = nil
 				}
@@ -759,6 +766,18 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			b.answer(true, "") // leaving goes ahead
 			return loadTimeout, dialogTimeout
 		}
+		// A page that asks again and again (in a loop, on every key) would
+		// keep the person answering: once they've said it may ask no
+		// more, it's answered here, as a browser that stops a page's
+		// dialogs does: OK to an alert, no to a question.
+		if b.askedGen != b.gen {
+			b.askedGen, b.asked = b.gen, 0
+		}
+		b.asked++
+		if b.quiet == b.gen {
+			b.answer(false, "")
+			return loadTimeout, dialogTimeout
+		}
 		if len(p.Message) > 2000 {
 			p.Message = p.Message[:2000] + "…"
 		}
@@ -769,7 +788,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		if err != nil {
 			from = b.docURL
 		}
-		b.send(map[string]any{"type": "go-dialog", "gen": b.gen, "kind": p.Type, "message": p.Message, "default": p.Default, "url": from})
+		b.send(map[string]any{"type": "go-dialog", "gen": b.gen, "kind": p.Type, "message": p.Message, "default": p.Default, "url": from, "again": b.asked > 1})
 		dialogTimeout = time.After(goDialogWait)
 	case "Page.frameNavigated":
 		var p struct {
