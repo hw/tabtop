@@ -48,7 +48,9 @@ if [ "$WEB_VNC" = 1 ] && [ "$VNC_X509" = 1 ]; then
         exit 1
     fi
 fi
-as_user /usr/local/bin/tabtopd \
+# TABTOP_GO_DEBUG=1 logs what each remote browser tab does (for finding
+# out why a page misbehaves): passed on, as as_user starts with nothing.
+as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
     -disable-vnc="$((1 - WEB_VNC))" \
     -disable-fs="$((1 - WEB_FS))" \
     -listen ":${WEB_PORT}" \

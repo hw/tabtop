@@ -44,6 +44,7 @@
 | [WEB_GO_UNSANDBOXED](#web_go) | `0` | `1` runs the remote browser's engine even where it can't be sandboxed. |
 | [WEB_GO_PRIVATE](#web_go) | `0` | `1` lets the remote browser reach private networks too, not only the internet. |
 | [WEB_GO_CACHE](#web_go) | `1` | `1` lets the remote browser's engines share a cache on disk, so sites' scripts and stylesheets are kept between tabs. `0` turns it off. |
+| TABTOP_GO_DEBUG | unset | `1` logs what each remote browser tab does (its loads, reads, input and dialogs) to the container's log, for finding out why a page misbehaves. Pages' addresses appear in it. |
 | [WEB_DISASM_DISABLE](#web_disasm_disable) | `none` | Turns off disassembly in binary previews: `all` of it, or a comma-separated list of `x86`, `arm64`, `capstone` (ARM32 and Thumb), `riscv` and `mips`. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |

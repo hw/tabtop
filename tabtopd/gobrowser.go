@@ -792,6 +792,9 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			URL     string `json:"url"`
 		}
 		json.Unmarshal(ev.Params, &p)
+		if b.dialog {
+			goDebugf("dialog %s opened with one open", p.Type)
+		}
 		b.dialog = true
 		if p.Type == "beforeunload" {
 			b.answer(true, "") // leaving goes ahead
@@ -819,6 +822,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		if err != nil {
 			from = b.docURL
 		}
+		goDebugf("dialog %s (%d of gen %d) opened", p.Type, b.asked, b.gen)
 		b.send(map[string]any{"type": "go-dialog", "gen": b.gen, "kind": p.Type, "message": p.Message, "default": p.Default, "url": from, "again": b.asked > 1})
 		dialogTimeout = time.After(goDialogWait)
 	case "Page.frameNavigated":
@@ -926,6 +930,7 @@ func (b *goBrowser) changed(after time.Duration) {
 
 // answer answers the open dialog.
 func (b *goBrowser) answer(accept bool, text string) {
+	goDebugf("dialog answered: %v", accept)
 	b.dialog = false
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)

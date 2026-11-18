@@ -774,7 +774,13 @@ async function check(base, port, site) {
 
     await step("prompt, a page asking as it loads, a frame asking, and a page asking in a loop", async () => {
         const answer = async (text, ok = true) => {
-            await waitFor(`document.getElementById("go_dialog").open`, "the dialog", 30000);
+            await waitFor(`document.getElementById("go_dialog").open`, "the dialog", 30000).catch(async (err) => {
+                // What the page and the frame were doing (an intermittent miss in CI).
+                const state = await ev(`JSON.stringify({ status: document.getElementById("go_status").textContent, busy: document.getElementById("go_view").getAttribute("aria-busy"),
+                    notice: document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p").textContent })`).catch((e) => e.message);
+                const there = await frame(`document.getElementById("status")?.textContent`).catch((e) => e.message);
+                throw new Error(`${err.message}; page ${state}; frame status ${there}; exceptions ${JSON.stringify(exceptions)}`);
+            });
             if (text !== undefined) await ev(`document.querySelector("#go_dialog input[type=text]").value = ${JSON.stringify(text)}`);
             await ev(`document.querySelector("#go_dialog ${ok ? ".ok" : ".cancel"}").click()`);
         };
