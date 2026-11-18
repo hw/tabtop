@@ -240,6 +240,8 @@ and bubblewrap, in a container run with the seccomp profile `/go` needs.
 With `GO_IMAGE`, it first checks that the image, run with Docker's default
 settings and `WEB_GO=1`, starts and says `/go` is unavailable;
 `GO_UNSANDBOXED=1` then checks it that way with `WEB_GO_UNSANDBOXED=1`.
+`WEB_BASE_PATH=/tabtop/` checks it served under that path, as behind a
+reverse proxy.
 `GO_NO_FS=1` checks it with files off, `GO_SITES="<address> ..."` loads
 real sites too (with screenshots in `GO_SHOTS`), and `GO_SOAK=<n>` loads
 `n` pages one after another in one tab; it reports the most memory the

@@ -15,10 +15,15 @@
 # seccomp profile /go needs (docs/environment.md, WEB_GO); first, that with
 # Docker's default settings it starts and says /go is unavailable.
 # GO_UNSANDBOXED=1 checks it with Docker's default settings and
-# WEB_GO_UNSANDBOXED=1 (with GO_IMAGE only).
+# WEB_GO_UNSANDBOXED=1 (with GO_IMAGE only). WEB_BASE_PATH=/tabtop/ serves
+# it all under that path (-base-path, or the image's WEB_BASE_PATH), as
+# behind a proxy.
 set -euo pipefail
 
 go_image=${GO_IMAGE:-}
+base_path=${WEB_BASE_PATH:-/}
+[[ "$base_path" == /* ]] || base_path="/$base_path"
+[[ "$base_path" == */ ]] || base_path="$base_path/"
 [[ "${GO_UNSANDBOXED:-}" != 1 || -n "$go_image" ]] || { echo "GO_UNSANDBOXED=1 needs GO_IMAGE" >&2; exit 2; }
 [[ -n "$go_image" ]] || moli=${MOLI:?set MOLI to a Moli binary, or GO_IMAGE to a TabTop image}
 image=${TABTOP_IMAGE:-${go_image:-tabtop-lite:latest}}
@@ -85,8 +90,8 @@ if [[ -n "$go_image" ]]; then
     [[ "${GO_UNSANDBOXED:-}" == 1 ]] && security=(-e WEB_GO_UNSANDBOXED=1)
     docker run -d --name "$box" -p "127.0.0.1:$port:6080" "${security[@]}" \
         -e VNC_USER=tester -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ -e WEB_VNC=0 "${files[@]}" \
-        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 "$go_image" >/dev/null
-    for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port/go/" >/dev/null && break; sleep 0.2; done
+        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" "$go_image" >/dev/null
+    for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port${base_path}go/" >/dev/null && break; sleep 0.2; done
     docker logs "$box" 2>&1 | grep -m1 "remote browser" || true
     watched_pid=$(docker inspect -f '{{.State.Pid}}' "$box")  # the container's, for the memory sampling
 else
@@ -95,9 +100,9 @@ else
     [[ "${GO_NO_FS:-}" == 1 ]] && files=(-disable-fs)
     TABTOP_GO_DEBUG=1 "$work/tabtopd" -listen "127.0.0.1:$port" -users-file "$work/users.oath" -noble-dir "$work/noble" \
         -disable-vnc "${files[@]}" -fetch=true -fetch-private=true \
-        -go -go-engine "$moli" -go-private > "$work/tabtopd.log" 2>&1 &
+        -go -go-engine "$moli" -go-private -base-path "$base_path" > "$work/tabtopd.log" 2>&1 &
     tabtopd_pid=$! watched_pid=$!
-    for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port/go/" >/dev/null && break; sleep 0.1; done
+    for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port${base_path}go/" >/dev/null && break; sleep 0.1; done
     grep -m1 "remote browser" "$work/tabtopd.log" || true
 fi
 
@@ -128,7 +133,7 @@ tree_rss() {
       ((${e:-0} > peak_engine)) && peak_engine=${e:-0}; ((${t:-0} > peak_tabtopd)) && peak_tabtopd=${t:-0}
       echo "$peak_engine $peak_tabtopd" > "$work/peak"; sleep 1
   done ) &
-node "$here/go-check.mjs" check "http://127.0.0.1:$port/" "$cport" "http://$site_ip/"
+node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/"
 read -r peak_engine peak_tabtopd < "$work/peak" || true
 echo "ok   the most memory used: an engine $((${peak_engine:-0} / 1024)) MiB, tabtopd $((${peak_tabtopd:-0} / 1024)) MiB"
 if [[ "${GO_NO_FS:-}" != 1 ]]; then
