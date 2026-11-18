@@ -167,6 +167,9 @@ $("under").addEventListener("click", () => log("under clicked"));
 <p>streamed by its own player:</p><video id="streamed" width="160" height="90"></video>
 <audio id="silent"></audio>
 <script>document.getElementById("streamed").src = URL.createObjectURL(new Blob(["x"]));</script>`,
+        "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
+${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
+<script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
@@ -706,6 +709,13 @@ async function check(base, port, site) {
         if (!over) throw new Error("the player isn't over its box, within the frame");
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
+    });
+
+    await step("a large page, sent compressed, and what it changes as it's shown", async () => {
+        await goTo(site + "big.html", "Big");
+        await frameWait(`document.querySelectorAll("p.row").length === 3000 && document.getElementById("items")?.children.length === 20`, "every row, and the 20 items added as it was shown", 30000);
+        const last = await frame(`document.getElementById("items").lastElementChild.textContent`);
+        if (last !== "item 20") throw new Error(`the last item says ${last}`);
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with

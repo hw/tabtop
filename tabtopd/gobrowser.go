@@ -19,6 +19,8 @@ package main
 // page can't place, and the whole document is read again.
 
 import (
+	"bytes"
+	"compress/flate"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -156,6 +158,7 @@ type goBrowser struct {
 	framesSent     int
 	ctx            context.Context
 	cancel         context.CancelFunc
+	deflate        bool   // the page takes large messages compressed (sendLarge)
 	view           goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
@@ -351,6 +354,29 @@ func newGoBrowser(t msgConn, e *goEngine, cdp *cdpConn, page, target string) *go
 	return &goBrowser{t: t, e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
 		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
 		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
+}
+
+// goDeflateFrom is the size a message is compressed from (sendLarge).
+const goDeflateFrom = 16 << 10
+
+// sendLarge sends a JSON message that may be large (a snapshot, a batch
+// of changes, a frame's page): compressed, if the page takes it and it's
+// worth it, as a binary message of request number 0 (four zero bytes, as
+// a resource's bytes have their request's, goprefetch.go) then raw
+// deflate; else as text. Snapshots shrink four to seven times: what's
+// compressed is the page's own content, which its site has already.
+func (b *goBrowser) sendLarge(p []byte) error {
+	if b.deflate && len(p) >= goDeflateFrom {
+		var z bytes.Buffer
+		z.Write([]byte{0, 0, 0, 0})
+		w, _ := flate.NewWriter(&z, flate.BestSpeed)
+		w.Write(p)
+		w.Close()
+		if z.Len() < len(p)*9/10 {
+			return b.t.Write(context.Background(), websocket.MessageBinary, z.Bytes())
+		}
+	}
+	return b.t.Write(context.Background(), websocket.MessageText, p)
 }
 
 func (b *goBrowser) send(v map[string]any) error {
@@ -755,11 +781,17 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			media, _, _ := strings.Cut(p.Response.MimeType, ";")
 			b.docType = strings.ToLower(strings.TrimSpace(media))
 		}
-	case "Page.loadEventFired":
+	case "Page.domContentEventFired", "Page.loadEventFired":
+		// The page is shown once its document's been read and its deferred
+		// scripts have run (DOMContentLoaded), not after everything it loads
+		// (the load event, up to seconds later): what it does after comes
+		// as changes, as anything later does.
 		if b.loading != 0 && b.navigated {
 			gen := b.loading
 			b.loading, loadTimeout = 0, nil
 			b.snapshot(gen, false)
+		} else if ev.Method == "Page.loadEventFired" {
+			b.changed(0) // what it did as it finished loading
 		}
 	case "Page.navigatedWithinDocument":
 		// A fragment followed: the address, read with the next changes.
@@ -946,7 +978,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				b.prefetch(s.Doc, s.Base) // what it'll ask for, on its way
 			}
 			goDebugf("snapshot gen %d, %d bytes", gen, len(p))
-			b.t.Write(context.Background(), websocket.MessageText, p)
+			b.sendLarge(p)
 			if b.dirty {
 				b.readChanges()
 			}
@@ -1004,7 +1036,7 @@ func (b *goBrowser) readChanges() {
 				ops := goCleanOps(c.Ops)
 				goDebugf("changes gen %d seq %d: %d ops, %d observed", gen, c.Seq, len(ops), len(io))
 				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io})
-				b.t.Write(context.Background(), websocket.MessageText, p)
+				b.sendLarge(p)
 			}
 			if b.dirty {
 				b.readChanges()

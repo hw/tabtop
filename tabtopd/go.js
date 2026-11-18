@@ -216,7 +216,7 @@ function stop() {
 // trying again, else true.
 function connect() {
     return new Promise((resolve) => {
-        const s = new TunnelSocket({ type: "go" }, { title: "Browser" });
+        const s = new TunnelSocket({ type: "go", deflate: canInflate }, { title: "Browser" });
         show("Connecting to TabTop…");
         $("go_progress").hidden = false;
         s.onopen = () => {
@@ -227,14 +227,26 @@ function connect() {
             if (at >= 0) load(entries[at].url, { push: false });
             resolve(true);
         };
+        // In the order they come, though a compressed one takes a moment to
+        // decompress: what follows it (changes to it) waits for it.
+        let inbox = Promise.resolve();
         s.onmessage = (e) => {
+            inbox = inbox.then(() => take(e.data)).catch(() => {});
+        };
+        const take = async (data) => {
             if (ws !== s) return;
-            if (typeof e.data !== "string") {
-                resData(e.data);  // a resource's bytes
-                return;
+            if (typeof data !== "string") {
+                // Request number 0: a large message, compressed (see
+                // sendLarge in gobrowser.go); any other, a resource's bytes.
+                if (!(data instanceof ArrayBuffer) || data.byteLength < 4 || new DataView(data).getUint32(0) !== 0) {
+                    resData(data);
+                    return;
+                }
+                data = await inflate(data.slice(4));
+                if (ws !== s) return;
             }
             let m;
-            try { m = JSON.parse(e.data); } catch { return; }
+            try { m = JSON.parse(data); } catch { return; }
             if (m.type === "go-res") {
                 resHeader(m);  // of any page: not a generation's
                 return;
@@ -384,6 +396,15 @@ async function fetchResource(kind, url) {
     }
     spent += size;
     return collect(t, size, () => {}, kind === "css" ? "text/css" : mime);
+}
+
+// Large messages may come compressed (raw deflate), if this browser can
+// decompress them, as it says when it opens the tunnel.
+const canInflate = (() => {
+    try { return typeof DecompressionStream === "function" && !!new DecompressionStream("deflate-raw"); } catch { return false; }
+})();
+function inflate(bytes) {
+    return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
 }
 
 // Resources over the tab's tunnel: asked for by number; the answer, a

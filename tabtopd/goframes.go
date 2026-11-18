@@ -22,8 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 var errGoFrameGone = errors.New("the frame's document went")
@@ -260,7 +258,7 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		b.framesSent += len(op)
 		p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": b.gen, "seq": b.seq, "ops": []json.RawMessage{op}})
 		goDebugf("frame %d: %d bytes", c.owner, len(p))
-		b.t.Write(context.Background(), websocket.MessageText, p)
+		b.sendLarge(p)
 		c.due = false
 		// One that changes every time is read less often, up to every
 		// goFrameWaitMax; one that's settled, every round.

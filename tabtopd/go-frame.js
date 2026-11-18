@@ -127,7 +127,19 @@
 
     // picture is src as this frame may show it: a data: picture as it is,
     // a web one fetched through the page (a blob: URL), anything else not.
-    const blobs = new Map();  // kind + url -> Promise of a blob: URL, per page
+    // kind + url -> Promise of a blob: URL, kept for the tab's pages (most
+    // recently used last; the oldest revoked past MAX_BLOBS), so a site's
+    // pages share their pictures, fonts, and stylesheets made with them.
+    const blobs = new Map();
+    const blobSizes = new Map();  // kind + url -> its bytes, once come
+    let blobBytes = 0;
+    const MAX_BLOBS = 1500, MAX_BLOB_BYTES = 256 << 20;
+    // href -> Promise of a stylesheet as rewritten (its addresses those
+    // blobs'), for the tab's pages: a site's pages parse each once. Cleared
+    // when a blob it may use is revoked.
+    const sheets = new Map();
+    let sheetChars = 0;
+    const MAX_SHEET_CHARS = 32 << 20;
     function load(kind, src, base) {
         const s = String(src).trim();
         if (/^data:/i.test(s)) {
@@ -138,10 +150,39 @@
             return Promise.reject(new Error("not a web address"));
         }
         const key = kind + " " + url;
-        if (!blobs.has(key)) {
-            blobs.set(key, resource(kind, url).then((blob) => URL.createObjectURL(blob)));
+        let got = blobs.get(key);
+        if (got) {
+            blobs.delete(key);
+            blobs.set(key, got);  // most recently used
+            return got;
         }
-        return blobs.get(key);
+        got = resource(kind, url).then((blob) => {
+            if (blobs.get(key) === got) {
+                blobSizes.set(key, blob.size);
+                blobBytes += blob.size;
+                trimBlobs(key);
+            }
+            return URL.createObjectURL(blob);
+        });
+        got.catch(() => blobs.get(key) === got && blobs.delete(key));  // tried again next time
+        blobs.set(key, got);
+        trimBlobs(key);
+        return got;
+    }
+
+    // trimBlobs drops the oldest blobs (but keep) past the limits, and the
+    // stylesheets that may use them.
+    function trimBlobs(keep) {
+        while ((blobs.size > MAX_BLOBS || blobBytes > MAX_BLOB_BYTES) && blobs.size > 1) {
+            const [oldest, url] = blobs.entries().next().value;
+            if (oldest === keep) break;
+            blobs.delete(oldest);
+            blobBytes -= blobSizes.get(oldest) ?? 0;
+            blobSizes.delete(oldest);
+            url.then(URL.revokeObjectURL, () => {});
+            sheets.clear();
+            sheetChars = 0;
+        }
     }
 
     // bestSource picks the srcset candidate nearest this screen's density
@@ -583,8 +624,27 @@
         if (media) style.media = media;
         const p = (async () => {
             d.budget.sheet();
-            const text = await (await resource("css", href)).text();
-            const css = await stylesheet(text, href, d.budget, alive(d));
+            let made = sheets.get(href);
+            if (made) {
+                sheets.delete(href);
+                sheets.set(href, made);  // most recently used
+            } else {
+                // Rewritten for the tab, not this page alone (its budget
+                // counts it below, as it does each page's own).
+                made = (async () => stylesheet(await (await resource("css", href)).text(), href, cssBudget(), () => true))();
+                sheets.set(href, made);
+                made.then((css) => {
+                    if (sheets.get(href) !== made) return;
+                    sheetChars += css.length;
+                    while (sheetChars > MAX_SHEET_CHARS && sheets.size > 1) {
+                        const [oldest, old] = sheets.entries().next().value;
+                        sheets.delete(oldest);
+                        old.then((c) => (sheetChars -= c.length), () => {});
+                    }
+                }, () => sheets.get(href) === made && sheets.delete(href));
+            }
+            const css = await made;
+            d.budget.charge(css);
             if (alive(d)()) style.textContent = css;
         })();
         d.waits.push(p);
@@ -616,8 +676,9 @@
     function render(m) {
         current = m.gen;
         const d = newDoc(m);
-        for (const url of blobs.values()) url.then(URL.revokeObjectURL, () => {});
-        blobs.clear();
+        building = d;
+        heldChanges = [];
+
 
         // The document's element: its html, or one made around what's there.
         let root = null;
@@ -659,6 +720,13 @@
                 hash ? scrollToFragment(hash) : scrollTo(0, 0);
             }
             tell({ type: "rendered", gen: d.gen, report: d.report });
+            // What changed while it was built.
+            if (building === d) {
+                building = null;
+                const queued = heldChanges;
+                heldChanges = [];
+                for (const c of queued) apply(c);
+            }
         })();
     }
 
@@ -746,7 +814,17 @@
     // apply applies a batch of changes to the document shown: only the
     // nodes they name change, so what has focus, what's selected and where
     // it's scrolled stay as they are.
+    // Changes that come while a document is being built (its stylesheets
+    // waited for) are its: kept, and applied once it's shown, in order.
+    // Dropped, the next would name nodes this copy never had, and the whole
+    // page would be read again.
+    let building = null;
+    let heldChanges = [];
     function apply(m) {
+        if (building && m.gen === building.gen) {
+            if (heldChanges.length < 1000) heldChanges.push(m);
+            return;
+        }
         const d = doc;
         if (!d || m.gen !== d.gen || !Array.isArray(m.ops)) return;
         for (const op of m.ops) {

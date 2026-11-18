@@ -265,7 +265,7 @@ History, back, forward and reload are kept by the page and sent as navigations. 
 The server answers per generation:
 
 - `{"type":"go-loading","gen":N,"url":…}`
-- `{"type":"go-snapshot","gen":N,"url":final,"base":…,"title":…,"doc":tree}`, once the page has loaded (`Page.loadEventFired` after its `Page.frameNavigated`), at once for a navigation within the document, or after 30 s with what has loaded.
+- `{"type":"go-snapshot","gen":N,"url":final,"base":…,"title":…,"doc":tree}`, once the page’s document is ready (`Page.domContentEventFired`, or `Page.loadEventFired` if that comes first, after its `Page.frameNavigated`; what it does until it’s loaded comes as changes), at once for a navigation within the document, or after 30 s with what has loaded.
 - `{"type":"go-error","gen":N,"message":…}`
 
 Messages for a generation older than the newest are dropped on the server. Snapshot nodes are `{"i":id,"t":type,"n":name,"v":text,"a":[name,value,…],"c":[…]}`, read by the agent in an isolated world (section 6); the server leaves out scripts, `noscript`, templates, comments, doctypes, and every `on…` attribute, as defence in depth before the client’s sanitizer. A snapshot larger than 16 MB is an error, not a partial page. The page may send at most 64 KiB per message.
@@ -341,6 +341,16 @@ Apply the same checks to every mutation batch, not only the initial snapshot.
 - The copy can’t play anything: its frame’s policy has no media, and it’s at an origin of its own, which the streaming service worker doesn’t serve. So, as the files page’s previews do (`preview-media.js`), a `<video>` or `<audio>` with a file to play (its `src`, or its first `<source>`’s) is drawn as a box, and the trusted `/go` page lays a native player over it (`go-media.js`), kept within the frame’s area and following the box as the copy scrolls or changes (the frame reports where its boxes are). The player’s file is read from the site by the server in 1 MiB ranges as it plays (`go-resource` `"media"`, with the remote browser’s address policy, its ports and its User-Agent; through the service worker, over the tunnel), so the site isn’t contacted from the device, and none of its script runs in the player. At most 8 players a page; a video’s poster is fetched as the page’s pictures are, and its box takes the video’s proportions once known (an empty box would have no height).
 - A player whose source is a `blob:` URL is fed by the site’s own player (Media Source, as on YouTube): there’s no file to read, so its box says so. Those would need the player’s pixels streamed instead (a full engine with a media pipeline).
 - The `/go` page’s policy gains `media-src 'self'` and `worker-src 'self'`; the frame’s stays `media-src 'none'`. Measured: W3Schools’ HTML5 video page plays its clip (`mov_bbb.mp4`); the server’s fetch had been refused there as Go’s default User-Agent, which the broker’s replaces.
+
+### Performance
+
+Measured on the same machine, Wikipedia, GitHub, Hacker News and www.sg, before and after (November 2026):
+
+- **The snapshot is read at DOMContentLoaded**, not the load event: 0.05–0.4 s sooner (Wikipedia’s document is ready at 0.37 s, loaded at 0.70 s).
+- **Changes that come while the frame builds a page are kept** and applied once it’s shown, in order. They were dropped, so the next batch named nodes the copy never had, and the whole page was read and sent again (Wikipedia: a second 736 KB snapshot and rebuild). Re-reads after this: none in the measured run.
+- **Large messages are compressed** (`sendLarge`): snapshots, change batches and frames from 16 KiB, raw deflate at its fastest, if they shrink by a tenth, as binary messages of request number 0 (resources’ bytes start with theirs); the page says it can decompress (`DecompressionStream`) when it opens the tunnel, and takes messages in order, a compressed one before what follows it. Wikipedia’s snapshot is 124 KB instead of 630 KB, GitHub’s 91 KB instead of 620 KB: on a distant connection, about half a second less a large page.
+- **The frame keeps a tab’s resources and stylesheets**: blob URLs across pages (1,500 or 256 MiB, the oldest revoked), and each stylesheet as rewritten, by address (32 MiB), dropped with any blob it may use. A site’s pages no longer parse and rewrite its stylesheets each time: GitHub’s 7.6 MB of CSS, about 0.8 s, once a tab (its page built in 0.5 s on a second visit, from 0.9 s).
+- Left as they are: the engine’s own loading (mostly the sites and the network), and the agent’s read (0.25 s of its own on Wikipedia, mostly Moli’s attribute access; more while the page’s scripts are still busy).
 
 ### What the page fetches (`data:` URLs)
 
