@@ -26,7 +26,7 @@ Compatibility is measured against these:
 
 - Content that cannot be carried by a DOM snapshot: `canvas` drawing, WebGL, video and audio playback, WebRTC.
 - Logins and persistent destination sessions until Phase 3 decides cookie handling (see section 4).
-- Service workers, browser extensions, and nested browsing contexts initially.
+- Service workers and browser extensions. Embedded pages (iframes) are shown as view-only copies (section 6), not as frames of their own.
 - Filesystem access for pages.
 
 ### Decision
@@ -304,7 +304,7 @@ No network origin appears anywhere, so remote content cannot load except through
 
 Snapshots and mutations from the engine are untrusted. Before rendering:
 
-1. Drop scripts, inline handlers, `javascript:` and other unsafe URLs, refresh directives, nested frames, objects, embeds, `<base>`, and media elements.
+1. Drop scripts, inline handlers, `javascript:` and other unsafe URLs, refresh directives, frames (an iframe’s page is drawn as a view-only copy in a box instead, section 6), objects, embeds, `<base>`, and media elements.
 2. Parse and rewrite CSS, including `@import`, `url()`, `image-set()`, and fonts.
 3. Replace resource URLs with broker-backed `blob:` URLs, resolved against the document’s final URL.
 4. Map engine node IDs to rendered elements, so events can be addressed back.
@@ -328,6 +328,13 @@ Apply the same checks to every mutation batch, not only the initial snapshot.
 - The frame observes the copy’s element with the browser’s own `IntersectionObserver`, which sees it as laid out and scrolled there, and sends what it sees, with the element’s box, its visible part and the root’s bounds as shown there (`{"op":"io","gen":N,"entries":[…]}`, in pieces of 500). Pages go by those places: YouTube loads a thumbnail only when its `intersectionRect` has a height, which the engine’s own 0×0 box for a picture it hasn’t fetched never has.
 - tabtopd hands them to the page on the acts’ queue (callbacks may open a dialog), one handing over at a time, the newest per element kept meanwhile; the agent drops what repeats what was last handed over; callbacks run from a task of their own, as in browsers. It isn’t counted as the person’s doing, so a page that makes what it observes come and go can’t keep the idle watchdog off.
 - Measured: YouTube’s channel page shows its thumbnails (18 of 35 pictures, those in view; none without). CNA, BBC News and The Verge load their lazy pictures either way. Sites learn which of their elements the person has scrolled to, as they would in a browser. A new observation reaches the person’s browser with the next batch of changes, up to a second on a quiet page.
+
+### Embedded pages (iframes)
+
+- An iframe is drawn in the copy as a box of its own (a shadow root, sized from its `width` and `height`, the page’s `iframe` rules rewritten to `[data-go-iframe]` so they apply to it), its page copied into it, sanitized as the page is, and `inert`: view-only. Pointer events over the box aren’t given to the engine, which would give them to the frame’s page at a place that needn’t be what’s shown (its size and scroll differ); its scripts run in the engine as they would in a browser.
+- A frame of the page’s own origin (or `srcdoc`) is read by the agent in the page’s world, into the snapshot, as a document node (`t: 9`, with its base, checked as an http(s) address) under its iframe; its changes resend it whole.
+- A frame of another origin, which the agent can’t see into, is read in an isolated world of its own (`goframes.go`): once a second the page’s frames are listed (`Page.getFrameTree`), a new one matched to its iframe (`DOM.getFrameOwner`, `DOM.resolveNode` into the agent’s world, then the agent’s number for it, which the copy must already have), and each new, navigated or changed one read again and sent whole after the page, as its iframe’s content (`{o: "c", i, c: [document]}`). A slow, looping or huge frame holds up nothing but itself; frames sent are budgeted at 4 MB a second a tab, at most 16 frames a page and 2 MB each, and a frame that changes every time is read less often, up to every 8 s. What its stylesheets and pictures need is fetched ahead against its own base.
+- Only the page’s own frames are shown: a frame’s frames show as unavailable. A Cloudflare or other challenge in a frame shows, but can’t be answered. Measured: Bootstrap’s docs show their YouTube embed (309 KB, sent once); `TestGoFramesWithMoli` has a frame of another origin shown, changed and navigated.
 
 ### What the page fetches (`data:` URLs)
 

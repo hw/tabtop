@@ -146,9 +146,17 @@ type goBrowser struct {
 	serving   int
 	// What's being fetched ahead for the page shown (goprefetch.go).
 	prefetcher *goPrefetcher
-	ctx        context.Context
-	cancel     context.CancelFunc
-	view       goView // the engine's window, as last set (zero: its own)
+	// The page's frames from other origins, by CDP frame id; whether
+	// they're being read, when they last were, and what's been sent of
+	// them this second (goframes.go).
+	children       map[string]*goChild
+	framesReading  bool
+	framesAt       time.Time
+	framesBudgetAt time.Time
+	framesSent     int
+	ctx            context.Context
+	cancel         context.CancelFunc
+	view           goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops
@@ -503,6 +511,7 @@ func (b *goBrowser) run() {
 				b.dirty = true
 				b.readChanges()
 			}
+			b.framesSoon() // other origins' frames: once a second
 		case <-loadTimeout:
 			// Show what has loaded, slow as the rest is.
 			gen := b.loading
@@ -716,6 +725,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		goDebugf("frame navigated (loading %d)", b.loading)
 		b.frame = p.Frame.ID
 		b.world, b.dirty = 0, false // a new document, a new world
+		b.children = nil            // and its own frames
 		b.docURL = ""
 		if u, err := goURL(p.Frame.URL); err == nil {
 			b.docURL = u
@@ -931,6 +941,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			b.shown, b.seq, b.lastChange = gen, 0, time.Now()
+			b.framesAgain() // its iframes were drawn empty
 			if !again {
 				b.prefetch(s.Doc, s.Base) // what it'll ask for, on its way
 			}

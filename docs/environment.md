@@ -802,7 +802,10 @@ as you scroll to them (with `IntersectionObserver`) do so as you scroll
 here: what's visible is worked out by your browser. Your mouse and keys
 reach the page as its own browser's would: hover menus, double and right
 clicks, the wheel, and where within an element you click. Touch, drag and
-drop, and editing text that isn't in a form field don't. A
+drop, and editing text that isn't in a form field don't. Embedded pages
+(iframes), from the page's site or another, show as copies you can see but
+not use: a video player shows its picture, and a check that wants a click
+can't be clicked. A
 file the site sends (a PDF, an archive) is offered to save into Downloads
 (`WEB_FS=1`), as fetches are saved, but from private networks only when
 both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`. Pictures, stylesheets and fonts are

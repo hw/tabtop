@@ -227,6 +227,22 @@ func (b *goBrowser) prefetch(doc *goNode, base string) {
 	if b.resources == nil || doc == nil {
 		return
 	}
+	wanted := goWants(doc, base)
+	ctx, cancel := context.WithCancel(b.ctx)
+	p := &goPrefetcher{ctx: ctx, cancel: cancel, queue: make(chan goPrefetch, goPrefetchMax)}
+	b.prefetcher = p
+	for _, w := range wanted {
+		p.want(b, w, 0)
+	}
+	for range goPrefetchers {
+		go p.work(b)
+	}
+}
+
+// goWants is what the page shown from doc will ask the broker for: its
+// stylesheets, pictures and inline styles' pictures (an embedded page's
+// against its own base); what the stylesheets use comes as they're read.
+func goWants(doc *goNode, base string) []goWanted {
 	var wanted []goWanted
 	add := func(kind, raw, against string) {
 		if len(wanted) >= goPrefetchMax {
@@ -236,10 +252,13 @@ func (b *goBrowser) prefetch(doc *goNode, base string) {
 			wanted = append(wanted, goWanted{kind, u})
 		}
 	}
-	var walk func(n *goNode)
-	walk = func(n *goNode) {
+	var walk func(n *goNode, base string)
+	walk = func(n *goNode, base string) {
 		if n == nil {
 			return
+		}
+		if n.Type == 9 && n.Base != "" {
+			base = n.Base // an embedded page's, its own
 		}
 		if n.Type == 1 {
 			name := strings.ToLower(n.Name)
@@ -275,19 +294,11 @@ func (b *goBrowser) prefetch(doc *goNode, base string) {
 			}
 		}
 		for _, k := range n.Kids {
-			walk(k)
+			walk(k, base)
 		}
 	}
-	walk(doc)
-	ctx, cancel := context.WithCancel(b.ctx)
-	p := &goPrefetcher{ctx: ctx, cancel: cancel, queue: make(chan goPrefetch, goPrefetchMax)}
-	b.prefetcher = p
-	for _, w := range wanted {
-		p.want(b, w, 0)
-	}
-	for range goPrefetchers {
-		go p.work(b)
-	}
+	walk(doc, base)
+	return wanted
 }
 
 type goWanted struct{ kind, url string }

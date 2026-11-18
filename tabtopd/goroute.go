@@ -175,6 +175,7 @@ type goNode struct {
 	Type  int       `json:"t"`
 	Name  string    `json:"n,omitempty"`
 	Value string    `json:"v,omitempty"`
+	Base  string    `json:"b,omitempty"` // base URL of an embedded document
 	Attrs []string  `json:"a,omitempty"`
 	Kids  []*goNode `json:"c,omitempty"`
 }
@@ -193,6 +194,7 @@ func goClean(n *goNode) *goNode {
 	}
 	switch n.Type {
 	case 1:
+		n.Base = ""
 		if goDropped[strings.ToLower(n.Name)] {
 			return nil
 		}
@@ -206,9 +208,17 @@ func goClean(n *goNode) *goNode {
 		n.Value = ""
 	case 3:
 		n.Name, n.Attrs, n.Kids = "", nil, nil
+		n.Base = ""
 		return n
 	case 9, 11:
 		n.Name, n.Value, n.Attrs = "", "", nil
+		// An embedded page's base, which its addresses resolve against:
+		// an http(s) one, or none.
+		if u, err := goURL(n.Base); n.Type != 9 || err != nil {
+			n.Base = ""
+		} else {
+			n.Base = u
+		}
 	default:
 		return nil
 	}

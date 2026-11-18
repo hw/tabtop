@@ -116,6 +116,15 @@
             }
             return "";
         }
+        // frameOwner says, of an iframe tabtopd found as a frame's owner,
+        // its number if the copy has it (not numbering it: that would make
+        // later batches name a node never sent) and whether its page is
+        // read here (same origin) or must be read in a world of its own.
+        function frameOwner(el) {
+            let readable = false;
+            try { readable = !!el.contentDocument; } catch { /* another origin's */ }
+            return JSON.stringify({ id: known(el) ? ids.get(el) : 0, readable });
+        }
         function keyTo(id) {
             const el = node(id);
             if (!el) return "gone";
@@ -156,6 +165,23 @@
         }
 
         let count = 0;
+        const frames = new Map();
+        function frameKids(el, depth) {
+            let child;
+            try { child = el.contentDocument; } catch { /* inaccessible origin */ }
+            const prev = frames.get(el);
+            if (prev?.child !== child) prev?.observer?.disconnect();
+            if (!child || !child.documentElement) {
+                frames.set(el, { child, depth });
+                return [];
+            }
+            const state = { child, depth, dirty: false };
+            state.observer = new MutationObserver(() => { state.dirty = true; });
+            prev?.observer?.disconnect();
+            state.observer.observe(child, { subtree: true, childList: true, attributes: true, characterData: true });
+            frames.set(el, state);
+            return [{ i: id(child), t: 9, b: child.baseURI, c: kids(child, depth + 1) }];
+        }
         function ser(n, depth) {
             if (++count > 400000) throw new Error("too many nodes");
             if (n.nodeType === 3 || n.nodeType === 4) return { i: id(n), t: 3, v: n.data };
@@ -177,7 +203,12 @@
             }
             const out = { i: id(n), t: 1, n: name };
             if (a.length) out.a = a;
-            const c = name === "textarea" ? [{ i: id(n.firstChild || n), t: 3, v: n.value }] : depth < 600 ? kids(n, depth) : [];
+            let c;
+            if (name === "iframe") {
+                c = n.ownerDocument === document && depth < 600 && (frames.has(n) || frames.size < 64) ? frameKids(n, depth) : [];
+            } else {
+                c = name === "textarea" ? [{ i: id(n.firstChild || n), t: 3, v: n.value }] : depth < 600 ? kids(n, depth) : [];
+            }
             if (c.length) out.c = c;
             return out;
         }
@@ -203,6 +234,8 @@
 
         function snapshot() {
             count = 0;
+            for (const frame of frames.values()) frame.observer?.disconnect();
+            frames.clear();
             observer.disconnect();
             observer.takeRecords();
             parents = new Set(); attrs = new Map(); texts = new Set();
@@ -235,7 +268,21 @@
             // their parent's children.
             const before = next;
             const old = (n) => known(n) && ids.get(n) < before;
+            for (const [el, state] of frames) {
+                if (!el.isConnected || el.ownerDocument !== document) {
+                    state.observer?.disconnect();
+                    frames.delete(el);
+                    continue;
+                }
+                let child;
+                try { child = el.contentDocument; } catch { /* inaccessible origin */ }
+                if (child !== state.child || state.dirty || state.observer?.takeRecords().length ||
+                    !state.observer && child?.documentElement) {
+                    ops.push({ o: "c", i: id(el), c: frameKids(el, state.depth) });
+                }
+            }
             for (const p of parents) {
+                if (p.localName === "iframe") continue; // its rendered children come from its document
                 if (!p.isConnected || !old(p) || p.nodeType === 1 && dropped.has(p.localName.toLowerCase())) continue;
                 const c = [];
                 for (let k = p.firstChild; k; k = k.nextSibling) {
@@ -352,7 +399,7 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo };
+        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner };
         // What the page observed before this world was made (as it loaded).
         document.dispatchEvent(new CustomEvent("__tabtop_io_sync"));
     }

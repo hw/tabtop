@@ -8,7 +8,7 @@
 // Throughout, every request Chrome makes, from the page and from its frames,
 // is recorded: none may go anywhere but the TabTop server.
 import { createHmac } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createBrowserHarness, sleep } from "./browser/harness.mjs";
@@ -65,6 +65,7 @@ function writeSite(dir) {
 <img id="img" src="pic.png" srcset="pic.png 1x, pic2.png 2x" alt="picture">
 <div id="bg" style="background-image:url(pic.png);width:10px;height:10px"></div><div id="varbg" style="width:10px;height:10px"></div>
 <iframe id="frame" src="https://example.com/"></iframe>
+<iframe id="embedded" src="embedded/frame.html"></iframe>
 <object data="https://example.com/x.swf"></object>
 <a id="next" href="second.html">next</a> <a id="jump" href="#end">end</a>
 <form id="form" action="https://example.com/steal"><input name="q"><button>Send</button></form>
@@ -72,6 +73,9 @@ function writeSite(dir) {
 <div style="height:3000px"></div><p id="end">the end</p>
 <script>document.getElementById("p").textContent = "scripted"; fetch("https://example.com/beacon").catch(() => {});</script>
 </body></html>`,
+        "embedded/frame.html": `<!doctype html><style>p { color: teal }</style>
+<p id="embedded-text" onclick="throw Error()">initial content</p><img src="../pic.png">
+<script>setTimeout(() => { document.getElementById("embedded-text").textContent = "updated content"; }, 1500);</script>`,
         "second.html": `<!doctype html><title>Second</title><p id="p">second page</p><a id="back" href="index.html">back</a>`,
         "interact.html": `<!doctype html><title>Interact</title>
 <p id="status">ready</p>
@@ -135,12 +139,12 @@ o.observe(seen);
 </script>`,
         "input.html": `<!doctype html><title>Input</title>
 <style>#menu { display: none } #host.open #menu { display: block } #pad { width: 200px; height: 100px; background: #eee }
-#cover { position: relative; width: 120px; height: 40px } #cover iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0 }</style>
+#cover { position: relative; width: 120px; height: 40px } #cover embed { position: absolute; inset: 0; width: 100%; height: 100%; border: 0 }</style>
 <button id="count">count</button> <span id="n">0</span>
 <div id="host"><span id="trigger">hover here</span><div id="menu"><a href="#" id="mitem">item</a></div></div>
 <button id="pointer">pointer only</button>
 <div id="pad">pad</div>
-<div id="cover"><button id="under">under</button><iframe srcdoc="<p>over</p>"></iframe></div>
+<div id="cover"><button id="under">under</button><embed type="image/png" src="pic.png"></div>
 <p id="log"></p>
 <script>
 const $ = (i) => document.getElementById(i), log = (t) => { $("log").textContent += t + ";"; };
@@ -183,6 +187,7 @@ http.createServer((req, res) => {
   });
 }).listen(80);`,
     };
+    mkdirSync(join(dir, "embedded"), { recursive: true });
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
     writeFileSync(join(dir, "pic.png"), png(4, 4, [200, 30, 30]));
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
@@ -354,6 +359,18 @@ async function check(base, port, site) {
         for (const [k, v] of Object.entries(want)) {
             if (left[k] !== v) throw new Error(`${k}: ${JSON.stringify(left[k])}, want ${JSON.stringify(v)}`);
         }
+    });
+
+    await step("iframe snapshots update and use the embedded page's base URL", async () => {
+        await frameWait(`document.getElementById("embedded")?.shadowRoot?.getElementById("embedded-text")?.textContent === "updated content"`, "embedded page update");
+        await frameWait(`document.getElementById("embedded")?.shadowRoot?.querySelector("img")?.naturalWidth > 0`, "embedded image");
+        const valid = await frame(`(() => {
+            const root = document.getElementById("embedded").shadowRoot;
+            const paragraph = root.getElementById("embedded-text");
+            return root.querySelector("script, iframe, [onclick]") === null &&
+                !!paragraph.closest("[inert]") && getComputedStyle(paragraph).color === "rgb(0, 128, 128)";
+        })()`);
+        if (!valid) throw new Error("embedded snapshot was not sanitized, inert, and styled");
     });
 
     await step("the frame can't reach the page, the site or the web", async () => {

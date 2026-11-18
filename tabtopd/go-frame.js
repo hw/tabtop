@@ -11,8 +11,9 @@
 // The page sends {type: "render", gen, url, base, doc, again}: a snapshot
 // of a document the engine on the server loaded and ran (see goroute.go),
 // its nodes as {i, t, n, v, a, c}. This rebuilds it here from an allowlist:
-// elements that load or run something (frames, objects, embeds, scripts,
-// base, meta) are left out, video, audio and canvas shown as a note, and
+// elements that load or run something (objects, embeds, scripts, base,
+// meta) are left out, an iframe's page drawn as a view-only copy in a box
+// (embeddedFrame), video, audio and canvas shown as a note, and
 // attributes that run script (on…) or load (src, srcset, href, style's
 // url()s) are dropped or pointed at pictures, stylesheets and fonts the page
 // fetches through the server: {type: "resource", id, kind, url}, answered
@@ -186,7 +187,11 @@
         let font = 0;
         css.walk(ast, {
             enter(node, item, list) {
-                if (node.type === "Atrule" && node.name.toLowerCase() === "import" && list) {
+                if (node.type === "TypeSelector" && node.name.toLowerCase() === "iframe" && list) {
+                    // An iframe is drawn as a box of its own (embeddedFrame):
+                    // the page's rules for iframes are for it.
+                    list.replace(item, list.createItem({ type: "AttributeSelector", name: { type: "Identifier", name: "data-go-iframe" }, matcher: null, value: null, flags: null }));
+                } else if (node.type === "Atrule" && node.name.toLowerCase() === "import" && list) {
                     imports.push({ node, item, list });
                 } else if (node.type === "Atrule" && node.name.toLowerCase() === "font-face") {
                     font++;
@@ -264,6 +269,7 @@
         };
     }
     const alive = (d) => () => d.gen === current;
+    const frameRoots = new WeakMap();
     const leave = (d, what) => { d.report.left[what] = (d.report.left[what] || 0) + 1; };
     const later = (d, promise) => promise.then(() => d.report.resources++, () => d.report.failed++);
     function own(d, id, n) {
@@ -330,6 +336,51 @@
         }
     }
 
+    function renderFrame(d, el, kids) {
+        const { viewport } = frameRoots.get(el);
+        const frame = Array.isArray(kids) && kids.find((k) => k?.t === 9);
+        if (!frame) {
+            viewport.replaceChildren();
+            viewport.textContent = "Embedded page unavailable";
+            return;
+        }
+        const content = document.createElement("div");
+        content.inert = true;
+        const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
+        child.budget = d.budget;
+        child.report = d.report;
+        children(child, content, frame.c, HTML);
+        d.waits.push(...child.waits);
+        viewport.replaceChildren(content);
+    }
+
+    function embeddedFrame(d, n) {
+        // A shadow tree contains the embedded styles. There is no local
+        // browsing context and the copied content does not receive input.
+        const el = document.createElement("span");
+        el.setAttribute("data-go-iframe", "");  // what the page's iframe rules apply to
+        const shadow = el.attachShadow({ mode: "open" });
+        const style = document.createElement("style");
+        style.textContent = ":host { display:inline-block; vertical-align:bottom; width:300px; height:150px; max-width:100%; border:2px inset } div[part=viewport] { width:100%; height:100%; overflow:auto; contain:strict }";
+        const viewport = document.createElement("div");
+        viewport.setAttribute("part", "viewport");
+        shadow.append(style, viewport);
+        frameRoots.set(el, { viewport });
+        for (const name of ["id", "class", "title", "style"]) {
+            const value = attrOf(n, name);
+            if (value) attribute(d, el, HTML, "span", name, value);
+        }
+        for (const name of ["width", "height"]) {
+            const value = attrOf(n, name);
+            if (/^\d{1,5}%?$/.test(value)) {
+                style.textContent += `:host { ${name}:${value.endsWith("%") ? value : value + "px"} }`;
+            }
+        }
+        own(d, n.i, el);
+        renderFrame(d, el, n.c);
+        return el;
+    }
+
     function element(d, n, ns) {
         const name = n.n;
         if (typeof name !== "string" || !validName.test(name) || name.includes(":")) {
@@ -340,6 +391,7 @@
         const tag = name.toLowerCase();
         if (ns === HTML && tag === "svg") ns = SVG;
         else if (ns === HTML && tag === "math") ns = MATHML;
+        if (ns === HTML && tag === "iframe") return embeddedFrame(d, n);
         if (dropped.has(tag) && !(ns === SVG && tag === "a")) {
             leave(d, tag);
             own(d, n.i, null);
@@ -636,6 +688,10 @@
     // and moving those already shown, leaving any in place in place.
     function reconcile(d, parent, kids) {
         if (!Array.isArray(kids)) return true;
+        if (frameRoots.has(parent)) {
+            renderFrame(d, parent, kids);
+            return true;
+        }
         if (parent.nodeType === 1 && parent.localName === "style") {
             styleKids(d, parent, kids);
             return true;
@@ -738,6 +794,10 @@
         if (!under) return null;  // outside the frame
         const at = idOf(under);
         if (!at || at.node.nodeType !== 1) return null;
+        // Over an embedded page's copy: nothing. The engine would give it to
+        // the page in the frame, at a place that needn't be what's shown
+        // here (its size and scroll differ), and the copy takes no input.
+        if (frameRoots.has(at.node)) return null;
         const r = at.node.getBoundingClientRect();
         const f = (v, size) => (size > 0 ? Math.min(1, Math.max(0, v / size)) : 0.5);
         return { id: at.id, fx: Math.round(f(e.clientX - r.left, r.width) * 1000) / 1000, fy: Math.round(f(e.clientY - r.top, r.height) * 1000) / 1000 };
