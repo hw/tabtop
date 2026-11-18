@@ -625,16 +625,30 @@
         const p = (async () => {
             d.budget.sheet();
             let made = sheets.get(href);
+            const cached = !!made;
             if (made) {
                 sheets.delete(href);
                 sheets.set(href, made);  // most recently used
             } else {
-                // Rewritten for the tab, not this page alone (its budget
-                // counts it below, as it does each page's own).
-                made = (async () => stylesheet(await (await resource("css", href)).text(), href, cssBudget(), () => true))();
+                // Rewritten for the tab, as this page reads it: what it
+                // imports counts against this page's budget as it's read,
+                // and it stops if the page goes. Kept only if it was read
+                // whole (one stopped part way isn't the stylesheet).
+                const own = cssBudget();
+                const budget = {
+                    charge(text) { own.charge(text); d.budget.charge(text); },
+                    sheet() { own.sheet(); d.budget.sheet(); },
+                };
+                let cut = false;
+                const live = () => alive(d)() || !(cut = true);
+                made = (async () => stylesheet(await (await resource("css", href)).text(), href, budget, live))();
                 sheets.set(href, made);
                 made.then((css) => {
                     if (sheets.get(href) !== made) return;
+                    if (cut) {
+                        sheets.delete(href);
+                        return;
+                    }
                     sheetChars += css.length;
                     while (sheetChars > MAX_SHEET_CHARS && sheets.size > 1) {
                         const [oldest, old] = sheets.entries().next().value;
@@ -643,8 +657,9 @@
                     }
                 }, () => sheets.get(href) === made && sheets.delete(href));
             }
+            const fresh = !cached;
             const css = await made;
-            d.budget.charge(css);
+            if (!fresh) d.budget.charge(css);  // read before: counted now
             if (alive(d)()) style.textContent = css;
         })();
         d.waits.push(p);
