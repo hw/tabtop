@@ -621,6 +621,20 @@ async function saveFile(url) {
 
 // --- Controls ---------------------------------------------------------
 
+// Keep the URL on focus, selected so typing or pasting replaces it. A
+// second click or an arrow key places the caret for editing instead.
+let selectAddressOnClick = false;
+address.addEventListener("pointerdown", () => {
+    selectAddressOnClick = document.activeElement !== address;
+});
+address.addEventListener("focus", () => address.select());
+address.addEventListener("click", () => {
+    // The focusing click may collapse the selection made by focus.
+    if (selectAddressOnClick) address.select();
+    selectAddressOnClick = false;
+});
+address.addEventListener("blur", () => { selectAddressOnClick = false; });
+
 $("go_address").addEventListener("submit", (e) => {
     e.preventDefault();
     const url = target(address.value);
