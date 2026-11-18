@@ -720,23 +720,106 @@
     let lastClick = 0;
     let labelled = null;  // the field of the label clicked last
     let lastEnter = 0;
+    let lastActivation = 0;  // an Enter or Space given to the engine as a key
+
+    // --- The mouse: given to the engine as input (see goinput.go) -----------
+    //
+    // Each event names the element under the pointer and where within it, as
+    // fractions across and down: places here aren't the engine's. The engine
+    // makes the click from the press and release, as a browser does.
+    const mods = (e) => ({ shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey });
+    function where(e) {
+        // What's under the pointer, not the event's target: a button pressed
+        // keeps the mouse (its release, and moves while dragging, are its,
+        // wherever they are).
+        const under = document.elementFromPoint(e.clientX, e.clientY);
+        if (!under) return null;  // outside the frame
+        const at = idOf(under);
+        if (!at || at.node.nodeType !== 1) return null;
+        const r = at.node.getBoundingClientRect();
+        const f = (v, size) => (size > 0 ? Math.min(1, Math.max(0, v / size)) : 0.5);
+        return { id: at.id, fx: Math.round(f(e.clientX - r.left, r.width) * 1000) / 1000, fy: Math.round(f(e.clientY - r.top, r.height) * 1000) / 1000 };
+    }
+    let held = 0;  // buttons pressed here, not yet released
+    let pressedAt = null;
+    document.addEventListener("mousedown", (e) => {
+        if (!e.isTrusted) return;
+        const w = where(e);
+        if (!w) return;
+        flushAll();
+        lastClick = performance.now();
+        held |= 1 << e.button;
+        pressedAt = w;
+        send("mouse", w.id, { phase: "down", fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+    }, true);
+    document.addEventListener("mouseup", (e) => {
+        if (!e.isTrusted || !(held & (1 << e.button))) return;
+        held &= ~(1 << e.button);
+        const w = where(e);
+        lastClick = performance.now();
+        // Let go outside the frame: let go, away from what was pressed (no
+        // click).
+        if (!w) send("mouse", 0, { phase: "cancel", button: e.button });
+        else send("mouse", w.id, { phase: "up", fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+    }, true);
+    // Let go outside the frame, or the window left: nothing stays pressed.
+    const cancel = () => {
+        if (!held || !doc) return;
+        held = 0;
+        send("mouse", 0, { phase: "cancel" });
+    };
+    window.addEventListener("blur", cancel);
+    document.addEventListener("mousemove", (e) => {
+        if (held && !e.buttons) cancel();
+    }, true);
+    // Moves and the wheel: the newest every 50 ms at most (the wheel's
+    // turns added up), as pages follow the pointer, not every pixel.
+    let move = null, wheel = null, pointerTimer = 0;
+    function pointerSoon() {
+        if (pointerTimer) return;
+        pointerTimer = setTimeout(() => {
+            pointerTimer = 0;
+            if (move) send("mouse", move.id, move);
+            if (wheel) send("mouse", wheel.id, wheel);
+            move = wheel = null;
+        }, 50);
+    }
+    document.addEventListener("mousemove", (e) => {
+        if (!e.isTrusted) return;
+        const w = where(e);
+        if (!w) return;
+        move = { phase: "move", id: w.id, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
+        pointerSoon();
+    }, true);
+    document.addEventListener("wheel", (e) => {
+        if (!e.isTrusted) return;
+        const w = where(e);
+        if (!w) return;
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+        wheel = { phase: "wheel", id: w.id, fx: w.fx, fy: w.fy, dx: (wheel?.dx ?? 0) + e.deltaX * unit, dy: (wheel?.dy ?? 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
+        pointerSoon();
+    }, { capture: true, passive: true });
+
     document.addEventListener("click", (e) => {
         if (!e.isTrusted || e.button !== 0) return;
         const link = linkOf(e.target);
         const at = idOf(e.target);
         if (link || e.target.closest?.("a[href='#']")) e.preventDefault();
+        // A click by the mouse: the engine made its own, from the press and
+        // release. One by a key it was given (Enter, Space): from that key.
+        // Any other (a click by assistive software, say): by script, below.
+        const byMouse = e.detail > 0 || e.pointerType === "mouse";
+        const byKey = performance.now() - lastActivation < 300;
+        if (at && (byMouse || byKey)) {
+            if (link) followFragment(link);
+            return;
+        }
         // A click on a label clicks its field too: that's one click, the
         // label's (the engine's label clicks its own field).
         if (e.target === labelled && performance.now() - lastClick < 100) return;
         lastClick = performance.now();
         labelled = e.target.closest?.("label")?.control ?? null;
-        if (link) {
-            const to = new URL(link);
-            const here = doc?.url ? new URL(doc.url) : null;
-            if (here && to.hash && to.origin + to.pathname + to.search === here.origin + here.pathname + here.search) {
-                scrollToFragment(to.hash.slice(1));  // the engine follows it too, below
-            }
-        }
+        if (link) followFragment(link);
         if (at) {
             flushAll();
             send("click", at.id);
@@ -744,6 +827,14 @@
             tell({ type: "navigate", url: link });
         }
     }, true);
+    // A link within the page scrolls here at once; the engine follows it too.
+    function followFragment(link) {
+        const to = new URL(link);
+        const here = doc?.url ? new URL(doc.url) : null;
+        if (here && to.hash && to.origin + to.pathname + to.search === here.origin + here.pathname + here.search) {
+            scrollToFragment(to.hash.slice(1));
+        }
+    }
     document.addEventListener("auxclick", (e) => {
         const link = linkOf(e.target);
         if (link && e.button === 1) {
@@ -764,15 +855,26 @@
         if (!e.isTrusted || !id || textLike(el) || el.type === "checkbox" || el.type === "radio") return;
         send("change", id, { value: String(el.value ?? "") });
     }, true);
-    const keys = new Set(["Enter", "Escape", "ArrowUp", "ArrowDown", "Tab", "Backspace", "Delete"]);
-    document.addEventListener("keydown", (e) => {
-        if (!e.isTrusted || !keys.has(e.key) || e.isComposing) return;
+    // Keys: given to the engine as keys, every one, to what has the focus
+    // here (the engine gives it the focus first). What's typed is typed here
+    // and sent as the field's value; the engine's keys type nothing, but do
+    // what else keys do (Enter sends a form, Space presses a button).
+    function keyEvent(e, type) {
+        if (!e.isTrusted || e.isComposing || e.key === "Process" || e.key === "Dead") return;
         const at = idOf(e.target);
         if (!at) return;
-        if (e.key === "Tab" && !textLike(at.node)) return;
-        flush(at.node);
-        if (e.key === "Enter") lastEnter = performance.now();
-        send("key", at.id, { key: e.key, code: e.code, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey });
+        flush(at.node);  // what was typed, before the key that may use it
+        if (type === "down" && (e.key === "Enter" || e.key === " ")) lastActivation = performance.now();
+        if (type === "down" && e.key === "Enter") lastEnter = performance.now();
+        send("key", at.id, { phase: type, key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
+    }
+    document.addEventListener("keydown", (e) => keyEvent(e, "down"), true);
+    document.addEventListener("keyup", (e) => keyEvent(e, "up"), true);
+    // What has the focus here has it there, for the keys that follow.
+    document.addEventListener("focusin", (e) => {
+        if (!e.isTrusted) return;
+        const at = idOf(e.target);
+        if (at && at.node === e.target && at.node.nodeType === 1) send("focus", at.id);
     }, true);
     // Forms aren't sent from here (form-action 'none'): the engine sends
     // them. Enter in a field sends its form there already, with its key.

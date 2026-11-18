@@ -11,6 +11,8 @@ package main
 //	{"op":"navigate","url":...,"view":{"w":...,"h":...,"dpr":...}}  {"op":"stop"}
 //	{"op":"viewport","view":{...}}  the frame's size changed: the engine's window follows
 //	{"op":"event","gen":N,"kind":"click"|"input"|"change"|"key"|"submit"|"focus","id":...}
+//	{"op":"event","gen":N,"kind":"mouse","type":"down"|"up"|"move"|"wheel"|"cancel","id":...,"fx":...,"fy":...,...}
+//	{"op":"event","gen":N,"kind":"key","type":"down"|"up","id":...,"key":...,"code":...,"keyCode":...}  (goinput.go)
 //	{"op":"dialog","accept":...,"text":...}  {"op":"resync","gen":N}
 //
 // and the server answers, for each generation (a navigation, the person's

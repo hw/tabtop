@@ -10,6 +10,15 @@
 //                        snapshot, so a missed batch shows
 //   __tabtop.act(json)   does what the person did, in the page: a click,
 //                        typing, a key, a form sent
+//   __tabtop.into(id)    scrolls an element into view (only as far as needed),
+//                        for real input at it: "ok", or "gone"
+//   __tabtop.point(json) where in the window real input at {id, fx, fy}
+//                        (fractions across and down the element) lands on
+//                        it, as JSON {x, y}, or "" if it can't (not laid
+//                        out, or covered here): run after layout's refreshed
+//   __tabtop.keyTo(id)   gives the element keys go to the focus, if it isn't
+//                        the document itself (the page's own focus stays):
+//                        "field" if it's a one-line field, "ok", or "gone"
 //   __tabtop.io(json)    what the person's browser saw of elements the page
 //                        observes, [{o, i, hit, ratio}], handed to the page
 //                        (see goobserve.js)
@@ -78,6 +87,43 @@
                     ioOut.push({ op: "+", o, i, m: r.m, t: r.t, r: r.root ? ids.get(r.root) : 0 });
                 }
             }
+        }
+        function into(id) {
+            const el = node(id);
+            if (!el) return "gone";
+            watch(el);  // as it was: what the input changes is sent
+            if (el.nodeType === 1) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+            return "ok";
+        }
+        function point(json) {
+            const a = JSON.parse(json);
+            const el = node(a.id);
+            if (!el || el.nodeType !== 1) return "";
+            const r = el.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) return "";
+            const on = (x, y) => {
+                if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+                const hit = document.elementFromPoint(x, y);
+                return !!hit && (hit === el || el.contains(hit));
+            };
+            const f = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+            // Where the person pointed within it, kept just inside it; or its
+            // middle, if something else is there.
+            for (const [fx, fy] of [[f(a.fx), f(a.fy)], [0.5, 0.5]]) {
+                const x = r.left + Math.min(r.width - 0.5, Math.max(0.5, fx * r.width));
+                const y = r.top + Math.min(r.height - 0.5, Math.max(0.5, fy * r.height));
+                if (on(x, y)) return JSON.stringify({ x, y });
+            }
+            return "";
+        }
+        function keyTo(id) {
+            const el = node(id);
+            if (!el) return "gone";
+            watch(el);
+            if (el.nodeType === 1 && el !== document.body && el !== document.documentElement && document.activeElement !== el) el.focus?.();
+            // A one-line field: Enter there sends its form (given as typed).
+            const field = el.localName === "input" && !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/i.test(el.type);
+            return field ? "field" : "ok";
         }
         function io(json) {
             let list;
@@ -306,7 +352,7 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act, io };
+        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo };
         // What the page observed before this world was made (as it loaded).
         document.dispatchEvent(new CustomEvent("__tabtop_io_sync"));
     }

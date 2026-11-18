@@ -124,7 +124,12 @@ type goBrowser struct {
 	// is queued: one at a time, so they can't fill the acts' queue.
 	ioWaiting map[[2]int]goIOEntry
 	ioQueued  bool
-	view      goView // the engine's window, as last set (zero: its own)
+	// The person's mouse: the move and wheel turn waiting, and whether one's
+	// queued; the buttons held (the acts' queue's own, see goinput.go).
+	moveWaiting, wheelWaiting *goClientMsg
+	movesQueued               bool
+	input                     *goInput
+	view                      goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops
@@ -201,6 +206,21 @@ type goClientMsg struct {
 	View      *goView `json:"view"` // navigate, viewport: the frame's size
 	// io: what the person's browser saw of the elements the page observes.
 	Entries []goIOEntry `json:"entries"`
+	// Real input (goinput.go). Mouse: Type move, down, up, cancel or wheel;
+	// where within the element (fractions), which button and buttons, the
+	// click count, the wheel's turn. Keys: Type down or up, the key's code,
+	// where on the keyboard, held down.
+	Type     string  `json:"type"`
+	FX       float64 `json:"fx"`
+	FY       float64 `json:"fy"`
+	Button   int     `json:"button"`
+	Buttons  int     `json:"buttons"`
+	Count    int     `json:"count"`
+	DX       float64 `json:"dx"`
+	DY       float64 `json:"dy"`
+	KeyCode  int     `json:"keyCode"`
+	Location int     `json:"location"`
+	Repeat   bool    `json:"repeat"`
 }
 
 // goIO is one of a page's IntersectionObserver targets, for the client to
@@ -299,7 +319,8 @@ func (v goView) clamped() goView {
 
 func newGoBrowser(t msgConn, e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
 	return &goBrowser{t: t, e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
-		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
+		input: &goInput{pressed: map[int]goPress{}},
+		jobs:  newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
 }
 
 func (b *goBrowser) send(v map[string]any) error {
@@ -950,6 +971,17 @@ func (b *goBrowser) readChanges() {
 	}, func(r any) { r.(func())() })
 }
 
+// actNow does what the person did in the page, by script (goagent.js's
+// act): on the acts' queue, from act, or from real input that couldn't be
+// given (goinput.go).
+func (b *goBrowser) actNow(ctx context.Context, world int, m goClientMsg) (string, error) {
+	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.ID, "value": m.Value, "checked": m.Checked, "key": m.Key,
+		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": m.Submitter})
+	arg, _ := json.Marshal(string(a))
+	_, res, err := b.evaluate(ctx, world, "__tabtop.act("+string(arg)+")")
+	return res, err
+}
+
 // goCleanOps takes event handler attributes and what's never shown out of a
 // batch of changes, as goClean does a snapshot.
 func goCleanOps(raw []json.RawMessage) []any {
@@ -997,6 +1029,14 @@ func goCleanOps(raw []json.RawMessage) []any {
 
 // act does what the person did, in the page, then reads what it changed.
 func (b *goBrowser) act(m goClientMsg) {
+	switch {
+	case m.Kind == "mouse":
+		b.pointer(m) // real input (goinput.go)
+		return
+	case m.Kind == "key" && (m.Type == "down" || m.Type == "up"):
+		b.key(m)
+		return
+	}
 	switch m.Kind {
 	case "click", "input", "change", "key", "submit", "focus":
 	default:
@@ -1008,9 +1048,6 @@ func (b *goBrowser) act(m goClientMsg) {
 	if b.acts.waiting() >= goActsWaiting {
 		return // the page isn't keeping up (stuck, or a dialog's open): dropped
 	}
-	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.ID, "value": m.Value, "checked": m.Checked, "key": m.Key,
-		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": m.Submitter})
-	arg, _ := json.Marshal(string(a))
 	world, gen := b.world, b.gen
 	// On the acts' queue, in order (typing, then the Enter that uses it),
 	// not the worker's: an act may open a dialog, which stops the page
@@ -1018,7 +1055,7 @@ func (b *goBrowser) act(m goClientMsg) {
 	b.acts.add(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), goActTimeout)
 		defer cancel()
-		_, res, err := b.evaluate(ctx, world, "__tabtop.act("+string(arg)+")")
+		res, err := b.actNow(ctx, world, m)
 		goDebugf("act %s %d: %s %v", m.Kind, m.ID, res, err)
 		b.post(func() {
 			if gen != b.gen || b.dialog {

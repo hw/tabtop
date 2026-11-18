@@ -133,6 +133,30 @@ const o = new IntersectionObserver((entries) => {
 });
 o.observe(seen);
 </script>`,
+        "input.html": `<!doctype html><title>Input</title>
+<style>#menu { display: none } #host.open #menu { display: block } #pad { width: 200px; height: 100px; background: #eee }
+#cover { position: relative; width: 120px; height: 40px } #cover iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0 }</style>
+<button id="count">count</button> <span id="n">0</span>
+<div id="host"><span id="trigger">hover here</span><div id="menu"><a href="#" id="mitem">item</a></div></div>
+<button id="pointer">pointer only</button>
+<div id="pad">pad</div>
+<div id="cover"><button id="under">under</button><iframe srcdoc="<p>over</p>"></iframe></div>
+<p id="log"></p>
+<script>
+const $ = (i) => document.getElementById(i), log = (t) => { $("log").textContent += t + ";"; };
+let n = 0;
+$("count").addEventListener("click", (e) => { $("n").textContent = ++n; log("count " + e.isTrusted); });
+$("host").addEventListener("mouseenter", () => $("host").classList.add("open"));
+$("host").addEventListener("mouseleave", () => $("host").classList.remove("open"));
+let down = false;
+$("pointer").addEventListener("pointerdown", () => { down = true; });
+$("pointer").addEventListener("pointerup", () => { if (down) log("pointer pressed"); down = false; });
+$("pad").addEventListener("dblclick", () => log("dblclick"));
+$("pad").addEventListener("contextmenu", (e) => { e.preventDefault(); log("contextmenu"); });
+$("pad").addEventListener("wheel", (e) => log("wheel " + (e.deltaY > 0 ? "down" : "up")), { passive: true });
+$("pad").addEventListener("click", (e) => log("pad " + (e.offsetX < 100 ? "left" : "right")));
+$("under").addEventListener("click", () => log("under clicked"));
+</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
@@ -570,6 +594,67 @@ async function check(base, port, site) {
         if (!said.includes("seen it")) throw new Error(`the alert said ${said}`);
         await ev(`document.querySelector("#go_dialog .ok").click()`);
         await frameWait(`document.getElementById("after")?.textContent === "after the alert"`, "the page carrying on");
+    });
+
+    // at is where on the screen the element in the frame that sel finds is,
+    // fx and fy across and down it.
+    async function at(sel, fx = 0.5, fy = 0.5) {
+        const r = await frame(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return { x: b.x + b.width * ${fx}, y: b.y + b.height * ${fy} }; })()`);
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        return { x: f.x + r.x, y: f.y + r.y };
+    }
+    const mouse = (type, p, extra = {}) => cdp("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, button: "none", ...extra });
+    async function clickAt(p, { button = "left", count = 1 } = {}) {
+        const buttons = { left: 1, right: 2, middle: 4 }[button];
+        await mouse("mousePressed", p, { button, buttons, clickCount: count });
+        await mouse("mouseReleased", p, { button, buttons: 0, clickCount: count });
+    }
+    const pageLog = () => frame(`document.getElementById("log").textContent`);
+
+    await step("the mouse and keys reach the page as a browser's own input, each once", async () => {
+        await goTo(site + "input.html", "Input");
+        await frameWait(`!!document.getElementById("count")`, "the page");
+        await frameClick("#count");
+        await frameWait(`document.getElementById("n").textContent === "1"`, "a click, by the mouse");
+        await frame(`document.getElementById("count").focus()`);
+        await browser.press(" ");
+        await frameWait(`document.getElementById("n").textContent === "2"`, "a press, by Space");
+        await browser.press("Enter");
+        await frameWait(`document.getElementById("n").textContent === "3"`, "a press, by Enter");
+        await sleep(1000);
+        const n = await frame(`document.getElementById("n").textContent`);
+        if (n !== "3") throw new Error(`pressed 3 times, counted ${n}`);
+        const log = await pageLog();
+        if (log !== "count true;count true;count true;") throw new Error(`the page saw ${log}`);
+    });
+
+    await step("hover, a button that listens for the pointer, double and right clicks, the wheel, where in an element", async () => {
+        await mouse("mouseMoved", await at("#trigger"));
+        await frameWait(`document.getElementById("host").classList.contains("open")`, "the menu shown by hovering");
+        await frameClick("#pointer");
+        await frameWait(`document.getElementById("log").textContent.includes("pointer pressed")`, "the pointer-only button pressed");
+        const pad = await at("#pad", 0.75, 0.5);
+        await clickAt(pad);
+        await frameWait(`document.getElementById("log").textContent.includes("pad right")`, "the click on the pad's right half");
+        await clickAt(pad, { count: 2 });
+        await frameWait(`document.getElementById("log").textContent.includes("dblclick")`, "the double click");
+        await clickAt(pad, { button: "right" });
+        await frameWait(`document.getElementById("log").textContent.includes("contextmenu")`, "the right click");
+        await mouse("mouseWheel", pad, { deltaX: 0, deltaY: 120 });
+        await frameWait(`document.getElementById("log").textContent.includes("wheel down")`, "the wheel");
+    });
+
+    await step("what the engine has covered is clicked all the same; a press let go outside isn't a click", async () => {
+        await frameClick("#under");
+        await frameWait(`document.getElementById("log").textContent.includes("under clicked")`, "the covered button clicked");
+        // Pressed in the frame, let go over the address bar.
+        await mouse("mousePressed", await at("#count"), { button: "left", buttons: 1, clickCount: 1 });
+        await mouse("mouseReleased", { x: 200, y: 40 }, { button: "left", buttons: 0, clickCount: 1 });
+        await frameClick("#count");
+        await frameWait(`document.getElementById("n").textContent === "4"`, "the next click");
+        await sleep(800);
+        const n = await frame(`document.getElementById("n").textContent`);
+        if (n !== "4") throw new Error(`counted ${n}, not 4: the press let go outside clicked too`);
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with

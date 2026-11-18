@@ -387,7 +387,13 @@ window.addEventListener("message", (e) => {
             // Done in the engine, for the document shown only.
             if (ws && m.gen === shown && Number.isSafeInteger(m.id)) {
                 const { kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter } = m;
-                ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter }));
+                // The mouse and keys, as input (see goinput.go): numbers
+                // and words only ("phase" here, as "type" is the message's).
+                const num = (v) => (Number.isFinite(v) ? v : 0);
+                const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
+                    buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
+                    location: num(m.location), repeat: !!m.repeat };
+                ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter, ...input }));
             }
             break;
         case "resync":

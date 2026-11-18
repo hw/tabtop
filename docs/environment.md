@@ -799,8 +799,10 @@ screen's), so pages made for phones or wide screens, and menus placed by
 measuring the page, work; the engine's fonts aren't the site's, so such
 places can be a little off. Pages that load pictures or more of themselves
 as you scroll to them (with `IntersectionObserver`) do so as you scroll
-here: what's visible is worked out by your browser. Pages that react to
-where you click within an element may not work. A
+here: what's visible is worked out by your browser. Your mouse and keys
+reach the page as its own browser's would: hover menus, double and right
+clicks, the wheel, and where within an element you click. Touch, drag and
+drop, and editing text that isn't in a form field don't. A
 file the site sends (a PDF, an archive) is offered to save into Downloads
 (`WEB_FS=1`), as fetches are saved, but from private networks only when
 both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`. Pictures, stylesheets and fonts are
