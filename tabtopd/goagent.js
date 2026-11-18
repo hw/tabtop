@@ -182,7 +182,10 @@
                     if (link && link.target && link.target !== "_self") link.removeAttribute("target");
                     watch(el);  // as it was: what the click changes is sent
                     el.focus?.();
-                    el.click?.();
+                    // An SVG element (a button's icon, say) has no click():
+                    // a click event it sends up to its button all the same.
+                    if (typeof el.click === "function") el.click();
+                    else el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: window }));
                     return "ok";
                 }
                 case "input":

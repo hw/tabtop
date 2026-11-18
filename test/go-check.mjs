@@ -82,7 +82,7 @@ function writeSite(dir) {
 <label><input type="checkbox" id="cb"> tick</label>
 <select id="sel"><option value="a">A</option><option value="b">B</option></select>
 <button id="push">Route</button> <button id="redirect">Redirect</button>
-<button id="alert">Alert</button> <button id="confirm">Confirm</button> <button id="open">Open</button> <button id="openask">Open and ask</button>
+<button id="alert">Alert</button> <button id="confirm">Confirm</button> <button id="open">Open</button> <button id="openask">Open and ask</button> <button id="svgbtn"><svg width="20" height="20"><path id="svgpath" d="M0 0h20v20H0z"/></svg></button>
 <a id="pdf" href="doc.pdf">a PDF</a>
 <script>
 const $ = (id) => document.getElementById(id), status = (t) => { $("status").textContent = t; };
@@ -95,6 +95,7 @@ $("redirect").onclick = () => { location.href = "second.html"; };
 $("alert").onclick = () => { alert("hello from the page"); status("after alert"); };
 $("confirm").onclick = () => { status("confirmed " + confirm("sure?")); };
 $("open").onclick = () => { window.open("second.html"); };
+$("svgbtn").onclick = () => status("icon pressed");
 $("openask").onclick = () => { window.open(location.protocol + "//" + location.hostname + ":8081/second.html"); alert("who asks"); };
 setTimeout(() => { const p = document.createElement("p"); p.id = "late"; p.textContent = "late"; document.body.append(p); }, 1500);
 </script>`,
@@ -414,6 +415,11 @@ async function check(base, port, site) {
         await ev(`document.querySelector("#go_dialog .ok").click()`);
         await goTo(site + "interact.html", "Interact");
         await frameWait(`!!document.getElementById("alert")`, "the page");
+    });
+
+    await step("a click on a button's SVG icon presses the button", async () => {
+        await frameClick("#svgpath");
+        await frameWait(`document.getElementById("status").textContent === "icon pressed"`, "the button pressed");
     });
 
     await step("a GET form, sent in the engine", async () => {
