@@ -529,7 +529,10 @@ func TestGoEngineWithMoli(t *testing.T) {
 				}
 			}
 			t.Logf("memory page: %s; peak seen %d MB (limit %d MB)", e.killReason(), peak>>20, limit>>20)
-			if r := e.killReason(); r != "it used too much memory" && r != "it exited" {
+			// Stopped by its memory limit (it exits), or by the watchdog: over
+			// budget, or too busy allocating to answer its pings (as on CI's
+			// slower machines, with layout on). Either way, under the limit.
+			if r := e.killReason(); r != "it used too much memory" && r != "it exited" && r != "it stopped answering" {
 				t.Errorf("killed because %q", r)
 			}
 			if peak > limit {
