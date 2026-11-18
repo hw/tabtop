@@ -558,9 +558,16 @@ export async function checkBinary({ inContainer, step, ev, waitFor, open, listed
             await choose(mode);
             // Find starts after the current selection; branch navigation
             // or another mode may already have selected this fixture.
+            // Search starts after the selection and doesn't wrap: it's put
+            // on the first byte, by a press there (only arm64's, searched
+            // first with nothing selected, is at 0). An Escape to clear it
+            // sometimes didn't reach the dump (CI, and 1 run in 3 here).
             if (await ev(`!!document.querySelector(".hex-byte.selected")`)) {
-                await ev(`document.querySelector(".hex-dump").focus()`);
-                await press("Escape");
+                const first = await ev(`(() => { const b = document.querySelector('.hex-dump .hex-byte[data-offset="0"]'); b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+                for (const type of ["mousePressed", "mouseReleased"]) {
+                    await cdp("Input.dispatchMouseEvent", { type, ...first, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+                }
+                await waitFor(`document.querySelector('.hex-dump .hex-byte[data-offset="0"]').classList.contains("selected") && document.querySelectorAll(".hex-dump .hex-byte.selected").length === 1`, "the first byte selected");
             }
             await ev(`(() => { const e = document.querySelector(".hex-find-mode"); if (e.dataset.mode !== "hex") e.click();
                 document.querySelector(".hex-find-input").value = ${JSON.stringify(pattern)}; document.querySelector(".hex-find").requestSubmit(); })()`);
