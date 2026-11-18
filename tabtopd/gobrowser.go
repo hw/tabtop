@@ -138,9 +138,11 @@ type goBrowser struct {
 	session   string
 	res       *goResCache
 	serving   int
-	ctx       context.Context
-	cancel    context.CancelFunc
-	view      goView // the engine's window, as last set (zero: its own)
+	// What's being fetched ahead for the page shown (goprefetch.go).
+	prefetcher *goPrefetcher
+	ctx        context.Context
+	cancel     context.CancelFunc
+	view       goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops

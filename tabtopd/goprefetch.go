@@ -22,15 +22,18 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/coder/websocket"
 )
 
 const (
-	goResChunk     = 256 << 10 // bytes in a binary message
-	goResCacheMax  = 64 << 20  // a tab's resources kept, in all
-	goPrefetchMax  = 300       // resources fetched ahead for one page
-	goResServesMax = 64        // a tab's requests answered at once
+	goResChunk      = 256 << 10 // bytes in a binary message
+	goResCacheMax   = 64 << 20  // a tab's resources kept, in all
+	goPrefetchMax   = 300       // resources fetched ahead for one page, in all
+	goPrefetchBytes = 128 << 20 // and their bytes (the page's own budget)
+	goPrefetchers   = 4         // fetching at once for it
+	goResServesMax  = 64        // a tab's requests answered at once
 )
 
 // goResCache is a tab's resources: fetched, or being fetched, by kind and
@@ -157,10 +160,70 @@ func goHost(raw string) string {
 	return ""
 }
 
+// goPrefetcher fetches ahead for one page: what's wanted queued (at most
+// goPrefetchMax, whatever a page's stylesheets ask for), a few at a time,
+// until goPrefetchBytes have come or the tab goes to another page.
+type goPrefetcher struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	queue  chan goPrefetch
+	count  atomic.Int32
+	bytes  atomic.Int64
+}
+
+type goPrefetch struct {
+	goWanted
+	depth int
+}
+
+// want queues w, unless it's had or wanted already, or enough are.
+func (p *goPrefetcher) want(b *goBrowser, w goWanted, depth int) {
+	if p.ctx.Err() != nil || b.res.has(w.kind+" "+w.url) || p.count.Add(1) > goPrefetchMax {
+		return
+	}
+	select {
+	case p.queue <- goPrefetch{w, depth}:
+	default:
+	}
+}
+
+// work fetches what's queued; what a stylesheet uses is queued in turn
+// (imports four deep, as the page shown follows them).
+func (p *goPrefetcher) work(b *goBrowser) {
+	for {
+		var w goPrefetch
+		select {
+		case <-p.ctx.Done():
+			return
+		case w = <-p.queue:
+		}
+		f := b.res.get(p.ctx, w.kind+" "+w.url, func() goFetched {
+			return goFetchResource(p.ctx, b.resources, b.session, w.kind, w.url)
+		})
+		if p.bytes.Add(int64(len(f.data))) > goPrefetchBytes {
+			p.cancel() // the page's had its share
+			return
+		}
+		if f.err != nil || w.kind != "css" || w.depth >= 4 {
+			continue
+		}
+		for _, u := range goCSSWants(string(f.data)) {
+			if abs := goResolve(u.url, w.url); abs != "" {
+				p.want(b, goWanted{u.kind, abs}, w.depth+1)
+			}
+		}
+	}
+}
+
 // prefetch fetches ahead what the page shown from snapshot doc will ask for:
 // its stylesheets, pictures and inline styles' pictures, and what the
-// stylesheets use, as the page shown takes them (goprefetchCSS).
+// stylesheets use, as the page shown takes them (goCSSWants); what was
+// being fetched ahead for the page before stops.
 func (b *goBrowser) prefetch(doc *goNode, base string) {
+	if b.prefetcher != nil {
+		b.prefetcher.cancel()
+		b.prefetcher = nil
+	}
 	if b.resources == nil || doc == nil {
 		return
 	}
@@ -216,41 +279,18 @@ func (b *goBrowser) prefetch(doc *goNode, base string) {
 		}
 	}
 	walk(doc)
-	gen := b.gen
+	ctx, cancel := context.WithCancel(b.ctx)
+	p := &goPrefetcher{ctx: ctx, cancel: cancel, queue: make(chan goPrefetch, goPrefetchMax)}
+	b.prefetcher = p
 	for _, w := range wanted {
-		b.fetchAhead(gen, w, 0)
+		p.want(b, w, 0)
+	}
+	for range goPrefetchers {
+		go p.work(b)
 	}
 }
 
 type goWanted struct{ kind, url string }
-
-// fetchAhead fetches w into the cache, unless it's there, and what it uses
-// if it's a stylesheet (imports four deep, as the page shown follows them).
-func (b *goBrowser) fetchAhead(gen int, w goWanted, depth int) {
-	key := w.kind + " " + w.url
-	if b.res.has(key) {
-		return
-	}
-	go func() {
-		f := b.resource(b.ctx, w.kind, w.url)
-		if f.err != nil || w.kind != "css" || depth >= 4 {
-			return
-		}
-		n := 0
-		for _, u := range goCSSWants(string(f.data)) {
-			if n++; n > goPrefetchMax {
-				break
-			}
-			if abs := goResolve(u.url, w.url); abs != "" {
-				b.post(func() {
-					if gen == b.gen { // still the page it's for
-						b.fetchAhead(gen, goWanted{u.kind, abs}, depth+1)
-					}
-				})
-			}
-		}
-	}()
-}
 
 // goResolve is raw as an http(s) address, against base, or "".
 func goResolve(raw, base string) string {

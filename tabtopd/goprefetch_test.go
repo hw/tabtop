@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,5 +90,33 @@ func TestGoResCache(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	if f := c.get(ctx, "image slow", slow); f.err == nil {
 		t.Error("waited past its deadline")
+	}
+}
+
+// A page gets at most goPrefetchMax resources fetched ahead, whatever its
+// stylesheets ask for, none it has already, and none once it's left.
+func TestGoPrefetcherLimits(t *testing.T) {
+	b := &goBrowser{res: newGoResCache()}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &goPrefetcher{ctx: ctx, cancel: cancel, queue: make(chan goPrefetch, goPrefetchMax)}
+	b.res.get(context.Background(), "image https://x.example/had.png", func() goFetched { return goFetched{data: []byte("x")} })
+	p.want(b, goWanted{"image", "https://x.example/had.png"}, 0)
+	if len(p.queue) != 0 {
+		t.Error("queued one it had")
+	}
+	for i := range goPrefetchMax + 100 {
+		p.want(b, goWanted{"image", "https://x.example/" + strconv.Itoa(i) + ".png"}, 1)
+	}
+	if n := len(p.queue); n != goPrefetchMax {
+		t.Errorf("queued %d", n)
+	}
+	cancel()
+	for len(p.queue) > 0 {
+		<-p.queue
+	}
+	p.count.Store(0)
+	p.want(b, goWanted{"image", "https://x.example/after.png"}, 0)
+	if len(p.queue) != 0 {
+		t.Error("queued one after the page was left")
 	}
 }
