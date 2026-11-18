@@ -197,6 +197,16 @@ $("tap").addEventListener("touchstart", () => touches++);
 $("tap").onclick = () => status("tapped, touches " + touches);
 </script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
+        "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
+        "trap-frame.html": `<!doctype html><p id="inner">inner</p>
+<script>
+// Whatever the remote browser's agent hands this window's constructors is
+// reported in the page: it mustn't hand anything.
+for (const name of ["MutationObserver", "IntersectionObserver", "ResizeObserver"]) {
+    window[name] = function (cb) { parent.document.getElementById("status").textContent = "handed a " + typeof cb + " by " + name; this.observe = () => {}; this.disconnect = () => {}; this.takeRecords = () => []; };
+}
+setTimeout(() => { document.getElementById("inner").textContent = "inner changed"; }, 800);
+</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -864,6 +874,13 @@ async function check(base, port, site) {
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
         }
+    });
+
+    await step("a frame's own constructors are never handed the agent's functions", async () => {
+        await goTo(site + "trap.html", "Trap");
+        await frameWait(`document.getElementById("f")?.shadowRoot?.getElementById("inner")?.textContent === "inner changed"`, "the frame's change, seen all the same");
+        const status = await frame(`document.getElementById("status").textContent`);
+        if (status !== "safe") throw new Error(status);
     });
 
     await step("a feed: a video the page gives a file and plays plays here, and a swipe scrolls the page", async () => {

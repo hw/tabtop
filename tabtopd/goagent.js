@@ -179,6 +179,22 @@
 
         let count = 0;
         const frames = new Map();
+        // framePrintChanged: whether a frame's markup changed since it was
+        // last read, looked at once a second at most. For an engine whose
+        // observers miss what changes in another window's document
+        // (Obscura): this world's observer can't be the frame's own (see
+        // frameKids), and nothing of this world is handed to the frame's.
+        function framePrint(child) {
+            try { return String(child?.documentElement?.outerHTML ?? ""); } catch { return ""; }
+        }
+        function framePrintChanged(state) {
+            if (!state.observer || performance.now() - state.printed < 1000) return false;
+            state.printed = performance.now();
+            const print = framePrint(state.child);
+            const changed = print !== state.print;
+            state.print = print;
+            return changed;
+        }
         function frameKids(el, depth) {
             let child;
             try { child = el.contentDocument; } catch { /* inaccessible origin */ }
@@ -189,14 +205,16 @@
                 return [];
             }
             const state = { child, depth, dirty: false };
-            // The frame's own MutationObserver: Obscura's observers see only
-            // their own window's documents (Moli's and browsers' see any).
-            let Observer = MutationObserver;
-            try { Observer = child.defaultView?.MutationObserver ?? MutationObserver; } catch { /* this one */ }
-            state.observer = new Observer(() => { state.dirty = true; });
+            // This world's own MutationObserver, never the frame's: in both
+            // engines a frame's window here is the page's own, and a page
+            // can replace its constructor and be handed this callback (and
+            // through it, this world's Function: the agent's to run).
+            state.observer = new MutationObserver(() => { state.dirty = true; });
             prev?.observer?.disconnect();
             state.observer.observe(child, { subtree: true, childList: true, attributes: true, characterData: true });
             frames.set(el, state);
+            state.print = framePrint(child);  // as it is when read
+            state.printed = performance.now();
             return [{ i: id(child), t: 9, b: child.baseURI, c: kids(child, depth + 1) }];
         }
         function ser(n, depth) {
@@ -297,7 +315,7 @@
                 let child;
                 try { child = el.contentDocument; } catch { /* inaccessible origin */ }
                 if (child !== state.child || state.dirty || state.observer?.takeRecords().length ||
-                    !state.observer && child?.documentElement) {
+                    !state.observer && child?.documentElement || framePrintChanged(state)) {
                     ops.push({ o: "c", i: id(el), c: frameKids(el, state.depth) });
                 }
             }
