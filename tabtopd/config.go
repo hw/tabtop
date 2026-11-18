@@ -52,7 +52,7 @@ type serverConfig struct {
 	fetchOn, fetchPrivate                 bool   // fetching from URLs, and from private networks
 	previewFetchPrivate                   bool   // previews' external resources from private networks too
 	goOn                                  bool   // the remote browser, /go
-	goEngine                              string // its page engine's binary (Moli); "" for none
+	goEngine                              string // its page engine's binary (Moli or Obscura: goAdapterFor); "" for none
 	goUnsandboxed                         bool   // run the engine even where it can't be sandboxed
 	goPrivate                             bool   // let the remote browser reach private networks too
 	goCache                               bool   // the engines share an HTTP cache on disk (gocache.go)

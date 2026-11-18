@@ -159,6 +159,7 @@ func newGoProxy(allow func(netip.Addr) bool, user, password string) *goProxy {
 		},
 		ModifyResponse: func(res *http.Response) error {
 			res.Body = goCountedBody{res.Body, p.budget}
+			res.Header.Del(goRefusedHeader) // only the proxy says it refused
 			return nil
 		},
 		Transport: &http.Transport{
@@ -176,10 +177,10 @@ func newGoProxy(allow func(netip.Addr) bool, user, password string) *goProxy {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(err, errFetchAddress) {
 				p.logf("go: refused %s", r.URL.Host)
-				http.Error(w, "That address can't be reached from here.", http.StatusForbidden)
+				goRefuse(w, "address", http.StatusForbidden)
 				return
 			}
-			http.Error(w, "The site couldn't be reached.", http.StatusBadGateway)
+			goRefuse(w, "unreachable", http.StatusBadGateway)
 		},
 	}
 	return p
@@ -195,15 +196,15 @@ func (p *goProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p.slots <- struct{}{}:
 		defer func() { <-p.slots }()
 	default:
-		http.Error(w, "Too many connections.", http.StatusServiceUnavailable)
+		goRefuse(w, "busy", http.StatusServiceUnavailable)
 		return
 	}
 	if p.budget.spent() {
-		http.Error(w, errGoProxyBytes.Error(), http.StatusTooManyRequests)
+		goRefuse(w, "budget", http.StatusTooManyRequests)
 		return
 	}
 	if !p.budget.request() {
-		http.Error(w, "Too many requests; slow down.", http.StatusTooManyRequests)
+		goRefuse(w, "rate", http.StatusTooManyRequests)
 		return
 	}
 	if r.Method == http.MethodConnect {
@@ -219,7 +220,7 @@ func (p *goProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		port = map[string]string{"http": "80", "https": "443"}[r.URL.Scheme]
 	}
 	if !p.ports[port] { // as goPortAllowed, with this proxy's ports
-		http.Error(w, "Pages load only from ports 80 and 443.", http.StatusForbidden)
+		goRefuse(w, "port", http.StatusForbidden)
 		return
 	}
 	p.forward.ServeHTTP(w, r)
@@ -238,10 +239,10 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errFetchAddress) {
 			p.logf("go: refused %s", host)
-			http.Error(w, "That address can't be reached from here.", http.StatusForbidden)
+			goRefuse(w, "address", http.StatusForbidden)
 			return
 		}
-		http.Error(w, "The site couldn't be reached.", http.StatusBadGateway)
+		goRefuse(w, "unreachable", http.StatusBadGateway)
 		return
 	}
 	rc := http.NewResponseController(w)
@@ -324,4 +325,26 @@ func (p *goProxy) serve(l net.Listener) error {
 		return nil
 	}
 	return err
+}
+
+// goRefusedHeader marks a response that's the proxy's own refusal, not a
+// site's, with why (a key of goRefusals): an engine that shows it as the
+// page (Obscura) rather than failing the load (Moli) is shown the reason
+// instead (gobrowser.go). Taken out of the sites' responses.
+const goRefusedHeader = "X-Tabtop-Go-Refused"
+
+// goRefusals are the proxy's reasons for refusing, as the person is told.
+var goRefusals = map[string]string{
+	"address":     "That address can't be reached from here.",
+	"unreachable": "The site couldn't be reached.",
+	"port":        "Pages load only from ports 80 and 443.",
+	"busy":        "Too many connections.",
+	"budget":      errGoProxyBytes.Error(),
+	"rate":        "Too many requests; slow down.",
+}
+
+// goRefuse answers with the proxy's refusal, for why.
+func goRefuse(w http.ResponseWriter, why string, status int) {
+	w.Header().Set(goRefusedHeader, why)
+	http.Error(w, goRefusals[why], status)
 }

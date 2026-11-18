@@ -127,6 +127,12 @@ type goBrowser struct {
 	lastRead   time.Time
 	lastChange time.Time // when the document last changed
 	dialog     bool      // a dialog is open
+	// The generation whose document is the proxy's refusal, and why.
+	refused    int
+	refusedWhy string
+	// The page's last events, by method and parameters (see ours).
+	seenEvents [32]string
+	seenAt     int
 	// The dialogs the page shown (of gen askedGen) has opened, and the gen
 	// of the page the person said may ask no more (answered here instead).
 	asked, askedGen, quiet int
@@ -780,7 +786,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		}
 		return loadTimeout, dialogTimeout
 	}
-	if ev.SessionID != b.page {
+	if !b.ours(ev) {
 		return loadTimeout, dialogTimeout
 	}
 	switch ev.Method {
@@ -861,11 +867,19 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			Type     string `json:"type"`
 			FrameID  string `json:"frameId"`
 			Response struct {
-				MimeType string `json:"mimeType"`
+				MimeType string            `json:"mimeType"`
+				Headers  map[string]string `json:"headers"`
 			} `json:"response"`
 		}
 		json.Unmarshal(ev.Params, &p)
 		if p.Type == "Document" && (p.FrameID == b.frame || b.frame == "") {
+			// The proxy's refusal, shown as the page by an engine that
+			// doesn't fail the load (Obscura): the person's told instead.
+			for k, v := range p.Response.Headers {
+				if msg, ok := goRefusals[v]; ok && strings.EqualFold(k, goRefusedHeader) {
+					b.refused, b.refusedWhy = b.gen, msg
+				}
+			}
 			// Its type alone: Moli keeps its parameters (charset), as
 			// Chrome doesn't.
 			media, _, _ := strings.Cut(p.Response.MimeType, ";")
@@ -890,6 +904,29 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		b.changed(0)
 	}
 	return loadTimeout, dialogTimeout
+}
+
+// ours is whether ev is an event of the page's to act on: on the session
+// tabtopd attached; or, with an engine that sends its page's events on a
+// session of its own too (goAdapter.anySession: some on both, some on its
+// own only), on any session, but once: one that's the same as one of the
+// last few is a copy, passed over.
+func (b *goBrowser) ours(ev cdpEvent) bool {
+	if b.e == nil || !b.e.adapter.anySession {
+		return ev.SessionID == b.page
+	}
+	if ev.SessionID == "" {
+		return false
+	}
+	key := ev.Method + " " + string(ev.Params)
+	for _, seen := range b.seenEvents {
+		if seen == key {
+			return false
+		}
+	}
+	b.seenEvents[b.seenAt%len(b.seenEvents)] = key
+	b.seenAt++
+	return true
 }
 
 // readAgain reads generation gen's document again whole, at most once
@@ -1031,6 +1068,12 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			b.reading = false
 			if gen != b.gen {
 				return // superseded while it was read
+			}
+			if b.refused == gen {
+				// Not a page: the proxy's refusal (see responseReceived).
+				b.loading = 0
+				b.fail(gen, "The page couldn't be loaded: "+b.refusedWhy)
+				return
 			}
 			if err != nil {
 				b.fail(gen, "The page couldn't be read.")

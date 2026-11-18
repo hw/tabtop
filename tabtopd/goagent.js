@@ -42,6 +42,10 @@
         let seq = 0;
         const dropped = new Set(["script", "noscript", "template"]);
         let parents = new Set(), attrs = new Map(), texts = new Set();
+        // The document's address, as location has it: Obscura's
+        // document.URL keeps the address it loaded at, without a fragment
+        // followed since (location's is right in both).
+        const here = () => location.href;
         const watched = new Map();   // fields acted on -> the value last reported
         // Players the page started or stopped since the last batch (media
         // events don't bubble: caught on their way down).
@@ -185,7 +189,11 @@
                 return [];
             }
             const state = { child, depth, dirty: false };
-            state.observer = new MutationObserver(() => { state.dirty = true; });
+            // The frame's own MutationObserver: Obscura's observers see only
+            // their own window's documents (Moli's and browsers' see any).
+            let Observer = MutationObserver;
+            try { Observer = child.defaultView?.MutationObserver ?? MutationObserver; } catch { /* this one */ }
+            state.observer = new Observer(() => { state.dirty = true; });
             prev?.observer?.disconnect();
             state.observer.observe(child, { subtree: true, childList: true, attributes: true, characterData: true });
             frames.set(el, state);
@@ -251,7 +259,7 @@
             seq = 0;
             const doc = ser(document, 0);
             observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
-            lastURL = document.URL;
+            lastURL = here();
             // What's playing already: said with the first batch.
             played = new Set();
             for (const m of document.querySelectorAll("video, audio")) if (!m.paused) played.add(m);
@@ -262,7 +270,7 @@
             ioNew();
             const ioAll = ioOut;
             ioOut = [];
-            return JSON.stringify({ url: document.URL, base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll });
+            return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll });
         }
 
         function changes() {
@@ -330,14 +338,14 @@
                 }
             }
             parents = new Set(); attrs = new Map(); texts = new Set();
-            const moved = document.URL !== lastURL;
-            lastURL = document.URL;
+            const moved = here() !== lastURL;
+            lastURL = here();
             ioNew();
             const ioNow = ioOut;
             ioOut = [];
             if (!ops.length && !moved && !ioNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: document.URL, title: document.title, ops, io: ioNow });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow });
         }
 
         function watch(el) {
@@ -351,8 +359,13 @@
             if (typeof v !== "string") return;
             const proto = el.localName === "textarea" ? HTMLTextAreaElement.prototype
                 : el.localName === "select" ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-            // The setter itself, as a framework that wraps value expects.
-            Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, v);
+            // The setter itself, as a framework that wraps value expects:
+            // the element's class's, or the nearest along its prototypes
+            // (Obscura has none on HTMLSelectElement's); else assigned.
+            let setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            for (let p = proto; !setter && p; p = Object.getPrototypeOf(p)) setter = Object.getOwnPropertyDescriptor(p, "value")?.set;
+            if (setter) setter.call(el, v);
+            else el.value = v;
         }
 
         function act(json) {

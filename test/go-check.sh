@@ -15,7 +15,8 @@
 # seccomp profile /go needs (docs/environment.md, WEB_GO); first, that with
 # Docker's default settings it starts and says /go is unavailable.
 # GO_UNSANDBOXED=1 checks it with Docker's default settings and
-# WEB_GO_UNSANDBOXED=1 (with GO_IMAGE only). WEB_BASE_PATH=/tabtop/ serves
+# WEB_GO_UNSANDBOXED=1 (with GO_IMAGE only). GO_ENGINE=obscura checks the
+# image's other engine (WEB_GO_ENGINE). WEB_BASE_PATH=/tabtop/ serves
 # it all under that path (-base-path, or the image's WEB_BASE_PATH), as
 # behind a proxy.
 set -euo pipefail
@@ -90,7 +91,7 @@ if [[ -n "$go_image" ]]; then
     [[ "${GO_UNSANDBOXED:-}" == 1 ]] && security=(-e WEB_GO_UNSANDBOXED=1)
     docker run -d --name "$box" -p "127.0.0.1:$port:6080" "${security[@]}" \
         -e VNC_USER=tester -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ -e WEB_VNC=0 "${files[@]}" \
-        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e TABTOP_GO_DEBUG=1 "$go_image" >/dev/null
+        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e TABTOP_GO_DEBUG=1 -e WEB_GO_ENGINE="${GO_ENGINE:-moli}" "$go_image" >/dev/null
     for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port${base_path}go/" >/dev/null && break; sleep 0.2; done
     docker logs "$box" 2>&1 | grep -m1 "remote browser" || true
     watched_pid=$(docker inspect -f '{{.State.Pid}}' "$box")  # the container's, for the memory sampling

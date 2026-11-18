@@ -370,7 +370,10 @@ async function check(base, port, site) {
     await step("the browser toolbar fits a mobile viewport", async () => {
         try {
             await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 700, deviceScaleFactor: 1, mobile: true });
+            // The width at once; the height once the page has followed the
+            // visual viewport's resize (an event of its own, a moment later).
             await waitFor(`document.getElementById("go_view").getBoundingClientRect().width === 390`, "mobile layout");
+            await waitFor(`Math.abs(document.getElementById("go_view").getBoundingClientRect().bottom - visualViewport.height) <= 1`, "the page fitted to the screen's height", 5000).catch(() => {});
             const layout = await ev(`(() => {
                 const input = document.getElementById("go_url"), bar = document.getElementById("go_bar");
                 const view = document.getElementById("go_view").getBoundingClientRect();

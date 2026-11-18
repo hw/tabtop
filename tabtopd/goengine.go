@@ -196,36 +196,108 @@ func goSandboxArgs(engine, tabtopd, run, cache string) []string {
 	return args
 }
 
-// goMoliArgs are Moli's arguments: CDP on port, everything fetched through
-// the proxy, and nothing kept (no profile, no cookie jar) or fetched for
-// display (images, fonts: the client's broker fetches those). With
-// --layout, pages that measure themselves (a menu placed below its header)
-// get real sizes and places, at the size of the person's window (see
-// gobrowser.go's viewport). cache, if set, is the HTTP cache it shares
-// with the other tabs' engines (gocache.go), as it sees it.
-func goMoliArgs(port int, proxy, userAgent, cache string) []string {
-	args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
-		"--http-proxy", proxy, "--log-level", "warn", "--layout"}
-	if userAgent != "" {
-		args = append(args, "--user-agent", userAgent)
-	}
-	if cache != "" {
-		args = append(args, "--http-cache-dir", cache)
-	}
-	return args
+// goAdapter is what tabtopd needs to know of a page engine to run one:
+// Moli or Obscura, chosen by -go-engine (WEB_GO_ENGINE). The rest (the
+// sandbox, the proxy, CDP, the agent) is the same for both.
+type goAdapter struct {
+	name string
+	// args are its arguments: CDP on port, everything fetched through
+	// proxy, as userAgent if it's set, with the shared HTTP cache in cache
+	// if it's set (and it takes one).
+	args func(port int, proxy, userAgent, cache string) []string
+	// cache is whether it can keep its HTTP cache in a directory shared by
+	// the tabs' engines (gocache.go).
+	cache bool
+	// anySession: its page's events may come on a session of its own, not
+	// the one tabtopd attached (some on both): they're taken from any,
+	// once. An engine runs one page.
+	anySession bool
+	// data is its data segment's limit (RLIMIT_DATA) if it isn't its
+	// memory's: V8 counts some of what it reserves (not uses) against it.
+	// The resident memory the watchdog allows is the same for both.
+	data int64
 }
+
+var goAdapters = map[string]goAdapter{
+	// Moli: nothing kept (no profile, no cookie jar) or fetched for display
+	// (images, fonts: the client's broker fetches those). With --layout,
+	// pages that measure themselves (a menu placed below its header) get
+	// real sizes and places, at the size of the person's window (see
+	// gobrowser.go's viewport).
+	"moli": {name: "Moli", cache: true, args: func(port int, proxy, userAgent, cache string) []string {
+		args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+			"--http-proxy", proxy, "--log-level", "warn", "--layout"}
+		if userAgent != "" {
+			args = append(args, "--user-agent", userAgent)
+		}
+		if cache != "" {
+			args = append(args, "--http-cache-dir", cache)
+		}
+		return args
+	}},
+	// Obscura: quiet. It refuses private addresses itself unless told not
+	// to; tabtopd's proxy is where that policy is (and Obscura reaches the
+	// proxy on loopback), so it's told not to. It has no HTTP cache of its
+	// own to share: each engine fetches for itself.
+	// Its V8 reserves address space that RLIMIT_DATA counts (1.25 GiB to
+	// start, measured; more for each page's): its limit is 8 GiB, and what
+	// it uses is held to goEngineMemory by the watchdog, as Moli's is.
+	// Its page's events come on its own session as well as tabtopd's, and
+	// those that input causes (a link clicked) on its own only.
+	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, args: func(port int, proxy, userAgent, _ string) []string {
+		args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+			"--proxy", proxy, "--quiet", "--allow-private-network"}
+		if userAgent != "" {
+			args = append(args, "--user-agent", userAgent)
+		}
+		return args
+	}},
+}
+
+// goAdapterFor is engine's adapter: by its file's name, or else by what it
+// says it is (--version, asked once); Moli's if neither says.
+func goAdapterFor(engine string) goAdapter {
+	base := strings.ToLower(filepath.Base(engine))
+	for key, a := range goAdapters {
+		if strings.HasPrefix(base, key) {
+			return a
+		}
+	}
+	goAdapterSeen.Lock()
+	defer goAdapterSeen.Unlock()
+	if a, ok := goAdapterSeen.m[engine]; ok {
+		return a
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, engine, "--version").Output()
+	a := goAdapters["moli"]
+	for key, candidate := range goAdapters {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(out))), key) {
+			a = candidate
+		}
+	}
+	goAdapterSeen.m[engine] = a
+	return a
+}
+
+var goAdapterSeen = struct {
+	sync.Mutex
+	m map[string]goAdapter
+}{m: map[string]goAdapter{}}
 
 type goEngineConfig struct {
 	engine string // the engine's binary
 	mode   goSandboxMode
 	bwrap  string
 	allow  func(netip.Addr) bool // where its requests may go
-	// args are the engine's arguments; nil for Moli's (goMoliArgs).
+	// args are the engine's arguments; nil for its adapter's (goAdapterFor).
 	args      func(port int, proxy string) []string
 	userAgent string
 	// cache is the engines' shared HTTP cache, on the host ("": none).
 	cache  string
 	memory int64         // resident memory limit; 0 for goEngineMemory
+	data   int64         // data segment limit, if not memory's (its adapter's)
 	busy   time.Duration // a core kept busy this long: 0 for goEngineBusy
 	ping   time.Duration // how often it's asked if it's there: 0 for goEnginePing
 	logf   func(format string, args ...any)
@@ -233,7 +305,8 @@ type goEngineConfig struct {
 
 type goEngine struct {
 	cfg     goEngineConfig
-	run     string // its run directory: sockets, its home when unsandboxed
+	adapter goAdapter // what it is
+	run     string    // its run directory: sockets, its home when unsandboxed
 	cmd     *exec.Cmd
 	proxy   *goProxy
 	proxyL  net.Listener
@@ -262,12 +335,17 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 	if cfg.mode == goUnavailable {
 		return nil, errors.New("the remote browser's engine can't run here")
 	}
+	adapter := goAdapterFor(cfg.engine)
 	if cfg.args == nil {
+		cfg.data = adapter.data
+		if !adapter.cache {
+			cfg.cache = "" // none to share: not bound into its sandbox either
+		}
 		ua, cache := cfg.userAgent, cfg.cache
 		if cache != "" && cfg.mode == goSandboxed {
 			cache = "/cache" // where the sandbox has it
 		}
-		cfg.args = func(port int, proxy string) []string { return goMoliArgs(port, proxy, ua, cache) }
+		cfg.args = func(port int, proxy string) []string { return adapter.args(port, proxy, ua, cache) }
 	}
 	if cfg.memory == 0 {
 		cfg.memory = goEngineMemory
@@ -285,7 +363,7 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &goEngine{cfg: cfg, run: run, stderr: &tailBuffer{max: 4096}, exited: make(chan struct{}), killed: make(chan struct{})}
+	e := &goEngine{cfg: cfg, adapter: adapter, run: run, stderr: &tailBuffer{max: 4096}, exited: make(chan struct{}), killed: make(chan struct{})}
 	// Whose it is, so a later tabtopd can tell it's left over (see
 	// sweepGoRunDirs).
 	if err := os.WriteFile(filepath.Join(run, goOwnerFile), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
@@ -309,7 +387,11 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 	if err != nil {
 		return fail(err)
 	}
-	dataLimit := fmt.Sprintf("-data=%d", cfg.memory)
+	data := cfg.memory
+	if cfg.data > 0 {
+		data = cfg.data
+	}
+	dataLimit := fmt.Sprintf("-data=%d", data)
 	switch cfg.mode {
 	case goSandboxed:
 		e.proxy = newGoProxy(cfg.allow, "", "")

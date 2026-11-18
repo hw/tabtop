@@ -201,12 +201,39 @@ func TestGoSandboxArgs(t *testing.T) {
 	if cached := strings.Join(goSandboxArgs("/opt/moli/moli", "/usr/local/bin/tabtopd", "/tmp/tabtop-go-1", "/home/u/.cache/tabtop/go-http-cache"), " "); !strings.Contains(cached, "--bind /home/u/.cache/tabtop/go-http-cache /cache") || strings.Contains(joined, "/cache") {
 		t.Errorf("the shared cache's bind: %q", cached)
 	}
-	if m := goMoliArgs(9222, "http://127.0.0.1:3128", "", "/cache"); !slices.Contains(m, "--http-cache-dir") || m[len(m)-1] != "/cache" {
+	if m := goAdapters["moli"].args(9222, "http://127.0.0.1:3128", "", "/cache"); !slices.Contains(m, "--http-cache-dir") || m[len(m)-1] != "/cache" {
 		t.Errorf("Moli's cache argument: %q", m)
 	}
-	moli := goMoliArgs(9222, "http://127.0.0.1:3128", "", "")
+	moli := goAdapters["moli"].args(9222, "http://127.0.0.1:3128", "", "")
 	if !slices.Equal(moli, []string{"serve", "--host", "127.0.0.1", "--port", "9222", "--http-proxy", "http://127.0.0.1:3128", "--log-level", "warn", "--layout"}) {
 		t.Errorf("Moli's arguments: %q", moli)
+	}
+	// Obscura: its own proxy flag, and no cache, even if one is given.
+	obscura := goAdapters["obscura"].args(9222, "http://127.0.0.1:3128", "Agent/1", "/cache")
+	if !slices.Equal(obscura, []string{"serve", "--host", "127.0.0.1", "--port", "9222", "--proxy", "http://127.0.0.1:3128", "--quiet", "--allow-private-network", "--user-agent", "Agent/1"}) {
+		t.Errorf("Obscura's arguments: %q", obscura)
+	}
+}
+
+// An engine's adapter is chosen by its file's name, or by what it says it
+// is; Moli's if neither says.
+func TestGoAdapterFor(t *testing.T) {
+	dir := t.TempDir()
+	says := func(name, version string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte("#!/bin/sh\necho '"+version+"'\n"), 0o755)
+		return p
+	}
+	for _, c := range []struct{ engine, want string }{
+		{"/opt/moli/moli", "Moli"},
+		{"/opt/obscura/obscura", "Obscura"},
+		{says("engine-a", "obscura 0.2.7"), "Obscura"},
+		{says("engine-b", "moli 1.1.25"), "Moli"},
+		{says("engine-c", "something else"), "Moli"},
+	} {
+		if got := goAdapterFor(c.engine).name; got != c.want {
+			t.Errorf("%s: %s, want %s", c.engine, got, c.want)
+		}
 	}
 }
 

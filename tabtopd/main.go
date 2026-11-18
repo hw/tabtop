@@ -176,7 +176,7 @@ func main() {
 	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,
 		"let previews in Proxy mode load a document's external resources from private networks too; the document picks those URLs")
 	flag.BoolVar(&c.goOn, "go", c.goOn, "serve the remote browser at go: pages run in a sandboxed engine on this machine, shown as a sanitized DOM; needs -go-engine")
-	flag.StringVar(&c.goEngine, "go-engine", c.goEngine, "the remote browser's page engine: a Moli binary; empty turns the remote browser off")
+	flag.StringVar(&c.goEngine, "go-engine", c.goEngine, "the remote browser's page engine: a Moli or Obscura binary (which, by its name or --version); empty turns the remote browser off")
 	flag.BoolVar(&c.goUnsandboxed, "go-unsandboxed", c.goUnsandboxed,
 		"run the remote browser's engine even where bubblewrap can't sandbox it (a container with default security settings): a page exploiting the engine would run as this server's user")
 	flag.BoolVar(&c.goPrivate, "go-private", c.goPrivate, "let the remote browser reach private networks too, not only public addresses")
