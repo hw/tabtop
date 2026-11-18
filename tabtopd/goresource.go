@@ -96,13 +96,23 @@ func newGoResourceClient(allow func(netip.Addr) bool) *http.Client {
 	client.Transport = transport
 	redirects := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if next.URL.User != nil || next.URL.Scheme != "http" && next.URL.Scheme != "https" {
+		if next.URL.User != nil || next.URL.Scheme != "http" && next.URL.Scheme != "https" || !goPortAllowed(next.URL) {
 			return http.ErrUseLastResponse
 		}
 		next.Header.Del("Referer")
 		return redirects(next, via)
 	}
 	return client
+}
+
+// goPortAllowed is whether u's port is one the remote browser may reach
+// (goProxyPorts), as the engine's proxy checks its requests.
+func goPortAllowed(u *url.URL) bool {
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+	}
+	return goProxyPorts[port]
 }
 
 func (g *server) routeGoResource(c *tunnelCall) {
@@ -123,6 +133,10 @@ func (g *server) routeGoResource(c *tunnelCall) {
 	u, err := url.Parse(c.req.URL)
 	if err != nil || u.Host == "" || u.User != nil || u.Scheme != "http" && u.Scheme != "https" || len(c.req.URL) > maxGoURL {
 		c.r.fail("Give an HTTP or HTTPS address without credentials.")
+		return
+	}
+	if !goPortAllowed(u) {
+		c.r.fail("Resources load only from ports 80 and 443.")
 		return
 	}
 	w := newChunkWriter(c.t)

@@ -84,6 +84,8 @@ func TestGoResource(t *testing.T) {
 		case "/page.html":
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte("<script>x</script>"))
+		case "/other-port.png":
+			http.Redirect(w, r, "http://127.0.0.1:1/pic.png", http.StatusFound)
 		case "/huge.png":
 			w.Header().Set("Content-Type", "image/png")
 			w.Header().Set("Content-Length", fmt.Sprint(maxGoImage+1))
@@ -92,6 +94,7 @@ func TestGoResource(t *testing.T) {
 		}
 	}))
 	defer site.Close()
+	goTestPorts(t, portOf(t, site.URL))
 	g, url, s := newGoServer(t, "")
 	g.goResources = newGoResourceClient(allowAll) // the site is on loopback
 	ctx := testCtx(t)
@@ -137,6 +140,7 @@ func TestGoResource(t *testing.T) {
 		{"css", "/pic.png", "type"},
 		{"image", "/huge.png", "too large"},
 		{"image", "/missing.png", "HTTP 404"},
+		{"image", "/other-port.png", "HTTP 302"}, // not followed to another port
 		{"script", "/pic.png", "Unsupported"},
 	} {
 		if reply, _ := fetchOnly(tc.kind, tc.path); reply["error"] == nil || !strings.Contains(reply["error"].(string), tc.want) {
@@ -150,6 +154,13 @@ func TestGoResource(t *testing.T) {
 		}
 	}
 
+	// Only HTTP's and HTTPS's ports, as the engine's proxy: not the test
+	// site's.
+	goTestPorts(t)
+	if reply, _ := fetchOnly("image", "/pic.png"); reply["error"] == nil || !strings.Contains(reply["error"].(string), "ports 80 and 443") {
+		t.Errorf("another port: %v", reply)
+	}
+	goTestPorts(t, portOf(t, site.URL))
 	// The real policy refuses loopback, the test site's address.
 	g.goResources = newGoResourceClient(fetchPolicy(false))
 	if reply, _ := fetchOnly("image", "/pic.png"); reply["error"] == nil {

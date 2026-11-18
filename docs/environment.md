@@ -837,6 +837,12 @@ works too, but turns the container's whole filter off. Docker's default
 AppArmor profile also stops bubblewrap, so it has to be unconfined, unless
 you load an AppArmor profile of your own on the host.
 
+Both options apply to the whole container, not only the engine: any
+process in it may then make namespaces and mounts, as bubblewrap does,
+which gives a process that's been taken over more of the kernel to attack
+than Docker's defaults allow. Leave `WEB_GO` off, and these options out,
+unless you want the remote browser.
+
 `WEB_GO_UNSANDBOXED=1` runs the engine anyway, as a plain process, where it
 can't be sandboxed. Only the proxy then confines what pages request, and a
 page that exploits a bug in the engine runs as the server's user, with its

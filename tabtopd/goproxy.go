@@ -218,7 +218,7 @@ func (p *goProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if port == "" {
 		port = map[string]string{"http": "80", "https": "443"}[r.URL.Scheme]
 	}
-	if !p.ports[port] {
+	if !p.ports[port] { // as goPortAllowed, with this proxy's ports
 		http.Error(w, "Pages load only from ports 80 and 443.", http.StatusForbidden)
 		return
 	}
