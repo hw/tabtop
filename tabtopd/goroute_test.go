@@ -257,3 +257,58 @@ func TestGoRouteWithMoli(t *testing.T) {
 	tc.c.CloseNow()
 	waitFor(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }
+
+// TestGoFetchDataWithMoli has the engine's page fetch a data: URL its own
+// CSP forbids, answered by the page's patched fetch (gofetch.js). Set
+// TABTOP_TEST_MOLI to a Moli binary to run it.
+func TestGoFetchDataWithMoli(t *testing.T) {
+	moli := os.Getenv("TABTOP_TEST_MOLI")
+	if moli == "" {
+		t.Skip("TABTOP_TEST_MOLI isn't set to a Moli binary")
+	}
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'")
+		// Base64 and percent-encoded data: URLs, answered in the page; and
+		// another address, which still goes to the engine's fetch, where
+		// the page's CSP refuses it.
+		io.WriteString(w, `<!doctype html><title>data fetch</title><p id=p>waiting</p><script>
+const text = (u) => fetch(u).then((r) => r.text(), () => "refused");
+Promise.all([text("data:text/plain;base64,aGk="), text("data:text/plain,there%20too"), text("/other")]).then(([a, b, c]) => {
+	document.getElementById("p").textContent = "got " + a + ", " + b + "; other " + c;
+});
+</script>`)
+	}))
+	defer site.Close()
+	goTestPorts(t, portOf(t, site.URL))
+	g, url, s := newGoServer(t, moli)
+	t.Logf("engine mode: %s", g.goMode)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tc := openSession(t, ctx, url, s)
+	if r := tc.request(t, ctx, map[string]any{"type": "go"}); r["ok"] != true {
+		t.Fatal(r)
+	}
+	sendGo(t, ctx, tc, map[string]any{"op": "navigate", "url": site.URL + "/page"})
+	if m := tc.readJSON(t, ctx); m["type"] != "go-loading" {
+		t.Fatalf("got %v", m)
+	}
+	snap := tc.readJSON(t, ctx)
+	if snap["type"] != "go-snapshot" {
+		t.Fatalf("snapshot: %v", snap)
+	}
+	doc, _ := json.Marshal(snap["doc"])
+	const want = "got hi, there too; other refused"
+	if !strings.Contains(string(doc), want) {
+		// The fetches may have been answered after the snapshot was read.
+		m := tc.readJSON(t, ctx)
+		if m["type"] != "go-changes" {
+			t.Fatalf("changes: %v", m)
+		}
+		if c, _ := json.Marshal(m); !strings.Contains(string(c), want) {
+			t.Errorf("data: fetches the page's CSP forbids: %s", c)
+		}
+	}
+	tc.c.CloseNow()
+	waitFor(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+}

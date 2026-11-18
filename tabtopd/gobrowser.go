@@ -44,6 +44,12 @@ var goAgentJS string
 //go:embed goobserve.js
 var goObserveJS string
 
+// goFetchJS is the page's fetch, patched for data: URLs, run before its
+// scripts (see gofetch.js).
+//
+//go:embed gofetch.js
+var goFetchJS string
+
 // goDebug (TABTOP_GO_DEBUG=1) logs what each tab does, for finding out why
 // a page misbehaves: the person's requests by kind, navigations,
 // snapshots and changes, by size. Never addresses typed or values.
@@ -390,13 +396,14 @@ func (b *goBrowser) run() {
 	}()
 	go b.jobs.run(stop)
 	go b.acts.run(stop)
-	// The page's IntersectionObserver, in every document from now on, before
-	// its own scripts: queued before any navigation.
+	// The page's fetch, patched for data: URLs (gofetch.js), and its
+	// IntersectionObserver stand-in (goobserve.js), in every document from
+	// now on, before its own scripts: queued before any navigation.
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": goObserveJS}, nil)
-	}, func(r any) { goDebugf("observer stand-in: %v", r) })
+		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": goFetchJS + "\n" + goObserveJS}, nil)
+	}, func(r any) { goDebugf("fetch for data:, observer stand-in: %v", r) })
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	b.cdp.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
 	cancel()

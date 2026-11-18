@@ -329,6 +329,13 @@ Apply the same checks to every mutation batch, not only the initial snapshot.
 - tabtopd hands them to the page on the acts’ queue (callbacks may open a dialog), one handing over at a time, the newest per element kept meanwhile; the agent drops what repeats what was last handed over; callbacks run from a task of their own, as in browsers. It isn’t counted as the person’s doing, so a page that makes what it observes come and go can’t keep the idle watchdog off.
 - Measured: YouTube’s channel page shows its thumbnails (18 of 35 pictures, those in view; none without). CNA, BBC News and The Verge load their lazy pictures either way. Sites learn which of their elements the person has scrolled to, as they would in a browser. A new observation reaches the person’s browser with the next batch of changes, up to a second on a quiet page.
 
+### What the page fetches (`data:` URLs)
+
+- `gofetch.js` patches the page’s `fetch` for `data:` URLs (in the same `Page.addScriptToEvaluateOnNewDocument`, before any of its scripts). Engines fetch `data:` URLs themselves (XHR always has), but a page’s CSP forbidding them — `connect-src` without `data:`, typical of sites that never fetch `data:` — refuses the fetch before the engine’s is asked, and pages that do fetch `data:` (inline datasets, self-contained exports) break.
+- Those fetches are answered in the page instead: the URL’s own bytes, decoded the way `data:` URLs are (the fetch standard’s data: URL processor), in a `Response`. No request is made, so there’s nothing for the page’s CSP or the engine’s proxy to refuse; every other URL goes to the engine’s fetch as before, and a `data:` fetch sends nothing anywhere, so the engine’s address policy is untouched.
+- Workers aren’t covered: their globals are the engine’s to start, not the page’s documents, and a `data:` fetch there goes as it would in a browser.
+- Measured with Moli 1.1.25: under the page’s `connect-src 'none'` it refuses a `data:` fetch (“blocked by Content Security Policy for `data`”); with the patch, base64 and percent-encoded `data:` URLs are answered, and a fetch of any other address still goes to the engine’s own `fetch`, which the page’s CSP still refuses (`TestGoFetchDataWithMoli`). XHR isn’t patched.
+
 ### Events
 
 - The mouse and keys are given to the engine as a browser’s own input (`goinput.go`: `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`), so the page gets trusted events and the engine does what a browser does with them: a click from a press and release, a double click, a context menu, focus, Enter sending a form, Space pressing a button, Tab moving on; hover menus, buttons that listen only for the pointer, and the wheel work.
