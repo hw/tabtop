@@ -55,6 +55,7 @@ type serverConfig struct {
 	goEngine                              string // its page engine's binary (Moli); "" for none
 	goUnsandboxed                         bool   // run the engine even where it can't be sandboxed
 	goPrivate                             bool   // let the remote browser reach private networks too
+	goCache                               bool   // the engines share an HTTP cache on disk (gocache.go)
 	activityFile                          string // where the activity log is kept; "" for in memory
 	passkeysFile                          string // where passkeys are kept; "" for in memory
 	shareKeyFile                          string // what share links' tokens are sealed with; "" for a key in memory
@@ -188,6 +189,10 @@ func newServer(c serverConfig) (*server, error) {
 			bwrap, _ := exec.LookPath("bwrap")
 			g.goMode, g.goWhy = goSandboxProbe(bwrap, c.goUnsandboxed)
 			g.goConfig = goEngineConfig{engine: c.goEngine, mode: g.goMode, bwrap: bwrap, allow: fetchPolicy(c.goPrivate)}
+			if c.goCache && g.goMode != goUnavailable {
+				g.goConfig.cache = goCacheDir()
+				goPruneCacheSoon(g.goConfig.cache)
+			}
 			if g.goMode != goUnavailable {
 				g.goResources = newGoResourceClient(fetchPolicy(c.goPrivate))
 				sweepGoRunDirs()

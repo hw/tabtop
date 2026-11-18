@@ -232,6 +232,12 @@ The engine’s network namespace contains only loopback. A small bridge inside t
 
 In unsandboxed mode there is no bridge: the proxy listens on loopback TCP with per-context credentials, and tabtopd connects to Moli’s CDP port directly.
 
+### Shared HTTP cache
+
+The engines share Moli’s HTTP cache (`--http-cache-dir`, `gocache.go`): one directory on disk (`~/.cache/tabtop/go-http-cache`, private to TabTop’s user), bound writable into each engine’s sandbox at `/cache` (or given as it is, unsandboxed), so a site’s scripts and stylesheets fetched in one tab are on disk for the next and survive restarts. Measured: GitHub in a fresh engine took 23 of its 105 requests from it, its document ready 0.5 s sooner; `TestGoCacheWithMoli` has a second engine load a page without asking for its script or stylesheet again. Moli doesn’t bound it; tabtopd prunes it to 512 MiB, the entries used longest ago first, at start-up and as tabs close (at most once a minute). `WEB_GO_CACHE=0` (`-go-cache=false`) turns it off.
+
+Chosen with its costs, which a per-tab engine didn’t have: the engines write it themselves, so one taken over by a page could change what’s cached for another site, which later tabs then run (its compromise outliving its tab), or fill the disk through it between prunings; and Moli keys entries by address alone, not partitioned by the site that asked as browsers now are, so a site can time another site’s resources to learn whether they were fetched before. A cache tabtopd itself fills, read-only to the engines, was considered and set aside for now (it relies on Moli’s cache format and re-fetches without cookies).
+
 ### Resource limits
 
 Memory is capped by `RLIMIT_DATA`, which V8 tolerates where it doesn’t tolerate `RLIMIT_AS`. The bridge sets it on itself just before starting the engine, which inherits it; unsandboxed, tabtopd still starts the engine through the bridge, forwarding nothing, for this. Measured in Phase 1: Moli needs at least 640 MiB to start (512 MiB crashes it); with the default 1 GiB, a page allocating as fast as it can was stopped at a 473–479 MB peak, on the host and in Docker, sandboxed and not. A 1-second watchdog alone let the same page reach 1.2–1.46 GB first. The watchdog’s resident-memory check remains a second layer.

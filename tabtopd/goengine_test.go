@@ -182,7 +182,7 @@ func sandboxOrSkip(t *testing.T) {
 
 func TestGoSandboxArgs(t *testing.T) {
 	// An engine in someone's home: only the binary is bound, not the home.
-	args := goSandboxArgs("/home/someone/bin/moli", "/usr/local/bin/tabtopd", "/tmp/tabtop-go-1")
+	args := goSandboxArgs("/home/someone/bin/moli", "/usr/local/bin/tabtopd", "/tmp/tabtop-go-1", "")
 	joined := " " + strings.Join(args, " ") + " "
 	for _, want := range []string{" --unshare-all ", " --die-with-parent ", " --new-session ", " --cap-drop ALL ", " --clearenv ",
 		" --ro-bind /usr /usr ", " --ro-bind /home/someone/bin/moli /app/moli ", " --ro-bind /usr/local/bin/tabtopd /bridge ",
@@ -198,7 +198,13 @@ func TestGoSandboxArgs(t *testing.T) {
 			t.Errorf("has %q", banned)
 		}
 	}
-	moli := goMoliArgs(9222, "http://127.0.0.1:3128", "")
+	if cached := strings.Join(goSandboxArgs("/opt/moli/moli", "/usr/local/bin/tabtopd", "/tmp/tabtop-go-1", "/home/u/.cache/tabtop/go-http-cache"), " "); !strings.Contains(cached, "--bind /home/u/.cache/tabtop/go-http-cache /cache") || strings.Contains(joined, "/cache") {
+		t.Errorf("the shared cache's bind: %q", cached)
+	}
+	if m := goMoliArgs(9222, "http://127.0.0.1:3128", "", "/cache"); !slices.Contains(m, "--http-cache-dir") || m[len(m)-1] != "/cache" {
+		t.Errorf("Moli's cache argument: %q", m)
+	}
+	moli := goMoliArgs(9222, "http://127.0.0.1:3128", "", "")
 	if !slices.Equal(moli, []string{"serve", "--host", "127.0.0.1", "--port", "9222", "--http-proxy", "http://127.0.0.1:3128", "--log-level", "warn", "--layout"}) {
 		t.Errorf("Moli's arguments: %q", moli)
 	}
@@ -231,7 +237,7 @@ probe "the host's loopback" "exec 3<>/dev/tcp/127.0.0.1/` + hostPort + `"
 probe "the internet" "timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80'"
 probe "more than 256 MiB in /tmp" "head -c 300000000 /dev/zero > /tmp/big"
 `
-	args := append(goSandboxArgs(engine, exe, run), "/bin/bash", "-c", shell)
+	args := append(goSandboxArgs(engine, exe, run, ""), "/bin/bash", "-c", shell)
 	out, err := exec.Command(bwrap, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)

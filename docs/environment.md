@@ -43,6 +43,7 @@
 | [WEB_GO_ENGINE](#web_go) | `/opt/moli/moli` | Path of the remote browser's page engine, a [Moli](https://github.com/lexmount/moli) binary. The image has one. |
 | [WEB_GO_UNSANDBOXED](#web_go) | `0` | `1` runs the remote browser's engine even where it can't be sandboxed. |
 | [WEB_GO_PRIVATE](#web_go) | `0` | `1` lets the remote browser reach private networks too, not only the internet. |
+| [WEB_GO_CACHE](#web_go) | `1` | `1` lets the remote browser's engines share a cache on disk, so sites' scripts and stylesheets are kept between tabs. `0` turns it off. |
 | [WEB_DISASM_DISABLE](#web_disasm_disable) | `none` | Turns off disassembly in binary previews: `all` of it, or a comma-separated list of `x86`, `arm64`, `capstone` (ARM32 and Thumb), `riscv` and `mips`. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
@@ -56,7 +57,7 @@ The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
 `WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
-`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_GO_FETCH`, `WEB_GO_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_GO` (or `WEB_GO_ENGINE`, when `WEB_GO=1` and it isn't an executable file), `WEB_GO_UNSANDBOXED`, `WEB_GO_PRIVATE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
+`WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_GO_FETCH`, `WEB_GO_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_GO` (or `WEB_GO_ENGINE`, when `WEB_GO=1` and it isn't an executable file), `WEB_GO_UNSANDBOXED`, `WEB_GO_PRIVATE`, `WEB_GO_CACHE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
 
 Each variable is described in detail below.
@@ -822,6 +823,17 @@ that check and go no further. Each engine may use up to
 engine that stops answering, or keeps a core busy for a minute, is stopped
 (the tab says so and can load the page again). A tab may make 30 requests a
 second (300 at once) and move 4 GiB in all; after that it's refused.
+
+With `WEB_GO_CACHE=1` (the default), the engines share one HTTP cache on
+disk (Moli's own, in `~/.cache/tabtop/go-http-cache`, kept to 512 MiB, the
+least recently used dropped), so a site's scripts and stylesheets fetched
+in one tab are there for the next, after restarts too. The engines write it
+themselves, from their sandboxes, which costs some of their isolation: an
+engine taken over by a page could change what's cached for another site,
+which a later tab would then run, and fill the disk through it between
+prunings; and the cache isn't kept apart by site, so a site can time
+another's files to learn whether you've been there. `WEB_GO_CACHE=0` keeps
+each engine's cache to its own tab, in memory.
 
 Each engine runs in a [bubblewrap](https://github.com/containers/bubblewrap)
 sandbox, with no network of its own: it reaches only the server's proxy,

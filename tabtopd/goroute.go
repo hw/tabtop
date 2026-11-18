@@ -108,6 +108,7 @@ func (g *server) routeGo(c *tunnelCall) {
 		return
 	}
 	defer e.kill("its tab was closed")
+	defer goPruneCacheSoon(g.goConfig.cache) // what it added, kept to size
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	cdp, err := dialCDP(ctx, e)
 	var page, target string

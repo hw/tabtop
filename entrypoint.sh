@@ -89,6 +89,7 @@ as_user /usr/local/bin/tabtopd \
     -go-engine "$WEB_GO_ENGINE" \
     -go-unsandboxed="$WEB_GO_UNSANDBOXED" \
     -go-private="$WEB_GO_PRIVATE" \
+    -go-cache="$WEB_GO_CACHE" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
     -session-max "$WEB_SESSION_MAX" \

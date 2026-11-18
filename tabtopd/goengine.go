@@ -169,8 +169,9 @@ func goSandboxSystem() []string {
 // program it runs (the bridge, /bridge, then the engine, /app/NAME). Only
 // the engine's binary is bound, not the directory it's in, which could be
 // anyone's home; and the run directory read-only: its sockets work, but the
-// engine can't fill the host's disk through it.
-func goSandboxArgs(engine, tabtopd, run string) []string {
+// engine can't fill the host's disk through it. cache, if set, is the
+// engines' shared HTTP cache (gocache.go), bound writable at /cache.
+func goSandboxArgs(engine, tabtopd, run, cache string) []string {
 	args := []string{
 		"--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
 		"--clearenv", "--setenv", "HOME", "/tmp", "--setenv", "PATH", "/usr/bin:/bin",
@@ -189,6 +190,9 @@ func goSandboxArgs(engine, tabtopd, run string) []string {
 		"--size", strconv.Itoa(goEngineTmp), "--tmpfs", "/tmp",
 		"--dev", "/dev",
 	)
+	if cache != "" {
+		args = append(args, "--bind", cache, "/cache")
+	}
 	return args
 }
 
@@ -197,12 +201,16 @@ func goSandboxArgs(engine, tabtopd, run string) []string {
 // display (images, fonts: the client's broker fetches those). With
 // --layout, pages that measure themselves (a menu placed below its header)
 // get real sizes and places, at the size of the person's window (see
-// gobrowser.go's viewport).
-func goMoliArgs(port int, proxy, userAgent string) []string {
+// gobrowser.go's viewport). cache, if set, is the HTTP cache it shares
+// with the other tabs' engines (gocache.go), as it sees it.
+func goMoliArgs(port int, proxy, userAgent, cache string) []string {
 	args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
 		"--http-proxy", proxy, "--log-level", "warn", "--layout"}
 	if userAgent != "" {
 		args = append(args, "--user-agent", userAgent)
+	}
+	if cache != "" {
+		args = append(args, "--http-cache-dir", cache)
 	}
 	return args
 }
@@ -215,10 +223,12 @@ type goEngineConfig struct {
 	// args are the engine's arguments; nil for Moli's (goMoliArgs).
 	args      func(port int, proxy string) []string
 	userAgent string
-	memory    int64         // resident memory limit; 0 for goEngineMemory
-	busy      time.Duration // a core kept busy this long: 0 for goEngineBusy
-	ping      time.Duration // how often it's asked if it's there: 0 for goEnginePing
-	logf      func(format string, args ...any)
+	// cache is the engines' shared HTTP cache, on the host ("": none).
+	cache  string
+	memory int64         // resident memory limit; 0 for goEngineMemory
+	busy   time.Duration // a core kept busy this long: 0 for goEngineBusy
+	ping   time.Duration // how often it's asked if it's there: 0 for goEnginePing
+	logf   func(format string, args ...any)
 }
 
 type goEngine struct {
@@ -253,8 +263,11 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 		return nil, errors.New("the remote browser's engine can't run here")
 	}
 	if cfg.args == nil {
-		ua := cfg.userAgent
-		cfg.args = func(port int, proxy string) []string { return goMoliArgs(port, proxy, ua) }
+		ua, cache := cfg.userAgent, cfg.cache
+		if cache != "" && cfg.mode == goSandboxed {
+			cache = "/cache" // where the sandbox has it
+		}
+		cfg.args = func(port int, proxy string) []string { return goMoliArgs(port, proxy, ua, cache) }
 	}
 	if cfg.memory == 0 {
 		cfg.memory = goEngineMemory
@@ -318,7 +331,7 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 			return fail(err)
 		}
 		defer cdpFile.Close()
-		argv = append([]string{cfg.bwrap}, goSandboxArgs(cfg.engine, tabtopd, run)...)
+		argv = append([]string{cfg.bwrap}, goSandboxArgs(cfg.engine, tabtopd, run, cfg.cache)...)
 		// The seccomp filter (goseccomp.go), read by bwrap from fd 4.
 		if filterFile, err = goSeccompFile(); err != nil {
 			return fail(err)

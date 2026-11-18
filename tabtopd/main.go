@@ -180,6 +180,7 @@ func main() {
 	flag.BoolVar(&c.goUnsandboxed, "go-unsandboxed", c.goUnsandboxed,
 		"run the remote browser's engine even where bubblewrap can't sandbox it (a container with default security settings): a page exploiting the engine would run as this server's user")
 	flag.BoolVar(&c.goPrivate, "go-private", c.goPrivate, "let the remote browser reach private networks too, not only public addresses")
+	flag.BoolVar(&c.goCache, "go-cache", true, "let the remote browser's engines share an HTTP cache on disk (scripts and stylesheets kept between tabs)")
 	flag.BoolVar(&c.doctorOn, "doctor", c.doctorOn, "serve a troubleshooting report at doctor, without a login")
 	flag.StringVar(&c.kaitaiDir, "kaitai-dir", c.kaitaiDir, "compiled Kaitai formats for binary previews; empty for none")
 	flag.StringVar(&c.pdfjsDir, "pdfjs-dir", c.pdfjsDir, "pdf.js, for PDF previews; empty for none, and PDFs download instead")

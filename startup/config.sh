@@ -28,6 +28,7 @@ WEB_GO="${WEB_GO:-0}"
 WEB_GO_ENGINE="${WEB_GO_ENGINE:-/opt/moli/moli}"
 WEB_GO_UNSANDBOXED="${WEB_GO_UNSANDBOXED:-0}"
 WEB_GO_PRIVATE="${WEB_GO_PRIVATE:-0}"
+WEB_GO_CACHE="${WEB_GO_CACHE:-1}"
 WEB_DISASM_DISABLE="${WEB_DISASM_DISABLE:-none}"
 WEB_AUDIO_BITRATE="${WEB_AUDIO_BITRATE:-64}"
 WEB_AUDIO_SERVER="${WEB_AUDIO_SERVER:-}"
@@ -179,6 +180,10 @@ esac
 case "$WEB_GO_PRIVATE" in
     0|1) ;;
     *) echo "WEB_GO_PRIVATE must be 0 or 1 (got '${WEB_GO_PRIVATE}')." >&2; exit 1 ;;
+esac
+case "$WEB_GO_CACHE" in
+    0|1) ;;
+    *) echo "WEB_GO_CACHE must be 0 or 1 (got '${WEB_GO_CACHE}')." >&2; exit 1 ;;
 esac
 if [ "$WEB_GO" = 1 ] && [ ! -x "$WEB_GO_ENGINE" ]; then
     echo "WEB_GO=1 needs WEB_GO_ENGINE, the path of a Moli binary (got '${WEB_GO_ENGINE}', which isn't one)." >&2; exit 1
