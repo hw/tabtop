@@ -272,7 +272,9 @@ Messages for a generation older than the newest are dropped on the server. Snaps
 
 Run directories left by a tabtopd that died (each holds an `owner` file with its tabtopd’s process ID) are removed at start-up.
 
-A separate `go-resource` request (`goresource.go`) fetches images, stylesheets, and fonts for the renderer through the broker.
+The broker (`goresource.go`) fetches images, stylesheets, and fonts for the renderer. They come over the tab’s own tunnel (`goprefetch.go`): `{"op":"res","rid":N,"kind":…,"url":…}`, answered by a `go-res` header (size and type, or an error) and the bytes in binary messages of up to 256 KiB that start with the request’s number, so they go between the tab’s other messages. A separate `go-resource` request, with a tunnel of its own, is used only while the tab’s isn’t open: a new tunnel is a WebSocket and a key exchange, which cost about 80 ms a resource on the same machine and several round trips on a distant connection, more than the fetch.
+
+As soon as a page’s snapshot is sent, the server fetches ahead what the page shown will ask for: its stylesheets, `<img>` pictures and inline styles’ pictures, and what the stylesheets use (imports four deep, `@font-face` sources as fonts, other `url()` and `image-set()` as pictures, as `go-frame.js` takes them), at most 300 a page. They’re kept in the tab (64 MiB, the oldest dropped; failures not kept); a request for one being fetched waits for it. Measured on the same machine, from the snapshot to the page shown with its styles and pictures, first visits: Wikipedia 2.6 s → 0.4 s, www.sg 5.0 s → 0.1 s, GitHub 3.9 s → 2.4 s (most of it its 7.6 MB of CSS, rewritten in the frame).
 
 The resource broker enforces:
 

@@ -218,14 +218,23 @@ function connect() {
             resolve(true);
         };
         s.onmessage = (e) => {
-            if (typeof e.data !== "string") return;
+            if (ws !== s) return;
+            if (typeof e.data !== "string") {
+                resData(e.data);  // a resource's bytes
+                return;
+            }
             let m;
             try { m = JSON.parse(e.data); } catch { return; }
+            if (m.type === "go-res") {
+                resHeader(m);  // of any page: not a generation's
+                return;
+            }
             if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
             gen = m.gen;
             message(m);
         };
         s.onclose = (e) => {
+            resLost(s);
             const was = ws === s;
             ws = null;
             loading = rendering = false;
@@ -341,10 +350,13 @@ function cachedResource(kind, url) {
 }
 
 // fetchResource fetches what the frame asked for through the server, as a
-// Blob, within the page's budget.
+// Blob, within the page's budget: over the tab's own tunnel (the server has
+// usually fetched it already, see goprefetch.go), or one of its own if
+// that isn't open.
 async function fetchResource(kind, url) {
     const limit = RESOURCE_LIMITS[kind];
     if (!limit || typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("not allowed");
+    if (ws?.readyState === TunnelSocket.OPEN) return viaTab(ws, kind, url, limit);
     const t = await call({ type: "go-resource", resource: kind, url });
     const { size, mime } = t.reply;
     if (!Number.isSafeInteger(size) || size < 0 || size > limit) {
@@ -357,6 +369,51 @@ async function fetchResource(kind, url) {
     }
     spent += size;
     return collect(t, size, () => {}, kind === "css" ? "text/css" : mime);
+}
+
+// Resources over the tab's tunnel: asked for by number; the answer, a
+// header, then the bytes in binary messages that start with the number.
+let lastRid = 0;
+const resWaiting = new Map();  // number -> what's come of it
+function viaTab(s, kind, url, limit) {
+    return new Promise((resolve, reject) => {
+        const rid = ++lastRid;
+        resWaiting.set(rid, { s, kind, limit, resolve, reject, parts: [], got: 0, size: -1, mime: "" });
+        s.send(JSON.stringify({ op: "res", rid, kind, url }));
+    });
+}
+function resFail(rid, message) {
+    const r = resWaiting.get(rid);
+    resWaiting.delete(rid);
+    r?.reject(new Error(message));
+}
+function resHeader(m) {
+    const r = resWaiting.get(m.rid);
+    if (!r) return;
+    if (typeof m.error === "string") return resFail(m.rid, m.error);
+    if (!Number.isSafeInteger(m.size) || m.size < 0 || m.size > r.limit) return resFail(m.rid, "too large");
+    if (spent + m.size > PAGE_BUDGET) return resFail(m.rid, "the page uses too much");
+    spent += m.size;
+    r.size = m.size;
+    r.mime = r.kind === "css" ? "text/css" : typeof m.mime === "string" ? m.mime : "";
+}
+function resData(buf) {
+    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
+    const rid = new DataView(buf).getUint32(0);
+    const r = resWaiting.get(rid);
+    if (!r || r.size < 0) return;
+    const part = new Uint8Array(buf, 4);
+    r.parts.push(part);
+    r.got += part.length;
+    if (r.got > r.size) return resFail(rid, "more than it said");
+    if (r.got === r.size) {
+        resWaiting.delete(rid);
+        r.resolve(new Blob(r.parts, { type: r.mime }));
+    }
+}
+// What was asked of a tunnel that's gone won't come.
+function resLost(s) {
+    for (const [rid, r] of resWaiting) if (r.s === s) resFail(rid, "the connection was lost");
 }
 
 window.addEventListener("message", (e) => {

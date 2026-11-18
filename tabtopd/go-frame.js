@@ -50,7 +50,9 @@
         "classid", "manifest", "is", "sizes", "imagesrcset", "imagesizes", "attributionsrc", "popovertarget"]);
     // Per page: resources fetched at once, stylesheets imported, bytes of
     // CSS processed, and how long to wait for stylesheets before showing.
-    const MAX_FETCHING = 6;
+    // Requests for resources at once: they go over the tab's own tunnel,
+    // and the server fetches at most a few at a time itself.
+    const MAX_FETCHING = 24;
     const MAX_SHEETS = 64;
     const MAX_CSS = 32 << 20;
     const STYLE_WAIT = 5000;

@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -129,7 +130,17 @@ type goBrowser struct {
 	moveWaiting, wheelWaiting *goClientMsg
 	movesQueued               bool
 	input                     *goInput
-	view                      goView // the engine's window, as last set (zero: its own)
+
+	// The page's resources (goprefetch.go): fetched with resources, as
+	// session's; kept in res; requests being answered. ctx ends with the
+	// tab.
+	resources *http.Client
+	session   string
+	res       *goResCache
+	serving   int
+	ctx       context.Context
+	cancel    context.CancelFunc
+	view      goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops
@@ -221,6 +232,8 @@ type goClientMsg struct {
 	KeyCode  int     `json:"keyCode"`
 	Location int     `json:"location"`
 	Repeat   bool    `json:"repeat"`
+	// res: the page's request for a resource, by its number (goprefetch.go).
+	RID int `json:"rid"`
 }
 
 // goIO is one of a page's IntersectionObserver targets, for the client to
@@ -318,9 +331,10 @@ func (v goView) clamped() goView {
 }
 
 func newGoBrowser(t msgConn, e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &goBrowser{t: t, e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
-		input: &goInput{pressed: map[int]goPress{}},
-		jobs:  newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
+		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
+		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
 }
 
 func (b *goBrowser) send(v map[string]any) error {
@@ -352,6 +366,7 @@ func (b *goBrowser) run() {
 	msgs := make(chan goClientMsg)
 	stop := b.stop
 	defer close(stop)
+	defer b.cancel()
 	go func() {
 		defer close(msgs)
 		for {
@@ -440,6 +455,10 @@ func (b *goBrowser) run() {
 				if m.View != nil {
 					b.setView(*m.View)
 				}
+			case "res":
+				// A resource for the page shown, from any generation: a
+				// page being left may still ask, and it's kept.
+				b.serveRes(m)
 			case "io":
 				// Not the person's doing as such: a page can make what it
 				// observes come and go by itself, and mustn't keep the
@@ -903,6 +922,9 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			b.shown, b.seq, b.lastChange = gen, 0, time.Now()
+			if !again {
+				b.prefetch(s.Doc, s.Base) // what it'll ask for, on its way
+			}
 			goDebugf("snapshot gen %d, %d bytes", gen, len(p))
 			b.t.Write(context.Background(), websocket.MessageText, p)
 			if b.dirty {

@@ -134,7 +134,9 @@ func (g *server) routeGo(c *tunnelCall) {
 		return
 	}
 	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
-	newGoBrowser(c.t, e, cdp, page, target).run()
+	b := newGoBrowser(c.t, e, cdp, page, target)
+	b.resources, b.session = g.goResources, c.session
+	b.run()
 	log.Printf("go: remote browser tab from %s closed", c.ip)
 }
 
