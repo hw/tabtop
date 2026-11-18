@@ -532,6 +532,9 @@ async function check(base, port, site) {
         await waitFor(`document.title.startsWith("Second")`, "the second page", 30000);
         await cdp("Page.reload");
         await waitFor(`document.title.startsWith("Second") && !!document.getElementById("go_url")`, "the second page after reloading", 30000);
+        // The page's address is the tab's alone: not in its own (history).
+        const own = await ev(`location.href`);
+        if (own.includes("second.html") || own.includes("#")) throw new Error(`the tab's address is ${own}`);
     });
 
     await step("an address in a link from elsewhere waits for Enter", async () => {
@@ -540,6 +543,7 @@ async function check(base, port, site) {
         // own address back in between.
         await ev(`sessionStorage.clear(); location.replace(location.pathname + "?linked#" + ${JSON.stringify(url)})`);
         await waitFor(`!!document.getElementById("go_url") && document.getElementById("go_url").value === ${JSON.stringify(url)}`, "the address waiting", 30000);
+        if ((await ev(`location.hash`)) !== "") throw new Error("the linked address stayed in the tab's address");
         await sleep(1500);
         if (await ev(`document.title.startsWith("Result")`)) throw new Error("it loaded without Enter");
         await ev(`document.getElementById("go_url").form.requestSubmit()`);

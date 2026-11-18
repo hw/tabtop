@@ -143,8 +143,10 @@ function update() {
     frame.title = entry ? entry.title || hostOf(entry.url) : "Page";
     document.title = entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
     if (entry) {
-        history.replaceState(null, "", "#" + entry.url);
-        // So that reloading this tab carries on (see the start, below).
+        // Kept in this tab only, so that reloading it carries on (see the
+        // start, below): not in the tab's own address (/go/#…), which the
+        // browser keeps in its history (and syncs), and shows to whoever
+        // sees the screen.
         try { sessionStorage.setItem(KEPT, entry.url); } catch { /* not kept */ }
     }
 }
@@ -706,22 +708,30 @@ document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") { e.preventDefault(); address.focus(); address.select(); }
 });
 
-// Start where the tab's address says (after #), if anywhere: an address
-// as it was kept there (see update), or one typed or linked to.
-const kept = location.hash.slice(1);
-let typed = kept;
-try { typed = /^https?:/i.test(kept) ? kept : decodeURIComponent(kept); } catch { /* as it is */ }
-let first = kept ? target(typed) : null;
-// An address in the link only loads at once if this tab put it there (a
-// reload): a link from elsewhere could have the server load anything it
-// may reach, private networks too with WEB_GO_PRIVATE, so it waits in the
-// address bar for Enter.
-let ours = false;
-try { ours = !!first && sessionStorage.getItem(KEPT) === first; } catch { /* not kept */ }
-if (first && !ours) {
-    address.value = first;
-    show("Press Enter to load this address.");
-    first = null;
+// Start where this tab was (a reload: see update), or where a link to
+// /go/#<address> says. The address after # is taken out of the tab's
+// address at once, so the browser's history keeps /go/ only.
+const linked = location.hash.slice(1);
+if (linked) history.replaceState(null, "", location.pathname + location.search);
+let first = null;
+if (linked) {
+    let typed = linked;
+    try { typed = /^https?:/i.test(linked) ? linked : decodeURIComponent(linked); } catch { /* as it is */ }
+    first = target(typed);
+    // An address in a link only loads at once if it's where this tab was
+    // (a reload of a page from before this change): a link from elsewhere
+    // could have the server load anything it may reach, private networks
+    // too with WEB_GO_PRIVATE, so it waits in the address bar for Enter.
+    let ours = false;
+    try { ours = !!first && sessionStorage.getItem(KEPT) === first; } catch { /* not kept */ }
+    if (first && !ours) {
+        address.value = first;
+        show("Press Enter to load this address.");
+        first = null;
+    }
+} else {
+    try { first = sessionStorage.getItem(KEPT); } catch { /* not kept */ }
+    if (first && !/^https?:\/\//i.test(first)) first = null;
 }
 // Connected at once, as the terminal is: the login form shows now if
 // there's no session, and the engine is ready before the first address.
