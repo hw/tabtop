@@ -43,16 +43,26 @@ export function goMedia(frame, { picture, sized } = {}) {
         });
     }
 
+    // start plays media, muted if this browser won't play it with sound
+    // unasked (its autoplay rules: the person can unmute it).
+    function start(media) {
+        media.play().catch((err) => {
+            if (err?.name !== "NotAllowedError" || media.muted) return;
+            media.muted = true;
+            return media.play();
+        }).catch(() => {});
+    }
+
     return {
         // open makes a player for the box key, of kind, playing src (an
         // http(s) address the page had); its error, if it can't.
-        async open({ key, kind, src, rect, muted, loop, poster }) {
+        async open({ key, kind, src, rect, muted, loop, poster, play }) {
             if (!["audio", "video"].includes(kind) || !Number.isSafeInteger(key) || typeof src !== "string" || !/^https?:\/\//i.test(src)) {
                 return { error: "This media can't be played here." };
             }
             if (players.has(key)) return {};
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
-            const entry = {};
+            const entry = { play: !!play };
             players.set(key, entry);
             let tunnel;
             const cancel = () => tunnel?.close();
@@ -88,6 +98,7 @@ export function goMedia(frame, { picture, sized } = {}) {
                 media.style.pointerEvents = "auto";
                 layer.append(media);
                 place(key, rect, true);
+                if (entry.play) start(media);
                 return {};
             } catch (error) {
                 entry.element?.stop?.();
@@ -99,6 +110,15 @@ export function goMedia(frame, { picture, sized } = {}) {
             }
         },
         place,
+        // play starts or stops the player of a box as the page did its own
+        // (or does once it's made).
+        play(key, on) {
+            const player = players.get(key);
+            if (!player) return;
+            player.play = on;
+            const media = player.element;
+            if (media) on ? start(media) : media.pause();
+        },
         // keep stops the players of boxes not among keys: gone from the page.
         keep(keys) {
             for (const key of [...players.keys()]) if (!keys.has(key)) this.close(key);

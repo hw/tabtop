@@ -109,6 +109,22 @@ func (g *server) routeGo(c *tunnelCall) {
 	}
 	defer e.kill("its tab was closed")
 	defer goPruneCacheSoon(g.goConfig.cache) // what it added, kept to size
+	if dir := g.goConfig.cache; dir != "" {
+		// And while it runs: a tab kept open for hours adds to it too.
+		prune := time.NewTicker(goCacheEvery)
+		done := make(chan struct{})
+		defer func() { prune.Stop(); close(done) }()
+		go func() {
+			for {
+				select {
+				case <-prune.C:
+					goPruneCacheSoon(dir)
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	cdp, err := dialCDP(ctx, e)
 	var page, target string

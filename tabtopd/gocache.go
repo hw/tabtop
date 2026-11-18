@@ -11,9 +11,9 @@ package main
 // asked, so a site can time another's resources to learn whether they were
 // fetched before. WEB_GO_CACHE=0 (-go-cache=false) turns it off.
 //
-// Moli doesn't bound it; tabtopd does: at start-up, and as tabs close (at
-// most once a minute), the entries used longest ago go, until it's within
-// goCacheMax.
+// Moli doesn't bound it; tabtopd does: at start-up, while tabs are open and
+// as they close (at most once a minute), the entries used longest ago go,
+// until it's within goCacheMax.
 
 import (
 	"io/fs"

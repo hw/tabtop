@@ -59,7 +59,17 @@
     const MAX_FETCHING = 24;
     const MAX_SHEETS = 64;
     const MAX_CSS = 32 << 20;
-    const STYLE_WAIT = 5000;
+    // How long a page is held back for its stylesheets before it's shown
+    // anyway: a page shown before its styles would show unstyled, then jump.
+    const STYLE_WAIT = 12000;
+    // Then, held back (the page before staying in view) until it settles:
+    // no change for SETTLE_QUIET while the engine has nothing loading, or
+    // SETTLE_MAX after its styles came, at most. A page that builds itself
+    // with script (YouTube's skeleton, then its content) is shown built.
+    const SETTLE_QUIET = 300, SETTLE_MAX = 4000;
+    // A batch that adds stylesheets: what it adds hidden until they've come,
+    // FRESH_WAIT at most.
+    const FRESH_WAIT = 2000;
 
     let current = 0;  // the generation shown, or being built
     // The page's token, from its first message: sent with each of this
@@ -105,6 +115,9 @@
             render(m).catch((err) => tell({ type: "rendered", gen: m.gen, report: { error: String(err?.message || err) } }));
         } else if (m.type === "changes") {
             apply(m);
+        } else if (m.type === "net" && Number.isSafeInteger(m.gen)) {
+            netGen = m.gen;
+            netBusy = !!m.busy;
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
             const box = media.get(m.key)?.box;
             if (box && typeof m.error === "string") box.textContent = m.error;
@@ -445,8 +458,10 @@
     // no weight), as a browser's players' are.
     const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: 300px; height: auto; aspect-ratio: 2 / 1; } " +
         ":where([data-go-audio]) { display: inline-block; width: 300px; height: 54px; } " +
-        ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; }";
+        ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
+        "[data-go-wait] { visibility: hidden !important; }";
     let mediaKey = 0;
+    const mediaOf = new WeakMap();  // a box -> {tag, key, src, poster, muted, loop, play}: the page's player's
     let mediaSoon = false;
     function mediaBox(d, n, tag) {
         const box = document.createElement("div");
@@ -464,37 +479,87 @@
         const w = Number(attrOf(n, "width")), h = Number(attrOf(n, "height"));
         if (tag === "video") box.style.setProperty("aspect-ratio", w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9");
         own(d, n.i, box);
-        // Its own file, or its first source's.
-        let src = attrOf(n, "src");
-        if (!src) {
-            for (const k of Array.isArray(n.c) ? n.c : []) {
-                if (k?.t === 1 && String(k.n).toLowerCase() === "source" && attrOf(k, "src")) {
-                    src = attrOf(k, "src");
-                    break;
-                }
-            }
+        const info = {
+            tag, key: 0, src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
+            muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), play: hasAttr(n, "autoplay"),
+        };
+        mediaOf.set(box, info);
+        mediaSource(d, box, info.src || firstSource(n.c));
+        return box;
+    }
+    // Its own file, or else its first source's.
+    function firstSource(kids) {
+        for (const k of Array.isArray(kids) ? kids : []) {
+            if (k?.t === 1 && String(k.n).toLowerCase() === "source" && attrOf(k, "src")) return attrOf(k, "src");
         }
-        const what = tag === "video" ? "video" : "sound";
+        return "";
+    }
+    // mediaSource has a box play src: a player of its own, the one it had
+    // (if any) stopped. A feed that plays one player after another changes
+    // its file as it goes.
+    function mediaSource(d, box, src) {
+        const info = mediaOf.get(box);
+        if (!info) return;
+        if (info.key) media.delete(info.key);  // its player stops (keep, in the page)
+        info.key = 0;
+        const what = info.tag === "video" ? "video" : "sound";
         if (/^blob:/i.test(src)) {
             // Fed by the page's own player (Media Source): nothing a player
             // here could read.
             box.textContent = `This ${what} is streamed by the site's own player, which can't play here.`;
-            leave(d, tag);
-            return box;
+            leave(d, info.tag);
+            mediaLater();
+            return;
         }
         const url = src && web(src, d.base);
         if (!url) {
             box.textContent = `A ${what} with nothing to play.`;
-            return box;
+            mediaLater();
+            return;
         }
         box.textContent = `Loading the ${what}…`;
-        const key = ++mediaKey;
-        const poster = tag === "video" ? web(attrOf(n, "poster"), d.base) : null;
+        const key = info.key = ++mediaKey;
+        const poster = info.tag === "video" ? web(info.poster, d.base) : null;
         // Of the document it's in once shown (an embedded page's box, of its
         // page's): not asked for, nor dropped, before that.
-        media.set(key, { top: d.top ?? d, box, kind: tag, src: url, poster, muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), asked: false });
+        media.set(key, { top: d.top ?? d, box, kind: info.tag, src: url, poster, muted: info.muted, loop: info.loop, play: info.play, asked: false });
         mediaLater();
-        return box;
+    }
+    // mediaChanged follows what the page changed of a player (op, a batch's)
+    // to its box: true if it was the box's, not the page's element's.
+    function mediaChanged(d, box, op) {
+        const info = mediaOf.get(box);
+        if (!info) return false;
+        if (op.o === "c") {
+            // Its sources: its children aren't drawn.
+            if (!info.src) mediaSource(d, box, firstSource(op.c));
+            return true;
+        }
+        if (op.o === "m") {
+            const m = media.get(info.key);
+            if (!m) return true;
+            m.play = op.v === true;
+            if (m.asked && doc && m.top === doc) tell({ type: "media-play", gen: doc.gen, key: info.key, play: m.play });
+            return true;
+        }
+        if (op.o !== "a") return false;
+        const name = String(op.n).toLowerCase(), v = op.v === null ? null : String(op.v);
+        switch (name) {
+            case "src":
+                info.src = v;
+                mediaSource(d, box, v ?? "");
+                return true;
+            case "poster":
+                info.poster = v ?? "";
+                return true;
+            case "muted": case "loop":
+                info[name] = v !== null;
+                return true;
+            case "autoplay":
+                info.play = v !== null;
+                return true;
+        }
+        return false;
     }
     // mediaLater asks the page for players for new boxes, and tells it where
     // the boxes are, after this task (the box laid out).
@@ -512,7 +577,7 @@
                 const shown = m.box.isConnected && m.box.getClientRects().length > 0;
                 if (shown && !m.asked) {
                     m.asked = true;
-                    tell({ type: "media", gen: doc.gen, key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, rect });
+                    tell({ type: "media", gen: doc.gen, key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play, rect });
                 }
                 if (!m.box.isConnected) media.delete(key);
                 positions.push({ key, rect, shown });
@@ -692,7 +757,7 @@
         current = m.gen;
         const d = newDoc(m);
         building = d;
-        heldChanges = [];
+        lastChange = performance.now();
 
 
         // The document's element: its html, or one made around what's there.
@@ -715,6 +780,21 @@
             const at = { x: scrollX, y: scrollY };
             await Promise.race([Promise.allSettled(d.waits), new Promise((resolve) => setTimeout(resolve, m.again ? 1000 : STYLE_WAIT))]);
             if (!alive(d)()) return;
+            // Settled: no change for a moment, with nothing loading; its
+            // changes so far are in it, and their stylesheets come.
+            const styled = performance.now();
+            while (!m.again && performance.now() - styled < SETTLE_MAX) {
+                const quiet = performance.now() - lastChange >= SETTLE_QUIET;
+                if (quiet && !(netBusy && netGen === d.gen) && !d.waits.length) break;
+                if (d.waits.length) {
+                    const waits = d.waits;
+                    d.waits = [];
+                    await Promise.race([Promise.allSettled(waits), new Promise((resolve) => setTimeout(resolve, FRESH_WAIT))]);
+                } else {
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+                if (!alive(d)()) return;
+            }
             d.waits = [];
             // (Document.replaceChildren refuses a second element even as
             // it replaces the first.)
@@ -735,13 +815,7 @@
                 hash ? scrollToFragment(hash) : scrollTo(0, 0);
             }
             tell({ type: "rendered", gen: d.gen, report: d.report });
-            // What changed while it was built.
-            if (building === d) {
-                building = null;
-                const queued = heldChanges;
-                heldChanges = [];
-                for (const c of queued) apply(c);
-            }
+            if (building === d) building = null;
         })();
     }
 
@@ -834,13 +908,47 @@
     // Dropped, the next would name nodes this copy never had, and the whole
     // page would be read again.
     let building = null;
-    let heldChanges = [];
+    let lastChange = 0;   // when the page being built last changed
+    let netBusy = false;  // the engine has something loading for it
+    let netGen = 0;
+    // Batches for the page shown are drawn together, once a frame: a page
+    // that sends many in a moment isn't drawn in each of its states.
+    let batches = [];
+    let batchesSoon = false;
     function apply(m) {
         if (building && m.gen === building.gen) {
-            if (heldChanges.length < 1000) heldChanges.push(m);
+            // To the page being built, out of view, as it comes.
+            lastChange = performance.now();
+            applyTo(building, m);
             return;
         }
-        const d = doc;
+        batches.push(m);
+        if (batchesSoon) return;
+        batchesSoon = true;
+        requestAnimationFrame(() => {
+            batchesSoon = false;
+            const list = batches;
+            batches = [];
+            const d = doc;
+            if (!d) return;
+            d.fresh = [];
+            for (const b of list) if (b.gen === d.gen) applyTo(d, b);
+            hideUntilStyled(d, d.fresh);
+            d.fresh = null;
+        });
+    }
+    // hideUntilStyled keeps what a batch added out of sight until the
+    // stylesheets it brought have come (FRESH_WAIT at most), so it isn't
+    // seen unstyled.
+    function hideUntilStyled(d, fresh) {
+        const waits = d.waits;
+        d.waits = [];
+        if (!waits.length || !fresh.length) return;
+        for (const el of fresh) el.setAttribute("data-go-wait", "");
+        Promise.race([Promise.allSettled(waits), new Promise((resolve) => setTimeout(resolve, FRESH_WAIT))])
+            .then(() => { for (const el of fresh) el.removeAttribute("data-go-wait"); });
+    }
+    function applyTo(d, m) {
         if (!d || m.gen !== d.gen || !Array.isArray(m.ops)) return;
         for (const op of m.ops) {
             if (!op || typeof op !== "object") continue;
@@ -852,6 +960,7 @@
                 continue;
             }
             if (target === null) continue;  // left out
+            if (target.nodeType === 1 && mediaChanged(d, target, op)) continue;
             switch (op.o) {
                 case "c":
                     if (!reconcile(d, target, op.c)) return resync(d);
@@ -880,8 +989,9 @@
                     break;
             }
         }
-        // Stylesheets of what was added load as they come.
-        d.waits = [];
+        // Stylesheets of what was added: waited for by the page being built,
+        // or (hideUntilStyled) by what the batch added to the page shown.
+        if (d !== building && !d.fresh) d.waits = [];
         observeAll(d, m.io);
         mediaLater();  // boxes added, gone or moved
         if (typeof m.title === "string") tell({ type: "title", gen: d.gen, title: m.title });
@@ -910,6 +1020,7 @@
             } else {
                 const n = node(d, k, ns);
                 if (n) want.push(n);
+                if (n?.nodeType === 1 && d.fresh) d.fresh.push(n);
             }
         }
         let cur = parent.firstChild;
@@ -962,7 +1073,7 @@
         return null;
     }
     function send(kind, id, extra = {}) {
-        if (!doc) return;
+        if (!doc || current !== doc.gen) return;
         tell({ type: "event", gen: doc.gen, kind, id, ...extra });
     }
 
@@ -1070,9 +1181,44 @@
         pointerSoon();
     }, { capture: true, passive: true });
 
+    // --- Scrolling: where the person scrolled to, given to the engine --------
+    //
+    // A swipe, a fling, a scrollbar dragged, a key: none is a wheel the
+    // engine is given, yet a page (a feed that plays the video scrolled to)
+    // goes by where it's scrolled. The newest place of each element scrolled
+    // by the person, every 100 ms at most; not the copy's own scrolling (a
+    // page shown at its top).
+    let lastInput = -Infinity;
+    for (const type of ["pointerdown", "touchstart", "touchmove", "wheel", "keydown"]) {
+        document.addEventListener(type, (e) => { if (e.isTrusted) lastInput = performance.now(); }, { capture: true, passive: true });
+    }
+    const scrolled = new Map();  // element -> its place
+    let scrollTimer = 0;
+    document.addEventListener("scroll", (e) => {
+        if (!e.isTrusted || !doc || performance.now() - lastInput > 3000) return;
+        const el = e.target === document ? document.documentElement : e.target;
+        if (el?.nodeType !== 1) return;
+        scrolled.set(el, el === document.documentElement ? { x: scrollX, y: scrollY } : { x: el.scrollLeft, y: el.scrollTop });
+        if (scrollTimer) return;
+        scrollTimer = setTimeout(() => {
+            scrollTimer = 0;
+            for (const [el, at] of scrolled) {
+                const id = doc?.ids.get(el);
+                if (id) send("scroll", id, { sx: Math.round(at.x), sy: Math.round(at.y) });
+            }
+            scrolled.clear();
+        }, 100);
+    }, { capture: true, passive: true });
+
     document.addEventListener("click", (e) => {
         if (!e.isTrusted || e.button !== 0) return;
         const link = linkOf(e.target);
+        // The page being replaced, held in view until the next settles: it
+        // takes nothing (the engine has moved on; see send).
+        if (doc && current !== doc.gen) {
+            if (link || e.target.closest?.("a[href]")) e.preventDefault();
+            return;
+        }
         const at = idOf(e.target);
         if (link || e.target.closest?.("a[href='#']")) e.preventDefault();
         // A click by the mouse: the engine made its own, from the press and

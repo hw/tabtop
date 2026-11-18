@@ -316,6 +316,11 @@ function message(m) {
         case "go-changes":
             if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io });
             break;
+        case "go-net":
+            // Whether the page being read is still loading: the frame holds
+            // a new page back until it settles (it checks the gen).
+            toFrame({ type: "net", gen: m.gen, busy: !!m.busy });
+            break;
         case "go-url":
             // The page changed its address itself (history.pushState, a
             // link within it): a new entry, as browsers make.
@@ -485,7 +490,7 @@ window.addEventListener("message", (e) => {
                 const num = (v) => (Number.isFinite(v) ? v : 0);
                 const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
                     buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
-                    location: num(m.location), repeat: !!m.repeat };
+                    location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy) };
                 ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter, ...input }));
             }
             break;
@@ -496,10 +501,14 @@ window.addEventListener("message", (e) => {
             // A player for a box in the copy (go-media.js).
             if (m.gen === shown && Number.isSafeInteger(m.key)) {
                 const owner = media;
-                owner.open({ key: m.key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, rect: m.rect }).then((got) => {
+                owner.open({ key: m.key, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: !!m.play, rect: m.rect }).then((got) => {
                     if (owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "" }, "*");
                 });
             }
+            break;
+        case "media-play":
+            // The page started or stopped its player (a feed's next video).
+            if (m.gen === shown && Number.isSafeInteger(m.key)) media.play(m.key, !!m.play);
             break;
         case "media-positions":
             if (m.gen === shown && Array.isArray(m.positions)) {

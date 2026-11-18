@@ -167,6 +167,13 @@ $("under").addEventListener("click", () => log("under clicked"));
 <p>streamed by its own player:</p><video id="streamed" width="160" height="90"></video>
 <audio id="silent"></audio>
 <script>document.getElementById("streamed").src = URL.createObjectURL(new Blob(["x"]));</script>`,
+        "feed.html": `<!doctype html><title>Feed</title><p id="status">ready</p>
+<button id="nextclip">next</button><video id="a" src="clip.mp4" width="320" height="180" muted></video><video id="b" width="320" height="180" muted></video>
+<div id="scroller" style="height:150px;width:300px;overflow:auto"><div style="height:3000px">scroll me</div></div>
+<script>
+document.getElementById("nextclip").onclick = () => { const b = document.getElementById("b"); b.src = "clip.mp4"; b.play().catch(() => {}); };
+document.getElementById("scroller").onscroll = (e) => { document.getElementById("status").textContent = "at " + Math.round(e.target.scrollTop); };
+</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -245,7 +252,11 @@ async function check(base, port, site) {
     const frame = (expr) => inFrame("go-frame.html", expr);
     // frameClick clicks the element in the frame that sel finds, at its place
     // on the screen: a click the page sees as a person's.
+    // The page held in view while the next is built takes nothing (see
+    // render in go-frame.js): a click is for the page shown.
+    const pageShown = () => waitFor(`document.getElementById("go_view").getAttribute("aria-busy") !== "true"`, "the page shown", 30000);
     async function frameClick(sel) {
+        await pageShown();
         const r = await frame(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({ block: "center" }); const b = e.getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
         const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
         for (const type of ["mousePressed", "mouseReleased"]) {
@@ -261,6 +272,7 @@ async function check(base, port, site) {
     const goTo = async (url, title) => {
         await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(url)}; i.form.requestSubmit(); })()`);
         await waitFor(`document.title.startsWith(${JSON.stringify(title)})`, title, 30000);
+        await pageShown();
     };
     const origin = new URL(base).origin;
 
@@ -442,6 +454,7 @@ async function check(base, port, site) {
     });
 
     await step("a link within the page scrolls, without a load", async () => {
+        await pageShown();
         for (let i = 0; i < 50 && !(await frame(`!!document.getElementById("jump")`).catch(() => false)); i++) await sleep(100);
         await frameClick("#jump");
         await waitFor(`document.getElementById("go_url").value.endsWith("#end")`, "the address with #end");
@@ -709,6 +722,20 @@ async function check(base, port, site) {
         if (!over) throw new Error("the player isn't over its box, within the frame");
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
+    });
+
+    await step("a feed: a video the page gives a file and plays plays here, and a swipe scrolls the page", async () => {
+        await goTo(site + "feed.html", "Feed");
+        await frameWait(`/nothing to play/.test(document.getElementById("b").textContent)`, "the second box, empty");
+        await frameClick("#nextclip");
+        await frameWait(`document.querySelector("#b[data-go-video]")?.textContent === ""`, "its player made for the file it was given");
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5)`, "it playing, as the page played it", 30000);
+        // Scrolled by the person (a swipe, say: no wheel), and the page
+        // sees itself scrolled. (Headless Chrome doesn't scroll the frame by
+        // touch: a press, then the scroll, which is the person's still.)
+        await frameClick("#scroller");
+        await frame(`document.getElementById("scroller").scrollTop = 300`);
+        await frameWait(`/^at [1-9]/.test(document.getElementById("status").textContent)`, "the page told of the scroll");
     });
 
     await step("a large page, sent compressed, and what it changes as it's shown", async () => {

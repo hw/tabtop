@@ -158,8 +158,12 @@ type goBrowser struct {
 	framesSent     int
 	ctx            context.Context
 	cancel         context.CancelFunc
-	deflate        bool   // the page takes large messages compressed (sendLarge)
-	view           goView // the engine's window, as last set (zero: its own)
+	deflate        bool // the page takes large messages compressed (sendLarge)
+	// The page's requests not yet answered, and whether it was last said to
+	// be busy loading (network): the page shown waits for it to settle.
+	inflight map[string]bool
+	netBusy  bool
+	view     goView // the engine's window, as last set (zero: its own)
 
 	// The worker's jobs (reads, navigations) and the person's acts, each in
 	// order, on queues of their own: an act may open a dialog, which stops
@@ -251,6 +255,9 @@ type goClientMsg struct {
 	KeyCode  int     `json:"keyCode"`
 	Location int     `json:"location"`
 	Repeat   bool    `json:"repeat"`
+	// scroll: where the person scrolled the element to.
+	SX float64 `json:"sx"`
+	SY float64 `json:"sy"`
 	// res: the page's request for a resource, by its number (goprefetch.go).
 	RID int `json:"rid"`
 }
@@ -354,6 +361,36 @@ func newGoBrowser(t msgConn, e *goEngine, cdp *cdpConn, page, target string) *go
 	return &goBrowser{t: t, e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
 		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
 		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
+}
+
+// goNetBusy is how many of a page's requests may be going and it still be
+// idle: some never end (a long poll, a stream), and analytics beacons
+// mustn't hold a page back. (The page shown holds back a while at most.)
+const goNetBusy = 2
+
+// network follows the page's requests, and tells the page shown when it
+// starts or stops having more than goNetBusy going.
+func (b *goBrowser) network(ev cdpEvent) {
+	var p struct {
+		RequestID string `json:"requestId"`
+	}
+	if json.Unmarshal(ev.Params, &p) != nil || p.RequestID == "" {
+		return
+	}
+	if b.inflight == nil {
+		b.inflight = map[string]bool{}
+	}
+	if ev.Method == "Network.requestWillBeSent" {
+		if len(b.inflight) < 1000 {
+			b.inflight[p.RequestID] = true
+		}
+	} else {
+		delete(b.inflight, p.RequestID)
+	}
+	if busy := len(b.inflight) > goNetBusy; busy != b.netBusy {
+		b.netBusy = busy
+		b.send(map[string]any{"type": "go-net", "gen": b.gen, "busy": busy})
+	}
 }
 
 // goDeflateFrom is the size a message is compressed from (sendLarge).
@@ -666,9 +703,7 @@ func (b *goBrowser) setView(v goView) {
 			"screenWidth": v.W, "screenHeight": v.H,
 		}, nil)
 		if err == nil {
-			err = b.cdp.call(ctx, b.page, "Page.captureScreenshot", map[string]any{
-				"format": "png", "clip": map[string]any{"x": 0, "y": 0, "width": 1, "height": 1, "scale": 1},
-			}, nil)
+			err = b.relayout(ctx)
 		}
 		return err
 	}, func(r any) {
@@ -752,6 +787,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		b.frame = p.Frame.ID
 		b.world, b.dirty = 0, false // a new document, a new world
 		b.children = nil            // and its own frames
+		b.inflight, b.netBusy = nil, false
 		b.docURL = ""
 		if u, err := goURL(p.Frame.URL); err == nil {
 			b.docURL = u
@@ -781,6 +817,8 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			media, _, _ := strings.Cut(p.Response.MimeType, ";")
 			b.docType = strings.ToLower(strings.TrimSpace(media))
 		}
+	case "Network.requestWillBeSent", "Network.loadingFinished", "Network.loadingFailed":
+		b.network(ev)
 	case "Page.domContentEventFired", "Page.loadEventFired":
 		// The page is shown once its document's been read and its deferred
 		// scripts have run (DOMContentLoaded), not after everything it loads
@@ -1050,10 +1088,18 @@ func (b *goBrowser) readChanges() {
 // given (goinput.go).
 func (b *goBrowser) actNow(ctx context.Context, world int, m goClientMsg) (string, error) {
 	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.ID, "value": m.Value, "checked": m.Checked, "key": m.Key,
-		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": m.Submitter})
+		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": m.Submitter, "x": m.SX, "y": m.SY})
 	arg, _ := json.Marshal(string(a))
 	_, res, err := b.evaluate(ctx, world, "__tabtop.act("+string(arg)+")")
 	return res, err
+}
+
+// relayout has the engine lay the page out again, as it does only when
+// asked for a picture (a pixel of one): a scroll, changes of class.
+func (b *goBrowser) relayout(ctx context.Context) error {
+	return b.cdp.call(ctx, b.page, "Page.captureScreenshot", map[string]any{
+		"format": "png", "clip": map[string]any{"x": 0, "y": 0, "width": 1, "height": 1, "scale": 1},
+	}, nil)
 }
 
 // goCleanOps takes event handler attributes and what's never shown out of a
@@ -1090,6 +1136,8 @@ func goCleanOps(raw []json.RawMessage) []any {
 				continue
 			}
 			out = append(out, map[string]any{"o": "a", "i": op.I, "n": op.N, "v": op.V})
+		case "m": // a player started or stopped by the page
+			out = append(out, map[string]any{"o": "m", "i": op.I, "v": op.V != nil && *op.V == "true"})
 		case "t", "v":
 			v := ""
 			if op.V != nil {
@@ -1112,7 +1160,7 @@ func (b *goBrowser) act(m goClientMsg) {
 		return
 	}
 	switch m.Kind {
-	case "click", "input", "change", "key", "submit", "focus":
+	case "click", "input", "change", "key", "submit", "focus", "scroll":
 	default:
 		return
 	}

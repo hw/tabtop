@@ -28,7 +28,8 @@
 // within a page); ops are {o: "c", i, c} (a node's children, those
 // already numbered as {i, r: 1}), {o: "a", i, n, v} (an attribute, v null if
 // removed), {o: "t", i, v} (text), {o: "v", i, v} (a form field's value,
-// changed by script). Snapshots and batches carry the page's
+// changed by script), {o: "m", i, v} (an audio or video element started
+// playing, v "true", or stopped). Snapshots and batches carry the page's
 // IntersectionObserver targets too, io: [{op: "+", o, i, m, t, r}] (its
 // observer's number, the element's, rootMargin, thresholds, root element
 // or 0) and {op: "-", o, i}; a snapshot, all of them.
@@ -42,6 +43,14 @@
         const dropped = new Set(["script", "noscript", "template"]);
         let parents = new Set(), attrs = new Map(), texts = new Set();
         const watched = new Map();   // fields acted on -> the value last reported
+        // Players the page started or stopped since the last batch (media
+        // events don't bubble: caught on their way down).
+        let played = new Set();
+        for (const type of ["play", "pause", "ended", "emptied"]) {
+            document.addEventListener(type, (e) => {
+                if (e.target instanceof HTMLMediaElement && played.size < 256) played.add(e.target);
+            }, true);
+        }
         let lastURL = "";
 
         // The page's observed elements, held by element until it's one the
@@ -243,6 +252,9 @@
             const doc = ser(document, 0);
             observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
             lastURL = document.URL;
+            // What's playing already: said with the first batch.
+            played = new Set();
+            for (const m of document.querySelectorAll("video, audio")) if (!m.paused) played.add(m);
             // All of what's observed, for the copy built from this.
             ioSent = new Set();
             ioOut = [];
@@ -305,6 +317,10 @@
             for (const n of texts) {
                 if (n.isConnected && old(n)) ops.push({ o: "t", i: ids.get(n), v: n.data });
             }
+            for (const n of played) {
+                if (n.isConnected && known(n)) ops.push({ o: "m", i: ids.get(n), v: String(!n.paused && !n.ended) });
+            }
+            played = new Set();
             for (const [n, last] of watched) {
                 if (!n.isConnected) { watched.delete(n); continue; }
                 const v = n.type === "checkbox" || n.type === "radio" ? String(n.checked) : n.value;
@@ -395,6 +411,24 @@
                 case "focus":
                     el.focus?.();
                     return "ok";
+                case "scroll": {
+                    // Where the person scrolled it to (the page's own
+                    // smooth scrolling not used: it's there already). The
+                    // engine doesn't say it scrolled (it fires scroll events
+                    // as it renders, which it doesn't): said here, as a
+                    // browser does, if it moved.
+                    const x = Number(a.x) || 0, y = Number(a.y) || 0;
+                    if (el === document.documentElement || el === document.body) {
+                        const was = [scrollX, scrollY];
+                        window.scrollTo({ left: x, top: y, behavior: "instant" });
+                        if (scrollX !== was[0] || scrollY !== was[1]) document.dispatchEvent(new Event("scroll", { bubbles: true }));
+                    } else if (typeof el.scrollTo === "function") {
+                        const was = [el.scrollLeft, el.scrollTop];
+                        el.scrollTo({ left: x, top: y, behavior: "instant" });
+                        if (el.scrollLeft !== was[0] || el.scrollTop !== was[1]) el.dispatchEvent(new Event("scroll"));
+                    }
+                    return "ok";
+                }
             }
             return "unknown";
         }

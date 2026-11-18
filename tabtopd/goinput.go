@@ -179,9 +179,7 @@ func (b *goBrowser) at(ctx context.Context, world, id int, fx, fy float64) (x, y
 	}
 	// Laid out again: the scroll, and changes of class (a menu shown on
 	// hover), aren't, until then.
-	if b.cdp.call(ctx, b.page, "Page.captureScreenshot", map[string]any{
-		"format": "png", "clip": map[string]any{"x": 0, "y": 0, "width": 1, "height": 1, "scale": 1},
-	}, nil) != nil {
+	if b.relayout(ctx) != nil {
 		return 0, 0, false
 	}
 	arg, _ := json.Marshal(fmt.Sprintf(`{"id":%d,"fx":%g,"fy":%g}`, id, goClamp(fx, 0, 1), goClamp(fy, 0, 1)))
