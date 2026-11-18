@@ -5,14 +5,18 @@ import (
 	"testing"
 )
 
-// The engine's window is made the frame's size, within sensible bounds.
+// The engine's window is made the frame's size, within sensible bounds;
+// its display the person's window, at least the frame's size.
 func TestGoViewClamped(t *testing.T) {
+	v := func(w, h int, dpr float64, sw, sh int) goView { return goView{W: w, H: h, DPR: dpr, SW: sw, SH: sh} }
 	for _, c := range []struct{ in, want goView }{
-		{goView{400, 800, 2}, goView{400, 800, 2}},
-		{goView{0, 0, 0}, goView{160, 160, 1}},
-		{goView{100000, 100000, 10}, goView{7680, 4320, 4}},
-		{goView{1280, 720, math.NaN()}, goView{1280, 720, 1}},
-		{goView{-5, 300, -1}, goView{160, 300, 1}},
+		{v(400, 800, 2, 400, 900), v(400, 800, 2, 400, 900)},
+		{v(0, 0, 0, 0, 0), v(160, 160, 1, 160, 160)},
+		{v(100000, 100000, 10, 100000, 100000), v(7680, 4320, 4, 7680, 4320)},
+		{v(1280, 720, math.NaN(), 1280, 800), v(1280, 720, 1, 1280, 800)},
+		{v(-5, 300, -1, 0, 0), v(160, 300, 1, 160, 300)},        // no display said: the window's
+		{v(1280, 720, 1, 640, 360), v(1280, 720, 1, 1280, 720)}, // smaller than the window
+		{goView{W: 400, H: 800, DPR: 2, Touch: true}, goView{W: 400, H: 800, DPR: 2, SW: 400, SH: 800, Touch: true}},
 	} {
 		if got := c.in.clamped(); got != c.want {
 			t.Errorf("%+v: %+v, want %+v", c.in, got, c.want)

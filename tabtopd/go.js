@@ -180,18 +180,28 @@ function load(url, { push = true } = {}) {
 let sentView = null;
 function view() {
     const r = frame.getBoundingClientRect();
-    return { w: Math.round(r.width), h: Math.round(r.height), dpr: Math.round((window.devicePixelRatio || 1) * 100) / 100 };
+    return {
+        w: Math.round(r.width), h: Math.round(r.height), dpr: Math.round((window.devicePixelRatio || 1) * 100) / 100,
+        // The display, to the page: this window (its own screen isn't told).
+        sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
+        // Touch, if this device has it: the page offers what it offers to
+        // touch screens, and takes the touches given it.
+        touch: navigator.maxTouchPoints > 0,
+    };
 }
+const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch"].every((k) => a[k] === b[k]);
 let viewTimer = 0;
-new ResizeObserver(() => {
+const viewSizes = new ResizeObserver(() => {
     clearTimeout(viewTimer);
     viewTimer = setTimeout(() => {
         const v = view();
-        if (!ws || !v.w || !v.h || (sentView && v.w === sentView.w && v.h === sentView.h && v.dpr === sentView.dpr)) return;
+        if (!ws || !v.w || !v.h || sameView(v, sentView)) return;
         sentView = v;
         ws.send(JSON.stringify({ op: "viewport", view: v }));
     }, 250);
-}).observe(frame);
+});
+viewSizes.observe(frame);
+viewSizes.observe(document.documentElement);  // the window: the display
 // Mobile keyboards resize the visual viewport even when the layout viewport
 // stays unchanged. Keep the toolbar and the remaining page in that space.
 function fitViewport() {
@@ -490,7 +500,9 @@ window.addEventListener("message", (e) => {
                 const num = (v) => (Number.isFinite(v) ? v : 0);
                 const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
                     buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
-                    location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy) };
+                    location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy), tap: !!m.tap,
+                    points: (Array.isArray(m.points) ? m.points.slice(0, 10) : []).map((p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
+                    items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })) };
                 ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter, ...input }));
             }
             break;
@@ -505,6 +517,9 @@ window.addEventListener("message", (e) => {
                     if (owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "" }, "*");
                 });
             }
+            break;
+        case "drop-files":
+            if (m.gen === shown) warn("Files can’t be dropped into the remote browser: it doesn’t take files from this device.", { error: false });
             break;
         case "media-play":
             // The page started or stopped its player (a feed's next video).

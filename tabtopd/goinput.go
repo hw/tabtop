@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,50 @@ type goPress struct {
 type goInput struct {
 	gen     int // the generation presses were made in
 	pressed map[int]goPress
+	// A touch: given as input (touching), or to be a scripted click on
+	// what was touched (touchID) if it's a tap.
+	touching bool
+	touchID  int
+	dragging bool // something from outside is being dragged over the page
+}
+
+// goDragItem is one kind of what's dragged in, and itself once dropped.
+type goDragItem struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
+}
+
+// goDropMax is the most dropped at once, all kinds together (the page's
+// message holding it is at most goClientMessage).
+const goDropMax = 32 << 10
+
+// goDragData is items as the engine takes them: of the kinds a page may be
+// given, within goDropMax.
+func goDragData(items []goDragItem) map[string]any {
+	list := []map[string]any{}
+	room := goDropMax
+	for _, it := range items {
+		if len(list) == 3 || (it.Type != "text/plain" && it.Type != "text/uri-list" && it.Type != "text/html") {
+			continue
+		}
+		data := it.Data
+		if len(data) > room {
+			data = strings.ToValidUTF8(data[:room], "") // not a character cut in two
+		}
+		room -= len(data)
+		list = append(list, map[string]any{"mimeType": it.Type, "data": data})
+	}
+	// Copy, link or move: the page's choice.
+	return map[string]any{"items": list, "dragOperationsMask": 1 | 2 | 16}
+}
+
+// goTouchPoint is a finger: the element under it, where within it
+// (fractions, as the mouse's), and its number.
+type goTouchPoint struct {
+	ID int     `json:"id"`
+	FX float64 `json:"fx"`
+	FY float64 `json:"fy"`
+	T  int     `json:"t"`
 }
 
 func goModifiers(m goClientMsg) int {
@@ -117,13 +162,63 @@ func (b *goBrowser) pointer(m goClientMsg) {
 	}
 }
 
-// movesOn queues the waiting move and wheel turn, if none are queued.
+// touch takes a touch from the person: its start and end in order; a move
+// kept, newest, as the mouse's are.
+func (b *goBrowser) touch(m goClientMsg) {
+	if len(m.Points) > 10 {
+		m.Points = m.Points[:10]
+	}
+	switch m.Type {
+	case "move":
+		if b.dialog {
+			return
+		}
+		b.touchWaiting = &m
+		b.movesOn()
+	case "start", "end", "cancel":
+		b.touchWaiting = nil // what's after it, not before
+		if b.acts.waiting() >= goActsWaiting {
+			return
+		}
+		world, gen := b.world, b.gen
+		b.acts.add(func() {
+			b.input.touch(b, world, gen, m)
+			b.post(func() { b.afterInput(gen) })
+		})
+	}
+}
+
+// drag takes what the person drags in from outside: a drop or its end in
+// order; where it's dragged over kept, newest, as moves are.
+func (b *goBrowser) drag(m goClientMsg) {
+	switch m.Type {
+	case "over":
+		if b.dialog {
+			return
+		}
+		b.dragWaiting = &m
+		b.movesOn()
+	case "drop", "cancel":
+		b.dragWaiting = nil
+		if b.acts.waiting() >= goActsWaiting {
+			return
+		}
+		world, gen := b.world, b.gen
+		b.acts.add(func() {
+			b.input.drag(b, world, gen, m)
+			b.post(func() { b.afterInput(gen) })
+		})
+	}
+}
+
+// movesOn queues the waiting move, wheel turn, touch move and drag, if
+// none are queued.
 func (b *goBrowser) movesOn() {
-	if b.movesQueued || (b.moveWaiting == nil && b.wheelWaiting == nil) {
+	if b.movesQueued || (b.moveWaiting == nil && b.wheelWaiting == nil && b.touchWaiting == nil && b.dragWaiting == nil) {
 		return
 	}
-	move, wheel := b.moveWaiting, b.wheelWaiting
-	b.moveWaiting, b.wheelWaiting = nil, nil
+	move, wheel, touch, drag := b.moveWaiting, b.wheelWaiting, b.touchWaiting, b.dragWaiting
+	b.moveWaiting, b.wheelWaiting, b.touchWaiting, b.dragWaiting = nil, nil, nil, nil
 	b.movesQueued = true
 	world, gen := b.world, b.gen
 	b.acts.add(func() {
@@ -131,6 +226,12 @@ func (b *goBrowser) movesOn() {
 			if m != nil {
 				b.input.move(b, world, gen, *m)
 			}
+		}
+		if touch != nil {
+			b.input.touch(b, world, gen, *touch)
+		}
+		if drag != nil {
+			b.input.drag(b, world, gen, *drag)
 		}
 		b.post(func() {
 			b.movesQueued = false
@@ -221,6 +322,120 @@ func (in *goInput) release(b *goBrowser) {
 		}
 	}
 	in.pressed = map[int]goPress{}
+	if in.touching {
+		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+		b.touchInput(ctx, "touchEnd", nil, goClientMsg{})
+		cancel()
+	}
+	in.touching, in.touchID = false, 0
+	if in.dragging {
+		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+		b.dragInput(ctx, "dragCancel", -1, -1, goClientMsg{})
+		cancel()
+		in.dragging = false
+	}
+}
+
+// touch gives the engine a touch: the fingers down where they are on the
+// engine's page (each found as a press's place is), or, at the end, none.
+// The engine makes a tap's click itself, and a swipe's none. A touch the
+// engine can't be given (nowhere for it) is, if a tap, a click by script.
+func (in *goInput) touch(b *goBrowser, world, gen int, m goClientMsg) {
+	if in.gen != gen {
+		in.release(b)
+		in.gen = gen
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), goInputWait)
+	defer cancel()
+	switch m.Type {
+	case "start", "move":
+		if m.Type == "move" && !in.touching {
+			return
+		}
+		var points []map[string]any
+		for _, p := range m.Points {
+			if x, y, ok := b.at(ctx, world, p.ID, p.FX, p.FY); ok {
+				points = append(points, map[string]any{"x": x, "y": y, "id": p.T & 0xffff, "radiusX": 1, "radiusY": 1, "force": 1})
+			}
+		}
+		if len(points) == 0 {
+			if m.Type == "start" && !in.touching && len(m.Points) > 0 {
+				in.touchID = m.Points[0].ID
+			}
+			return
+		}
+		typ := "touchMove"
+		if m.Type == "start" {
+			typ = "touchStart"
+		}
+		if b.touchInput(ctx, typ, points, m) {
+			in.touching = true
+		}
+	case "end", "cancel":
+		if in.touching {
+			in.touching = false
+			b.touchInput(ctx, "touchEnd", nil, m)
+			return
+		}
+		if id := in.touchID; id != 0 && m.Type == "end" && m.Tap {
+			b.actNow(ctx, world, goClientMsg{Kind: "click", ID: id})
+		}
+		in.touchID = 0
+	}
+}
+
+// drag gives the engine what's dragged in from outside, where it's
+// dragged over or dropped (found as a press's place is), as a browser's
+// drag: entering, over, then dropped, or gone.
+func (in *goInput) drag(b *goBrowser, world, gen int, m goClientMsg) {
+	if in.gen != gen {
+		in.release(b)
+		in.gen = gen
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), goInputWait)
+	defer cancel()
+	if m.Type == "cancel" {
+		if in.dragging {
+			in.dragging = false
+			b.dragInput(ctx, "dragCancel", -1, -1, m)
+		}
+		return
+	}
+	x, y, ok := b.at(ctx, world, m.ID, m.FX, m.FY)
+	if !ok {
+		return
+	}
+	if !in.dragging {
+		if !b.dragInput(ctx, "dragEnter", x, y, m) {
+			return
+		}
+		in.dragging = true
+	}
+	if m.Type == "drop" {
+		b.dragInput(ctx, "dragOver", x, y, m)
+		in.dragging = false
+		b.dragInput(ctx, "drop", x, y, m)
+		return
+	}
+	b.dragInput(ctx, "dragOver", x, y, m)
+}
+
+// dragInput gives the engine one drag event; as mouse does.
+func (b *goBrowser) dragInput(ctx context.Context, typ string, x, y float64, m goClientMsg) (given bool) {
+	err := b.cdp.call(ctx, b.page, "Input.dispatchDragEvent", map[string]any{"type": typ, "x": x, "y": y,
+		"data": goDragData(m.Items), "modifiers": goModifiers(m)}, nil)
+	goDebugf("input %s at %.0f,%.0f: %v", typ, x, y, err)
+	return err == nil || errors.Is(err, context.DeadlineExceeded)
+}
+
+// touchInput gives the engine one touch event; as mouse does.
+func (b *goBrowser) touchInput(ctx context.Context, typ string, points []map[string]any, m goClientMsg) (given bool) {
+	if points == nil {
+		points = []map[string]any{}
+	}
+	err := b.cdp.call(ctx, b.page, "Input.dispatchTouchEvent", map[string]any{"type": typ, "touchPoints": points, "modifiers": goModifiers(m)}, nil)
+	goDebugf("input %s, %d points: %v", typ, len(points), err)
+	return err == nil || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (in *goInput) press(b *goBrowser, world, gen int, m goClientMsg) {

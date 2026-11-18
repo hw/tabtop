@@ -181,6 +181,21 @@ document.getElementById("scroller").onscroll = (e) => { document.getElementById(
 <script>document.getElementById("ask").onclick = () => { document.getElementById("status").textContent = "prompted " + prompt("your name?", "nobody"); };</script>`,
         "ask-loop.html": `<!doctype html><title>Loop</title><p id="status">ready</p><button id="loop">Loop</button>
 <script>document.getElementById("loop").onclick = () => { for (let i = 0; i < 1000; i++) alert("again " + i); document.getElementById("status").textContent = "done"; };</script>`,
+        "hands.html": `<!doctype html><title>Hands</title><p id="status">ready</p><p id="screen"></p>
+<div id="a" draggable="true" style="width:120px;height:60px;background:#c33">drag me</div>
+<div id="t" style="margin-top:40px;width:240px;height:100px;background:#36c">drop here</div>
+<button id="tap" style="width:120px;height:60px">tap</button>
+<script>
+const $ = (id) => document.getElementById(id), status = (t) => { $("status").textContent = t; };
+const tell = () => { $("screen").textContent = screen.width + "x" + screen.height + " " + ("ontouchstart" in window) + " " + navigator.maxTouchPoints; };
+tell(); addEventListener("resize", tell);
+$("a").ondragstart = (e) => e.dataTransfer.setData("text/plain", "from the page");
+$("t").ondragover = (e) => e.preventDefault();
+$("t").ondrop = (e) => { e.preventDefault(); status("dropped " + e.dataTransfer.getData("text/plain")); };
+let touches = 0;
+$("tap").addEventListener("touchstart", () => touches++);
+$("tap").onclick = () => status("tapped, touches " + touches);
+</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -763,6 +778,46 @@ async function check(base, port, site) {
         await ev(`document.querySelector("#go_dialog .ok").click()`);
         await frameWait(`document.getElementById("status").textContent === "done"`, "the loop through, unasked", 30000);
         if (await ev(`document.getElementById("go_dialog").open`)) throw new Error("still asking");
+    });
+
+    await step("the display is this window; drags within the page, drops from outside, and touches go to the engine", async () => {
+        await goTo(site + "hands.html", "Hands");
+        const win = await ev(`innerWidth + "x" + innerHeight`);
+        await frameWait(`document.getElementById("screen").textContent.startsWith(${JSON.stringify(win + " ")})`, `the display, ${win}`);
+        // Within the page: the engine's drag, from the mouse.
+        const at = async (sel) => {
+            const r = await frame(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({ block: "center" }); const b = e.getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+            const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+            return { x: f.x + r.x, y: f.y + r.y };
+        };
+        await pageShown();
+        const from = await at("#a"), to = await at("#t");
+        await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...from, button: "left", buttons: 1, clickCount: 1 });
+        for (let i = 1; i <= 8; i++) {
+            await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x + (to.x - from.x) * i / 8, y: from.y + (to.y - from.y) * i / 8, button: "left", buttons: 1 });
+            await sleep(80);
+        }
+        await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...to, button: "left", buttons: 0, clickCount: 1 });
+        await frameWait(`document.getElementById("status").textContent === "dropped from the page"`, "the drag within the page");
+        // From outside: dragged over, then dropped.
+        const data = { items: [{ mimeType: "text/plain", data: "from outside" }], dragOperationsMask: 1 };
+        for (const type of ["dragEnter", "dragOver"]) await cdp("Input.dispatchDragEvent", { type, ...to, data });
+        await sleep(200);
+        await cdp("Input.dispatchDragEvent", { type: "drop", ...to, data });
+        await frameWait(`document.getElementById("status").textContent === "dropped from outside"`, "the drop from outside");
+        // A touch: a tap, the engine's click from it (once).
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        try {
+            const tap = await at("#tap");
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [tap] });
+            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+            await frameWait(`document.getElementById("status").textContent === "tapped, touches 1"`, "the tap, as a touch");
+            await sleep(500);
+            const now = await frame(`document.getElementById("status").textContent`);
+            if (now !== "tapped, touches 1") throw new Error(`then ${now}: clicked twice?`);
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+        }
     });
 
     await step("a feed: a video the page gives a file and plays plays here, and a swipe scrolls the page", async () => {

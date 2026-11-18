@@ -1105,11 +1105,12 @@
     // fractions across and down: places here aren't the engine's. The engine
     // makes the click from the press and release, as a browser does.
     const mods = (e) => ({ shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey });
-    function where(e) {
+    const where = (e) => whereAt(e.clientX, e.clientY);
+    function whereAt(cx, cy) {
         // What's under the pointer, not the event's target: a button pressed
         // keeps the mouse (its release, and moves while dragging, are its,
         // wherever they are).
-        const under = document.elementFromPoint(e.clientX, e.clientY);
+        const under = document.elementFromPoint(cx, cy);
         if (!under) return null;  // outside the frame
         const at = idOf(under);
         if (!at || at.node.nodeType !== 1) return null;
@@ -1119,12 +1120,12 @@
         if (frameRoots.has(at.node)) return null;
         const r = at.node.getBoundingClientRect();
         const f = (v, size) => (size > 0 ? Math.min(1, Math.max(0, v / size)) : 0.5);
-        return { id: at.id, fx: Math.round(f(e.clientX - r.left, r.width) * 1000) / 1000, fy: Math.round(f(e.clientY - r.top, r.height) * 1000) / 1000 };
+        return { id: at.id, fx: Math.round(f(cx - r.left, r.width) * 1000) / 1000, fy: Math.round(f(cy - r.top, r.height) * 1000) / 1000 };
     }
     let held = 0;  // buttons pressed here, not yet released
     let pressedAt = null;
     document.addEventListener("mousedown", (e) => {
-        if (!e.isTrusted) return;
+        if (!e.isTrusted || fromTouch(e)) return;
         const w = where(e);
         if (!w) return;
         flushAll();
@@ -1134,7 +1135,7 @@
         send("mouse", w.id, { phase: "down", fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     document.addEventListener("mouseup", (e) => {
-        if (!e.isTrusted || !(held & (1 << e.button))) return;
+        if (!e.isTrusted || fromTouch(e) || !(held & (1 << e.button))) return;
         held &= ~(1 << e.button);
         const w = where(e);
         lastClick = performance.now();
@@ -1155,18 +1156,142 @@
     }, true);
     // Moves and the wheel: the newest every 50 ms at most (the wheel's
     // turns added up), as pages follow the pointer, not every pixel.
-    let move = null, wheel = null, pointerTimer = 0;
+    let move = null, wheel = null, touchMove = null, pointerTimer = 0;
     function pointerSoon() {
         if (pointerTimer) return;
         pointerTimer = setTimeout(() => {
             pointerTimer = 0;
             if (move) send("mouse", move.id, move);
             if (wheel) send("mouse", wheel.id, wheel);
-            move = wheel = null;
+            if (touchMove) send("touch", touchMove.points[0].id, touchMove);
+            if (dragOver) send("drag", dragOver.id, dragOver);
+            move = wheel = touchMove = dragOver = null;
         }, 50);
     }
-    document.addEventListener("mousemove", (e) => {
+
+    // --- Touch: given to the engine as touch input (see goinput.go) -------
+    //
+    // Each finger as the element under it and where within it, as the
+    // mouse's; moves as the mouse's, the newest every 50 ms. The engine
+    // makes a tap's click itself (and a swipe's none), so the mouse events
+    // this browser makes from a touch aren't sent too. Swiping scrolls the
+    // copy here, as before, and where it's scrolled to goes as the person's
+    // scrolling does.
+    let lastTouch = -Infinity;
+    let touchFrom = null, touchMoved = false, touchSent = false;
+    const fromTouch = (e) => e.sourceCapabilities?.firesTouchEvents || performance.now() - lastTouch < 1000;
+    function fingers(list) {
+        const out = [];
+        for (const t of list) {
+            const w = whereAt(t.clientX, t.clientY);
+            if (w) out.push({ id: w.id, fx: w.fx, fy: w.fy, t: t.identifier & 0xffff });
+            if (out.length >= 10) break;
+        }
+        return out;
+    }
+    function touchNow(phase, points, e) {
+        if (touchMove) {
+            send("touch", touchMove.points[0].id, touchMove);
+            touchMove = null;
+        }
+        send("touch", points[0]?.id ?? 0, { phase, points, tap: !touchMoved, ...mods(e) });
+    }
+    document.addEventListener("touchstart", (e) => {
         if (!e.isTrusted) return;
+        lastTouch = performance.now();
+        if (e.touches.length === 1) {
+            touchFrom = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            touchMoved = false;
+        }
+        const points = fingers(e.touches);
+        if (!points.length) return;  // over nothing the engine has
+        flushAll();
+        touchNow("start", points, e);
+        touchSent = true;
+    }, { capture: true, passive: true });
+    document.addEventListener("touchmove", (e) => {
+        if (!e.isTrusted || !touchSent) return;
+        lastTouch = performance.now();
+        const t = e.touches[0];
+        if (t && touchFrom && Math.hypot(t.clientX - touchFrom.x, t.clientY - touchFrom.y) > 10) touchMoved = true;
+        const points = fingers(e.touches);
+        if (!points.length) return;
+        touchMove = { phase: "move", points, ...mods(e) };
+        pointerSoon();
+    }, { capture: true, passive: true });
+    const touchEnd = (e) => {
+        if (!e.isTrusted || !touchSent) return;
+        lastTouch = performance.now();
+        const points = fingers(e.touches);
+        if (e.touches.length && points.length) {
+            touchNow("move", points, e);  // a finger lifted, others still down
+            return;
+        }
+        touchNow(e.type === "touchcancel" ? "cancel" : "end", [], e);
+        touchSent = false;
+    };
+    document.addEventListener("touchend", touchEnd, { capture: true, passive: true });
+    document.addEventListener("touchcancel", touchEnd, { capture: true, passive: true });
+
+    // --- Drag and drop -----------------------------------------------------
+    //
+    // A drag within the page is the engine's: it drags as a browser does,
+    // from the mouse it's given (a draggable element, a sortable list). This
+    // browser's own drag of the copy (an element, a picture, a link) would
+    // take the mouse's moves and release, so it isn't started.
+    document.addEventListener("dragstart", (e) => {
+        if (e.isTrusted) e.preventDefault();
+    }, true);
+    // What's dragged in from outside (text, a link, from another window) is
+    // given to the engine's page under it, and dropped there: its kinds as
+    // it's dragged over (a browser shows no more till the drop), what it
+    // is when dropped. Files aren't (the remote browser takes no files).
+    const DRAG_TYPES = ["text/plain", "text/uri-list", "text/html"];
+    const MAX_DROP = 32 << 10;  // within a message the server takes (goClientMessage)
+    let dragOver = null;
+    const dragTypes = (dt) => [...(dt?.types ?? [])].filter((t) => DRAG_TYPES.includes(t));
+    for (const type of ["dragenter", "dragover"]) {
+        document.addEventListener(type, (e) => {
+            if (!e.isTrusted) return;
+            e.preventDefault();  // it may be dropped (the engine's page says if it's taken)
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+            const w = where(e);
+            if (!w) return;
+            dragOver = { phase: "over", id: w.id, fx: w.fx, fy: w.fy, items: dragTypes(e.dataTransfer).map((t) => ({ type: t, data: "" })), ...mods(e) };
+            pointerSoon();
+        }, true);
+    }
+    document.addEventListener("dragleave", (e) => {
+        if (!e.isTrusted || e.relatedTarget) return;  // left the frame, not one element for another
+        dragOver = null;
+        send("drag", 0, { phase: "cancel" });
+    }, true);
+    document.addEventListener("drop", (e) => {
+        if (!e.isTrusted) return;
+        e.preventDefault();  // not opened here
+        dragOver = null;
+        const dt = e.dataTransfer;
+        if (dt?.files?.length) tell({ type: "drop-files", gen: doc?.gen });
+        const w = where(e);
+        if (!w) {
+            send("drag", 0, { phase: "cancel" });
+            return;
+        }
+        let room = MAX_DROP;
+        const items = [];
+        for (const t of dragTypes(dt)) {
+            const data = String(dt.getData(t) ?? "").slice(0, room);
+            room -= data.length;
+            items.push({ type: t, data });
+        }
+        if (!items.length) {
+            send("drag", 0, { phase: "cancel" });
+            return;
+        }
+        send("drag", w.id, { phase: "drop", fx: w.fx, fy: w.fy, items, ...mods(e) });
+    }, true);
+    document.addEventListener("mousemove", (e) => {
+        if (!e.isTrusted || fromTouch(e)) return;
         const w = where(e);
         if (!w) return;
         move = { phase: "move", id: w.id, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };

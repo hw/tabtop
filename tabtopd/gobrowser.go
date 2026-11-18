@@ -138,9 +138,9 @@ type goBrowser struct {
 	ioQueued  bool
 	// The person's mouse: the move and wheel turn waiting, and whether one's
 	// queued; the buttons held (the acts' queue's own, see goinput.go).
-	moveWaiting, wheelWaiting *goClientMsg
-	movesQueued               bool
-	input                     *goInput
+	moveWaiting, wheelWaiting, touchWaiting, dragWaiting *goClientMsg
+	movesQueued                                          bool
+	input                                                *goInput
 
 	// The page's resources (goprefetch.go): fetched with resources, as
 	// session's; kept in res; requests being answered. ctx ends with the
@@ -262,6 +262,14 @@ type goClientMsg struct {
 	// scroll: where the person scrolled the element to.
 	SX float64 `json:"sx"`
 	SY float64 `json:"sy"`
+	// touch: Type start, move, end or cancel; the fingers down, and
+	// whether it was a tap (an end that didn't move).
+	Points []goTouchPoint `json:"points"`
+	Tap    bool           `json:"tap"`
+	// drag: Type over, drop or cancel, at the element and place a mouse
+	// event's are; what's dragged in from outside (its kinds, as it's
+	// dragged over; itself, dropped).
+	Items []goDragItem `json:"items"`
 	// res: the page's request for a resource, by its number (goprefetch.go).
 	RID int `json:"rid"`
 }
@@ -347,6 +355,12 @@ type goView struct {
 	W   int     `json:"w"`
 	H   int     `json:"h"`
 	DPR float64 `json:"dpr"`
+	// The display the page is told of: the person's window (the frame's
+	// within it), not their screen.
+	SW int `json:"sw"`
+	SH int `json:"sh"`
+	// The person's device has touch: the page is told so, and given it.
+	Touch bool `json:"touch"`
 }
 
 // clamped is v within what's sensible to lay a page out at.
@@ -357,6 +371,9 @@ func (v goView) clamped() goView {
 		v.DPR = 1
 	}
 	v.DPR = min(v.DPR, 4)
+	// At least the window's: the display holds it.
+	v.SW = min(max(v.SW, v.W), 7680)
+	v.SH = min(max(v.SH, v.H), 4320)
 	return v
 }
 
@@ -700,21 +717,29 @@ func (b *goBrowser) setView(v goView) {
 	if v == b.view {
 		return
 	}
+	touch := v.Touch != b.view.Touch || b.view == (goView{})
 	b.view = v
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
 		err := b.cdp.call(ctx, b.page, "Emulation.setDeviceMetricsOverride", map[string]any{
 			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
-			// The screen is the window: the person's own isn't told.
-			"screenWidth": v.W, "screenHeight": v.H,
+			// The screen is the person's window: their own isn't told.
+			"screenWidth": v.SW, "screenHeight": v.SH,
 		}, nil)
+		if err == nil && touch {
+			points := 0
+			if v.Touch {
+				points = 5
+			}
+			err = b.cdp.call(ctx, b.page, "Emulation.setTouchEmulationEnabled", map[string]any{"enabled": v.Touch, "maxTouchPoints": points}, nil)
+		}
 		if err == nil {
 			err = b.relayout(ctx)
 		}
 		return err
 	}, func(r any) {
-		goDebugf("view %dx%d at %g: %v", v.W, v.H, v.DPR, r)
+		goDebugf("view %dx%d at %g on %dx%d, touch %v: %v", v.W, v.H, v.DPR, v.SW, v.SH, v.Touch, r)
 		b.changed(goChangesEvery)
 	})
 }
@@ -1173,6 +1198,12 @@ func (b *goBrowser) act(m goClientMsg) {
 	switch {
 	case m.Kind == "mouse":
 		b.pointer(m) // real input (goinput.go)
+		return
+	case m.Kind == "touch":
+		b.touch(m)
+		return
+	case m.Kind == "drag":
+		b.drag(m)
 		return
 	case m.Kind == "key" && (m.Type == "down" || m.Type == "up"):
 		b.key(m)
