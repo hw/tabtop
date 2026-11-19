@@ -338,7 +338,7 @@ function message(m) {
             break;
         }
         case "go-changes":
-            if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io });
+            if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls });
             break;
         case "go-net":
             // Whether the page being read is still loading: the frame holds
@@ -588,11 +588,13 @@ window.addEventListener("message", (e) => {
             break;
         case "io": {
             const rect = (r) => (Array.isArray(r) && r.length === 4 && r.every(Number.isFinite) ? r : null);
+            // An element's sizes, for the page's ResizeObserver (goobserve.js).
+            const sizes = (z) => (Array.isArray(z) && z.length === 8 && z.every((v) => Number.isFinite(v) && v >= 0) ? z : undefined);
             // What this browser saw of the elements the page observes: on to
             // the engine, in pieces well within a message's limit.
             if (ws && m.gen === shown && Array.isArray(m.entries)) {
                 const entries = m.entries.filter((e) => e && Number.isSafeInteger(e.o) && Number.isSafeInteger(e.i))
-                    .map((e) => ({ o: e.o, i: e.i, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: rect(e.b), r: rect(e.r), rb: rect(e.rb) }));
+                    .map((e) => ({ o: e.o, i: e.i, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: rect(e.b), r: rect(e.r), rb: rect(e.rb), z: sizes(e.z) }));
                 for (let at = 0; at < entries.length; at += 500) {
                     ws.send(JSON.stringify({ op: "io", gen: m.gen, entries: entries.slice(at, at + 500) }));
                 }

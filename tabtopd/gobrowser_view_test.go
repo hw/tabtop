@@ -37,10 +37,15 @@ func TestGoCleanIO(t *testing.T) {
 		{Op: "+", O: 0, I: 8, M: "0px", T: []float64{0}},                 // no observer
 		{Op: "+", O: 1, I: 9, M: "0px 0px 0px 0px 0px", T: []float64{0}}, // five
 		{Op: "?", O: 1, I: 10},
+		{Op: "+", O: 2, I: 11, S: "border-box", M: "ignored", T: []float64{9}, R: 3}, // a ResizeObserver's
+		{Op: "+", O: 2, I: 12, S: "margin-box"},                                      // no such box
 	}
 	got := goCleanIO(in)
-	if len(got) != 3 || got[0].I != 2 || got[1].I != 3 || got[1].R != 4 || got[2].Op != "-" || got[2].M != "" || got[2].T != nil {
+	if len(got) != 4 || got[0].I != 2 || got[1].I != 3 || got[1].R != 4 || got[2].Op != "-" || got[2].M != "" || got[2].T != nil {
 		t.Fatalf("kept %+v", got)
+	}
+	if r := got[3]; r.I != 11 || r.S != "border-box" || r.M != "" || r.T != nil || r.R != 0 {
+		t.Errorf("a ResizeObserver's kept as %+v", r)
 	}
 	many := make([]goIO, maxGoIO+10)
 	for i := range many {
@@ -48,6 +53,45 @@ func TestGoCleanIO(t *testing.T) {
 	}
 	if n := len(goCleanIO(many)); n != maxGoIO {
 		t.Errorf("kept %d of too many", n)
+	}
+}
+
+// Where the page scrolled is passed on only well formed: it's the page's.
+func TestGoCleanScrolls(t *testing.T) {
+	got := goCleanScrolls([]goScroll{
+		{I: 1, X: 0, Y: 646},
+		{I: 2, Into: [2]string{"start", "nearest"}},
+		{I: 3, Into: [2]string{"start", "url(x)"}}, // not a place
+		{I: 0, Y: 10},                              // no element
+		{I: 4, Y: -1},                              // before the start
+		{I: 5, Y: 2e7},                             // beyond reason
+		{I: 6, X: math.NaN()},
+	})
+	if len(got) != 2 || got[0]["y"] != 646.0 || got[1]["into"] != [2]string{"start", "nearest"} {
+		t.Fatalf("kept %v", got)
+	}
+	many := make([]goScroll, 100)
+	for i := range many {
+		many[i] = goScroll{I: i + 1}
+	}
+	if n := len(goCleanScrolls(many)); n != 64 {
+		t.Errorf("kept %d of too many", n)
+	}
+}
+
+// Sizes from the client are eight numbers within reason, or none.
+func TestGoSizes(t *testing.T) {
+	ok := []float64{400, 670, 400, 6500, 400, 670, 400, 670}
+	if goSizes(ok) == nil {
+		t.Error("refused sizes within reason")
+	}
+	for _, z := range [][]float64{nil, ok[:7], {400, 670, 400, 6500, 400, 670, 400, -1}, {400, 670, 400, 6500, 400, 670, 400, 2e6}} {
+		if goSizes(z) != nil {
+			t.Errorf("kept %v", z)
+		}
+	}
+	if goSizes([]float64{0, 0, 0, 0, 0, 0, 0, math.NaN()}) != nil {
+		t.Error("kept NaN")
 	}
 }
 

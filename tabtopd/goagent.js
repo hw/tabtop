@@ -55,6 +55,26 @@
             try { d = JSON.parse(e.detail); } catch { return; }
             if (asked.length < 16 && d && typeof d.kind === "string" && typeof d.message === "string") asked.push({ kind: d.kind, message: d.message.slice(0, 2000) });
         });
+        // Where the page scrolled its elements itself (goobserve.js), for
+        // the copy to scroll so: the newest of each, with the next batch.
+        let scrollsOut = new Map();  // element -> {x, y} or {into}
+        // Not this world's own scrolling (an engine whose worlds share what
+        // the page's script changed, Obscura's, says it as the page's).
+        let ownScrolling = false;
+        const ownScroll = (f) => {
+            ownScrolling = true;
+            try { return f(); } finally { ownScrolling = false; }
+        };
+        document.addEventListener("__tabtop_scroll", (e) => {
+            if (ownScrolling) return;
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            const el = e.target;
+            if (!(el instanceof Element) || !d || (scrollsOut.size >= 64 && !scrollsOut.has(el))) return;
+            const where = ["start", "center", "end", "nearest"];
+            if (Array.isArray(d.into) && where.includes(d.into[0]) && where.includes(d.into[1])) scrollsOut.set(el, { into: d.into });
+            else if (Number.isFinite(d.x) && Number.isFinite(d.y)) scrollsOut.set(el, { x: d.x, y: d.y });
+        }, true);
         // Players the page started or stopped since the last batch (media
         // events don't bubble: caught on their way down).
         let played = new Set();
@@ -85,7 +105,9 @@
                     if (ioTargets.size >= 5000) return;
                     ioTargets.set(el, new Map());
                 }
-                ioTargets.get(el).set(d.o, { m: String(d.m), t: Array.isArray(d.t) ? d.t : [0], root: d.r ? ioRoots.get(d.o) ?? null : null });
+                // A ResizeObserver's (s, its box) or an IntersectionObserver's.
+                ioTargets.get(el).set(d.o, typeof d.s === "string" ? { s: d.s.slice(0, 32) }
+                    : { m: String(d.m), t: Array.isArray(d.t) ? d.t : [0], root: d.r ? ioRoots.get(d.o) ?? null : null });
             } else if (d.op === "-") {
                 ioTargets.get(el)?.delete(d.o);
                 if (ioTargets.get(el)?.size === 0) ioTargets.delete(el);
@@ -105,7 +127,7 @@
                     const key = o + ":" + i;
                     if (ioSent.has(key) || (r.root && !(r.root.isConnected && known(r.root)))) continue;
                     ioSent.add(key);
-                    ioOut.push({ op: "+", o, i, m: r.m, t: r.t, r: r.root ? ids.get(r.root) : 0 });
+                    ioOut.push(r.s ? { op: "+", o, i, s: r.s } : { op: "+", o, i, m: r.m, t: r.t, r: r.root ? ids.get(r.root) : 0 });
                 }
             }
         }
@@ -113,7 +135,7 @@
             const el = node(id);
             if (!el) return "gone";
             watch(el);  // as it was: what the input changes is sent
-            if (el.nodeType === 1) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+            if (el.nodeType === 1) ownScroll(() => el.scrollIntoView({ block: "nearest", inline: "nearest" }));
             return "ok";
         }
         function point(json) {
@@ -293,7 +315,7 @@
                             for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
                                 const st = getComputedStyle(n);
                                 if (/(auto|scroll)/.test(st.overflowY + st.overflowX) && (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) {
-                                    n.scrollBy(dx, dy);
+                                    ownScroll(() => n.scrollBy(dx, dy));
                                     return "ok";
                                 }
                             }
@@ -313,10 +335,11 @@
                 const el = node(e?.i);
                 const key = e?.o + ":" + e?.i;
                 if (!el || !ioSent.has(key)) continue;
-                const now = (e.hit ? "1" : "0") + ":" + Number(e.ratio).toFixed(3);
+                const z = Array.isArray(e.z) ? e.z.map(Number) : undefined;  // sizes, for a ResizeObserver
+                const now = z ? z.join() : (e.hit ? "1" : "0") + ":" + Number(e.ratio).toFixed(3);
                 if (ioLast.get(key) === now) continue;  // as it was: not again
                 ioLast.set(key, now);
-                el.dispatchEvent(new CustomEvent("__tabtop_io_entry", { detail: JSON.stringify({ o: e.o, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: e.b, r: e.r, rb: e.rb }) }));
+                el.dispatchEvent(new CustomEvent("__tabtop_io_entry", { detail: JSON.stringify({ o: e.o, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: e.b, r: e.r, rb: e.rb, z }) }));
             }
             return "ok";
         }
@@ -610,9 +633,12 @@
             ioOut = [];
             const askedNow = asked;
             asked = [];
-            if (!ops.length && !moved && !ioNow.length && !askedNow.length) return "";
+            const scrollsNow = [];
+            for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
+            scrollsOut = new Map();
+            if (!ops.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow });
         }
 
         function watch(el) {
@@ -713,10 +739,18 @@
                         const was = [scrollX, scrollY];
                         window.scrollTo({ left: x, top: y, behavior: "instant" });
                         if (scrollX !== was[0] || scrollY !== was[1]) document.dispatchEvent(new Event("scroll", { bubbles: true }));
-                    } else if (typeof el.scrollTo === "function") {
-                        const was = [el.scrollLeft, el.scrollTop];
-                        el.scrollTo({ left: x, top: y, behavior: "instant" });
-                        if (el.scrollLeft !== was[0] || el.scrollTop !== was[1]) el.dispatchEvent(new Event("scroll"));
+                    } else if (el.nodeType === 1) {
+                        // Set, not scrolled to: an engine's scrolling goes by
+                        // its own layout (Moli's can have a box 20 pixels
+                        // high that's 6000 here, and keeps it from moving),
+                        // and the page reads where it is from this. Said
+                        // each time: it's where the person scrolled it.
+                        ownScroll(() => {
+                            el.scrollLeft = x;
+                            el.scrollTop = y;
+                        });
+                        el.dispatchEvent(new CustomEvent("__tabtop_scrolled", { detail: JSON.stringify({ x, y }) }));  // goobserve.js
+                        el.dispatchEvent(new Event("scroll"));
                     }
                     return "ok";
                 }

@@ -317,7 +317,8 @@ type goClientMsg struct {
 }
 
 // goIO is one of a page's IntersectionObserver targets, for the client to
-// observe: added ("+", with its options) or no longer ("-").
+// observe: added ("+", with its options) or no longer ("-"); or a
+// ResizeObserver's (S, the box it watches; see goobserve.js).
 type goIO struct {
 	Op string    `json:"op"`
 	O  int       `json:"o"`
@@ -325,6 +326,7 @@ type goIO struct {
 	M  string    `json:"m,omitempty"`
 	T  []float64 `json:"t,omitempty"`
 	R  int       `json:"r,omitempty"`
+	S  string    `json:"s,omitempty"`
 }
 
 // goIOEntry is what the client saw of one: whether it shows, and how much.
@@ -338,6 +340,22 @@ type goIOEntry struct {
 	B  []float64 `json:"b,omitempty"`
 	R  []float64 `json:"r,omitempty"`
 	RB []float64 `json:"rb,omitempty"`
+	// A ResizeObserver's: the element's sizes there (client, scroll and
+	// offset width and height, its content box's width and height).
+	Z []float64 `json:"z,omitempty"`
+}
+
+// goSizes is z if it's sizes within reason, or nil.
+func goSizes(z []float64) []float64 {
+	if len(z) != 8 {
+		return nil
+	}
+	for _, v := range z {
+		if !(v >= 0 && v < 1e6) { // NaN too
+			return nil
+		}
+	}
+	return z
 }
 
 // goRect is r if it's a rectangle within reason, or nil.
@@ -376,6 +394,13 @@ func goCleanIO(list []goIO) []goIO {
 		case "-":
 			out = append(out, goIO{Op: "-", O: x.O, I: x.I})
 		case "+":
+			if x.S != "" {
+				switch x.S {
+				case "content-box", "border-box", "device-pixel-content-box":
+					out = append(out, goIO{Op: "+", O: x.O, I: x.I, S: x.S})
+				}
+				continue
+			}
 			if len(x.M) > 64 || !goIOMargin.MatchString(x.M) || len(x.T) == 0 || len(x.T) > 101 {
 				continue
 			}
@@ -743,7 +768,7 @@ func (b *goBrowser) giveIO(entries []goIOEntry) {
 	for _, e := range entries[:min(len(entries), maxGoIOEntries)] {
 		if e.O > 0 && e.I > 0 && len(b.ioWaiting) < maxGoIO {
 			e.Ratio = min(max(e.Ratio, 0), 1)
-			e.B, e.R, e.RB = goRect(e.B), goRect(e.R), goRect(e.RB)
+			e.B, e.R, e.RB, e.Z = goRect(e.B), goRect(e.R), goRect(e.RB), goSizes(e.Z)
 			b.ioWaiting[[2]int{e.O, e.I}] = e
 		}
 	}
@@ -1220,6 +1245,39 @@ type goChanges struct {
 		Kind    string `json:"kind"`
 		Message string `json:"message"`
 	} `json:"asked"`
+	// Where the page scrolled its elements itself (goobserve.js).
+	Scrolls []goScroll `json:"scrolls"`
+}
+
+// goScroll is where the page scrolled one of its elements itself, for the
+// client to scroll its copy so: to x, y, or into view (Into: block, inline).
+type goScroll struct {
+	I    int       `json:"i"`
+	X    float64   `json:"x"`
+	Y    float64   `json:"y"`
+	Into [2]string `json:"into"`
+}
+
+// goCleanScrolls keeps what's well formed of where the page scrolled: it's
+// the page's (its own script could say anything).
+func goCleanScrolls(list []goScroll) []map[string]any {
+	out := []map[string]any{}
+	where := map[string]bool{"start": true, "center": true, "end": true, "nearest": true}
+	for _, s := range list {
+		if len(out) >= 64 {
+			break
+		}
+		switch {
+		case s.I <= 0:
+		case s.Into != [2]string{}:
+			if where[s.Into[0]] && where[s.Into[1]] {
+				out = append(out, map[string]any{"i": s.I, "into": s.Into})
+			}
+		case s.X >= 0 && s.X < 1e7 && s.Y >= 0 && s.Y < 1e7:
+			out = append(out, map[string]any{"i": s.I, "x": s.X, "y": s.Y})
+		}
+	}
+	return out
 }
 
 // readChanges reads what's changed in the document since it was last
@@ -1278,10 +1336,10 @@ func (b *goBrowser) readChanges() {
 				goDebugf("dialog %s asked, answered by the engine", q.Kind)
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
-			if io := goCleanIO(c.IO); len(c.Ops) > 0 || len(io) > 0 {
+			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(io) > 0 || len(scrolls) > 0 {
 				ops := goCleanOps(c.Ops)
-				goDebugf("changes gen %d seq %d: %d ops, %d observed", gen, c.Seq, len(ops), len(io))
-				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io})
+				goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
+				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls})
 				b.sendLarge(p)
 			}
 			if b.dirty {

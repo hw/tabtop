@@ -1000,11 +1000,35 @@
                 if (rec?.ids.has(el)) {
                     rec.observer.unobserve(el);
                     rec.ids.delete(el);
+                    const was = rec.size && d.sized?.get(el);
+                    if (was) {
+                        was.os.delete(x.o);
+                        if (!was.os.size) d.sized.delete(el);
+                    }
                     ioCount--;
                 }
                 continue;
             }
             if (x.op !== "+" || ioCount >= MAX_IO) continue;
+            if (!rec && typeof x.s === "string") {
+                // A ResizeObserver's: its sizes here go back (see sized).
+                rec = { observer: new ResizeObserver((entries) => sized(d, entries.map((e) => e.target))), ids: new WeakMap(), size: true };
+                d.io.set(x.o, rec);
+            }
+            if (rec?.size) {
+                if (rec.ids.has(el)) continue;
+                rec.ids.set(el, x.i);
+                rec.observer.observe(el);
+                const was = (d.sized ??= new Map()).get(el);
+                if (was) {
+                    was.os.add(x.o);
+                    was.last = "";  // the new observer's told too
+                } else {
+                    d.sized.set(el, { i: x.i, os: new Set([x.o]), last: "" });
+                }
+                ioCount++;
+                continue;
+            }
             if (!rec) {
                 const root = x.r ? d.nodes.get(x.r) : null;
                 if (x.r && !(root?.nodeType === 1)) continue;
@@ -1045,9 +1069,99 @@
             if (doc === d && list.length) tell({ type: "io", gen: d.gen, entries: list });
         }, 100);
     }
+    // An element the page watches the size of: its sizes here (the
+    // engine's layout isn't this one), when they change: on this browser's
+    // ResizeObserver, and after changes or scrolling (what's in it grown,
+    // which no ResizeObserver tells).
+    const MAX_SIZED_CHECK = 500;
+    function sizesOf(el) {
+        const cs = getComputedStyle(el);
+        const pad = (a, b) => (parseFloat(cs[a]) || 0) + (parseFloat(cs[b]) || 0);
+        const border = (a, b) => (parseFloat(cs[a]) || 0) + (parseFloat(cs[b]) || 0);
+        const r = el.getBoundingClientRect();
+        const ow = el.offsetWidth ?? r.width, oh = el.offsetHeight ?? r.height;
+        const round = (v) => Math.max(0, Math.round(v * 100) / 100);
+        const cw = ow - pad("paddingLeft", "paddingRight") - border("borderLeftWidth", "borderRightWidth");
+        const ch = oh - pad("paddingTop", "paddingBottom") - border("borderTopWidth", "borderBottomWidth");
+        return [el.clientWidth, el.clientHeight, el.scrollWidth, el.scrollHeight, ow, oh, cw, ch].map(round);
+    }
+    function sized(d, elements) {
+        if (d !== doc) return;
+        for (const el of elements) {
+            const rec = d.sized?.get(el);
+            if (!rec || !el.isConnected) continue;
+            const z = sizesOf(el);
+            const key = z.join();
+            if (key === rec.last) continue;
+            rec.last = key;
+            for (const o of rec.os) ioSeen.push({ o, i: rec.i, z });
+        }
+        if (ioTimer || !ioSeen.length) return;
+        ioTimer = setTimeout(() => {
+            ioTimer = 0;
+            const list = ioSeen;
+            ioSeen = [];
+            if (doc === d && list.length) tell({ type: "io", gen: d.gen, entries: list });
+        }, 100);
+    }
+    let sizedTimer = 0;
+    function sizedSoon() {
+        if (sizedTimer || !doc?.sized?.size) return;
+        sizedTimer = setTimeout(() => {
+            sizedTimer = 0;
+            const d = doc;
+            if (!d?.sized) return;
+            sized(d, [...d.sized.keys()].slice(0, MAX_SIZED_CHECK));
+        }, 200);
+    }
+    // Where the page scrolled its elements itself: scrolled so here (the
+    // engine's layout isn't this one), and where that ends up goes back as
+    // the person's scrolling does (see the scroll listener).
+    // Where it is goes back even if it didn't move (a browser's page hears
+    // its scrolling; the engine's didn't move it, or not there), but not a
+    // place the engine was last told: a page asking again for where this
+    // can't go isn't answered again and again.
+    let pageScrolled = -Infinity;
+    const toldAt = new WeakMap();  // element -> where the engine was last told it is
+    const scrollOf = (el) => (el === document.documentElement ? { x: scrollX, y: scrollY } : { x: el.scrollLeft, y: el.scrollTop });
+    function tellScrolled(el) {
+        const id = doc?.ids.get(el);
+        if (!id) return;
+        const at = scrollOf(el), x = Math.round(at.x), y = Math.round(at.y);
+        if (toldAt.get(el) === x + "," + y) return;
+        toldAt.set(el, x + "," + y);
+        send("scroll", id, { sx: x, sy: y });
+    }
+    function scrollAsked(d, list) {
+        if (!Array.isArray(list)) return;
+        const asked = [];
+        for (const s of list.slice(0, 64)) {
+            const el = d.nodes.get(s?.i);
+            if (el?.nodeType !== 1 || !el.isConnected) continue;
+            pageScrolled = performance.now();
+            if (Array.isArray(s.into)) {
+                const [block, inline] = s.into.map(String);
+                try { el.scrollIntoView({ block, inline }); } catch { /* not a place */ }
+                // What it scrolled: its scrolling ancestors.
+                for (let p = el.parentElement; p; p = p.parentElement) {
+                    if (p === document.documentElement || p.scrollHeight > p.clientHeight || p.scrollWidth > p.clientWidth) asked.push(p);
+                }
+            } else if (Number.isFinite(s.x) && Number.isFinite(s.y)) {
+                const top = el === document.documentElement || el === document.body;
+                if (top) scrollTo({ left: s.x, top: s.y, behavior: "instant" });
+                else el.scrollTo({ left: s.x, top: s.y, behavior: "instant" });
+                // The engine's page has it where it asked.
+                toldAt.set(top ? document.documentElement : el, Math.round(s.x) + "," + Math.round(s.y));
+                asked.push(top ? document.documentElement : el);
+            }
+        }
+        // Once it's there (a smooth scroll goes on, and says so itself).
+        if (asked.length) setTimeout(() => { if (doc === d) for (const el of asked) tellScrolled(el); }, 50);
+    }
     function unobserveAll(d) {
         for (const rec of d?.io.values() ?? []) rec.observer.disconnect();
         d?.io.clear();
+        d?.sized?.clear();
         ioCount = 0;
         ioSeen = [];
     }
@@ -1110,6 +1224,7 @@
     }
     function applyTo(d, m) {
         if (!d || m.gen !== d.gen) return;
+        if (d === doc) sizedSoon();  // what it changes may change watched sizes
         // (A batch may bring only what the page observes: no changes.)
         for (const op of Array.isArray(m.ops) ? m.ops : []) {
             if (!op || typeof op !== "object") continue;
@@ -1164,6 +1279,7 @@
         // and one that's still not in view once shown never reported.
         if (d === building) (d.ioLater ??= []).push(...(Array.isArray(m.io) ? m.io : []));
         else observeAll(d, m.io);
+        if (d === doc) scrollAsked(d, m.scrolls);
         mediaLater();  // boxes added, gone or moved
         if (typeof m.title === "string") tell({ type: "title", gen: d.gen, title: m.title });
     }
@@ -1584,17 +1700,15 @@
     const scrolled = new Map();  // element -> its place
     let scrollTimer = 0;
     document.addEventListener("scroll", (e) => {
-        if (!e.isTrusted || !doc || performance.now() - lastInput > 3000) return;
+        if (!e.isTrusted || !doc || (performance.now() - lastInput > 3000 && performance.now() - pageScrolled > 3000)) return;
         const el = e.target === document ? document.documentElement : e.target;
         if (el?.nodeType !== 1) return;
         scrolled.set(el, el === document.documentElement ? { x: scrollX, y: scrollY } : { x: el.scrollLeft, y: el.scrollTop });
+        sizedSoon();
         if (scrollTimer) return;
         scrollTimer = setTimeout(() => {
             scrollTimer = 0;
-            for (const [el, at] of scrolled) {
-                const id = doc?.ids.get(el);
-                if (id) send("scroll", id, { sx: Math.round(at.x), sy: Math.round(at.y) });
-            }
+            for (const el of scrolled.keys()) tellScrolled(el);
             scrolled.clear();
         }, 100);
     }, { capture: true, passive: true });

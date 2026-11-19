@@ -215,6 +215,25 @@ for (const name of ["MutationObserver", "IntersectionObserver", "ResizeObserver"
 }
 setTimeout(() => { document.getElementById("inner").textContent = "inner changed"; }, 800);
 </script>`,
+        "reels.html": `<!doctype html><title>Reels</title><style>#box { height: 300px; width: 200px; overflow-y: scroll; scroll-snap-type: y mandatory } .reel { height: 280px; margin-bottom: 20px; scroll-snap-align: start; background: #ddd }</style>
+<div id="box">${Array.from({ length: 10 }, (_, i) => `<div class="reel">reel ${i}</div>`).join("")}</div><p id="status">not scrolled</p><p id="sized">not sized</p><button id="next">next</button>
+<script>
+// As YouTube's Shorts goes by it: a reel's height from the box's scroll height
+// when the box is resized, which reel shows from where it's scrolled.
+const box = document.getElementById("box");
+let item = 0;
+new ResizeObserver((entries) => {
+    item = box.scrollHeight / 10;
+    document.getElementById("sized").textContent = "box " + entries[0].contentRect.height + " high, reels " + item;
+}).observe(box);
+box.addEventListener("scroll", () => {
+    document.getElementById("status").textContent = item ? "reel " + Math.round(box.scrollTop / item) : "no reel height";
+});
+// Its next button scrolls the next reel into view, as Shorts' does.
+document.getElementById("next").addEventListener("click", () => {
+    box.children[Math.round(box.scrollTop / item) + 1]?.scrollIntoView({ block: "start" });
+});
+</script>`,
         "cssom.html": `<!doctype html><title>Rules</title><style id="css"></style><p id="early">early</p><p id="late">late</p>
 <script>
 // As styled-components and Emotion do in production: rules into the sheet, no text.
@@ -998,6 +1017,23 @@ async function check(base, port, site) {
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
         }
+    });
+
+    await step("a scroll box's sizes and scrolling, as shown, for a page that goes by them", async () => {
+        await goTo(site + "reels.html", "Reels");
+        await frameWait(`document.getElementById("sized")?.textContent === "box 300 high, reels 300"`, "the box's sizes, as shown");
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        const box = JSON.parse(await frame(`(() => { const b = document.getElementById("box").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); })()`));
+        for (const want of [1, 2]) {
+            await cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: f.x + box.x, y: f.y + box.y, deltaX: 0, deltaY: 300 });
+            await frameWait(`document.getElementById("status")?.textContent === "reel ${want}"`, `reel ${want}, scrolled to`);
+        }
+        // The page scrolling it itself: shown scrolled, and the page told
+        // where it went.
+        const next = JSON.parse(await frame(`(() => { const b = document.getElementById("next").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); })()`));
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + next.x, y: f.y + next.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await frameWait(`document.getElementById("box")?.scrollTop === 900`, "the box scrolled by the page, shown");
+        await frameWait(`document.getElementById("status")?.textContent === "reel 3"`, "reel 3, scrolled to by the page");
     });
 
     await step("rules put into a stylesheet by script, as it loads and after", async () => {
