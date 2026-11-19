@@ -442,6 +442,14 @@
             viewport.textContent = "Embedded page unavailable";
             return;
         }
+        // What has the focus in the copy keeps it, read again (as typing
+        // there makes it be): its caret, and what's typed that hasn't been
+        // sent, which goes on to the new copy's field.
+        const was = frameRoots.get(el).child, focused = el.shadowRoot?.activeElement;
+        const keep = was && focused && was.ids.get(focused) ? {
+            i: was.ids.get(focused), old: focused, value: pending.has(focused) ? focused.value : undefined,
+            caret: textLike(focused) ? [focused.selectionStart, focused.selectionEnd] : null,
+        } : null;
         const content = document.createElement("div");
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
         frameRoots.get(el).child = child;  // its nodes, by the frame's own numbers (whereAt)
@@ -451,6 +459,17 @@
         children(child, content, frame.c, HTML);
         d.waits.push(...child.waits);
         viewport.replaceChildren(content);
+        const now = keep && child.nodes.get(keep.i);
+        if (now?.nodeType === 1) {
+            if (keep.value !== undefined && textLike(now)) {
+                now.value = keep.value;
+                clearTimeout(pending.get(keep.old));
+                pending.delete(keep.old);
+                pending.set(now, setTimeout(() => flush(now), 150));
+            }
+            now.focus({ preventScroll: true });
+            if (keep.caret) try { now.setSelectionRange(...keep.caret); } catch { /* no caret */ }
+        }
     }
 
     function embeddedFrame(d, n) {
@@ -1204,6 +1223,24 @@
         }
         return null;
     }
+    // targetOf is what node is to the engine: its number in the page (id),
+    // or, in an embedded page's copy, its number there (frame) with its
+    // iframe's (id); and the node numbered. An event's own target is the
+    // first of its path (one in a copy is retargeted to the copy's box).
+    const real = (e) => e.composedPath?.()[0] ?? e.target;
+    function targetOf(node) {
+        const root = node?.getRootNode?.();
+        if (root instanceof ShadowRoot) {
+            const fr = frameRoots.get(root.host), host = doc?.ids.get(root.host);
+            for (let n = node; n && n !== root && fr?.child && host; n = n.parentNode) {
+                const i = fr.child.ids.get(n);
+                if (i) return { id: host, frame: i, node: n };
+            }
+            return null;
+        }
+        const at = idOf(node);
+        return at && { ...at, frame: 0 };
+    }
     function send(kind, id, extra = {}) {
         if (!doc || current !== doc.gen) return;
         tell({ type: "event", gen: doc.gen, kind, id, ...extra });
@@ -1217,8 +1254,8 @@
         if (timer === undefined) return;
         clearTimeout(timer);
         pending.delete(field);
-        const id = doc?.ids.get(field);
-        if (id) send("input", id, { value: field.value });
+        const at = targetOf(field);
+        if (at) send("input", at.id, { value: field.value, frame: at.frame });
     }
     function flushAll(within) {
         for (const field of [...pending.keys()]) if (!within || within.contains(field)) flush(field);
@@ -1438,8 +1475,7 @@
         if (!e.isTrusted || fromTouch(e)) return;
         const w = where(e);
         if (!w) return;
-        if (w.frame) return;  // an embedded page's: presses and releases only, for now
-        move = { phase: "move", id: w.id, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
+        move = { phase: "move", id: w.id, frame: w.frame, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, true);
     document.addEventListener("wheel", (e) => {
@@ -1447,8 +1483,7 @@
         const w = where(e);
         if (!w) return;
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
-        if (w.frame) return;
-        wheel = { phase: "wheel", id: w.id, fx: w.fx, fy: w.fy, dx: (wheel?.dx ?? 0) + e.deltaX * unit, dy: (wheel?.dy ?? 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
+        wheel = { phase: "wheel", id: w.id, frame: w.frame, fx: w.fx, fy: w.fy, dx: (wheel?.frame === w.frame ? wheel?.dx ?? 0 : 0) + e.deltaX * unit, dy: (wheel?.frame === w.frame ? wheel?.dy ?? 0 : 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, { capture: true, passive: true });
 
@@ -1555,17 +1590,17 @@
         }
     }, true);
     document.addEventListener("input", (e) => {
-        const el = e.target;
-        if (!e.isTrusted || !textLike(el) || !doc?.ids.get(el)) return;
+        const el = real(e);
+        if (!e.isTrusted || !textLike(el) || !targetOf(el)) return;
         clearTimeout(pending.get(el));
         pending.set(el, setTimeout(() => flush(el), 150));
     }, true);
     document.addEventListener("change", (e) => {
-        const el = e.target;
-        const id = doc?.ids.get(el);
+        const el = real(e);
+        const at = targetOf(el);
         // (Boxes are ticked by their clicks; text by its typing.)
-        if (!e.isTrusted || !id || textLike(el) || el.type === "checkbox" || el.type === "radio") return;
-        send("change", id, { value: String(el.value ?? "") });
+        if (!e.isTrusted || !at || at.node !== el || textLike(el) || el.type === "checkbox" || el.type === "radio") return;
+        send("change", at.id, { value: String(el.value ?? ""), frame: at.frame });
     }, true);
     // Keys: given to the engine as keys, every one, to what has the focus
     // here (the engine gives it the focus first). What's typed is typed here
@@ -1573,20 +1608,20 @@
     // what else keys do (Enter sends a form, Space presses a button).
     function keyEvent(e, type) {
         if (!e.isTrusted || e.isComposing || e.key === "Process" || e.key === "Dead") return;
-        const at = idOf(e.target);
+        const at = targetOf(real(e));
         if (!at) return;
         flush(at.node);  // what was typed, before the key that may use it
         if (type === "down" && (e.key === "Enter" || e.key === " ")) lastActivation = performance.now();
         if (type === "down" && e.key === "Enter") lastEnter = performance.now();
-        send("key", at.id, { phase: type, key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
+        send("key", at.id, { phase: type, frame: at.frame, key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
     }
     document.addEventListener("keydown", (e) => keyEvent(e, "down"), true);
     document.addEventListener("keyup", (e) => keyEvent(e, "up"), true);
     // What has the focus here has it there, for the keys that follow.
     document.addEventListener("focusin", (e) => {
         if (!e.isTrusted) return;
-        const at = idOf(e.target);
-        if (at && at.node === e.target && at.node.nodeType === 1) send("focus", at.id);
+        const n = real(e), at = targetOf(n);
+        if (at && at.node === n && n.nodeType === 1) send("focus", at.id, { frame: at.frame });
     }, true);
     // Forms aren't sent from here (form-action 'none'): the engine sends
     // them. Enter in a field sends its form there already, with its key.
@@ -1595,11 +1630,11 @@
         // Sent by a click on its button, or Enter in a field: the engine
         // sends it, from those, already.
         if (performance.now() - lastEnter < 200 || performance.now() - lastClick < 200) return;
-        const form = idOf(e.target);
+        const form = targetOf(real(e));
         if (!form) return;
-        flushAll(e.target);
-        const by = e.submitter ? doc?.ids.get(e.submitter) : 0;
-        send("submit", form.id, { submitter: by || 0 });
+        flushAll(real(e));
+        const by = e.submitter ? targetOf(e.submitter) : null;
+        send("submit", form.id, { submitter: (form.frame ? by?.frame : by?.id) || 0, frame: form.frame });
     }, true);
 
     // A link goes nowhere here (its href is "#"); where it goes is kept.

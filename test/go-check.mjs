@@ -228,7 +228,15 @@ setTimeout(() => sheet.insertRule("#late { color: rgb(4, 5, 6) }", sheet.cssRule
 document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xinner.html";
 </script>`,
         "xinner.html": `<!doctype html><style>/* old Internet Explorer's hacks, which match nothing in a document */ * html #b, *:first-child+html #b { display: none }</style><button id="b">press</button> <span id="s">not pressed</span>
-<script>document.getElementById("b").addEventListener("click", () => { document.getElementById("s").textContent = "pressed " + location.hostname; });</script>`,
+<form id="f"><input id="t" name="t"></form><span id="echo">nothing typed</span> <span id="sent">not sent</span>
+<div id="h" style="width:120px;height:20px;background:#ddd">hover me</div><span id="hs">not hovered</span>
+<script>
+const $ = (i) => document.getElementById(i);
+$("b").addEventListener("click", () => { $("s").textContent = "pressed " + location.hostname; });
+$("t").addEventListener("input", () => { $("echo").textContent = "typed " + $("t").value; });
+$("f").addEventListener("submit", (e) => { e.preventDefault(); $("sent").textContent = "sent " + $("t").value; });
+$("h").addEventListener("mouseenter", () => { $("hs").textContent = "hovered"; });
+</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -949,7 +957,7 @@ async function check(base, port, site) {
         }
     });
 
-    await step("a press in an embedded page of another origin reaches it there", async () => {
+    await step("a press, typing, Enter and hover in an embedded page of another origin reach it there", async () => {
         await goTo(site + "xframe.html", "Other origin");
         const inner = (expr) => frame(`(() => { const root = document.getElementById("x")?.shadowRoot; return root ? (${expr})(root) : null; })()`);
         await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`, "the embedded page's copy", 20000);
@@ -957,6 +965,20 @@ async function check(base, port, site) {
         const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
         for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + p.x, y: f.y + p.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
         await frameWait(`/^pressed \\[/.test(document.getElementById("x")?.shadowRoot?.querySelector("#s")?.textContent || "")`, "the press in the other origin's page", 15000);
+        const inCopy = async (sel) => {
+            const q = JSON.parse(await inner(`(root) => { const e = root.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return JSON.stringify({ x: e.x + e.width / 2, y: e.y + e.height / 2 }); }`));
+            return { x: f.x + q.x, y: f.y + q.y };
+        };
+        // Typing in it, and Enter sending its form.
+        const field = await inCopy("#t");
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, ...field, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await browser.type("hi");
+        await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#echo")?.textContent === "typed hi"`, "what was typed, in the other origin's page", 15000);
+        await browser.press("Enter");
+        await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#sent")?.textContent === "sent hi"`, "its form sent by Enter", 15000);
+        // Hovering.
+        await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", ...(await inCopy("#h")), button: "none" });
+        await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#hs")?.textContent === "hovered"`, "the hover in the other origin's page", 15000);
     });
 
     await step("rules put into a stylesheet by script, as it loads and after", async () => {

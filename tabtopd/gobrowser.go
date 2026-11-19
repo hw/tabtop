@@ -1358,6 +1358,22 @@ func goCleanOps(raw []json.RawMessage) []any {
 
 // act does what the person did, in the page, then reads what it changed.
 func (b *goBrowser) act(m goClientMsg) {
+	if m.Frame != 0 {
+		// In an embedded page: by its own agent, as the engine's input
+		// can't be aimed there (goinput.go).
+		switch {
+		case m.Kind == "mouse":
+			b.pointerInFrame(m)
+		case m.Kind == "key" && m.Type == "up":
+			// A key's press is done by script, all of it (keydown,
+			// keypress, keyup; Enter sending its form): its release is in it.
+		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus":
+			if len(m.Value) <= maxGoURL*8 {
+				b.actInFrame(m)
+			}
+		}
+		return
+	}
 	switch {
 	case m.Kind == "mouse":
 		b.pointer(m) // real input (goinput.go)

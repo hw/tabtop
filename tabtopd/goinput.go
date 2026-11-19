@@ -217,32 +217,28 @@ func (b *goBrowser) drag(m goClientMsg) {
 	}
 }
 
-// pointerInFrame gives a press, release or let go to an element of an
-// embedded page (m.Frame, by the frame's own number; m.ID its iframe's):
-// by script, in the world its numbers are of (the frame's own, for another
-// origin's; the page's, for its own origin's, which the page's agent
-// numbers), as the agent's mouse (pointer and mouse events, a click where
-// it was pressed). The frame is read again soon after: what it changed.
-func (b *goBrowser) pointerInFrame(m goClientMsg) {
-	if m.Type != "down" && m.Type != "up" && m.Type != "cancel" {
-		return
-	}
-	world := 0
-	var child *goChild
+// frameWorld is the world an embedded page's numbers are of, its iframe
+// being the page's element owner: the frame's own, for another origin's;
+// the page's, for its own origin's (the page's agent numbers it). 0, nil
+// if it's none of the page's frames (any more).
+func (b *goBrowser) frameWorld(owner int) (int, *goChild) {
 	for _, c := range b.children {
-		if c.owner == m.ID {
-			child = c
-			break
+		if c.owner == owner {
+			if c.same {
+				return b.world, c
+			}
+			return c.world, c
 		}
 	}
-	switch {
-	case child == nil:
-		return // not one of the page's frames (any more)
-	case child.same:
-		world = b.world // the page's agent numbered it
-	default:
-		world = child.world
-	}
+	return 0, nil
+}
+
+// inFrame runs one of the agent's calls in an embedded page's world, on
+// the acts' queue, in that world only (were it gone, another world's
+// numbers are another document's: evaluate would make the page's); then
+// the frame is read again on the next round, and what the page changed.
+func (b *goBrowser) inFrame(owner int, what string, expr string) {
+	world, child := b.frameWorld(owner)
 	if world == 0 || b.acts.waiting() >= goActsWaiting {
 		return
 	}
@@ -250,19 +246,13 @@ func (b *goBrowser) pointerInFrame(m goClientMsg) {
 	b.acts.add(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), goInputWait)
 		defer cancel()
-		// In that world only: were it gone, another's numbers are
-		// another document's (evaluate would make the page's).
-		what, _ := json.Marshal(map[string]any{"kind": "mouse", "type": m.Type, "id": m.Frame, "fx": m.FX, "fy": m.FY,
-			"button": int(goClamp(float64(m.Button), 0, 4)), "buttons": m.Buttons, "count": m.Count,
-			"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
-		arg, _ := json.Marshal(string(what))
 		var r struct {
 			Result struct {
 				Value string `json:"value"`
 			} `json:"result"`
 		}
-		err := b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"expression": "__tabtop.scripted(" + string(arg) + ")", "contextId": world, "returnByValue": true}, &r)
-		goDebugf("frame %d mouse %s on %d: %s %v", m.ID, m.Type, m.Frame, r.Result.Value, err)
+		err := b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"expression": expr, "contextId": world, "returnByValue": true}, &r)
+		goDebugf("frame %d %s: %s %v", owner, what, r.Result.Value, err)
 		b.post(func() {
 			if gen != b.gen {
 				return
@@ -271,6 +261,38 @@ func (b *goBrowser) pointerInFrame(m goClientMsg) {
 			b.afterInput(gen)
 		})
 	})
+}
+
+// pointerInFrame gives the mouse to an element of an embedded page
+// (m.Frame, by the frame's own number; m.ID its iframe's), by script, as
+// the agent's mouse (pointer and mouse events, entering and leaving, a
+// click where pressed, the wheel): its places there needn't be the copy's.
+func (b *goBrowser) pointerInFrame(m goClientMsg) {
+	switch m.Type {
+	case "down", "up", "cancel", "move", "wheel":
+	default:
+		return
+	}
+	what, _ := json.Marshal(map[string]any{"kind": "mouse", "type": m.Type, "id": m.Frame, "fx": m.FX, "fy": m.FY,
+		"button": int(goClamp(float64(m.Button), 0, 4)), "buttons": m.Buttons, "count": m.Count,
+		"dx": goClamp(m.DX, -10000, 10000), "dy": goClamp(m.DY, -10000, 10000),
+		"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
+	arg, _ := json.Marshal(string(what))
+	b.inFrame(m.ID, "mouse "+m.Type, "__tabtop.scripted("+string(arg)+")")
+}
+
+// actInFrame does what the person did in an embedded page (typing, a
+// change, a key, focus, a form sent) by the agent there (act), as it's
+// done when the engine won't take input: m.Frame its element.
+func (b *goBrowser) actInFrame(m goClientMsg) {
+	submitter := 0
+	if m.Kind == "submit" {
+		submitter = m.Submitter
+	}
+	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.Frame, "value": m.Value, "checked": m.Checked, "key": m.Key,
+		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": submitter})
+	arg, _ := json.Marshal(string(a))
+	b.inFrame(m.ID, m.Kind, "__tabtop.act("+string(arg)+")")
 }
 
 // movesOn queues the waiting move, wheel turn, touch move and drag, if
