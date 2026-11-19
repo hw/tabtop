@@ -258,10 +258,18 @@
         const ast = css.parse(text, { positions: false, parseValue: true, parseCustomProperty: true });
         const imports = [];
         const loads = [];
+        const never = [];  // selectors that can't match a document: {item, list}
         let font = 0;
         css.walk(ast, {
             enter(node, item, list) {
-                if (node.type === "TypeSelector" && drawnAs[node.name.toLowerCase()] && list) {
+                if (node.type === "Selector" && list && node.children.some((k, i, all) => k.type === "TypeSelector" && k.name.toLowerCase() === "html" &&
+                    all.toArray().slice(0, all.toArray().indexOf(k)).some((p) => p.type === "Combinator"))) {
+                    // An html with something before it (* html, *+html: old
+                    // Internet Explorer's hacks) is never in a document: its
+                    // root has no parent nor sibling. An embedded page's copy
+                    // has its html in a box (embeddedFrame), where it would.
+                    never.push({ item, list });
+                } else if (node.type === "TypeSelector" && drawnAs[node.name.toLowerCase()] && list) {
                     // An iframe, video or audio is drawn as a box of its own
                     // (embeddedFrame, mediaBox): the page's rules for them
                     // are for it.
@@ -282,6 +290,13 @@
                 if (node.type === "Atrule" && node.name.toLowerCase() === "font-face") font--;
             },
         });
+        for (const { item, list } of never) list.remove(item);
+        if (never.length) {
+            // A rule left with no selector is no rule.
+            const empty = [];
+            css.walk(ast, { visit: "Rule", enter(node, item, list) { if (node.prelude?.type === "SelectorList" && node.prelude.children.isEmpty && list) empty.push({ item, list }); } });
+            for (const { item, list } of empty) list.remove(item);
+        }
         await Promise.all(loads.map(async ({ node, kind }) => {
             try {
                 node.value = await load(kind, node.value, base);
@@ -428,8 +443,8 @@
             return;
         }
         const content = document.createElement("div");
-        content.inert = true;
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
+        frameRoots.get(el).child = child;  // its nodes, by the frame's own numbers (whereAt)
         child.top = d.top ?? d;  // its boxes are its page's
         child.budget = d.budget;
         child.report = d.report;
@@ -1231,13 +1246,25 @@
         if (!under) return null;  // outside the frame
         const at = idOf(under);
         if (!at || at.node.nodeType !== 1) return null;
-        // Over an embedded page's copy: nothing. The engine would give it to
-        // the page in the frame, at a place that needn't be what's shown
-        // here (its size and scroll differ), and the copy takes no input.
-        if (frameRoots.has(at.node)) return null;
-        const r = at.node.getBoundingClientRect();
         const f = (v, size) => (size > 0 ? Math.min(1, Math.max(0, v / size)) : 0.5);
-        return { id: at.id, fx: Math.round(f(cx - r.left, r.width) * 1000) / 1000, fy: Math.round(f(cy - r.top, r.height) * 1000) / 1000 };
+        const place = (n) => {
+            const r = n.getBoundingClientRect();
+            return { fx: Math.round(f(cx - r.left, r.width) * 1000) / 1000, fy: Math.round(f(cy - r.top, r.height) * 1000) / 1000 };
+        };
+        // Over an embedded page's copy: its element, by its page's own
+        // number (frame), with its iframe's (id): the engine gives it to the
+        // page in the frame there, by script (its places there needn't be
+        // these: the frame's size and scroll differ).
+        const fr = frameRoots.get(at.node);
+        if (fr) {
+            const inner = at.node.shadowRoot?.elementFromPoint?.(cx, cy);
+            for (let n = inner; n && fr.child; n = n.parentNode) {
+                const i = fr.child.ids.get(n);
+                if (i && n.nodeType === 1) return { id: at.id, frame: i, ...place(n) };
+            }
+            return null;
+        }
+        return { id: at.id, ...place(at.node) };
     }
     let held = 0;  // buttons pressed here, not yet released
     let pressedAt = null;
@@ -1249,7 +1276,7 @@
         lastClick = performance.now();
         held |= 1 << e.button;
         pressedAt = w;
-        send("mouse", w.id, { phase: "down", fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+        send("mouse", w.id, { phase: "down", frame: w.frame, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     document.addEventListener("mouseup", (e) => {
         if (!e.isTrusted || fromTouch(e) || !(held & (1 << e.button))) return;
@@ -1259,7 +1286,7 @@
         // Let go outside the frame: let go, away from what was pressed (no
         // click).
         if (!w) send("mouse", 0, { phase: "cancel", button: e.button });
-        else send("mouse", w.id, { phase: "up", fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+        else send("mouse", w.id, { phase: "up", frame: w.frame, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     // Let go outside the frame, or the window left: nothing stays pressed.
     const cancel = () => {
@@ -1411,6 +1438,7 @@
         if (!e.isTrusted || fromTouch(e)) return;
         const w = where(e);
         if (!w) return;
+        if (w.frame) return;  // an embedded page's: presses and releases only, for now
         move = { phase: "move", id: w.id, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, true);
@@ -1419,6 +1447,7 @@
         const w = where(e);
         if (!w) return;
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+        if (w.frame) return;
         wheel = { phase: "wheel", id: w.id, fx: w.fx, fy: w.fy, dx: (wheel?.dx ?? 0) + e.deltaX * unit, dy: (wheel?.dy ?? 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, { capture: true, passive: true });

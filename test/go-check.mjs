@@ -222,6 +222,13 @@ const sheet = document.getElementById("css").sheet;
 sheet.insertRule("#early { color: rgb(1, 2, 3) }");
 setTimeout(() => sheet.insertRule("#late { color: rgb(4, 5, 6) }", sheet.cssRules.length), 800);
 </script>`,
+        "xframe.html": `<!doctype html><title>Other origin</title><p>a page of another origin:</p><iframe id="x" width="300" height="80"></iframe>
+<script>
+// The same server by another name (its address as IPv6): another origin.
+document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xinner.html";
+</script>`,
+        "xinner.html": `<!doctype html><style>/* old Internet Explorer's hacks, which match nothing in a document */ * html #b, *:first-child+html #b { display: none }</style><button id="b">press</button> <span id="s">not pressed</span>
+<script>document.getElementById("b").addEventListener("click", () => { document.getElementById("s").textContent = "pressed " + location.hostname; });</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -483,10 +490,10 @@ async function check(base, port, site) {
         const valid = await frame(`(() => {
             const root = document.getElementById("embedded").shadowRoot;
             const paragraph = root.getElementById("embedded-text");
-            return root.querySelector("script, iframe, [onclick]") === null &&
-                !!paragraph.closest("[inert]") && getComputedStyle(paragraph).color === "rgb(0, 128, 128)";
+            // (Not inert: presses in it go to its page, in the engine.)
+            return root.querySelector("script, iframe, [onclick]") === null && getComputedStyle(paragraph).color === "rgb(0, 128, 128)";
         })()`);
-        if (!valid) throw new Error("embedded snapshot was not sanitized, inert, and styled");
+        if (!valid) throw new Error("embedded snapshot was not sanitized and styled");
     });
 
     await step("the frame can't reach the page, the site or the web", async () => {
@@ -940,6 +947,16 @@ async function check(base, port, site) {
                     video.getBoundingClientRect().width > 290 && video.getBoundingClientRect().height === 180;
             })()`, `only clip ${i + 1} retained at the feed dimensions`);
         }
+    });
+
+    await step("a press in an embedded page of another origin reaches it there", async () => {
+        await goTo(site + "xframe.html", "Other origin");
+        const inner = (expr) => frame(`(() => { const root = document.getElementById("x")?.shadowRoot; return root ? (${expr})(root) : null; })()`);
+        await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`, "the embedded page's copy", 20000);
+        const p = JSON.parse(await inner(`(root) => { const b = root.querySelector("#b").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); }`));
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + p.x, y: f.y + p.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await frameWait(`/^pressed \\[/.test(document.getElementById("x")?.shadowRoot?.querySelector("#s")?.textContent || "")`, "the press in the other origin's page", 15000);
     });
 
     await step("rules put into a stylesheet by script, as it loads and after", async () => {

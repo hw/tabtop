@@ -138,6 +138,10 @@ func goClamp(v, lo, hi float64) float64 {
 // pointer takes a mouse event from the person: a press, release or end of a
 // drag in order; a move or wheel turn kept, newest, until the last is done.
 func (b *goBrowser) pointer(m goClientMsg) {
+	if m.Frame != 0 {
+		b.pointerInFrame(m)
+		return
+	}
 	switch m.Type {
 	case "move", "wheel":
 		if b.dialog {
@@ -211,6 +215,62 @@ func (b *goBrowser) drag(m goClientMsg) {
 			b.post(func() { b.afterInput(gen) })
 		})
 	}
+}
+
+// pointerInFrame gives a press, release or let go to an element of an
+// embedded page (m.Frame, by the frame's own number; m.ID its iframe's):
+// by script, in the world its numbers are of (the frame's own, for another
+// origin's; the page's, for its own origin's, which the page's agent
+// numbers), as the agent's mouse (pointer and mouse events, a click where
+// it was pressed). The frame is read again soon after: what it changed.
+func (b *goBrowser) pointerInFrame(m goClientMsg) {
+	if m.Type != "down" && m.Type != "up" && m.Type != "cancel" {
+		return
+	}
+	world := 0
+	var child *goChild
+	for _, c := range b.children {
+		if c.owner == m.ID {
+			child = c
+			break
+		}
+	}
+	switch {
+	case child == nil:
+		return // not one of the page's frames (any more)
+	case child.same:
+		world = b.world // the page's agent numbered it
+	default:
+		world = child.world
+	}
+	if world == 0 || b.acts.waiting() >= goActsWaiting {
+		return
+	}
+	gen := b.gen
+	b.acts.add(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), goInputWait)
+		defer cancel()
+		// In that world only: were it gone, another's numbers are
+		// another document's (evaluate would make the page's).
+		what, _ := json.Marshal(map[string]any{"kind": "mouse", "type": m.Type, "id": m.Frame, "fx": m.FX, "fy": m.FY,
+			"button": int(goClamp(float64(m.Button), 0, 4)), "buttons": m.Buttons, "count": m.Count,
+			"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
+		arg, _ := json.Marshal(string(what))
+		var r struct {
+			Result struct {
+				Value string `json:"value"`
+			} `json:"result"`
+		}
+		err := b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"expression": "__tabtop.scripted(" + string(arg) + ")", "contextId": world, "returnByValue": true}, &r)
+		goDebugf("frame %d mouse %s on %d: %s %v", m.ID, m.Type, m.Frame, r.Result.Value, err)
+		b.post(func() {
+			if gen != b.gen {
+				return
+			}
+			child.due, child.next, b.framesAt = true, time.Time{}, time.Time{} // read again, next round
+			b.afterInput(gen)
+		})
+	})
 }
 
 // movesOn queues the waiting move, wheel turn, touch move and drag, if

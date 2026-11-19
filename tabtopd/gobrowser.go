@@ -296,6 +296,9 @@ type goClientMsg struct {
 	SY float64 `json:"sy"`
 	// touch: Type start, move, end or cancel; the fingers down, and
 	// whether it was a tap (an end that didn't move).
+	// mouse in an embedded page: its element, by the frame's own number
+	// (ID being its iframe's).
+	Frame  int            `json:"frame"`
 	Points []goTouchPoint `json:"points"`
 	Tap    bool           `json:"tap"`
 	// drag: Type over, drop or cancel, at the element and place a mouse
