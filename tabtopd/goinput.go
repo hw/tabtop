@@ -237,9 +237,17 @@ func (b *goBrowser) frameWorld(owner int) (int, *goChild) {
 // the acts' queue, in that world only (were it gone, another world's
 // numbers are another document's: evaluate would make the page's); then
 // the frame is read again on the next round, and what the page changed.
-func (b *goBrowser) inFrame(owner int, what string, expr string) {
+func (b *goBrowser) inFrame(owner, fdoc int, what string, expr string) {
 	world, child := b.frameWorld(owner)
 	if world == 0 || b.acts.waiting() >= goActsWaiting {
+		return
+	}
+	// Another origin's page numbers its nodes anew in each document (each
+	// a world of its own): what was done in the copy of one isn't for the
+	// next (it went elsewhere, or was replaced), whose same numbers are
+	// other nodes, perhaps another site's.
+	if !child.same && fdoc != world {
+		goDebugf("frame %d %s: for a document gone (%d, now %d)", owner, what, fdoc, world)
 		return
 	}
 	gen := b.gen
@@ -278,7 +286,7 @@ func (b *goBrowser) pointerInFrame(m goClientMsg) {
 		"dx": goClamp(m.DX, -10000, 10000), "dy": goClamp(m.DY, -10000, 10000),
 		"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
 	arg, _ := json.Marshal(string(what))
-	b.inFrame(m.ID, "mouse "+m.Type, "__tabtop.scripted("+string(arg)+")")
+	b.inFrame(m.ID, m.FDoc, "mouse "+m.Type, "__tabtop.scripted("+string(arg)+")")
 }
 
 // actInFrame does what the person did in an embedded page (typing, a
@@ -292,7 +300,7 @@ func (b *goBrowser) actInFrame(m goClientMsg) {
 	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.Frame, "value": m.Value, "checked": m.Checked, "key": m.Key,
 		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": submitter})
 	arg, _ := json.Marshal(string(a))
-	b.inFrame(m.ID, m.Kind, "__tabtop.act("+string(arg)+")")
+	b.inFrame(m.ID, m.FDoc, m.Kind, "__tabtop.act("+string(arg)+")")
 }
 
 // movesOn queues the waiting move, wheel turn, touch move and drag, if

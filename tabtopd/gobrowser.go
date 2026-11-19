@@ -299,6 +299,7 @@ type goClientMsg struct {
 	// mouse in an embedded page: its element, by the frame's own number
 	// (ID being its iframe's).
 	Frame  int            `json:"frame"`
+	FDoc   int            `json:"fdoc"` // which of its documents Frame is of (its world, as its copy came)
 	Points []goTouchPoint `json:"points"`
 	Tap    bool           `json:"tap"`
 	// drag: Type over, drop or cancel, at the element and place a mouse

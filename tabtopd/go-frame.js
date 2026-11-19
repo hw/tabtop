@@ -434,7 +434,7 @@
         }
     }
 
-    function renderFrame(d, el, kids) {
+    function renderFrame(d, el, kids, docOf = 0) {
         const { viewport } = frameRoots.get(el);
         const frame = Array.isArray(kids) && kids.find((k) => k?.t === 9);
         if (!frame) {
@@ -445,8 +445,17 @@
         // What has the focus in the copy keeps it, read again (as typing
         // there makes it be): its caret, and what's typed that hasn't been
         // sent, which goes on to the new copy's field.
-        const was = frameRoots.get(el).child, focused = el.shadowRoot?.activeElement;
-        const keep = was && focused && was.ids.get(focused) ? {
+        // Only for the same document: another (the frame went elsewhere)
+        // numbers its nodes anew, and what was typed for one isn't the
+        // other's. What wasn't sent of it is dropped.
+        const fr = frameRoots.get(el), was = fr.child, focused = el.shadowRoot?.activeElement;
+        const same = fr.docOf === docOf && was?.base === web(frame?.b, "about:blank");
+        if (!same && focused && pending.has(focused)) {
+            clearTimeout(pending.get(focused));
+            pending.delete(focused);
+        }
+        fr.docOf = docOf;
+        const keep = same && was && focused && was.ids.get(focused) ? {
             i: was.ids.get(focused), old: focused, value: pending.has(focused) ? focused.value : undefined,
             caret: textLike(focused) ? [focused.selectionStart, focused.selectionEnd] : null,
         } : null;
@@ -1110,6 +1119,12 @@
             if (target.nodeType === 1 && mediaChanged(d, target, op)) continue;
             switch (op.o) {
                 case "c":
+                    if (frameRoots.has(target)) {
+                        // An embedded page read in a world of its own: which
+                        // document it is (its world, the server's word).
+                        renderFrame(d, target, op.c, Number.isSafeInteger(op.f) ? op.f : 0);
+                        break;
+                    }
                     if (!reconcile(d, target, op.c)) return resync(d);
                     break;
                 case "a": {
@@ -1234,7 +1249,7 @@
             const fr = frameRoots.get(root.host), host = doc?.ids.get(root.host);
             for (let n = node; n && n !== root && fr?.child && host; n = n.parentNode) {
                 const i = fr.child.ids.get(n);
-                if (i) return { id: host, frame: i, node: n };
+                if (i) return { id: host, frame: i, fdoc: fr.docOf ?? 0, node: n };
             }
             return null;
         }
@@ -1255,7 +1270,7 @@
         clearTimeout(timer);
         pending.delete(field);
         const at = targetOf(field);
-        if (at) send("input", at.id, { value: field.value, frame: at.frame });
+        if (at) send("input", at.id, { value: field.value, frame: at.frame, fdoc: at.fdoc });
     }
     function flushAll(within) {
         for (const field of [...pending.keys()]) if (!within || within.contains(field)) flush(field);
@@ -1297,7 +1312,7 @@
             const inner = at.node.shadowRoot?.elementFromPoint?.(cx, cy);
             for (let n = inner; n && fr.child; n = n.parentNode) {
                 const i = fr.child.ids.get(n);
-                if (i && n.nodeType === 1) return { id: at.id, frame: i, ...place(n) };
+                if (i && n.nodeType === 1) return { id: at.id, frame: i, fdoc: fr.docOf ?? 0, ...place(n) };
             }
             return null;
         }
@@ -1313,7 +1328,7 @@
         lastClick = performance.now();
         held |= 1 << e.button;
         pressedAt = w;
-        send("mouse", w.id, { phase: "down", frame: w.frame, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+        send("mouse", w.id, { phase: "down", frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     document.addEventListener("mouseup", (e) => {
         if (!e.isTrusted || fromTouch(e) || !(held & (1 << e.button))) return;
@@ -1323,7 +1338,7 @@
         // Let go outside the frame: let go, away from what was pressed (no
         // click).
         if (!w) send("mouse", 0, { phase: "cancel", button: e.button });
-        else send("mouse", w.id, { phase: "up", frame: w.frame, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+        else send("mouse", w.id, { phase: "up", frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     // Let go outside the frame, or the window left: nothing stays pressed.
     const cancel = () => {
@@ -1475,7 +1490,7 @@
         if (!e.isTrusted || fromTouch(e)) return;
         const w = where(e);
         if (!w) return;
-        move = { phase: "move", id: w.id, frame: w.frame, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
+        move = { phase: "move", id: w.id, frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, true);
     document.addEventListener("wheel", (e) => {
@@ -1483,7 +1498,7 @@
         const w = where(e);
         if (!w) return;
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
-        wheel = { phase: "wheel", id: w.id, frame: w.frame, fx: w.fx, fy: w.fy, dx: (wheel?.frame === w.frame ? wheel?.dx ?? 0 : 0) + e.deltaX * unit, dy: (wheel?.frame === w.frame ? wheel?.dy ?? 0 : 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
+        wheel = { phase: "wheel", id: w.id, frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, dx: (wheel?.frame === w.frame ? wheel?.dx ?? 0 : 0) + e.deltaX * unit, dy: (wheel?.frame === w.frame ? wheel?.dy ?? 0 : 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, { capture: true, passive: true });
 
@@ -1600,7 +1615,7 @@
         const at = targetOf(el);
         // (Boxes are ticked by their clicks; text by its typing.)
         if (!e.isTrusted || !at || at.node !== el || textLike(el) || el.type === "checkbox" || el.type === "radio") return;
-        send("change", at.id, { value: String(el.value ?? ""), frame: at.frame });
+        send("change", at.id, { value: String(el.value ?? ""), frame: at.frame, fdoc: at.fdoc });
     }, true);
     // Keys: given to the engine as keys, every one, to what has the focus
     // here (the engine gives it the focus first). What's typed is typed here
@@ -1613,7 +1628,7 @@
         flush(at.node);  // what was typed, before the key that may use it
         if (type === "down" && (e.key === "Enter" || e.key === " ")) lastActivation = performance.now();
         if (type === "down" && e.key === "Enter") lastEnter = performance.now();
-        send("key", at.id, { phase: type, frame: at.frame, key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
+        send("key", at.id, { phase: type, frame: at.frame, fdoc: at.fdoc, key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
     }
     document.addEventListener("keydown", (e) => keyEvent(e, "down"), true);
     document.addEventListener("keyup", (e) => keyEvent(e, "up"), true);
@@ -1621,7 +1636,7 @@
     document.addEventListener("focusin", (e) => {
         if (!e.isTrusted) return;
         const n = real(e), at = targetOf(n);
-        if (at && at.node === n && n.nodeType === 1) send("focus", at.id, { frame: at.frame });
+        if (at && at.node === n && n.nodeType === 1) send("focus", at.id, { frame: at.frame, fdoc: at.fdoc });
     }, true);
     // Forms aren't sent from here (form-action 'none'): the engine sends
     // them. Enter in a field sends its form there already, with its key.
@@ -1634,7 +1649,7 @@
         if (!form) return;
         flushAll(real(e));
         const by = e.submitter ? targetOf(e.submitter) : null;
-        send("submit", form.id, { submitter: (form.frame ? by?.frame : by?.id) || 0, frame: form.frame });
+        send("submit", form.id, { submitter: (form.frame ? by?.frame : by?.id) || 0, frame: form.frame, fdoc: form.fdoc });
     }, true);
 
     // A link goes nowhere here (its href is "#"); where it goes is kept.

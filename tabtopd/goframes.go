@@ -250,7 +250,9 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		}
 		doc := &goNode{ID: s.Doc.ID, Type: 9, Base: s.Base, Kids: s.Doc.Kids}
 		goClean(doc)
-		op, _ := json.Marshal(map[string]any{"o": "c", "i": c.owner, "c": []*goNode{doc}})
+		// f: which document it is, its world (made anew for each), for the
+		// copy to say with what's done in it (inFrame checks it).
+		op, _ := json.Marshal(map[string]any{"o": "c", "i": c.owner, "c": []*goNode{doc}, "f": c.world})
 		if b.framesSent+len(op) > goFramesBytes {
 			c.due = true // next round
 			continue
