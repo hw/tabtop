@@ -398,6 +398,18 @@
             const out = { i: id(n), t: 1, n: name };
             if (a.length) out.a = a;
             let c;
+            if (name === "style" && n.namespaceURI === "http://www.w3.org/1999/xhtml" && !n.textContent.trim()) {
+                // Rules put in by script (styled-components, Emotion: in
+                // production, insertRule, no text): what the copy gets is
+                // what's in the sheet, as a text node of its own, which
+                // changes says again as rules come and go.
+                const r = rulesOf(n);
+                if (r) {
+                    c = [{ i: r.id, t: 3, v: r.text }];
+                    out.c = c;
+                    return out;
+                }
+            }
             if (name === "iframe") {
                 c = n.ownerDocument === document && depth < 600 && (frames.has(n) || frames.size < 64) ? frameKids(n, depth) : [];
             } else {
@@ -405,6 +417,41 @@
             }
             if (c.length) out.c = c;
             return out;
+        }
+        // A <style> with rules but no text: its rules as text, under a number
+        // of its own for the copy's text node (a stand-in object, kept as
+        // long as the element), and how many rules there were when said.
+        const ruled = new Map();  // style element -> {id, count, text, told}
+        let sheetsAsked = 0;
+        document.addEventListener("__tabtop_sheet", (e) => {
+            const r = ruled.get(e.target);
+            if (!r) return;
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (Number.isSafeInteger(d?.count) && typeof d?.text === "string") r.told = { count: d.count, text: d.text.slice(0, 4 << 20) };
+        }, true);
+        function rulesOf(el) {
+            let rules;
+            try { rules = el.sheet?.cssRules; } catch { return null; }
+            const was = ruled.get(el);
+            if (!rules || (!rules.length && !was)) {
+                if (!was && el.isConnected) ruled.set(el, { stand: {}, id: 0, count: 0, text: "" });  // watched for rules to come
+                return null;
+            }
+            let text = "";
+            for (const rule of rules) {
+                text += rule.cssText + "\n";
+                if (text.length > 4 << 20) break;  // a sheet that big is the page's own problem
+            }
+            const r = was ?? { stand: {}, id: 0, count: 0, text: "" };
+            if (!r.id) r.id = id(r.stand);
+            // What the page's world last told, if it's told since: this
+            // world's own read is right only the first time (Moli).
+            if (was?.count && was.count !== rules.length) return was;
+            r.count = rules.length;
+            r.text = text;
+            ruled.set(el, r);
+            return r;
         }
         function kids(n, depth) {
             const c = [];
@@ -518,6 +565,30 @@
             }
             for (const n of texts) {
                 if (n.isConnected && old(n)) ops.push({ o: "t", i: ids.get(n), v: n.data });
+            }
+            // Rules put in or taken out of a <style> by script: no mutation
+            // says so. The page's world says, asked (gosheets.js): this
+            // world's view of a sheet's rules doesn't follow the page's.
+            for (const [el, r] of ruled) {
+                if (!el.isConnected || el.textContent.trim()) { ruled.delete(el); continue; }  // gone, or said by its text now
+                if (!r.told) continue;
+                const { count, text } = r.told;
+                r.told = null;
+                if (count === r.count && text === r.text) continue;
+                r.count = count;
+                r.text = text;
+                if (!r.id) {
+                    // Watched with no rules: its children are said again, the
+                    // stand-in among them.
+                    r.id = id(r.stand);
+                    if (old(el)) ops.push({ o: "c", i: ids.get(el), c: [{ i: r.id, t: 3, v: text }] });
+                    continue;
+                }
+                ops.push({ o: "t", i: r.id, v: text });
+            }
+            if (ruled.size && performance.now() - sheetsAsked > 1000) {
+                sheetsAsked = performance.now();
+                window.postMessage({ __tabtop: "sheets" }, "*");  // posted: see the io-sync below
             }
             for (const n of played) {
                 if (n.isConnected && known(n)) ops.push({ o: "m", i: ids.get(n), v: String(!n.paused && !n.ended) });
@@ -654,8 +725,12 @@
         }
 
         w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted };
-        // What the page observed before this world was made (as it loaded).
-        document.dispatchEvent(new CustomEvent("__tabtop_io_sync"));
+        // What the page observed before this world was made (as it loaded),
+        // asked for again: posted, not dispatched. An event from this world
+        // handled in the page's, as the page loads, leaves part of it
+        // undone in Moli (measured: dbs.com.sg's React never fills in some
+        // of its text); a message comes in a task of the page's own.
+        window.postMessage({ __tabtop: "io-sync" }, "*");
     }
     return w.__tabtop.snapshot();
 })()

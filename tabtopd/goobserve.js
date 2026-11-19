@@ -8,8 +8,9 @@
 //                      observer's root, if it has one) with what's asked as
 //                      JSON; the agent (goagent.js), in its isolated world,
 //                      hears it and sends it on with the document's changes
-//   "__tabtop_io_sync" the agent, when it starts, asks for all of them again
-//                      (a page observes as it loads, before the agent's there)
+//   {__tabtop: "io-sync"} the agent, when it starts, asks for all of them
+//                      again, posted (a page observes as it loads, before the
+//                      agent's there)
 //   "__tabtop_io_entry" the agent hands back what the person's browser saw,
 //                      {o, hit, ratio}, on the element; callbacks are called
 //                      with entries later, from a task of their own, as
@@ -18,7 +19,7 @@
 // It's the page's to see and change, like anything in its world: what it
 // does with that only touches its own copy.
 (() => {
-    const SEND = "__tabtop_io", ENTRY = "__tabtop_io_entry", SYNC = "__tabtop_io_sync";
+    const SEND = "__tabtop_io", ENTRY = "__tabtop_io_entry";
     const MAX_TARGETS = 5000;  // at once, all observers together
     const state = new WeakMap();  // observer -> its state
     const byId = new Map();       // observer's number -> observer
@@ -114,12 +115,17 @@
         tell(target, { op: "+", o: s.id, m: s.margin, t: s.thresholds, r: !!s.element });
     }
 
-    document.addEventListener(SYNC, () => {
+    // The agent, once there, asks for all of them again (a page observes as
+    // it loads, before the agent's there): a message (its source is the
+    // agent's world's view of this window, not this one; the page posting it
+    // only has its own observed again, which is harmless).
+    window.addEventListener("message", (e) => {
+        if (e.data?.__tabtop !== "io-sync") return;
         for (const o of byId.values()) {
             const s = state.get(o);
             for (const t of s.targets) announce(s, t);
         }
-    }, true);
+    });
 
     document.addEventListener(ENTRY, (e) => {
         let d;

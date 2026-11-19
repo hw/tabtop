@@ -370,6 +370,15 @@ Apply the same checks to every mutation batch, not only the initial snapshot.
 - YouTube's Shorts (desktop) plays its first video at its size, but doesn't go on to the next by a swipe, the wheel or a key, nor reliably by its "Next video" button (measured with Moli, even pressed by script in the engine): it goes by its scroll container's layout (`#shorts-container`, its reels' places), which Moli lays out at no height (`ytd-page-manager`, 0); told the container's scroll position and size, it still doesn't. The copy scrolls through the reels, but the engine's page doesn't follow.
 - The `/go` page’s policy gains `media-src 'self'` and `worker-src 'self'`; the frame’s stays `media-src 'none'`. Measured: W3Schools’ HTML5 video page plays its clip (`mov_bbb.mp4`); the server’s fetch had been refused there as Go’s default User-Agent, which the broker’s replaces.
 
+### Rules put into a stylesheet by script
+
+- styled-components and Emotion, in production, put their rules into a `<style>`'s sheet (`insertRule`), leaving it with no text: the copy, built from the text, had none (dbs.com.sg: 215 rules, shown unstyled). A `<style>` with rules and no text is said with a text node of its own (a stand-in, numbered), its rules as text; as rules come and go, that text node's text is said again (`"t"`), and the copy restyles.
+- In Moli the agent's world's view of a sheet's rules stays as it first read it: what the page's script adds later the agent never sees (measured: the page's world 2 rules, the agent's 1). The page's world tells it: asked by a message (`{__tabtop: "sheets"}`, at most once a second, while there are such `<style>`s), `gosheets.js` says, in an event on each whose count has changed, its rules as text.
+
+### What crosses between the worlds
+
+- The agent's world handing the page's world an event that a listener of the page's handles, as the page starts, leaves part of the page undone in Moli: dbs.com.sg's React never fills in its "Annual Report 2025" line (measured: with no listener, or with the event posted instead, it does; on a timer, it still doesn't). The agent's ask for what the page observed before it was there (`io-sync`) was such an event: it's posted now (`window.postMessage`), as the ask for a sheet's rules is, and comes in a task of the page's own. What goes the other way (the page's world's events, heard in the agent's) is unharmed. The agent still hands the page events later, as the person acts (observer entries, a video's size, scripted input): after a page has started, as far as measured.
+
 ### Performance
 
 Measured on the same machine, Wikipedia, GitHub, Hacker News and www.sg, before and after (November 2026):

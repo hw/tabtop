@@ -215,6 +215,13 @@ for (const name of ["MutationObserver", "IntersectionObserver", "ResizeObserver"
 }
 setTimeout(() => { document.getElementById("inner").textContent = "inner changed"; }, 800);
 </script>`,
+        "cssom.html": `<!doctype html><title>Rules</title><style id="css"></style><p id="early">early</p><p id="late">late</p>
+<script>
+// As styled-components and Emotion do in production: rules into the sheet, no text.
+const sheet = document.getElementById("css").sheet;
+sheet.insertRule("#early { color: rgb(1, 2, 3) }");
+setTimeout(() => sheet.insertRule("#late { color: rgb(4, 5, 6) }", sheet.cssRules.length), 800);
+</script>`,
         "big.html": `<!doctype html><title>Big</title><link rel="stylesheet" href="style.css"><ul id="items"></ul>
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
@@ -933,6 +940,12 @@ async function check(base, port, site) {
                     video.getBoundingClientRect().width > 290 && video.getBoundingClientRect().height === 180;
             })()`, `only clip ${i + 1} retained at the feed dimensions`);
         }
+    });
+
+    await step("rules put into a stylesheet by script, as it loads and after", async () => {
+        await goTo(site + "cssom.html", "Rules");
+        await frameWait(`getComputedStyle(document.getElementById("early")).color === "rgb(1, 2, 3)"`, "the rule put in as it loaded");
+        await frameWait(`getComputedStyle(document.getElementById("late")).color === "rgb(4, 5, 6)"`, "the rule put in after");
     });
 
     await step("a large page, sent compressed, and what it changes as it's shown", async () => {

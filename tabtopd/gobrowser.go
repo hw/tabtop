@@ -59,6 +59,12 @@ var goFetchJS string
 //go:embed gomedia.js
 var goMediaJS string
 
+// goSheetsJS tells the agent the rules a page's script put into its
+// <style> elements (gosheets.js).
+//
+//go:embed gosheets.js
+var goSheetsJS string
+
 // goDialogsJS tells the agent what the page asked by alert, confirm and
 // prompt, for an engine that answers them itself (goAdapter.noDialogs).
 //
@@ -141,6 +147,8 @@ type goBrowser struct {
 	lastChange time.Time      // when the document last changed
 	dialog     bool           // a dialog is open
 	dialogMsg  map[string]any // what was sent of it (go-dialog)
+	// navCancel gives up the load under way (navigate).
+	navCancel context.CancelFunc
 	// The generation whose load failed (Page.navigate's error), and where
 	// it was to go.
 	failed    int
@@ -524,7 +532,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goSheetsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -679,8 +687,15 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 	b.loading, b.navigated, b.world, b.dirty, b.docType = gen, false, 0, false, ""
 	b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
 	b.askAgain()
+	// A load another one replaces is given up: its Page.navigate (which an
+	// engine may leave unanswered, sent while a dialog held the page) mustn't
+	// hold up the jobs behind it, the next load and its snapshot among them.
+	if b.navCancel != nil {
+		b.navCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), goLoadTimeout)
+	b.navCancel = cancel
 	b.job(func() any {
-		ctx, cancel := context.WithTimeout(context.Background(), goLoadTimeout)
 		defer cancel()
 		var r struct {
 			FrameID   string `json:"frameId"`
@@ -778,11 +793,15 @@ func (b *goBrowser) setView(v goView) {
 			"screenWidth": v.SW, "screenHeight": v.SH,
 		}, nil)
 		if err == nil && touch {
-			points := 0
+			// Touch points only when it's on (Moli refuses 0); and an engine
+			// that can't is laid out at the new size all the same.
+			p := map[string]any{"enabled": v.Touch}
 			if v.Touch {
-				points = 5
+				p["maxTouchPoints"] = 5
 			}
-			err = b.cdp.call(ctx, b.page, "Emulation.setTouchEmulationEnabled", map[string]any{"enabled": v.Touch, "maxTouchPoints": points}, nil)
+			if terr := b.cdp.call(ctx, b.page, "Emulation.setTouchEmulationEnabled", p, nil); terr != nil {
+				goDebugf("touch emulation %v: %v", v.Touch, terr)
+			}
 		}
 		if err == nil {
 			err = b.relayout(ctx)
@@ -1231,6 +1250,7 @@ func (b *goBrowser) readChanges() {
 			b.seq = c.Seq
 			b.lastChange = time.Now()
 			if c.Again {
+				goDebugf("changes gen %d seq %d: read again (nodes of another world)", gen, c.Seq)
 				b.readAgain(gen)
 				return
 			}
@@ -1289,7 +1309,7 @@ func (b *goBrowser) relayout(ctx context.Context) error {
 // goCleanOps takes event handler attributes and what's never shown out of a
 // batch of changes, as goClean does a snapshot.
 func goCleanOps(raw []json.RawMessage) []any {
-	var out []any
+	out := []any{} // [] if none, not null: a batch may bring only what's observed
 	for _, r := range raw {
 		var op struct {
 			O string    `json:"o"`

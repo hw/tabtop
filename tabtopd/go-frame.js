@@ -915,6 +915,10 @@
             for (const [key, m] of media) if (m.top !== d && m.top.gen <= d.gen || m.top === d && !m.box.isConnected) forgetMedia(key);
             mediaLater();
             observeAll(d, m.io);
+            if (d.ioLater) {
+                observeAll(d, d.ioLater);  // observed as it was built
+                d.ioLater = null;
+            }
             if (m.again) {
                 scrollTo(at.x, at.y);  // the same document, read again
                 if (focused) giveFocus(d, focused);
@@ -1057,8 +1061,9 @@
             .then(() => { for (const el of fresh) el.removeAttribute("data-go-wait"); });
     }
     function applyTo(d, m) {
-        if (!d || m.gen !== d.gen || !Array.isArray(m.ops)) return;
-        for (const op of m.ops) {
+        if (!d || m.gen !== d.gen) return;
+        // (A batch may bring only what the page observes: no changes.)
+        for (const op of Array.isArray(m.ops) ? m.ops : []) {
             if (!op || typeof op !== "object") continue;
             const target = d.nodes.get(op.i);
             if (target === undefined) return resync(d);
@@ -1100,7 +1105,11 @@
         // Stylesheets of what was added: waited for by the page being built,
         // or (hideUntilStyled) by what the batch added to the page shown.
         if (d !== building && !d.fresh) d.waits = [];
-        observeAll(d, m.io);
+        // What the page observes, seen once it's shown: observed out of
+        // view, an element's first report (not in view) would be dropped,
+        // and one that's still not in view once shown never reported.
+        if (d === building) (d.ioLater ??= []).push(...(Array.isArray(m.io) ? m.io : []));
+        else observeAll(d, m.io);
         mediaLater();  // boxes added, gone or moved
         if (typeof m.title === "string") tell({ type: "title", gen: d.gen, title: m.title });
     }
