@@ -8,16 +8,81 @@
 // element say it, and fires the events a browser's does as it learns it.
 // An engine that has found it itself is left as it is.
 //
+// How the person's player plays comes the same way ({play: {t, playing,
+// ended}}, as it starts, stops or ends, and once a second): the element's
+// currentTime (going on as it plays), paused and ended say it, with the
+// events a browser's fires (play, playing, pause, ended, timeupdate). A
+// player script goes by them: YouTube's Shorts shows the next video's
+// player only once its element is playing. Its next file forgets it.
+//
 // It's the page's to see and change, like anything in its world: what it
 // does with that only touches its own copy.
 (() => {
     const SEND = "__tabtop_media";
+    const num = (v, max) => (Number.isFinite(v) && v >= 0 && v <= max ? v : 0);
+    const plays = new WeakMap();  // element -> {t, at, playing, ended}: as the person's player last said
+    const proto = HTMLMediaElement.prototype;
+    const native = {};
+    for (const name of ["currentTime", "paused", "ended"]) native[name] = Object.getOwnPropertyDescriptor(proto, name);
+    const timeOf = (el, p) => {
+        const t = p.playing ? p.t + (performance.now() - p.at) / 1000 : p.t;
+        const d = el.duration;
+        return Number.isFinite(d) && d > 0 ? Math.min(t, d) : t;
+    };
+    const fire = (el, ...types) => { for (const type of types) el.dispatchEvent(new Event(type)); };
+    for (const [name, get, set] of [
+        ["currentTime", (el, p) => timeOf(el, p), (el, p, v) => {
+            p.t = num(Number(v), 1e7);
+            p.at = performance.now();
+            fire(el, "seeking", "seeked", "timeupdate");
+        }],
+        ["paused", (el, p) => !p.playing],
+        ["ended", (el, p) => p.ended],
+    ]) {
+        const was = native[name];
+        if (!was?.get) continue;
+        Object.defineProperty(proto, name, {
+            ...was,
+            get: { [name]() { const p = plays.get(this); return p ? get(this, p) : was.get.call(this); } }[name],
+            ...(was.set ? { set: { [name](v) { const p = plays.get(this); if (p && set) set(this, p, v); else was.set.call(this, v); } }[name] } : {}),
+        });
+    }
+    // timeupdate as a browser's, a few times a second, while one plays.
+    const playing = new Set();
+    let ticking = 0;
+    const tick = () => {
+        for (const el of playing) {
+            if (!el.isConnected || !plays.get(el)?.playing) playing.delete(el);
+            else fire(el, "timeupdate");
+        }
+        if (!playing.size) {
+            clearInterval(ticking);
+            ticking = 0;
+        }
+    };
+    function played(el, d) {
+        const was = plays.get(el);
+        const now = { t: num(d.t, 1e7), at: performance.now(), playing: !!d.playing, ended: !!d.ended };
+        plays.set(el, now);
+        if (now.playing && !was?.playing) fire(el, "play", "playing");
+        if (!now.playing && was?.playing) fire(el, "pause");
+        if (now.ended && !was?.ended) fire(el, "ended");
+        fire(el, "timeupdate");
+        if (now.playing) {
+            playing.add(el);
+            ticking ||= setInterval(tick, 250);
+        }
+    }
     document.addEventListener(SEND, (e) => {
         const el = e.target;
         if (!(el instanceof HTMLMediaElement)) return;
         let d;
         try { d = JSON.parse(e.detail); } catch { return; }
-        const num = (v, max) => (Number.isFinite(v) && v >= 0 && v <= max ? v : 0);
+        if (d?.play && typeof d.play === "object") {
+            played(el, d.play);
+            return;
+        }
+        plays.delete(el);  // a file of its own: how the last played isn't this one's
         const w = num(d?.w, 16384), h = num(d?.h, 16384), duration = num(d?.duration, 1e7);
         if (el instanceof HTMLVideoElement && (!w || !h)) return;
         // The engine's own, if it has them (and they weren't said here

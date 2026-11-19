@@ -78,9 +78,12 @@
         // Players the page started or stopped since the last batch (media
         // events don't bubble: caught on their way down).
         let played = new Set();
+        // Not those said of how the person's player plays (gomedia.js fires
+        // them as it's told, within the telling): the page's doing only.
+        let tellingPlay = false;
         for (const type of ["play", "pause", "ended", "emptied"]) {
             document.addEventListener(type, (e) => {
-                if (e.target instanceof HTMLMediaElement && played.size < 256) played.add(e.target);
+                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.add(e.target);
             }, true);
         }
         let lastURL = "";
@@ -725,7 +728,15 @@
                     let d;
                     try { d = JSON.parse(a.value); } catch { return "bad"; }
                     const num = (v) => (Number.isFinite(v) ? v : 0);
-                    el.dispatchEvent(new CustomEvent("__tabtop_media", { detail: JSON.stringify({ w: num(d?.w), h: num(d?.h), duration: num(d?.duration) }) }));
+                    const what = d?.play && typeof d.play === "object"
+                        ? { play: { t: num(d.play.t), playing: !!d.play.playing, ended: !!d.play.ended } }  // how it plays
+                        : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration) };
+                    tellingPlay = !!what.play;
+                    try {
+                        el.dispatchEvent(new CustomEvent("__tabtop_media", { detail: JSON.stringify(what) }));
+                    } finally {
+                        tellingPlay = false;
+                    }
                     return "ok";
                 }
                 case "scroll": {

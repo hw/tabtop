@@ -56,6 +56,7 @@ const mediaHelp = {
     // if not: the player asks on a tunnel of its own).
     range: (url, part) => (ws?.readyState === TunnelSocket.OPEN ? mediaViaTab(ws, url, part) : null),
     sized: (key, ratio, meta) => frame.contentWindow?.postMessage({ type: "media-state", key, ratio, meta }, "*"),
+    played: (key, play) => frame.contentWindow?.postMessage({ type: "media-state", key, play }, "*"),
     // Scrolling done over a player (go-media.js), for the frame to do in
     // the page under it: where (in the frame) and by how much.
     passOn: (x, y, dx, dy, how) => {

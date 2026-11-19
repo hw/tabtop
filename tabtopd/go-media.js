@@ -24,7 +24,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, range, failed, passOn } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -107,7 +107,14 @@ export function goMedia(frame, { picture, sized, range, failed, passOn } = {}) {
             passOn?.(t.clientX, t.clientY, last.x - t.clientX, last.y - t.clientY, "drag");
             last = { x: t.clientX, y: t.clientY };
         }, { passive: false });
-        media.addEventListener("touchend", () => { last = null; }, { passive: true });
+        // Its end: where a feed snaps to (see the frame's scrollUnder).
+        const end = (e) => {
+            const t = e.changedTouches?.[0];
+            if (last && t) passOn?.(t.clientX, t.clientY, 0, 0, "drag-end");
+            last = null;
+        };
+        media.addEventListener("touchend", end, { passive: true });
+        media.addEventListener("touchcancel", end, { passive: true });
         media.style.touchAction = "none";  // its drags are passed on, not the browser's
     }
 
@@ -153,7 +160,7 @@ export function goMedia(frame, { picture, sized, range, failed, passOn } = {}) {
     return {
         // open makes a player for the box key, of kind, playing src (an
         // http(s) address the page had); its error, if it can't.
-        async open({ key, kind, src, rect, clip, fit, position, muted, loop, poster, play }) {
+        async open({ key, kind, src, rect, clip, shown, fit, position, muted, loop, poster, play }) {
             if (!["audio", "video"].includes(kind) || !Number.isSafeInteger(key) || typeof src !== "string" || !/^https?:\/\//i.test(src)) {
                 return { error: "This media can't be played here." };
             }
@@ -161,7 +168,7 @@ export function goMedia(frame, { picture, sized, range, failed, passOn } = {}) {
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
             const controller = new AbortController();
             const { signal } = controller;
-            const entry = { controller, play: !!play, placement: { key, rect, clip, shown: true, fit, position } };
+            const entry = { controller, play: !!play, placement: { key, rect, clip, shown: shown !== false, fit, position } };
             players.set(key, entry);
             let tunnel;
             const cancel = () => tunnel?.close();
@@ -186,6 +193,17 @@ export function goMedia(frame, { picture, sized, range, failed, passOn } = {}) {
                     const meta = { w: media.videoWidth || 0, h: media.videoHeight || 0, duration: Number.isFinite(media.duration) ? media.duration : 0 };
                     sized?.(key, media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 0, meta);
                 });
+                // How it plays, for the page (its player script goes by its
+                // element's: YouTube's Shorts shows the next video's player
+                // once it's playing): as it starts, stops or ends, and where
+                // it is, once a second.
+                let toldAt = -Infinity;
+                const playing = () => {
+                    toldAt = performance.now();
+                    played?.(key, { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: !media.paused && !media.ended, ended: media.ended });
+                };
+                for (const type of ["playing", "pause", "ended", "seeked"]) media.addEventListener(type, playing);
+                media.addEventListener("timeupdate", () => { if (performance.now() - toldAt >= 1000) playing(); });
                 media.muted = !!muted;
                 media.loop = !!loop;
                 if (kind === "video" && typeof poster === "string" && /^https?:\/\//i.test(poster) && picture) {

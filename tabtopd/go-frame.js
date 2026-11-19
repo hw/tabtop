@@ -131,9 +131,13 @@
             // Its size and length, for the page in the engine, which has no
             // media of its own (gomedia.js): to the element the box is for.
             const engineId = box && doc?.ids.get(box);
+            const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
             if (engineId && m.meta && typeof m.meta === "object") {
-                const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
                 send("media-meta", engineId, { value: JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration) }) });
+            }
+            // How it plays, likewise.
+            if (engineId && m.play && typeof m.play === "object") {
+                send("media-meta", engineId, { value: JSON.stringify({ play: { t: num(m.play.t), playing: !!m.play.playing, ended: !!m.play.ended } }) });
             }
         }
     });
@@ -695,14 +699,19 @@
                 const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
                 const clip = mediaClip(r, m.intersection);
                 const { objectFit: fit, objectPosition: position, visibility } = getComputedStyle(m.box);
-                const shown = visibility === "visible" && clip !== null && clip.width >= 8 && clip.height >= 8;
-                if (m.kind === "video" && !shown) {
+                // In view, or played by the page, it's played (hidden too, as
+                // a browser's is: a page may show a player, and move it to
+                // where it's seen, only once its video plays, YouTube's
+                // Shorts as it goes to the next); laid over its box when shown.
+                const inView = clip !== null && clip.width >= 8 && clip.height >= 8;
+                const shown = visibility === "visible" && inView;
+                if (m.kind === "video" && !inView && !m.play) {
                     if (m.asked) m.box.textContent = "";
                     m.asked = false;
                     continue;
                 }
                 const at = { key, rect, clip, shown, fit, position };
-                if (!m.asked && shown) {
+                if (!m.asked && (inView || m.play)) {
                     m.asked = true;
                     opening.push({ ...at, type: "media", gen: doc.gen, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
                 }
@@ -1224,7 +1233,12 @@
     }
     function applyTo(d, m) {
         if (!d || m.gen !== d.gen) return;
-        if (d === doc) sizedSoon();  // what it changes may change watched sizes
+        if (d === doc) {
+            sizedSoon();  // what it changes may change watched sizes
+            // and whether a player shows (a page hides one as it moves it to
+            // the next video, by its style or an ancestor's): looked at again.
+            if (media.size) mediaLater();
+        }
         // (A batch may bring only what the page observes: no changes.)
         for (const op of Array.isArray(m.ops) ? m.ops : []) {
             if (!op || typeof op !== "object") continue;
@@ -1665,8 +1679,22 @@
     // laid over a box here (go-media.js): the page under it scrolls, the
     // nearest that can, as the person's (given to the engine as their
     // scrolling is); a wheel goes to the engine as a wheel too.
+    // A drag passed on is one scroll, as a finger's is: a box that snaps
+    // (a feed's, a video to a screen) doesn't snap at each part of it, but
+    // once it ends, on in the way it went, as a swipe goes on (or back, if
+    // it hardly went).
+    let dragging = null;  // {el, snap, dx, dy}
+    function dragEnd() {
+        const d = dragging;
+        dragging = null;
+        if (!d) return;
+        d.el.style.scrollSnapType = d.snap;
+        const on = (v) => (Math.abs(v) > 40 ? Math.sign(v) : 0);
+        (d.el === document.documentElement ? window : d.el).scrollBy({ left: on(d.dx), top: on(d.dy), behavior: "smooth" });
+    }
     function scrollUnder(m) {
         lastInput = performance.now();
+        if (m.how === "drag-end") return dragEnd();
         const at = document.elementFromPoint(m.x, m.y);
         let scroller = null;
         for (let n = at; n && n !== document.documentElement; n = n.parentElement) {
@@ -1675,6 +1703,16 @@
                 scroller = n;
                 break;
             }
+        }
+        if (m.how === "drag") {
+            const el = scroller ?? document.documentElement;
+            if (dragging?.el !== el) {
+                dragEnd();
+                dragging = { el, snap: el.style.scrollSnapType, dx: 0, dy: 0 };
+                el.style.scrollSnapType = "none";
+            }
+            dragging.dx += m.dx;
+            dragging.dy += m.dy;
         }
         (scroller ?? window).scrollBy(m.dx, m.dy);
         if (m.how === "wheel") {

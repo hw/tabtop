@@ -178,6 +178,16 @@ clip.addEventListener("loadedmetadata", () => { document.getElementById("meta").
 document.getElementById("nextclip").onclick = () => { const b = document.getElementById("b"); b.src = "clip.mp4"; b.play().catch(() => {}); };
 document.getElementById("scroller").onscroll = (e) => { document.getElementById("status").textContent = "at " + Math.round(e.target.scrollTop); };
 </script>`,
+        "reel-player.html": `<!doctype html><title>Reel player</title><p id="status">ready</p><p id="time">no time</p><button id="load">load</button>
+<div id="wrap" style="visibility:hidden"><video id="v" width="320" height="180" muted></video></div>
+<script>
+// As YouTube's Shorts goes to its next video: its player hidden till the
+// video it's given plays, and where it is read as it plays.
+const v = document.getElementById("v");
+document.getElementById("load").onclick = () => { v.src = "clip.mp4"; v.play().catch(() => {}); };
+v.addEventListener("playing", () => { document.getElementById("wrap").style.visibility = "visible"; document.getElementById("status").textContent = "playing"; });
+v.addEventListener("timeupdate", () => { document.getElementById("time").textContent = "time " + v.currentTime.toFixed(1) + (v.paused ? " paused" : ""); });
+</script>`,
         "long-feed.html": `<!doctype html><title>Long feed</title>
 <style>#clips { width: 320px; height: 180px; overflow: auto; }
 #clips video { display: block; width: 100%; height: 180px; object-fit: cover; }</style>
@@ -962,6 +972,15 @@ async function check(base, port, site) {
         await frameClick("#scroller");
         await frame(`document.getElementById("scroller").scrollTop = 300`);
         await frameWait(`/^at [1-9]/.test(document.getElementById("status").textContent)`, "the page told of the scroll");
+    });
+
+    await step("a player the page hides till its video plays is played, and shown once it does", async () => {
+        await goTo(site + "reel-player.html", "Reel player");
+        await frameClick("#load");
+        await frameWait(`document.getElementById("status")?.textContent === "playing"`, "the page told its video plays");
+        await frameWait(`getComputedStyle(document.getElementById("wrap")).visibility === "visible"`, "the player shown by the page");
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5 && v.style.display !== "none" && v.getBoundingClientRect().width > 300)`, "it laid over its box, playing", 30000);
+        await frameWait(`/^time [1-9][0-9.]*$/.test(document.getElementById("time")?.textContent)`, "the page reading where it is, going on");
     });
 
     await step("a scrolling video feed releases old players and honors the page's dimensions", async () => {
