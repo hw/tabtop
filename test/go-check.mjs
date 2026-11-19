@@ -222,17 +222,19 @@ const sheet = document.getElementById("css").sheet;
 sheet.insertRule("#early { color: rgb(1, 2, 3) }");
 setTimeout(() => sheet.insertRule("#late { color: rgb(4, 5, 6) }", sheet.cssRules.length), 800);
 </script>`,
-        "xframe.html": `<!doctype html><title>Other origin</title><p>a page of another origin:</p><iframe id="x" width="300" height="80"></iframe>
+        "xframe.html": `<!doctype html><title>Other origin</title><p>a page of another origin:</p><iframe id="x" width="300" height="120"></iframe>
 <script>
 // The same server by another name (its address as IPv6): another origin.
 document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xinner.html";
 </script>`,
-        "xinner.html": `<!doctype html><style>/* old Internet Explorer's hacks, which match nothing in a document */ * html #b, *:first-child+html #b { display: none }</style><button id="b">press</button> <span id="s">not pressed</span>
+        "xinner.html": `<!doctype html><style>/* old Internet Explorer's hacks, which match nothing in a document */ * html #b, *:first-child+html #b { display: none }</style><button id="b">press</button> <span id="s">not pressed</span> <button id="tb">tap</button> <span id="ts">not tapped</span>
 <form id="f"><input id="t" name="t"></form><span id="echo">nothing typed</span> <span id="sent">not sent</span>
 <div id="h" style="width:120px;height:20px;background:#ddd">hover me</div><span id="hs">not hovered</span>
 <script>
 const $ = (i) => document.getElementById(i);
 $("b").addEventListener("click", () => { $("s").textContent = "pressed " + location.hostname; });
+let taps = 0;
+$("tb").addEventListener("click", () => { $("ts").textContent = "tapped " + ++taps; });
 $("t").addEventListener("input", () => { $("echo").textContent = "typed " + $("t").value; });
 $("f").addEventListener("submit", (e) => { e.preventDefault(); $("sent").textContent = "sent " + $("t").value; });
 $("h").addEventListener("mouseenter", () => { $("hs").textContent = "hovered"; });
@@ -957,7 +959,7 @@ async function check(base, port, site) {
         }
     });
 
-    await step("a press, typing, Enter and hover in an embedded page of another origin reach it there", async () => {
+    await step("a press, typing, Enter, hover and a tap in an embedded page of another origin reach it there", async () => {
         await goTo(site + "xframe.html", "Other origin");
         const inner = (expr) => frame(`(() => { const root = document.getElementById("x")?.shadowRoot; return root ? (${expr})(root) : null; })()`);
         await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`, "the embedded page's copy", 20000);
@@ -979,6 +981,23 @@ async function check(base, port, site) {
         // Hovering.
         await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", ...(await inCopy("#h")), button: "none" });
         await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#hs")?.textContent === "hovered"`, "the hover in the other origin's page", 15000);
+        // A tap: a press there, on what's under the finger (not the
+        // iframe's touch, whose place is the engine's iframe's), once.
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        try {
+            await sleep(500);  // the toolbar as for touch: the page moves down
+            Object.assign(f, await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`));
+            const tap = await inCopy("#tb");
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [tap] });
+            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+            const said = `document.getElementById("x")?.shadowRoot?.querySelector("#ts")?.textContent`;
+            await frameWait(`${said} === "tapped 1"`, "the tap in the other origin's page", 15000);
+            await sleep(500);
+            const now = await frame(said);
+            if (now !== "tapped 1") throw new Error(`then ${now}: pressed twice?`);
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+        }
     });
 
     await step("rules put into a stylesheet by script, as it loads and after", async () => {

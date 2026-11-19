@@ -497,6 +497,11 @@
             const value = attrOf(n, name);
             if (value) attribute(d, el, HTML, "span", name, value);
         }
+        // As an iframe: no scroll bars if it says so, no border if it says
+        // so. Still scrolled by wheel and finger: the copy's layout may
+        // run past where the engine's fits (what's past it would be lost).
+        if (/^no$/i.test(attrOf(n, "scrolling") ?? "")) style.textContent += "div[part=viewport] { scrollbar-width:none }";
+        if ((attrOf(n, "frameborder") ?? "").trim() === "0") style.textContent += ":host { border:none }";
         for (const name of ["width", "height"]) {
             const value = attrOf(n, name);
             if (/^\d{1,5}%?$/.test(value)) {
@@ -1373,14 +1378,18 @@
     // this browser makes from a touch aren't sent too. Swiping scrolls the
     // copy here, as before, and where it's scrolled to goes as the person's
     // scrolling does.
+    // A finger over an embedded page's copy isn't a touch there (the engine
+    // finds a touch's place by the iframe, and the frame's places aren't
+    // these): a tap is a press and release on what's under it, by the
+    // agent in the frame, as the mouse's are; a swipe scrolls the copy.
     let lastTouch = -Infinity;
-    let touchFrom = null, touchMoved = false, touchSent = false;
+    let touchFrom = null, touchMoved = false, touchSent = false, frameTap = null;
     const fromTouch = (e) => e.sourceCapabilities?.firesTouchEvents || performance.now() - lastTouch < 1000;
     function fingers(list) {
         const out = [];
         for (const t of list) {
             const w = whereAt(t.clientX, t.clientY);
-            if (w) out.push({ id: w.id, fx: w.fx, fy: w.fy, t: t.identifier & 0xffff });
+            if (w && !w.frame) out.push({ id: w.id, fx: w.fx, fy: w.fy, t: t.identifier & 0xffff });  // a frame's place isn't its iframe's
             if (out.length >= 10) break;
         }
         return out;
@@ -1398,6 +1407,16 @@
         if (e.touches.length === 1) {
             touchFrom = { x: e.touches[0].clientX, y: e.touches[0].clientY };
             touchMoved = false;
+            frameTap = null;
+            const w = whereAt(touchFrom.x, touchFrom.y);
+            if (w?.frame) {
+                frameTap = w;
+                flushAll();
+                return;
+            }
+        } else if (frameTap) {
+            frameTap = null;  // more fingers: not a tap
+            return;
         }
         const points = fingers(e.touches);
         if (!points.length) return;  // over nothing the engine has
@@ -1415,7 +1434,25 @@
         touchMove = { phase: "move", points, ...mods(e) };
         pointerSoon();
     }, { capture: true, passive: true });
+    const tapInFrame = (e) => {
+        const w = frameTap;
+        frameTap = null;
+        lastTouch = performance.now();  // the mouse events this browser makes of it aren't sent
+        if (e.type !== "touchend" || e.touches.length) return;
+        const t = e.changedTouches[0];
+        if (touchMoved || !t || Math.hypot(t.clientX - touchFrom.x, t.clientY - touchFrom.y) > 10) return;
+        lastClick = performance.now();
+        const at = { frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, button: 0, count: 1, ...mods(e) };
+        send("mouse", w.id, { phase: "move", ...at, buttons: 0 });
+        send("mouse", w.id, { phase: "down", ...at, buttons: 1 });
+        send("mouse", w.id, { phase: "up", ...at, buttons: 0 });
+    };
+    document.addEventListener("touchmove", (e) => {
+        const t = e.touches[0];
+        if (frameTap && e.isTrusted && t && Math.hypot(t.clientX - touchFrom.x, t.clientY - touchFrom.y) > 10) touchMoved = true;
+    }, { capture: true, passive: true });
     const touchEnd = (e) => {
+        if (e.isTrusted && frameTap) return tapInFrame(e);
         if (!e.isTrusted || !touchSent) return;
         lastTouch = performance.now();
         const points = fingers(e.touches);
@@ -1453,6 +1490,12 @@
             if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
             const w = where(e);
             if (!w) return;
+            if (w.frame) {  // an embedded page's: not given (its places aren't the iframe's)
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+                if (dragOver) send("drag", 0, { phase: "cancel" });
+                dragOver = null;
+                return;
+            }
             dragOver = { phase: "over", id: w.id, fx: w.fx, fy: w.fy, items: dragTypes(e.dataTransfer).map((t) => ({ type: t, data: "" })), ...mods(e) };
             pointerSoon();
         }, true);
@@ -1469,7 +1512,7 @@
         const dt = e.dataTransfer;
         if (dt?.files?.length) tell({ type: "drop-files", gen: doc?.gen });
         const w = where(e);
-        if (!w) {
+        if (!w || w.frame) {
             send("drag", 0, { phase: "cancel" });
             return;
         }
