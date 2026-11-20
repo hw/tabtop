@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +166,49 @@ func TestGoSiteAndOrigin(t *testing.T) {
 	}
 	if goOriginHost("http://h:8080") != "h" || goOriginHost("https://www.example.com") != "www.example.com" {
 		t.Error("goOriginHost")
+	}
+}
+
+// What goes with media fetched for a page: the cookies for its address
+// (host-only to its host alone, a domain cookie to subdomains, by path,
+// secure over https), SameSite ones only from a page of the same site.
+func TestGoMediaCookieHeader(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	j := newGoCookieJar("", "")
+	j.now = func() time.Time { return clock }
+	mk := func(name, domain, path, sameSite string, secure bool) goCookie {
+		c := goTestCookie(name, name+"v", domain)
+		c.Path, c.SameSite, c.Secure = path, sameSite, secure
+		return c
+	}
+	j.apply(nil, goCookieMap(
+		mk("host", "video.example.com", "/", "Lax", false),
+		mk("dom", ".example.com", "/", "None", true),
+		mk("deep", ".example.com", "/v/clips", "None", true),
+		mk("nopath", ".example.com", "/v/cl", "None", true), // /v/clips isn't under /v/cl
+		mk("plain", ".example.com", "/", "None", false),     // None without Secure: not sent
+		mk("other", "cdn.example.com", "/", "Lax", false),
+	))
+	u, _ := url.Parse("https://video.example.com/v/clips/1.mp4")
+	if got := j.header(u, "example.com"); got != "deep=deepv; host=hostv; dom=domv" && got != "deep=deepv; dom=domv; host=hostv" {
+		t.Errorf("from the site's own page: %q", got)
+	}
+	if got := j.header(u, "other.org"); got != "deep=deepv; dom=domv" {
+		t.Errorf("from another site's page: %q", got)
+	}
+	if got := j.header(u, ""); got != "deep=deepv; dom=domv" {
+		t.Errorf("from no page known: %q", got)
+	}
+	plain, _ := url.Parse("http://video.example.com/x")
+	if got := j.header(plain, "example.com"); got != "host=hostv" {
+		t.Errorf("over http: %q", got)
+	}
+	// At most goCookieHeaderMax.
+	var many []goCookie
+	for i := 0; i < 100; i++ {
+		many = append(many, goCookie{Name: "n" + strings.Repeat("x", 100), Value: strings.Repeat("v", 200), Path: "/"})
+	}
+	if len(goCookieHeader(many)) > goCookieHeaderMax {
+		t.Error("the header is over its limit")
 	}
 }

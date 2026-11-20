@@ -25,8 +25,6 @@ const (
 	maxGoImage = 10 << 20
 	maxGoCSS   = 4 << 20 // sites' bundles are larger than previews' sheets
 	maxGoFont  = 8 << 20
-	// goUserAgent is what the broker says it is.
-	goUserAgent = "Mozilla/5.0 (compatible; TabTop remote browser)"
 )
 
 // goResourceSlots bounds the broker's fetches at once, across sessions; a
@@ -149,7 +147,7 @@ type goFetched struct {
 // client, where the remote browser may go, within the kind's limit, of the
 // kind's types (a picture labelled as just bytes looked at, as browsers
 // do), waiting for a slot of the session's share and of all.
-func goFetchResource(ctx context.Context, client *http.Client, session, kind, raw string) goFetched {
+func goFetchResource(ctx context.Context, client *http.Client, session, kind, raw, userAgent string) goFetched {
 	fail := func(m string) goFetched { return goFetched{err: errors.New(m)} }
 	limit := goResourceLimit(kind)
 	if limit == 0 {
@@ -178,7 +176,7 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	if err != nil {
 		return fail("Invalid resource address.")
 	}
-	request.Header.Set("User-Agent", goUserAgent)
+	request.Header.Set("User-Agent", userAgent) // the tab's (gouseragent.go)
 	request.Header.Set("Accept", map[string]string{"image": "image/*", "css": "text/css", "font": "font/*, application/font-woff, */*;q=0.1"}[kind])
 	response, err := client.Do(request)
 	if err != nil {
@@ -254,12 +252,18 @@ func (g *server) routeGoResource(c *tunnelCall) {
 			return
 		}
 		defer mine()
-		serveRemoteResource(c.t, c.req, c.r, g.goResources, goResourceSlots, goUserAgent)
+		// With no tab to ask, the cookies kept for the media's site that
+		// any page may send it (SameSite=None).
+		var cookies func(*url.URL) string
+		if g.goCookies != nil {
+			cookies = func(u *url.URL) string { return g.goCookies.header(u, "") }
+		}
+		serveRemoteResource(c.t, c.req, c.r, g.goResources, goResourceSlots, goSessionUA(c.session), cookies)
 		return
 	}
 	w := newChunkWriter(c.t)
 	defer w.stop()
-	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL)
+	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL, goSessionUA(c.session))
 	if f.err != nil {
 		if w.ctx.Err() == nil {
 			c.r.fail(f.err.Error())

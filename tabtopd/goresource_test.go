@@ -51,8 +51,9 @@ func TestGoResource(t *testing.T) {
 				t.Errorf("the site was sent %s", h)
 			}
 		}
-		if r.Header.Get("User-Agent") != goUserAgent {
-			t.Errorf("User-Agent %q", r.Header.Get("User-Agent"))
+		// What a tab says it is (no tab here: the desktop's), never TabTop.
+		if ua := r.Header.Get("User-Agent"); ua != goDesktopUA || strings.Contains(strings.ToLower(ua), "tabtop") {
+			t.Errorf("User-Agent %q", ua)
 		}
 		switch r.URL.Path {
 		case "/pic.png":

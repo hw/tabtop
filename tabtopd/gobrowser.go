@@ -112,10 +112,16 @@ type goBrowser struct {
 	// The account's cookies (gocookies.go), and this tab's part of them.
 	jar     *goCookieJar
 	cookies goCookieTab
-	cdp     *cdpConn
-	page    string // the CDP session of its page
-	target  string // its page's target
-	frame   string // its main frame
+	// What it says it is (gouseragent.go): the engine's own, or, on a
+	// phone (phone, set by a job), Chrome on Android's.
+	engineUA  string
+	uaMu      sync.Mutex
+	userAgent string
+	phone     bool
+	cdp       *cdpConn
+	page      string // the CDP session of its page
+	target    string // its page's target
+	frame     string // its main frame
 
 	gen int // the newest generation
 	// loading is the generation waiting for its load, if any; navigated,
@@ -824,6 +830,9 @@ func (b *goBrowser) setView(v goView) {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
+		if goPhone(v) {
+			b.phoneUA(ctx) // before what's loaded next: it's asked for as a phone
+		}
 		err := b.cdp.call(ctx, b.page, "Emulation.setDeviceMetricsOverride", map[string]any{
 			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
 			// The screen is the person's window: their own isn't told.

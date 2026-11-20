@@ -28,6 +28,7 @@ import (
 	"io/fs"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -492,6 +493,7 @@ type goCookieTab struct {
 	base    map[goCookieKey]goCookie
 	started bool
 	visits  map[string]time.Time // origin -> last there
+	top     string               // the site of the page shown, for SameSite
 }
 
 // exportCookies reads the engine's cookies. An engine that doesn't say a
@@ -589,6 +591,109 @@ func (b *goBrowser) visited(rawURL string) {
 	if len(b.cookies.visits) < 1000 {
 		b.cookies.visits[origin] = time.Now()
 	}
+	b.cookies.top = goSite(goOriginHost(origin))
+}
+
+// --- Cookies sent with what the server fetches for a page -----------------
+
+// goCookieHeaderMax is the most a Cookie header sent for media may be.
+const goCookieHeaderMax = 8 << 10
+
+// goSendable is whether c goes with a request to u from a page of site top
+// ("": none known): over https if it's secure, not expired, and (SameSite)
+// only to the page's own site unless it's None (a cross-site request, as a
+// video's from another site's page; None requires Secure, as Chrome has it).
+func goSendable(c *goCookie, u *url.URL, top string, now time.Time) bool {
+	if c.expired(now) || c.Secure && u.Scheme != "https" {
+		return false
+	}
+	if strings.EqualFold(c.SameSite, "None") {
+		return c.Secure
+	}
+	return top != "" && goSite(u.Hostname()) == top
+}
+
+// goCookieHeader is cookies as a Cookie header: the longest paths first,
+// as browsers send them, to at most goCookieHeaderMax.
+func goCookieHeader(list []goCookie) string {
+	slices.SortStableFunc(list, func(a, b goCookie) int { return len(b.Path) - len(a.Path) })
+	var out strings.Builder
+	for _, c := range list {
+		pair := c.Name + "=" + c.Value
+		if out.Len()+len(pair)+2 > goCookieHeaderMax {
+			break
+		}
+		if out.Len() > 0 {
+			out.WriteString("; ")
+		}
+		out.WriteString(pair)
+	}
+	return out.String()
+}
+
+// goCookieMatches is whether the cookie is for u's host and path.
+func goCookieMatches(c *goCookie, u *url.URL) bool {
+	host, d := strings.ToLower(u.Hostname()), strings.ToLower(c.host())
+	if strings.HasPrefix(c.Domain, ".") {
+		if host != d && !strings.HasSuffix(host, "."+d) {
+			return false
+		}
+	} else if host != d {
+		return false
+	}
+	p := u.EscapedPath()
+	if p == "" {
+		p = "/"
+	}
+	cp := c.Path
+	if cp == "" {
+		cp = "/"
+	}
+	return p == cp || strings.HasPrefix(p, cp) && (strings.HasSuffix(cp, "/") || p[len(cp)] == '/')
+}
+
+// header is the jar's cookies for u, from a page of site top, as a
+// Cookie header.
+func (j *goCookieJar) header(u *url.URL, top string) string {
+	j.mu.Lock()
+	now := j.now()
+	var list []goCookie
+	for _, c := range j.cookies {
+		if goCookieMatches(c, u) && goSendable(c, u, top, now) {
+			list = append(list, *c)
+		}
+	}
+	j.mu.Unlock()
+	return goCookieHeader(list)
+}
+
+// mediaCookies is the Cookie header for media the tab's page plays from u:
+// the engine's cookies for it now (its sites' latest, httpOnly ones too),
+// those a request from the page shown may carry; the jar's, if the engine
+// can't say.
+func (b *goBrowser) mediaCookies(u *url.URL) string {
+	b.cookies.mu.Lock()
+	top := b.cookies.top
+	b.cookies.mu.Unlock()
+	ctx, cancel := context.WithTimeout(b.ctx, 3*time.Second)
+	defer cancel()
+	var r struct {
+		Cookies []goCookie `json:"cookies"`
+	}
+	if err := b.cdp.call(ctx, b.page, "Network.getCookies", map[string]any{"urls": []string{u.String()}}, &r); err != nil {
+		if b.jar != nil {
+			return b.jar.header(u, top)
+		}
+		return ""
+	}
+	now := time.Now()
+	list := r.Cookies[:0]
+	for _, c := range r.Cookies {
+		if goSendable(&c, u, top, now) {
+			list = append(list, c)
+		}
+	}
+	return goCookieHeader(list)
 }
 
 func (b *goBrowser) visitedOrigins(since time.Time) map[string]time.Time {

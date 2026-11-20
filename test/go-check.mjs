@@ -295,7 +295,18 @@ h1 { font-family: "Fixture Font", sans-serif; }`,
         "more.css": `body { background-color: rgb(250, 250, 240); }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path");
 const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
+const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
 http.createServer((req, res) => {
+  const name = req.url.split("?")[0];
+  if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "" };
+  if (name === "/seen") {
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end("<!doctype html><title>Seen</title><pre id=s>" + JSON.stringify(seen).replace(/[<&]/g, "") + "</pre>");
+  }
+  if (name === "/ua") {
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end("<!doctype html><title>UA</title><p id=ua>" + (req.headers["user-agent"] || "").replace(/[<&]/g, "") + "</p><p id=m>" + (req.headers["sec-ch-ua-mobile"] || "none") + "</p><img src=pic.png?ua>");
+  }
   if (req.url.startsWith("/cookie")) {
     // What the browser sent of its cookies; ?set sets one (for an hour).
     const head = { "Content-Type": "text/html", "Cache-Control": "no-store" };
@@ -692,6 +703,31 @@ async function check(base, port, site) {
         await newTab();
         await goTo(site + "cookie", "Cookie");
         if ((await sent()) !== "sent nothing") throw new Error(`after clearing the last hour, a new tab sent ${await sent()}`);
+    });
+
+    await step("a phone's tab says it's Chrome on Android, never TabTop; a video's site is sent its cookies", async () => {
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        try {
+            await sleep(1000);
+            await goTo(site + "ua", "UA");
+            const ua = await frame(`document.getElementById("ua").textContent`), mobile = await frame(`document.getElementById("m").textContent`);
+            if (!/^Mozilla\/5\.0 \(Linux; Android 10; K\) .* Chrome\/\d+\.0\.0\.0 Mobile Safari\/537\.36$/.test(ua) || mobile !== "?1") throw new Error(`the site was told ${ua}, mobile ${mobile}`);
+            // A cookie on the site, and its video played: fetched with it,
+            // as the page's own browser would.
+            await goTo(site + "cookie?set", "Cookie");
+            await goTo(site + "video.html", "Video");
+            await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1)`, "the clip's player", 30000);
+            await goTo(site + "seen", "Seen");
+            const seen = JSON.parse(await frame(`document.getElementById("s").textContent`));
+            for (const [what, s] of Object.entries(seen)) {
+                if (/tabtop/i.test(s.ua) || !/Android 10; K/.test(s.ua)) throw new Error(`${what} was fetched as ${s.ua}`);
+            }
+            if (!seen["/clip.mp4"] || !/(^|; )kept=yes(;|$)/.test(seen["/clip.mp4"].cookie)) throw new Error(`the clip was fetched with cookies ${JSON.stringify(seen["/clip.mp4"])}`);
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
     });
 
     await step("this machine's addresses are refused", async () => {

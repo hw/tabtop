@@ -90,17 +90,17 @@ func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tun
 		r.fail("External resource proxying is turned off (WEB_GO_FETCH=0).")
 		return
 	}
-	serveRemoteResource(t, req, r, g.resourceClient, previewResourceSlots, "")
+	serveRemoteResource(t, req, r, g.resourceClient, previewResourceSlots, "", nil)
 }
 
 // serveRemoteResource answers req, fetched with client, a slot of slots
-// held, as userAgent if it's set: a preview's resource, or (in byte
-// ranges, "media") the audio and video a preview or the remote browser
-// plays.
-func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, client *http.Client, slots *previewWork, userAgent string) {
+// held, as userAgent if it's set, with cookies' if they're given: a
+// preview's resource, or (in byte ranges, "media") the audio and video a
+// preview or the remote browser plays.
+func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, client *http.Client, slots *previewWork, userAgent string, cookies func(*url.URL) string) {
 	w := newChunkWriter(t)
 	defer w.stop()
-	data, reply, err := fetchRemoteResource(w.ctx, req, client, slots, userAgent)
+	data, reply, err := fetchRemoteResource(w.ctx, req, client, slots, userAgent, cookies)
 	if err != nil {
 		if w.ctx.Err() == nil { // not the page that stopped waiting
 			r.fail(err.Error())
@@ -122,8 +122,10 @@ func serveRemoteResource(t *tunnel, req tunnelRequest, r *tunnelResponder, clien
 // fetchRemoteResource fetches req's resource (in byte ranges, "media"),
 // with client, a slot of slots held, as userAgent if it's set, until ctx
 // ends: its bytes, and what's said of them (size, mime, url; and for media
-// total_size and validator), or why not, said for the person.
-func fetchRemoteResource(ctx context.Context, req tunnelRequest, client *http.Client, slots *previewWork, userAgent string) ([]byte, map[string]any, error) {
+// total_size and validator), or why not, said for the person. cookies, if
+// given, is the Cookie header for an address (the remote browser's, for
+// the site's media): asked again for each address redirected to.
+func fetchRemoteResource(ctx context.Context, req tunnelRequest, client *http.Client, slots *previewWork, userAgent string, cookies func(*url.URL) string) ([]byte, map[string]any, error) {
 	fail := func(message string) ([]byte, map[string]any, error) { return nil, nil, errors.New(message) }
 	limit := previewResourceLimit(req.Resource)
 	if limit == 0 {
@@ -158,6 +160,15 @@ func fetchRemoteResource(ctx context.Context, req tunnelRequest, client *http.Cl
 	if userAgent != "" {
 		request.Header.Set("User-Agent", userAgent)
 	}
+	setCookies := func(r *http.Request) {
+		r.Header.Del("Cookie")
+		if cookies != nil {
+			if c := cookies(r.URL); c != "" {
+				r.Header.Set("Cookie", c)
+			}
+		}
+	}
+	setCookies(request)
 	if req.Resource == "media" {
 		request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", begin, begin+length-1))
 		if req.IfMtime != "" {
@@ -170,6 +181,7 @@ func fetchRemoteResource(ctx context.Context, req tunnelRequest, client *http.Cl
 		if next.URL.User != nil {
 			return http.ErrUseLastResponse
 		}
+		setCookies(next) // the new address's own, not the last one's
 		if redirects != nil {
 			return redirects(next, via)
 		}

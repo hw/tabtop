@@ -157,6 +157,7 @@ func (g *server) routeGo(c *tunnelCall) {
 	// tab's sites set taken back as it closes (gocookies.go).
 	b.jar = g.goCookies
 	ctx, cancel = context.WithTimeout(context.Background(), goCallTimeout)
+	b.startUA(ctx)
 	b.startCookies(ctx)
 	cancel()
 	defer b.endCookies()
