@@ -12,8 +12,9 @@ import (
 )
 
 // What a stylesheet uses is read as the page shown fetches it: imports as
-// stylesheets, @font-face sources as fonts, any other url() and
-// image-set()'s strings as pictures; a fragment (an SVG's own) isn't one.
+// stylesheets, any url() and image-set()'s strings but a @font-face's as
+// pictures (fonts are asked for as they're used); a fragment (an SVG's own)
+// isn't one.
 func TestGoCSSWants(t *testing.T) {
 	css := `@import url("more.css") screen; @import 'other.css';
 @font-face { font-family: X; src: url(font.woff2) format("woff2"), url('font.ttf'); }
@@ -23,7 +24,7 @@ body { background: url(bg.png); } .a { mask: url(#m); } .b { background-image: i
 	for _, w := range goCSSWants(css) {
 		got = append(got, w.kind+" "+w.url)
 	}
-	want := []string{"css more.css", "css other.css", "font font.woff2", "font font.ttf", "image bg.png", "image spaced.png", "image x1.png", "image x2.png"}
+	want := []string{"css more.css", "css other.css", "image bg.png", "image spaced.png", "image x1.png", "image x2.png"}
 	slices.Sort(got)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {

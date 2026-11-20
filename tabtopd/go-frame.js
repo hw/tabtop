@@ -257,6 +257,101 @@
         };
     }
 
+    // --- Fonts: the one a browser would use, when its text uses it --------
+    //
+    // A @font-face keeps the first of its sources in a format this browser
+    // takes (WOFF2, WOFF, TrueType, OpenType; not EOT nor SVG fonts), with
+    // the local() ones before it; the others go, as a browser wouldn't fetch
+    // them. That one is an address this frame's policy refuses
+    // (https://f<n>.font.invalid/): the browser loads a face only when
+    // text in its family, style and characters (unicode-range) is shown,
+    // and the face it couldn't load is said (the font set's loadingerror;
+    // not the refusals, which come for every face as its rule is read).
+    // That face is found by its descriptors, as this browser has them, and
+    // its font fetched and added with them (FontFace). Faces nothing uses
+    // (another script's characters, a weight not used, a font the page
+    // never shows) are never fetched, and the page isn't held back for any.
+    let fontId = 0;
+    let fontGen = 0;  // the document the faces being read are for
+    const fontFaces = new Map();  // n -> {url, family, descriptors, gen, face}
+    const FONT_FORMATS = ["woff2", "woff", "truetype", "opentype", "collection", "woff2-variations", "woff-variations", "truetype-variations", "opentype-variations"];
+    const FONT_DESCRIPTORS = { "font-style": "style", "font-weight": "weight", "font-stretch": "stretch", "unicode-range": "unicodeRange",
+        "font-feature-settings": "featureSettings", "font-variation-settings": "variationSettings", "font-display": "display",
+        "ascent-override": "ascentOverride", "descent-override": "descentOverride", "line-gap-override": "lineGapOverride", "size-adjust": "sizeAdjust" };
+    const faceKey = (face) => [face.family.replace(/^["']|["']$/g, ""), face.style, face.weight, face.stretch, face.unicodeRange, face.featureSettings].join("|");
+    document.fonts.addEventListener("loadingerror", (e) => {
+        for (const failed of e.fontfaces ?? []) {
+            const key = faceKey(failed);
+            // The newest of that face (a page's own, as it's read again).
+            let n = 0, f = null;
+            for (const [i, x] of fontFaces) if (x.key === key && !x.face && i > n) [n, f] = [i, x];
+            if (f && !f.asked) ask(n, f);
+        }
+    });
+    function ask(n, f) {
+        f.asked = true;
+        load("font", f.url).then((blobURL) => {
+            if (fontFaces.get(n) !== f) return;  // its page gone
+            const face = new FontFace(f.family, `url("${blobURL}")`, f.descriptors);
+            f.face = face;
+            document.fonts.add(face);
+            return face.load();
+        }).catch(() => { /* left to the page's fallback, as a font that fails is */ });
+    }
+    // fontsFor keeps the faces of the document shown (gen) and drops the rest.
+    function fontsFor(gen) {
+        for (const [n, f] of fontFaces) {
+            if (f.gen === gen) continue;
+            if (f.face) document.fonts.delete(f.face);
+            fontFaces.delete(n);
+        }
+    }
+    // fontFace rewrites a @font-face's src to its one source (above).
+    function fontFace(css, rule, base) {
+        const decls = rule.block?.children;
+        if (!decls) return;
+        let family = "", src = null;
+        const descriptors = {}, srcs = [];
+        decls.forEach((d, item) => {
+            if (d.type !== "Declaration") return;
+            const name = d.property.toLowerCase();
+            if (name === "font-family") family = css.generate(d.value).trim().replace(/^(["'])(.*)\1$/s, "$2");
+            else if (name === "src") srcs.push({ d, item });
+            else if (FONT_DESCRIPTORS[name]) descriptors[FONT_DESCRIPTORS[name]] = css.generate(d.value).trim();
+        });
+        src = srcs.at(-1)?.d;
+        if (!src || !family) return;
+        for (const { item } of srcs.slice(0, -1)) decls.remove(item);  // overridden (the last is a browser's), not left to load
+        // Its sources, between commas: url() [format()] [tech()], or local().
+        const items = [[]];
+        src.value.children?.forEach((k) => {
+            if (k.type === "Operator" && k.value === ",") items.push([]);
+            else items[items.length - 1].push(k);
+        });
+        const kept = [];
+        let chosen = null;
+        for (const item of items) {
+            const url = item.find((k) => k.type === "Url");
+            if (!url) {
+                if (item.some((k) => k.type === "Function" && k.name.toLowerCase() === "local")) kept.push(item.map((k) => css.generate(k)).join(" "));
+                continue;
+            }
+            const format = item.find((k) => k.type === "Function" && k.name.toLowerCase() === "format");
+            const said = format ? css.generate(format).toLowerCase().replace(/^format\(\s*["']?|["']?\s*\)$/g, "") : "";
+            const ok = format ? FONT_FORMATS.includes(said) : !/\.(eot|svg)([?#]|$)/i.test(url.value);
+            const address = ok && web(url.value, base);
+            if (!address) continue;
+            // Its descriptors as this browser has them, to know it by.
+            let key;
+            try { key = faceKey(new FontFace(family, "url(data:,)", descriptors)); } catch { return; }  // descriptors it won't take: as it was
+            const n = ++fontId;
+            fontFaces.set(n, { url: address, family, descriptors, gen: fontGen, key });
+            chosen = `url("https://f${n}.font.invalid/")` + (format ? " " + css.generate(format) : "");
+            break;
+        }
+        src.value = css.parse((chosen ? [...kept, chosen] : kept.length ? kept : [`url("data:,")`]).join(", "), { context: "value" });
+    }
+
     async function stylesheet(text, base, budget, alive, depth = 0, chain = []) {
         const css = globalThis.csstree;
         budget.charge(text);
@@ -264,6 +359,7 @@
         const imports = [];
         const loads = [];
         const never = [];  // selectors that can't match a document: {item, list}
+        const faces = [];  // @font-face rules (fontFace)
         let font = 0;
         css.walk(ast, {
             enter(node, item, list) {
@@ -283,8 +379,9 @@
                     imports.push({ node, item, list });
                 } else if (node.type === "Atrule" && node.name.toLowerCase() === "font-face") {
                     font++;
+                    faces.push(node);
                 } else if (node.type === "Url") {
-                    loads.push({ node, kind: font ? "font" : "image" });
+                    if (!font) loads.push({ node, kind: "image" });  // a font's, when it's used (fontFace)
                 } else if (node.type === "Function" && /^(-webkit-)?image-set$/i.test(node.name)) {
                     node.children.forEach((child) => {
                         if (child.type === "String") loads.push({ node: child, kind: "image" });
@@ -295,6 +392,9 @@
                 if (node.type === "Atrule" && node.name.toLowerCase() === "font-face") font--;
             },
         });
+        for (const rule of faces) {
+            try { fontFace(css, rule, base); } catch { /* left as it was: its fonts refused */ }
+        }
         for (const { item, list } of never) list.remove(item);
         if (never.length) {
             // A rule left with no selector is no rule.
@@ -925,6 +1025,7 @@
 
     function render(m) {
         current = m.gen;
+        fontGen = m.gen;
         const d = newDoc(m);
         building = d;
         lastChange = performance.now();
@@ -980,6 +1081,7 @@
             (root.querySelector("head") ?? root).prepend(defaults);
             unobserveAll(doc);
             doc = d;
+            fontsFor(d.gen);  // the last page's faces gone
             // Boxes of this document only (the page stops the others').
             for (const [key, m] of media) if (m.top !== d && m.top.gen <= d.gen || m.top === d && !m.box.isConnected) forgetMedia(key);
             mediaLater();

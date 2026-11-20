@@ -293,12 +293,19 @@ ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page larg
 #varbg { background-image: var(--pic); }
 h1 { font-family: "Fixture Font", sans-serif; }`,
         "more.css": `body { background-color: rgb(250, 250, 240); }`,
+        "fonts.html": `<!doctype html><title>Fonts</title><link rel="stylesheet" href="fonts.css"><p id="used">in the font used</p>`,
+        // Old Internet Explorer's EOT, an SVG font, then one a browser
+        // takes; and a face the page never shows.
+        "fonts.css": `@font-face { font-family: "Used Font"; src: url(old.eot); src: url(old.eot?#iefix) format("embedded-opentype"), url(icons.svg#f) format("svg"), url(font.ttf?used) format("truetype"), url(fallback.woff) format("woff"); }
+@font-face { font-family: "Unused Font"; src: url(unused.woff2) format("woff2"); }
+#used { font-family: "Used Font", monospace; }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path");
 const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
 http.createServer((req, res) => {
   const name = req.url.split("?")[0];
   if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "" };
+  if (/\.(eot|svg|woff2?|ttf)$/.test(name)) (seen.fonts ??= []).push(req.url);  // the fonts asked for
   if (name === "/seen") {
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
     return res.end("<!doctype html><title>Seen</title><pre id=s>" + JSON.stringify(seen).replace(/[<&]/g, "") + "</pre>");
@@ -536,6 +543,8 @@ async function check(base, port, site) {
 
     await step("stylesheets, imports, fonts and pictures through the server", async () => {
         await frame(`document.fonts.ready`);
+        // A face's font comes once its text is shown (go-frame.js's fonts).
+        await frameWait(`[...document.fonts].some((f) => f.family.replace(/"/g, "") === "Fixture Font" && f.status === "loaded")`, "the page's font");
         for (let i = 0; i < 50; i++) {
             if (await frame(`document.getElementById("img").naturalWidth > 0`)) break;
             await sleep(100);
@@ -722,14 +731,27 @@ async function check(base, port, site) {
             await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1)`, "the clip's player", 30000);
             await goTo(site + "seen", "Seen");
             const seen = JSON.parse(await frame(`document.getElementById("s").textContent`));
-            for (const [what, s] of Object.entries(seen)) {
-                if (/tabtop/i.test(s.ua) || !/Android 10; K/.test(s.ua)) throw new Error(`${what} was fetched as ${s.ua}`);
+            for (const what of ["/pic.png", "/clip.mp4"]) {
+                const s = seen[what];
+                if (!s || /tabtop/i.test(s.ua) || !/Android 10; K/.test(s.ua)) throw new Error(`${what} was fetched as ${s?.ua}`);
             }
             if (!seen["/clip.mp4"] || !/(^|; )kept=yes(;|$)/.test(seen["/clip.mp4"].cookie)) throw new Error(`the clip was fetched with cookies ${JSON.stringify(seen["/clip.mp4"])}`);
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }
+    });
+
+    await step("a font is fetched as a browser would: the one source it takes, for a face its text uses", async () => {
+        await goTo(site + "fonts.html", "Fonts");
+        // Shown in it: not as wide as in the fallback (monospace).
+        await frameWait(`(() => { const p = document.getElementById("used"); if (!p) return false; const mono = Object.assign(document.createElement("span"), { textContent: p.textContent }); mono.style.fontFamily = "monospace"; const its = Object.assign(document.createElement("span"), { textContent: p.textContent }); its.style.font = getComputedStyle(p).font; document.body.append(mono, its); const differ = Math.abs(mono.getBoundingClientRect().width - its.getBoundingClientRect().width) > 2; mono.remove(); its.remove(); return differ; })()`, "the text in the font used");
+        await sleep(1000);
+        await goTo(site + "seen", "Seen");
+        const fonts = JSON.parse(await frame(`document.getElementById("s").textContent`)).fonts ?? [];
+        if (!fonts.includes("/font.ttf?used")) throw new Error(`the font used wasn't fetched: ${fonts}`);
+        const extra = fonts.filter((f) => /eot|svg|fallback|unused/.test(f));
+        if (extra.length) throw new Error(`fetched too: ${extra}`);
     });
 
     await step("this machine's addresses are refused", async () => {

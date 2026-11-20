@@ -438,11 +438,14 @@ func goCSSWants(text string) []goWanted {
 		if u == "" || strings.HasPrefix(u, "#") {
 			continue
 		}
-		kind := "image"
+		// A @font-face's sources aren't fetched ahead: the copy asks for a
+		// face's font only once its text uses it (go-frame.js), and for the
+		// one source a browser would use, not the others (old formats,
+		// fallbacks, faces for other scripts, fonts the page never shows).
 		if fonts[m[0]] {
-			kind = "font"
+			continue
 		}
-		out = append(out, goWanted{kind, u})
+		out = append(out, goWanted{"image", u})
 	}
 	for _, m := range goCSSImageSet.FindAllStringSubmatch(text, -1) {
 		for _, s := range goCSSString.FindAllStringSubmatch(m[1], -1) {
