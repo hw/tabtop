@@ -107,12 +107,14 @@ func (g *server) routeGo(c *tunnelCall) {
 			return
 		}
 		logGoTab("taken back", c.ip)
-		if t.lend(newGoLink(c.t, c.req.Deflate)) {
+		if t.lend(newGoLink(c.t, c.req.Deflate), true) {
 			logGoTab("connection gone", c.ip)
 		}
 		return
 	}
-	if !g.openGo(c.session) {
+	// At the limit: a tab no one's connected to makes way (the one let go
+	// longest ago), as it would have closed at once before tabs were kept.
+	if !g.openGo(c.session) && !(tabs.makeRoom(c.session) && g.openGo(c.session)) {
 		c.r.fail("Too many remote browser tabs are open.")
 		return
 	}
@@ -161,7 +163,7 @@ func (g *server) routeGo(c *tunnelCall) {
 	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
 	tabs.add(t)
 	go g.runGoTab(t, tabs, c.ip)
-	if t.lend(newGoLink(c.t, c.req.Deflate)) {
+	if t.lend(newGoLink(c.t, c.req.Deflate), false) {
 		logGoTab("connection gone", c.ip)
 	}
 }

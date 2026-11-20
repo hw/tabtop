@@ -538,6 +538,9 @@ function stop() {
 // connect opens a tab's engine, then loads the entry shown, if any. It
 // resolves to false if the server couldn't be reached, so it's worth
 // trying again, else true.
+// heard: something's come on the connection since it took a tab back;
+// closing: the tab's being closed by the person (not reconnected).
+let heard = true, closing = false;
 function connect() {
     return new Promise((resolve) => {
         const resume = resumeToken.get();
@@ -558,6 +561,16 @@ function connect() {
                 ws.send(JSON.stringify({ op: "viewport", view: sentView }));
                 notice.hidden = true;
                 show("Carrying on…");
+                // Nothing from it soon (held up on the server): a tab of
+                // its own, the page loaded again, as without one to take back.
+                heard = false;
+                setTimeout(() => {
+                    if (ws !== s || heard) return;
+                    resumeToken.set("");
+                    s.close();
+                    ws = null;
+                    connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
+                }, 10_000);
             } else if (at >= 0) {
                 load(entries[at].url, { push: false });
             }
@@ -571,6 +584,7 @@ function connect() {
         };
         const take = async (data) => {
             if (ws !== s) return;
+            heard = true;
             if (typeof data !== "string") {
                 // Request number 0: a large message, compressed (see
                 // sendLarge in gobrowser.go); any other, a resource's bytes.
@@ -599,6 +613,7 @@ function connect() {
         };
         s.onclose = (e) => {
             resLost(s);
+            if (closing) return;  // closed by the person: nothing to come back to
             const was = ws === s;
             ws = null;
             loading = rendering = false;
@@ -1259,6 +1274,7 @@ window.addEventListener("message", (e) => {
         case "close":
             // Closed by the person: not kept on the server either.
             resumeToken.set("");
+            closing = true;
             ws?.send(JSON.stringify({ op: "close" }));
             break;
         case "count":

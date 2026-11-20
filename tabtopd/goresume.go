@@ -49,8 +49,24 @@ var errGoDetached = errors.New("no one's connected to the tab")
 // goConn is a tab's connection, whichever is lent it now (none, while
 // it's lost): what's written goes to that one.
 type goConn struct {
-	mu  sync.Mutex
-	cur *goLink
+	mu    sync.Mutex
+	cur   *goLink
+	since time.Time // when it was let go, with none since (zero: one's lent)
+}
+
+func (c *goConn) detachedAt(at time.Time) {
+	c.mu.Lock()
+	if c.cur == nil {
+		c.since = at
+	}
+	c.mu.Unlock()
+}
+
+// detached is when the tab was last let go, if no one's connected now.
+func (c *goConn) detached() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.since, c.cur == nil && !c.since.IsZero()
 }
 
 func (c *goConn) link() *goLink {
@@ -68,6 +84,9 @@ func (c *goConn) swap(l *goLink) *goLink {
 	defer c.mu.Unlock()
 	was := c.cur
 	c.cur = l
+	if l != nil {
+		c.since = time.Time{}
+	}
 	return was
 }
 
@@ -194,15 +213,55 @@ func (g *server) goSessionEnded(session string) {
 	}
 }
 
+// goTakeWait is how long a connection waits for its tab to take it
+// before the one it has is cut (a tab held up writing to a connection gone
+// without a word: a write gives up only after tunnelWriteTimeout); and
+// goTakeMax, before it gives up.
+var goTakeWait, goTakeMax = 3 * time.Second, 15 * time.Second
+
 // lend lends t the call's connection, till the tab lets it go; false if
-// the tab ended first.
-func (t *goTab) lend(l *goLink) bool {
-	select {
-	case t.b.attach <- l:
-	case <-t.ended:
+// the tab ended first, or (back, a tab already running) didn't take it.
+func (t *goTab) lend(l *goLink, back bool) bool {
+	var cut, giveUp <-chan time.Time
+	if back {
+		cut, giveUp = time.After(goTakeWait), time.After(goTakeMax)
+	}
+	for {
+		select {
+		case t.b.attach <- l:
+			<-l.done
+			return true
+		case <-t.ended:
+			return false
+		case <-cut:
+			if was := t.b.conn.link(); was != nil {
+				was.conn.CloseNow()
+			}
+		case <-giveUp:
+			return false
+		}
+	}
+}
+
+// makeRoom ends the session's tab let go longest ago, if any is (kept for
+// a connection that may not come: a page closed, not just cut off), so a
+// new tab can be had at the session's limit; whether one was.
+func (ts *goTabs) makeRoom(session string) bool {
+	var oldest *goTab
+	var at time.Time
+	for _, t := range ts.ofSession(session) {
+		if since, ok := t.b.conn.detached(); ok && (oldest == nil || since.Before(at)) {
+			oldest, at = t, since
+		}
+	}
+	if oldest == nil {
 		return false
 	}
-	<-l.done
+	oldest.b.e.kill("a new tab took its place")
+	select {
+	case <-oldest.ended:
+	case <-time.After(10 * time.Second):
+	}
 	return true
 }
 

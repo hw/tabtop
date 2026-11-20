@@ -221,6 +221,7 @@ type goBrowser struct {
 	stop       chan struct{}
 
 	loadingURL string // where the generation loading goes (resume)
+	sentGen    int    // the generation of the last snapshot the person was sent (resume)
 
 	// The person's connection, whichever is lent the tab now (none while
 	// it's lost: goresume.go), as t; connections lent it come by attach.
@@ -645,9 +646,26 @@ func (b *goBrowser) run() {
 			// taking it from another (the same tab opened again elsewhere,
 			// or the old connection not yet seen to be gone).
 			if was := b.conn.swap(l); was != nil {
-				writeJSON(was.conn, map[string]any{"type": "go-taken"})
-				was.conn.Close(websocket.StatusNormalClosure, "This tab was opened in another window.")
-				was.release()
+				// Told, and closed, aside: a connection that's gone (the
+				// reason it's taken) mustn't hold the tab up.
+				go func() {
+					defer was.release()
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					if p, err := json.Marshal(map[string]any{"type": "go-taken"}); err == nil && was.conn.Write(ctx, websocket.MessageText, p) == nil {
+						closed := make(chan struct{})
+						go func() {
+							was.conn.Close(websocket.StatusNormalClosure, "This tab was opened in another window.")
+							close(closed)
+						}()
+						select {
+						case <-closed:
+							return
+						case <-ctx.Done():
+						}
+					}
+					was.conn.CloseNow()
+				}()
 			}
 			detached = nil
 			read(l)
@@ -662,6 +680,7 @@ func (b *goBrowser) run() {
 			}
 			b.conn.swap(nil)
 			l.release()
+			b.conn.detachedAt(time.Now())
 			detached = time.After(goDetachedFor)
 			goDebugf("tab detached: kept %v", goDetachedFor)
 		case <-detached:
@@ -681,6 +700,7 @@ func (b *goBrowser) run() {
 			switch m.Op {
 			case "close":
 				// Closed by the person (its tab): not kept.
+				b.t.Close(websocket.StatusNormalClosure, "This tab was closed.")
 				return
 			case "popup-answer":
 				b.popupAnswer(m.ID, m.Accept, m.Remember)
@@ -789,17 +809,24 @@ func (b *goBrowser) run() {
 }
 
 // resume tells a connection taking the tab back what's there now: the
-// page loading (its snapshot follows as it would), or the page shown, read
-// whole, as the same document again (a copy still shown keeps its place,
-// a new one starts where the page is scrolled); and what it's asking. A
-// page that failed is loaded again by the person, as before.
+// page loading (its snapshot follows as it would); or the page shown, read
+// whole: as the same document again, if it's the one the person was last
+// sent (a copy still shown keeps its place, a new one starts where the
+// page is scrolled), else as a page it went to meanwhile; and what it's
+// asking. A page that failed is loaded again by the person, as before.
 func (b *goBrowser) resume() {
 	switch {
 	case b.loading != 0:
 		b.send(map[string]any{"type": "go-loading", "gen": b.loading, "url": b.loadingURL, "by": "resume"})
-	case b.shown == b.gen && b.gen != 0:
+	case b.shown == b.gen && b.gen != 0 && b.sentGen == b.gen:
 		b.lastAgain = time.Time{} // at once
 		b.readAgain(b.gen)
+	case b.shown == b.gen && b.gen != 0 && !b.reading:
+		// The page went elsewhere while no one was connected (a link, a
+		// redirect, a timer): a page of its own, as it would have been,
+		// with an entry of its own in the person's history.
+		b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": b.url, "by": "page"})
+		b.snapshot(b.gen, false)
 	default:
 		// Nothing shown (its load failed, or it was a file): the page
 		// loads its address again, as without a tab to take back.
@@ -1376,7 +1403,9 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				b.prefetch(s.Doc, s.Base) // what it'll ask for, on its way
 			}
 			goDebugf("snapshot gen %d, %d bytes", gen, len(p))
-			b.sendLarge(p)
+			if b.sendLarge(p) == nil {
+				b.sentGen = gen // the page the person has (resume)
+			}
 			if b.dirty {
 				b.readChanges()
 			}
