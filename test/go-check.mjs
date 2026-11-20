@@ -716,7 +716,10 @@ async function check(base, port, site) {
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
-        if (!/^Forward,Site settings,Cookies and site data,.+,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
+        if (items !== "Forward,Site settings,Cookies and site data,Log out") throw new Error(`the menu has ${items}`);
+        // The other pages: one row, icons only (named for a screen reader).
+        const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
+        if (!pages.length || new Set(pages.map((p) => p.top)).size !== 1 || pages.some((p) => !p.name || /Browser/.test(p.name))) throw new Error(`the pages: ${JSON.stringify(pages)}`);
         // Set apart: the browser's items, then the other pages, then logging out.
         const parts = await ev(`(() => { const nav = document.querySelector("#go_menu_panel .tabtop-nav"), sep = nav.querySelector(".sep");
             return { navLine: getComputedStyle(nav).borderTopWidth, sep: sep ? Math.round(sep.getBoundingClientRect().height) : 0, before: sep?.nextElementSibling?.textContent, after: sep?.previousElementSibling?.textContent }; })()`);
