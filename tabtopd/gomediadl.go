@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -170,6 +171,12 @@ func (d *goMediaDownload) run(ctx context.Context, client *http.Client, userAgen
 	case "video/x-m4v":
 		media = "video/mp4"
 	}
+	// Labelled only as bytes: what its first bytes say it is (sniffMedia).
+	body := bufio.NewReaderSize(response.Body, mediaSniffLen)
+	if goUnlabelled(media) && response.StatusCode == http.StatusOK {
+		head, _ := body.Peek(mediaSniffLen)
+		media = sniffMedia(head)
+	}
 	switch {
 	case response.StatusCode != http.StatusOK:
 		fail(errors.New("The media server returned HTTP " + strconv.Itoa(response.StatusCode) + "."))
@@ -191,9 +198,9 @@ func (d *goMediaDownload) run(ctx context.Context, client *http.Client, userAgen
 	}
 	d.mu.Unlock()
 	buf := make([]byte, 256<<10)
-	body := io.LimitReader(response.Body, goMediaDownloadMax+1)
+	limited := io.LimitReader(body, goMediaDownloadMax+1)
 	for {
-		n, rerr := body.Read(buf)
+		n, rerr := limited.Read(buf)
 		if n > 0 {
 			if _, werr := d.file.WriteAt(buf[:n], d.have); werr != nil {
 				fail(errors.New("The video couldn't be downloaded here."))
