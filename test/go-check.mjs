@@ -280,6 +280,8 @@ ${Array.from({ length: 40 }, (_, i) => `<button id="b${i}">button ${i}</button>`
         "many.html": `<!doctype html><title>Many</title><p id="n">loading</p><div>${Array.from({ length: 80 }, (_, i) => `<img src="pic.png?many=${i}&slow" width="4" height="4" alt="">`).join("")}</div>`,
         "rotate.html": `<!doctype html><title>Rotate</title><meta name="viewport" content="width=device-width"><style>body { margin: 0 } video { display: block; width: 100%; aspect-ratio: 16 / 9 }</style>
 <p>top</p><video id="v" src="clip.mp4?rotate" muted loop></video><p>below</p><script>document.getElementById("v").play().catch(() => {});</script>`,
+        "auto.html": `<!doctype html><title>Autoplay</title><video id="v" src="clip.mp4?auto" width="320" height="180" muted loop></video><p id="out">none</p><button id="again">again</button>
+<script>const v = document.getElementById("v"), out = document.getElementById("out"); for (const t of ["play", "pause"]) v.addEventListener(t, () => { out.textContent = t + " " + (v.paused ? "paused" : "playing"); }); v.play().catch(() => {}); document.getElementById("again").onclick = () => v.play().catch(() => {});</script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -558,6 +560,15 @@ async function check(base, port, site) {
         const r = await ev(`(() => { const v = document.querySelector("video"); return { t: v.currentTime, stalls: window.__w, bytes: v.dataset.bytes, buf: v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0 }; })()`);
         return (`page ${tPage} player ${tPlayer} metadata ${tMeta} playing ${tPlay} ms; after 15 s: ${JSON.stringify(r)}`);
     });
+    // With GO_PROBE (a module's path), only that, after logging in: its
+    // default export, given the steps' helpers, to look into a site.
+    if (process.env.GO_PROBE) {
+        const probe = (await import(new URL(process.env.GO_PROBE, `file://${process.cwd()}/`).href)).default;
+        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, cdp, goTo, waitFor, sleep, writeFileSync })).catch(() => { process.exitCode = 1; });
+        ws.close();
+        browser.close();
+        process.exit();
+    }
     if (process.env.GO_VIDEO_URL) {
         await farVideo().catch(() => { process.exitCode = 1; });
         ws.close();
@@ -1330,13 +1341,13 @@ async function check(base, port, site) {
                 const r = (e) => e.getBoundingClientRect();
                 const boxes = [...document.querySelectorAll(".go-media-loading")].sort((a, b) => r(a).top - r(b).top);
                 const panel = r(document.getElementById("go_menu_panel"));
-                const buttons = [...document.querySelectorAll("#go_menu_media button")].map((b) => Math.round(r(b).height));
+                const buttons = [...document.querySelectorAll("#go_menu_media button")].map((b) => Math.round(Math.min(r(b).height, r(b).width)));
                 return { fits: boxes.every((b) => b.scrollHeight <= b.clientHeight + 1), small: boxes[1].classList.contains("small"),
                     panel: panel.left >= 0 && panel.right <= innerWidth, buttons };
             })()`);
             if (!got.fits || !got.small || !got.panel || got.buttons.some((h) => h < 44)) throw new Error(`on a phone: ${JSON.stringify(got)}`);
             // Numbered, top first; a row focused outlines its video on the page.
-            await ev(`document.querySelectorAll("#go_menu_media li button")[1].focus()`);
+            await ev(`document.querySelectorAll("#go_menu_media li")[1].querySelector("button:not(:disabled)").focus()`);
             const marked = await ev(`(() => { const r = (e) => e.getBoundingClientRect(); const boxes = [...document.querySelectorAll(".go-media-loading")].sort((a, b) => r(a).top - r(b).top);
                 return { states: [...document.querySelectorAll("#go_menu_media .state")].map((s) => s.textContent.split(" · ")[0]), outlines: boxes.map((b) => !!b.style.outline) }; })()`);
             if (marked.states.join() !== "Video 1,Video 2" || marked.outlines.join() !== "false,true") throw new Error(`the rows and their videos: ${JSON.stringify(marked)}`);
@@ -1396,6 +1407,51 @@ async function check(base, port, site) {
         }
     });
 
+    await step("the menu's autoplay switch pauses every video and holds pages back; its player: full screen, speed, back, given back as closed", async () => {
+        // A real click (the person's: full screen needs one), where sel is.
+        const press = async (sel) => {
+            const p = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+            await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
+            await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...p, button: "left", buttons: 0, clickCount: 1 });
+        };
+        await goTo(site + "auto.html", "Autoplay");
+        await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3; })()`, "the page's video playing", 30000);
+        await ev(`document.getElementById("go_menu").click()`);
+        await waitFor(`!!document.querySelector("#go_menu_media li") && document.getElementById("go_menu_autoplay").getAttribute("aria-pressed") === "false"`, "the menu's videos");
+        // Autoplay paused: the video paused, its page told; the page
+        // playing it again held back; played from the menu, it plays.
+        await press("#go_menu_autoplay");
+        try {
+            await waitFor(`document.querySelector("video").paused && document.getElementById("go_menu_autoplay").getAttribute("aria-pressed") === "true"`, "paused by the switch");
+            await frameWait(`document.getElementById("out").textContent === "pause paused"`, "the page told it's paused");
+            await frameClick("#again");
+            await sleep(1500);
+            if (!(await ev(`document.querySelector("video").paused`))) throw new Error("the page played it, autoplay paused");
+            await ev(`document.getElementById("go_menu").click()`);
+            await waitFor(`!!document.querySelector("#go_menu_media li .acts button")`, "the menu again");
+            await ev(`document.querySelector("#go_menu_media li .acts button").click()`);  // play
+            await waitFor(`!document.querySelector("video").paused`, "played from the menu");
+        } finally {
+            await ev(`(() => { if (document.getElementById("go_menu_panel").hidden) document.getElementById("go_menu").click(); const b = document.getElementById("go_menu_autoplay"); if (b.getAttribute("aria-pressed") === "true") b.click(); })()`);
+        }
+        // The player: the video taken into it, full screen, kept to its
+        // proportions; its speed and back 10 s; closed, given back.
+        await waitFor(`!!document.querySelector("#go_menu_media li .acts button:nth-child(2):not(:disabled)")`, "Watch offered");
+        await press("#go_menu_media li .acts button:nth-child(2)");
+        await waitFor(`!!document.querySelector("#go_player .stage video") && document.fullscreenElement?.id === "go_player"`, "the video in the player, full screen", 10000);
+        const shape = await ev(`(() => { const v = document.querySelector("#go_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
+        if (shape.fit !== "contain" || shape.controls) throw new Error(`in the player: ${JSON.stringify(shape)}`);
+        await ev(`(() => { const s = document.querySelector("#go_player .speed"); s.value = "2"; s.dispatchEvent(new Event("change")); })()`);
+        if ((await ev(`document.querySelector("#go_player video").playbackRate`)) !== 2) throw new Error("its speed wasn't set");
+        await ev(`document.querySelector("#go_player video").currentTime = 3`);
+        await waitFor(`document.querySelector("#go_player video").currentTime >= 3`, "at 3 s");
+        await press('#go_player button[aria-label^="Back"]');
+        await waitFor(`document.querySelector("#go_player video").currentTime < 2`, "back 10 s (to its start)");
+        await press('#go_player button[aria-label^="Close the player"]');
+        await waitFor(`!document.getElementById("go_player") && !document.fullscreenElement && !!document.querySelector("video") && document.querySelector("video").controls && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+    });
+
     await step("a video skipped is, to the page, played to its end, whether playing or still loading: from the menu, or Shift+N", async () => {
         await goTo(site + "skip.html", "Skip");
         // The second still loading (sent slowly): skipped from the menu's list
@@ -1403,7 +1459,7 @@ async function check(base, port, site) {
         await waitFor(`!!document.querySelector(".go-media-loading:not([hidden])")`, "the second loading", 15000);
         await ev(`document.getElementById("go_menu").click()`);
         await waitFor(`document.querySelectorAll("#go_menu_media li").length === 2`, "both videos in the menu");
-        await ev(`document.querySelectorAll("#go_menu_media li button")[1].click()`);
+        await ev(`document.querySelectorAll("#go_menu_media li")[1].querySelector(".acts button:last-child").click()`);
         await frameWait(`document.getElementById("b-out").textContent === "b ended at 0 true"`, "the second ended, to its page");
         await waitFor(`!document.querySelector(".go-media-loading")`, "its loading gone");
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
@@ -1416,7 +1472,7 @@ async function check(base, port, site) {
         await waitFor(`(() => { const v = [...document.querySelectorAll("video")]; return v.length === 1 && v[0].paused && Math.round(v[0].currentTime) === 5; })()`, "its player paused at the end, the other's closed");
         // In the menu: skipped, Skip not offered again.
         await ev(`document.getElementById("go_menu").click()`);
-        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, skip: !li.querySelector("button").disabled }))`);
+        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, skip: !li.querySelector(".acts button:last-child").disabled }))`);
         if (rows.length !== 1 || rows[0].state !== "Skipped" || rows[0].skip) throw new Error(`the menu, after: ${JSON.stringify(rows)}`);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });

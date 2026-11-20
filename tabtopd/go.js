@@ -176,7 +176,37 @@ const mediaHelp = {
 // address to a screen reader, and to hover over), and Skip (the page told
 // it played to its end, go-media.js). The menu's button is marked while
 // there are any, so Skip's found where it is.
-const SKIP_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>`;
+const MEDIA_ICONS = {
+    play: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
+    pause: '<path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" stroke="none"/>',
+    watch: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/>',
+    skip: '<path d="M5 5l9 7-9 7z M16 5h3v14h-3z" fill="currentColor" stroke="none"/>',
+    // Autoplay paused: a play mark struck through.
+    autoplay: '<path d="M8 5v14l11-7z"/>',
+    noAutoplay: '<path d="M8 5v14l11-7z"/><path d="M4 4l16 16"/>',
+};
+const mediaIcon = (name) => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MEDIA_ICONS[name]}</svg>`;
+// Autoplay paused or not: this device's setting (localStorage), for every
+// page's players (go-media.js).
+const AUTOPLAY = "tabtop-go-autoplay-paused";
+let autoplayPaused = (() => { try { return localStorage.getItem(AUTOPLAY) === "1"; } catch { return false; } })();
+function newMedia() {
+    const m = goMedia(frame, mediaHelp);
+    m.autoplay(!autoplayPaused);
+    return m;
+}
+function glyph(name, label, act, { disabled = false, pressed } = {}) {
+    const b = Object.assign(document.createElement("button"), { type: "button", className: "glyph", disabled, title: label });
+    b.setAttribute("aria-label", label);
+    if (pressed !== undefined) b.setAttribute("aria-pressed", String(pressed));
+    b.innerHTML = mediaIcon(name);
+    b.addEventListener("click", (e) => {
+        e.stopPropagation();  // (the menu stays open: there may be more to do)
+        act();
+    });
+    return b;
+}
+let mediaDrawn = "", mediaDrawnOpen = false;
 function mediaMenu() {
     const section = $("go_menu_media"), list = section.querySelector("ul");
     const players = media?.list() ?? [];
@@ -185,8 +215,24 @@ function mediaMenu() {
     section.hidden = !players.length;
     const videos = players.every((p) => p.kind === "video");
     section.querySelector("h2").textContent = videos ? "Videos on this page" : "Videos and sounds on this page";
-    if (menuPanel.hidden && list.childElementCount === players.length) return;  // drawn as it's opened
-    const focused = document.activeElement?.closest?.("#go_menu_media li")?.dataset.key;
+    // Drawn again only as what's shown changes: a row replaced as it's
+    // pressed takes no click, and a focus moves.
+    const drawn = JSON.stringify([autoplayPaused, players.map(({ key, state, short, src, skippable, playing, ready, watching }) => [key, state, short, src, skippable, playing, ready, watching])]);
+    if (drawn === mediaDrawn && !menuPanel.hidden === mediaDrawnOpen) return;
+    mediaDrawn = drawn;
+    mediaDrawnOpen = !menuPanel.hidden;
+    // Autoplay paused, or not: every player paused, and the page's starting
+    // them not done, till one's played here (this device's setting).
+    const toggle = $("go_menu_autoplay");
+    toggle.replaceWith(Object.assign(glyph(autoplayPaused ? "noAutoplay" : "autoplay", autoplayPaused ? "Autoplay paused: let pages play their videos" : "Pause autoplay: stop every video, and pages starting them", () => {
+        autoplayPaused = !autoplayPaused;
+        try { autoplayPaused ? localStorage.setItem(AUTOPLAY, "1") : localStorage.removeItem(AUTOPLAY); } catch { /* this page's only */ }
+        media?.autoplay(!autoplayPaused);
+        mediaMenu();
+        $("go_menu_autoplay").focus();
+    }, { pressed: autoplayPaused }), { id: "go_menu_autoplay" }));
+    const focused = document.activeElement?.closest?.("#go_menu_media li");
+    const focusedKey = focused?.dataset.key, focusedAct = document.activeElement?.dataset?.act;
     list.replaceChildren(...players.map((p, i) => {
         const li = document.createElement("li");
         li.dataset.key = String(p.key);
@@ -198,14 +244,16 @@ function mediaMenu() {
         const where = Object.assign(document.createElement("div"), { className: "where", textContent: p.short });
         if (p.src) where.title = p.src;
         about.append(state, where);
-        const skip = Object.assign(document.createElement("button"), { type: "button", disabled: !p.skippable, title: `Skip to the end of this ${noun} (Shift+N on it)` });
-        skip.innerHTML = `<span>Skip</span>${SKIP_ICON}`;
-        skip.setAttribute("aria-label", `Skip ${noun} ${i + 1}${p.src ? `, ${p.src}` : ""}`);
-        skip.addEventListener("click", (e) => {
-            e.stopPropagation();  // (the menu stays open: there may be more to skip)
-            media?.skip(p.key);
-        });
-        li.append(about, skip);
+        const which = `${noun} ${i + 1}${p.src ? `, ${p.src}` : ""}`;
+        const acts = [
+            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready || p.state === "Skipped" }),
+            ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
+            glyph("skip", `Skip ${which} to its end (Shift+N on it)`, () => media?.skip(p.key), { disabled: !p.skippable }),
+        ];
+        for (const [j, b] of acts.entries()) b.dataset.act = String(j);
+        const buttons = Object.assign(document.createElement("div"), { className: "acts" });
+        buttons.append(...acts);
+        li.append(about, buttons);
         // Pointed at or focused: its player outlined on the page.
         li.addEventListener("pointerenter", () => media?.mark(p.key));
         li.addEventListener("pointerleave", () => media?.mark(null));
@@ -213,7 +261,10 @@ function mediaMenu() {
         li.addEventListener("focusout", () => media?.mark(null));
         return li;
     }));
-    if (focused) list.querySelector(`li[data-key="${CSS.escape(focused)}"] button:not(:disabled)`)?.focus();
+    if (focusedKey) {
+        const row = list.querySelector(`li[data-key="${CSS.escape(focusedKey)}"]`);
+        (row?.querySelector(`button[data-act="${CSS.escape(focusedAct ?? "")}"]:not(:disabled)`) ?? row?.querySelector("button:not(:disabled)"))?.focus();
+    }
 }
 frame.id = "go_view";
 frame.title = "Page";
@@ -247,7 +298,7 @@ frame.addEventListener("load", () => {
 const toFrame = (m) => frameIsReady.then(() => frame.contentWindow?.postMessage(m, "*"));
 resetFrame();
 document.body.append(frame);
-media = goMedia(frame, mediaHelp);
+media = newMedia();
 
 // History: this page's, by address; the engine only loads what it's told.
 let entries = [];  // {url, title}
@@ -590,7 +641,20 @@ function stop() {
 // heard: something's come on the connection since it took a tab back;
 // closing: the tab's being closed by the person (not reconnected).
 let heard = true, closing = false;
+// pageLeft: this page's being left (a reload, another page): its connection
+// closing isn't one to come back from here. (It would: and with the tab's
+// token the next page has just been given, sessionStorage being the
+// browser tab's, take that page's tab from it.)
+let pageLeft = false;
+window.addEventListener("pagehide", () => { pageLeft = true; });
+// (Back from the browser's cache: as it was, but for its connection.)
+window.addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    pageLeft = false;
+    if (!ws) connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
+});
 function connect() {
+    if (pageLeft) return Promise.resolve(true);
     return new Promise((resolve) => {
         const resume = resumeToken.get();
         const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}) }, { title: "Browser" });
@@ -662,7 +726,7 @@ function connect() {
         };
         s.onclose = (e) => {
             resLost(s);
-            if (closing) return;  // closed by the person: nothing to come back to
+            if (closing || pageLeft) return;  // closed by the person, or the page left: nothing to come back to
             const was = ws === s;
             ws = null;
             loading = rendering = false;
@@ -726,7 +790,7 @@ function message(m) {
             if (!m.again && shown !== m.gen) {
                 // Another page: its players, not the last one's.
                 media.stop();
-                media = goMedia(frame, mediaHelp);
+                media = newMedia();
             }
             shown = m.gen;
             lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at };

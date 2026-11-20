@@ -12,6 +12,7 @@
 import { call, collect } from "../tabtop/requests.js";
 import { createMediaSource } from "../tabtop/media-source.js";
 import { mediaWorker } from "../tabtop/stream-worker.js";
+import { openPlayer } from "./go-player.js";
 
 const MAX_PLAYERS = 8;
 
@@ -74,6 +75,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     } });
 
     const players = new Map();  // the frame's box's key -> {element, stopped}
+    const ours = new WeakSet();  // players being started by the page (start), not the person
     const abort = new AbortController();
     let layer = null;
     const streams = new Map();
@@ -209,6 +211,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         const player = players.get(key);
         if (!player) return;
         players.delete(key);
+        player.closeWatch?.();
         player.controller.abort();
         if (player.stream) {
             releaseStream(player.stream);
@@ -228,6 +231,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // the player's own controls, are the player's still.
     function passScrolling(media) {
         media.addEventListener("wheel", (e) => {
+            if ("player" in media.dataset) return;  // in the player: its own
             const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
             e.preventDefault();
             passOn?.(e.clientX, e.clientY, e.deltaX * unit, e.deltaY * unit, "wheel");
@@ -239,6 +243,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }, { passive: true });
         media.addEventListener("touchmove", (e) => {
             const t = e.touches[0];
+            if ("player" in media.dataset) return;
             if (!last || !t || e.touches.length !== 1) return;
             e.preventDefault();
             passOn?.(t.clientX, t.clientY, last.x - t.clientX, last.y - t.clientY, "drag");
@@ -280,6 +285,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         if (!player) return;
         player.placement = { key, rect, clip, shown, fit, position };
         const media = player.element, loading = player.loading?.box;
+        if (media && "player" in media.dataset) return;  // in the player (go-player.js), not its box
         if (media && document.fullscreenElement === media) {
             media.style.clipPath = "none";
             return;
@@ -318,6 +324,17 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             loading.classList.toggle("small", bottom - top < 120 || right - left < 240);
             loading.hidden = false;
         }
+    }
+
+    // pageStarts plays a player the page started, unless autoplay's paused
+    // (and it's not one the person played): then the page's told it's
+    // paused, as a browser that won't autoplay tells it.
+    function pageStarts(key, player) {
+        const media = player.element;
+        if (!media) return;
+        if (autoplay || player.chosen) return start(media);
+        media.pause();
+        played?.(key, { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: false, ended: false });
     }
 
     // told tells the page that a player's state changed (its list, in the
@@ -469,7 +486,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
 
     // start plays media, muted if this browser won't play it with sound
     // unasked (its autoplay rules: the person can unmute it).
+    // Autoplay paused (the menu's): the page's starting a player isn't
+    // done (and the page told it's paused), till the person plays it.
+    let autoplay = true;
     function start(media) {
+        ours.add(media);
+        setTimeout(() => ours.delete(media), 1000);
         media.play().catch((err) => {
             if (err?.name !== "NotAllowedError" || media.muted) return;
             media.muted = true;
@@ -580,7 +602,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 });
                 layerHere().append(media);
                 place(entry.placement);
-                if (entry.play) start(media);
+                // Played by the person (its own controls, the player's): its
+                // page may play it from then on, autoplay paused or not.
+                media.addEventListener("play", () => { if (!ours.has(media)) entry.chosen = true; });
+                if (entry.play) pageStarts(key, entry);
                 return {};
             } catch (error) {
                 entry.element?.stop?.();
@@ -606,15 +631,17 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         },
         // list is the page's players, top first, for the menu: each's kind,
         // its address (whole, and short), and how it's doing.
+        get autoplaying() { return autoplay; },
         list() {
             const out = [];
             for (const [key, p] of players) {
                 if (!p.kind) continue;
                 const media = p.element;
                 const loading = p.loading?.said;
-                const state = p.skipped ? "Skipped" : loading ? loading : !media ? "Loading…" : media.ended ? "Ended" : media.paused ? "Paused" : "Playing";
+                const state = p.skipped ? "Skipped" : loading ? loading : !media ? "Loading…" : media.ended ? "Ended" : (media.paused ? "Paused" : "Playing") + (p.watching ? " in the player" : "");
                 out.push({ key, kind: p.kind, src: p.stream ? "" : p.src, short: p.stream ? "Streamed by the site's own player" : shortAddress(p.src), state,
-                    skippable: !p.skipped && !media?.ended, top: p.placement?.rect?.y ?? 0, shown: !!p.placement?.shown });
+                    skippable: !p.skipped && !media?.ended, top: p.placement?.rect?.y ?? 0, shown: !!p.placement?.shown,
+                    playing: !!media && !media.paused && !media.ended, ready: !!media, watching: !!p.watching });
             }
             return out.sort((a, b) => a.top - b.top);
         },
@@ -631,7 +658,47 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 if (media) media.currentTime = 0;
                 told();
             }
-            if (media) on ? start(media) : media.pause();
+            if (media) on ? pageStarts(key, player) : media.pause();
+        },
+        // autoplay allows the page's starting its players, or (false) pauses
+        // them all and stops it doing so, till the person plays one.
+        autoplay(on) {
+            autoplay = !!on;
+            if (!autoplay) for (const player of players.values()) if (!player.chosen) player.element?.pause();
+            told();
+        },
+        // toggle plays or pauses a player, as the person's doing.
+        toggle(key) {
+            const player = players.get(key);
+            const media = player?.element;
+            if (!media) return;
+            player.chosen = true;
+            if (media.paused || media.ended) {
+                player.skipped = false;
+                media.play().catch(() => {});
+            } else media.pause();
+        },
+        // watch takes a video into the player (go-player.js), full screen,
+        // and gives it back to its box as that's closed.
+        watch(key) {
+            const player = players.get(key);
+            const media = player?.element;
+            if (!media || player.kind !== "video" || player.watching) return;
+            player.watching = true;
+            player.chosen = true;
+            player.loading?.done();
+            player.closeWatch = openPlayer(media, {
+                title: shortAddress(player.src),
+                skip: () => skip(key),
+                closed: () => {
+                    player.watching = false;
+                    player.closeWatch = null;
+                    if (players.get(key) === player) place(player.placement);
+                    told();
+                },
+            });
+            if (media.paused) media.play().catch(() => {});
+            told();
         },
         // pauseAll pauses every player: the page they're on is being left.
         pauseAll() {

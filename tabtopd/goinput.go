@@ -180,6 +180,7 @@ func (b *goBrowser) pointer(m goClientMsg) {
 		if b.acts.waiting() >= goActsWaiting {
 			return // the page isn't keeping up: dropped
 		}
+		b.movesFirst()
 		world, gen := b.world, b.gen
 		b.acts.add(func() {
 			b.input.press(b, world, gen, m)
@@ -202,10 +203,13 @@ func (b *goBrowser) touch(m goClientMsg) {
 		b.touchWaiting = &m
 		b.movesOn()
 	case "start", "end", "cancel":
-		b.touchWaiting = nil // what's after it, not before
 		if b.acts.waiting() >= goActsWaiting {
 			return
 		}
+		// The moves before it given first: a finger let go before its moves
+		// were (a quick swipe, a slow engine) was a finger that hadn't
+		// moved, and its swipe a tap.
+		b.movesFirst()
 		world, gen := b.world, b.gen
 		b.acts.add(func() {
 			b.input.touch(b, world, gen, m)
@@ -225,10 +229,10 @@ func (b *goBrowser) drag(m goClientMsg) {
 		b.dragWaiting = &m
 		b.movesOn()
 	case "drop", "cancel":
-		b.dragWaiting = nil
 		if b.acts.waiting() >= goActsWaiting {
 			return
 		}
+		b.movesFirst()
 		world, gen := b.world, b.gen
 		b.acts.add(func() {
 			b.input.drag(b, world, gen, m)
@@ -334,17 +338,7 @@ func (b *goBrowser) movesOn() {
 	b.movesQueued = true
 	world, gen := b.world, b.gen
 	b.acts.add(func() {
-		for _, m := range []*goClientMsg{move, wheel} {
-			if m != nil {
-				b.input.move(b, world, gen, *m)
-			}
-		}
-		if touch != nil {
-			b.input.touch(b, world, gen, *touch)
-		}
-		if drag != nil {
-			b.input.drag(b, world, gen, *drag)
-		}
+		b.input.moves(b, world, gen, move, wheel, touch, drag)
 		b.post(func() {
 			b.movesQueued = false
 			if gen == b.gen && !b.dialog {
@@ -352,6 +346,35 @@ func (b *goBrowser) movesOn() {
 				b.movesOn()
 			}
 		})
+	})
+}
+
+// moves gives the engine the moves waiting, those there are, in order.
+func (in *goInput) moves(b *goBrowser, world, gen int, move, wheel, touch, drag *goClientMsg) {
+	for _, m := range []*goClientMsg{move, wheel} {
+		if m != nil {
+			in.move(b, world, gen, *m)
+		}
+	}
+	if touch != nil {
+		in.touch(b, world, gen, *touch)
+	}
+	if drag != nil {
+		in.drag(b, world, gen, *drag)
+	}
+}
+
+// movesFirst queues the moves waiting (kept, newest: movesOn), before what
+// comes after them: a press, a release, a finger down or let go, a drop.
+func (b *goBrowser) movesFirst() {
+	move, wheel, touch, drag := b.moveWaiting, b.wheelWaiting, b.touchWaiting, b.dragWaiting
+	if move == nil && wheel == nil && touch == nil && drag == nil {
+		return
+	}
+	b.moveWaiting, b.wheelWaiting, b.touchWaiting, b.dragWaiting = nil, nil, nil, nil
+	world, gen := b.world, b.gen
+	b.acts.add(func() {
+		b.input.moves(b, world, gen, move, wheel, touch, drag)
 	})
 }
 

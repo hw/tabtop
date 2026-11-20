@@ -66,10 +66,15 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_menu_media .about { flex: 1; min-width: 0; }
 #go_menu_media .state { color: #e8e8ea; font: 14px system-ui, sans-serif; }
 #go_menu_media .where { color: #a8a8ad; font: 12px system-ui, sans-serif; overflow-wrap: anywhere; }
-#go_menu_media button { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px;
-    border: 1px solid #636366; border-radius: 6px; background: #3a3a3c; color: #e8e8ea; font: 600 14px system-ui, sans-serif; cursor: pointer; }
-#go_menu_media button:hover:not(:disabled) { background: #48484a; }
-#go_menu_media button:disabled { opacity: .45; cursor: default; }
+#go_menu_media .head { display: flex; align-items: center; gap: 8px; }
+#go_menu_media .head h2 { flex: 1; }
+#go_menu_media .acts { flex: 0 0 auto; display: flex; gap: 2px; }
+#go_menu_media .glyph { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; min-height: 0; padding: 0;
+    border: 0; border-radius: 50%; background: none; color: #e8e8ea; cursor: pointer; }
+#go_menu_media .glyph:hover:not(:disabled) { background: #48484a; }
+#go_menu_media .glyph:disabled { opacity: .35; cursor: default; }
+#go_menu_media .glyph[aria-pressed="true"] { color: #8ab4f8; background: rgba(138, 180, 248, .15); }
+#go_menu_media .glyph:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
 #go_menu { position: relative; }
 #go_menu.has-media::after { content: ""; position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #8ab4f8; }
 /* The pages back (or forward), Back held. */
@@ -106,6 +111,29 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 .go-media-loading .bar { position: relative; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .2); overflow: hidden; }
 .go-media-loading .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; background: #8ab4f8; border-radius: 2px; transition: width .25s; }
 .go-media-loading .bar.unknown > i { width: 30%; animation: go-media-loading 1.2s ease-in-out infinite; transition: none; }
+/* The remote browser's own player (go-player.js): over everything, the
+   video kept to its proportions, its controls over its bottom, hidden
+   while it plays untouched. */
+#go_player { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; outline: none; color: #fff;
+    font: 14px system-ui, sans-serif; padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0); }
+#go_player .stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+#go_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+#go_player .bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 24px 12px calc(8px + env(safe-area-inset-bottom, 0));
+    background: linear-gradient(transparent, rgba(0, 0, 0, .8)); transition: opacity .2s; }
+#go_player:not(.awake):not(.paused) .bar { opacity: 0; pointer-events: none; }
+#go_player:not(.awake):not(.paused) .stage { cursor: none; }
+#go_player .seek { width: 100%; margin: 0 0 4px; accent-color: #8ab4f8; height: 24px; }
+#go_player .row { display: flex; align-items: center; gap: 4px; }
+#go_player .spacer { flex: 1; }
+#go_player .time { margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
+#go_player .glyph { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0;
+    border-radius: 50%; background: none; color: #fff; cursor: pointer; }
+#go_player .glyph:hover { background: rgba(255, 255, 255, .15); }
+#go_player .glyph:focus-visible, #go_player .speed:focus-visible, #go_player .seek:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
+#go_player .speed { height: 36px; padding: 0 6px; border: 1px solid rgba(255, 255, 255, .4); border-radius: 6px; background: rgba(0, 0, 0, .5);
+    color: #fff; font: 600 13px system-ui, sans-serif; }
+@media (max-width: 420px) { #go_player .time { font-size: 12px; } #go_player .row { gap: 0; } #go_player .glyph { width: 40px; } }
+@media (prefers-reduced-motion: reduce) { #go_player .bar { transition: none; } }
 @keyframes go-media-loading { from { left: -30%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .go-media-loading .bar.unknown > i { animation: none; left: 0; width: 100%; opacity: .5; } }
 #go_status { position: absolute; left: calc(8px + var(--safe-left)); bottom: calc(8px + var(--safe-bottom)); max-width: calc(100% - 16px - var(--safe-left) - var(--safe-right)); box-sizing: border-box; padding: 4px 10px;
@@ -167,7 +195,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     #go_address input { height: 44px; padding-right: 44px; font-size: 16px; }
     #go_notice button, #go_dialog button, #tabtop_login_summary button, #go_popup button { min-height: 44px; }
     #go_menu_panel .item, #go_menu_panel .tabtop-nav > * { min-height: 44px; }
-    #go_menu_media button { min-height: 44px; }
+    #go_menu_media .glyph { width: 44px; height: 44px; }
     #go_recent button { min-height: 44px; }
     /* Forward is in the menu: room for the address. */
     #go_forward { display: none !important; }
@@ -185,7 +213,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <button type="button" id="go_tabs" title="Tabs" aria-label="Tabs" hidden><span class="count">1</span></button>
     <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
     <div id="go_menu_panel" hidden>
-        <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><h2 id="go_menu_media_h">Videos on this page</h2><ul></ul></section>
+        <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay" class="glyph"></button></div><ul></ul></section>
         <button type="button" class="item" id="go_menu_forward" disabled></button>
         <a class="item" id="go_menu_settings" href="settings" target="tabtop-go-settings"></a>
         <a class="item" id="go_menu_sites" href="cookie" target="tabtop-go-cookie"></a>
