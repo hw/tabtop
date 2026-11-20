@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,6 +94,20 @@ func (c *goResCache) has(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.entries[key] != nil
+}
+
+// clear forgets what's kept (what's being fetched is fetched as it is: it
+// began after what's cleared was).
+func (c *goResCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, k := range slices.Clone(c.order) {
+		select {
+		case <-c.entries[k].done:
+			c.drop(k)
+		default:
+		}
+	}
 }
 
 // drop forgets key (c.mu held).

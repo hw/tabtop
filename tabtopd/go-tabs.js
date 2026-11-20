@@ -224,6 +224,10 @@ window.addEventListener("message", (e) => {
         case "show":
             showOverview();
             break;
+        case "cache-cleared":
+            // Cleared from one tab: what the others keep for their copies too.
+            for (const o of tabs) if (o !== t) tell(o, { type: "cache-cleared" });
+            break;
     }
 });
 

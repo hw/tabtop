@@ -115,6 +115,7 @@ const turned = () => { document.getElementById("or").textContent = (screen.orien
 turned(); screen.orientation?.addEventListener("change", turned); matchMedia("(orientation: portrait)").addEventListener("change", turned);
 document.getElementById("menu").onclick = () => { const o = document.createElement("div"); o.id = "overlay"; o.style.cssText = "position: fixed; left: 0; right: 0; bottom: 0; background: #def"; o.style.top = document.getElementById("hd").getBoundingClientRect().bottom + "px"; o.textContent = "menu"; document.body.append(o); };
 </script>`,
+        "cache.html": `<!doctype html><title>Cached</title><img id="pic" src="pic.png?cache" width="4" height="4" alt="cached">`,
         "lazy.html": `<!doctype html><title>Lazy</title><p id="state">waiting</p><p id="feature"></p>
 <div style="height:3000px">down there</div><img id="lazy" data-src="pic.png" width="10" height="10" alt="lazy">
 <script>
@@ -341,6 +342,7 @@ const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", "
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
 http.createServer((req, res) => {
   const name = req.url.split("?")[0];
+  if (req.url === "/pic.png?cache") seen.cached = (seen.cached || 0) + 1;  // Clear cache's
   if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
   if (name === "/norange.mp4") {
     // A server without byte ranges: the whole file, whatever's asked.
@@ -726,14 +728,15 @@ async function check(base, port, site) {
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
-        if (items !== "Forward,Site settings,Cookies and site data,Log out") throw new Error(`the menu has ${items}`);
-        // The other pages: one row, icons only (named for a screen reader).
-        const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
-        if (!pages.length || new Set(pages.map((p) => p.top)).size !== 1 || pages.some((p) => !p.name || /Browser/.test(p.name))) throw new Error(`the pages: ${JSON.stringify(pages)}`);
+        if (items !== "Forward,Site settings,Cookies and site data,Clear cache") throw new Error(`the menu has ${items}`);
+        // The other pages and logging out: one row, icons only (named for a
+        // screen reader), logging out last.
+        const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page, #go_menu_panel .tabtop-nav > button")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
+        if (pages.length < 2 || new Set(pages.map((p) => p.top)).size !== 1 || pages.some((p) => !p.name || /Browser/.test(p.name)) || !/^Log out/.test(pages.at(-1).name)) throw new Error(`the pages: ${JSON.stringify(pages)}`);
         // Set apart: the browser's items, then the other pages, then logging out.
         const parts = await ev(`(() => { const nav = document.querySelector("#go_menu_panel .tabtop-nav"), sep = nav.querySelector(".sep");
             return { navLine: getComputedStyle(nav).borderTopWidth, sep: sep ? Math.round(sep.getBoundingClientRect().height) : 0, before: sep?.nextElementSibling?.textContent, after: sep?.previousElementSibling?.textContent }; })()`);
-        if (parts.navLine !== "1px" || parts.sep !== 1 || parts.before !== "Log out" || !parts.after) throw new Error(`the menu's parts: ${JSON.stringify(parts)}`);
+        if (parts.navLine !== "1px" || !(parts.sep > 10) || parts.before !== "Log out" || !parts.after) throw new Error(`the menu's parts: ${JSON.stringify(parts)}`);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         await waitFor(`document.getElementById("go_menu_panel").hidden`, "the menu closed");
         // The device's back (the tab's history: a swipe, a button): a page
@@ -846,6 +849,26 @@ async function check(base, port, site) {
         if (!fonts.includes("/font.ttf?used")) throw new Error(`the font used wasn't fetched: ${fonts}`);
         const extra = fonts.filter((f) => /eot|svg|fallback|unused/.test(f));
         if (extra.length) throw new Error(`fetched too: ${extra}`);
+    });
+
+    await step("Clear cache, in the menu: a picture is fetched from its site again, not before", async () => {
+        const fetched = async () => { await goTo(site + "seen", "Seen"); return JSON.parse(await frame(`document.getElementById("s").textContent`)).cached || 0; };
+        const shown = () => frameWait(`document.getElementById("pic")?.naturalWidth > 0`, "the picture");
+        await goTo(site + "cache.html", "Cached");
+        await shown();
+        const first = await fetched();
+        if (first < 1) throw new Error("the picture wasn't fetched");
+        await goTo(site + "cache.html", "Cached");
+        await shown();
+        if ((await fetched()) !== first) throw new Error("fetched again, not cleared");
+        await ev(`document.getElementById("go_menu").click()`);
+        await ev(`document.getElementById("go_menu_cache").click()`);
+        await waitFor(`!document.getElementById("go_notice").hidden && document.getElementById("go_notice").textContent.includes("Cache cleared")`, "said it's cleared");
+        await goTo(site + "cache.html", "Cached");
+        await shown();
+        const after = await fetched();
+        if (after !== first + 1) throw new Error(`fetched ${after - first} times after clearing`);
+        await ev(`document.getElementById("go_notice").hidden = true`);
     });
 
     await step("this machine's addresses are refused", async () => {
@@ -1162,12 +1185,24 @@ async function check(base, port, site) {
     });
 
     await step("the same video switches from a file to a MediaSource stream", async () => {
+        await frame(`window.addEventListener("message", (e) => {
+            if (e.source === parent && e.data?.type === "render") window.relayGeneration = e.data.gen;
+        })`);
         await goTo(site + "relay.html", "Relay");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 2 && Math.abs(v.duration - 5) < 0.5)`, "the preroll", 30000);
         await ev(`(() => { const v = document.querySelector("video"); v.currentTime = v.duration - 0.2; return v.play(); })()`);
         await frameWait(`document.getElementById("status").textContent === "stream supplied"`, "the site handed over the stream");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.src.startsWith("blob:") && Math.abs(v.duration - 3) < 0.5 && v.currentTime > 0.25)`,
             "the relayed main video advancing", 30000);
+        await ev(`window.relayPlayer = document.querySelector("video")`);
+        await frame(`window.relayBox = document.getElementById("player");
+            window.dispatchEvent(new MessageEvent("message", { source: parent,
+                data: { type: "changes", gen: window.relayGeneration, ops: [{ i: -1 }] } }))`);
+        await frameWait(`window.relayBox !== document.getElementById("player")`, "the rebuilt player box");
+        await sleep(300);
+        if (!await ev(`window.relayPlayer === document.querySelector("video") && window.relayPlayer.isConnected`)) {
+            throw new Error("a same-page snapshot replaced the native stream player");
+        }
     });
 
     await step("a video plays in a player laid over the copy, its file read through the server", async () => {

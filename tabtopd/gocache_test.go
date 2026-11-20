@@ -42,6 +42,56 @@ func TestGoPruneCache(t *testing.T) {
 	}
 }
 
+// Clear cache: every entry goes, links too (not what they lead to); the
+// directory stays, for the engines using it.
+func TestGoClearCache(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "keep")
+	os.WriteFile(outside, []byte("not the cache's"), 0o600)
+	os.Mkdir(filepath.Join(dir, "a.entry"), 0o700)
+	os.WriteFile(filepath.Join(dir, "a.entry", "body.bin"), make([]byte, 3000), 0o600)
+	os.Mkdir(filepath.Join(dir, "empty.entry"), 0o700)
+	os.WriteFile(filepath.Join(dir, "loose"), make([]byte, 1000), 0o600)
+	os.Symlink(outside, filepath.Join(dir, "link.entry"))
+	if freed := goClearCache(dir); freed < 4000 {
+		t.Errorf("freed %d bytes", freed)
+	}
+	if items, err := os.ReadDir(dir); err != nil || len(items) != 0 {
+		t.Errorf("left %v (%v)", items, err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("the link's target went: %v", err)
+	}
+	if goClearCache("") != 0 {
+		t.Error("no cache, yet something cleared")
+	}
+}
+
+// A tab's resources, cleared: what's kept goes; what's being fetched is
+// fetched as it is.
+func TestGoResCacheClear(t *testing.T) {
+	c := newGoResCache()
+	ctx := context.Background()
+	c.get(ctx, "image a", func() goFetched { return goFetched{data: []byte("aaaa")} })
+	release := make(chan struct{})
+	started := make(chan struct{})
+	go c.get(ctx, "image b", func() goFetched { close(started); <-release; return goFetched{data: []byte("bb")} })
+	<-started
+	c.clear()
+	if c.has("image a") || !c.has("image b") {
+		t.Errorf("after clearing: a %v, b %v", c.has("image a"), c.has("image b"))
+	}
+	close(release)
+	if f := c.get(ctx, "image b", func() goFetched { t.Error("fetched again"); return goFetched{} }); string(f.data) != "bb" {
+		t.Errorf("b: %q", f.data)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.bytes != 2 || len(c.order) != 1 {
+		t.Errorf("counts %d bytes, %v", c.bytes, c.order)
+	}
+}
+
 // TestGoCacheWithMoli has two engines, one after the other, share the
 // cache: what the first fetched, the second has on disk and doesn't ask
 // for again. Set TABTOP_TEST_MOLI to a Moli binary to run it.

@@ -16,6 +16,7 @@ package main
 // until it's within goCacheMax.
 
 import (
+	"context"
 	"io/fs"
 	"log"
 	"os"
@@ -122,4 +123,60 @@ func goPruneCache(dir string, max int64) {
 		}
 	}
 	goDebugf("shared cache: %d entries removed, %d MiB kept", removed, total>>20)
+}
+
+// goClearCache empties the cache dir: every entry; an engine reading one
+// as it goes gets a miss. How much went, in bytes.
+func goClearCache(dir string) int64 {
+	if dir == "" {
+		return 0
+	}
+	var before int64
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				before += info.Size()
+			}
+		}
+		return nil
+	})
+	items, _ := os.ReadDir(dir)
+	for _, it := range items {
+		os.RemoveAll(filepath.Join(dir, it.Name())) // a link: the link, not what it leads to
+	}
+	return before
+}
+
+// routeGoCacheClear clears what the remote browser keeps of what sites
+// sent (not their cookies or storage: go/cookie): the engines' shared HTTP
+// cache, each open tab's engine's own, and what each tab fetched for its
+// copy. A page is fetched again from its site next.
+func (g *server) routeGoCacheClear(c *tunnelCall) {
+	if !g.goOn {
+		c.r.fail("The remote browser is off or unavailable.")
+		return
+	}
+	freed := goClearCache(g.goConfig.cache)
+	var tabs []*goBrowser
+	if g.goCookies != nil {
+		g.goCookies.mu.Lock()
+		tabs = g.goCookies.tabList()
+		g.goCookies.mu.Unlock()
+	}
+	for _, b := range tabs {
+		b.clearCache()
+	}
+	log.Printf("go: cache cleared from %s (%d tabs, %d MiB on disk)", c.ip, len(tabs), freed>>20)
+	c.r.finish(map[string]any{"freed": freed, "tabs": len(tabs)})
+}
+
+// clearCache forgets what the tab fetched for its copy, and has its engine
+// forget what it keeps itself (Moli: in memory, alongside the shared one).
+func (b *goBrowser) clearCache() {
+	b.res.clear()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.cdp.call(ctx, b.page, "Network.clearBrowserCache", nil, nil); err != nil {
+		goDebugf("clear the engine's cache: %v", err)
+	}
 }

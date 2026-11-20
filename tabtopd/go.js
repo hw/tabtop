@@ -70,6 +70,7 @@ const ICONS = {
     stop: '<path d="M6 6l12 12M18 6L6 18"/>',
     clear: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    clear: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     sites: '<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="13.5" r="1"/><circle cx="10.5" cy="15" r="1"/>',
     settings: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
 };
@@ -87,6 +88,9 @@ menuForward.innerHTML = `${icon("forward")}<span class="label">Forward</span>`;
 // Cookies and site data: a page of its own (go/cookie, go-cookies.js),
 // in a tab of its own, this one's page kept.
 $("go_menu_sites").innerHTML = `${icon("sites")}<span class="label">Cookies and site data</span>`;
+// Clear cache: what the server and engines keep of what sites sent (not
+// cookies: those are go/cookie's), in every tab (gocache.go).
+$("go_menu_cache").innerHTML = `${icon("clear")}<span class="label">Clear cache</span>`;
 // Site settings: sites blocked, pop-ups (go/settings, go-settings.js).
 $("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings</span>`;
 const nav = navBar("go", { logOutIcon: true });
@@ -706,6 +710,11 @@ function message(m) {
 const CACHE = 64 << 20;
 const cache = new Map();  // kind + url -> Promise of a Blob
 let cached = 0;
+// forgetResources forgets what's kept here for the copy (Clear cache).
+function forgetResources() {
+    cache.clear();
+    cached = 0;
+}
 function cachedResource(kind, url) {
     const key = kind + " " + url;
     let got = cache.get(key);
@@ -715,6 +724,7 @@ function cachedResource(kind, url) {
         return got;
     }
     got = fetchResource(kind, url).then((blob) => {
+        if (cache.get(key) !== got) return blob;  // forgotten meanwhile (Clear cache): not counted
         cached += blob.size;
         for (const [k, p] of cache) {
             if (cached <= CACHE || k === key) break;
@@ -1161,6 +1171,17 @@ historyPanel.addEventListener("keydown", (e) => {
     }
 });
 menuForward.addEventListener("click", () => goBy(1));
+$("go_menu_cache").addEventListener("click", async () => {
+    try {
+        const t = await call({ type: "go-cache-clear" });
+        t.close();
+        forgetResources();
+        toTabs({ type: "cache-cleared" });  // the other tabs' copies' too
+        warn("Cache cleared: pages are fetched from their sites again. Cookies and sites' data are kept (Cookies and site data clears those).", { error: false });
+    } catch (err) {
+        warn(err.message || "The cache couldn't be cleared.");
+    }
+});
 reload.addEventListener("click", () => (loading ? stop() : at >= 0 && load(entries[at].url, { push: false })));
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && document.activeElement === address) {
@@ -1199,6 +1220,9 @@ window.addEventListener("message", (e) => {
             }
             break;
         }
+        case "cache-cleared":
+            forgetResources();
+            break;
         case "count":
             $("go_tabs").hidden = !m.compact;
             $("go_tabs").querySelector(".count").textContent = String(m.count);
