@@ -178,6 +178,18 @@ clip.addEventListener("loadedmetadata", () => { document.getElementById("meta").
 document.getElementById("nextclip").onclick = () => { const b = document.getElementById("b"); b.src = "clip.mp4"; b.play().catch(() => {}); };
 document.getElementById("scroller").onscroll = (e) => { document.getElementById("status").textContent = "at " + Math.round(e.target.scrollTop); };
 </script>`,
+        "memory.html": `<!doctype html><title>Memory</title><p id="s">not yet</p>
+<script>
+// Address space past a gigabyte, little of it used: the engine's limit is on
+// what it has (Moli's V8 ended at 1 GiB on Wikipedia, using 400 MiB).
+try {
+    const memories = [];
+    for (let i = 0; i < 6; i++) memories.push(new ArrayBuffer(200 << 20));
+    document.getElementById("s").textContent = "memory " + memories.reduce((n, m) => n + m.byteLength, 0);
+} catch (e) {
+    document.getElementById("s").textContent = "refused " + e.name;
+}
+</script>`,
         "reel-player.html": `<!doctype html><title>Reel player</title><p id="status">ready</p><p id="time">no time</p><button id="load">load</button>
 <div id="wrap" style="visibility:hidden"><video id="v" width="320" height="180" muted></video></div>
 <script>
@@ -1018,6 +1030,14 @@ async function check(base, port, site) {
         await frameClick("#scroller");
         await frame(`document.getElementById("scroller").scrollTop = 300`);
         await frameWait(`/^at [1-9]/.test(document.getElementById("status").textContent)`, "the page told of the scroll");
+    });
+
+    await step("a page's address space past a gigabyte, little used, is the page's", async () => {
+        await goTo(site + "memory.html", "Memory");
+        await frameWait(`document.getElementById("s")?.textContent === "memory 1258291200"`, "the page's memory made");
+        await sleep(2000);
+        // Still the same engine: not ended and the page loaded again.
+        if (await ev(`!document.getElementById("go_notice").hidden || /Loading/.test(document.getElementById("go_status").textContent)`)) throw new Error("the page was loaded again");
     });
 
     await step("a player the page hides till its video plays is played, and shown once it does", async () => {

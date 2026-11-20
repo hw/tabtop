@@ -108,6 +108,7 @@ func (c *cdpConn) read() {
 			c.mu.Unlock()
 		}
 	}
+	goDebugf("cdp: connection closed: %v", err)
 	c.mu.Lock()
 	c.err = err
 	for id, ch := range c.pending {

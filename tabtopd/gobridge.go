@@ -114,6 +114,11 @@ func runGoBridge(args []string) int {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := cmd.Run(); err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
+			// Said if it was a signal (an engine that ends so may say
+			// nothing itself: V8's fatal errors are a trap, SIGTRAP).
+			if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				fmt.Fprintf(os.Stderr, "go-bridge: the engine ended by %v\n", status.Signal())
+			}
 			return exit.ExitCode()
 		}
 		fmt.Fprintf(os.Stderr, "go-bridge: %v\n", err)

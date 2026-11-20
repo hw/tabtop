@@ -253,7 +253,13 @@ var goAdapters = map[string]goAdapter{
 	// pages that measure themselves (a menu placed below its header) get
 	// real sizes and places, at the size of the person's window (see
 	// gobrowser.go's viewport).
-	"moli": {name: "Moli", cache: true, args: func(port int, proxy, userAgent, cache string) []string {
+	// Its V8 reserves address space that RLIMIT_DATA counts, a page's
+	// WebAssembly memory most of all (Wikipedia's player, ogv.js, once its
+	// audio's length is known): at 1 GiB, V8 couldn't reserve it and ended
+	// the engine (SIGTRAP), and the page, loaded again, did the same, over
+	// and over. Its limit is 8 GiB, as Obscura's; what it uses is held to
+	// goEngineMemory by the watchdog.
+	"moli": {name: "Moli", cache: true, data: 8 << 30, args: func(port int, proxy, userAgent, cache string) []string {
 		args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
 			"--http-proxy", proxy, "--log-level", "warn", "--layout"}
 		if userAgent != "" {
@@ -646,7 +652,13 @@ func (e *goEngine) watch() {
 			return
 		case <-e.exited:
 			if e.killReason() != "" {
-				return // it's being killed
+				// Being killed; but if it ended first (its tab closed as
+				// its connection went), the bridge says how.
+				out := strings.TrimSpace(e.stderr.String())
+				if last := out[strings.LastIndex(out, "\n")+1:]; strings.HasPrefix(last, "go-bridge: the engine ended by") {
+					e.cfg.logf("go: engine exited: %s", last)
+				}
+				return
 			}
 			e.cfg.logf("go: engine exited: %s", firstLine(strings.TrimSpace(e.stderr.String())))
 			e.kill("it exited")
