@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 // readGoResource reads a go-resource reply's bytes, acknowledging each
@@ -51,6 +55,34 @@ func TestGoResource(t *testing.T) {
 		bw.Write(make([]byte, 1<<20))
 	}
 	bw.Close()
+	// zstd, deflate (zlib's, and bare), and one on another (gzip, then
+	// Brotli of that); a zstd bomb, and one asking for a 64 MB window.
+	enc := func(f func(io.Writer) io.WriteCloser, data []byte) []byte {
+		var b bytes.Buffer
+		w := f(&b)
+		w.Write(data)
+		w.Close()
+		return b.Bytes()
+	}
+	zstdW := func(opts ...zstd.EOption) func(io.Writer) io.WriteCloser {
+		return func(w io.Writer) io.WriteCloser { e, _ := zstd.NewWriter(w, opts...); return e }
+	}
+	zstded := enc(zstdW(), css)
+	zstdBomb := enc(zstdW(), make([]byte, maxGoCSS+(1<<20)))
+	// A frame whose header asks for a 64 MB window (2^(10+16)), one raw
+	// block, the last, of "body{}" (written by hand: an encoder sizes the
+	// window to what it has).
+	raw := []byte("body{}")
+	blockHeader := 1 | len(raw)<<3 // last, raw, its size
+	zstdWide := append([]byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 16 << 3, byte(blockHeader), byte(blockHeader >> 8), byte(blockHeader >> 16)}, raw...)
+	if zr, err := zstd.NewReader(bytes.NewReader(zstdWide), zstd.WithDecoderMaxWindow(128<<20)); err != nil {
+		t.Fatal(err)
+	} else if got, err := io.ReadAll(zr); err != nil || string(got) != "body{}" {
+		t.Fatalf("the wide frame, allowed its window: %q %v", got, err) // it's well formed: refused for its window alone
+	}
+	zlibbed := enc(func(w io.Writer) io.WriteCloser { return zlib.NewWriter(w) }, css)
+	flated := enc(func(w io.Writer) io.WriteCloser { f, _ := flate.NewWriter(w, flate.DefaultCompression); return f }, css)
+	stacked := enc(func(w io.Writer) io.WriteCloser { return brotli.NewWriter(w) }, gzipped.Bytes())
 	var bomb bytes.Buffer // 1 MB compressed to almost nothing, many times over the limit
 	zw = gzip.NewWriter(&bomb)
 	for i := 0; i < maxGoCSS/(1<<20)+2; i++ {
@@ -101,10 +133,15 @@ func TestGoResource(t *testing.T) {
 			w.Header().Set("Content-Type", "text/css")
 			w.Header().Set("Content-Encoding", "br")
 			w.Write(brBomb.Bytes())
-		case "/zstd.css":
+		case "/zstd.css", "/zstd-bomb.css", "/zstd-wide.css", "/deflate.css", "/raw-deflate.css", "/stacked.css", "/three.css", "/compress.css":
+			if ae := r.Header.Get("Accept-Encoding"); ae != goAcceptEncoding {
+				t.Errorf("Accept-Encoding %q", ae)
+			}
 			w.Header().Set("Content-Type", "text/css")
-			w.Header().Set("Content-Encoding", "zstd")
-			w.Write([]byte("not asked for"))
+			body, coding := map[string][]byte{"/zstd.css": zstded, "/zstd-bomb.css": zstdBomb, "/zstd-wide.css": zstdWide, "/deflate.css": zlibbed, "/raw-deflate.css": flated, "/stacked.css": stacked, "/three.css": stacked, "/compress.css": css}[r.URL.Path],
+				map[string]string{"/zstd.css": "zstd", "/zstd-bomb.css": "zstd", "/zstd-wide.css": "zstd", "/deflate.css": "deflate", "/raw-deflate.css": "deflate", "/stacked.css": "gzip, br", "/three.css": "gzip, br, identity, gzip", "/compress.css": "compress"}[r.URL.Path]
+			w.Header().Set("Content-Encoding", coding)
+			w.Write(body)
 		case "/font.woff2":
 			w.Header().Set("Content-Type", "font/woff2")
 			w.Write(woff2)
@@ -158,6 +195,10 @@ func TestGoResource(t *testing.T) {
 		{"image", "/unlabelled.png", "image/png", png}, // labelled as bytes, seen to be a PNG
 		{"css", "/style.css", "text/css", css},         // decompressed
 		{"css", "/brotli.css", "text/css", css},        // Brotli, decoded
+		{"css", "/zstd.css", "text/css", css},
+		{"css", "/deflate.css", "text/css", css},
+		{"css", "/raw-deflate.css", "text/css", css}, // bare deflate, as some servers send
+		{"css", "/stacked.css", "text/css", css},     // gzip, then Brotli of it
 		{"font", "/font.woff2", "font/woff2", woff2},
 	} {
 		reply, conn := fetch(tc.kind, tc.path)
@@ -177,7 +218,10 @@ func TestGoResource(t *testing.T) {
 		{"css", "/bomb.css", "too large"},
 		{"css", "/broken.br.css", "couldn't be read"},
 		{"css", "/bomb.br.css", "too large"},
-		{"css", "/zstd.css", "encoding"}, // not asked for
+		{"css", "/zstd-bomb.css", "too large"},
+		{"css", "/zstd-wide.css", "couldn't be read"}, // asks to hold more than 8 MB
+		{"css", "/three.css", "encoding"},             // too many, one on another
+		{"css", "/compress.css", "encoding"},          // not asked for
 		{"font", "/fake-font.woff2", "font"},
 		{"image", "/page.html", "type"},
 		{"image", "/unlabelled.html", "type"},

@@ -201,6 +201,10 @@ video.addEventListener("ended", () => {
         } catch (error) { status.textContent = String(error); }
     };
     video.src = URL.createObjectURL(source);
+    if (video.ended) {
+        source.onsourceopen = null;
+        status.textContent = "the replacement stream inherited the preroll end state";
+    }
 }, { once: true });
 </script>`,
         "feed.html": `<!doctype html><title>Feed</title><p id="status">ready</p>
@@ -379,7 +383,13 @@ http.createServer((req, res) => {
       res.writeHead(206, { "Content-Type": type, "Content-Range": "bytes " + first + "-" + last + "/" + data.length, "Accept-Ranges": "bytes", "ETag": '"clip"' });
       return res.end(data.subarray(first, last + 1));
     }
-    // Stylesheets in Brotli to who asks, as sites send them.
+    // Stylesheets in Brotli to who asks, as sites send them; the one
+    // imported (more.css) in zstd.
+    if (type === "text/css" && name === "/more.css" && /\\bzstd\\b/.test(req.headers["accept-encoding"] || "")) {
+      seen.zstd = (seen.zstd || 0) + 1;
+      res.writeHead(200, { "Content-Type": type, "Content-Encoding": "zstd", "Vary": "Accept-Encoding" });
+      return res.end(zlib.zstdCompressSync(data));
+    }
     if (type === "text/css" && /\\bbr\\b/.test(req.headers["accept-encoding"] || "")) {
       seen.brotli = (seen.brotli || 0) + 1;
       res.writeHead(200, { "Content-Type": type, "Content-Encoding": "br", "Vary": "Accept-Encoding" });
@@ -830,8 +840,9 @@ async function check(base, port, site) {
         await sleep(1000);
         await goTo(site + "seen", "Seen");
         const fonts = JSON.parse(await frame(`document.getElementById("s").textContent`)).fonts ?? [];
-        // (The stylesheets were sent in Brotli, and shown: the steps above.)
-        if (!(JSON.parse(await frame(`document.getElementById("s").textContent`)).brotli > 0)) throw new Error("no stylesheet was sent in Brotli");
+        // (The stylesheets were sent in Brotli and zstd, and shown: the steps above.)
+        const coded = JSON.parse(await frame(`document.getElementById("s").textContent`));
+        if (!(coded.brotli > 0) || !(coded.zstd > 0)) throw new Error(`stylesheets weren't sent in Brotli and zstd: ${JSON.stringify(coded)}`);
         if (!fonts.includes("/font.ttf?used")) throw new Error(`the font used wasn't fetched: ${fonts}`);
         const extra = fonts.filter((f) => /eot|svg|fallback|unused/.test(f));
         if (extra.length) throw new Error(`fetched too: ${extra}`);

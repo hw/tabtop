@@ -9,7 +9,10 @@ package main
 // connection and redirect. Nothing is sent but the request: no cookies, no
 // referrer, a fixed User-Agent.
 import (
+	"bufio"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -23,6 +26,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -185,9 +189,9 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	}
 	request.Header.Set("User-Agent", userAgent) // the tab's (gouseragent.go)
 	request.Header.Set("Accept", map[string]string{"image": "image/*", "css": "text/css", "font": "font/*, application/font-woff, */*;q=0.1"}[kind])
-	// Brotli and gzip, as a browser asks (decoded below; asked here, not by
-	// the transport, which would then decode gzip alone).
-	request.Header.Set("Accept-Encoding", "br, gzip")
+	// What Chrome asks for, as it asks (decoded below, by goDecoded; asked
+	// here, not by the transport, which would then decode gzip alone).
+	request.Header.Set("Accept-Encoding", goAcceptEncoding)
 	// The cookies and Referer the page's browser would send it, and anew
 	// at each address it's redirected to (goFrom).
 	from.apply(request)
@@ -215,21 +219,11 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	}
 	// Decoded as it's read: what's limited below is what it decodes to (a
 	// small file that decodes to a great deal is stopped there).
-	body := io.Reader(response.Body)
-	switch enc := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding"))); enc {
-	case "", "identity":
-	case "br":
-		body = brotli.NewReader(response.Body)
-	case "gzip", "x-gzip":
-		zr, err := gzip.NewReader(response.Body)
-		if err != nil {
-			return fail("The resource couldn't be read.")
-		}
-		defer zr.Close()
-		body = zr
-	default:
-		return fail("The resource came in an encoding that isn't supported.") // not asked for
+	body, done, err := goDecoded(response.Body, response.Header.Values("Content-Encoding"))
+	if err != nil {
+		return fail(err.Error())
 	}
+	defer done()
 	media, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	// A picture labelled as just bytes (some storage services say
 	// binary/octet-stream for everything) is looked at, as browsers do:
@@ -319,4 +313,85 @@ func (g *server) routeGoResource(c *tunnelCall) {
 	if w.flush() == nil {
 		c.r.finish(nil)
 	}
+}
+
+// goAcceptEncoding is what Chrome asks a site to compress in, as it says it.
+const goAcceptEncoding = "gzip, deflate, br, zstd"
+
+// goMaxEncodings is how many encodings, one on another, a response may come
+// in ("gzip, br": Brotli of gzip); a browser takes a few, a site sends one.
+const goMaxEncodings = 2
+
+// goZstdWindow is the most a zstd stream may ask to be held while it's
+// decoded: 8 MB, as HTTP's zstd has it (RFC 8878 3.1.1.1.2; Chrome refuses
+// more), so a response can't make the server hold more.
+const goZstdWindow = 8 << 20
+
+// goDecoded is body decoded from the Content-Encoding header's encodings
+// (the last applied first undone), as it's read, so the limits on what's
+// read count what it decodes to; done frees the decoders. An encoding
+// that wasn't asked for, or too many, is refused.
+func goDecoded(body io.Reader, header []string) (io.Reader, func(), error) {
+	var encodings []string
+	for _, h := range header {
+		for _, e := range strings.Split(h, ",") {
+			if e = strings.ToLower(strings.TrimSpace(e)); e != "" && e != "identity" {
+				encodings = append(encodings, e)
+			}
+		}
+	}
+	unreadable := errors.New("The resource couldn't be read.")
+	if len(encodings) > goMaxEncodings {
+		return nil, nil, errors.New("The resource came in an encoding that isn't supported.")
+	}
+	var closers []func()
+	done := func() {
+		for _, c := range closers {
+			c()
+		}
+	}
+	for i := len(encodings) - 1; i >= 0; i-- {
+		switch encodings[i] {
+		case "br":
+			body = brotli.NewReader(body)
+		case "gzip", "x-gzip":
+			zr, err := gzip.NewReader(body)
+			if err != nil {
+				done()
+				return nil, nil, unreadable
+			}
+			closers = append(closers, func() { zr.Close() })
+			body = zr
+		case "deflate":
+			// zlib's, as HTTP has it; some servers send it bare, which
+			// browsers take too.
+			br := bufio.NewReader(body)
+			head, _ := br.Peek(2)
+			if len(head) == 2 && head[0]&0x0f == 8 && (uint16(head[0])<<8|uint16(head[1]))%31 == 0 {
+				zr, err := zlib.NewReader(br)
+				if err != nil {
+					done()
+					return nil, nil, unreadable
+				}
+				closers = append(closers, func() { zr.Close() })
+				body = zr
+			} else {
+				fr := flate.NewReader(br)
+				closers = append(closers, func() { fr.Close() })
+				body = fr
+			}
+		case "zstd":
+			zr, err := zstd.NewReader(body, zstd.WithDecoderMaxWindow(goZstdWindow), zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true))
+			if err != nil {
+				done()
+				return nil, nil, unreadable
+			}
+			closers = append(closers, zr.Close)
+			body = zr
+		default:
+			done()
+			return nil, nil, errors.New("The resource came in an encoding that isn't supported.") // not asked for
+		}
+	}
+	return body, done, nil
 }

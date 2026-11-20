@@ -7,6 +7,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/jfreymuth/pulse v0.1.3
+	github.com/klauspost/compress v1.18.0
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/yuin/goldmark v1.8.6
 	golang.org/x/crypto v0.58.0
