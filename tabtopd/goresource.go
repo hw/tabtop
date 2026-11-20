@@ -151,7 +151,7 @@ type goFetched struct {
 // client, where the remote browser may go, within the kind's limit, of the
 // kind's types (a picture labelled as just bytes looked at, as browsers
 // do), waiting for a slot of the session's share and of all.
-func goFetchResource(ctx context.Context, client *http.Client, session, kind, raw, userAgent string) goFetched {
+func goFetchResource(ctx context.Context, client *http.Client, session, kind, raw, userAgent string, from *goFrom) goFetched {
 	fail := func(m string) goFetched { return goFetched{err: errors.New(m)} }
 	limit := goResourceLimit(kind)
 	if limit == 0 {
@@ -188,6 +188,23 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	// Brotli and gzip, as a browser asks (decoded below; asked here, not by
 	// the transport, which would then decode gzip alone).
 	request.Header.Set("Accept-Encoding", "br, gzip")
+	// The cookies and Referer the page's browser would send it, and anew
+	// at each address it's redirected to (goFrom).
+	from.apply(request)
+	if from != nil {
+		c := *client
+		redirects := c.CheckRedirect
+		c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+			if redirects != nil {
+				if err := redirects(next, via); err != nil {
+					return err
+				}
+			}
+			from.apply(next)
+			return nil
+		}
+		client = &c
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return goFetched{err: fetchError(err)}
@@ -280,16 +297,12 @@ func (g *server) routeGoResource(c *tunnelCall) {
 		defer mine()
 		// With no tab to ask, the cookies kept for the media's site that
 		// any page may send it (SameSite=None).
-		var cookies func(*url.URL) string
-		if g.goCookies != nil {
-			cookies = func(u *url.URL) string { return g.goCookies.header(u, "") }
-		}
-		serveRemoteResource(c.t, c.req, c.r, g.goResources, goResourceSlots, goSessionUA(c.session), cookies)
+		serveGoMedia(c.t, c.session, c.req, c.r, g.goResources, goResourceSlots, goSessionUA(c.session), g.goFromNoTab())
 		return
 	}
 	w := newChunkWriter(c.t)
 	defer w.stop()
-	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL, goSessionUA(c.session))
+	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL, goSessionUA(c.session), g.goFromNoTab())
 	if f.err != nil {
 		if w.ctx.Err() == nil {
 			c.r.fail(f.err.Error())

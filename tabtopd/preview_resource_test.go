@@ -185,6 +185,8 @@ func TestPreviewStylesFontsAndMediaRanges(t *testing.T) {
 		case "/fake.woff2":
 			w.Header().Set("Content-Type", "font/woff2")
 			fmt.Fprint(w, "<script>bad()</script>")
+		case "/missing.mp4":
+			http.NotFound(w, r)
 		case "/ignores.mp4":
 			w.Header().Set("Content-Type", "video/mp4")
 			w.WriteHeader(http.StatusOK)
@@ -250,6 +252,10 @@ func TestPreviewStylesFontsAndMediaRanges(t *testing.T) {
 		if reply, _ := read(req); reply["error"] == nil {
 			t.Fatalf("invalid resource accepted: %+v", req)
 		}
+	}
+	missing, _ := read(tunnelRequest{Type: "preview-resource", Resource: "media", URL: remote.URL + "/missing.mp4?token=private"})
+	if msg, _ := missing["error"].(string); !strings.Contains(msg, "127.0.0.1 returned HTTP 404") || strings.Contains(msg, "token") {
+		t.Errorf("missing media: %v", missing)
 	}
 	// Changed since it was opened: the server sends it whole (If-Range
 	// didn't match), which is said as that, not as no range support.

@@ -123,7 +123,7 @@ func (b *goBrowser) resource(ctx context.Context, kind, raw string) goFetched {
 	return b.res.get(ctx, kind+" "+raw, func() goFetched {
 		// Not the page's request's own context: what's fetched is kept,
 		// for the page's next request, if this one's given up.
-		return goFetchResource(b.ctx, b.resources, b.session, kind, raw, b.ua())
+		return goFetchResource(b.ctx, b.resources, b.session, kind, raw, b.ua(), b.from())
 	})
 }
 
@@ -194,8 +194,8 @@ func (b *goBrowser) serveMedia(m goClientMsg) {
 		return
 	}
 	defer mine()
-	data, reply, err := fetchRemoteResource(b.ctx, tunnelRequest{Resource: "media", URL: m.URL, Offset: m.Offset, Length: m.Length,
-		IfSize: m.IfSize, IfMtime: m.IfMtime}, b.resources, goResourceSlots, b.ua(), b.mediaCookies)
+	data, reply, err := goFetchMedia(b.ctx, b.session, tunnelRequest{Resource: "media", URL: m.URL, Offset: m.Offset, Length: m.Length,
+		IfSize: m.IfSize, IfMtime: m.IfMtime}, b.resources, goResourceSlots, b.ua(), b.from())
 	if err != nil {
 		if b.ctx.Err() == nil {
 			fail(err)
@@ -260,7 +260,7 @@ func (p *goPrefetcher) work(b *goBrowser) {
 		case w = <-p.queue:
 		}
 		f := b.res.get(p.ctx, w.kind+" "+w.url, func() goFetched {
-			return goFetchResource(p.ctx, b.resources, b.session, w.kind, w.url, b.ua())
+			return goFetchResource(p.ctx, b.resources, b.session, w.kind, w.url, b.ua(), b.from())
 		})
 		if p.bytes.Add(int64(len(f.data))) > goPrefetchBytes {
 			p.cancel() // the page's had its share

@@ -28,6 +28,7 @@ import (
 	"io/fs"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -494,6 +495,7 @@ type goCookieTab struct {
 	started bool
 	visits  map[string]time.Time // origin -> last there
 	top     string               // the site of the page shown, for SameSite
+	page    string               // the page shown, for Referer
 }
 
 // exportCookies reads the engine's cookies. An engine that doesn't say a
@@ -592,6 +594,79 @@ func (b *goBrowser) visited(rawURL string) {
 		b.cookies.visits[origin] = time.Now()
 	}
 	b.cookies.top = goSite(goOriginHost(origin))
+	b.cookies.page = rawURL
+}
+
+// --- Who asks: the cookies and Referer a page's browser would send ---------
+
+// goFrom is what a fetch for a page sends as the page's browser would: the
+// cookies for an address, and its Referer, worked out for each address
+// (the first, and each a redirect goes to). nil: neither.
+type goFrom struct {
+	cookies func(*url.URL) string
+	referer func(*url.URL) string
+}
+
+func (f *goFrom) apply(r *http.Request) {
+	r.Header.Del("Cookie")
+	r.Header.Del("Referer")
+	if f == nil {
+		return
+	}
+	if f.cookies != nil {
+		if c := f.cookies(r.URL); c != "" {
+			r.Header.Set("Cookie", c)
+		}
+	}
+	if f.referer != nil {
+		if ref := f.referer(r.URL); ref != "" {
+			r.Header.Set("Referer", ref)
+		}
+	}
+}
+
+// goReferrer is the Referer a page (page) sends with a request to u, as a
+// browser's default policy has it (strict-origin-when-cross-origin): the
+// page's address to its own origin, its origin to another, nothing from
+// https to http. Never its fragment, nor a user and password.
+func goReferrer(page string, u *url.URL) string {
+	p, err := url.Parse(page)
+	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+		return ""
+	}
+	if p.Scheme == "https" && u.Scheme != "https" {
+		return ""
+	}
+	p.User, p.Fragment, p.RawFragment = nil, "", ""
+	if p.Scheme == u.Scheme && strings.EqualFold(p.Host, u.Host) {
+		return p.String()
+	}
+	return p.Scheme + "://" + p.Host + "/"
+}
+
+// from is what the tab's fetches send: its sites' cookies (siteCookies), and
+// the page shown as their Referer, if the settings say (on, at first).
+func (b *goBrowser) from() *goFrom {
+	f := &goFrom{cookies: b.siteCookies}
+	if b.sites == nil || b.sites.sendReferer() {
+		f.referer = func(u *url.URL) string {
+			b.cookies.mu.Lock()
+			page := b.cookies.page
+			b.cookies.mu.Unlock()
+			return goReferrer(page, u)
+		}
+	}
+	return f
+}
+
+// goFromNoTab is what's sent for a fetch with no tab to say whose page asks
+// (a go-resource request on a tunnel of its own): the jar's cookies any
+// page may send (SameSite=None), and no Referer (no page to say).
+func (g *server) goFromNoTab() *goFrom {
+	if g.goCookies == nil {
+		return nil
+	}
+	return &goFrom{cookies: func(u *url.URL) string { return g.goCookies.header(u, "") }}
 }
 
 // --- Cookies sent with what the server fetches for a page -----------------
@@ -667,11 +742,12 @@ func (j *goCookieJar) header(u *url.URL, top string) string {
 	return goCookieHeader(list)
 }
 
-// mediaCookies is the Cookie header for media the tab's page plays from u:
+// siteCookies is the Cookie header for what the tab's page asks of u (its
+// media, pictures, fonts, stylesheets):
 // the engine's cookies for it now (its sites' latest, httpOnly ones too),
 // those a request from the page shown may carry; the jar's, if the engine
 // can't say.
-func (b *goBrowser) mediaCookies(u *url.URL) string {
+func (b *goBrowser) siteCookies(u *url.URL) string {
 	b.cookies.mu.Lock()
 	top := b.cookies.top
 	b.cookies.mu.Unlock()

@@ -45,6 +45,14 @@ func TestGoSiteSettings(t *testing.T) {
 	if !again.isBlocked("ads.example") || again.popup("other.org") != "block" {
 		t.Errorf("not kept: %v", again.report())
 	}
+	// Referer: sent at first; off, kept off.
+	if !again.sendReferer() {
+		t.Error("Referer not sent at first")
+	}
+	again.set("", "referer-off")
+	if newGoSiteSettings(file).sendReferer() {
+		t.Error("Referer's setting not kept")
+	}
 	again.set("other.org", "popups-ask")
 	again.set("ads.example", "unblock")
 	if again.popup("other.org") != "" || again.isBlocked("ads.example") {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -210,5 +211,45 @@ func TestGoMediaCookieHeader(t *testing.T) {
 	}
 	if len(goCookieHeader(many)) > goCookieHeaderMax {
 		t.Error("the header is over its limit")
+	}
+}
+
+// The Referer a page's fetches send, as a browser's default policy has it.
+func TestGoReferrer(t *testing.T) {
+	for _, c := range []struct{ page, to, want string }{
+		{"https://www.example.com/a/b?q=1#frag", "https://www.example.com/pic.png", "https://www.example.com/a/b?q=1"}, // its own origin: the page
+		{"https://www.example.com/a/b?q=1", "https://cdn.example.net/pic.png", "https://www.example.com/"},             // another: its origin
+		{"https://www.example.com/a", "http://www.example.com/pic.png", ""},                                            // https to http: nothing
+		{"http://www.example.com/a", "https://cdn.example.net/p.png", "http://www.example.com/"},                       // http to https: the origin
+		{"https://user:pw@www.example.com/a", "https://www.example.com/p.png", "https://www.example.com/a"},            // never a password
+		{"", "https://cdn.example.net/p.png", ""}, {"about:blank", "https://cdn.example.net/p.png", ""},
+	} {
+		u, _ := url.Parse(c.to)
+		if got := goReferrer(c.page, u); got != c.want {
+			t.Errorf("%q to %q: %q, want %q", c.page, c.to, got, c.want)
+		}
+	}
+	// Applied anew to each address: what one had doesn't go to the next.
+	f := &goFrom{cookies: func(u *url.URL) string {
+		if u.Host == "a.example" {
+			return "k=v"
+		}
+		return ""
+	}, referer: func(u *url.URL) string { return goReferrer("https://a.example/page", u) }}
+	r, _ := http.NewRequest("GET", "https://a.example/x", nil)
+	f.apply(r)
+	if r.Header.Get("Cookie") != "k=v" || r.Header.Get("Referer") != "https://a.example/page" {
+		t.Errorf("first: %v", r.Header)
+	}
+	r.URL, _ = url.Parse("http://b.example/y")
+	f.apply(r)
+	if r.Header.Get("Cookie") != "" || r.Header.Get("Referer") != "" {
+		t.Errorf("redirected to another, insecure: %v", r.Header)
+	}
+	var none *goFrom
+	r.Header.Set("Cookie", "x=y")
+	none.apply(r)
+	if r.Header.Get("Cookie") != "" {
+		t.Error("nil left a cookie")
 	}
 }

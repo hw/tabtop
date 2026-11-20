@@ -220,6 +220,8 @@ try {
     document.getElementById("s").textContent = "refused " + e.name;
 }
 </script>`,
+        "noreferer.html": `<!doctype html><title>No referer</title><img id="pic" src="pic.png?with-referer-off">`,
+        "norange.html": `<!doctype html><title>No ranges</title><video id="v" src="norange.mp4" width="320" height="180" muted></video><img id="pic" src="pic.png?from-norange">`,
         "reel-player.html": `<!doctype html><title>Reel player</title><p id="status">ready</p><p id="time">no time</p><button id="load">load</button>
 <div id="wrap" style="visibility:hidden"><video id="v" width="320" height="180" muted></video></div>
 <script>
@@ -333,7 +335,14 @@ const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", "
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
 http.createServer((req, res) => {
   const name = req.url.split("?")[0];
-  if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "" };
+  if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
+  if (name === "/norange.mp4") {
+    // A server without byte ranges: the whole file, whatever's asked.
+    seen.norange = (seen.norange || 0) + 1;
+    const data = fs.readFileSync("/srv/clip.mp4");
+    res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": data.length });
+    return res.end(data);
+  }
   if (/\.(eot|svg|woff2?|ttf)$/.test(name)) (seen.fonts ??= []).push(req.url);  // the fonts asked for
   if (name === "/seen") {
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
@@ -1247,6 +1256,29 @@ async function check(base, port, site) {
         await sleep(2000);
         // Still the same engine: not ended and the page loaded again.
         if (await ev(`!document.getElementById("go_notice").hidden || /Loading/.test(document.getElementById("go_status").textContent)`)) throw new Error("the page was loaded again");
+    });
+
+    await step("a video from a server without byte ranges plays; what a page loads says the page (Referer), unless that's off", async () => {
+        await goTo(site + "norange.html", "No ranges");
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1 && Math.abs(v.duration - 5) < 0.5)`, "the clip, 5 s, from a server without ranges", 30000);
+        await ev(`[...document.querySelectorAll("video")].find((v) => v.readyState >= 1).play()`);
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5)`, "it playing", 30000);
+        await goTo(site + "seen", "Seen");
+        let seen = JSON.parse(await frame(`document.getElementById("s").textContent`));
+        if (!(seen.norange >= 1)) throw new Error("the server without ranges wasn't asked");
+        if (seen["/pic.png"]?.referer !== site + "norange.html") throw new Error(`the picture said ${JSON.stringify(seen["/pic.png"]?.referer)}`);
+        // Off: not said.
+        const settings = (req) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call(${JSON.stringify(req)}); t.close(); return JSON.stringify(t.reply); })`);
+        await settings({ type: "go-settings-set", name: "", setting: "referer-off" });
+        try {
+            await goTo(site + "noreferer.html", "No referer");
+            await frameWait(`document.getElementById("pic")?.naturalWidth > 0`, "a picture not fetched before");
+            await goTo(site + "seen", "Seen");
+            seen = JSON.parse(await frame(`document.getElementById("s").textContent`));
+            if (seen["/pic.png"]?.referer !== "") throw new Error(`with it off, the picture said ${JSON.stringify(seen["/pic.png"]?.referer)}`);
+        } finally {
+            await settings({ type: "go-settings-set", name: "", setting: "referer-on" });
+        }
     });
 
     await step("a player the page hides till its video plays is played, and shown once it does", async () => {

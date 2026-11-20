@@ -22,15 +22,17 @@ import (
 const maxGoSiteSettings = 2000 // blocked sites and pop-up answers, each
 
 type goSiteSettings struct {
-	mu      sync.Mutex
-	file    string
-	blocked []string          // hosts: example.com blocks it and its subdomains
-	popups  map[string]string // site -> "allow" or "block"
+	mu        sync.Mutex
+	file      string
+	blocked   []string          // hosts: example.com blocks it and its subdomains
+	popups    map[string]string // site -> "allow" or "block"
+	noReferer bool              // what's fetched for a page doesn't say the page (Referer)
 }
 
 type goSiteSettingsFile struct {
 	Blocked []string          `json:"blocked"`
 	Popups  map[string]string `json:"popups"`
+	Referer *bool             `json:"referer,omitempty"` // false: not sent; unsaid: sent
 }
 
 // goBlockedHost is whether a host is blocked in the settings: the engine's
@@ -65,6 +67,7 @@ func newGoSiteSettings(file string) *goSiteSettings {
 			s.blocked = append(s.blocked, h)
 		}
 	}
+	s.noReferer = f.Referer != nil && !*f.Referer
 	for site, v := range f.Popups {
 		if site = goSettingHost(site); site != "" && (v == "allow" || v == "block") && len(s.popups) < maxGoSiteSettings {
 			s.popups[site] = v
@@ -114,7 +117,12 @@ func (s *goSiteSettings) save() {
 	if s.file == "" {
 		return
 	}
-	data, _ := json.MarshalIndent(goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups}, "", " ")
+	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups}
+	if s.noReferer {
+		no := false
+		f.Referer = &no
+	}
+	data, _ := json.MarshalIndent(f, "", " ")
 	if err := writeFileAtomic(s.file, data); err != nil {
 		log.Printf("go: site settings: saving: %v", err)
 	}
@@ -136,6 +144,14 @@ func (s *goSiteSettings) isBlocked(host string) bool {
 	return false
 }
 
+// sendReferer is whether what's fetched for a page (pictures, fonts,
+// stylesheets, media) says the page, as a browser does (Referer).
+func (s *goSiteSettings) sendReferer() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.noReferer
+}
+
 // popup is what's said for a site's pop-ups: "allow", "block", or "" (ask).
 func (s *goSiteSettings) popup(site string) string {
 	s.mu.Lock()
@@ -146,6 +162,14 @@ func (s *goSiteSettings) popup(site string) string {
 // set changes a site's setting: "block" or "unblock" it, or its pop-ups
 // "popups-allow", "popups-block" or "popups-ask" (forget the answer).
 func (s *goSiteSettings) set(site, setting string) error {
+	if setting == "referer-on" || setting == "referer-off" {
+		// Not a site's: all of them.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.noReferer = setting == "referer-off"
+		s.save()
+		return nil
+	}
 	h := goSettingHost(site)
 	if h == "" {
 		return errors.New("That isn't a site's address.")
@@ -184,7 +208,7 @@ func (s *goSiteSettings) report() map[string]any {
 	for k, v := range s.popups {
 		popups[k] = v
 	}
-	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": popups, "kept": s.file != ""}
+	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": popups, "referer": !s.noReferer, "kept": s.file != ""}
 }
 
 // routeGoSettings answers the settings page: what's set.

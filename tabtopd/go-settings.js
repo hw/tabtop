@@ -42,6 +42,7 @@ function show(r) {
         return li;
     }));
     $("blocked_empty").hidden = blocked.length > 0;
+    $("referer").checked = r.referer !== false;
 }
 
 async function set(name, setting, done) {
@@ -54,6 +55,11 @@ async function set(name, setting, done) {
         return false;
     }
 }
+
+$("referer").addEventListener("change", () => {
+    const on = $("referer").checked;
+    set("", on ? "referer-on" : "referer-off", on ? "Pages' addresses are sent with what they load." : "Pages' addresses aren't sent with what they load.");
+});
 
 $("block").addEventListener("submit", async (e) => {
     e.preventDefault();
