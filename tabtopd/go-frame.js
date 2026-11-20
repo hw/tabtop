@@ -1905,8 +1905,50 @@
         const on = (v) => (Math.abs(v) > 40 ? Math.sign(v) : 0);
         (d.el === document.documentElement ? window : d.el).scrollBy({ left: on(d.dx), top: on(d.dy), behavior: "smooth" });
     }
+    // A finger dragged over a player is a touch for the page too, at the
+    // place under it (a page that swipes by its own script, as YouTube's
+    // Shorts on a phone does, has nothing to scroll here): down, its moves,
+    // let go. A finger not moved isn't one: the player's tap (its own
+    // controls), and the page's touch is cancelled, not a tap of its own.
+    let playerTouch = null;  // {moved, from: {x, y}}
+    function playerFinger(m) {
+        const w = whereAt(m.x, m.y);
+        return w && !w.frame ? [{ id: w.id, fx: w.fx, fy: w.fy, t: 0, cx: Math.round(m.x * 10) / 10, cy: Math.round(m.y * 10) / 10 }] : [];
+    }
+    function playerTouches(m) {
+        if (m.how === "drag-start") {
+            const points = playerFinger(m);
+            playerTouch = points.length ? { moved: false, from: { x: m.x, y: m.y } } : null;
+            if (playerTouch) {
+                flushAll();
+                send("touch", points[0].id, { phase: "start", points, tap: false });
+            }
+            return;
+        }
+        if (!playerTouch) return;
+        if (m.how === "drag") {
+            if (Math.hypot(m.x - playerTouch.from.x, m.y - playerTouch.from.y) > 10) playerTouch.moved = true;
+            const points = playerFinger(m);
+            if (points.length) {
+                touchMove = { phase: "move", points };
+                pointerSoon();
+            }
+            return;
+        }
+        if (m.how === "drag-end") {
+            if (touchMove) {
+                send("touch", touchMove.points[0].id, touchMove);
+                touchMove = null;
+            }
+            send("touch", 0, { phase: playerTouch.moved ? "end" : "cancel", points: [], tap: false });
+            playerTouch = null;
+        }
+    }
+
     function scrollUnder(m) {
         lastInput = performance.now();
+        playerTouches(m);
+        if (m.how === "drag-start") return;
         if (m.how === "drag-end") return dragEnd();
         const at = document.elementFromPoint(m.x, m.y);
         let scroller = null;

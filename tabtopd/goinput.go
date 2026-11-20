@@ -563,7 +563,13 @@ func (in *goInput) touch(b *goBrowser, world, gen int, m goClientMsg) {
 		in.fingers = nil
 		if in.touching {
 			in.touching = false
-			b.touchInput(ctx, "touchEnd", nil, m)
+			// Cancelled (by the browser, or a finger on a player that wasn't
+			// a swipe): no tap's click of the engine's own.
+			typ := "touchEnd"
+			if m.Type == "cancel" {
+				typ = "touchCancel"
+			}
+			b.touchInput(ctx, typ, nil, m)
 			return
 		}
 		if id := in.touchID; id != 0 && m.Type == "end" && m.Tap {

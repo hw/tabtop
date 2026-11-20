@@ -282,6 +282,14 @@ ${Array.from({ length: 40 }, (_, i) => `<button id="b${i}">button ${i}</button>`
 <p>top</p><video id="v" src="clip.mp4?rotate" muted loop></video><p>below</p><script>document.getElementById("v").play().catch(() => {});</script>`,
         "auto.html": `<!doctype html><title>Autoplay</title><video id="v" src="clip.mp4?auto" width="320" height="180" muted loop></video><p id="out">none</p><button id="again">again</button>
 <script>const v = document.getElementById("v"), out = document.getElementById("out"); for (const t of ["play", "pause"]) v.addEventListener(t, () => { out.textContent = t + " " + (v.paused ? "paused" : "playing"); }); v.play().catch(() => {}); document.getElementById("again").onclick = () => v.play().catch(() => {});</script>`,
+        "swiped.html": `<!doctype html><title>Swiped</title><meta name="viewport" content="width=device-width"><style>html, body { margin: 0; height: 100%; overflow: hidden } #wrap { position: relative; height: 100%; overflow: hidden } #items { position: absolute; inset: 0; transition: transform .2s } .item { height: 100vh } video { width: 100%; height: 100%; object-fit: cover; display: block } #out { position: fixed; top: 0; left: 0; background: #fff }</style>
+<p id="out">at 0, clicks 0</p><div id="wrap"><div id="items">${[0, 1, 2].map((i) => `<div class="item"><video src="clip.mp4?reel=${i}" muted loop></video></div>`).join("")}</div></div>
+<script>let at = 0, clicks = 0, from = null, dy = 0; const out = () => { document.getElementById("out").textContent = "at " + at + ", clicks " + clicks; };
+addEventListener("touchstart", (e) => { from = e.touches[0].clientY; dy = 0; }, { passive: false });
+addEventListener("touchmove", (e) => { if (from !== null) { dy = e.touches[0].clientY - from; e.preventDefault(); } }, { passive: false });
+addEventListener("touchend", () => { if (from !== null && dy < -50 && at < 2) { at++; document.getElementById("items").style.transform = "translateY(" + (-100 * at) + "vh)"; } from = null; out(); });
+addEventListener("click", () => { clicks++; out(); });
+document.querySelector("video").play().catch(() => {});</script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -564,7 +572,7 @@ async function check(base, port, site) {
     // default export, given the steps' helpers, to look into a site.
     if (process.env.GO_PROBE) {
         const probe = (await import(new URL(process.env.GO_PROBE, `file://${process.cwd()}/`).href)).default;
-        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, cdp, goTo, waitFor, sleep, writeFileSync })).catch(() => { process.exitCode = 1; });
+        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, cdp, goTo, waitFor, sleep, writeFileSync, site })).catch(() => { process.exitCode = 1; });
         ws.close();
         browser.close();
         process.exit();
@@ -1560,6 +1568,32 @@ async function check(base, port, site) {
     await step("a page asking for more than a tab fetches at once has them all, in turn, not refused", async () => {
         await goTo(site + "many.html", "Many");
         await frameWait(`(() => { const imgs = [...document.images]; return imgs.length === 80 && imgs.every((i) => i.complete && i.naturalWidth > 0); })()`, "all 80 pictures (each sent slowly)", 90000);
+    });
+
+    await step("a swipe over a video a page swipes by its own script (as YouTube's Shorts on a phone) reaches the page; a tap there's the player's", async () => {
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        try {
+            await goTo(site + "swiped.html", "Swiped");
+            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && getComputedStyle(v).display !== "none" && v.getBoundingClientRect().height > 300; })()`, "the reel's player, over the page", 30000);
+            const p = await ev(`(() => { const r = document.querySelector("video").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height * 0.7) }; })()`);
+            // A tap: the player's, not the page's (no click, no swipe).
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [p] });
+            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+            await sleep(1000);
+            if ((await frame(`document.getElementById("out").textContent`)) !== "at 0, clicks 0") throw new Error(`a tap on the player: ${await frame(`document.getElementById("out").textContent`)}`);
+            // A swipe up over it: the page's own script goes to the next.
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [p] });
+            for (let k = 1; k <= 8; k++) {
+                await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: p.x, y: p.y - 30 * k }] });
+                await sleep(30);
+            }
+            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+            await frameWait(`document.getElementById("out").textContent === "at 1, clicks 0"`, "the next reel, by the page's swipe");
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
     });
 
     await step("a touch swipe that scrolls the page clicks nothing; a tap still clicks", async () => {

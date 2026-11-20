@@ -239,7 +239,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         let last = null;
         media.addEventListener("touchstart", (e) => {
             const t = e.touches[0];
-            last = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : null;
+            last = e.touches.length === 1 && t && !("player" in media.dataset) ? { x: t.clientX, y: t.clientY } : null;
+            // The finger down, for the page too (a swipe it takes itself:
+            // YouTube's Shorts on a phone go to the next by its script).
+            if (last) passOn?.(t.clientX, t.clientY, 0, 0, "drag-start");
         }, { passive: true });
         media.addEventListener("touchmove", (e) => {
             const t = e.touches[0];
