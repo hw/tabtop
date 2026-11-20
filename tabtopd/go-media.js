@@ -24,7 +24,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -217,8 +217,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         }
         player.element?.remove();
         player.loading?.done();
-        player.skipButton?.remove();
-        clearTimeout(player.skipTimer);
+        told();
         if (player.poster) URL.revokeObjectURL(player.poster);
     }
 
@@ -275,8 +274,6 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             if (media) media.style.display = "none";
             if (loading) loading.hidden = true;
         };
-        const skip = player.skipButton;
-        if (skip) skip.hidden = true;
         if (!media && !loading) return;
         if (!shown || !rect || !clip || ![rect.x, rect.y, rect.width, rect.height, clip.x, clip.y, clip.width, clip.height].every(Number.isFinite)) {
             hide();
@@ -304,35 +301,20 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         }
         if (loading) {
             Object.assign(loading.style, box);
+            loading.classList.toggle("small", bottom - top < 120 || right - left < 240);
             loading.hidden = false;
-        }
-        // Skip, at the bottom right of what's shown of it, above the player's
-        // controls (a small player's: its corner), while it's not ended.
-        if (skip && !player.skipped && right - left >= 80 && bottom - top >= 40) {
-            const above = bottom - top >= 150 ? 56 : 8;
-            Object.assign(skip.style, { left: `${area.left - host.left + right - 8}px`, top: `${area.top - host.top + bottom - above}px` });
-            skip.hidden = false;
-            showSkip(player);
         }
     }
 
-    // showSkip shows a player's Skip while it's wanted: loading, paused, or
-    // for SKIP_SHOWN after the pointer moved over it or it was tapped.
-    const SKIP_SHOWN = 3000;
-    function showSkip(player) {
-        const skip = player.skipButton;
-        if (!skip) return;
-        const media = player.element;
-        const wanted = !player.skipped && (!media || player.loading?.box.isConnected || media.paused || performance.now() < (player.skipUntil ?? 0) || skip.matches(":hover, :focus-visible"));
-        skip.classList.toggle("shown", wanted);
-        clearTimeout(player.skipTimer);
-        if (wanted && media && !media.paused) player.skipTimer = setTimeout(() => showSkip(player), Math.max(250, (player.skipUntil ?? 0) - performance.now()));
-    }
-    // A player noticed (the pointer over it, a tap, its focus): its Skip
-    // shown a while.
-    function noticed(player) {
-        player.skipUntil = performance.now() + SKIP_SHOWN;
-        showSkip(player);
+    // told tells the page that a player's state changed (its list, in the
+    // menu: see list), at most once a frame.
+    let telling = 0;
+    function told() {
+        if (telling || !changed) return;
+        telling = requestAnimationFrame(() => {
+            telling = 0;
+            changed();
+        });
     }
 
     // skip treats a player as played to its end: the page is told it ended
@@ -344,7 +326,6 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         if (!player || player.skipped) return;
         player.skipped = true;
         player.play = false;
-        player.skipButton.hidden = true;
         const media = player.element;
         const length = Number.isFinite(media?.duration) && media.duration > 0 ? media.duration : player.length || 0;
         if (!media) {
@@ -357,6 +338,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             }
         }
         played?.(key, { t: length, playing: false, ended: true });
+        told();
     }
 
     // layerHere is the layer the players are laid in, over the frame.
@@ -382,23 +364,22 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         box.setAttribute("aria-valuemin", "0");
         box.setAttribute("aria-valuemax", "100");
         const what = Object.assign(document.createElement("div"), { className: "what" });
-        const where = Object.assign(document.createElement("div"), { className: "url" });
-        where.textContent = stream ? "Streamed by the site's own player" : src;
-        if (!stream) where.title = src;
         const bar = Object.assign(document.createElement("div"), { className: "bar unknown" });
         const fill = document.createElement("i");
         bar.append(fill);
-        box.append(what, where, bar);
+        box.append(what, bar);
         const noun = kind === "video" ? "video" : "sound";
         let words = "", bytes = 0, done = false;
         const say = () => {
             const amount = bytes > 0 ? ` (${bytes >= 1 << 20 ? (bytes / (1 << 20)).toFixed(1) + " MB" : Math.ceil(bytes / 1024) + " KB"})` : "";
             what.textContent = words + amount;
             box.setAttribute("aria-label", `Loading the ${noun}: ${what.textContent}`);
+            told();
         };
         layerHere().append(box);
         return {
             box,
+            get said() { return done ? "" : what.textContent; },
             stage(fraction, said) {
                 if (done) return;
                 words = said;
@@ -421,8 +402,23 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             done() {
                 done = true;
                 box.remove();
+                told();
             },
         };
+    }
+
+    // shortAddress is an address as its site and file name, what's
+    // between elided: "cdn.example.com/…/clip.mp4".
+    function shortAddress(src) {
+        try {
+            const u = new URL(src);
+            const parts = u.pathname.split("/").filter(Boolean);
+            const name = parts.at(-1) ?? "";
+            const path = parts.length > 1 ? `/…/${name}` : `/${name}`;
+            return u.host.replace(/^www\./, "") + (path === "/" ? "" : path) + (u.search ? "?…" : "");
+        } catch {
+            return src;
+        }
     }
 
     // How near to playing a player is: its stages, then what it has ahead
@@ -452,7 +448,6 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         const ready = () => {
             for (const type of events) media.removeEventListener(type, update);
             loading.done();
-            for (const player of players.values()) if (player.loading === loading) showSkip(player);
         };
         for (const type of events) media.addEventListener(type, type === "error" ? ready : update);
         update();
@@ -485,17 +480,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             players.set(key, entry);
             // Loading, over its box, till it can play.
             const loading = entry.loading = loader(kind, src, !!streamId);
-            if (kind === "video") {
-                const button = entry.skipButton = Object.assign(document.createElement("button"), { type: "button", className: "go-media-skip", hidden: true });
-                button.innerHTML = `Skip <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>`;
-                button.title = "Skip to the end of this video (Shift+N)";
-                button.setAttribute("aria-label", "Skip this video");
-                button.setAttribute("aria-keyshortcuts", "Shift+N");
-                button.addEventListener("click", () => skip(key));
-                button.addEventListener("pointerenter", () => noticed(entry));
-                button.addEventListener("blur", () => showSkip(entry));
-                layerHere().append(button);
-            }
+            Object.assign(entry, { kind, src, stream: !!streamId });
+            told();
             loading.stage(null, streamId ? "Starting the stream…" : "Asking the site…");
             place(entry.placement);
             let tunnel;
@@ -569,17 +555,15 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 Object.assign(media.style, { position: "absolute", background: "#000", zIndex: "2", display: "none" });
                 media.style.pointerEvents = "auto";
                 passScrolling(media);
-                if (entry.skipButton) {
-                    for (const type of ["pointermove", "pointerdown", "focus"]) media.addEventListener(type, () => noticed(entry), { passive: true });
-                    for (const type of ["play", "pause", "playing", "ended"]) media.addEventListener(type, () => showSkip(entry));
-                    // Shift+N, as video sites' "next video": skipped.
-                    media.addEventListener("keydown", (e) => {
-                        if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") {
-                            e.preventDefault();
-                            skip(key);
-                        }
-                    });
-                }
+                // Its state, for the menu's list of players.
+                for (const type of ["play", "playing", "pause", "ended", "emptied"]) media.addEventListener(type, told);
+                // Shift+N, as video sites' "next video": skipped.
+                media.addEventListener("keydown", (e) => {
+                    if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") {
+                        e.preventDefault();
+                        skip(key);
+                    }
+                });
                 layerHere().append(media);
                 place(entry.placement);
                 if (entry.play) start(media);
@@ -596,6 +580,30 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         },
         place,
         skip,
+        // mark outlines a player's box (its row in the menu pointed at or
+        // focused), or none (key null).
+        mark(key) {
+            for (const [k, p] of players) {
+                for (const el of [p.element, p.loading?.box]) {
+                    if (el) el.style.outline = k === key ? "3px solid #8ab4f8" : "";
+                    if (el) el.style.outlineOffset = k === key ? "-3px" : "";
+                }
+            }
+        },
+        // list is the page's players, top first, for the menu: each's kind,
+        // its address (whole, and short), and how it's doing.
+        list() {
+            const out = [];
+            for (const [key, p] of players) {
+                if (!p.kind) continue;
+                const media = p.element;
+                const loading = p.loading?.said;
+                const state = p.skipped ? "Skipped" : loading ? loading : !media ? "Loading…" : media.ended ? "Ended" : media.paused ? "Paused" : "Playing";
+                out.push({ key, kind: p.kind, src: p.stream ? "" : p.src, short: p.stream ? "Streamed by the site's own player" : shortAddress(p.src), state,
+                    skippable: !p.skipped && !media?.ended, top: p.placement?.rect?.y ?? 0, shown: !!p.placement?.shown });
+            }
+            return out.sort((a, b) => a.top - b.top);
+        },
         // play starts or stops the player of a box as the page did its own
         // (or does once it's made).
         play(key, on) {
@@ -607,7 +615,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 // The page played it again: from its start, skippable again.
                 player.skipped = false;
                 if (media) media.currentTime = 0;
-                place(player.placement);
+                told();
             }
             if (media) on ? start(media) : media.pause();
         },

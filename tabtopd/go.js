@@ -124,6 +124,8 @@ new MutationObserver(() => {
 }).observe(nav, { childList: true });
 function openMenu(open) {
     menuPanel.hidden = !open;
+    if (open) mediaMenu();
+    else media?.mark(null);
     menu.setAttribute("aria-expanded", String(open));
     if (open) (menuPanel.querySelector("button:not(:disabled), a:not([hidden])") ?? menuPanel).focus();
 }
@@ -165,7 +167,54 @@ const mediaHelp = {
         frame.contentWindow?.postMessage({ type: "media-scroll", x: x - f.left, y: y - f.top, dx, dy, how }, "*");
     },
     failed: (key, error) => frame.contentWindow?.postMessage({ type: "media-state", key, error }, "*"),
+    // A player's state changed: the menu's list of them (mediaMenu).
+    changed: () => mediaMenu(),
 };
+
+// mediaMenu lists the page's videos and sounds at the menu's top: how
+// each is doing, where it's from (its site and file name; the whole
+// address to a screen reader, and to hover over), and Skip (the page told
+// it played to its end, go-media.js). The menu's button is marked while
+// there are any, so Skip's found where it is.
+const SKIP_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>`;
+function mediaMenu() {
+    const section = $("go_menu_media"), list = section.querySelector("ul");
+    const players = media?.list() ?? [];
+    menu.classList.toggle("has-media", players.length > 0);
+    menu.setAttribute("aria-label", players.length ? `Menu (${players.length} playing or loading on this page)` : "Menu");
+    section.hidden = !players.length;
+    const videos = players.every((p) => p.kind === "video");
+    section.querySelector("h2").textContent = videos ? "Videos on this page" : "Videos and sounds on this page";
+    if (menuPanel.hidden && list.childElementCount === players.length) return;  // drawn as it's opened
+    const focused = document.activeElement?.closest?.("#go_menu_media li")?.dataset.key;
+    list.replaceChildren(...players.map((p, i) => {
+        const li = document.createElement("li");
+        li.dataset.key = String(p.key);
+        const noun = p.kind === "video" ? "video" : "sound";
+        const about = Object.assign(document.createElement("div"), { className: "about" });
+        // Numbered as they are on the page, top first: which is which.
+        const ordinal = players.length > 1 ? `${noun === "video" ? "Video" : "Sound"} ${i + 1} · ` : "";
+        const state = Object.assign(document.createElement("div"), { className: "state", textContent: ordinal + p.state });
+        const where = Object.assign(document.createElement("div"), { className: "where", textContent: p.short });
+        if (p.src) where.title = p.src;
+        about.append(state, where);
+        const skip = Object.assign(document.createElement("button"), { type: "button", disabled: !p.skippable, title: `Skip to the end of this ${noun} (Shift+N on it)` });
+        skip.innerHTML = `<span>Skip</span>${SKIP_ICON}`;
+        skip.setAttribute("aria-label", `Skip ${noun} ${i + 1}${p.src ? `, ${p.src}` : ""}`);
+        skip.addEventListener("click", (e) => {
+            e.stopPropagation();  // (the menu stays open: there may be more to skip)
+            media?.skip(p.key);
+        });
+        li.append(about, skip);
+        // Pointed at or focused: its player outlined on the page.
+        li.addEventListener("pointerenter", () => media?.mark(p.key));
+        li.addEventListener("pointerleave", () => media?.mark(null));
+        li.addEventListener("focusin", () => media?.mark(p.key));
+        li.addEventListener("focusout", () => media?.mark(null));
+        return li;
+    }));
+    if (focused) list.querySelector(`li[data-key="${CSS.escape(focused)}"] button:not(:disabled)`)?.focus();
+}
 frame.id = "go_view";
 frame.title = "Page";
 frame.setAttribute("sandbox", "allow-scripts");

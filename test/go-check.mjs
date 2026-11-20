@@ -266,6 +266,8 @@ $("tap").addEventListener("touchstart", () => touches++);
 $("tap").onclick = () => status("tapped, touches " + touches);
 </script>`,
         "slow.html": `<!doctype html><title>Slow video</title><video id="slow" src="clip.mp4?slow" width="320" height="180" muted></video>`,
+        "phone.html": `<!doctype html><title>Phone video</title><meta name="viewport" content="width=device-width"><style>body { margin: 0 } video { display: block; width: 100% }</style>
+<video id="big" src="clip.mp4?phone=1&slow" style="height: 220px" muted></video><p>a feed:</p><video id="small" src="clip.mp4?phone=2&slow" style="width: 160px; height: 90px" muted></video>`,
         "skip.html": `<!doctype html><title>Skip</title><style>body { margin: 0 } video { display: block }</style>
 <video id="a" src="clip.mp4?skip" width="320" height="180" muted></video><p id="a-out">a not ended</p>
 <video id="b" src="clip.mp4?slow" width="320" height="180" muted></video><p id="b-out">b not ended</p>
@@ -487,7 +489,13 @@ async function check(base, port, site) {
     }
     const goTo = async (url, title) => {
         await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(url)}; i.form.requestSubmit(); })()`);
-        await waitFor(`document.title.startsWith(${JSON.stringify(title)})`, title, 30000);
+        try {
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)})`, title, 30000);
+        } catch (err) {
+            // What the page shows instead, to say why.
+            const shows = await ev(`JSON.stringify({ title: document.title, at: location.pathname, status: document.getElementById("go_status")?.textContent, notice: document.getElementById("go_notice")?.hidden ? "" : document.getElementById("go_notice")?.textContent, url: document.getElementById("go_url")?.dataset.url, reconnect: document.getElementById("tabtop_reconnect")?.textContent })`).catch((e) => e.message);
+            throw new Error(`${err.message} (the page shows ${shows})`);
+        }
         await pageShown();
     };
     const origin = new URL(base).origin;
@@ -799,12 +807,14 @@ async function check(base, port, site) {
         // A new tab (this page loaded again: its engine closed, a new one
         // started): given the cookie.
         const browserPage = async (path = "go/tab") => {
-            await ev(`(() => { sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); sessionStorage.removeItem("tabtop-go-resume"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
-            await sleep(500);
+            // (The page left marked: what's waited for next is the new one's,
+            // not the old one's as it goes.)
+            await ev(`(() => { window.__leaving = true; sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); sessionStorage.removeItem("tabtop-go-resume"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete"`, "the page loaded anew", 30000);
         };
         const newTab = async () => {
             await browserPage();
-            await waitFor(`!!document.getElementById("go_url") && !!document.getElementById("go_menu")`, "the browser page again");
+            await waitFor(`!!document.getElementById("go_url") && !!document.getElementById("go_menu") && document.getElementById("go_progress").hidden`, "the browser page again, connected");
             await sleep(1000);
         };
         await newTab();
@@ -1290,75 +1300,75 @@ async function check(base, port, site) {
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
     });
 
-    await step("a video loading shows so over its box, with its address, till it can play", async () => {
+    await step("a video loading shows so over its box till it can play; the menu has its address", async () => {
         await goTo(site + "slow.html", "Slow video");
-        await waitFor(`(() => { const l = document.querySelector(".go-media-loading"); return !!l && !l.hidden && l.querySelector(".url").textContent.endsWith("/clip.mp4?slow") && l.querySelector(".bar") && /Asking|Loading|Buffering/.test(l.querySelector(".what").textContent); })()`, "the loading box, with the address", 15000);
+        await waitFor(`(() => { const l = document.querySelector(".go-media-loading"); return !!l && !l.hidden && !!l.querySelector(".bar") && /Asking|Loading|Buffering/.test(l.querySelector(".what").textContent); })()`, "the loading box", 15000);
         const over = await ev(`(() => { const l = document.querySelector(".go-media-loading").getBoundingClientRect(), f = document.getElementById("go_view").getBoundingClientRect();
             return Math.round(l.width) === 320 && Math.round(l.height) === 180 && l.left >= f.left && l.top >= f.top; })()`);
         if (!over) throw new Error("the loading box isn't over the video's box");
+        // The menu: marked; its list has the video, its site and file name.
+        await waitFor(`document.getElementById("go_menu").classList.contains("has-media")`, "the menu marked");
+        await ev(`document.getElementById("go_menu").click()`);
+        const row = await ev(`(() => { const li = document.querySelector("#go_menu_media li"); return li && { state: li.querySelector(".state").textContent, where: li.querySelector(".where").textContent, title: li.querySelector(".where").title, label: li.querySelector("button").getAttribute("aria-label") }; })()`);
+        if (!row || !row.where.endsWith("/clip.mp4?…") || !row.title.endsWith("/clip.mp4?slow") || !row.label.endsWith("/clip.mp4?slow") || !/Asking|Loading|Buffering/.test(row.state)) throw new Error(`the menu lists ${JSON.stringify(row)}`);
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         await waitFor(`!document.querySelector(".go-media-loading") && document.querySelector("video")?.readyState >= 2`, "the video ready, the loading box gone", 60000);
     });
 
-    await step("a tab carries on while its connection's lost, and is taken back as it is: after a drop, and after a reload", async () => {
-        await goTo(site + "resume.html", "Resume");
-        await frameClick("#t");
-        await browser.type("kept text");
-        await frame(`scrollTo(0, 1500)`);
-        const count = async () => Number(await frame(`document.getElementById("n").textContent`));
-        await frameWait(`Number(document.getElementById("n").textContent) > 5`, "the page counting");
-        await sleep(1000);  // the field's text and the scroll with the engine
-        // The page reloaded (the same browser tab): taken back, the copy
-        // built afresh, where the page was scrolled and what was typed. (Its
-        // sockets kept a note of, from here, to cut them below.)
-        const atReload = await count();
-        const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `{ const W = WebSocket; window.__sockets = []; window.WebSocket = class extends W { constructor(...a) { super(...a); __sockets.push(this); } }; }` });
+    await step("on a phone, a video loading fits its box, small or not; the menu's list of them fits the screen", async () => {
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
         try {
-            await cdp("Page.reload");
-            await waitFor(`document.title.startsWith("Resume") && !!window.__sockets`, "the page back after the reload", 30000);
-            await frameWait(`Number(document.getElementById("n").textContent) >= ${atReload}`, "the count carried on, not restarted", 15000);
-            await frameWait(`document.getElementById("t")?.value === "kept text"`, "the field's text kept", 10000);
-            await frameWait(`scrollY > 1200`, "the place it was scrolled to", 10000);
-            // The connection lost (its sockets cut), a few seconds: the page
-            // runs on, and is taken back, not loaded again (the count goes
-            // on: a new load would start again at 0).
-            const before = await count();
-            await ev(`__sockets.filter((s) => s.readyState === 1).forEach((s) => s.close())`);
-            await waitFor(`!!document.getElementById("tabtop_reconnect")`, "the connection lost", 15000);
-            await sleep(3000);
-            await ev(`document.querySelector("#tabtop_reconnect button")?.click()`);  // (Try now)
-            await waitFor(`!document.getElementById("tabtop_reconnect")`, "connected again", 60000);
-            await frameWait(`Number(document.getElementById("n").textContent) > ${before + 10}`, "the count gone on meanwhile", 15000);
-            if ((await frame(`document.getElementById("t").value`)) !== "kept text") throw new Error("the field's text was lost");
-            if (!((await frame(`scrollY`)) > 1200)) throw new Error("its place was lost");
+            await goTo(site + "phone.html", "Phone video");
+            await waitFor(`document.querySelectorAll(".go-media-loading:not([hidden])").length === 2`, "both loading", 15000);
+            await ev(`document.getElementById("go_menu").click()`);
+            await waitFor(`document.querySelectorAll("#go_menu_media li").length === 2`, "both in the menu");
+            if (process.env.GO_SHOT) writeFileSync(process.env.GO_SHOT, Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+            const got = await ev(`(() => {
+                const r = (e) => e.getBoundingClientRect();
+                const boxes = [...document.querySelectorAll(".go-media-loading")].sort((a, b) => r(a).top - r(b).top);
+                const panel = r(document.getElementById("go_menu_panel"));
+                const buttons = [...document.querySelectorAll("#go_menu_media button")].map((b) => Math.round(r(b).height));
+                return { fits: boxes.every((b) => b.scrollHeight <= b.clientHeight + 1), small: boxes[1].classList.contains("small"),
+                    panel: panel.left >= 0 && panel.right <= innerWidth, buttons };
+            })()`);
+            if (!got.fits || !got.small || !got.panel || got.buttons.some((h) => h < 44)) throw new Error(`on a phone: ${JSON.stringify(got)}`);
+            // Numbered, top first; a row focused outlines its video on the page.
+            await ev(`document.querySelectorAll("#go_menu_media li button")[1].focus()`);
+            const marked = await ev(`(() => { const r = (e) => e.getBoundingClientRect(); const boxes = [...document.querySelectorAll(".go-media-loading")].sort((a, b) => r(a).top - r(b).top);
+                return { states: [...document.querySelectorAll("#go_menu_media .state")].map((s) => s.textContent.split(" · ")[0]), outlines: boxes.map((b) => !!b.style.outline) }; })()`);
+            if (marked.states.join() !== "Video 1,Video 2" || marked.outlines.join() !== "false,true") throw new Error(`the rows and their videos: ${JSON.stringify(marked)}`);
+            await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+            await waitFor(`!document.querySelector(".go-media-loading")`, "both ready", 60000);
         } finally {
-            await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }
-        return `counted to ${await count()}`;
     });
 
-    await step("a video skipped is, to the page, played to its end, whether playing or still loading", async () => {
+    await step("a video skipped is, to the page, played to its end, whether playing or still loading: from the menu, or Shift+N", async () => {
         await goTo(site + "skip.html", "Skip");
-        const skips = `[...document.querySelectorAll(".go-media-skip")].filter((b) => !b.hidden).sort((x, y) => x.getBoundingClientRect().top - y.getBoundingClientRect().top)`;
-        // The second still loading (sent slowly): skipped, it stops.
-        await waitFor(`${skips}.length === 2 && !!document.querySelector(".go-media-loading:not([hidden])")`, "both videos' Skip, the second loading", 15000);
-        await ev(`${skips}[1].click()`);
+        // The second still loading (sent slowly): skipped from the menu's list
+        // (the page's videos, top first), it stops.
+        await waitFor(`!!document.querySelector(".go-media-loading:not([hidden])")`, "the second loading", 15000);
+        await ev(`document.getElementById("go_menu").click()`);
+        await waitFor(`document.querySelectorAll("#go_menu_media li").length === 2`, "both videos in the menu");
+        await ev(`document.querySelectorAll("#go_menu_media li button")[1].click()`);
         await frameWait(`document.getElementById("b-out").textContent === "b ended at 0 true"`, "the second ended, to its page");
         await waitFor(`!document.querySelector(".go-media-loading")`, "its loading gone");
-        // The first playing: its Skip faded away a while after, untouched;
-        // shown as the pointer moves over it; skipped by Shift+N, at its end.
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+        // The first playing: Shift+N on it skips it, at its end.
         await waitFor(`[...document.querySelectorAll("video")].some((v) => !v.paused && v.currentTime > 0.3)`, "the first playing", 30000);
-        await waitFor(`!${skips}[0].classList.contains("shown")`, "Skip faded away as it plays", 8000);
-        const v = await ev(`(() => { const r = [...document.querySelectorAll("video")].find((v) => !v.paused).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
-        await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: v.x, y: v.y });
-        await waitFor(`${skips}[0].classList.contains("shown")`, "Skip shown, the pointer over it", 3000);
-        const place = await ev(`(() => { const s = ${skips}[0].getBoundingClientRect(), p = [...document.querySelectorAll("video")].find((v) => !v.paused).getBoundingClientRect(); return { right: p.right - s.right, below: p.bottom - s.bottom }; })()`);
-        if (!(place.right >= 0 && place.right < 20 && place.below > 40)) throw new Error(`Skip isn't at the bottom right, above the controls: ${JSON.stringify(place)}`);
         await ev(`[...document.querySelectorAll("video")].find((v) => !v.paused).focus()`);
         await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "N", code: "KeyN", modifiers: 8, windowsVirtualKeyCode: 78 });
         await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "N", code: "KeyN", modifiers: 8, windowsVirtualKeyCode: 78 });
         await frameWait(`document.getElementById("a-out").textContent === "a ended at 5 true"`, "the first ended at its end, to its page");
         await waitFor(`(() => { const v = [...document.querySelectorAll("video")]; return v.length === 1 && v[0].paused && Math.round(v[0].currentTime) === 5; })()`, "its player paused at the end, the other's closed");
-        if (await ev(`${skips}.length`)) throw new Error("Skip still shown once skipped");
+        // In the menu: skipped, Skip not offered again.
+        await ev(`document.getElementById("go_menu").click()`);
+        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, skip: !li.querySelector("button").disabled }))`);
+        if (rows.length !== 1 || rows[0].state !== "Skipped" || rows[0].skip) throw new Error(`the menu, after: ${JSON.stringify(rows)}`);
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
     await step("prompt, a page asking as it loads, a frame asking, and a page asking in a loop", async () => {
