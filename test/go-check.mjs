@@ -773,7 +773,7 @@ async function check(base, port, site) {
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
-        if (items !== "Forward,Site settings and cookies,Clear cache") throw new Error(`the menu has ${items}`);
+        if (items !== "Site settings,Clear cache") throw new Error(`the menu has ${items}`);
         // The other pages and logging out: one row, icons only (named for a
         // screen reader), logging out last.
         const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page, #go_menu_panel .tabtop-nav > button")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
@@ -832,30 +832,42 @@ async function check(base, port, site) {
         // Held (a touch or the mouse): the list, the page just before first.
         await ev(`document.getElementById("go_back").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "touch" }))`);
         await waitFor(`!document.getElementById("go_history").hidden`, "the list, back held", 3000);
-        const pages = await ev(`[...document.querySelectorAll("#go_history button:not(.clear)")].map((b) => b.title)`);
+        const pages = await ev(`[...document.querySelectorAll("#go_history button.item")].map((b) => b.title)`);
         if (pages.length < 2 || pages.some((u) => u.endsWith("/second.html"))) throw new Error(`back lists ${JSON.stringify(pages)}`);
         await ev(`document.getElementById("go_back").dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerType: "touch" }))`);
         // The first page, more than one back.
         const first = pages[pages.length - 1];
-        await ev(`[...document.querySelectorAll("#go_history button:not(.clear)")].at(-1).click()`);
+        await ev(`[...document.querySelectorAll("#go_history button.item")].at(-1).click()`);
         await waitFor(`document.getElementById("go_history").hidden && document.getElementById("go_url").dataset.url === ${JSON.stringify(first)}`, "the first page", 30000);
         // Forward's list (its context menu: a right click), and the last.
         await ev(`document.getElementById("go_forward").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
         await waitFor(`!document.getElementById("go_history").hidden`, "the list, forward", 3000);
-        const ahead = await ev(`[...document.querySelectorAll("#go_history button:not(.clear)")].map((b) => b.title)`);
+        const ahead = await ev(`[...document.querySelectorAll("#go_history button.item")].map((b) => b.title)`);
         if (ahead.length !== pages.length || !ahead.at(-1).endsWith("/second.html")) throw new Error(`forward lists ${JSON.stringify(ahead)}`);
-        await ev(`[...document.querySelectorAll("#go_history button:not(.clear)")].at(-1).click()`);
+        await ev(`[...document.querySelectorAll("#go_history button.item")].at(-1).click()`);
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "the last page again", 30000);
         // And the device's back still a page at a time from there.
         await ev(`history.back()`);
         await waitFor(`document.getElementById("go_url").dataset.url === ${JSON.stringify(pages[0])}`, "a page back", 30000);
         await ev(`history.forward()`);
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
-        // Clear history (at the list's end): none back or forward, the page kept.
+        // At the first page: Back (none back) opens the panel, its Forward
+        // glyph a page on (Forward's not in the menu).
         await ev(`document.getElementById("go_back").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
-        await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .clear")`, "Clear history offered");
-        await ev(`document.querySelector("#go_history .clear").click()`);
-        await waitFor(`document.getElementById("go_back").disabled && document.getElementById("go_forward").disabled && document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "no pages back or forward, the page kept");
+        await waitFor(`!document.getElementById("go_history").hidden`, "the list again");
+        const oldest = await ev(`[...document.querySelectorAll("#go_history button.item")].at(-1).title`);
+        await ev(`[...document.querySelectorAll("#go_history button.item")].at(-1).click()`);
+        await waitFor(`document.getElementById("go_url").dataset.url === ${JSON.stringify(oldest)}`, "the first page again", 30000);
+        await ev(`document.getElementById("go_back").click()`);
+        await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .foot .forward:not(:disabled)")`, "Back, at the first page, the panel with Forward");
+        await ev(`document.querySelector("#go_history .foot .forward").click()`);
+        await waitFor(`document.getElementById("go_url").dataset.url !== ${JSON.stringify(oldest)}`, "a page on, by its Forward", 30000);
+        // Clear history (its glyph beside Forward): none back or forward, the page kept.
+        await ev(`document.getElementById("go_back").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
+        await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .foot .clear:not(:disabled)")`, "Clear history offered");
+        const kept = await ev(`document.getElementById("go_url").dataset.url`);
+        await ev(`document.querySelector("#go_history .foot .clear").click()`);
+        await waitFor(`document.getElementById("go_back").disabled && document.getElementById("go_forward").disabled && document.getElementById("go_url").dataset.url === ${JSON.stringify(kept)}`, "no pages back or forward, the page kept");
     });
 
     await step("a site's cookies are kept for new tabs, listed at go/cookie, and deleted by site or by time", async () => {
@@ -1488,6 +1500,13 @@ async function check(base, port, site) {
         await waitFor(`!!document.querySelector("#go_player .stage video") && document.fullscreenElement?.id === "go_player"`, "the video in the player, full screen", 10000);
         const shape = await ev(`(() => { const v = document.querySelector("#go_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
         if (shape.fit !== "contain" || shape.controls) throw new Error(`in the player: ${JSON.stringify(shape)}`);
+        // Its controls hidden as it plays untouched; a tap where its play
+        // button is (unseen) shows them, and doesn't pause it.
+        await ev(`document.querySelector("#go_player video").play()`);
+        await waitFor(`!document.getElementById("go_player").classList.contains("awake") && !document.querySelector("#go_player video").paused`, "its controls hidden, playing", 8000);
+        await press('#go_player .glyph.big');
+        await waitFor(`document.getElementById("go_player").classList.contains("awake")`, "its controls shown by the tap");
+        if (await ev(`document.querySelector("#go_player video").paused`)) throw new Error("a tap on its hidden controls paused it");
         await ev(`(() => { const s = document.querySelector("#go_player .speed"); s.value = "2"; s.dispatchEvent(new Event("change")); })()`);
         if ((await ev(`document.querySelector("#go_player video").playbackRate`)) !== 2) throw new Error("its speed wasn't set");
         await ev(`document.querySelector("#go_player video").currentTime = 3`);
@@ -1498,12 +1517,16 @@ async function check(base, port, site) {
         // Download: offered where Files are on (it saves into Downloads), not where they're off.
         const offered = await ev(`!!document.querySelector('#go_player button[aria-label^="Download"]')`);
         if (offered !== (process.env.GO_NO_FS !== "1")) throw new Error(`Download ${offered ? "offered, Files off" : "not offered"}`);
+        // (Paused: the clip loops, and 10 s on is its end, looped back from;
+        // its mark noted as it's shown: it's gone in a moment.)
+        await ev(`(() => { const v = document.querySelector("#go_player video"); v.pause(); v.currentTime = 1; const f = document.querySelector("#go_player .flash"); window.__flashed = ""; new MutationObserver(() => { if (f.classList.contains("shown")) window.__flashed = f.className; }).observe(f, { attributes: true }); return 0; })()`);
+        await waitFor(`Math.abs(document.querySelector("#go_player video").currentTime - 1) < 0.2`, "at 1 s, paused");
         const right = await ev(`(() => { const r = document.getElementById("go_player").getBoundingClientRect(); return { x: Math.round(r.right - r.width * 0.2), y: Math.round(r.top + r.height * 0.3) }; })()`);
         for (const n of [1, 2]) {
             await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...right, button: "left", buttons: 1, clickCount: n });
             await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...right, button: "left", buttons: 0, clickCount: n });
         }
-        await waitFor(`document.querySelector("#go_player video").currentTime > 4 && document.querySelector("#go_player .flash").classList.contains("right")`, "on 10 s by a double tap at the right");
+        await waitFor(`document.querySelector("#go_player video").currentTime > 4 && /\\bright\\b/.test(window.__flashed)`, "on 10 s by a double tap at the right, marked there");
         await press('#go_player button[aria-label^="Close the player"]');
         await waitFor(`!document.getElementById("go_player") && !document.fullscreenElement && !!document.querySelector("video") && document.querySelector("video").controls && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);

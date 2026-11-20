@@ -95,9 +95,10 @@ export function openPlayer(media, { title = "", skip, download, closed } = {}) {
 
     // The video, taken from its box: its own controls off (these instead),
     // as it was given back.
-    const was = { parent: media.parentNode, next: media.nextSibling, style: media.getAttribute("style"), controls: media.controls };
+    const was = { parent: media.parentNode, next: media.nextSibling, style: media.getAttribute("style"), controls: media.controls, tabIndex: media.getAttribute("tabindex") };
     media.controls = false;
     media.removeAttribute("style");
+    media.tabIndex = -1;  // (focused by a click: no ring of its own)
     media.dataset.player = "";  // (its box's scrolling isn't passed on: go-media.js)
     stage.append(media);
     document.body.append(box);
@@ -230,6 +231,8 @@ export function openPlayer(media, { title = "", skip, download, closed } = {}) {
         // Given back to its box, as it was.
         media.controls = was.controls;
         if (was.style !== null) media.setAttribute("style", was.style);
+        if (was.tabIndex === null) media.removeAttribute("tabindex");
+        else media.setAttribute("tabindex", was.tabIndex);
         delete media.dataset.player;
         if (was.parent?.isConnected) was.parent.insertBefore(media, was.next?.parentNode === was.parent ? was.next : null);
         box.remove();

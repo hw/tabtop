@@ -632,6 +632,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         // focused), or none (key null).
         mark(key) {
             for (const [k, p] of players) {
+                if (p.watching) continue;  // in the player: no outline
                 for (const el of [p.element, p.loading?.box]) {
                     if (el) el.style.outline = k === key ? "3px solid #8ab4f8" : "";
                     if (el) el.style.outlineOffset = k === key ? "-3px" : "";

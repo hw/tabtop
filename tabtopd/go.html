@@ -98,7 +98,14 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     min-height: 44px; height: auto; padding: 4px 10px; font: 14px system-ui, sans-serif; color: #e8e8ea; text-align: left;
     background: none; border: 0; border-radius: 6px; cursor: pointer; }
 #go_history .item:hover, #go_history .item:focus-visible { background: #3a3a3c; }
-#go_history .item.clear { margin-top: 4px; border-top: 1px solid #48484a; border-radius: 0 0 6px 6px; color: #f2b8b5; font-weight: 600; }
+/* Its foot: Forward and Clear history, glyphs side by side. */
+#go_history .foot { display: flex; justify-content: space-between; gap: 4px; margin-top: 4px; padding-top: 4px; border-top: 1px solid #48484a; }
+#go_history .foot .glyph { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0;
+    border-radius: 50%; background: none; color: #e8e8ea; cursor: pointer; }
+#go_history .foot .glyph svg { width: 22px; height: 22px; }
+#go_history .foot .glyph.clear { color: #f2b8b5; }
+#go_history .foot .glyph:hover:not(:disabled), #go_history .foot .glyph:focus-visible { background: #3a3a3c; }
+#go_history .foot .glyph:disabled { opacity: .35; cursor: default; }
 #go_history .title, #go_history .where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #go_history .where { color: #a8a8ad; font-size: 12px; }
 #go_back, #go_forward { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
@@ -124,7 +131,7 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 .go-media-loading .bar { position: relative; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .2); overflow: hidden; }
 .go-media-loading .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; background: #8ab4f8; border-radius: 2px; transition: width .25s; }
 .go-media-loading .bar.unknown > i { width: 30%; animation: go-media-loading 1.2s ease-in-out infinite; transition: none; }
-/* Site settings and cookies: a lightbox over the browser, the settings page
+/* Site settings: a lightbox over the browser, the settings page
    in it (go/settings); the whole screen on a phone. */
 #go_settings { width: min(44rem, calc(100vw - 32px)); height: min(52rem, calc(100dvh - 48px)); max-width: none; max-height: none; padding: 0;
     border: 1px solid #48484a; border-radius: 12px; background: #1c1c1e; color: #e8e8ea; box-shadow: 0 12px 48px rgba(0, 0, 0, .6); overflow: hidden; }
@@ -144,11 +151,19 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
    its middle back, play and on, at its bottom where it is and the rest:
    all hidden together while it plays untouched, as video apps' are. Its
    glyphs as the menu's. */
-#go_player { position: fixed; inset: 0; z-index: 50; background: #000; outline: none; color: #fff; font: 14px system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
-#go_player .stage { position: absolute; inset: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0); }
-#go_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+#go_player { position: fixed; inset: 0; z-index: 50; background: #000; outline: none; color: #fff; font: 14px system-ui, sans-serif; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent; }
+/* The video has the whole screen (a notch's too); its controls over it
+   keep clear of the screen's edges (safe-area insets). */
+#go_player .stage { position: absolute; inset: 0; }
+/* No frame about it: not a tap's highlight, a focus ring, nor the menu's
+   outline of it (its row pointed at). */
+#go_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; border: 0; outline: none !important; box-shadow: none; }
 #go_player .top, #go_player .middle, #go_player .bar { transition: opacity .2s; }
 #go_player:not(.awake):not(.paused) :is(.top, .middle, .bar) { opacity: 0; pointer-events: none; }
+/* (Their buttons too, which take taps of their own when shown: hidden, a
+   tap's the video's, to show them, not an unseen button's.) */
+#go_player:not(.awake):not(.paused) :is(.top, .middle, .bar) * { pointer-events: none !important; }
 #go_player:not(.awake):not(.paused) { cursor: none; }
 #go_player .top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: flex-start; gap: 8px;
     padding: calc(6px + env(safe-area-inset-top, 0)) calc(6px + env(safe-area-inset-right, 0)) 28px calc(16px + env(safe-area-inset-left, 0));
@@ -265,7 +280,6 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
     <div id="go_menu_panel" hidden>
         <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay"></button></div><ul></ul></section>
-        <button type="button" class="item" id="go_menu_forward" disabled></button>
         <button type="button" class="item" id="go_menu_settings" aria-haspopup="dialog"></button>
         <button type="button" class="item" id="go_menu_cache"></button>
     </div>
@@ -273,7 +287,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <div id="go_progress" aria-hidden="true" hidden></div>
 </div>
 <dialog id="go_settings" aria-labelledby="go_settings_h">
-    <div class="head"><h2 id="go_settings_h">Site settings and cookies</h2><button type="button" class="close" aria-label="Close" title="Close (Esc)">✕</button></div>
+    <div class="head"><h2 id="go_settings_h">Site settings</h2><button type="button" class="close" aria-label="Close" title="Close (Esc)">✕</button></div>
 </dialog>
 <div id="go_start">
     <div>

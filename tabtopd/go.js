@@ -90,16 +90,15 @@ $("go_clear").innerHTML = icon("clear");
 // The menu, at the end of the bar: forward, then the other pages and
 // logging out (the bar of links the other pages have at the top, here in
 // the menu to leave the page the room).
-const menu = $("go_menu"), menuPanel = $("go_menu_panel"), menuForward = $("go_menu_forward");
+const menu = $("go_menu"), menuPanel = $("go_menu_panel");
 menu.innerHTML = icon("menu");
-menuForward.innerHTML = `${icon("forward")}<span class="label">Forward</span>`;
 // Clear cache: what the server and engines keep of what sites sent (not
 // cookies: those are go/settings'), in every tab (gocache.go).
 $("go_menu_cache").innerHTML = `${icon("clear")}<span class="label">Clear cache</span>`;
-// Site settings and cookies: sites blocked, pop-ups, videos blocked, the
+// Site settings: sites blocked, pop-ups, videos blocked, the
 // Referer; cookies and site data (go/settings, go-settings.js and
 // go-cookies.js), in a tab of its own, this one's page kept.
-$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings and cookies</span>`;
+$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings</span>`;
 // ...in a lightbox over the browser, not a window of its own: the settings
 // page (go/settings) in a frame of it, a new one each time it's opened (a
 // frame sent elsewhere is an entry in the browser's history, which the
@@ -115,7 +114,7 @@ function openSettings() {
     const there = new URL("settings", location.href);
     const host = at >= 0 ? hostOf(entries[at].url).replace(/:\d+$/, "").replace(/^www\./, "") : "";
     if (host && !entries[at].url.startsWith(SEARCH)) there.searchParams.set("site", host);
-    settingsFrame = Object.assign(document.createElement("iframe"), { title: "Site settings and cookies", src: there.href });
+    settingsFrame = Object.assign(document.createElement("iframe"), { title: "Site settings", src: there.href });
     settingsBox.append(settingsFrame);
     settingsBox.showModal();
     settingsBox.querySelector(".close").focus();
@@ -489,8 +488,10 @@ function update() {
         leaving = 0;
         frame.classList.remove("leaving");
     }
-    back.disabled = at <= 0;
-    forward.disabled = menuForward.disabled = at >= entries.length - 1;
+    // Back: a page back; with none, but some forward, the history panel
+    // (Forward's there, on a phone: not in the bar).
+    back.disabled = at <= 0 && at >= entries.length - 1;
+    forward.disabled = at >= entries.length - 1;
     reload.disabled = at < 0;
     reload.innerHTML = icon(loading ? "stop" : "reload");
     reload.title = loading ? "Stop" : "Reload";
@@ -745,8 +746,15 @@ window.addEventListener("pageshow", (e) => {
     pageLeft = false;
     if (!ws) connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
 });
+// One connection at a time: one open, or opening, is the one (a second,
+// with the token the first was just given, would take the tab from it).
+let opening = null;
 function connect() {
-    if (pageLeft) return Promise.resolve(true);
+    if (pageLeft || ws) return Promise.resolve(true);
+    opening ??= open().finally(() => (opening = null));
+    return opening;
+}
+function open() {
     return new Promise((resolve) => {
         const resume = resumeToken.get();
         const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}) }, { title: "Browser" });
@@ -820,6 +828,12 @@ function connect() {
             resLost(s);
             if (closing || pageLeft) return;  // closed by the person, or the page left: nothing to come back to
             const was = ws === s;
+            // One that isn't the page's now (replaced, or never opened to be
+            // it): nothing of the one that is is touched, nor said.
+            if (!was && ws) {
+                resolve(!e.lost);
+                return;
+            }
             ws = null;
             loading = rendering = false;
             closeDialog();
@@ -1352,7 +1366,7 @@ $("go_address").addEventListener("submit", (e) => {
         load(url);
     }
 });
-back.addEventListener("click", () => held || goBy(-1));
+back.addEventListener("click", () => held || (at > 0 ? goBy(-1) : showHistory(back, -1)));
 forward.addEventListener("click", () => held || goBy(1));
 
 // Back (or forward) held, or its context menu (a right click): the pages
@@ -1362,7 +1376,7 @@ let held = false, holdTimer = 0;
 function showHistory(button, way) {
     const pages = [];
     for (let i = at + way; i >= 0 && i < entries.length && pages.length < 20; i += way) pages.push(i);
-    if (!pages.length) return;
+    if (!pages.length && entries.length <= 1) return;
     historyPanel.replaceChildren(...pages.map((i) => {
         const b = Object.assign(document.createElement("button"), { type: "button", className: "item" });
         b.setAttribute("role", "menuitem");
@@ -1375,16 +1389,21 @@ function showHistory(button, way) {
         });
         return b;
     }));
-    // And clearing them: this tab's pages back and forward forgotten, the
-    // one it's on kept.
-    const clear = Object.assign(document.createElement("button"), { type: "button", className: "item clear", textContent: "Clear history" });
-    clear.setAttribute("role", "menuitem");
-    clear.title = "Forget this tab's pages back and forward";
-    clear.addEventListener("click", () => {
-        openHistory(null);
-        clearHistory();
-    });
-    historyPanel.append(clear);
+    // At its foot, as glyphs side by side: Forward (a page on), and Clear
+    // history (this tab's pages back and forward forgotten, the one it's on
+    // kept).
+    const foot = Object.assign(document.createElement("div"), { className: "foot" });
+    const footGlyph = (name, label, act, disabled) => {
+        const b = Object.assign(document.createElement("button"), { type: "button", className: `glyph ${name}`, title: label, disabled });
+        b.setAttribute("role", "menuitem");
+        b.setAttribute("aria-label", label);
+        b.innerHTML = icon(name === "clear" ? "clear" : "forward");
+        b.addEventListener("click", () => { openHistory(null); act(); });
+        return b;
+    };
+    foot.append(footGlyph("forward", "Forward: a page on", () => goBy(1), at >= entries.length - 1),
+        footGlyph("clear", "Clear history: forget this tab's pages back and forward", () => clearHistory(), entries.length <= 1));
+    historyPanel.append(foot);
     historyPanel.setAttribute("aria-label", way < 0 ? "Pages back" : "Pages forward");
     historyPanel.style.left = Math.max(4, Math.round(button.getBoundingClientRect().left)) + "px";
     openHistory(button);
@@ -1409,7 +1428,7 @@ function openHistory(button) {
     if (button) {
         openMenu(false);
         button.setAttribute("aria-expanded", "true");
-        historyPanel.querySelector("button")?.focus();
+        historyPanel.querySelector("button:not(:disabled)")?.focus();
     }
 }
 for (const [button, way] of [[back, -1], [forward, 1]]) {
@@ -1424,7 +1443,13 @@ for (const [button, way] of [[back, -1], [forward, 1]]) {
             showHistory(button, way);
         }, 500);
     });
-    const letGo = () => clearTimeout(holdTimer);
+    // Let go: held, its click (as it's let go, in the same task) isn't a
+    // step; then not held (a touch held has no click after it, and the next
+    // press, a key's, is a step).
+    const letGo = () => {
+        clearTimeout(holdTimer);
+        if (held) setTimeout(() => (held = false));
+    };
     button.addEventListener("pointerup", letGo);
     button.addEventListener("pointerleave", letGo);
     button.addEventListener("pointercancel", letGo);
@@ -1441,7 +1466,7 @@ document.addEventListener("pointerdown", (e) => {
 }, true);
 window.addEventListener("blur", () => openHistory(null));
 historyPanel.addEventListener("keydown", (e) => {
-    const items = [...historyPanel.querySelectorAll("button")], i = items.indexOf(document.activeElement);
+    const items = [...historyPanel.querySelectorAll("button:not(:disabled)")], i = items.indexOf(document.activeElement);
     if (e.key === "Escape") {
         const from = historyFrom;
         openHistory(null);
@@ -1451,14 +1476,13 @@ historyPanel.addEventListener("keydown", (e) => {
         items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
     }
 });
-menuForward.addEventListener("click", () => goBy(1));
 $("go_menu_cache").addEventListener("click", async () => {
     try {
         const t = await call({ type: "go-cache-clear" });
         t.close();
         forgetResources();
         toTabs({ type: "cache-cleared" });  // the other tabs' copies' too
-        warn("Cache cleared: pages are fetched from their sites again. Cookies and sites' data are kept (Site settings and cookies clears those).", { error: false });
+        warn("Cache cleared: pages are fetched from their sites again. Cookies and sites' data are kept (Site settings clears those).", { error: false });
     } catch (err) {
         warn(err.message || "The cache couldn't be cleared.");
     }
@@ -1566,5 +1590,5 @@ if (first && entries[at]?.url === first) {
     update();
     showRecent();
     address.focus();
-    connecting = connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
+    connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
 }
