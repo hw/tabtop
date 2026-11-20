@@ -13,7 +13,7 @@
 /* No pull-to-refresh (it would reload this page, not the page shown) nor
    overscroll bounce: a page's own scrolling ends at its ends. */
 html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; overscroll-behavior: none; font: 13px system-ui, sans-serif; color: #e8e8ea; }
-body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minmax(0, 1fr); }
+body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
 #go_bar { position: relative; grid-row: 1; height: var(--bar-total); box-sizing: border-box; display: flex; align-items: center;
     gap: 4px; padding: var(--safe-top) calc(8px + var(--safe-right)) 0 calc(8px + var(--safe-left)); background: #2c2c2e; border-bottom: 1px solid #3a3a3c; }
 #go_bar button { flex: 0 0 auto; min-width: 30px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
@@ -31,6 +31,10 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_address input.insecure { color: #f2b8b5; }
 #go_bar #go_address button { position: absolute; right: 0; top: 0; bottom: 0; height: auto; min-width: 30px; color: #a8a8ad; }
 #go_bar #go_address button[hidden] { display: none; }
+/* The tabs, on a phone (go-tabs.js shows them all). */
+#go_tabs .count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 3px;
+    box-sizing: border-box; border: 2px solid currentColor; border-radius: 5px; font: 600 11px system-ui, sans-serif; }
+#go_bar #go_tabs[hidden] { display: none; }
 /* The menu: the other pages, forward, logging out. */
 #go_menu_panel { position: absolute; top: calc(100% + 4px); right: 4px; z-index: 6; min-width: 13rem; box-sizing: border-box; padding: 4px;
     background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
@@ -121,6 +125,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         <button type="button" id="go_reload" title="Reload" aria-label="Reload" disabled>⟳</button>
         <button type="button" id="go_clear" title="Clear" aria-label="Clear the address" hidden>✕</button>
     </form>
+    <button type="button" id="go_tabs" title="Tabs" aria-label="Tabs" hidden><span class="count">1</span></button>
     <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
     <div id="go_menu_panel" hidden>
         <button type="button" class="item" id="go_menu_forward" disabled></button>

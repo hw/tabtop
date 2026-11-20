@@ -438,7 +438,9 @@ async function check(base, port, site) {
     await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 
     await step("log in on /go", async () => {
-        await open("go/", `!!document.querySelector("#tabtop_login input")`, "the login form");
+        // A tab on its own (go/tab), as the tabs' page has each (see the
+        // tabs' step, below).
+        await open("go/tab", `!!document.querySelector("#tabtop_login input")`, "the login form");
         const code = await totp();
         await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
         await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page");
@@ -677,7 +679,7 @@ async function check(base, port, site) {
         if ((await sent()) !== "sent kept=yes") throw new Error(`the site was sent ${await sent()}`);
         // A new tab (this page loaded again: its engine closed, a new one
         // started): given the cookie.
-        const browserPage = async (path = "go/") => {
+        const browserPage = async (path = "go/tab") => {
             await ev(`(() => { sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
             await sleep(500);
         };
@@ -1221,6 +1223,60 @@ async function check(base, port, site) {
         await frameWait(`document.querySelectorAll("p.row").length === 3000 && document.getElementById("items")?.children.length === 20`, "every row, and the 20 items added as it was shown", 30000);
         const last = await frame(`document.getElementById("items").lastElementChild.textContent`);
         if (last !== "item 20") throw new Error(`the last item says ${last}`);
+    });
+
+    await step("tabs: a window a page opens is a tab of its own, tabs are made and closed, back goes back in its tab, and they're kept", async () => {
+        await ev(`location.href = ${JSON.stringify(new URL("go/", base).href)}`);
+        const inTab = (n, expr) => ev(`(() => { const f = document.querySelectorAll("#frames iframe")[${n}]; const document_ = f?.contentDocument; return document_ ? ((document) => (${expr}))(document_) : null; })()`);
+        const count = () => ev(`document.querySelectorAll("#frames iframe").length`);
+        const shownTab = () => ev(`[...document.querySelectorAll("#frames iframe")].findIndex((f) => !f.hidden)`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === 1 && !!document.querySelector("#frames iframe").contentDocument?.getElementById("go_url")`, "the tabs' page, one tab", 30000);
+        // The tab loads a page, which opens a window: a tab of its own.
+        await inTab(0, `(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "interact.html")}; i.form.requestSubmit(); return true; })()`);
+        await waitFor(`/^Interact/.test(document.querySelector(".tab .title")?.textContent || "")`, "the first tab's page", 30000);
+        // (The copy is in the tab's frame here: its place is that frame's,
+        // the view's in it, the element's in the copy.)
+        for (let i = 0; i < 100 && !(await frame(`!!document.getElementById("open")`).catch(() => false)); i++) await sleep(200);
+        await sleep(1000);
+        const at = await ev(`(() => { const f = document.querySelectorAll("#frames iframe")[0]; const r = f.getBoundingClientRect(), v = f.contentDocument.getElementById("go_view").getBoundingClientRect(); return { x: r.x + v.x, y: r.y + v.y }; })()`);
+        const b = JSON.parse(await frame(`(() => { const b = document.getElementById("open").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); })()`));
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: at.x + b.x, y: at.y + b.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await waitFor(`document.querySelectorAll("#frames iframe").length === 2 && /^Second/.test(document.querySelectorAll(".tab .title")[1]?.textContent || "")`, "the opened window, in a tab of its own", 30000);
+        if ((await shownTab()) !== 1) throw new Error("the new tab isn't shown");
+        if (!/^Interact/.test(await inTab(0, "document.title"))) throw new Error("the first tab left its page");
+        // Back (the device's): to the first tab's page, in its tab.
+        await ev(`history.back()`);
+        await waitFor(`[...document.querySelectorAll("#frames iframe")].findIndex((f) => !f.hidden) === 0`, "back, in the first tab", 15000);
+        // A new tab, and closing it.
+        await ev(`document.getElementById("new").click()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === 3`, "a new tab");
+        if ((await shownTab()) !== 2) throw new Error("the new tab isn't shown");
+        await ev(`document.querySelectorAll(".tab .close")[2].click()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === 2`, "the tab closed");
+        // Kept: the page loaded again has its tabs, each at its page.
+        await ev(`location.reload()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === 2 && /^Interact/.test(document.querySelectorAll(".tab .title")[0]?.textContent || "") && /^Second/.test(document.querySelectorAll(".tab .title")[1]?.textContent || "")`, "the tabs again, at their pages", 45000);
+        // On a phone: no strip; each tab's bar has a button for the list of
+        // tabs, and still fits.
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        try {
+            const tabDoc = `[...document.querySelectorAll("#frames iframe")].find((f) => !f.hidden).contentDocument`;
+            await waitFor(`!${tabDoc}.getElementById("go_tabs").hidden && getComputedStyle(document.getElementById("strip")).display === "none"`, "the tabs' button, no strip");
+            const fits = await ev(`(() => { const d = ${tabDoc}; return d.getElementById("go_menu").getBoundingClientRect().right <= d.defaultView.innerWidth && d.querySelector("#go_tabs .count").textContent === "2"; })()`);
+            if (!fits) throw new Error("the phone's bar doesn't fit, or doesn't count the tabs");
+            await ev(`${tabDoc}.getElementById("go_tabs").click()`);
+            await waitFor(`!document.getElementById("overview").hidden && document.querySelectorAll("#overview li").length === 2`, "the list of tabs");
+            await ev(`document.querySelector("#overview .done").click()`);
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
+        // No address in any frame's own (go/tab?id=N only).
+        const srcs = await ev(`[...document.querySelectorAll("#frames iframe")].map((f) => f.getAttribute("src")).join()`);
+        if (!/^tab\?id=\d+,tab\?id=\d+$/.test(srcs)) throw new Error(`the frames are at ${srcs}`);
+        await ev(`location.href = ${JSON.stringify(new URL("go/tab", base).href)}`);
+        await waitFor(`!!document.getElementById("go_url")`, "a tab on its own again");
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with

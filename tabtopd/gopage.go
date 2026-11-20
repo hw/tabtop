@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-cookies.html go-cookies.js
+//go:embed go.html go.js go-media.js go-cookies.html go-cookies.js go-tabs.html go-tabs.js
 var goFiles embed.FS
 
 const (
@@ -21,7 +21,12 @@ const (
 	// players' parts from the streaming service worker (go-media.js), at
 	// the page's own origin.
 	goPageCSP = "default-src 'none'; script-src 'self'; connect-src 'self' data:; style-src 'unsafe-inline'; " +
-		"img-src 'self' data: blob:; media-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		"img-src 'self' data: blob:; media-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+
+	// goTabsCSP is the tabs' page's, at go/: each tab a frame of the site's
+	// (go/tab), the login's tunnel, nothing else.
+	goTabsCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; " +
+		"frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 	// goCookiesCSP is the cookies page's: its script, the tunnel to the
 	// site, nothing else.
@@ -65,6 +70,14 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 	switch strings.TrimPrefix(r.URL.Path, goPrefix) {
 	case "":
+		// The tabs (go-tabs.js), each a frame of go/tab.
+		h.Set("Content-Security-Policy", goTabsCSP)
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		page, _ := goFiles.ReadFile("go-tabs.html")
+		w.Write(page)
+	case "tab":
+		// A tab: the page that holds a browsing context's tunnel (go.js),
+		// in the tabs' page, or on its own.
 		h.Set("Content-Security-Policy", goPageCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go.html")
@@ -75,7 +88,7 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go-cookies.html")
 		w.Write(page)
-	case "go.js", "go-media.js", "go-cookies.js":
+	case "go.js", "go-media.js", "go-cookies.js", "go-tabs.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)

@@ -47,8 +47,8 @@ import (
 
 const (
 	// Engines (browsing contexts) open at once, for a session and in all.
-	maxGoPerSession = 3
-	maxGoEngines    = 8
+	maxGoPerSession = 6
+	maxGoEngines    = 12
 	// goClientMessage is the largest message the page may send: a URL.
 	goClientMessage = 64 << 10
 	maxGoURL        = 8 << 10

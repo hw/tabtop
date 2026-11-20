@@ -37,9 +37,17 @@ func TestGoPage(t *testing.T) {
 	g.goOn = true
 	srv = httptest.NewServer(g.handler())
 	defer srv.Close()
-	res, page := get("/go/")
+	// The tabs' page, and a tab: framed by the site only.
+	res, tabsPage := get("/go/")
+	if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goTabsCSP || !strings.Contains(tabsPage, `src="go-tabs.js"`) {
+		t.Errorf("the tabs' page: %d %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
+	}
+	res, page := get("/go/tab")
 	if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goPageCSP || !strings.Contains(page, `src="go.js"`) {
-		t.Errorf("the page: %d %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
+		t.Errorf("a tab: %d %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
+	}
+	if !strings.Contains(goPageCSP, "frame-ancestors 'self'") || !strings.Contains(goTabsCSP, "frame-ancestors 'none'") {
+		t.Error("a tab must be framed by the site alone, the tabs' page by none")
 	}
 	if res, _ := get("/go"); res.StatusCode != http.StatusMovedPermanently || res.Header.Get("Location") != "/go/" {
 		t.Errorf("/go: %d to %q", res.StatusCode, res.Header.Get("Location"))

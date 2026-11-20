@@ -864,8 +864,9 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 	switch ev.Method {
 	case "Target.targetCreated", "Target.targetInfoChanged":
 		// A window the page opened (window.open, a link to a new
-		// window): closed in the engine, and its address loaded in this
-		// tab instead, as a navigation of the page's.
+		// window): closed in the engine, and its address given to the
+		// page above, which opens it in a tab of its own (go-tabs.js), or
+		// has this one load it, as a navigation of the page's.
 		var p struct {
 			TargetInfo struct {
 				TargetID string `json:"targetId"`
@@ -885,7 +886,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 				defer cancel()
 				b.cdp.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": info.TargetID}, nil)
 			}()
-			loadTimeout = b.navigate(u, "page")
+			b.send(map[string]any{"type": "go-popup", "gen": b.gen, "url": u})
 		}
 		return loadTimeout, dialogTimeout
 	}
@@ -954,7 +955,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			// as a popup's is (Target.targetCreated, above).
 			if u, err := goURL(p.Frame.URL); err == nil {
 				b.popups[p.Frame.ID] = true
-				loadTimeout = b.navigate(u, "page")
+				b.send(map[string]any{"type": "go-popup", "gen": b.gen, "url": u}) // as a popup's (above)
 			}
 			break
 		}

@@ -28,11 +28,24 @@ import { call, collect, setLoginTitle } from "../tabtop/requests.js";
 import { goMedia } from "./go-media.js";
 
 const SEARCH = "https://html.duckduckgo.com/html/?q=";
+// One of the tabs' page's tabs (go-tabs.js: go/tab?id=N in a frame of it),
+// or on its own: its number keeps what it keeps apart from the others',
+// and the tabs' page has its history (and the device's back).
+const tabId = (() => {
+    const id = new URLSearchParams(location.search).get("id") ?? "";
+    return /^\d{1,6}$/.test(id) ? id : "";
+})();
+const inTabs = (() => {
+    try { return window.parent !== window && parent.location.origin === location.origin; } catch { return false; }
+})();
+function toTabs(m) {
+    if (inTabs) parent.postMessage({ ...m, goTab: tabId }, location.origin);
+}
 // The address this tab last showed, kept for its reloads (sessionStorage).
-const KEPT = "tabtop-go-kept";
+const KEPT = "tabtop-go-kept" + (tabId ? ":" + tabId : "");
 // Its pages back and forward, likewise (the tab's own history has an entry
 // for each, on this page's address, which says which: see remember).
-const KEPT_HISTORY = "tabtop-go-history";
+const KEPT_HISTORY = "tabtop-go-history" + (tabId ? ":" + tabId : "");
 // Sites opened, newest first, for the start (localStorage: this device's
 // only, never sent anywhere; forgotten from the start).
 const RECENT = "tabtop-go-recent";
@@ -41,7 +54,9 @@ const RECENT_MAX = 8;
 const PAGE_BUDGET = 128 << 20;
 const RESOURCE_LIMITS = { image: 10 << 20, css: 4 << 20, font: 8 << 20 };
 
-nameTab("go");
+// The browser's tab is named for links from the other pages to find: the
+// tabs' page's, not one of its tabs' frames.
+if (!inTabs) nameTab("go");
 setLoginTitle("Browser");
 const $ = (id) => document.getElementById(id);
 const back = $("go_back"), forward = $("go_forward"), reload = $("go_reload");
@@ -239,6 +254,8 @@ function update() {
             sessionStorage.setItem(KEPT_HISTORY, JSON.stringify({ entries: entries.slice(-50).map((e) => ({ url: e.url, title: e.title })), at: at - Math.max(0, entries.length - 50) }));
         } catch { /* not kept */ }
     }
+    // Its title and whether it's loading, for its tab.
+    toTabs({ type: "state", title: entry ? entry.title || hostOf(entry.url) : "New tab", loading: loading || rendering });
 }
 
 // The address bar, but while it's edited, shows the site only (the words
@@ -316,6 +333,10 @@ $("go_recent_clear").addEventListener("click", () => {
 // here (see popstate), not away from this page. The first is this page's
 // own entry.
 function remember() {
+    if (inTabs) {
+        toTabs({ type: "history", at });  // the tabs' page keeps it
+        return;
+    }
     try {
         if (at === 0) history.replaceState({ goAt: 0 }, "");
         else history.pushState({ goAt: at }, "");
@@ -332,6 +353,10 @@ window.addEventListener("popstate", (e) => {
 function goBy(step) {
     const to = at + step;
     if (to < 0 || to >= entries.length) return;
+    if (inTabs) {
+        toTabs({ type: "step", step, at });  // by its history, or back here ("go")
+        return;
+    }
     if (history.state?.goAt === at) {
         step < 0 ? history.back() : history.forward();
         return;
@@ -572,6 +597,14 @@ function message(m) {
             break;
         case "go-dialog-closed":
             closeDialog();
+            break;
+        case "go-popup":
+            // A window the page opened: a tab of its own, or (none to be
+            // had, or this tab on its own) this one, as a link of the page's.
+            if (typeof m.url === "string" && /^https?:\/\//i.test(m.url)) {
+                if (inTabs) toTabs({ type: "popup", url: m.url });
+                else load(m.url);
+            }
             break;
         case "go-file":
             loading = rendering = false;
@@ -986,6 +1019,44 @@ document.addEventListener("keydown", (e) => {
     if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); forward.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") { e.preventDefault(); address.focus(); address.select(); }
 });
+
+// What the tabs' page says to this tab: go to one of its pages (the
+// device's back), load what a page opened (a new tab's first), an address
+// a link gave (waiting for Enter), how many tabs there are.
+window.addEventListener("message", (e) => {
+    if (!inTabs || e.source !== parent || e.origin !== location.origin || e.data?.goTabs !== true) return;
+    const m = e.data;
+    const web = typeof m.url === "string" && /^https?:\/\//i.test(m.url) && m.url.length <= 8192;
+    switch (m.type) {
+        case "go":
+            if (Number.isSafeInteger(m.at) && m.at >= 0 && m.at < entries.length && m.at !== at) {
+                at = m.at;
+                load(entries[at].url, { push: false });
+            }
+            break;
+        case "open":
+            if (web) load(m.url);
+            break;
+        case "linked": {
+            const url = typeof m.text === "string" && m.text.length <= 8192 ? target(m.text) : null;
+            if (url) {
+                address.value = url;
+                show("Press Enter to load this address.");
+                address.focus();
+            }
+            break;
+        }
+        case "count":
+            $("go_tabs").hidden = !m.compact;
+            $("go_tabs").querySelector(".count").textContent = String(m.count);
+            $("go_tabs").setAttribute("aria-label", `Tabs: ${m.count} open`);
+            break;
+        case "focus":
+            if (at < 0) address.focus();
+            break;
+    }
+});
+$("go_tabs").addEventListener("click", () => toTabs({ type: "show" }));
 
 // Start where this tab was (a reload: see update), or where a link to
 // /go/#<address> says. The address after # is taken out of the tab's

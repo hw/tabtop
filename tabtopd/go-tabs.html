@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Browser</title>
+<style>
+:root { --strip: 34px; --safe-top: env(safe-area-inset-top, 0px); --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px); --safe-left: env(safe-area-inset-left, 0px); }
+html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; overscroll-behavior: none; color: #e8e8ea; font: 13px system-ui, sans-serif; }
+body { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
+/* The tabs, on a wide screen: a strip above the tab shown. */
+#strip { display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: var(--strip); box-sizing: border-box;
+    padding: calc(4px + var(--safe-top)) calc(6px + var(--safe-right)) 0 calc(6px + var(--safe-left)); background: #1c1c1e; }
+body.compact #strip { display: none; }
+#tabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tab { display: flex; align-items: center; gap: 6px; flex: 0 1 200px; min-width: 64px; height: 30px; box-sizing: border-box;
+    padding: 0 4px 0 10px; color: #a8a8ad; background: #242426; border: 0; border-radius: 7px 7px 0 0; cursor: pointer; font: inherit; text-align: left; }
+.tab[aria-selected="true"] { color: #e8e8ea; background: #2c2c2e; }
+.tab .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab.loading .title::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%;
+    background: #8ab4f8; vertical-align: 1px; animation: pulse 1s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: .3; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .tab.loading .title::before { animation: none; } }
+.close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0;
+    color: inherit; background: none; border: 0; border-radius: 5px; cursor: pointer; font-size: 14px; }
+.close:hover, .tab:hover:not([aria-selected="true"]) { background: #3a3a3c; }
+#new { flex: 0 0 auto; width: 28px; height: 28px; margin-bottom: 1px; padding: 0; color: #e8e8ea; background: none; border: 0;
+    border-radius: 6px; cursor: pointer; font-size: 18px; }
+#new:hover:not(:disabled) { background: #2c2c2e; }
+#new:disabled, #overview .new:disabled { color: #6c6c70; cursor: default; }
+#strip { grid-row: 1; }
+#frames { grid-row: 2; position: relative; min-height: 0; }
+#frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #1c1c1e; }
+#frames iframe[hidden] { display: none; }
+/* The tabs, on a phone: all of them, over the one shown. */
+#overview { position: fixed; inset: 0; z-index: 10; overflow: auto; box-sizing: border-box; background: #1c1c1e;
+    padding: calc(12px + var(--safe-top)) calc(16px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(16px + var(--safe-left)); }
+#overview[hidden] { display: none; }
+#overview header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+#overview h1 { flex: 1; margin: 0; font-size: 18px; }
+#overview header button { min-height: 44px; padding: 0 14px; color: #e8e8ea; background: #3a3a3c; border: 1px solid #48484a; border-radius: 6px; font: 14px system-ui, sans-serif; cursor: pointer; }
+#overview ul { list-style: none; margin: 0; padding: 0; }
+#overview li { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; background: #2c2c2e; border: 2px solid transparent; border-radius: 10px; }
+#overview li.shown { border-color: #8ab4f8; }
+#overview li .pick { flex: 1; min-width: 0; min-height: 56px; padding: 0 14px; color: #e8e8ea; background: none; border: 0; text-align: left; font: 15px system-ui, sans-serif; cursor: pointer;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#overview li .close { width: 44px; height: 44px; font-size: 18px; }
+button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+</style>
+<div id="strip"><div id="tabs" role="tablist" aria-label="Tabs"></div><button type="button" id="new" title="New tab" aria-label="New tab">+</button></div>
+<div id="frames"></div>
+<section id="overview" aria-label="Tabs" hidden>
+    <header><h1>Tabs</h1><button type="button" class="new">New tab</button><button type="button" class="done">Done</button></header>
+    <ul></ul>
+</section>
+<script type="module" src="go-tabs.js"></script>
+</html>
