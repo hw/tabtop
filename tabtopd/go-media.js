@@ -260,6 +260,20 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     document.addEventListener("fullscreenchange", () => {
         for (const player of players.values()) place(player.placement);
     }, { signal: abort.signal });
+    // The frame moved, not resized (which its page would say): a half turn,
+    // landscape one way to the other, a notch's margin from one side to the
+    // other. Players placed again on their boxes, at once and once the
+    // window's settled (a browser says its margins after it says it turned).
+    let replaceTimer = 0;
+    const replaceAll = () => {
+        requestAnimationFrame(() => { for (const player of players.values()) place(player.placement); });
+        clearTimeout(replaceTimer);
+        replaceTimer = setTimeout(() => { for (const player of players.values()) place(player.placement); }, 300);
+    };
+    window.addEventListener("resize", replaceAll, { signal: abort.signal });
+    window.addEventListener("orientationchange", replaceAll, { signal: abort.signal });
+    screen.orientation?.addEventListener?.("change", replaceAll, { signal: abort.signal });
+    window.visualViewport?.addEventListener("resize", replaceAll, { signal: abort.signal });
 
     function place({ key, rect, clip, shown, fit, position }) {
         const player = players.get(key);
@@ -629,6 +643,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         },
         stop() {
             abort.abort();
+            clearTimeout(replaceTimer);
             for (const key of players.keys()) closePlayer(key);
             ahead.clear();
             for (const stream of streams.values()) releaseStream(stream);

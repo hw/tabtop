@@ -278,6 +278,8 @@ $("tap").onclick = () => status("tapped, touches " + touches);
 ${Array.from({ length: 40 }, (_, i) => `<button id="b${i}">button ${i}</button>`).join("")}
 <script>let clicks = 0; for (const b of document.querySelectorAll("button")) b.addEventListener("click", () => { document.getElementById("out").textContent = "clicks " + ++clicks + " " + b.id; });</script>`,
         "many.html": `<!doctype html><title>Many</title><p id="n">loading</p><div>${Array.from({ length: 80 }, (_, i) => `<img src="pic.png?many=${i}&slow" width="4" height="4" alt="">`).join("")}</div>`,
+        "rotate.html": `<!doctype html><title>Rotate</title><meta name="viewport" content="width=device-width"><style>body { margin: 0 } video { display: block; width: 100%; aspect-ratio: 16 / 9 }</style>
+<p>top</p><video id="v" src="clip.mp4?rotate" muted loop></video><p>below</p><script>document.getElementById("v").play().catch(() => {});</script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -1341,6 +1343,54 @@ async function check(base, port, site) {
             await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
             await waitFor(`!document.querySelector(".go-media-loading")`, "both ready", 60000);
         } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
+    });
+
+    await step("a video playing, the phone turned: its player stays shown, and on its box, after a quarter or a half turn", async () => {
+        const turn = (w, h, type, angle) => cdp("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 2, mobile: true, screenOrientation: { type, angle } });
+        await turn(390, 844, "portraitPrimary", 0);
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        // Where the player is against its box (in the frame, so asked of it).
+        const offBy = async () => {
+            const box = await frame(`(() => { const r = document.getElementById("v").getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+            return ev(`(() => { const f = document.getElementById("go_view").getBoundingClientRect(), v = document.querySelector("video").getBoundingClientRect(), b = ${JSON.stringify(box)};
+                return Math.max(Math.abs(v.x - f.x - b.x), Math.abs(v.y - f.y - b.y), Math.abs(v.width - b.w), Math.abs(v.height - b.h)); })()`);
+        };
+        // Frames the player wasn't shown in, from now.
+        const watch = () => ev(`(() => { window.__hidden = 0; window.__watching = true; const tick = () => { const v = document.querySelector("video"); if (!v || getComputedStyle(v).display === "none") __hidden++; if (__watching) requestAnimationFrame(tick); }; requestAnimationFrame(tick); return 0; })()`);
+        const watched = () => ev(`(() => { __watching = false; return __hidden; })()`);
+        let insets = false;
+        try {
+            await goTo(site + "rotate.html", "Rotate");
+            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3 && getComputedStyle(v).display !== "none"; })()`, "the video playing, shown", 30000);
+            const found = [];
+            // A quarter turn.
+            await watch();
+            await turn(844, 390, "landscapePrimary", 90);
+            await sleep(1500);
+            const quarter = { hidden: await watched(), off: await offBy() };
+            found.push(`quarter turn: hidden ${quarter.hidden} frames, off by ${Math.round(quarter.off)} px`);
+            if (quarter.hidden > 0 || quarter.off > 1) throw new Error(found.join("; "));
+            // A half turn, a notch's side swapped (where the browser can say).
+            insets = (await cdp("Emulation.setSafeAreaInsetsOverride", { insets: { left: 47, right: 0, top: 0, bottom: 0 } }).then(() => true, () => false));
+            if (insets) {
+                await sleep(1000);
+                const before = Math.round(await offBy());
+                await watch();
+                await cdp("Emulation.setSafeAreaInsetsOverride", { insets: { left: 0, right: 47, top: 0, bottom: 0 } });
+                await turn(844, 390, "landscapeSecondary", 270);
+                await sleep(1500);
+                const half = { hidden: await watched(), off: await offBy() };
+                found.push(`half turn: off by ${before} px before, hidden ${half.hidden} frames, off by ${Math.round(half.off)} px after`);
+                if (before > 1 || half.hidden > 0 || half.off > 1) throw new Error(found.join("; "));
+            } else {
+                found.push("half turn: this browser can't emulate a notch");
+            }
+            return found.join("; ");
+        } finally {
+            if (insets) await cdp("Emulation.setSafeAreaInsetsOverride", { insets: {} }).catch(() => {});
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }

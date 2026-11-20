@@ -818,6 +818,12 @@
         const bottom = Math.min(innerHeight, rect.bottom - (box.bottom - visible.bottom));
         return { x, y, width: right - x, height: bottom - y };
     }
+    // windowClip is what of rect is in the window, if enough to show.
+    function windowClip(rect) {
+        const x = Math.max(0, rect.x), y = Math.max(0, rect.y);
+        const right = Math.min(innerWidth, rect.x + rect.width), bottom = Math.min(innerHeight, rect.y + rect.height);
+        return right - x >= 8 && bottom - y >= 8 ? { x, y, width: right - x, height: bottom - y } : null;
+    }
     // mediaLater asks the page for players for new boxes, and tells it where
     // the boxes are, after this task (the box laid out).
     function mediaLater() {
@@ -844,9 +850,14 @@
                     mediaVisibility.observe(m.box);
                 }
                 // An unset intersection is waiting for a fresh measurement.
-                // Keep an open player alive through the layout transition.
+                // Keep an open player alive through the layout transition:
+                // one shown stays shown, on its box where it is now, cut to
+                // the window till it's measured (else it blinks out as the
+                // window turns, or a keyboard comes up).
                 if (!m.intersection) {
-                    if (m.asked) positions.push({ key, rect, shown: false });
+                    const clip = m.asked && m.shown ? windowClip(rect) : null;
+                    if (clip) positions.push({ key, rect, clip, shown: true, fit: m.fit, position: m.position });
+                    else if (m.asked) positions.push({ key, rect, shown: false });
                     continue;
                 }
                 const clip = mediaClip(r, m.intersection);
@@ -869,6 +880,7 @@
                     opening.push({ ...at, type: "media", gen: doc.gen, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
                 }
                 if (m.asked) positions.push(at);
+                Object.assign(m, { shown: m.asked && shown, fit, position });
             }
             tell({ type: "media-positions", gen: doc.gen, positions });
             for (const message of opening) tell(message);
