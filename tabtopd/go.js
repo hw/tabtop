@@ -21,6 +21,7 @@
 // reconnect.js), with a new engine, loading the page that was shown.
 
 import { navBar, nameTab, pages, openPage } from "../tabtop/nav.js";
+import { iconSVG } from "../tabtop/glyphs.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
 import { reconnect } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
@@ -41,6 +42,25 @@ const inTabs = (() => {
 function toTabs(m) {
     if (inTabs) parent.postMessage({ ...m, goTab: tabId }, location.origin);
 }
+const windowList = document.getElementById("go_window_list"), windowListRows = windowList.querySelector("ul");
+function hideWindowList() { windowList.hidden = true; }
+function showWindowList(tabs) {
+    windowList.hidden = false;
+    windowListRows.replaceChildren(...tabs.filter((t) => Number.isSafeInteger(t.id) && typeof t.title === "string").map((t) => {
+        const row = document.createElement("li");
+        row.classList.toggle("current", t.current === true);
+        const pick = Object.assign(document.createElement("button"), { type: "button", className: "pick", textContent: t.title });
+        pick.addEventListener("click", () => toTabs({ type: "select-window", id: t.id }));
+        const close = Object.assign(document.createElement("button"), { type: "button", className: "close", textContent: "×" });
+        close.setAttribute("aria-label", `Close ${t.title}`);
+        close.addEventListener("click", () => toTabs({ type: "close-window", id: t.id }));
+        row.append(pick, close);
+        return row;
+    }));
+    windowList.querySelector(".done").focus();
+}
+windowList.querySelector(".done").addEventListener("click", hideWindowList);
+windowList.addEventListener("keydown", (e) => { if (e.key === "Escape") hideWindowList(); });
 // The address this tab last showed, kept for its reloads (sessionStorage).
 const KEPT = "tabtop-go-kept" + (tabId ? ":" + tabId : "");
 // Its pages back and forward, likewise (the tab's own history has an entry
@@ -77,10 +97,16 @@ const ICONS = {
     reload: '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4v4h-4"/>',
     stop: '<path d="M6 6l12 12M18 6L6 18"/>',
     clear: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
+    hideBrowser: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5M4 9h16"/>',
+    fullscreen: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/>',
+    exitFullscreen: '<path d="M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
     clear: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     sites: '<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="13.5" r="1"/><circle cx="10.5" cy="15" r="1"/>',
-    settings: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
+    controls: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
+    shield: '<path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/>',
+    // A gear (Feather's, MIT).
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 back.innerHTML = icon("back");
@@ -91,43 +117,135 @@ $("go_clear").innerHTML = icon("clear");
 // logging out (the bar of links the other pages have at the top, here in
 // the menu to leave the page the room).
 const menu = $("go_menu"), menuPanel = $("go_menu_panel");
+const desktop = $("go_menu_desktop");
+$("go_menu_desktop_glyph").innerHTML = iconSVG("desktop");
+const desktopKey = "tabtop-go-desktop" + (tabId ? ":" + tabId : "");
+try { desktop.checked = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
+desktop.addEventListener("change", () => {
+    try {
+        if (desktop.checked) sessionStorage.setItem(desktopKey, "1");
+        else sessionStorage.removeItem(desktopKey);
+    } catch { /* this page only */ }
+    openMenu(false);
+    menu.focus();
+    if (at >= 0) load(entries[at].url, { push: false });
+    else viewSoon();
+});
+
+const hideBrowser = $("go_menu_hide_browser");
+const fullScreen = $("go_menu_fullscreen"), exitFullScreen = $("go_exit_fullscreen");
+hideBrowser.innerHTML = icon("hideBrowser");
+fullScreen.innerHTML = icon("fullscreen");
+exitFullScreen.innerHTML = icon("exitFullscreen");
+const fullScreenRoot = document.documentElement;
+let screenMode = "", nativeFullScreen = false, nativeRequest;
+let tabsCompact = false, tabsCount = 1;
+function updateTabsButton() {
+    const tabs = $("go_tabs");
+    tabs.hidden = !inTabs || (!tabsCompact && screenMode !== "browser");
+    tabs.querySelector(".count").textContent = String(tabsCount);
+    tabs.setAttribute("aria-label", `Tabs: ${tabsCount} open`);
+}
+
+function showScreenMode(mode) {
+    screenMode = mode;
+    const immersive = mode === "full";
+    hideBrowser.setAttribute("aria-pressed", String(mode === "browser"));
+    fullScreen.setAttribute("aria-pressed", String(immersive));
+    fullScreenRoot.classList.toggle("go-fullscreen", immersive);
+    updateTabsButton();
+    exitFullScreen.hidden = !immersive;
+    openMenu(false);
+    (immersive ? exitFullScreen : menu).focus();
+}
+
+function leaveFullScreen() {
+    showScreenMode("");
+    if (document.fullscreenElement === fullScreenRoot) document.exitFullscreen().catch(() => {});
+}
+
+async function toggleScreenMode(mode) {
+    if (screenMode === mode) {
+        leaveFullScreen();
+        return;
+    }
+    showScreenMode(mode);
+    if (document.fullscreenElement === fullScreenRoot) return;
+    if (!nativeRequest && document.fullscreenEnabled) {
+        nativeRequest = fullScreenRoot.requestFullscreen({ navigationUI: "hide" })
+            .catch(() => {})
+            .finally(() => { nativeRequest = null; });
+    }
+    await nativeRequest;
+    if (!screenMode && document.fullscreenElement === fullScreenRoot) {
+        document.exitFullscreen().catch(() => {});
+    } else if (screenMode === "browser" && document.fullscreenElement !== fullScreenRoot) {
+        showScreenMode("");
+        note("The browser couldn't hide its toolbar.");
+    }
+}
+
+hideBrowser.addEventListener("click", () => toggleScreenMode("browser"));
+fullScreen.addEventListener("click", () => toggleScreenMode("full"));
+exitFullScreen.addEventListener("click", leaveFullScreen);
+document.addEventListener("fullscreenchange", () => {
+    if (document.fullscreenElement === fullScreenRoot) nativeFullScreen = true;
+    else if (nativeFullScreen && !document.fullscreenElement) {
+        nativeFullScreen = false;
+        if (screenMode) showScreenMode("");
+    }
+});
+
+
 menu.innerHTML = icon("menu");
-// Clear cache: what the server and engines keep of what sites sent (not
-// cookies: those are go/settings'), in every tab (gocache.go).
-$("go_menu_cache").innerHTML = `${icon("clear")}<span class="label">Clear cache</span>`;
-// Site settings: sites blocked, pop-ups, videos blocked, the
-// Referer; cookies and site data (go/settings, go-settings.js and
-// go-cookies.js), in a tab of its own, this one's page kept.
-$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings</span>`;
-// ...in a lightbox over the browser, not a window of its own: the settings
-// page (go/settings) in a frame of it, a new one each time it's opened (a
-// frame sent elsewhere is an entry in the browser's history, which the
-// device's back would go through; a new frame's first page isn't), gone
-// as it's closed: by its ✕, Esc, a click beside it, or the page's own
-// "close" (its header's link, which in the lightbox says so).
+$("go_menu_sites").innerHTML = `${icon("controls")}<span class="label">Site controls</span>`;
+$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Settings</span>`;
+// Open Site controls (go/sites) or Settings (go/settings) in a fresh
+// lightbox frame so it leaves the browser's back and forward history alone.
 const settingsBox = $("go_settings");
 let settingsFrame = null;
-function openSettings() {
+function openSettings(page) {
     openMenu(false);
     settingsFrame?.remove();
-    // Filtered to the page's site, if there's a page (go-settings.js).
-    const there = new URL("settings", location.href);
-    const host = at >= 0 ? hostOf(entries[at].url).replace(/:\d+$/, "").replace(/^www\./, "") : "";
-    if (host && !entries[at].url.startsWith(SEARCH)) there.searchParams.set("site", host);
-    settingsFrame = Object.assign(document.createElement("iframe"), { title: "Site settings", src: there.href });
+    const there = new URL(page, location.href);
+    // Site controls open at the page's site when there's a page.
+    const host = at >= 0 && !entries[at].url.startsWith(SEARCH) ? hostOf(entries[at].url).replace(/:\d+$/, "") : "";
+    if (page === "sites" && host) there.searchParams.set("site", host);
+    const title = page === "sites" ? "Site controls" : "Settings";
+    $("go_settings_h").textContent = title;
+    settingsFrame = Object.assign(document.createElement("iframe"), { title, src: there.href });
     settingsBox.append(settingsFrame);
     settingsBox.showModal();
     settingsBox.querySelector(".close").focus();
 }
-$("go_menu_settings").addEventListener("click", openSettings);
+$("go_menu_sites").addEventListener("click", () => openSettings("sites"));
+// Ads and trackers blocked on the page (goadblock.go): how many (sites
+// refused whole, and addresses), a shield in the bar; its site's controls,
+// to allow them, from it.
+const adsShown = $("go_ads");
+adsShown.insertAdjacentHTML("afterbegin", icon("shield"));
+function showAds(count) {
+    adsShown.hidden = !(count > 0);
+    adsShown.querySelector(".count").textContent = count > 0 ? String(count) : "";
+    const said = `${count} ${count === 1 ? "ad or tracker" : "ads and trackers"} blocked on this page`;
+    adsShown.title = said;
+    adsShown.setAttribute("aria-label", said);
+}
+adsShown.addEventListener("click", () => openSettings("sites"));
+$("go_menu_settings").addEventListener("click", () => openSettings("settings"));
 settingsBox.querySelector(".close").addEventListener("click", () => settingsBox.close());
 settingsBox.addEventListener("click", (e) => { if (e.target === settingsBox) settingsBox.close(); });  // beside it (its backdrop)
 settingsBox.addEventListener("close", () => {
+    // The close event comes a moment after it's shut: opened again
+    // meanwhile, the frame is the new one's, kept.
+    if (settingsBox.open) return;
     settingsFrame?.remove();
     settingsFrame = null;
 });
 window.addEventListener("message", (e) => {
-    if (settingsFrame && e.source === settingsFrame.contentWindow && e.origin === location.origin && e.data?.goSettings === "close") settingsBox.close();
+    if (!settingsFrame || e.source !== settingsFrame.contentWindow || e.origin !== location.origin) return;
+    if (e.data?.goSettings === "close") settingsBox.close();
+    else if (e.data?.goSettings === "media-changed") refreshMediaPolicy();
 });
 const nav = navBar("go", { logOutIcon: true });
 for (const item of nav.children) {
@@ -155,7 +273,11 @@ function openMenu(open) {
     if (open) mediaMenu();
     else media?.mark(null);
     menu.setAttribute("aria-expanded", String(open));
-    if (open) (menuPanel.querySelector("button:not(:disabled), a:not([hidden])") ?? menuPanel).focus();
+    if (open) {
+        const first = [...menuPanel.querySelectorAll("button:not(:disabled), input:not(:disabled), a[href]")]
+            .find((item) => item.getClientRects().length);
+        (first ?? menu).focus();
+    }
 }
 menu.addEventListener("click", () => openMenu(menuPanel.hidden));
 menuPanel.addEventListener("click", (e) => {
@@ -194,7 +316,7 @@ const mediaHelp = {
         const f = frame.getBoundingClientRect();
         frame.contentWindow?.postMessage({ type: "media-scroll", x: x - f.left, y: y - f.top, dx, dy, how }, "*");
     },
-    failed: (key, error) => frame.contentWindow?.postMessage({ type: "media-state", key, error }, "*"),
+    failed: (key, error, blocked) => frame.contentWindow?.postMessage({ type: "media-state", key, error, blocked }, "*"),
     // A player's state changed: the menu's list of them (mediaMenu).
     changed: () => mediaMenu(),
     // A video's file saved into Downloads (the player's Download), saying
@@ -204,23 +326,52 @@ const mediaHelp = {
 
 // mediaMenu lists the page's videos and sounds at the menu's top: how
 // each is doing, where it's from (its site and file name; the whole
-// address to a screen reader, and to hover over), and Skip (the page told
-// it played to its end, go-media.js). The menu's button is marked while
-// there are any, so Skip's found where it is.
+// address to a screen reader, and to hover over), and Skip or Hide. The
+// menu's button is marked while there are any, so these actions are handy.
 const MEDIA_ICONS = {
     play: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
     pause: '<path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" stroke="none"/>',
     watch: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/>',
     skip: '<path d="M5 5l9 7-9 7z M16 5h3v14h-3z" fill="currentColor" stroke="none"/>',
+    hide: '<path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A10.8 10.8 0 0 1 12 5c5 0 8.5 5 8.5 7a8.5 8.5 0 0 1-2.2 3.5M6.2 6.2C3.9 7.7 1.5 10.5 1.5 12c0 2 3.5 7 8.5 7 1.2 0 2.3-.3 3.3-.8"/>',
 };
 const mediaIcon = (name) => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MEDIA_ICONS[name]}</svg>`;
-// Autoplay paused or not: this device's setting (localStorage), for every
-// page's players (go-media.js).
+// A device-wide user choice, when made; otherwise the site's media policy
+// supplies the autoplay default. The switch can always override that default.
 const AUTOPLAY = "tabtop-go-autoplay-paused";
-let autoplayPaused = (() => { try { return localStorage.getItem(AUTOPLAY) === "1"; } catch { return false; } })();
+let autoplayOverride = (() => {
+    try {
+        const saved = localStorage.getItem(AUTOPLAY);
+        return saved === "1" ? false : saved === "0" ? true : null;
+    } catch { return null; }
+})();
+let siteMedia = "allow";
+let mediaPolicyRequest = 0;
+const shouldAutoplay = () => autoplayOverride ?? (siteMedia !== "no-autoplay" && siteMedia !== "block");
+
+function applyMediaPolicy(policy) {
+    const wasBlocked = siteMedia === "block";
+    siteMedia = policy;
+    media?.block(policy === "block");
+    media?.autoplay(shouldAutoplay());
+    if (wasBlocked && policy !== "block") toFrame({ type: "media-allowed" });
+    mediaMenu();
+}
+
+async function refreshMediaPolicy() {
+    const entry = entries[at];
+    const shownBefore = shown, request = ++mediaPolicyRequest;
+    if (!entry) return;
+    try {
+        const t = await call({ type: "go-settings", name: entry.url });
+        t.close();
+        if (request === mediaPolicyRequest && entries[at] === entry && shown === shownBefore) applyMediaPolicy(t.reply.effectiveMedia);
+    } catch { /* the next snapshot includes the server setting */ }
+}
+
 function newMedia() {
     const m = goMedia(frame, mediaHelp);
-    m.autoplay(!autoplayPaused);
+    m.autoplay(shouldAutoplay());
     return m;
 }
 function glyph(name, label, act, { disabled = false, pressed } = {}) {
@@ -236,7 +387,7 @@ function glyph(name, label, act, { disabled = false, pressed } = {}) {
 }
 // holdToBlock has a Skip held (half a second; or its context menu: a right
 // click, a long touch's) block the site's videos: the page's stopped, and
-// none played on its pages (the site settings), with Undo.
+// none played on its pages (Site controls), with Undo.
 function holdToBlock(button) {
     button.classList.add("hold");
     let timer = 0, held = false;
@@ -270,16 +421,19 @@ async function blockVideos() {
     if (!url) return;
     const site = hostOf(url).replace(/^www\./, "");
     try {
+        const previous = await call({ type: "go-settings", name: url });
+        previous.close();
+        const policy = previous.reply.media?.[previous.reply.site] ?? "default";
         const t = await call({ type: "go-settings-set", name: url, setting: "videos-block" });
         t.close();
-        media?.block(true);
-        warn(`Videos are blocked on ${site}: its pages' videos won't play (☰ → Site settings).`, {
+        if (entries[at]?.url === url) applyMediaPolicy("block");
+        warn(`Videos are blocked on ${site}: its pages' videos won't play (☰ → Site controls).`, {
             error: false, label: "Undo",
             retry: async () => {
                 try {
-                    const u = await call({ type: "go-settings-set", name: url, setting: "videos-allow" });
+                    const u = await call({ type: "go-settings-set", name: url, setting: "videos-" + policy });
                     u.close();
-                    load(entries[at].url, { push: false });  // its videos, again
+                    if (entries[at]?.url === url) load(url, { push: false });
                 } catch (err) { warn(err.message); }
             },
         });
@@ -290,9 +444,9 @@ async function blockVideos() {
 $("go_menu_autoplay").innerHTML = `<span>Autoplay</span><span class="knob" aria-hidden="true"></span>`;
 $("go_menu_autoplay").addEventListener("click", (e) => {
     e.stopPropagation();
-    autoplayPaused = !autoplayPaused;
-    try { autoplayPaused ? localStorage.setItem(AUTOPLAY, "1") : localStorage.removeItem(AUTOPLAY); } catch { /* this page's only */ }
-    media?.autoplay(!autoplayPaused);
+    autoplayOverride = !shouldAutoplay();
+    try { localStorage.setItem(AUTOPLAY, autoplayOverride ? "1" : "0"); } catch { /* this page only */ }
+    media?.autoplay(shouldAutoplay());
     mediaMenu();
 });
 let mediaDrawn = "", mediaDrawnOpen = false;
@@ -306,17 +460,20 @@ function mediaMenu() {
     section.querySelector("h2").textContent = videos ? "Videos on this page" : "Videos and sounds on this page";
     // Drawn again only as what's shown changes: a row replaced as it's
     // pressed takes no click, and a focus moves.
-    const drawn = JSON.stringify([autoplayPaused, players.map(({ key, state, short, src, skippable, playing, ready, watching }) => [key, state, short, src, skippable, playing, ready, watching])]);
+    const drawn = JSON.stringify([autoplayOverride, siteMedia, players.map(({ key, state, short, src, skippable, playing, ready, watching }) => [key, state, short, src, skippable, playing, ready, watching])]);
     if (drawn === mediaDrawn && !menuPanel.hidden === mediaDrawnOpen) return;
     mediaDrawn = drawn;
     mediaDrawnOpen = !menuPanel.hidden;
     // Autoplay paused, or not: every player paused, and the page's starting
-    // them not done, till one's played here (this device's setting).
+    // them not done, till one's played here or the switch is turned on.
     // (A switch, named: a glyph alone would read as "play all".)
     const toggle = $("go_menu_autoplay");
     toggle.setAttribute("role", "switch");
-    toggle.setAttribute("aria-checked", String(!autoplayPaused));
-    toggle.title = autoplayPaused ? "Autoplay is off: pages' videos wait to be played" : "Autoplay is on: turn it off to stop every video, and pages starting them";
+    toggle.disabled = siteMedia === "block";
+    toggle.setAttribute("aria-checked", String(shouldAutoplay()));
+    toggle.title = toggle.disabled ? "Videos are blocked in Site controls" : autoplayOverride === null && !shouldAutoplay()
+        ? "Autoplay defaults to off for this site; turn it on here"
+        : shouldAutoplay() ? "Autoplay is on: turn it off to stop pages starting videos" : "Autoplay is off: pages' videos wait to be played";
     toggle.removeAttribute("aria-pressed");
 
     const focused = document.activeElement?.closest?.("#go_menu_media li");
@@ -333,12 +490,15 @@ function mediaMenu() {
         if (p.src) where.title = p.src;
         about.append(state, where);
         const which = `${noun} ${i + 1}${p.src ? `, ${p.src}` : ""}`;
-        // The player, then play or pause and skip, side by side.
-        const skip = glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block this site's videos`, () => media?.skip(p.key), { disabled: !p.skippable });
-        holdToBlock(skip);
+        // Ended videos can be hidden; live players can be skipped as before.
+        const endedVideo = p.kind === "video" && (p.state === "Ended" || p.state === "Skipped");
+        const skip = endedVideo
+            ? glyph("hide", `Hide ${which} from the page`, () => media?.hide(p.key))
+            : glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block this site's videos`, () => media?.skip(p.key), { disabled: !p.skippable });
+        if (!endedVideo) holdToBlock(skip);
         const acts = [
             ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
-            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready || p.state === "Skipped" }),
+            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
             skip,
         ];
         for (const [j, b] of acts.entries()) b.dataset.act = String(j);
@@ -670,7 +830,7 @@ function view() {
         sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
         // Touch, if this device has it: the page offers what it offers to
         // touch screens, and takes the touches given it.
-        touch: navigator.maxTouchPoints > 0,
+        touch: navigator.maxTouchPoints > 0, desktop: desktop.checked,
         // Which way up the device is held: the page's screen.orientation and
         // (orientation: …) media queries follow it. Where the device doesn't
         // say, the window's shape.
@@ -683,7 +843,7 @@ function orientation() {
     const portrait = window.innerHeight >= window.innerWidth;
     return { o: portrait ? "portrait-primary" : "landscape-primary", a: portrait ? 0 : 90 };
 }
-const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch", "o", "a"].every((k) => a[k] === b[k]);
+const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch", "desktop", "o", "a"].every((k) => a[k] === b[k]);
 let viewTimer = 0;
 const viewSizes = new ResizeObserver(() => viewSoon());
 function viewSoon() {
@@ -820,6 +980,12 @@ function open() {
                 resHeader(m);  // of any page: not a generation's
                 return;
             }
+            if (m.type === "go-ads") {
+                // Not a generation's either: the server's count is always
+                // the page it's at now's, whatever generation that is yet.
+                if (ws === s && typeof m.count === "number") showAds(m.count);
+                return;
+            }
             if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
             gen = m.gen;
             message(m);
@@ -857,6 +1023,7 @@ function open() {
 function message(m) {
     switch (m.type) {
         case "go-loading":
+            showAds(0);
             if (m.by === "page" && typeof m.url === "string") {
                 // The page went somewhere itself: a link, a form, a script.
                 entries = entries.slice(0, at + 1);
@@ -899,15 +1066,19 @@ function message(m) {
                 media = newMedia();
             }
             shown = m.gen;
-            media.block(!!m.noVideos);  // its site's videos blocked (the site settings)
-            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at };
+            applyMediaPolicy(m.mediaPolicy ?? "allow");
+            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide };
             toFrame(lastRender);
             update();
             break;
         }
         case "go-changes":
             if (m.gen === shown) media.streams(m.streams);
-            if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls });
+            if (m.gen === shown) {
+                toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls, hide: m.hide });
+                // Kept with the page, for a frame given it again.
+                if (Array.isArray(m.hide) && lastRender?.gen === m.gen) lastRender.hide = [...(lastRender.hide ?? []), ...m.hide];
+            }
             break;
         case "go-net":
             // Whether the page being read is still loading: the frame holds
@@ -954,7 +1125,7 @@ function message(m) {
             if (Number.isSafeInteger(m.id) && typeof m.url === "string") askPopup(m);
             break;
         case "go-popup-blocked":
-            note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (☰ → Site settings).`);
+            note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (☰ → Site controls).`);
             break;
         case "go-file":
             loading = rendering = false;
@@ -983,6 +1154,11 @@ function forgetResources() {
     cache.clear();
     cached = 0;
 }
+// Settings can be open in the lightbox or in a separate browser tab.
+const cacheEvents = new BroadcastChannel(new URL("./", location.href).pathname + "cache");
+cacheEvents.addEventListener("message", ({ data }) => {
+    if (data === "cleared") forgetResources();
+});
 function cachedResource(kind, url) {
     const key = kind + " " + url;
     let got = cache.get(key);
@@ -1161,7 +1337,7 @@ window.addEventListener("message", (e) => {
             if (m.gen === shown && Number.isSafeInteger(m.key)) {
                 const owner = media;
                 owner.open(m).then((got) => {
-                    if (got && owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "" }, "*");
+                    if (got && owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "", blocked: got.blocked }, "*");
                 });
             }
             break;
@@ -1389,7 +1565,7 @@ function showHistory(button, way) {
         });
         return b;
     }));
-    // At its foot, as glyphs side by side: Forward (a page on), and Clear
+    // At its foot, as glyphs side by side: Back, Forward, and Clear
     // history (this tab's pages back and forward forgotten, the one it's on
     // kept).
     const foot = Object.assign(document.createElement("div"), { className: "foot" });
@@ -1397,11 +1573,12 @@ function showHistory(button, way) {
         const b = Object.assign(document.createElement("button"), { type: "button", className: `glyph ${name}`, title: label, disabled });
         b.setAttribute("role", "menuitem");
         b.setAttribute("aria-label", label);
-        b.innerHTML = icon(name === "clear" ? "clear" : "forward");
+        b.innerHTML = icon(name);
         b.addEventListener("click", () => { openHistory(null); act(); });
         return b;
     };
-    foot.append(footGlyph("forward", "Forward: a page on", () => goBy(1), at >= entries.length - 1),
+    foot.append(footGlyph("back", "Back: a page back", () => goBy(-1), at <= 0),
+        footGlyph("forward", "Forward: a page on", () => goBy(1), at >= entries.length - 1),
         footGlyph("clear", "Clear history: forget this tab's pages back and forward", () => clearHistory(), entries.length <= 1));
     historyPanel.append(foot);
     historyPanel.setAttribute("aria-label", way < 0 ? "Pages back" : "Pages forward");
@@ -1476,17 +1653,6 @@ historyPanel.addEventListener("keydown", (e) => {
         items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
     }
 });
-$("go_menu_cache").addEventListener("click", async () => {
-    try {
-        const t = await call({ type: "go-cache-clear" });
-        t.close();
-        forgetResources();
-        toTabs({ type: "cache-cleared" });  // the other tabs' copies' too
-        warn("Cache cleared: pages are fetched from their sites again. Cookies and sites' data are kept (Site settings clears those).", { error: false });
-    } catch (err) {
-        warn(err.message || "The cache couldn't be cleared.");
-    }
-});
 reload.addEventListener("click", () => (loading ? stop() : at >= 0 && load(entries[at].url, { push: false })));
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && document.activeElement === address) {
@@ -1494,6 +1660,7 @@ document.addEventListener("keydown", (e) => {
         address.blur();
     }
     if (e.key === "Escape" && !menuPanel.hidden) openMenu(false);
+    if (e.key === "Escape" && !e.defaultPrevented && screenMode === "full" && !document.fullscreenElement && !$("go_dialog").open) leaveFullScreen();
     if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); back.click(); }
     if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); forward.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") { e.preventDefault(); address.focus(); address.select(); }
@@ -1525,9 +1692,6 @@ window.addEventListener("message", (e) => {
             }
             break;
         }
-        case "cache-cleared":
-            forgetResources();
-            break;
         case "close":
             // Closed by the person: not kept on the server either.
             resumeToken.set("");
@@ -1535,16 +1699,22 @@ window.addEventListener("message", (e) => {
             ws?.send(JSON.stringify({ op: "close" }));
             break;
         case "count":
-            $("go_tabs").hidden = !m.compact;
-            $("go_tabs").querySelector(".count").textContent = String(m.count);
-            $("go_tabs").setAttribute("aria-label", `Tabs: ${m.count} open`);
+            tabsCompact = !!m.compact;
+            if (Number.isSafeInteger(m.count)) tabsCount = m.count;
+            updateTabsButton();
+            break;
+        case "window-list":
+            if (screenMode === "browser" && Array.isArray(m.tabs)) showWindowList(m.tabs);
+            break;
+        case "window-list-close":
+            hideWindowList();
             break;
         case "focus":
             if (at < 0) address.focus();
             break;
     }
 });
-$("go_tabs").addEventListener("click", () => toTabs({ type: "show" }));
+$("go_tabs").addEventListener("click", () => toTabs({ type: "show", fullscreen: screenMode === "browser" }));
 
 // Start where this tab was (a reload: see update), or where a link to
 // /go/#<address> says. The address after # is taken out of the tab's

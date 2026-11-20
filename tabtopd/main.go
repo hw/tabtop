@@ -113,10 +113,14 @@ type server struct {
 	goCookies *goCookieJar
 	// goSites is its site settings: blocked sites, pop-ups.
 	goSites *goSiteSettings
+	// goAds is its ad blocking: filter lists, and the hosts they refuse.
+	goAds *goAdBlock
 	// goEngines counts the remote browser's engines open, by session.
 	goEngines map[string]int
 	// The remote browser\'s tabs, by token: kept a while without a connection (goresume.go).
 	goTabs *goTabs
+	// Its sites' localStorage, kept for the account (gostorage.go).
+	goStorage *goStorage
 	// rootProblems are configured roots left out at startup (see
 	// parseFileRootsAll).
 	rootProblems []rootProblem
@@ -177,6 +181,8 @@ func main() {
 	flag.StringVar(&c.passkeysFile, "passkeys-file", c.passkeysFile, "where passkeys added to log in with are kept; empty keeps them in memory, till a restart")
 	flag.StringVar(&c.goCookiesFile, "go-cookies-file", c.goCookiesFile, "where the remote browser's cookies are kept, sealed, to last across tabs and restarts; empty keeps them in memory, till a restart")
 	flag.StringVar(&c.goSitesFile, "go-sites-file", c.goSitesFile, "where the remote browser's site settings (blocked sites, pop-ups) are kept; empty keeps them in memory, till a restart")
+	flag.StringVar(&c.goAdBlockFile, "go-adblock-file", c.goAdBlockFile, "where the remote browser's ad blocking settings are kept, its filter lists in go-filters/ beside it; empty keeps them in memory, till a restart")
+	flag.StringVar(&c.goStorageFile, "go-storage-file", c.goStorageFile, "where the remote browser's sites' localStorage is kept, sealed (with -go-cookies-key-file), to last across tabs and restarts; empty keeps it in memory, till a restart")
 	flag.StringVar(&c.goCookiesKeyFile, "go-cookies-key-file", c.goCookiesKeyFile, "the key the remote browser's cookies are sealed with; needed to keep them in -go-cookies-file")
 	flag.StringVar(&c.remoteApprovalURL, "remote-approval-url", "", "trusted HTTPS approval page URL; empty uses this deployment at /auth/approve")
 	flag.BoolVar(&c.offlineClient, "offline-client", false, "accept the tunnel from the offline client (tabtop.html from the bootstrap pack, opened as a file: origin \"null\")")
@@ -356,5 +362,8 @@ func main() {
 		log.Printf("stopping: some connections didn't close in %s", shutdownGrace)
 	}
 	wg.Wait()
+	if g.goStorage != nil {
+		g.goStorage.flush()
+	}
 	log.Print("stopped")
 }

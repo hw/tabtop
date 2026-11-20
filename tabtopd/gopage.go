@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-player.js go-cookies.js go-tabs.html go-tabs.js go-settings.html go-settings.js
+//go:embed go.html go.js go-media.js go-player.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-pages.js go-pages.css
 var goFiles embed.FS
 
 const (
@@ -28,10 +28,11 @@ const (
 	goTabsCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; " +
 		"frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-	// goCookiesCSP is the site settings and cookies page's: its scripts,
-	// the tunnel to the site, nothing else; shown in a frame of the site's
-	// own only (the browser's lightbox, go.js), never another site's.
-	goCookiesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; " +
+	// goCookiesCSP is the browser's own pages', Site controls (with each
+	// site's cookies) and Settings: their scripts and stylesheet, the
+	// tunnel to the site, nothing else; shown in a frame of the site's own
+	// only (the browser's lightbox, go.js), never another site's.
+	goCookiesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
 		"base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 
 	// goFrameCSP is the frame's: its own script and the CSS parser only,
@@ -84,22 +85,36 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		page, _ := goFiles.ReadFile("go.html")
 		w.Write(page)
 	case "cookie":
-		// Its cookies and site data: on its site settings page, now. (Said
-		// as it is, relative: http.Redirect would make it a path from the
-		// root, without the base path a proxy serves TabTop under.)
-		h.Set("Location", "settings#cookies")
+		// Its cookies and site data: in Site controls, now. (Said as it
+		// is, relative: http.Redirect would make it a path from the root,
+		// without the base path a proxy serves TabTop under.)
+		h.Set("Location", "sites#cookies")
 		w.WriteHeader(http.StatusFound)
-	case "settings":
-		// Its site settings (gosites.go), and the cookies kept for it
-		// (gocookies.go), by site. Their scripts, the tunnel, nothing else.
+	case "settings", "sites":
+		// A site's settings were at go/settings?site=, before Settings
+		// had that address: they're Site controls now.
+		page := strings.TrimPrefix(r.URL.Path, goPrefix)
+		if page == "settings" && r.URL.Query().Has("site") {
+			h.Set("Location", "sites?"+r.URL.RawQuery)
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		// Site controls: each site's settings (gosites.go) and the cookies
+		// kept for it (gocookies.go), and the defaults for them all.
+		// Settings: the browser's own, ad blocking (goadblock.go).
+		// Their scripts, the tunnel, nothing else.
 		h.Set("Content-Security-Policy", goCookiesCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		page, _ := goFiles.ReadFile("go-settings.html")
-		w.Write(page)
-	case "go.js", "go-media.js", "go-player.js", "go-cookies.js", "go-tabs.js", "go-settings.js":
+		html, _ := goFiles.ReadFile("go-" + page + ".html")
+		w.Write(html)
+	case "go.js", "go-media.js", "go-player.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-pages.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)
+	case "go-pages.css":
+		h.Set("Content-Type", "text/css; charset=utf-8")
+		css, _ := goFiles.ReadFile("go-pages.css")
+		w.Write(css)
 	default:
 		http.NotFound(w, r)
 	}

@@ -99,6 +99,29 @@
         });
     }
 
+    // Ads and trackers hidden (goadblock.go): what the server's filter lists
+    // say to hide on the page, as selectors, each a rule of its own,
+    // display:none, in a sheet the page's changes can't remove. The server
+    // sends only plain selectors (no braces, at-rules, escapes, comments
+    // or urls); insertRule takes one rule and nothing more, and throws on a
+    // selector this browser doesn't know, which is left out.
+    const HIDE_MAX = 20000;
+    function hideSheet(list) {
+        const sheet = new CSSStyleSheet();
+        hideMore(sheet, list);
+        return sheet;
+    }
+    function hideMore(sheet, list) {
+        if (!Array.isArray(list)) return;
+        for (const sel of list) {
+            if (sheet.cssRules.length >= HIDE_MAX) return;
+            if (typeof sel !== "string" || !sel || sel.length > 1000 || /[{};@\\<]|\/\*|url\(/i.test(sel)) continue;
+            try {
+                sheet.insertRule(`${sel}{display:none!important}`, sheet.cssRules.length);
+            } catch { /* a selector this browser doesn't know */ }
+        }
+    }
+
     window.addEventListener("message", (e) => {
         if (e.source !== page || !e.data || typeof e.data !== "object") {
             return;
@@ -121,9 +144,19 @@
             netBusy = !!m.busy;
         } else if (m.type === "media-scroll" && [m.x, m.y, m.dx, m.dy].every(Number.isFinite)) {
             scrollUnder(m);
+        } else if (m.type === "media-allowed") {
+            for (const entry of media.values()) {
+                if (!entry.policyBlocked) continue;
+                entry.policyBlocked = false;
+                entry.asked = false;
+            }
+            mediaLater();
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
-            const box = media.get(m.key)?.box;
-            if (box && typeof m.error === "string") box.textContent = m.error;
+            const entry = media.get(m.key), box = entry?.box;
+            if (box && typeof m.error === "string") {
+                entry.policyBlocked = m.blocked === true;
+                box.textContent = m.error;
+            }
             // The video's own proportions, which its box takes.
             if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) {
                 mediaOf.get(box).size.aspectRatio = String(m.ratio);
@@ -171,9 +204,8 @@
     const blobSizes = new Map();  // kind + url -> its bytes, once come
     let blobBytes = 0;
     const MAX_BLOBS = 1500, MAX_BLOB_BYTES = 256 << 20;
-    // href -> Promise of a stylesheet as rewritten (its addresses those
-    // blobs'), for the tab's pages: a site's pages parse each once. Cleared
-    // when a blob it may use is revoked.
+    // href -> Promise of rewritten CSS and its font definitions. A site's
+    // pages parse each sheet once. Cleared when an asset blob is revoked.
     const sheets = new Map();
     let sheetChars = 0;
     const MAX_SHEET_CHARS = 32 << 20;
@@ -279,7 +311,6 @@
     // (another script's characters, a weight not used, a font the page
     // never shows) are never fetched, and the page isn't held back for any.
     let fontId = 0;
-    let fontGen = 0;  // the document the faces being read are for
     const fontFaces = new Map();  // n -> {url, family, descriptors, gen, face}
     const FONT_FORMATS = ["woff2", "woff", "truetype", "opentype", "collection", "woff2-variations", "woff-variations", "truetype-variations", "opentype-variations"];
     const FONT_DESCRIPTORS = { "font-style": "style", "font-weight": "weight", "font-stretch": "stretch", "unicode-range": "unicodeRange",
@@ -303,7 +334,20 @@
             f.face = face;
             document.fonts.add(face);
             return face.load();
-        }).catch(() => { /* left to the page's fallback, as a font that fails is */ });
+        }).catch(() => { f.failed = true; });
+    }
+    // A cached sheet can outlive the faces installed in the prior document.
+    // Reuse active faces and register the rest before applying its CSS.
+    function useFonts(gen, definitions) {
+        for (const [id, definition] of definitions) {
+            const f = fontFaces.get(id);
+            if (f && (f.gen === gen || !f.failed)) {
+                f.gen = gen;
+            } else {
+                if (f?.face) document.fonts.delete(f.face);
+                fontFaces.set(id, { ...definition, gen });
+            }
+        }
     }
     // fontsFor keeps the faces of the document shown (gen) and drops the rest.
     function fontsFor(gen) {
@@ -314,7 +358,7 @@
         }
     }
     // fontFace rewrites a @font-face's src to its one source (above).
-    function fontFace(css, rule, base) {
+    function fontFace(css, rule, base, definitions) {
         const decls = rule.block?.children;
         if (!decls) return;
         let family = "", src = null;
@@ -352,14 +396,14 @@
             let key;
             try { key = faceKey(new FontFace(family, "url(data:,)", descriptors)); } catch { return; }  // descriptors it won't take: as it was
             const n = ++fontId;
-            fontFaces.set(n, { url: address, family, descriptors, gen: fontGen, key });
+            definitions.push([n, { url: address, family, descriptors, key }]);
             chosen = `url("https://f${n}.font.invalid/")` + (format ? " " + css.generate(format) : "");
             break;
         }
         src.value = css.parse((chosen ? [...kept, chosen] : kept.length ? kept : [`url("data:,")`]).join(", "), { context: "value" });
     }
 
-    async function stylesheet(text, base, budget, alive, depth = 0, chain = []) {
+    async function stylesheet(text, base, budget, alive, definitions = [], depth = 0, chain = []) {
         const css = globalThis.csstree;
         budget.charge(text);
         const ast = css.parse(text, { positions: false, parseValue: true, parseCustomProperty: true });
@@ -400,7 +444,7 @@
             },
         });
         for (const rule of faces) {
-            try { fontFace(css, rule, base); } catch { /* left as it was: its fonts refused */ }
+            try { fontFace(css, rule, base, definitions); } catch { /* left as it was: its fonts refused */ }
         }
         for (const { item, list } of never) list.remove(item);
         if (never.length) {
@@ -427,7 +471,7 @@
             try {
                 budget.sheet();
                 const text = await (await resource("css", url)).text();
-                let sheet = await stylesheet(text, url, budget, alive, depth + 1, [...chain, url]);
+                let sheet = await stylesheet(text, url, budget, alive, definitions, depth + 1, [...chain, url]);
                 const media = [...node.prelude.children].slice(1).filter((n) => n.type === "MediaQueryList");
                 if (media.length) sheet = `@media ${css.generate(media[0])}{${sheet}}`;
                 imported += sheet;
@@ -465,6 +509,7 @@
             links: new WeakMap(),  // element -> where its link goes
             styleText: new Map(),  // a stylesheet's text node's id -> its text
             styleOf: new Map(),    // a stylesheet's text node's id -> its <style>
+            hide: hideSheet(m.hide),  // ads hidden (goadblock.go): a sheet of its own, out of the page's reach
             waits: [],
             report: { elements: 0, left: {}, resources: 0, failed: 0 },
             io: new Map(),         // the page's observer's number -> {observer, ids}
@@ -983,7 +1028,12 @@
     }
     function restyle(d, el) {
         const text = (el.goStyleIds || []).map((i) => d.styleText.get(i) ?? "").join("");
-        const p = stylesheet(text, d.base, d.budget, alive(d)).then((css) => { if (alive(d)()) el.textContent = css; });
+        const definitions = [];
+        const p = stylesheet(text, d.base, d.budget, alive(d), definitions).then((css) => {
+            if (!alive(d)()) return;
+            useFonts(d.gen, definitions);
+            el.textContent = css;
+        });
         d.waits.push(p);
         later(d, p);
     }
@@ -1017,9 +1067,13 @@
                 };
                 let cut = false;
                 const live = () => alive(d)() || !(cut = true);
-                made = (async () => stylesheet(await (await resource("css", href)).text(), href, budget, live))();
+                made = (async () => {
+                    const definitions = [];
+                    const css = await stylesheet(await (await resource("css", href)).text(), href, budget, live, definitions);
+                    return { css, definitions };
+                })();
                 sheets.set(href, made);
-                made.then((css) => {
+                made.then(({ css }) => {
                     if (sheets.get(href) !== made) return;
                     if (cut) {
                         sheets.delete(href);
@@ -1029,14 +1083,17 @@
                     while (sheetChars > MAX_SHEET_CHARS && sheets.size > 1) {
                         const [oldest, old] = sheets.entries().next().value;
                         sheets.delete(oldest);
-                        old.then((c) => (sheetChars -= c.length), () => {});
+                        old.then(({ css }) => (sheetChars -= css.length), () => {});
                     }
                 }, () => sheets.get(href) === made && sheets.delete(href));
             }
             const fresh = !cached;
-            const css = await made;
+            const { css, definitions } = await made;
             if (!fresh) d.budget.charge(css);  // read before: counted now
-            if (alive(d)()) style.textContent = css;
+            if (alive(d)()) {
+                useFonts(d.gen, definitions);
+                style.textContent = css;
+            }
         })();
         d.waits.push(p);
         later(d, p);
@@ -1089,7 +1146,6 @@
 
     function render(m) {
         current = m.gen;
-        fontGen = m.gen;
         const d = newDoc(m);
         building = d;
         lastChange = performance.now();
@@ -1143,6 +1199,7 @@
             const defaults = document.createElement("style");
             defaults.textContent = MEDIA_DEFAULTS;
             (root.querySelector("head") ?? root).prepend(defaults);
+            document.adoptedStyleSheets = [d.hide];
             unobserveAll(doc);
             if (m.again) keepRelayedPlayers(doc, d);
             // The same document still shown here (read again): it keeps its
@@ -1418,6 +1475,7 @@
     }
     function applyTo(d, m) {
         if (!d || m.gen !== d.gen) return;
+        if (m.hide) hideMore(d.hide, m.hide);
         if (d === doc) {
             sizedSoon();  // what it changes may change watched sizes
             // and whether a player shows (a page hides one as it moves it to

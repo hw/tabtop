@@ -125,6 +125,32 @@ type goProxy struct {
 	closed  bool // close has been called: no more tunnels
 	tunnels sync.WaitGroup
 	done    chan struct{}
+	// page is the host of the page the engine's showing, or loading (the
+	// tab says: setPage): what ad blocking holds requests to. Nothing's
+	// blocked as an ad while it isn't known.
+	page atomic.Pointer[string]
+	// onAd is told each host refused as an ad's (the tab counts them).
+	onAd atomic.Pointer[func(host string)]
+}
+
+// setPage says the engine's page is at host, from now.
+func (p *goProxy) setPage(host string) {
+	if p != nil {
+		p.page.Store(&host)
+	}
+}
+
+// adBlocked is whether a request to host is an ad's or a tracker's, for
+// the page the engine's at.
+func (p *goProxy) adBlocked(host string) bool {
+	page := p.page.Load()
+	if page == nil || !goAdBlocked(host, *page) {
+		return false
+	}
+	if f := p.onAd.Load(); f != nil {
+		(*f)(host)
+	}
+	return true
 }
 
 // newGoProxy is a proxy connecting where allow says. With user non-empty,
@@ -227,6 +253,10 @@ func (p *goProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		goRefuse(w, "blocked", http.StatusForbidden)
 		return
 	}
+	if p.adBlocked(r.URL.Hostname()) {
+		goRefuse(w, "ads", http.StatusForbidden)
+		return
+	}
 	p.forward.ServeHTTP(w, r)
 }
 
@@ -241,6 +271,10 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	if goBlockedHost(host) {
 		goRefuse(w, "blocked", http.StatusForbidden)
+		return
+	}
+	if p.adBlocked(host) {
+		goRefuse(w, "ads", http.StatusForbidden)
 		return
 	}
 	up, err := p.dialer.DialContext(r.Context(), "tcp", r.Host)
@@ -349,7 +383,8 @@ var goRefusals = map[string]string{
 	"busy":        "Too many connections.",
 	"budget":      errGoProxyBytes.Error(),
 	"rate":        "Too many requests; slow down.",
-	"blocked":     "This site is blocked in the browser's settings (☰ → Site settings).",
+	"blocked":     "This site is blocked in the browser's settings (☰ → Site controls).",
+	"ads":         "Blocked as an ad or tracker (☰ → Settings → Ad blocking).",
 }
 
 // goRefuse answers with the proxy's refusal, for why.

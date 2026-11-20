@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Site controls</title>
+<link rel="stylesheet" href="go-pages.css">
+</head>
+<body>
+<main>
+    <header><a href="./" id="back">← Browser</a><h1>Site controls</h1></header>
+    <nav aria-label="Site controls views">
+        <button type="button" id="show_current" hidden>Current site</button>
+        <button type="button" id="show_all">All sites</button>
+        <button type="button" id="show_browser">Browser-wide</button>
+    </nav>
+    <p id="done" role="status" aria-live="polite"></p>
+
+    <section id="all_sites" aria-label="All sites" hidden>
+        <form id="find_site" class="tools">
+            <input id="filter" type="search" inputmode="url" placeholder="Search or enter a site" aria-label="Search or enter a site" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button type="submit" id="open_site">Open site</button>
+        </form>
+        <div class="question">
+            <span class="hint" id="storage_usage" hidden></span>
+            <label>Sort <span class="select"><select id="sort_sites"><option value="recent">Most recent</option><option value="name">A–Z</option><option value="size">Largest first</option></select></span></label>
+        </div>
+        <ul id="sites" aria-label="Sites"></ul>
+        <p id="empty" class="hint" hidden></p>
+    </section>
+
+    <section id="site_settings" aria-labelledby="site_heading" hidden>
+        <div class="site-title">
+            <h2 id="site_heading" tabindex="-1"></h2>
+            <button type="button" id="back_to_sites" aria-label="Back to All sites" title="Back to All sites" hidden>
+                <span id="back_to_sites_glyph" aria-hidden="true"></span><span class="back-label">Back to All sites</span>
+            </button>
+        </div>
+        <div class="card">
+            <div class="question"><div>Site access<span class="hint" id="access_note"></span></div><button type="button" id="access"></button></div>
+            <div class="question"><label for="popups">Pop-ups<span class="hint" id="popup_scope"></span></label><span class="select"><select id="popups"><option value="default">Use browser default</option><option value="ask">Ask</option><option value="allow">Allow</option><option value="block">Block</option></select></span></div>
+            <div class="question"><label for="videos">Videos and sound<span class="hint" id="video_note"></span></label><span class="select"><select id="videos"><option value="default">Use browser default</option><option value="allow">Allow</option><option value="no-autoplay">No autoplay</option><option value="block">Block</option></select></span></div>
+            <div class="question"><label for="ads">Ads and trackers<span class="hint" id="ads_note"></span></label><span class="select"><select id="ads"><option value="default">Use browser default</option><option value="block">Block</option><option value="allow">Allow</option></select></span></div>
+        </div>
+        <div class="card" id="cookies">
+            <h3>Cookies and site data</h3>
+            <p id="site_data" class="detail"></p>
+            <button type="button" id="clear_site" class="danger">Clear site data…</button>
+        </div>
+    </section>
+
+    <section id="browser_settings" aria-labelledby="browser_heading" hidden>
+        <h2 id="browser_heading" tabindex="-1">Browser-wide settings</h2>
+        <div class="card">
+            <h3>Site defaults</h3>
+            <div class="question"><label for="default_popups">Pop-ups</label><span class="select"><select id="default_popups"><option value="ask">Ask</option><option value="allow">Allow</option><option value="block">Block</option></select></span></div>
+            <div class="question"><label for="default_videos">Videos and sound</label><span class="select"><select id="default_videos"><option value="allow">Allow</option><option value="no-autoplay">No autoplay</option><option value="block">Block</option></select></span></div>
+            <p class="hint">No autoplay lets you play media manually. Individual sites can override these defaults.</p>
+        </div>
+        <div class="card">
+            <label><input type="checkbox" id="referer"> Send referring page information</label>
+            <p class="hint">Requests for resources can include the page address on the same site or the site name across sites. Turning this off may prevent some resources from loading.</p>
+        </div>
+        <div class="card">
+            <h3>Browsing data</h3>
+            <p class="hint" id="about"></p>
+            <button type="button" id="clear_browser" class="danger">Clear browsing data…</button>
+        </div>
+        <div class="card">
+            <h3>Cached files</h3>
+            <p class="hint">Pages fetch fresh files the next time they load. Cookies and sign-ins are kept.</p>
+            <button type="button" id="clear_cache">Clear cached files</button>
+        </div>
+    </section>
+
+    <dialog id="confirm_clear" aria-labelledby="clear_heading" aria-describedby="clear_summary">
+        <h2 id="clear_heading"></h2>
+        <p id="clear_summary"></p>
+        <p id="time_range"><label>Time range <span class="select"><select id="within">
+            <option value="3600">Last hour</option>
+            <option value="86400">Last 24 hours</option>
+            <option value="604800">Last week</option>
+            <option value="2592000">Last month</option>
+            <option value="15724800">Last 6 months</option>
+            <option value="0">All time</option>
+        </select></span></label></p>
+        <form method="dialog" class="tools"><button autofocus>Cancel</button><button value="clear" class="danger" id="clear">Clear data</button></form>
+    </dialog>
+</main>
+<script type="module" src="go-sites.js"></script>
+</body>
+</html>

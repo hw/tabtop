@@ -89,9 +89,14 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// Its cookies, kept for the account (gocookies.go): their page, go/cookie.
 	"go-cookies":        other((*server).routeGoCookies),
 	"go-cookies-forget": other((*server).routeGoCookiesForget),
-	// Its site settings: sites blocked, pop-ups (gosites.go): their page, go/settings.
+	// Its site settings: sites blocked, pop-ups (gosites.go): their page, go/sites
+	// (Site controls).
 	"go-settings":     other((*server).routeGoSettings),
 	"go-settings-set": other((*server).routeGoSettingsSet),
+	// Its ad blocking: on or off, its filter lists (goadblock.go): Settings.
+	"go-adblock":        other((*server).routeGoAdBlock),
+	"go-adblock-set":    other((*server).routeGoAdBlockSet),
+	"go-adblock-update": other((*server).routeGoAdBlockUpdate),
 	// What it keeps of what sites sent: emptied (gocache.go).
 	"go-cache-clear": other((*server).routeGoCacheClear),
 

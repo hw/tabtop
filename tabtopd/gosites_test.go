@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -35,7 +36,7 @@ func TestGoSiteSettings(t *testing.T) {
 	}
 	s.set("example.com", "popups-allow")
 	s.set("other.org", "popups-block")
-	if s.popup("example.com") != "allow" || s.popup("other.org") != "block" || s.popup("new.net") != "" {
+	if s.popup("example.com") != "allow" || s.popup("other.org") != "block" || s.popup("new.net") != "ask" {
 		t.Errorf("popups %v", s.report())
 	}
 	if err := s.set("example.com", "nonsense"); err == nil {
@@ -53,9 +54,42 @@ func TestGoSiteSettings(t *testing.T) {
 	if newGoSiteSettings(file).sendReferer() {
 		t.Error("Referer's setting not kept")
 	}
-	again.set("other.org", "popups-ask")
+	again.set("other.org", "popups-default")
 	again.set("ads.example", "unblock")
-	if again.popup("other.org") != "" || again.isBlocked("ads.example") {
+	if again.popup("other.org") != "ask" || again.isBlocked("ads.example") {
 		t.Errorf("not forgotten: %v", again.report())
+	}
+}
+
+func TestGoSitePolicyDefaults(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sites.json")
+	if err := os.WriteFile(file, []byte(`{"noVideos":["old.example"],"popups":{"existing.example":"allow"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newGoSiteSettings(file)
+	for _, change := range [][2]string{
+		{"", "popups-block"}, {"", "videos-no-autoplay"},
+		{"ask.example", "popups-ask"}, {"sub.allowed.example", "videos-allow"},
+	} {
+		if err := s.set(change[0], change[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s = newGoSiteSettings(file)
+	for site, want := range map[string]string{"new.example": "block", "ask.example": "ask", "existing.example": "allow"} {
+		if got := s.popup(site); got != want {
+			t.Errorf("pop-up policy for %s = %s, want %s", site, got, want)
+		}
+	}
+	for host, want := range map[string]string{"new.example": "no-autoplay", "sub.old.example": "block", "allowed.example": "allow"} {
+		if got := s.mediaFor(host); got != want {
+			t.Errorf("media policy for %s = %s, want %s", host, got, want)
+		}
+	}
+	if err := s.set("ask.example", "popups-default"); err != nil || s.popup("ask.example") != "block" {
+		t.Fatalf("resetting a pop-up override should restore the browser default: %v", err)
+	}
+	if err := s.set("allowed.example", "videos-default"); err != nil || s.mediaFor("sub.allowed.example") != "no-autoplay" {
+		t.Fatalf("resetting a media override should restore the browser default: %v", err)
 	}
 }

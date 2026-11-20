@@ -90,7 +90,7 @@ func TestGoCookieJarForget(t *testing.T) {
 	clock = clock.Add(2 * time.Hour)
 	j.apply(nil, goCookieMap(goTestCookie("d", "1", "late.com")))
 
-	sites := j.sites()
+	sites := j.sites(nil)
 	if len(sites) != 3 || sites[0].Site != "example.co.uk" || sites[0].Cookies != 2 {
 		t.Fatalf("sites %+v", sites)
 	}

@@ -33,6 +33,7 @@ chrome=${CHROME:-$(command -v google-chrome || command -v chromium || command -v
 [[ -n "$chrome" ]] || { echo "Chrome isn't installed; set CHROME to it" >&2; exit 1; }
 work=$(mktemp -d)
 site=tabtop-go-site-$$
+ads=tabtop-go-ads-$$
 box=tabtop-go-box-$$
 tabtopd_pid= chrome_pid= watched_pid=
 
@@ -48,7 +49,7 @@ cleanup() {
         echo "--- container log"
         docker logs "$box" 2>&1 | tail -n 60
     fi
-    docker rm -f "$site" "$box" >/dev/null 2>&1 || true
+    docker rm -f "$site" "$ads" "$box" >/dev/null 2>&1 || true
     wait 2>/dev/null || true
     rm -rf "$work"
     exit "$status"
@@ -72,6 +73,10 @@ node "$here/go-check.mjs" site "$work/site"
 docker run -d --name "$site" -v "$work/site:/srv:ro" node:24-slim node /srv/serve.js >/dev/null
 site_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$site")
 for _ in $(seq 50); do curl -fs "http://$site_ip/index.html" >/dev/null && break; sleep 0.1; done
+# The same site at another address: another site's, for a page's ads.
+docker run -d --name "$ads" -v "$work/site:/srv:ro" node:24-slim node /srv/serve.js >/dev/null
+ads_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ads")
+for _ in $(seq 50); do curl -fs -m 1 "http://$ads_ip/index.html" >/dev/null && break; sleep 0.1; done
 
 port=$(free_port)
 if [[ -n "$go_image" ]]; then
@@ -134,7 +139,7 @@ tree_rss() {
       ((${e:-0} > peak_engine)) && peak_engine=${e:-0}; ((${t:-0} > peak_tabtopd)) && peak_tabtopd=${t:-0}
       echo "$peak_engine $peak_tabtopd" > "$work/peak"; sleep 1
   done ) &
-node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/"
+node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
 read -r peak_engine peak_tabtopd < "$work/peak" || true
 echo "ok   the most memory used: an engine $((${peak_engine:-0} / 1024)) MiB, tabtopd $((${peak_tabtopd:-0} / 1024)) MiB"
 if [[ "${GO_NO_FS:-}" != 1 ]]; then

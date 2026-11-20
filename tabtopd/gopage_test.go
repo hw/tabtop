@@ -73,16 +73,32 @@ func TestGoPage(t *testing.T) {
 	if res, _ := get("/tabtop/go-frame.js"); res.StatusCode != 200 {
 		t.Errorf("go-frame.js: %d", res.StatusCode)
 	}
-	// Its cookies, at go/cookie: on its settings page now, gone to.
-	if res, _ := get("/go/cookie"); res.StatusCode != http.StatusFound || res.Header.Get("Location") != "settings#cookies" {
+	// Its cookies, at go/cookie: in Site controls now, gone to.
+	if res, _ := get("/go/cookie"); res.StatusCode != http.StatusFound || res.Header.Get("Location") != "sites#cookies" {
 		t.Errorf("go/cookie: %d to %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	if res, _ := get("/go/go-cookies.js"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
 		t.Errorf("go-cookies.js: %d", res.StatusCode)
 	}
-	// Its site settings' page, with its cookies, at go/settings.
-	if res, settings := get("/go/settings"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(settings, `src="go-settings.js"`) || !strings.Contains(settings, `src="go-cookies.js"`) {
-		t.Errorf("the settings page: %d", res.StatusCode)
+	// Site controls, with each site's cookies, at go/sites; Settings, for
+	// every site, at go/settings; one stylesheet and helpers for both.
+	if res, sites := get("/go/sites"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(sites, `src="go-sites.js"`) {
+		t.Errorf("Site controls: %d", res.StatusCode)
+	}
+	if res, settings := get("/go/settings"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(settings, `src="go-settings.js"`) {
+		t.Errorf("Settings: %d", res.StatusCode)
+	}
+	for _, f := range []string{"go-sites.js", "go-settings.js", "go-pages.js"} {
+		if res, _ := get("/go/" + f); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
+			t.Errorf("%s: %d", f, res.StatusCode)
+		}
+	}
+	if res, _ := get("/go/go-pages.css"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/css") {
+		t.Errorf("go-pages.css: %d", res.StatusCode)
+	}
+	// A site's settings, at the address they had: Site controls.
+	if res, _ := get("/go/settings?site=example.com"); res.StatusCode != http.StatusFound || res.Header.Get("Location") != "sites?site=example.com" {
+		t.Errorf("go/settings?site=: %d to %q", res.StatusCode, res.Header.Get("Location"))
 	}
 }
 

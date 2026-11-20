@@ -148,10 +148,12 @@ func (g *server) routeGo(c *tunnelCall) {
 		return
 	}
 	b := newGoBrowser(e, cdp, page, target)
+	onAd := b.adCounted
+	e.proxy.onAd.Store(&onAd) // counted for the page (goadblock.go)
 	b.resources, b.session = g.goResources, c.session
 	// The account's cookies, given before anything's loaded; what the
 	// tab's sites set taken back as it closes (gocookies.go).
-	b.jar = g.goCookies
+	b.jar, b.storage = g.goCookies, g.goStorage
 	b.sites = g.goSites
 	t := &goTab{token: goToken(), session: c.session, b: b, ended: make(chan struct{})}
 	if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token}) {
@@ -195,10 +197,14 @@ func (g *server) runGoTab(t *goTab, tabs *goTabs, ip string) {
 		}()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+	b.startStorage(ctx)
+	cancel()
+	ctx, cancel = context.WithTimeout(context.Background(), goCallTimeout)
 	b.startUA(ctx)
 	b.startCookies(ctx)
 	cancel()
 	defer b.endCookies()
+	defer b.endStorage()
 	b.run()
 	log.Printf("go: remote browser tab from %s closed", ip)
 }

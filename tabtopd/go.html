@@ -35,6 +35,10 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_tabs .count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 3px;
     box-sizing: border-box; border: 2px solid currentColor; border-radius: 5px; font: 600 11px system-ui, sans-serif; }
 #go_bar #go_tabs[hidden] { display: none; }
+/* Ads and trackers blocked on the page: a shield, how many sites. */
+#go_bar #go_ads { display: inline-flex; align-items: center; gap: 3px; width: auto; padding: 0 6px; color: #a8c7fa; }
+#go_bar #go_ads[hidden] { display: none; }
+#go_ads .count { font: 600 12px system-ui, sans-serif; }
 /* The menu: the other pages, forward, logging out. */
 #go_menu_panel { position: absolute; top: calc(100% + 4px); right: 4px; z-index: 6; min-width: 13rem; box-sizing: border-box; padding: 4px;
     background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
@@ -56,6 +60,7 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_menu_panel .tabtop-nav .page[aria-current] { display: none; }  /* this page */
 #go_menu_panel svg { flex: 0 0 auto; display: block; width: 20px; height: 20px; }
 #go_menu_panel .label { color: #e8e8ea; }
+#go_menu_desktop { flex: 0 0 auto; margin: 0 0 0 auto; }
 /* The page's videos and sounds, at the menu's top: each's state, its
    address, and Skip. The menu's button marked while there are any. */
 #go_menu_media { padding: 4px 6px 8px; margin-bottom: 4px; border-bottom: 1px solid #545458; }
@@ -98,7 +103,7 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     min-height: 44px; height: auto; padding: 4px 10px; font: 14px system-ui, sans-serif; color: #e8e8ea; text-align: left;
     background: none; border: 0; border-radius: 6px; cursor: pointer; }
 #go_history .item:hover, #go_history .item:focus-visible { background: #3a3a3c; }
-/* Its foot: Forward and Clear history, glyphs side by side. */
+/* Its foot: Back, Forward and Clear history, glyphs side by side. */
 #go_history .foot { display: flex; justify-content: space-between; gap: 4px; margin-top: 4px; padding-top: 4px; border-top: 1px solid #48484a; }
 #go_history .foot .glyph { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0;
     border-radius: 50%; background: none; color: #e8e8ea; cursor: pointer; }
@@ -131,8 +136,8 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 .go-media-loading .bar { position: relative; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .2); overflow: hidden; }
 .go-media-loading .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; background: #8ab4f8; border-radius: 2px; transition: width .25s; }
 .go-media-loading .bar.unknown > i { width: 30%; animation: go-media-loading 1.2s ease-in-out infinite; transition: none; }
-/* Site settings: a lightbox over the browser, the settings page
-   in it (go/settings); the whole screen on a phone. */
+/* Site controls and Settings: a lightbox over the browser, the page
+   in it (go/sites, go/settings); the whole screen on a phone. */
 #go_settings { width: min(44rem, calc(100vw - 32px)); height: min(52rem, calc(100dvh - 48px)); max-width: none; max-height: none; padding: 0;
     border: 1px solid #48484a; border-radius: 12px; background: #1c1c1e; color: #e8e8ea; box-shadow: 0 12px 48px rgba(0, 0, 0, .6); overflow: hidden; }
 #go_settings[open] { display: flex; flex-direction: column; }
@@ -253,8 +258,32 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 #tabtop_reconnect { top: calc(var(--bar-total) + 8px) !important; }
 #go_notice .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #go_notice button[hidden] { display: none; }
+#go_menu_actions { display: flex; gap: 4px; padding-bottom: 4px; border-bottom: 1px solid #48484a; }
+#go_bar #go_menu_actions button { flex: 1 1 0; min-width: 44px; height: 40px; }
+#go_bar #go_menu_actions button[aria-pressed="true"] { background: #343f52; border-color: #7187a8; color: #dceaff; }
+:root.go-fullscreen { --bar-total: 0px; }
+.go-fullscreen #go_bar { display: none; }
+.go-fullscreen #go_view { margin-top: var(--safe-top); height: calc(100% - var(--safe-top) - var(--safe-bottom)); }
+.go-fullscreen #go_start { margin-top: var(--safe-top); }
+.go-fullscreen #go_popup { top: calc(60px + var(--safe-top)); }
+#go_exit_fullscreen { position: fixed; top: calc(8px + var(--safe-top)); right: calc(8px + var(--safe-right));
+    z-index: 6; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+    border: 1px solid #72727a; border-radius: 50%; background: #242428ee; color: #fff; cursor: pointer; }
+#go_exit_fullscreen[hidden] { display: none; }
+#go_exit_fullscreen svg { width: 20px; height: 20px; }
+#go_window_list { position: fixed; inset: 0; z-index: 20; overflow: auto; box-sizing: border-box; padding: calc(12px + var(--safe-top)) calc(16px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(16px + var(--safe-left)); background: #1c1c1e; }
+#go_window_list[hidden] { display: none; }
+#go_window_list header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+#go_window_list h2 { flex: 1; margin: 0; font-size: 18px; }
+#go_window_list header button { min-height: 44px; padding: 0 14px; color: #e8e8ea; background: #3a3a3c; border: 1px solid #48484a; border-radius: 6px; font: 14px system-ui, sans-serif; cursor: pointer; }
+#go_window_list ul { list-style: none; margin: 0; padding: 0; }
+#go_window_list li { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; background: #2c2c2e; border: 2px solid transparent; border-radius: 10px; }
+#go_window_list li.current { border-color: #8ab4f8; }
+#go_window_list .pick { flex: 1; min-width: 0; min-height: 56px; padding: 0 14px; color: #e8e8ea; background: none; border: 0; text-align: left; font: 15px system-ui, sans-serif; cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#go_window_list .close { flex: 0 0 44px; width: 44px; height: 44px; padding: 0; color: #e8e8ea; background: none; border: 0; border-radius: 6px; font-size: 18px; cursor: pointer; }
 @media (pointer: coarse), (max-width: 600px) {
     :root { --bar-height: 56px; }
+    #go_bar #go_menu_actions button { height: 44px; }
     #go_bar { padding: var(--safe-top) calc(4px + var(--safe-right)) 0 calc(4px + var(--safe-left)); }
     #go_bar button { min-width: 44px; height: 44px; }
     #go_bar #go_address button { min-width: 44px; }
@@ -263,7 +292,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     #go_menu_panel .item, #go_menu_panel .tabtop-nav > * { min-height: 44px; }
     #go_menu_media .glyph { width: 44px; height: 44px; }
     #go_recent button { min-height: 44px; }
-    /* Forward is in the menu: room for the address. */
+    /* Forward stays in the history panel, leaving room for the address. */
     #go_forward { display: none !important; }
 }
 </style>
@@ -276,18 +305,26 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         <button type="button" id="go_reload" title="Reload" aria-label="Reload" disabled>⟳</button>
         <button type="button" id="go_clear" title="Clear" aria-label="Clear the address" hidden>✕</button>
     </form>
+    <button type="button" id="go_ads" aria-haspopup="dialog" hidden><span class="count"></span></button>
     <button type="button" id="go_tabs" title="Tabs" aria-label="Tabs" hidden><span class="count">1</span></button>
     <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
     <div id="go_menu_panel" hidden>
         <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay"></button></div><ul></ul></section>
+        <div id="go_menu_actions" role="group" aria-label="Display">
+            <button type="button" id="go_menu_hide_browser" aria-label="Hide Original Browser" title="Hide Original Browser" aria-pressed="false"></button>
+            <button type="button" id="go_menu_fullscreen" aria-label="Full screen" title="Full screen" aria-pressed="false"></button>
+        </div>
+        <label class="item"><span id="go_menu_desktop_glyph" aria-hidden="true"></span><span class="label">Desktop</span><input type="checkbox" id="go_menu_desktop"></label>
+        <button type="button" class="item" id="go_menu_sites" aria-haspopup="dialog"></button>
         <button type="button" class="item" id="go_menu_settings" aria-haspopup="dialog"></button>
-        <button type="button" class="item" id="go_menu_cache"></button>
     </div>
     <div id="go_history" role="menu" hidden></div>
     <div id="go_progress" aria-hidden="true" hidden></div>
 </div>
+<button type="button" id="go_exit_fullscreen" aria-label="Exit full screen" title="Exit full screen" hidden></button>
+<section id="go_window_list" aria-label="Windows" hidden><header><h2>Windows</h2><button type="button" class="done">Done</button></header><ul></ul></section>
 <dialog id="go_settings" aria-labelledby="go_settings_h">
-    <div class="head"><h2 id="go_settings_h">Site settings</h2><button type="button" class="close" aria-label="Close" title="Close (Esc)">✕</button></div>
+    <div class="head"><h2 id="go_settings_h">Site controls</h2><button type="button" class="close" aria-label="Close" title="Close (Esc)">✕</button></div>
 </dialog>
 <div id="go_start">
     <div>

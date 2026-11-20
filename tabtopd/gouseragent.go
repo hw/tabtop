@@ -122,18 +122,21 @@ func (b *goBrowser) ua() string {
 	return b.userAgent
 }
 
-// phoneUA has the engine say it's Chrome on an Android phone, from now on
-// (a job: before what's loaded next). Once: a tab's device doesn't change.
-func (b *goBrowser) phoneUA(ctx context.Context) {
-	if b.phone {
+// applyUA switches the profile before the next page loads. An empty
+// override restores the engine's native user agent and client hints.
+func (b *goBrowser) applyUA(ctx context.Context, phone bool) {
+	if b.phone == phone {
 		return
 	}
-	ua, params := goPhoneProfile(b.engineUA)
+	ua := b.engineUA
+	params := map[string]any{"userAgent": ""}
+	if phone {
+		ua, params = goPhoneProfile(b.engineUA)
+	}
 	if err := b.cdp.call(ctx, b.page, "Emulation.setUserAgentOverride", params, nil); err != nil {
 		goDebugf("user agent: %v", err)
 		return
 	}
-	b.phone = true
+	b.phone = phone
 	b.setUA(ua)
-	goDebugf("user agent: a phone's")
 }

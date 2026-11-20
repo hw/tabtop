@@ -110,7 +110,18 @@ type goBrowser struct {
 	t msgConn
 	e *goEngine
 	// The account's cookies (gocookies.go), and this tab's part of them.
-	jar     *goCookieJar
+	jar        *goCookieJar
+	storage    *goStorage
+	storageTab goStorageTab
+	// topFrame is the engine's top frame, whose documents are paused as
+	// they're asked for (startStorage); "" if they aren't.
+	topFrame string
+	// adCount is the hosts refused as ads' for the page (goadblock.go).
+	adCount goAdCount
+	// hider is what's hidden on the page, as its classes and ids come
+	// (goadblock.go); nil for nothing.
+	hideMu  sync.Mutex
+	hider   *goAdHider
 	cookies goCookieTab
 	// The site settings (gosites.go), and the pop-ups the person's asked about.
 	sites     *goSiteSettings
@@ -455,7 +466,8 @@ type goView struct {
 	SW int `json:"sw"`
 	SH int `json:"sh"`
 	// The person's device has touch: the page is told so, and given it.
-	Touch bool `json:"touch"`
+	Touch   bool `json:"touch"`
+	Desktop bool `json:"desktop"`
 	// Which way up the device is held (screen.orientation's type, and its
 	// angle), told the page as its screen's.
 	Orientation string `json:"o"`
@@ -804,11 +816,11 @@ func (b *goBrowser) run() {
 			}
 		case <-b.e.killed:
 			b.fail(b.gen, "The page's engine was stopped: "+b.e.killReason()+".")
-			b.t.Close(websocket.StatusNormalClosure, "")
+			b.t.Close(websocket.StatusNormalClosure, "The page's engine was stopped.")
 			return
 		case <-b.cdp.done:
 			b.fail(b.gen, "The page's engine stopped answering.")
-			b.t.Close(websocket.StatusNormalClosure, "")
+			b.t.Close(websocket.StatusNormalClosure, "The page's engine stopped answering.")
 			return
 		}
 	}
@@ -881,6 +893,8 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 	}
 	b.loading, b.navigated, b.world, b.dirty, b.docType = gen, false, 0, false, ""
 	b.loadingURL = u
+	b.pageAt(u) // going there, even to an ad's site, loads it (goadblock.go)
+	b.newAdPage()
 	b.popupAsks = nil // asked about by the page left: gone with it
 	b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
 	b.askAgain()
@@ -984,9 +998,7 @@ func (b *goBrowser) setView(v goView) {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		if goPhone(v) {
-			b.phoneUA(ctx) // before what's loaded next: it's asked for as a phone
-		}
+		b.applyUA(ctx, goPhone(v) && !v.Desktop)
 		metrics := map[string]any{
 			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
 			// The screen is the person's window: their own isn't told.
@@ -1023,6 +1035,10 @@ func (b *goBrowser) setView(v goView) {
 // event handles one of the engine's events.
 func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Time) (<-chan time.Time, <-chan time.Time) {
 	switch ev.Method {
+	case "Fetch.requestPaused":
+		b.storagePaused(ev)
+	case "DOMStorage.domStorageItemAdded", "DOMStorage.domStorageItemUpdated", "DOMStorage.domStorageItemRemoved", "DOMStorage.domStorageItemsCleared":
+		b.storageEvent(ev)
 	case "Target.targetCreated", "Target.targetInfoChanged":
 		// A window the page opened (window.open, a link to a new
 		// window): closed in the engine, and its address given to the
@@ -1122,12 +1138,17 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		}
 		goDebugf("frame navigated (loading %d)", b.loading)
 		b.frame = p.Frame.ID
+		b.storageShown(p.Frame.URL)
 		b.world, b.dirty = 0, false // a new document, a new world
 		b.children = nil            // and its own frames
 		b.inflight, b.netBusy = nil, false
 		b.docURL = ""
 		if u, err := goURL(p.Frame.URL); err == nil {
 			b.docURL = u
+			if b.cdp != nil && b.cdp.interceptionDisabled.Load() {
+				b.pageAt(u)
+				b.newAdPage()
+			}
 		}
 		if b.loading != 0 {
 			b.navigated = true
@@ -1397,8 +1418,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
-				// Its site's videos blocked (the site settings): not played here.
-				"noVideos": b.sites.videosBlocked(goURLHost(s.URL))})
+				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "hide": b.startHiding(s.URL, s.Doc)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return
@@ -1531,9 +1551,15 @@ func (b *goBrowser) readChanges() {
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
 			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(io) > 0 || len(scrolls) > 0 {
-				ops := goCleanOps(c.Ops)
+				var seen goSeen
+				ops := goCleanOps(c.Ops, &seen)
 				goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
-				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams})
+				changes := map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams}
+				// What its new classes and ids bring to hide, with them.
+				if hide := b.moreHiding(seen.nodes, seen.attrs); len(hide) > 0 {
+					changes["hide"] = hide
+				}
+				p, _ := json.Marshal(changes)
 				b.sendLarge(p)
 			}
 			if b.dirty {
@@ -1562,9 +1588,17 @@ func (b *goBrowser) relayout(ctx context.Context) error {
 	}, nil)
 }
 
+// goSeen is what a batch of changes brought: nodes added, and attributes
+// set (for what's hidden on the page, goadblock.go).
+type goSeen struct {
+	nodes []*goNode
+	attrs [][2]string
+}
+
 // goCleanOps takes event handler attributes and what's never shown out of a
-// batch of changes, as goClean does a snapshot.
-func goCleanOps(raw []json.RawMessage) []any {
+// batch of changes, as goClean does a snapshot; what it brings is noted in
+// seen, if it's given.
+func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 	out := []any{} // [] if none, not null: a batch may bring only what's observed
 	for _, r := range raw {
 		var op struct {
@@ -1588,6 +1622,9 @@ func goCleanOps(raw []json.RawMessage) []any {
 					kids = append(kids, map[string]any{"i": k.ID, "r": 1})
 				} else if c := goClean(k); c != nil {
 					kids = append(kids, c)
+					if seen != nil {
+						seen.nodes = append(seen.nodes, k)
+					}
 				}
 			}
 			out = append(out, map[string]any{"o": "c", "i": op.I, "c": kids})
@@ -1596,6 +1633,9 @@ func goCleanOps(raw []json.RawMessage) []any {
 				continue
 			}
 			out = append(out, map[string]any{"o": "a", "i": op.I, "n": op.N, "v": op.V})
+			if seen != nil && op.V != nil && (op.N == "class" || op.N == "id") {
+				seen.attrs = append(seen.attrs, [2]string{op.N, *op.V})
+			}
 		case "m": // a player started or stopped by the page
 			out = append(out, map[string]any{"o": "m", "i": op.I, "v": op.V != nil && *op.V == "true"})
 		case "t", "v":

@@ -176,6 +176,9 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	if goBlockedHost(u.Hostname()) {
 		return fail(goRefusals["blocked"])
 	}
+	if from.adBlocked(u, kind) {
+		return fail(goRefusals["ads"])
+	}
 	mine, ok := goSessionSlots.acquire(ctx, session)
 	if !ok {
 		return fail("Too many resources are loading; try again.")
@@ -208,6 +211,9 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 				if err := redirects(next, via); err != nil {
 					return err
 				}
+			}
+			if from.adBlocked(next.URL, kind) {
+				return http.ErrUseLastResponse
 			}
 			from.apply(next)
 			return nil

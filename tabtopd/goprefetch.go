@@ -136,6 +136,11 @@ func (b *goBrowser) resource(ctx context.Context, kind, raw string) goFetched {
 	if b.resources == nil {
 		return goFetched{err: errGoNoResources}
 	}
+	// An ad's, now: not given from what was kept while it was let through
+	// (its site's ads allowed, or ad blocking off).
+	if u, err := url.Parse(raw); err == nil && b.from().adBlocked(u, kind) {
+		return goFetched{err: errors.New(goRefusals["ads"])}
+	}
 	return b.res.get(ctx, kind+" "+raw, func() goFetched {
 		// Not the page's request's own context: what's fetched is kept,
 		// for the page's next request, if this one's given up.

@@ -78,6 +78,7 @@ function close(t) {
         sessionStorage.removeItem(`tabtop-go-kept:${t.id}`);
         sessionStorage.removeItem(`tabtop-go-history:${t.id}`);
         sessionStorage.removeItem(`tabtop-go-resume:${t.id}`);
+        sessionStorage.removeItem(`tabtop-go-desktop:${t.id}`);
     } catch { /* none */ }
     if (!tabs.length) open();
     else if (shown === t) showTab(tabs[Math.min(i, tabs.length - 1)]);
@@ -227,12 +228,23 @@ window.addEventListener("message", (e) => {
             if (!open({ url: m.url })) tell(t, { type: "open", url: m.url });  // no room: in the tab that opened it
             break;
         case "show":
-            showOverview();
+            if (m.fullscreen) tell(t, { type: "window-list", tabs: tabs.map((x) => ({ id: x.id, title: x.title, current: x === shown })) });
+            else showOverview();
             break;
-        case "cache-cleared":
-            // Cleared from one tab: what the others keep for their copies too.
-            for (const o of tabs) if (o !== t) tell(o, { type: "cache-cleared" });
+        case "select-window": {
+            const picked = tabOf(m.id);
+            if (picked) {
+                showTab(picked);
+                tell(t, { type: "window-list-close" });
+            }
             break;
+        }
+        case "close-window": {
+            const picked = tabOf(m.id);
+            if (picked) close(picked);
+            if (shown) tell(t, { type: "window-list", tabs: tabs.map((x) => ({ id: x.id, title: x.title, current: x === shown })) });
+            break;
+        }
     }
 });
 

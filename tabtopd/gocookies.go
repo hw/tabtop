@@ -14,9 +14,8 @@
 // them till it's closed: this server's run. Their values never go to the
 // client: the settings get sites and counts.
 //
-// What sites keep in the browser besides cookies (localStorage, IndexedDB)
-// isn't kept: it lasts as long as a tab's engine. Clearing a site, or a
-// time, clears it in the tabs open now.
+// Moli's top-level localStorage is kept by gostorage.go. IndexedDB and
+// other engine-local data are cleared in open tabs by this settings route.
 
 package main
 
@@ -210,22 +209,31 @@ func (j *goCookieJar) load() {
 	j.trimLocked()
 }
 
-func (j *goCookieJar) seal(plain []byte) []byte {
-	aead, _ := chacha20poly1305.NewX(j.key)
-	nonce := make([]byte, aead.NonceSize())
-	rand.Read(nonce)
-	return aead.Seal(nonce, nonce, plain, []byte(goCookieSealAD))
-}
+func (j *goCookieJar) seal(plain []byte) []byte { return goSeal(j.key, goCookieSealAD, plain) }
 
 func (j *goCookieJar) open(data []byte) ([]byte, error) {
-	aead, err := chacha20poly1305.NewX(j.key)
+	return goOpenSealed(j.key, goCookieSealAD, data)
+}
+
+// goSeal seals plain with key (XChaCha20-Poly1305, a random nonce first),
+// for what (ad: what it is, so one kind's can't pass for another's).
+func goSeal(key []byte, ad string, plain []byte) []byte {
+	aead, _ := chacha20poly1305.NewX(key)
+	nonce := make([]byte, aead.NonceSize())
+	rand.Read(nonce)
+	return aead.Seal(nonce, nonce, plain, []byte(ad))
+}
+
+// goOpenSealed is what goSeal sealed.
+func goOpenSealed(key []byte, ad string, data []byte) ([]byte, error) {
+	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
 		return nil, err
 	}
 	if len(data) < aead.NonceSize() {
 		return nil, errors.New("too short")
 	}
-	return aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], []byte(goCookieSealAD))
+	return aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], []byte(ad))
 }
 
 // saveSoon writes the jar a moment later (changes come in runs).
@@ -354,7 +362,7 @@ func (g *server) routeGoCookies(c *tunnelCall) {
 		c.r.fail("The remote browser is off or unavailable, so it keeps no cookies.")
 		return
 	}
-	c.r.finish(map[string]any{"sites": g.goCookies.sites(), "kept": g.goCookies.file != ""})
+	c.r.finish(g.goCookiesReport(nil))
 }
 
 // routeGoCookiesForget deletes a site's cookies and data (Name), or (Name
@@ -373,7 +381,14 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 	if site == "" && within > 0 {
 		since = time.Now().Add(-time.Duration(within) * time.Second)
 	}
-	n := g.goCookies.forget(site, since)
+	var n int
+	if g.goStorage != nil {
+		g.goStorage.forget(site, since, func(selected map[string]bool) {
+			n = g.goCookies.forgetWithStorage(site, since, selected)
+		})
+	} else {
+		n = g.goCookies.forget(site, since)
+	}
 	what := "a site's"
 	if site == "" {
 		what = "the last " + strconv.FormatInt(within, 10) + " s's"
@@ -382,7 +397,25 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		}
 	}
 	log.Printf("go: cookies: %s cleared from %s (%d)", what, c.ip, n)
-	c.r.finish(map[string]any{"forgotten": n, "sites": g.goCookies.sites(), "kept": g.goCookies.file != ""})
+	c.r.finish(g.goCookiesReport(map[string]any{"forgotten": n}))
+}
+
+// goCookiesReport is what the settings page is told of what sites keep:
+// each site's cookies and storage, and the storage's use of its limit;
+// with more, if given.
+func (g *server) goCookiesReport(more map[string]any) map[string]any {
+	r := map[string]any{"kept": g.goCookies.file != ""}
+	var use map[string]goStorageUse
+	if g.goStorage != nil {
+		var used int64
+		use, used = g.goStorage.use()
+		r["storage"] = map[string]any{"used": used, "max": maxGoStorage, "kept": g.goStorage.file != ""}
+	}
+	r["sites"] = g.goCookies.sites(use)
+	for k, v := range more {
+		r[k] = v
+	}
+	return r
 }
 
 // goSiteInfo is a site in the settings: its cookies, how many and when
@@ -391,11 +424,16 @@ type goSiteInfo struct {
 	Site    string `json:"site"`
 	Cookies int    `json:"cookies"`
 	Changed int64  `json:"changed,omitempty"` // unix ms
+	Visited int64  `json:"visited,omitempty"` // latest visit in an open tab, unix ms
 	Open    bool   `json:"open,omitempty"`
+	// Its localStorage kept (gostorage.go): bytes and items.
+	Storage      int64 `json:"storage,omitempty"`
+	StorageItems int   `json:"storageItems,omitempty"`
 }
 
-// sites is the jar's sites, and those the tabs open have been to.
-func (j *goCookieJar) sites() []goSiteInfo {
+// sites is the jar's sites, those whose storage is kept (store), and those
+// the tabs open have been to.
+func (j *goCookieJar) sites(use map[string]goStorageUse) []goSiteInfo {
 	j.mu.Lock()
 	by := map[string]*goSiteInfo{}
 	now := j.now()
@@ -414,13 +452,23 @@ func (j *goCookieJar) sites() []goSiteInfo {
 	}
 	tabs := j.tabList()
 	j.mu.Unlock()
+	for site, u := range use {
+		info := by[site]
+		if info == nil {
+			info = &goSiteInfo{Site: site}
+			by[site] = info
+		}
+		info.Storage, info.StorageItems = u.Bytes, u.Items
+		info.Changed = max(info.Changed, u.Changed)
+	}
 	for _, b := range tabs {
-		for origin := range b.visitedOrigins(time.Time{}) {
+		for origin, visited := range b.visitedOrigins(time.Time{}) {
 			s := goSite(goOriginHost(origin))
 			if by[s] == nil {
 				by[s] = &goSiteInfo{Site: s}
 			}
 			by[s].Open = true
+			by[s].Visited = max(by[s].Visited, visited.UnixMilli())
 		}
 	}
 	out := make([]goSiteInfo, 0, len(by))
@@ -443,6 +491,10 @@ func (j *goCookieJar) tabList() []*goBrowser {
 // then; since zero, all), and clears them, and the storage of the site (or
 // of what was visited since), in the tabs open.
 func (j *goCookieJar) forget(site string, since time.Time) int {
+	return j.forgetWithStorage(site, since, nil)
+}
+
+func (j *goCookieJar) forgetWithStorage(site string, since time.Time, selected map[string]bool) int {
 	j.mu.Lock()
 	var gone []goCookie
 	for k, c := range j.cookies {
@@ -458,7 +510,7 @@ func (j *goCookieJar) forget(site string, since time.Time) int {
 	tabs := j.tabList()
 	j.mu.Unlock()
 	for _, b := range tabs {
-		b.forgetCookies(gone, site, since)
+		b.forgetCookies(gone, site, since, selected)
 	}
 	return len(gone)
 }
@@ -595,6 +647,7 @@ func (b *goBrowser) visited(rawURL string) {
 	}
 	b.cookies.top = goSite(goOriginHost(origin))
 	b.cookies.page = rawURL
+	b.pageAt(rawURL)
 }
 
 // --- Who asks: the cookies and Referer a page's browser would send ---------
@@ -605,6 +658,38 @@ func (b *goBrowser) visited(rawURL string) {
 type goFrom struct {
 	cookies func(*url.URL) string
 	referer func(*url.URL) string
+	page    func() string     // the page's address, for ad blocking; nil: none known
+	onAd    func(what string) // told what was refused as an ad's: a host, or an address
+}
+
+// adBlocked is whether a fetch of u for the page, of kind (image, css,
+// font, media), is an ad's or a tracker's (goadblock.go): by its host, or
+// its address. Nothing is, with no page to say whose.
+func (f *goFrom) adBlocked(u *url.URL, kind string) bool {
+	if f == nil || f.page == nil {
+		return false
+	}
+	blocked, byHost := goAdBlockedURL(u.String(), goAdKindTypes[kind], goPageHost(f.page()))
+	if !blocked {
+		return false
+	}
+	if f.onAd != nil {
+		if byHost {
+			f.onAd(u.Hostname())
+		} else {
+			f.onAd(u.String())
+		}
+	}
+	return true
+}
+
+// goPageHost is a page's address's host, "" if it has none.
+func goPageHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 func (f *goFrom) apply(r *http.Request) {
@@ -647,7 +732,11 @@ func goReferrer(page string, u *url.URL) string {
 // from is what the tab's fetches send: its sites' cookies (siteCookies), and
 // the page shown as their Referer, if the settings say (on, at first).
 func (b *goBrowser) from() *goFrom {
-	f := &goFrom{cookies: b.siteCookies}
+	f := &goFrom{cookies: b.siteCookies, onAd: b.adCounted, page: func() string {
+		b.cookies.mu.Lock()
+		defer b.cookies.mu.Unlock()
+		return b.cookies.page
+	}}
 	if b.sites == nil || b.sites.sendReferer() {
 		f.referer = func(u *url.URL) string {
 			b.cookies.mu.Lock()
@@ -803,7 +892,7 @@ func goOrigin(rawURL string) string {
 // the storage of the site's origins (site), or of those visited since
 // (site ""), that the tab has been to; then reads the engine again, so
 // what it no longer has isn't taken as its doing.
-func (b *goBrowser) forgetCookies(gone []goCookie, site string, since time.Time) {
+func (b *goBrowser) forgetCookies(gone []goCookie, site string, since time.Time, selected map[string]bool) {
 	b.cookies.mu.Lock()
 	defer b.cookies.mu.Unlock()
 	if !b.cookies.started {
@@ -811,14 +900,19 @@ func (b *goBrowser) forgetCookies(gone []goCookie, site string, since time.Time)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	b.forgetStorage(ctx, site, selected, site == "" && since.IsZero())
 	for _, c := range gone {
 		b.cdp.call(ctx, b.page, "Network.deleteCookies", map[string]any{"name": c.Name, "domain": c.Domain, "path": c.Path}, nil)
+	}
+	storageTypes := goSiteStorage
+	if b.storageTab.root != "" {
+		storageTypes = strings.TrimPrefix(storageTypes, "local_storage,")
 	}
 	for origin, t := range b.cookies.visits {
 		if site != "" && goSite(goOriginHost(origin)) != site || site == "" && t.Before(since) {
 			continue
 		}
-		b.cdp.call(ctx, "", "Storage.clearDataForOrigin", map[string]any{"origin": origin, "storageTypes": goSiteStorage}, nil)
+		b.cdp.call(ctx, "", "Storage.clearDataForOrigin", map[string]any{"origin": origin, "storageTypes": storageTypes}, nil)
 		if site != "" || since.IsZero() {
 			delete(b.cookies.visits, origin)
 		}

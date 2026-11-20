@@ -21,6 +21,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -65,6 +66,9 @@ var goMediaDownloads = struct {
 // goFetchMedia answers a part of a page's media: by a range, as before; or,
 // from a server that has none, from its download.
 func goFetchMedia(ctx context.Context, session string, req tunnelRequest, client *http.Client, slots *previewWork, userAgent string, from *goFrom) ([]byte, map[string]any, error) {
+	if u, err := url.Parse(req.URL); err == nil && from.adBlocked(u, "media") {
+		return nil, nil, errors.New(goRefusals["ads"])
+	}
 	key := session + "\x00" + req.URL
 	goMediaDownloads.Lock()
 	d := goMediaDownloads.by[key]
@@ -141,7 +145,7 @@ func (d *goMediaDownload) run(ctx context.Context, client *http.Client, userAgen
 				return err
 			}
 		}
-		if goBlockedHost(next.URL.Hostname()) {
+		if goBlockedHost(next.URL.Hostname()) || from.adBlocked(next.URL, "media") {
 			return http.ErrUseLastResponse
 		}
 		from.apply(next)

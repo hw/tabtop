@@ -357,6 +357,7 @@ ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page larg
 h1 { font-family: "Fixture Font", sans-serif; }`,
         "more.css": `body { background-color: rgb(250, 250, 240); }`,
         "fonts.html": `<!doctype html><title>Fonts</title><link rel="stylesheet" href="fonts.css"><p id="used">in the font used</p>`,
+        "fonts-next.html": `<!doctype html><title>Shared fonts</title><link rel="stylesheet" href="fonts.css"><p id="used">in the same font</p>`,
         // Old Internet Explorer's EOT, an SVG font, then one a browser
         // takes; and a face the page never shows.
         "fonts.css": `@font-face { font-family: "Used Font"; src: url(old.eot); src: url(old.eot?#iefix) format("embedded-opentype"), url(icons.svg#f) format("svg"), url(font.ttf?used) format("truetype"), url(fallback.woff) format("woff"); }
@@ -373,6 +374,35 @@ http.createServer(function handle(req, res) {
   }
   const name = req.url.split("?")[0];
   if (req.url === "/pic.png?cache") seen.cached = (seen.cached || 0) + 1;  // Clear cache's
+  if (req.url.startsWith("/pic.png?ad")) seen.ads = (seen.ads || 0) + 1;  // ad blocking's
+  if (name.startsWith("/ads/") || name.startsWith("/banner/")) seen[name] = (seen[name] || 0) + 1;  // and by address
+  if (name === "/ads/ok.js" || name === "/ads/track.js") {
+    res.writeHead(200, { "Content-Type": "text/javascript" });
+    return res.end(name === "/ads/ok.js" ? 'document.getElementById("ok").textContent = "ran";' : 'document.getElementById("tracked").textContent = "ran";');
+  }
+  if (name.startsWith("/banner/")) {
+    res.writeHead(200, { "Content-Type": "image/png" });
+    return res.end(fs.readFileSync("/srv/pic.png"));
+  }
+  if (name === "/filters.txt") {
+    // A filter list blocking the host asked for (?host=).
+    // And elements hidden: .ad and .late-ad anywhere, .native on the page's site (?page=).
+    const fq = new URLSearchParams(req.url.split("?")[1] || "");
+    const host = fq.get("host") || "", page = fq.get("page") || "";
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    return res.end("[Adblock Plus 2.0]\\n! Title: TabTop check list\\n! Expires: 1 days\\n||" + host + "^\\n##.ad\\n##.late-ad\\n/ads/*$script\\n@@/ads/ok.js\\n/banner/*$image\\n" + (page ? page + "##.native\\n" : ""));
+  }
+  if (name === "/ads") {
+    // A page with another site's picture (?ad=, its address), and its own.
+    const q = new URLSearchParams(req.url.split("?")[1] || "");
+    const ad = (q.get("ad") || "").replace(/[^\\w.:/-]/g, ""), v = (q.get("v") || "").replace(/\\W/g, "");
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end('<!doctype html><title>Ads</title><img id="own" src="pic.png?own" width="4" height="4" alt="own"><img id="ad" src="' + ad + 'pic.png?ad' + (v ? "&v=" + v : "") + '" width="4" height="4" alt="ad">' +
+      '<p id="content">The page</p><div class="ad" id="banner">An ad</div><div class="native">A native ad</div>' +
+      '<p id="ok">not run</p><p id="tracked">not run</p><img id="pathad" src="banner/ad.png?' + v + '" width="4" height="4" alt="by address">' +
+      '<script src="ads/ok.js"></script><script src="ads/track.js"></script>' +
+      '<script>setTimeout(() => { const d = document.createElement("div"); d.className = "late-ad"; d.id = "late"; d.textContent = "A late ad"; document.body.append(d); }, 800);</script>');
+  }
   if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
   if (name === "/norange.mp4") {
     // A server without byte ranges: the whole file, whatever's asked.
@@ -389,6 +419,13 @@ http.createServer(function handle(req, res) {
   if (name === "/ua") {
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
     return res.end("<!doctype html><title>UA</title><p id=ua>" + (req.headers["user-agent"] || "").replace(/[<&]/g, "") + "</p><p id=m>" + (req.headers["sec-ch-ua-mobile"] || "none") + "</p><img src=pic.png?ua>");
+  }
+  if (req.url.startsWith("/storage")) {
+    res.setHeader("Content-Type", "text/html");
+    const write = req.url.includes("?set");
+    return res.end('<!doctype html><title>Site storage</title><p id="storage"></p><script>' +
+      (write ? 'localStorage.setItem("check", "saved");' : '') +
+      'document.getElementById("storage").textContent = localStorage.getItem("check") ?? "empty";</script>');
   }
   if (req.url.startsWith("/cookie")) {
     // What the browser sent of its cookies; ?set sets one (for an hour).
@@ -469,7 +506,7 @@ async function step(name, f) {
     }
 }
 
-async function check(base, port, site) {
+async function check(base, port, site, adSite) {
     const browser = await createBrowserHarness({ port, base });
     const { cdp, ev, waitFor, open, inFrame, exceptions } = browser;
     const frame = (expr) => inFrame("go-frame.html", expr);
@@ -598,7 +635,7 @@ async function check(base, port, site) {
                     targets: [...bar.querySelectorAll("button")].filter((b) => b.getClientRects().length).every(b => b.getBoundingClientRect().height >= 44 && b.getBoundingClientRect().width >= 44),
                     // The bar of links in the menu, not above: this bar's at the top.
                     nav: !!document.querySelector("#go_menu_panel .tabtop-nav") && bar.getBoundingClientRect().top === 0,
-                    // Forward in the menu, not the bar: room for the address.
+                    // Forward stays in the history panel: room for the address.
                     forward: getComputedStyle(document.getElementById("go_forward")).display === "none",
                     top: view.top, barBottom: bar.getBoundingClientRect().bottom, bottom: view.bottom, height: visualViewport.height,
                     overflow: document.documentElement.scrollWidth > innerWidth };
@@ -769,11 +806,14 @@ async function check(base, port, site) {
         if (!(await ev(`document.getElementById("go_url").value`)).endsWith("/second.html")) throw new Error("the whole address isn't there to edit");
         await ev(`document.getElementById("go_url").blur()`);
         await waitFor(`document.getElementById("go_url").value === ${JSON.stringify(siteShown)}`, "the site again, not edited");
-        // The menu: forward, then the pages and logging out.
+        // The menu: display modes, then the pages and logging out.
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
-        if (items !== "Site settings,Clear cache") throw new Error(`the menu has ${items}`);
+        if (items !== "Desktop,Site controls,Settings") throw new Error(`the menu has ${items}`);
+        const actions = await ev(`[...document.querySelectorAll("#go_menu_actions button")].map((button) => ({ name: button.getAttribute("aria-label"), top: button.getBoundingClientRect().top, glyph: !!button.querySelector("svg") }))`);
+        if (actions.map((action) => action.name).join() !== "Hide Original Browser,Full screen" ||
+            actions.some((action) => !action.glyph) || new Set(actions.map((action) => action.top)).size !== 1) throw new Error("the display controls should share a glyph row");
         // The other pages and logging out: one row, icons only (named for a
         // screen reader), logging out last.
         const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page, #go_menu_panel .tabtop-nav > button")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
@@ -794,30 +834,38 @@ async function check(base, port, site) {
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
     });
 
-    await step("site settings and cookies open in a lightbox over the page, and close back to it", async () => {
+    await step("Site controls and Settings open in a lightbox over the page, and close back to it", async () => {
         const here = await ev(`document.getElementById("go_url").dataset.url`);
         const inside = (expr) => ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d && (${expr}); })()`);
         await ev(`document.getElementById("go_menu").click()`);
-        await ev(`document.getElementById("go_menu_settings").click()`);
+        await ev(`document.getElementById("go_menu_sites").click()`);
         await waitFor(`document.getElementById("go_settings").open`, "the lightbox open");
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d?.getElementById("popups") && !!d.getElementById("cookies") && d.documentElement.classList.contains("framed") && getComputedStyle(d.querySelector("header")).display === "none"; })()`, "the settings in it, its own header not shown", 15000);
-        // Its sections there (cookies listed: the page asked the server).
-        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return d.getElementById("about").textContent !== "Loading…"; })()`, "its cookies told", 15000);
-        // Filtered to the page's site: its rows only; cleared, all.
         const host = new URL(here).hostname;
-        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return d.getElementById("filter").value === ${JSON.stringify(host)}; })()`, "the filter set to the page's site");
-        await inside(`(() => { const add = (list, site) => { const li = d.createElement("li"); li.dataset.site = site; li.textContent = site; d.getElementById(list).append(li); }; add("blocked", "other.example"); add("blocked", ${JSON.stringify(host)}); return true; })()`);
-        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; const shown = [...d.querySelectorAll("#blocked li")].filter((li) => getComputedStyle(li).display !== "none").map((li) => li.dataset.site); return shown.join() === ${JSON.stringify(host)}; })()`, "only the page's site's rows shown");
-        await inside(`(d.getElementById("filter_clear").click(), true)`);
-        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return d.getElementById("filter").value === "" && [...d.querySelectorAll("#blocked li")].every((li) => getComputedStyle(li).display !== "none"); })()`, "the filter cleared: all shown");
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("site_settings").hidden && d.getElementById("site_heading").textContent === ${JSON.stringify(host)} && d.getElementById("popups").value === "default" && d.getElementById("popup_scope").textContent.includes("Ask"); })()`, "the current site and its default permission");
+        await inside(`(d.getElementById("show_all").click(), true)`);
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("all_sites").hidden && d.activeElement === d.getElementById("filter"); })()`, "All sites opens with search focused");
+        await inside(`(d.getElementById("show_browser").click(), true)`);
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("browser_settings").hidden && d.getElementById("site_settings").hidden && d.getElementById("default_popups").value === "ask" && !!d.getElementById("clear_cache"); })()`, "browser-wide settings in their own view");
+        if ((await ev(`document.getElementById("go_settings_h").textContent`)) !== "Site controls") throw new Error("the lightbox isn't titled Site controls");
+        if (await inside(`!!d.getElementById("adblock_on")`)) throw new Error("ad blocking is in Site controls");
         // The page's own close (its header's link) closes it; so do ✕ and Esc.
         await inside(`(d.getElementById("back").click(), true)`);
         await waitFor(`!document.getElementById("go_settings").open`, "closed by the page's link");
+        // Settings from the menu: its own page, ad blocking in it.
         await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe")?.contentDocument; return d?.getElementById("adblock_on")?.disabled === false && d.querySelectorAll("#ad_lists li").length >= 2 && !d.getElementById("site_settings") && !d.getElementById("default_popups") && d.documentElement.classList.contains("framed"); })()`, "Settings from the menu", 15000).catch(async (err) => {
+            const shows = await ev(`(() => { const d = document.querySelector("#go_settings iframe")?.contentDocument; return JSON.stringify({ at: d?.location.pathname, done: d?.getElementById("done")?.textContent, on: d?.getElementById("adblock_on")?.disabled, lists: d?.querySelectorAll("#ad_lists li").length }); })()`);
+            throw new Error(`${err.message} (it shows ${shows})`);
+        });
+        if ((await ev(`document.getElementById("go_settings_h").textContent`)) !== "Settings") throw new Error("the lightbox isn't titled Settings");
+        await ev(`document.querySelector("#go_settings .close").click()`);
+        await waitFor(`!document.getElementById("go_settings").open`, "Settings closed by ✕");
+        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_sites").click()`);
         await waitFor(`document.getElementById("go_settings").open`, "open again");
         await ev(`document.querySelector("#go_settings .close").click()`);
         await waitFor(`!document.getElementById("go_settings").open`, "closed by ✕");
-        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_sites").click()`);
         await waitFor(`document.getElementById("go_settings").open`, "open once more");
         await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
         await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
@@ -825,7 +873,8 @@ async function check(base, port, site) {
         if ((await ev(`document.getElementById("go_url").dataset.url`)) !== here) throw new Error("the page changed under it");
         // The browser's history as it was: the device's back still a page
         // of the tab's (the lightbox's frames weren't entries of it).
-        if (await ev(`!!document.querySelector("#go_settings iframe")`)) throw new Error("its frame left behind");
+        // (Removed as the dialog's close event comes, just after it's shut.)
+        await waitFor(`!document.querySelector("#go_settings iframe")`, "its frame gone", 2000);
     });
 
     await step("back held lists the pages before, to go to one; forward's the pages after", async () => {
@@ -851,18 +900,22 @@ async function check(base, port, site) {
         await waitFor(`document.getElementById("go_url").dataset.url === ${JSON.stringify(pages[0])}`, "a page back", 30000);
         await ev(`history.forward()`);
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
-        // At the first page: Back (none back) opens the panel, its Forward
-        // glyph a page on (Forward's not in the menu).
+        // At the first page, Back opens the panel with Back disabled and
+        // Forward available.
         await ev(`document.getElementById("go_back").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
         await waitFor(`!document.getElementById("go_history").hidden`, "the list again");
         const oldest = await ev(`[...document.querySelectorAll("#go_history button.item")].at(-1).title`);
         await ev(`[...document.querySelectorAll("#go_history button.item")].at(-1).click()`);
         await waitFor(`document.getElementById("go_url").dataset.url === ${JSON.stringify(oldest)}`, "the first page again", 30000);
         await ev(`document.getElementById("go_back").click()`);
-        await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .foot .forward:not(:disabled)")`, "Back, at the first page, the panel with Forward");
+        await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .foot .back:disabled") && !!document.querySelector("#go_history .foot .forward:not(:disabled)") && !!document.querySelector("#go_history .foot .clear:not(:disabled)")`, "Back, Forward, and Clear in the history panel");
         await ev(`document.querySelector("#go_history .foot .forward").click()`);
         await waitFor(`document.getElementById("go_url").dataset.url !== ${JSON.stringify(oldest)}`, "a page on, by its Forward", 30000);
-        // Clear history (its glyph beside Forward): none back or forward, the page kept.
+        await ev(`document.getElementById("go_back").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
+        await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .foot .back:not(:disabled)")`, "Back is available from a later page");
+        await ev(`document.querySelector("#go_history .foot .back").click()`);
+        await waitFor(`document.getElementById("go_url").dataset.url === ${JSON.stringify(oldest)}`, "a page back, by its Back glyph", 30000);
+        // Clear history: none back or forward, the page kept.
         await ev(`document.getElementById("go_back").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
         await waitFor(`!document.getElementById("go_history").hidden && !!document.querySelector("#go_history .foot .clear:not(:disabled)")`, "Clear history offered");
         const kept = await ev(`document.getElementById("go_url").dataset.url`);
@@ -901,14 +954,45 @@ async function check(base, port, site) {
         await goTo(site + "cookie?set", "Cookie");
         await browserPage("go/cookie");
         await waitFor(`[...document.querySelectorAll("#sites li")].some((li) => li.querySelector(".site").textContent === ${JSON.stringify(host)} && /1 cookie/.test(li.textContent))`, "the site listed with its cookie", 20000);
-        await ev(`(() => { document.getElementById("within").value = "3600"; document.getElementById("clear").click(); })()`);
+        await ev(`document.getElementById("show_browser").click(); document.getElementById("clear_browser").click(); document.getElementById("within").value = "3600"; document.getElementById("clear").click();`);
         await waitFor(`/Cleared/.test(document.getElementById("done").textContent) && !/cookie/.test(document.getElementById("sites").textContent)`, "the last hour's cleared");
         await newTab();
         await goTo(site + "cookie", "Cookie");
         if ((await sent()) !== "sent nothing") throw new Error(`after clearing the last hour, a new tab sent ${await sent()}`);
+
+        // Engines without localStorage persistence do not show the usage counter.
+        await browserPage("go/cookie");
+        await waitFor(`document.querySelectorAll("#sites li").length > 0 || document.getElementById("empty")?.hidden === false`, "storage capability loaded", 20000);
+        if (process.env.GO_IMAGE ? (process.env.GO_ENGINE || "moli") === "moli" : true) {
+            await waitFor(`document.getElementById("storage_usage")?.hidden === false`, "localStorage use is reported");
+            const storageShown = () => frame(`document.getElementById("storage")?.textContent`);
+            const usageRow = `[...document.querySelectorAll("#sites li")].find(li => li.dataset.site === ${JSON.stringify(host)})`;
+            await newTab();
+            await goTo(site + "storage?set", "Site storage");
+            await newTab();
+            await goTo(site + "storage", "Site storage");
+            if (await storageShown() !== "saved") throw new Error("new tab did not restore localStorage before the inline script");
+            await browserPage("go/cookie");
+            await waitFor(`/10 B in 1 item/.test((${usageRow})?.textContent) && /10 B of 50 MB/.test(document.getElementById("storage_usage").textContent)`, "saved storage usage listed");
+            await ev(`(${usageRow}).querySelector("button").click()`);
+            await waitFor(`!document.getElementById("site_settings").hidden && !document.getElementById("clear_site").disabled`, "the site's data details");
+            await ev(`document.getElementById("clear_site").click(); document.getElementById("clear").click();`);
+            await waitFor(`/Cleared site data/.test(document.getElementById("done").textContent) && /0 B of 50 MB/.test(document.getElementById("storage_usage").textContent)`, "Delete cleared saved storage");
+            await newTab();
+            await goTo(site + "storage", "Site storage");
+            if (await storageShown() !== "empty") throw new Error("deleted storage was restored");
+            await goTo(site + "storage?set", "Site storage");
+            await browserPage("go/cookie");
+            await waitFor(`/10 B of 50 MB/.test(document.getElementById("storage_usage").textContent)`, "site storage listed again");
+            await ev(`document.getElementById("show_browser").click(); document.getElementById("clear_browser").click(); document.getElementById("within").value = "3600"; document.getElementById("clear").click();`);
+            await waitFor(`/Cleared/.test(document.getElementById("done").textContent) && /0 B of 50 MB/.test(document.getElementById("storage_usage").textContent)`, "last hour's saved storage cleared");
+            await newTab();
+            await goTo(site + "storage", "Site storage");
+            if (await storageShown() !== "empty") throw new Error("cleared storage was restored");
+        }
     });
 
-    await step("a phone's tab says it's Chrome on Android, never TabTop; a video's site is sent its cookies", async () => {
+    await step("a phone switches between mobile and Desktop headers, and a video's site is sent its cookies", async () => {
         await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
         await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
         try {
@@ -916,6 +1000,15 @@ async function check(base, port, site) {
             await goTo(site + "ua", "UA");
             const ua = await frame(`document.getElementById("ua").textContent`), mobile = await frame(`document.getElementById("m").textContent`);
             if (!/^Mozilla\/5\.0 \(Linux; Android 10; K\) .* Chrome\/\d+\.0\.0\.0 Mobile Safari\/537\.36$/.test(ua) || mobile !== "?1") throw new Error(`the site was told ${ua}, mobile ${mobile}`);
+            await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_fullscreen").click();`);
+            await waitFor(`getComputedStyle(document.getElementById("go_bar")).display === "none" && !document.getElementById("go_exit_fullscreen").hidden`, "full screen hides the toolbar");
+            await ev(`document.getElementById("go_exit_fullscreen").click()`);
+            await waitFor(`getComputedStyle(document.getElementById("go_bar")).display !== "none" && document.getElementById("go_menu_fullscreen").getAttribute("aria-pressed") === "false"`, "exiting full screen restores the toolbar");
+            const toggleDesktop = () => ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_desktop").click();`);
+            await toggleDesktop();
+            await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "Desktop sends desktop headers on a phone");
+            await toggleDesktop();
+            await frameWait(`document.getElementById("m")?.textContent === "?1" && /Android/.test(document.getElementById("ua")?.textContent)`, "unchecking Desktop restores the mobile profile");
             // A cookie on the site, and its video played: fetched with it,
             // as the page's own browser would.
             await goTo(site + "cookie?set", "Cookie");
@@ -947,9 +1040,16 @@ async function check(base, port, site) {
         if (!fonts.includes("/font.ttf?used")) throw new Error(`the font used wasn't fetched: ${fonts}`);
         const extra = fonts.filter((f) => /eot|svg|fallback|unused/.test(f));
         if (extra.length) throw new Error(`fetched too: ${extra}`);
+        const usedLoaded = `[...document.fonts].some((f) => f.family.replaceAll('"', "") === "Used Font" && f.status === "loaded")`;
+        // The intermediate page drops the installed face, while the rewritten
+        // stylesheet stays cached for the next document.
+        await goTo(site + "fonts-next.html", "Shared fonts");
+        await frameWait(usedLoaded, "font restored from the cached stylesheet");
+        await goTo(site + "fonts.html", "Fonts");
+        await frameWait(usedLoaded, "font still loaded after navigation to the first page");
     });
 
-    await step("Clear cache, in the menu: a picture is fetched from its site again, not before", async () => {
+    await step("Clear cached files, in Site controls' Browser-wide settings: a picture is fetched from its site again, not before", async () => {
         const fetched = async () => { await goTo(site + "seen", "Seen"); return JSON.parse(await frame(`document.getElementById("s").textContent`)).cached || 0; };
         const shown = () => frameWait(`document.getElementById("pic")?.naturalWidth > 0`, "the picture");
         await goTo(site + "cache.html", "Cached");
@@ -960,13 +1060,18 @@ async function check(base, port, site) {
         await shown();
         if ((await fetched()) !== first) throw new Error("fetched again, not cleared");
         await ev(`document.getElementById("go_menu").click()`);
-        await ev(`document.getElementById("go_menu_cache").click()`);
-        await waitFor(`!document.getElementById("go_notice").hidden && document.getElementById("go_notice").textContent.includes("Cache cleared")`, "said it's cleared");
+        await ev(`document.getElementById("go_menu_sites").click()`);
+        const settings = `document.querySelector("#go_settings iframe")?.contentDocument`;
+        await waitFor(`!!(${settings})?.getElementById("show_browser")`, "Site controls open");
+        await ev(`(${settings}).getElementById("show_browser").click()`);
+        await waitFor(`(${settings})?.getElementById("clear_cache")?.disabled === false`, "cache action available");
+        await ev(`(${settings}).getElementById("clear_cache").click()`);
+        await waitFor(`(${settings})?.getElementById("done")?.textContent === "Cached files cleared."`, "cache action succeeded");
+        await ev(`document.querySelector("#go_settings .close").click()`);
         await goTo(site + "cache.html", "Cached");
         await shown();
         const after = await fetched();
         if (after !== first + 1) throw new Error(`fetched ${after - first} times after clearing`);
-        await ev(`document.getElementById("go_notice").hidden = true`);
     });
 
     await step("this machine's addresses are refused", async () => {
@@ -1099,7 +1204,7 @@ async function check(base, port, site) {
         await waitFor(`document.title.startsWith("Second")`, "the opened window, here", 30000);
     });
 
-    await step("pop-ups are asked about, the answer kept for the site; blocked sites aren't loaded; both at go/settings", async () => {
+    await step("pop-ups are asked about, the answer kept for the site; blocked sites aren't loaded; both in Site controls", async () => {
         const host = new URL(site).hostname;
         const settings = (req) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call(${JSON.stringify(req)}); t.close(); return JSON.stringify(t.reply); })`);
         const openPopup = async () => {
@@ -1129,17 +1234,114 @@ async function check(base, port, site) {
         await waitFor(`!document.getElementById("go_notice").hidden && /blocked/.test(document.querySelector("#go_notice p").textContent)`, "the blocked site refused", 30000);
         await settings({ type: "go-settings-set", name: host, setting: "unblock" });
         // The page: both listed, a site blocked and unblocked from it.
-        await ev(`location.href = ${JSON.stringify(new URL("go/settings", base).href)}`);
-        await waitFor(`[...document.querySelectorAll("#popups li")].some((li) => li.querySelector(".site").textContent === ${JSON.stringify(host)} && li.querySelector("select").value === "block")`, "the site's pop-ups, blocked, listed", 20000);
-        await ev(`(() => { document.getElementById("site").value = "https://www.ads.example/x"; document.getElementById("block").requestSubmit(); })()`);
-        await waitFor(`[...document.querySelectorAll("#blocked .site")].some((s) => s.textContent === "ads.example")`, "a site blocked from the page");
-        await ev(`[...document.querySelectorAll("#blocked li")].find((li) => li.querySelector(".site").textContent === "ads.example").querySelector("button").click()`);
-        await waitFor(`!document.querySelector("#blocked li")`, "unblocked from the page");
+        await ev(`location.href = ${JSON.stringify(new URL("go/sites", base).href)}`);
+        const siteRow = `document.querySelector('#sites li[data-site="${host}"]')`;
+        await waitFor(`document.getElementById("sort_sites").value === "recent" && /Pop-ups blocked/.test((${siteRow})?.textContent)`, "the site's pop-ups listed with Most recent selected", 20000);
+        await ev(`(${siteRow}).querySelector("button").click()`);
+        await waitFor(`!document.getElementById("site_settings").hidden && document.getElementById("popups").value === "block"`, "the site's pop-up setting");
+        await ev(`document.getElementById("back_to_sites").click()`);
+        await waitFor(`!document.getElementById("all_sites").hidden && document.activeElement === (${siteRow})?.querySelector("button")`, "back to All sites returns focus to the selected row");
+        await ev(`document.getElementById("filter").value = "https://www.ads.example/x"; document.getElementById("find_site").requestSubmit();`);
+        await waitFor(`document.getElementById("site_heading").textContent === "ads.example" && !document.getElementById("site_settings").hidden`, "settings for a newly entered site");
+        await ev(`document.getElementById("access").click()`);
+        await waitFor(`document.getElementById("access").textContent === "Unblock site"`, "a site blocked from the page");
+        await ev(`document.getElementById("access").click()`);
+        await waitFor(`document.getElementById("access").textContent === "Block site"`, "unblocked from the page");
         // Back to asking, for the steps after.
-        await settings({ type: "go-settings-set", name: host, setting: "popups-ask" });
+        await settings({ type: "go-settings-set", name: host, setting: "popups-default" });
         await ev(`location.href = ${JSON.stringify(new URL("go/tab", base).href)}`);
         // (The page it was at, loaded again, before the next.)
         await waitFor(`!!document.getElementById("go_url") && document.title.startsWith("Second")`, "the browser page again, at its page", 30000);
+    });
+
+    if (adSite) await step("ad blocking: a list added in Settings blocks another site's picture on a page (the shield says one site), not on a site allowed in Site controls, nor the site's own pages; My filters block it too; off, it's fetched", async () => {
+        const call = (req) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call(${JSON.stringify(req)}); t.close(); return JSON.stringify(t.reply); })`);
+        // What the other site was asked for, said by it (not through TabTop).
+        const adsSeen = async () => {
+            const text = await (await fetch(adSite + "seen")).text();
+            return JSON.parse(text.match(/<pre id=s>(.*)<\/pre>/s)[1]).ads || 0;
+        };
+        const adHost = new URL(adSite).hostname;
+        // Off at first, and the built-in lists (from the internet) not wanted here.
+        const first = JSON.parse(await call({ type: "go-adblock" }));
+        if (first.enabled) throw new Error("ad blocking was on at first");
+        await call({ type: "go-adblock-set", setting: "list-off", name: "easylist" });
+        await call({ type: "go-adblock-set", setting: "list-off", name: "easyprivacy" });
+        try {
+            await ev(`location.href = ${JSON.stringify(new URL("go/settings", base).href)}`);
+            await waitFor(`document.getElementById("adblock_on")?.disabled === false && /^Off/.test(document.getElementById("adblock_about").textContent)`, "Settings, ad blocking off", 20000);
+            const list = site + "filters.txt?host=" + adHost + "&page=" + new URL(site).hostname;
+            await ev(`(() => { const i = document.getElementById("ad_url"); i.value = ${JSON.stringify(list)}; i.dispatchEvent(new Event("input")); document.getElementById("ad_add").requestSubmit(); })()`);
+            await waitFor(`document.getElementById("done").textContent === "List added." && [...document.querySelectorAll("#ad_lists li")].some((li) => /TabTop check list/.test(li.textContent) && /7 rules\\b/.test(li.textContent) && li.querySelector("input").checked)`, "the list added, named as it says, ticked", 20000);
+            await ev(`document.getElementById("adblock_on").click()`);
+            await waitFor(`document.getElementById("done").textContent === "Ad blocking is on." && /^7 rules in force, from 1 of 1 ticked list/.test(document.getElementById("adblock_about").textContent)`, "on, the rule in force", 20000);
+            await ev(`location.href = ${JSON.stringify(new URL("go/tab", base).href)}`);
+            // (The page it was at, loaded again, before the next.)
+            await waitFor(`!!document.getElementById("go_url") && document.title.startsWith("Second")`, "the browser page again, at its page", 30000);
+            const before = await adsSeen();
+            await goTo(site + "ads?ad=" + encodeURIComponent(adSite), "Ads");
+            await frameWait(`document.getElementById("own")?.naturalWidth > 0`, "the page's own picture");
+            await sleep(1500);
+            if (await frame(`document.getElementById("ad")?.naturalWidth > 0`)) throw new Error("the other site's picture was shown");
+            if ((await adsSeen()) !== before) throw new Error("the other site's picture was fetched");
+            // Hidden: the ad, the site's own native ad, and one the page's script added after; not the page.
+            const hidden = (sel) => `getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display === "none"`;
+            await frameWait(`!!document.getElementById("late")`, "the late ad, added by the page");
+            await frameWait(`${hidden("#banner")} && ${hidden(".native")} && ${hidden("#late")} && getComputedStyle(document.getElementById("content")).display !== "none"`, "the ads hidden, the page shown", 5000);
+            // By address, on the page's own site: its script under /ads/ not run nor asked for, but the one an
+            // exception lets through run; its picture under /banner/ not fetched for the copy.
+            const pageSeen = async () => JSON.parse((await (await fetch(site + "seen")).text()).match(/<pre id=s>(.*)<\/pre>/s)[1]);
+            await frameWait(`document.getElementById("ok").textContent === "ran"`, "the script an exception lets through, run");
+            if ((await frame(`document.getElementById("tracked").textContent`)) !== "not run") throw new Error("a script blocked by its address ran");
+            const asked = await pageSeen();
+            if (asked["/ads/track.js"] || asked["/banner/ad.png"] || !asked["/ads/ok.js"]) throw new Error(`the page's site was asked for ${JSON.stringify(asked)}`);
+            if (await frame(`document.getElementById("pathad").naturalWidth > 0`)) throw new Error("a picture blocked by its address shown");
+            // The shield: three blocked on this page (the other site, the script, the picture).
+            await waitFor(`!document.getElementById("go_ads").hidden && document.querySelector("#go_ads .count").textContent === "3" && /3 ads and trackers blocked/.test(document.getElementById("go_ads").title)`, "the shield, saying three", 5000);
+            // The site's ads allowed, in its controls (from the shield): fetched, shown, no shield.
+            const pageHost = new URL(site).hostname;
+            await ev(`document.getElementById("go_ads").click()`);
+            const sites = `document.querySelector("#go_settings iframe")?.contentDocument`;
+            await waitFor(`(${sites})?.getElementById("ads")?.disabled === false && (${sites}).getElementById("site_heading").textContent === ${JSON.stringify(pageHost)} && /Default: Block/.test((${sites}).getElementById("ads_note").textContent)`, "the site's controls, from the shield", 15000);
+            await ev(`(() => { const s = (${sites}).getElementById("ads"); s.value = "allow"; s.dispatchEvent(new Event("change")); })()`);
+            await waitFor(`(${sites}).getElementById("done").textContent === "Setting saved."`, "the site's ads allowed");
+            await ev(`document.querySelector("#go_settings .close").click()`);
+            await goTo(site + "ads?v=allowed&ad=" + encodeURIComponent(adSite), "Ads");
+            await frameWait(`document.getElementById("ad")?.naturalWidth > 0`, "the other site's picture, ads allowed on the page's site");
+            await frameWait(`getComputedStyle(document.getElementById("banner")).display !== "none"`, "the ad shown, ads allowed on the page's site");
+            if (!(await ev(`document.getElementById("go_ads").hidden`))) throw new Error("the shield, with ads allowed");
+            await call({ type: "go-settings-set", name: pageHost, setting: "ads-default" });
+            // My filters: the list off, the site named there instead.
+            const listId = JSON.parse(await call({ type: "go-adblock" })).lists.find((l) => !l.builtIn).id;
+            await call({ type: "go-adblock-set", setting: "list-off", name: listId });
+            await ev(`location.href = ${JSON.stringify(new URL("go/settings", base).href)}`);
+            await waitFor(`document.getElementById("my_filters")?.disabled === false && document.querySelectorAll("#ad_lists li").length > 0`, "My filters", 20000);
+            await ev(`(() => { const t = document.getElementById("my_filters"); t.value = "! mine\\n" + ${JSON.stringify("||" + adHost + "^")} + "\\n/ads[0-9]+/"; t.dispatchEvent(new Event("input")); document.getElementById("save_filters").click(); })()`);
+            await waitFor(`document.getElementById("done").textContent === "Filters saved." && /Line 3, can't be used here/.test(document.getElementById("filter_problems").textContent)`, "My filters saved, the line it can't use said").catch(async (err) => {
+                throw new Error(`${err.message} (it shows ${await ev(`JSON.stringify({ done: document.getElementById("done").textContent, problems: document.getElementById("filter_problems").textContent, value: document.getElementById("my_filters").value, save: document.getElementById("save_filters").disabled })`)})`);
+            });
+            await ev(`location.href = ${JSON.stringify(new URL("go/tab", base).href)}`);
+            await waitFor(`!!document.getElementById("go_url") && document.title.startsWith("Ads")`, "the browser page again, at its page", 30000);
+            const seenBefore = await adsSeen();
+            await goTo(site + "ads?v=mine&ad=" + encodeURIComponent(adSite), "Ads");
+            await frameWait(`document.getElementById("own")?.naturalWidth > 0`, "the page's own picture");
+            await sleep(1500);
+            if (await frame(`document.getElementById("ad")?.naturalWidth > 0`)) throw new Error("shown, with the site in My filters");
+            if ((await adsSeen()) !== seenBefore) throw new Error("fetched, with the site in My filters");
+            // Its own pages load: a page's own site is never blocked.
+            await goTo(adSite + "second.html", "Second");
+            // Off: fetched, and shown.
+            await call({ type: "go-adblock-set", setting: "off" });
+            await goTo(site + "ads?v=off&ad=" + encodeURIComponent(adSite), "Ads");
+            await frameWait(`document.getElementById("ad")?.naturalWidth > 0`, "the other site's picture, blocking off");
+            if (!((await adsSeen()) > before)) throw new Error("the other site's picture wasn't fetched, blocking off");
+        } finally {
+            const state = JSON.parse(await call({ type: "go-adblock" }));
+            await call({ type: "go-adblock-set", setting: "off" });
+            await call({ type: "go-adblock-set", setting: "filters", filters: "" });
+            await call({ type: "go-settings-set", name: new URL(site).hostname, setting: "ads-default" });
+            for (const l of state.lists ?? []) if (!l.builtIn) await call({ type: "go-adblock-set", setting: "list-remove", name: l.id });
+        }
     });
 
     await step("a link to a file offers to save it", async () => {
@@ -1532,7 +1734,7 @@ async function check(base, port, site) {
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
-    await step("Skip held blocks the site's videos: stopped, kept in the site settings, and Undo has them again", async () => {
+    await step("Skip held blocks the site's videos: stopped, kept in Site controls, and Undo has them again", async () => {
         const press = async (sel, hold = 0) => {
             const p = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
             await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
@@ -1595,10 +1797,26 @@ async function check(base, port, site) {
         await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "N", code: "KeyN", modifiers: 8, windowsVirtualKeyCode: 78 });
         await frameWait(`document.getElementById("a-out").textContent === "a ended at 5 true"`, "the first ended at its end, to its page");
         await waitFor(`(() => { const v = [...document.querySelectorAll("video")]; return v.length === 1 && v[0].paused && Math.round(v[0].currentTime) === 5; })()`, "its player paused at the end, the other's closed");
-        // In the menu: skipped, Skip not offered again.
+        // In the menu: a skipped video can be hidden, then restored by
+        // opening it in the /go player or by playing it again.
         await ev(`document.getElementById("go_menu").click()`);
-        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, skip: !li.querySelector(".acts button:last-child").disabled }))`);
-        if (rows.length !== 1 || rows[0].state !== "Skipped" || rows[0].skip) throw new Error(`the menu, after: ${JSON.stringify(rows)}`);
+        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, hide: li.querySelector(".acts button:last-child").getAttribute("aria-label"), playDisabled: li.querySelector(".acts button:nth-child(2)").disabled }))`);
+        if (rows.length !== 1 || rows[0].state !== "Skipped" || !rows[0].hide.startsWith("Hide") || rows[0].playDisabled) throw new Error(`the menu, after: ${JSON.stringify(rows)}`);
+        await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
+        await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the skipped video hidden");
+        await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(2)").click()`);
+        await waitFor(`getComputedStyle(document.querySelector("video")).display !== "none" && !document.querySelector("video").paused`, "the video restored by Play");
+        await ev(`document.getElementById("go_menu").click()`);
+        await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
+        await waitFor(`document.querySelector("#go_menu_media .state").textContent === "Skipped"`, "the video ended again");
+        await ev(`document.getElementById("go_menu").click()`);
+        await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
+        await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the video hidden again");
+        await ev(`document.getElementById("go_menu").click()`);
+        await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(1)").click()`);
+        await waitFor(`!!document.querySelector("#go_player video")`, "the hidden video opened in the /go player");
+        await ev(`document.querySelector("#go_player button[aria-label^='Close the player']").click()`);
+        await waitFor(`!!document.querySelector("video") && getComputedStyle(document.querySelector("video")).display !== "none"`, "the video restored from the /go player");
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
@@ -1938,6 +2156,12 @@ async function check(base, port, site) {
             await ev(`${tabDoc}.getElementById("go_tabs").click()`);
             await waitFor(`!document.getElementById("overview").hidden && document.querySelectorAll("#overview li").length === 2`, "the list of tabs");
             await ev(`document.querySelector("#overview .done").click()`);
+            await ev(`${tabDoc}.getElementById("go_menu").click(); ${tabDoc}.getElementById("go_menu_hide_browser").click()`);
+            await waitFor(`${tabDoc}.defaultView.document.fullscreenElement === ${tabDoc}.defaultView.document.documentElement && getComputedStyle(${tabDoc}.getElementById("go_bar")).display !== "none"`, "Hide Original Browser keeps the /go toolbar in fullscreen");
+            await ev(`${tabDoc}.getElementById("go_tabs").click()`);
+            await waitFor(`!${tabDoc}.getElementById("go_window_list").hidden && ${tabDoc}.querySelectorAll("#go_window_list li").length === 2`, "the window list opens in fullscreen with the toolbar");
+            await ev(`${tabDoc}.querySelector("#go_window_list .done").click(); ${tabDoc}.getElementById("go_menu").click(); ${tabDoc}.getElementById("go_menu_hide_browser").click()`);
+            await waitFor(`!${tabDoc}.defaultView.document.fullscreenElement`, "leaving Hide Original Browser exits fullscreen");
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
@@ -2039,8 +2263,8 @@ if (mode === "site") {
         base = target.href;
         console.log(`link: ${delay} ms each way, ${rate} bytes a second, through ${base}`);
     }
-    await check(base, Number(args[1]), args[2]);
+    await check(base, Number(args[1]), args[2], args[3]);
 } else {
-    console.error("usage: go-check.mjs site DIR | check BASE PORT SITE");
+    console.error("usage: go-check.mjs site DIR | check BASE PORT SITE [ADS]");
     process.exit(2);
 }

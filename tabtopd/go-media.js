@@ -289,6 +289,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         player.placement = { key, rect, clip, shown, fit, position };
         const media = player.element, loading = player.loading?.box;
         if (media && "player" in media.dataset) return;  // in the player (go-player.js), not its box
+        if (player.hidden) {
+            if (media) media.style.display = "none";
+            return;
+        }
         if (media && document.fullscreenElement === media) {
             media.style.clipPath = "none";
             return;
@@ -329,9 +333,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     }
 
-    // Its site's videos blocked (the site settings): none played, those
+    // Its site's videos blocked (Site controls): none played, those
     // there stopped, the page told why in their boxes.
-    const BLOCKED = "Videos from this site are blocked (☰ → Site settings).";
+    const BLOCKED = "Videos from this site are blocked (☰ → Site controls).";
     let blocked = false;
 
     // pageStarts plays a player the page started, unless autoplay's paused
@@ -517,7 +521,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 return { error: "This media can't be played here." };
             }
             if (players.has(key)) return {};
-            if (blocked) return { error: BLOCKED };
+            if (blocked) return { error: BLOCKED, blocked: true };
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
             const controller = new AbortController();
             const { signal } = controller;
@@ -613,7 +617,13 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 place(entry.placement);
                 // Played by the person (its own controls, the player's): its
                 // page may play it from then on, autoplay paused or not.
-                media.addEventListener("play", () => { if (!ours.has(media)) entry.chosen = true; });
+                media.addEventListener("play", () => {
+                    if (entry.hidden) {
+                        entry.hidden = false;
+                        place(entry.placement);
+                    }
+                    if (!ours.has(media)) entry.chosen = true;
+                });
                 if (entry.play) pageStarts(key, entry);
                 return {};
             } catch (error) {
@@ -628,6 +638,15 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         },
         place,
         skip,
+        // hide removes an ended video's overlay while keeping its player
+        // available; a later play or opening it in the /go player restores it.
+        hide(key) {
+            const player = players.get(key);
+            if (!player || player.kind !== "video" || !player.element) return;
+            player.hidden = true;
+            player.element.style.display = "none";
+            told();
+        },
         // mark outlines a player's box (its row in the menu pointed at or
         // focused), or none (key null).
         mark(key) {
@@ -662,6 +681,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (!player) return;
             player.play = on;
             const media = player.element;
+            if (on && player.hidden) {
+                player.hidden = false;
+                if (player.placement) place(player.placement);
+            }
             if (on && player.skipped) {
                 // The page played it again: from its start, skippable again.
                 player.skipped = false;
@@ -680,7 +703,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 media?.pause();
                 played?.(key, { t: Number.isFinite(media?.currentTime) ? media.currentTime : 0, playing: false, ended: false });
                 closePlayer(key);
-                failed?.(key, BLOCKED);
+                failed?.(key, BLOCKED, true);
             }
             told();
         },
@@ -688,7 +711,11 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         // them all and stops it doing so, till the person plays one.
         autoplay(on) {
             autoplay = !!on;
-            if (!autoplay) for (const player of players.values()) if (!player.chosen) player.element?.pause();
+            if (!autoplay) {
+                for (const player of players.values()) if (!player.chosen) player.element?.pause();
+            } else {
+                for (const player of players.values()) if (player.play && !player.chosen && player.element?.paused) start(player.element);
+            }
             told();
         },
         // toggle plays or pauses a player, as the person's doing.
@@ -698,6 +725,11 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (!media) return;
             player.chosen = true;
             if (media.paused || media.ended) {
+                if (player.hidden) {
+                    player.hidden = false;
+                    if (player.placement) place(player.placement);
+                }
+                if (player.skipped) media.currentTime = 0;
                 player.skipped = false;
                 media.play().catch(() => {});
             } else media.pause();
@@ -709,6 +741,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             const media = player?.element;
             if (!media || player.kind !== "video" || player.watching) return;
             player.watching = true;
+            player.hidden = false;
+            if (player.placement) place(player.placement);
             player.chosen = true;
             player.loading?.done();
             player.closeWatch = openPlayer(media, {

@@ -1,103 +1,46 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Site settings</title>
-<style>
-:root { --safe-right: env(safe-area-inset-right, 0px); --safe-left: env(safe-area-inset-left, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }
-html, body { margin: 0; background: #1c1c1e; color: #e8e8ea; font: 14px system-ui, sans-serif; }
-main { max-width: 40rem; margin: 0 auto; box-sizing: border-box;
-    padding: 16px calc(16px + var(--safe-right)) calc(32px + var(--safe-bottom)) calc(16px + var(--safe-left)); }
-header { display: flex; align-items: center; gap: 12px; }
-a { color: #8ab4f8; }
-header a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; text-decoration: none; border-radius: 6px; }
-header a:hover { background: #2c2c2e; }
-h1 { margin: 0; font-size: 20px; }
-h2 { margin: 28px 0 6px; font-size: 16px; }
-.about { margin: 0 0 12px; color: #a8a8ad; line-height: 1.45; }
-button, select, input { min-height: 36px; font: 14px system-ui, sans-serif; color: #e8e8ea; border-radius: 6px; box-sizing: border-box; }
-button { padding: 0 14px; background: #3a3a3c; border: 1px solid #48484a; cursor: pointer; }
-select, input { padding: 0 8px; background: #1c1c1e; border: 1px solid #48484a; }
-form { display: flex; gap: 8px; margin-bottom: 8px; }
-form input { flex: 1; min-width: 0; }
-ul { list-style: none; margin: 0; padding: 0; }
-li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #2c2c2e; }
-li .site { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
-.empty { color: #a8a8ad; }
-.switch { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; line-height: 1.4; }
-.switch input { min-height: auto; width: 18px; height: 18px; margin: 1px 0 0; flex: 0 0 auto; }
-.clear { padding: 12px; background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 8px; margin-bottom: 8px; }
-.clear label { display: block; margin-bottom: 8px; }
-.row { display: flex; gap: 8px; }
-.row select { flex: 1; min-width: 0; }
-#clear { background: #8c2f2b; border-color: #8c2f2b; }
-button:disabled { color: #6c6c70; cursor: default; }
-.what { flex: 1; min-width: 0; }
-.detail { margin-top: 2px; color: #a8a8ad; font-size: 12px; }
-nav.toc { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
-nav.toc a { padding: 6px 10px; border: 1px solid #3a3a3c; border-radius: 16px; text-decoration: none; font-size: 13px; }
-h2 { scroll-margin-top: 12px; }
-.done { position: sticky; top: 0; z-index: 1; background: #1c1c1e; min-height: 1.4em; margin: 10px 0; padding: 4px 0; color: #a8d8a8; }
-.done.error { color: #f2b8b5; }
-[hidden] { display: none !important; }
-/* The filter: a site's settings only (the page's, from the browser's lightbox), or all. */
-.filter { position: relative; margin: 12px 0 0; }
-.filter input { width: 100%; padding-right: 44px; }
-.filter button { position: absolute; right: 0; top: 0; width: 44px; height: 100%; padding: 0; border: 0; background: none; }
-li.filtered { display: none; }
-.nomatch { color: #a8a8ad; margin: 4px 0; }
-/* In the browser's lightbox: its header there. */
-.framed header { display: none; }
-.framed main { padding-top: 4px; }
-button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
-@media (pointer: coarse), (max-width: 600px) { button, select, input, header a { min-height: 44px; } }
-</style>
+<title>Settings</title>
+<link rel="stylesheet" href="go-pages.css">
+</head>
+<body>
 <main>
-    <header><a href="./" id="back">← Browser</a><h1>Site settings</h1></header>
-    <nav class="toc" aria-label="On this page"><a href="#popups_h">Pop-ups</a><a href="#videos_h">Videos</a><a href="#blocked_h">Blocked sites</a><a href="#referer_h">What pages say</a><a href="#cookies">Cookies and site data</a></nav>
-    <div class="filter"><input id="filter" type="search" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Filter by site: all sites shown" aria-label="Filter by site"><button type="button" id="filter_clear" aria-label="Clear the filter: all sites" title="Clear the filter: all sites" hidden>✕</button></div>
-    <p class="done" id="done" role="status" aria-live="polite"></p>
+    <header><a href="./" id="back">← Browser</a><h1>Settings</h1></header>
+    <p id="done" role="status" aria-live="polite"></p>
 
-    <h2 id="popups_h">Pop-ups</h2>
-    <p class="about">When a site wants to open a pop-up, you're asked, unless you've said for that site. Allowed pop-ups open in a tab of their own.</p>
-    <ul id="popups" aria-label="Sites' pop-ups"></ul>
-    <p class="empty" id="popups_empty">No site has a setting yet: each asks.</p>
-
-    <h2 id="videos_h">Videos</h2>
-    <p class="about">A site's videos and sounds can be kept from playing: none of its pages' play, here or in the player. (In the ☰ menu, hold a video's Skip to block its site's.)</p>
-    <form id="video_block"><input id="video_site" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="example.com" aria-label="Site whose videos to block"><button type="submit">Block videos</button></form>
-    <ul id="videos" aria-label="Sites whose videos are blocked"></ul>
-    <p class="empty" id="videos_empty">Every site's videos play.</p>
-
-    <h2 id="blocked_h">Blocked sites</h2>
-    <p class="about">Nothing is loaded from a blocked site or its subdomains: not its pages, nor its pictures, scripts or videos in other sites' pages.</p>
-    <form id="block"><input id="site" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="example.com" aria-label="Site to block"><button type="submit">Block</button></form>
-    <ul id="blocked" aria-label="Blocked sites"></ul>
-    <p class="empty" id="blocked_empty">No site is blocked.</p>
-
-    <h2 id="referer_h">What pages say</h2>
-    <label class="switch"><input type="checkbox" id="referer"> <span>Tell the sites a page's pictures, fonts and videos come from which page asks (Referer)</span></label>
-    <p class="about">As browsers do: the page's address to its own site, just the site to others, nothing from a secure page to an insecure one. Some sites refuse their pictures and videos without it.</p>
-
-    <h2 id="cookies">Cookies and site data</h2>
-    <p class="about" id="about">Loading…</p>
-    <div class="clear">
-        <label for="within">Clear what sites set in</label>
-        <div class="row">
-            <select id="within">
-                <option value="3600">the last hour</option>
-                <option value="86400">the last 24 hours</option>
-                <option value="604800">the last week</option>
-                <option value="2592000">the last month</option>
-                <option value="15724800">the last 6 months</option>
-                <option value="0">all time</option>
-            </select>
-            <button type="button" id="clear">Clear</button>
+    <section id="browser_settings" aria-label="Settings">
+        <div class="card" id="adblock">
+            <h3>Ad blocking</h3>
+            <label class="toggle"><input type="checkbox" id="adblock_on" disabled> Block ads and trackers</label>
+            <p class="hint" id="adblock_about"></p>
         </div>
-    </div>
-    <ul id="sites" aria-label="Sites' cookies and data"></ul>
-    <p class="empty" id="empty" hidden>No site has kept anything.</p>
+        <div class="card" id="filter_lists">
+            <h3>Filter lists</h3>
+            <ul id="ad_lists" aria-label="Filter lists"></ul>
+            <form id="ad_add" class="tools">
+                <input id="ad_url" type="url" inputmode="url" placeholder="Add a list by its address (https://…)" aria-label="A filter list's address" autocomplete="off" autocapitalize="off" spellcheck="false" disabled>
+                <button type="submit" id="ad_add_button" disabled>Add list</button>
+            </form>
+            <div class="question">
+                <label for="ad_interval">Update lists<span class="hint">Lists are downloaded from their sites by this server.</span></label>
+                <span class="tools">
+                    <span class="select"><select id="ad_interval" disabled><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="manual">Manually</option></select></span>
+                    <button type="button" id="ad_update" disabled>Update now</button>
+                </span>
+            </div>
+        </div>
+        <div class="card" id="my_filters_card">
+            <h3><label for="my_filters">My filters</label></h3>
+            <p class="hint">Your own rules, one a line, as filter lists write them: <code>||ads.example^</code>, or a site’s name alone, blocks it; <code>/banner/*$image</code> blocks pictures at such addresses; <code>##.ad</code> hides what has that class; <code>@@</code> before a rule makes it an exception; <code>! …</code> is a note. Sites they name are blocked wherever ad blocking is.</p>
+            <textarea id="my_filters" rows="6" spellcheck="false" autocapitalize="off" autocomplete="off" disabled></textarea>
+            <ul id="filter_problems" class="problems" aria-label="Lines not used"></ul>
+            <div class="tools end"><button type="button" id="save_filters" disabled>Save filters</button></div>
+        </div>
+    </section>
 </main>
 <script type="module" src="go-settings.js"></script>
-<script type="module" src="go-cookies.js"></script>
+</body>
 </html>
