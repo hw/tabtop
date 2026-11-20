@@ -96,6 +96,14 @@ for (const item of nav.children) {
     label.textContent = (item.title || "").replace(/ \(.*$/, "");
     item.append(label);
 }
+// Set apart: the browser's own items, the other pages, logging out.
+const logOutItem = nav.querySelector(":scope > button");
+if (logOutItem) {
+    const sep = document.createElement("div");
+    sep.className = "sep";
+    sep.setAttribute("role", "separator");
+    logOutItem.before(sep);
+}
 menuPanel.append(nav);
 // The session's warning, which goes in that bar: shown below this one.
 new MutationObserver(() => {

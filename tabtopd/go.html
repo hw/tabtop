@@ -44,7 +44,8 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     justify-content: flex-start; background: none; border: 0; border-radius: 6px; cursor: pointer; }
 #go_menu_panel .item:hover:not(:disabled), #go_menu_panel .tabtop-nav > a:hover, #go_menu_panel .tabtop-nav > button:hover { background: #3a3a3c; }
 #go_menu_panel .item:disabled { color: #6c6c70; cursor: default; }
-#go_menu_panel .tabtop-nav { display: flex; flex-direction: column; margin-top: 4px; padding-top: 4px; border-top: 1px solid #3a3a3c; }
+#go_menu_panel .tabtop-nav { display: flex; flex-direction: column; margin-top: 4px; padding-top: 4px; border-top: 1px solid #545458; }
+#go_menu_panel .tabtop-nav > .sep { display: block; min-height: 0; height: 1px; padding: 0; margin: 4px 0; background: #545458; border-radius: 0; }
 #go_menu_panel .tabtop-nav > [hidden] { display: none; }
 #go_menu_panel .tabtop-nav .page { color: #8ab4f8; }
 #go_menu_panel .tabtop-nav .page[aria-current] { display: none; }  /* this page */

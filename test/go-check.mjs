@@ -717,6 +717,10 @@ async function check(base, port, site) {
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
         if (!/^Forward,Site settings,Cookies and site data,.+,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
+        // Set apart: the browser's items, then the other pages, then logging out.
+        const parts = await ev(`(() => { const nav = document.querySelector("#go_menu_panel .tabtop-nav"), sep = nav.querySelector(".sep");
+            return { navLine: getComputedStyle(nav).borderTopWidth, sep: sep ? Math.round(sep.getBoundingClientRect().height) : 0, before: sep?.nextElementSibling?.textContent, after: sep?.previousElementSibling?.textContent }; })()`);
+        if (parts.navLine !== "1px" || parts.sep !== 1 || parts.before !== "Log out" || !parts.after) throw new Error(`the menu's parts: ${JSON.stringify(parts)}`);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         await waitFor(`document.getElementById("go_menu_panel").hidden`, "the menu closed");
         // The device's back (the tab's history: a swipe, a button): a page
@@ -1477,7 +1481,6 @@ async function check(base, port, site) {
             await waitFor(`document.getElementById("go_status").textContent === "" || !document.getElementById("go_notice").hidden`, "it shown", 60000).catch(() => {});
             await sleep(1500);
             const shot = await cdp("Page.captureScreenshot", { format: "png" });
-            const file = join(process.env.GO_SHOTS || ".", new URL(url).host + ".png");
             writeFileSync(file, Buffer.from(shot.data, "base64"));
             const notice = await ev(`document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p").textContent`);
             if (notice) throw new Error(notice);
