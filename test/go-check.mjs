@@ -265,6 +265,7 @@ let touches = 0;
 $("tap").addEventListener("touchstart", () => touches++);
 $("tap").onclick = () => status("tapped, touches " + touches);
 </script>`,
+        "slow.html": `<!doctype html><title>Slow video</title><video id="slow" src="clip.mp4?slow" width="320" height="180" muted></video>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -340,7 +341,12 @@ h1 { font-family: "Fixture Font", sans-serif; }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path"), zlib = require("zlib");
 const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
-http.createServer((req, res) => {
+http.createServer(function handle(req, res) {
+  // ?slow: each answer a second and a half late (a player loading, seen).
+  if (/[?&]slow$/.test(req.url)) {
+    req.url = req.url.replace(/[?&]slow$/, "");
+    return setTimeout(() => handle(req, res), 1500);
+  }
   const name = req.url.split("?")[0];
   if (req.url === "/pic.png?cache") seen.cached = (seen.cached || 0) + 1;  // Clear cache's
   if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
@@ -1235,6 +1241,15 @@ async function check(base, port, site) {
         })()`, "the partly scrolled video retains its size and fit");
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
+    });
+
+    await step("a video loading shows so over its box, with its address, till it can play", async () => {
+        await goTo(site + "slow.html", "Slow video");
+        await waitFor(`(() => { const l = document.querySelector(".go-media-loading"); return !!l && !l.hidden && l.querySelector(".url").textContent.endsWith("/clip.mp4?slow") && l.querySelector(".bar") && /Asking|Loading|Buffering/.test(l.querySelector(".what").textContent); })()`, "the loading box, with the address", 15000);
+        const over = await ev(`(() => { const l = document.querySelector(".go-media-loading").getBoundingClientRect(), f = document.getElementById("go_view").getBoundingClientRect();
+            return Math.round(l.width) === 320 && Math.round(l.height) === 180 && l.left >= f.left && l.top >= f.top; })()`);
+        if (!over) throw new Error("the loading box isn't over the video's box");
+        await waitFor(`!document.querySelector(".go-media-loading") && document.querySelector("video")?.readyState >= 2`, "the video ready, the loading box gone", 60000);
     });
 
     await step("prompt, a page asking as it loads, a frame asking, and a page asking in a loop", async () => {

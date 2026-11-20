@@ -29,6 +29,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
     const ahead = new Map();  // url + " " + offset -> {at, got: Promise}
+    const arrived = new Map();  // url -> told of each part's bytes, while its player loads
     function part(url, offset, length, size, mtime) {
         const got = range?.(url, { offset, length, if_size: size, if_mtime: mtime });
         got?.catch(() => {});
@@ -60,6 +61,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         }
         if (length > 0) readAhead(url, offset + length, size, mtime, length);
         const { bytes, reply } = await got.got;
+        if (length > 0) arrived.get(url)?.(bytes?.byteLength ?? bytes?.length ?? 0);
         return { reply, bytes, close() {} };
     }
     const mediaStream = createMediaSource({ call: tabCall, collect, getWorker: mediaWorker, onError: (media, error) => {
@@ -171,6 +173,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 continue;
             }
             stream.queue.push(command);
+            if (command.op === "append") stream.arrived?.(Math.floor(size * 3 / 4));  // base64's bytes
             stream.bytes += size;
             streamBytes += size;
             drainStream(stream);
@@ -213,6 +216,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             player.element?.load();
         }
         player.element?.remove();
+        player.loading?.done();
         if (player.poster) URL.revokeObjectURL(player.poster);
     }
 
@@ -256,10 +260,14 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         const player = players.get(key);
         if (!player) return;
         player.placement = { key, rect, clip, shown, fit, position };
-        const media = player.element;
-        if (!media) return;
+        const media = player.element, loading = player.loading?.box;
+        const hide = () => {
+            if (media) media.style.display = "none";
+            if (loading) loading.hidden = true;
+        };
+        if (!media && !loading) return;
         if (!shown || !rect || !clip || ![rect.x, rect.y, rect.width, rect.height, clip.x, clip.y, clip.width, clip.height].every(Number.isFinite)) {
-            media.style.display = "none";
+            hide();
             return;
         }
         const area = frame.getBoundingClientRect(), host = frame.parentElement.getBoundingClientRect();
@@ -267,16 +275,123 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         const right = Math.min(area.width, rect.x + rect.width, clip.x + clip.width);
         const bottom = Math.min(area.height, rect.y + rect.height, clip.y + clip.height);
         if (right - left < 8 || bottom - top < 8) {
-            media.style.display = "none";  // scrolled out of the frame
+            hide();  // scrolled out of the frame
             return;
         }
-        Object.assign(media.style, {
-            display: "", left: `${area.left - host.left + rect.x}px`, top: `${area.top - host.top + rect.y}px`,
+        const box = {
+            left: `${area.left - host.left + rect.x}px`, top: `${area.top - host.top + rect.y}px`,
             width: `${rect.width}px`, height: `${rect.height}px`,
             clipPath: `inset(${top - rect.y}px ${rect.x + rect.width - right}px ${rect.y + rect.height - bottom}px ${left - rect.x}px)`,
-            objectFit: ["fill", "contain", "cover", "none", "scale-down"].includes(fit) ? fit : "contain",
-            objectPosition: typeof position === "string" && position.length <= 128 ? position : "",
-        });
+        };
+        if (media) {
+            Object.assign(media.style, box, {
+                display: "",
+                objectFit: ["fill", "contain", "cover", "none", "scale-down"].includes(fit) ? fit : "contain",
+                objectPosition: typeof position === "string" && position.length <= 128 ? position : "",
+            });
+        }
+        if (loading) {
+            Object.assign(loading.style, box);
+            loading.hidden = false;
+        }
+    }
+
+    // layerHere is the layer the players are laid in, over the frame.
+    function layerHere() {
+        if (!layer) {
+            layer = document.createElement("div");
+            Object.assign(layer.style, { position: "absolute", inset: "0", pointerEvents: "none", overflow: "hidden" });
+            frame.parentElement.append(layer);
+        }
+        return layer;
+    }
+
+    // loader shows, over a player's box till it can play, that it's
+    // loading: what, from where (the file's address; a stream's the site's
+    // player fetches itself), and a bar, how far it's come to playing.
+    // Its stage (stage(fraction or null, words)) and bytes (arrived(n))
+    // are told it; done takes it away.
+    function loader(kind, src, stream) {
+        const box = document.createElement("div");
+        box.className = "go-media-loading";
+        box.hidden = true;
+        box.setAttribute("role", "progressbar");
+        box.setAttribute("aria-valuemin", "0");
+        box.setAttribute("aria-valuemax", "100");
+        const what = Object.assign(document.createElement("div"), { className: "what" });
+        const where = Object.assign(document.createElement("div"), { className: "url" });
+        where.textContent = stream ? "Streamed by the site's own player" : src;
+        if (!stream) where.title = src;
+        const bar = Object.assign(document.createElement("div"), { className: "bar unknown" });
+        const fill = document.createElement("i");
+        bar.append(fill);
+        box.append(what, where, bar);
+        const noun = kind === "video" ? "video" : "sound";
+        let words = "", bytes = 0, done = false;
+        const say = () => {
+            const amount = bytes > 0 ? ` (${bytes >= 1 << 20 ? (bytes / (1 << 20)).toFixed(1) + " MB" : Math.ceil(bytes / 1024) + " KB"})` : "";
+            what.textContent = words + amount;
+            box.setAttribute("aria-label", `Loading the ${noun}: ${what.textContent}`);
+        };
+        layerHere().append(box);
+        return {
+            box,
+            stage(fraction, said) {
+                if (done) return;
+                words = said;
+                if (fraction === null) {
+                    bar.classList.add("unknown");
+                    box.removeAttribute("aria-valuenow");
+                } else {
+                    const at = Math.max(0, Math.min(1, fraction));
+                    bar.classList.remove("unknown");
+                    fill.style.width = `${Math.round(at * 100)}%`;
+                    box.setAttribute("aria-valuenow", String(Math.round(at * 100)));
+                }
+                say();
+            },
+            arrived(n) {
+                if (done || !(n > 0)) return;
+                bytes += n;
+                say();
+            },
+            done() {
+                done = true;
+                box.remove();
+            },
+        };
+    }
+
+    // How near to playing a player is: its stages, then what it has ahead
+    // of where it plays, of the few seconds a browser wants to start.
+    const READY_AHEAD = 3;
+    function loadingUntilReady(media, loading, wantsPlay) {
+        const ahead = () => {
+            const t = media.currentTime || 0;
+            for (let i = 0; i < media.buffered.length; i++) {
+                if (media.buffered.start(i) <= t + 0.5 && media.buffered.end(i) > t) return media.buffered.end(i) - t;
+            }
+            return 0;
+        };
+        const update = (e) => {
+            // Ready: enough to play on; or, not to be played, its first picture
+            // there (or as much as the browser loads before it's played).
+            if (media.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return ready();
+            // (The browser loading no more till it's played: all there'll be.)
+            if (e?.type === "suspend" && media.paused && media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return ready();
+            if (!wantsPlay() && (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || e?.type === "suspend" && media.readyState >= HTMLMediaElement.HAVE_METADATA)) return ready();
+            if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
+                const want = Math.min(READY_AHEAD, Number.isFinite(media.duration) && media.duration > 0 ? media.duration : READY_AHEAD);
+                loading.stage(0.4 + 0.6 * Math.min(1, ahead() / want), "Buffering…");
+            }
+        };
+        const events = ["loadedmetadata", "progress", "suspend", "loadeddata", "canplay", "canplaythrough", "playing", "error", "emptied"];
+        const ready = () => {
+            for (const type of events) media.removeEventListener(type, update);
+            loading.done();
+        };
+        for (const type of events) media.addEventListener(type, type === "error" ? ready : update);
+        update();
     }
 
     // start plays media, muted if this browser won't play it with sound
@@ -304,6 +419,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             const { signal } = controller;
             const entry = { controller, play: !!play, placement: { key, rect, clip, shown: shown !== false, fit, position } };
             players.set(key, entry);
+            // Loading, over its box, till it can play.
+            const loading = entry.loading = loader(kind, src, !!streamId);
+            loading.stage(null, streamId ? "Starting the stream…" : "Asking the site…");
+            place(entry.placement);
             let tunnel;
             const cancel = () => tunnel?.close();
             signal.addEventListener("abort", cancel, { once: true });
@@ -311,6 +430,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 let media;
                 if (streamId) {
                     media = streamPlayer(streamId, key, kind, entry);
+                    entry.stream.arrived = (n) => loading.arrived(n);
+                    loading.stage(0.15, "Loading the stream…");
                 } else {
                     // Its size, type and version, asked for first; it's read in
                     // parts as it plays.
@@ -322,10 +443,14 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                     if (!Number.isSafeInteger(info.total_size) || info.total_size < 1) throw new Error("Not a supported media file.");
                     tunnel.close();
                     const file = { size: info.total_size, type: info.mime, mtime: info.validator, remote: true, via: "go-resource" };
+                    loading.stage(0.15, "Loading…");
+                    arrived.set(info.url, (n) => loading.arrived(n));
+                    signal.addEventListener("abort", () => arrived.delete(info.url), { once: true });
                     media = await mediaStream(info.url, file, signal);
                 }
                 entry.element = media;
                 signal.throwIfAborted();
+                loadingUntilReady(media, loading, () => entry.play);
                 media.addEventListener("loadedmetadata", () => {
                     // Its proportions for its box, and its size and length
                     // for the page (the engine has none of its own).
@@ -362,14 +487,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                     }, () => {});
                 }
                 Object.assign(media.style, { position: "absolute", background: "#000", zIndex: "2", display: "none" });
-                if (!layer) {
-                    layer = document.createElement("div");
-                    Object.assign(layer.style, { position: "absolute", inset: "0", pointerEvents: "none", overflow: "hidden" });
-                    frame.parentElement.append(layer);
-                }
                 media.style.pointerEvents = "auto";
                 passScrolling(media);
-                layer.append(media);
+                layerHere().append(media);
                 place(entry.placement);
                 if (entry.play) start(media);
                 return {};
