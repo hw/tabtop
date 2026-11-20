@@ -18,8 +18,40 @@ func TestGoViewClamped(t *testing.T) {
 		{v(1280, 720, 1, 640, 360), v(1280, 720, 1, 1280, 720)}, // smaller than the window
 		{goView{W: 400, H: 800, DPR: 2, Touch: true}, goView{W: 400, H: 800, DPR: 2, SW: 400, SH: 800, Touch: true}},
 	} {
-		if got := c.in.clamped(); got != c.want {
+		got := c.in.clamped()
+		got.Orientation, got.Angle = "", 0 // below
+		if got != c.want {
 			t.Errorf("%+v: %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+// Which way up: one of screen.orientation's types and a quarter turn, or
+// the screen's shape.
+func TestGoViewOrientation(t *testing.T) {
+	for _, c := range []struct {
+		sw, sh int
+		o      string
+		a      int
+		wantO  string
+		wantA  int
+	}{
+		{390, 844, "portrait-primary", 0, "portrait-primary", 0},
+		{844, 390, "landscape-primary", 90, "landscape-primary", 90},
+		{844, 390, "landscape-secondary", 270, "landscape-secondary", 270},
+		{390, 844, "portrait-secondary", 180, "portrait-secondary", 180},
+		{844, 390, "", 0, "landscape-primary", 90},        // not said: its shape
+		{390, 844, "sideways", 45, "portrait-primary", 0}, // nonsense
+		{844, 390, "landscape-primary", 45, "landscape-primary", 0},
+		{844, 390, "landscape-primary", -90, "landscape-primary", 0},
+		{844, 390, "landscape-primary", 360, "landscape-primary", 0},
+	} {
+		got := goView{W: c.sw, H: c.sh, DPR: 2, SW: c.sw, SH: c.sh, Orientation: c.o, Angle: c.a}.clamped()
+		if got.Orientation != c.wantO || got.Angle != c.wantA {
+			t.Errorf("%dx%d %q %d: %q %d, want %q %d", c.sw, c.sh, c.o, c.a, got.Orientation, got.Angle, c.wantO, c.wantA)
+		}
+		if _, ok := goOrientations[got.Orientation]; !ok {
+			t.Errorf("%q has no CDP name", got.Orientation)
 		}
 	}
 }

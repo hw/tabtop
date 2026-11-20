@@ -210,10 +210,12 @@ window.addEventListener("message", (e) => {
             } catch { /* the bar's buttons still go back */ }
             break;
         case "step":
-            // Back or forward a page: by the history, if it's where it is;
+            // Back or forward a page, or more: by the history, if it's where it is;
             // else in the tab alone.
-            if (history.state?.goTab === t.id && history.state.at === m.at && (m.step === 1 || m.step === -1)) history.go(m.step);
-            else if (Number.isSafeInteger(m.at) && (m.step === 1 || m.step === -1)) tell(t, { type: "go", at: m.at + m.step });
+            // (More than one: a page picked from its list.)
+            if (!Number.isSafeInteger(m.step) || !m.step || Math.abs(m.step) > 50 || !Number.isSafeInteger(m.at)) break;
+            if (history.state?.goTab === t.id && history.state.at === m.at) history.go(m.step);
+            else tell(t, { type: "go", at: m.at + m.step });
             break;
         case "popup":
             if (typeof m.url !== "string" || !/^https?:\/\//i.test(m.url) || m.url.length > 8192) break;

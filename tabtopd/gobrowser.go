@@ -444,6 +444,16 @@ type goView struct {
 	SH int `json:"sh"`
 	// The person's device has touch: the page is told so, and given it.
 	Touch bool `json:"touch"`
+	// Which way up the device is held (screen.orientation's type, and its
+	// angle), told the page as its screen's.
+	Orientation string `json:"o"`
+	Angle       int    `json:"a"`
+}
+
+// goOrientations are screen.orientation's types, as CDP names them.
+var goOrientations = map[string]string{
+	"portrait-primary": "portraitPrimary", "portrait-secondary": "portraitSecondary",
+	"landscape-primary": "landscapePrimary", "landscape-secondary": "landscapeSecondary",
 }
 
 // clamped is v within what's sensible to lay a page out at.
@@ -457,6 +467,16 @@ func (v goView) clamped() goView {
 	// At least the window's: the display holds it.
 	v.SW = min(max(v.SW, v.W), 7680)
 	v.SH = min(max(v.SH, v.H), 4320)
+	// Not one of its types: the screen's shape says.
+	if _, ok := goOrientations[v.Orientation]; !ok {
+		v.Orientation, v.Angle = "landscape-primary", 90
+		if v.SH >= v.SW {
+			v.Orientation, v.Angle = "portrait-primary", 0
+		}
+	}
+	if v.Angle%90 != 0 || v.Angle < 0 || v.Angle >= 360 {
+		v.Angle = 0
+	}
 	return v
 }
 
@@ -850,11 +870,18 @@ func (b *goBrowser) setView(v goView) {
 		if goPhone(v) {
 			b.phoneUA(ctx) // before what's loaded next: it's asked for as a phone
 		}
-		err := b.cdp.call(ctx, b.page, "Emulation.setDeviceMetricsOverride", map[string]any{
+		metrics := map[string]any{
 			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
 			// The screen is the person's window: their own isn't told.
 			"screenWidth": v.SW, "screenHeight": v.SH,
-		}, nil)
+			"screenOrientation": map[string]any{"type": goOrientations[v.Orientation], "angle": v.Angle},
+		}
+		err := b.cdp.call(ctx, b.page, "Emulation.setDeviceMetricsOverride", metrics, nil)
+		if err != nil {
+			// An engine that won't be told which way up: its size all the same.
+			delete(metrics, "screenOrientation")
+			err = b.cdp.call(ctx, b.page, "Emulation.setDeviceMetricsOverride", metrics, nil)
+		}
 		if err == nil && touch {
 			// Touch points only when it's on (Moli refuses 0); and an engine
 			// that can't is laid out at the new size all the same.
@@ -871,7 +898,7 @@ func (b *goBrowser) setView(v goView) {
 		}
 		return err
 	}, func(r any) {
-		goDebugf("view %dx%d at %g on %dx%d, touch %v: %v", v.W, v.H, v.DPR, v.SW, v.SH, v.Touch, r)
+		goDebugf("view %dx%d at %g on %dx%d %s %d, touch %v: %v", v.W, v.H, v.DPR, v.SW, v.SH, v.Orientation, v.Angle, v.Touch, r)
 		b.changed(goChangesEvery)
 	})
 }

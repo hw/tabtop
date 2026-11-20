@@ -50,6 +50,18 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_menu_panel .tabtop-nav .page[aria-current] { display: none; }  /* this page */
 #go_menu_panel svg { flex: 0 0 auto; display: block; width: 20px; height: 20px; }
 #go_menu_panel .label { color: #e8e8ea; }
+/* The pages back (or forward), Back held. */
+#go_history { position: absolute; top: calc(100% + 4px); left: 4px; z-index: 6; width: max-content; min-width: 14rem; max-width: min(24rem, calc(100vw - 16px));
+    max-height: min(70vh, 32rem); overflow-y: auto; box-sizing: border-box; padding: 4px;
+    background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
+#go_history[hidden] { display: none; }
+#go_history .item { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; width: 100%; box-sizing: border-box;
+    min-height: 44px; height: auto; padding: 4px 10px; font: 14px system-ui, sans-serif; color: #e8e8ea; text-align: left;
+    background: none; border: 0; border-radius: 6px; cursor: pointer; }
+#go_history .item:hover, #go_history .item:focus-visible { background: #3a3a3c; }
+#go_history .title, #go_history .where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#go_history .where { color: #a8a8ad; font-size: 12px; }
+#go_back, #go_forward { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 /* The session warning, which the shared pages put in their bar of links:
    here, below this bar. And the login summary, at the bottom. */
 #tabtop_expiry { position: fixed !important; top: calc(var(--bar-total) + 8px); left: 50%; transform: translateX(-50%); z-index: 7;
@@ -141,6 +153,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         <a class="item" id="go_menu_settings" href="settings" target="tabtop-go-settings"></a>
         <a class="item" id="go_menu_sites" href="cookie" target="tabtop-go-cookie"></a>
     </div>
+    <div id="go_history" role="menu" hidden></div>
     <div id="go_progress" aria-hidden="true" hidden></div>
 </div>
 <div id="go_start">

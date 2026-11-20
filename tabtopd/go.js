@@ -392,17 +392,18 @@ window.addEventListener("popstate", (e) => {
     at = i;
     load(entries[at].url, { push: false });
 });
-// goBy goes back (-1) or forward (1) a page: by the tab's history, when
-// it's this page's (so it stays in step), else here.
+// goBy goes back (-1) or forward (1) a page, or as many as step says (a
+// page picked from the history list): by the tab's history, when it's
+// this page's (so it stays in step), else here.
 function goBy(step) {
     const to = at + step;
-    if (to < 0 || to >= entries.length) return;
+    if (!step || to < 0 || to >= entries.length) return;
     if (inTabs) {
         toTabs({ type: "step", step, at });  // by its history, or back here ("go")
         return;
     }
     if (history.state?.goAt === at) {
-        step < 0 ? history.back() : history.forward();
+        history.go(step);
         return;
     }
     at = to;
@@ -457,9 +458,19 @@ function view() {
         // Touch, if this device has it: the page offers what it offers to
         // touch screens, and takes the touches given it.
         touch: navigator.maxTouchPoints > 0,
+        // Which way up the device is held: the page's screen.orientation and
+        // (orientation: …) media queries follow it. Where the device doesn't
+        // say, the window's shape.
+        ...orientation(),
     };
 }
-const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch"].every((k) => a[k] === b[k]);
+function orientation() {
+    const o = screen.orientation;
+    if (o && /^(portrait|landscape)-(primary|secondary)$/.test(o.type)) return { o: o.type, a: Math.round(o.angle) || 0 };
+    const portrait = window.innerHeight >= window.innerWidth;
+    return { o: portrait ? "portrait-primary" : "landscape-primary", a: portrait ? 0 : 90 };
+}
+const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch", "o", "a"].every((k) => a[k] === b[k]);
 let viewTimer = 0;
 const viewSizes = new ResizeObserver(() => viewSoon());
 function viewSoon() {
@@ -473,6 +484,9 @@ function viewSoon() {
 }
 viewSizes.observe(frame);
 viewSizes.observe(document.documentElement);  // the window: the display
+// Turned: a half turn (landscape one way to the other) changes no size.
+screen.orientation?.addEventListener?.("change", () => viewSoon());
+window.addEventListener("orientationchange", () => viewSoon());
 // A device's keyboard, up for typing here or in the page: the frame's
 // shorter for it (below), but the page in the engine keeps its size (as a
 // phone's browser keeps a page's layout as its keyboard comes and goes),
@@ -1061,8 +1075,83 @@ $("go_address").addEventListener("submit", (e) => {
         load(url);
     }
 });
-back.addEventListener("click", () => goBy(-1));
-forward.addEventListener("click", () => goBy(1));
+back.addEventListener("click", () => held || goBy(-1));
+forward.addEventListener("click", () => held || goBy(1));
+
+// Back (or forward) held, or its context menu (a right click): the pages
+// that way, the nearest first, to go to one, as a browser's own do.
+const historyPanel = $("go_history");
+let held = false, holdTimer = 0;
+function showHistory(button, way) {
+    const pages = [];
+    for (let i = at + way; i >= 0 && i < entries.length && pages.length < 20; i += way) pages.push(i);
+    if (!pages.length) return;
+    historyPanel.replaceChildren(...pages.map((i) => {
+        const b = Object.assign(document.createElement("button"), { type: "button", className: "item" });
+        b.setAttribute("role", "menuitem");
+        b.append(Object.assign(document.createElement("span"), { className: "title", textContent: entries[i].title || hostOf(entries[i].url) }),
+            Object.assign(document.createElement("span"), { className: "where", textContent: hostOf(entries[i].url).replace(/^www\./, "") }));
+        b.title = entries[i].url;
+        b.addEventListener("click", () => {
+            openHistory(null);
+            goBy(i - at);
+        });
+        return b;
+    }));
+    historyPanel.setAttribute("aria-label", way < 0 ? "Pages back" : "Pages forward");
+    historyPanel.style.left = Math.max(4, Math.round(button.getBoundingClientRect().left)) + "px";
+    openHistory(button);
+}
+let historyFrom = null;
+function openHistory(button) {
+    historyFrom?.setAttribute("aria-expanded", "false");
+    historyFrom = button;
+    historyPanel.hidden = !button;
+    if (button) {
+        openMenu(false);
+        button.setAttribute("aria-expanded", "true");
+        historyPanel.querySelector("button")?.focus();
+    }
+}
+for (const [button, way] of [[back, -1], [forward, 1]]) {
+    button.setAttribute("aria-haspopup", "true");
+    button.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        held = false;
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(() => {
+            held = true;  // its click, as it's let go, isn't a step
+            navigator.vibrate?.(10);
+            showHistory(button, way);
+        }, 500);
+    });
+    const letGo = () => clearTimeout(holdTimer);
+    button.addEventListener("pointerup", letGo);
+    button.addEventListener("pointerleave", letGo);
+    button.addEventListener("pointercancel", letGo);
+    // A held touch's own menu (or a right click): the list instead.
+    button.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        if (historyPanel.hidden || historyFrom !== button) showHistory(button, way);
+    });
+    // A press that isn't held: a step again.
+    button.addEventListener("click", () => setTimeout(() => (held = false)), true);
+}
+document.addEventListener("pointerdown", (e) => {
+    if (!historyPanel.hidden && !historyPanel.contains(e.target) && e.target !== historyFrom) openHistory(null);
+}, true);
+window.addEventListener("blur", () => openHistory(null));
+historyPanel.addEventListener("keydown", (e) => {
+    const items = [...historyPanel.querySelectorAll("button")], i = items.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+        const from = historyFrom;
+        openHistory(null);
+        from?.focus();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    }
+});
 menuForward.addEventListener("click", () => goBy(1));
 reload.addEventListener("click", () => (loading ? stop() : at >= 0 && load(entries[at].url, { push: false })));
 document.addEventListener("keydown", (e) => {

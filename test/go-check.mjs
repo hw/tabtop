@@ -106,11 +106,13 @@ setTimeout(() => { const p = document.createElement("p"); p.id = "late"; p.textC
 </script>`,
         "result.html": `<!doctype html><title>Result</title><p id="p"></p><script>document.getElementById("p").textContent = "query " + new URLSearchParams(location.search).get("q");</script>`,
         "view.html": `<!doctype html><title>View</title><style>body { margin: 0 } #hd { height: 123px; background: #eee } .wide-only { display: none } @media (min-width: 900px) { .wide-only { display: block } }</style>
-<header id="hd"><button id="menu">Menu</button></header><p id="w"></p><p id="mq"></p><p class="wide-only" id="wide">wide</p>
+<header id="hd"><button id="menu">Menu</button></header><p id="w"></p><p id="mq"></p><p id="or"></p><p class="wide-only" id="wide">wide</p>
 <script>
 if (location.search === "?tall") document.body.append(Object.assign(document.createElement("div"), { style: "height: 3000px" }));
 const show = () => { document.getElementById("w").textContent = "width " + innerWidth; document.getElementById("mq").textContent = matchMedia("(min-width: 900px)").matches ? "wide" : "narrow"; };
 show(); addEventListener("resize", show);
+const turned = () => { document.getElementById("or").textContent = (screen.orientation ? screen.orientation.type + " " + screen.orientation.angle : "none") + " " + (matchMedia("(orientation: portrait)").matches ? "portrait" : "landscape"); };
+turned(); screen.orientation?.addEventListener("change", turned); matchMedia("(orientation: portrait)").addEventListener("change", turned);
 document.getElementById("menu").onclick = () => { const o = document.createElement("div"); o.id = "overlay"; o.style.cssText = "position: fixed; left: 0; right: 0; bottom: 0; background: #def"; o.style.top = document.getElementById("hd").getBoundingClientRect().bottom + "px"; o.textContent = "menu"; document.body.append(o); };
 </script>`,
         "lazy.html": `<!doctype html><title>Lazy</title><p id="state">waiting</p><p id="feature"></p>
@@ -727,6 +729,31 @@ async function check(base, port, site) {
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
     });
 
+    await step("back held lists the pages before, to go to one; forward's the pages after", async () => {
+        // Held (a touch or the mouse): the list, the page just before first.
+        await ev(`document.getElementById("go_back").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "touch" }))`);
+        await waitFor(`!document.getElementById("go_history").hidden`, "the list, back held", 3000);
+        const pages = await ev(`[...document.querySelectorAll("#go_history button")].map((b) => b.title)`);
+        if (pages.length < 2 || pages.some((u) => u.endsWith("/second.html"))) throw new Error(`back lists ${JSON.stringify(pages)}`);
+        await ev(`document.getElementById("go_back").dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerType: "touch" }))`);
+        // The first page, more than one back.
+        const first = pages[pages.length - 1];
+        await ev(`[...document.querySelectorAll("#go_history button")].at(-1).click()`);
+        await waitFor(`document.getElementById("go_history").hidden && document.getElementById("go_url").dataset.url === ${JSON.stringify(first)}`, "the first page", 30000);
+        // Forward's list (its context menu: a right click), and the last.
+        await ev(`document.getElementById("go_forward").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))`);
+        await waitFor(`!document.getElementById("go_history").hidden`, "the list, forward", 3000);
+        const ahead = await ev(`[...document.querySelectorAll("#go_history button")].map((b) => b.title)`);
+        if (ahead.length !== pages.length || !ahead.at(-1).endsWith("/second.html")) throw new Error(`forward lists ${JSON.stringify(ahead)}`);
+        await ev(`[...document.querySelectorAll("#go_history button")].at(-1).click()`);
+        await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "the last page again", 30000);
+        // And the device's back still a page at a time from there.
+        await ev(`history.back()`);
+        await waitFor(`document.getElementById("go_url").dataset.url === ${JSON.stringify(pages[0])}`, "a page back", 30000);
+        await ev(`history.forward()`);
+        await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
+    });
+
     await step("a site's cookies are kept for new tabs, listed at go/cookie, and deleted by site or by time", async () => {
         const sent = () => frame(`document.getElementById("c")?.textContent`);
         const host = new URL(site).hostname;
@@ -1021,6 +1048,14 @@ async function check(base, port, site) {
             // A menu placed by measuring its header lands under it.
             await frameClick("#menu");
             await frameWait(`document.getElementById("overlay")?.style.top === "123px"`, "the menu under the header");
+            // Turned: the page's screen.orientation and (orientation: …)
+            // follow this device's, a half turn (no size change) too.
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 600, height: 800, deviceScaleFactor: 1, mobile: false, screenOrientation: { type: "portraitPrimary", angle: 0 } });
+            await frameWait(`document.getElementById("or")?.textContent === "portrait-primary 0 portrait"`, "the page held upright");
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 900, height: 500, deviceScaleFactor: 1, mobile: false, screenOrientation: { type: "landscapePrimary", angle: 90 } });
+            await frameWait(`document.getElementById("or")?.textContent === "landscape-primary 90 landscape"`, "the page turned");
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 900, height: 500, deviceScaleFactor: 1, mobile: false, screenOrientation: { type: "landscapeSecondary", angle: 270 } });
+            await frameWait(`document.getElementById("or")?.textContent === "landscape-secondary 270 landscape"`, "the page turned the other way");
         } finally {
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }
