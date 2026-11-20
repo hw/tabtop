@@ -93,14 +93,13 @@ $("go_clear").innerHTML = icon("clear");
 const menu = $("go_menu"), menuPanel = $("go_menu_panel"), menuForward = $("go_menu_forward");
 menu.innerHTML = icon("menu");
 menuForward.innerHTML = `${icon("forward")}<span class="label">Forward</span>`;
-// Cookies and site data: a page of its own (go/cookie, go-cookies.js),
-// in a tab of its own, this one's page kept.
-$("go_menu_sites").innerHTML = `${icon("sites")}<span class="label">Cookies and site data</span>`;
 // Clear cache: what the server and engines keep of what sites sent (not
-// cookies: those are go/cookie's), in every tab (gocache.go).
+// cookies: those are go/settings'), in every tab (gocache.go).
 $("go_menu_cache").innerHTML = `${icon("clear")}<span class="label">Clear cache</span>`;
-// Site settings: sites blocked, pop-ups (go/settings, go-settings.js).
-$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings</span>`;
+// Site settings and cookies: sites blocked, pop-ups, videos blocked, the
+// Referer; cookies and site data (go/settings, go-settings.js and
+// go-cookies.js), in a tab of its own, this one's page kept.
+$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings and cookies</span>`;
 const nav = navBar("go", { logOutIcon: true });
 for (const item of nav.children) {
     const label = document.createElement("span");
@@ -169,6 +168,9 @@ const mediaHelp = {
     failed: (key, error) => frame.contentWindow?.postMessage({ type: "media-state", key, error }, "*"),
     // A player's state changed: the menu's list of them (mediaMenu).
     changed: () => mediaMenu(),
+    // A video's file saved into Downloads (the player's Download), saying
+    // how it goes there; where Files are off, not offered.
+    download: pages.some((p) => p.id === "files") ? (url, say) => saveFile(url, say) : null,
 };
 
 // mediaMenu lists the page's videos and sounds at the menu's top: how
@@ -181,9 +183,6 @@ const MEDIA_ICONS = {
     pause: '<path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" stroke="none"/>',
     watch: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/>',
     skip: '<path d="M5 5l9 7-9 7z M16 5h3v14h-3z" fill="currentColor" stroke="none"/>',
-    // Autoplay paused: a play mark struck through.
-    autoplay: '<path d="M8 5v14l11-7z"/>',
-    noAutoplay: '<path d="M8 5v14l11-7z"/><path d="M4 4l16 16"/>',
 };
 const mediaIcon = (name) => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MEDIA_ICONS[name]}</svg>`;
 // Autoplay paused or not: this device's setting (localStorage), for every
@@ -206,6 +205,67 @@ function glyph(name, label, act, { disabled = false, pressed } = {}) {
     });
     return b;
 }
+// holdToBlock has a Skip held (half a second; or its context menu: a right
+// click, a long touch's) block the site's videos: the page's stopped, and
+// none played on its pages (the site settings), with Undo.
+function holdToBlock(button) {
+    button.classList.add("hold");
+    let timer = 0, held = false;
+    const block = () => {
+        held = true;
+        navigator.vibrate?.(30);  // (a phone's: felt as it's done)
+        openMenu(false);
+        blockVideos();
+    };
+    button.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        held = false;
+        clearTimeout(timer);
+        timer = setTimeout(block, 600);
+    });
+    for (const type of ["pointerup", "pointerleave", "pointercancel"]) button.addEventListener(type, () => clearTimeout(timer));
+    button.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        clearTimeout(timer);
+        if (!held) block();
+    });
+    // Held: its click (as it's let go) isn't a skip.
+    button.addEventListener("click", (e) => {
+        if (!held) return;
+        e.stopImmediatePropagation();
+        held = false;
+    }, true);
+}
+async function blockVideos() {
+    const url = entries[at]?.url;
+    if (!url) return;
+    const site = hostOf(url).replace(/^www\./, "");
+    try {
+        const t = await call({ type: "go-settings-set", name: url, setting: "videos-block" });
+        t.close();
+        media?.block(true);
+        warn(`Videos are blocked on ${site}: its pages' videos won't play (☰ → Site settings).`, {
+            error: false, label: "Undo",
+            retry: async () => {
+                try {
+                    const u = await call({ type: "go-settings-set", name: url, setting: "videos-allow" });
+                    u.close();
+                    load(entries[at].url, { push: false });  // its videos, again
+                } catch (err) { warn(err.message); }
+            },
+        });
+    } catch (err) {
+        warn(err.message || "Its videos couldn't be blocked.");
+    }
+}
+$("go_menu_autoplay").innerHTML = `<span>Autoplay</span><span class="knob" aria-hidden="true"></span>`;
+$("go_menu_autoplay").addEventListener("click", (e) => {
+    e.stopPropagation();
+    autoplayPaused = !autoplayPaused;
+    try { autoplayPaused ? localStorage.setItem(AUTOPLAY, "1") : localStorage.removeItem(AUTOPLAY); } catch { /* this page's only */ }
+    media?.autoplay(!autoplayPaused);
+    mediaMenu();
+});
 let mediaDrawn = "", mediaDrawnOpen = false;
 function mediaMenu() {
     const section = $("go_menu_media"), list = section.querySelector("ul");
@@ -223,14 +283,13 @@ function mediaMenu() {
     mediaDrawnOpen = !menuPanel.hidden;
     // Autoplay paused, or not: every player paused, and the page's starting
     // them not done, till one's played here (this device's setting).
+    // (A switch, named: a glyph alone would read as "play all".)
     const toggle = $("go_menu_autoplay");
-    toggle.replaceWith(Object.assign(glyph(autoplayPaused ? "noAutoplay" : "autoplay", autoplayPaused ? "Autoplay paused: let pages play their videos" : "Pause autoplay: stop every video, and pages starting them", () => {
-        autoplayPaused = !autoplayPaused;
-        try { autoplayPaused ? localStorage.setItem(AUTOPLAY, "1") : localStorage.removeItem(AUTOPLAY); } catch { /* this page's only */ }
-        media?.autoplay(!autoplayPaused);
-        mediaMenu();
-        $("go_menu_autoplay").focus();
-    }, { pressed: autoplayPaused }), { id: "go_menu_autoplay" }));
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-checked", String(!autoplayPaused));
+    toggle.title = autoplayPaused ? "Autoplay is off: pages' videos wait to be played" : "Autoplay is on: turn it off to stop every video, and pages starting them";
+    toggle.removeAttribute("aria-pressed");
+
     const focused = document.activeElement?.closest?.("#go_menu_media li");
     const focusedKey = focused?.dataset.key, focusedAct = document.activeElement?.dataset?.act;
     list.replaceChildren(...players.map((p, i) => {
@@ -245,10 +304,13 @@ function mediaMenu() {
         if (p.src) where.title = p.src;
         about.append(state, where);
         const which = `${noun} ${i + 1}${p.src ? `, ${p.src}` : ""}`;
+        // The player, then play or pause and skip, side by side.
+        const skip = glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block this site's videos`, () => media?.skip(p.key), { disabled: !p.skippable });
+        holdToBlock(skip);
         const acts = [
-            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready || p.state === "Skipped" }),
             ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
-            glyph("skip", `Skip ${which} to its end (Shift+N on it)`, () => media?.skip(p.key), { disabled: !p.skippable }),
+            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready || p.state === "Skipped" }),
+            skip,
         ];
         for (const [j, b] of acts.entries()) b.dataset.act = String(j);
         const buttons = Object.assign(document.createElement("div"), { className: "acts" });
@@ -793,6 +855,7 @@ function message(m) {
                 media = newMedia();
             }
             shown = m.gen;
+            media.block(!!m.noVideos);  // its site's videos blocked (the site settings)
             lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at };
             toFrame(lastRender);
             update();
@@ -1183,8 +1246,11 @@ function offerFile(url, mime) {
     }
     warn(`${what} Save it into Downloads?`, { error: false, retry: () => saveFile(url), label: "Save into Downloads" });
 }
-async function saveFile(url) {
-    show(`Saving ${hostOf(url)}’s file into Downloads…`);
+// saveFile saves url into Downloads, saying how it goes (say: where, as
+// the player does over the page; else the page's status, and its notice).
+async function saveFile(url, say = null) {
+    const status = say ?? show;
+    status(`Saving ${hostOf(url)}’s file into Downloads…`);
     let t;
     try {
         t = await call({ type: "fetch", path: "", url, from_go: true });
@@ -1199,15 +1265,17 @@ async function saveFile(url) {
                 const amount = Number.isFinite(got) && got >= 0 ? `${(got / 1048576).toFixed(1)} MB` : "";
                 const progress = Number.isFinite(total) && total > 0 && amount
                     ? `${Math.min(100, Math.floor(got / total * 100))}% · ${amount}` : amount;
-                show(`Saving ${name || "file"} from ${hostOf(url)}${progress ? ` · ${progress}` : ""}…`);
+                status(`Saving ${name || "file"} from ${hostOf(url)}${progress ? ` · ${progress}` : ""}…`);
             }
             if (res.fetch?.done) {
+                if (say) return say(`Saved ${res.fetch.name} into Downloads.`);
                 show("");
                 warn(`Saved ${res.fetch.name} into Downloads.`, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
                 return;
             }
         }
     } catch (err) {
+        if (say) return say(`Not saved: ${err.message}`);
         show("");
         warn(`Not saved: ${err.message}`, { retry: () => saveFile(url), label: "Retry save" });
     } finally {
@@ -1277,9 +1345,31 @@ function showHistory(button, way) {
         });
         return b;
     }));
+    // And clearing them: this tab's pages back and forward forgotten, the
+    // one it's on kept.
+    const clear = Object.assign(document.createElement("button"), { type: "button", className: "item clear", textContent: "Clear history" });
+    clear.setAttribute("role", "menuitem");
+    clear.title = "Forget this tab's pages back and forward";
+    clear.addEventListener("click", () => {
+        openHistory(null);
+        clearHistory();
+    });
+    historyPanel.append(clear);
     historyPanel.setAttribute("aria-label", way < 0 ? "Pages back" : "Pages forward");
     historyPanel.style.left = Math.max(4, Math.round(button.getBoundingClientRect().left)) + "px";
     openHistory(button);
+}
+// clearHistory forgets the tab's pages but the one it's on: Back and
+// Forward have none, nor has a reload. (The browser's own history keeps
+// its entries for this page, which go nowhere now.)
+function clearHistory() {
+    if (at < 0) return;
+    entries = [entries[at]];
+    at = 0;
+    if (inTabs) toTabs({ type: "history", at: 0, cleared: true });
+    else try { history.replaceState({ goAt: 0 }, ""); } catch { /* as it is */ }
+    update();
+    note("History cleared: this tab's pages back and forward are forgotten.");
 }
 let historyFrom = null;
 function openHistory(button) {
@@ -1338,7 +1428,7 @@ $("go_menu_cache").addEventListener("click", async () => {
         t.close();
         forgetResources();
         toTabs({ type: "cache-cleared" });  // the other tabs' copies' too
-        warn("Cache cleared: pages are fetched from their sites again. Cookies and sites' data are kept (Cookies and site data clears those).", { error: false });
+        warn("Cache cleared: pages are fetched from their sites again. Cookies and sites' data are kept (Site settings and cookies clears those).", { error: false });
     } catch (err) {
         warn(err.message || "The cache couldn't be cleared.");
     }

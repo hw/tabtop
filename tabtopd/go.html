@@ -73,8 +73,20 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     border: 0; border-radius: 50%; background: none; color: #e8e8ea; cursor: pointer; }
 #go_menu_media .glyph:hover:not(:disabled) { background: #48484a; }
 #go_menu_media .glyph:disabled { opacity: .35; cursor: default; }
-#go_menu_media .glyph[aria-pressed="true"] { color: #8ab4f8; background: rgba(138, 180, 248, .15); }
+/* Autoplay: a switch, named. */
+#go_menu_autoplay { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 6px; border: 0; border-radius: 18px; background: none;
+    color: #e8e8ea; font: 13px system-ui, sans-serif; cursor: pointer; }
+#go_menu_autoplay:hover { background: #3a3a3c; }
+#go_menu_autoplay:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
+#go_menu_autoplay .knob { position: relative; width: 32px; height: 18px; border-radius: 9px; background: #636366; transition: background .15s; }
+#go_menu_autoplay .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+#go_menu_autoplay[aria-checked="true"] .knob { background: #8ab4f8; }
+#go_menu_autoplay[aria-checked="true"] .knob::after { transform: translateX(14px); }
+@media (pointer: coarse) { #go_menu_autoplay { min-height: 44px; } }
 #go_menu_media .glyph:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
+/* Held (Skip: to block the site's videos): not a selection, a callout, nor
+   a scroll begun by a finger's wavering. */
+#go_menu_media .glyph.hold { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; touch-action: none; }
 #go_menu { position: relative; }
 #go_menu.has-media::after { content: ""; position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #8ab4f8; }
 /* The pages back (or forward), Back held. */
@@ -86,6 +98,7 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     min-height: 44px; height: auto; padding: 4px 10px; font: 14px system-ui, sans-serif; color: #e8e8ea; text-align: left;
     background: none; border: 0; border-radius: 6px; cursor: pointer; }
 #go_history .item:hover, #go_history .item:focus-visible { background: #3a3a3c; }
+#go_history .item.clear { margin-top: 4px; border-top: 1px solid #48484a; border-radius: 0 0 6px 6px; color: #f2b8b5; font-weight: 600; }
 #go_history .title, #go_history .where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #go_history .where { color: #a8a8ad; font-size: 12px; }
 #go_back, #go_forward { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
@@ -112,28 +125,51 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 .go-media-loading .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; background: #8ab4f8; border-radius: 2px; transition: width .25s; }
 .go-media-loading .bar.unknown > i { width: 30%; animation: go-media-loading 1.2s ease-in-out infinite; transition: none; }
 /* The remote browser's own player (go-player.js): over everything, the
-   video kept to its proportions, its controls over its bottom, hidden
-   while it plays untouched. */
-#go_player { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; outline: none; color: #fff;
-    font: 14px system-ui, sans-serif; padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0); }
-#go_player .stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+   video kept to its proportions; at its top what it is and closing it, in
+   its middle back, play and on, at its bottom where it is and the rest:
+   all hidden together while it plays untouched, as video apps' are. Its
+   glyphs as the menu's. */
+#go_player { position: fixed; inset: 0; z-index: 50; background: #000; outline: none; color: #fff; font: 14px system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+#go_player .stage { position: absolute; inset: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0); }
 #go_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
-#go_player .bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 24px 12px calc(8px + env(safe-area-inset-bottom, 0));
-    background: linear-gradient(transparent, rgba(0, 0, 0, .8)); transition: opacity .2s; }
-#go_player:not(.awake):not(.paused) .bar { opacity: 0; pointer-events: none; }
-#go_player:not(.awake):not(.paused) .stage { cursor: none; }
-#go_player .seek { width: 100%; margin: 0 0 4px; accent-color: #8ab4f8; height: 24px; }
-#go_player .row { display: flex; align-items: center; gap: 4px; }
+#go_player .top, #go_player .middle, #go_player .bar { transition: opacity .2s; }
+#go_player:not(.awake):not(.paused) :is(.top, .middle, .bar) { opacity: 0; pointer-events: none; }
+#go_player:not(.awake):not(.paused) { cursor: none; }
+#go_player .top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: flex-start; gap: 8px;
+    padding: calc(6px + env(safe-area-inset-top, 0)) calc(6px + env(safe-area-inset-right, 0)) 28px calc(16px + env(safe-area-inset-left, 0));
+    background: linear-gradient(rgba(0, 0, 0, .75), transparent); }
+#go_player .about { flex: 1; min-width: 0; padding-top: 11px; }
+#go_player .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#go_player .note { display: block; margin-top: 2px; font-size: 12px; color: #d0d0d4; }
+#go_player .middle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 36px; pointer-events: none; }
+#go_player .middle .glyph { pointer-events: auto; background: rgba(0, 0, 0, .4); }
+#go_player .bar { position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 28px calc(10px + env(safe-area-inset-right, 0)) calc(6px + env(safe-area-inset-bottom, 0)) calc(10px + env(safe-area-inset-left, 0));
+    background: linear-gradient(transparent, rgba(0, 0, 0, .8)); }
+#go_player .seek { width: 100%; margin: 0 0 2px; accent-color: #8ab4f8; height: 24px; }
+#go_player .row { display: flex; align-items: center; gap: 2px; }
 #go_player .spacer { flex: 1; }
 #go_player .time { margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
 #go_player .glyph { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0;
     border-radius: 50%; background: none; color: #fff; cursor: pointer; }
-#go_player .glyph:hover { background: rgba(255, 255, 255, .15); }
+#go_player .glyph.mid { width: 56px; height: 56px; }
+#go_player .glyph.mid svg { width: 30px; height: 30px; }
+#go_player .glyph.big { width: 72px; height: 72px; }
+#go_player .glyph.big svg { width: 40px; height: 40px; }
+#go_player .glyph:hover { background: rgba(255, 255, 255, .18); }
 #go_player .glyph:focus-visible, #go_player .speed:focus-visible, #go_player .seek:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
-#go_player .speed { height: 36px; padding: 0 6px; border: 1px solid rgba(255, 255, 255, .4); border-radius: 6px; background: rgba(0, 0, 0, .5);
-    color: #fff; font: 600 13px system-ui, sans-serif; }
-@media (max-width: 420px) { #go_player .time { font-size: 12px; } #go_player .row { gap: 0; } #go_player .glyph { width: 40px; } }
-@media (prefers-reduced-motion: reduce) { #go_player .bar { transition: none; } }
+/* Its speed: a label as the glyphs are (no box), its choices the browser's. */
+#go_player .speed { -webkit-appearance: none; appearance: none; height: 44px; min-width: 44px; margin: 0; padding: 0 8px; border: 0; border-radius: 22px;
+    background: none; color: #fff; font: 700 14px system-ui, sans-serif; text-align: center; text-align-last: center; cursor: pointer; }
+#go_player .speed:hover { background: rgba(255, 255, 255, .18); }
+#go_player .speed option { color: #000; }
+#go_player .flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 10px 18px; border-radius: 24px; background: rgba(0, 0, 0, .6);
+    font-weight: 600; opacity: 0; transition: opacity .15s; pointer-events: none; }
+#go_player .flash.left { left: 10%; }
+#go_player .flash.right { right: 10%; }
+#go_player .flash.shown { opacity: 1; }
+@media (max-width: 420px) { #go_player .middle { gap: 24px; } #go_player .glyph { width: 40px; height: 40px; } #go_player .time { font-size: 12px; } }
+@media (prefers-reduced-motion: reduce) { #go_player :is(.top, .middle, .bar, .flash) { transition: none; } }
 @keyframes go-media-loading { from { left: -30%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .go-media-loading .bar.unknown > i { animation: none; left: 0; width: 100%; opacity: .5; } }
 #go_status { position: absolute; left: calc(8px + var(--safe-left)); bottom: calc(8px + var(--safe-bottom)); max-width: calc(100% - 16px - var(--safe-left) - var(--safe-right)); box-sizing: border-box; padding: 4px 10px;
@@ -213,10 +249,9 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <button type="button" id="go_tabs" title="Tabs" aria-label="Tabs" hidden><span class="count">1</span></button>
     <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
     <div id="go_menu_panel" hidden>
-        <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay" class="glyph"></button></div><ul></ul></section>
+        <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay"></button></div><ul></ul></section>
         <button type="button" class="item" id="go_menu_forward" disabled></button>
         <a class="item" id="go_menu_settings" href="settings" target="tabtop-go-settings"></a>
-        <a class="item" id="go_menu_sites" href="cookie" target="tabtop-go-cookie"></a>
         <button type="button" class="item" id="go_menu_cache"></button>
     </div>
     <div id="go_history" role="menu" hidden></div>

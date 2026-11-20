@@ -25,7 +25,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, download } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -329,6 +329,11 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     }
 
+    // Its site's videos blocked (the site settings): none played, those
+    // there stopped, the page told why in their boxes.
+    const BLOCKED = "Videos from this site are blocked (☰ → Site settings).";
+    let blocked = false;
+
     // pageStarts plays a player the page started, unless autoplay's paused
     // (and it's not one the person played): then the page's told it's
     // paused, as a browser that won't autoplay tells it.
@@ -512,6 +517,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 return { error: "This media can't be played here." };
             }
             if (players.has(key)) return {};
+            if (blocked) return { error: BLOCKED };
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
             const controller = new AbortController();
             const { signal } = controller;
@@ -663,6 +669,20 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             }
             if (media) on ? pageStarts(key, player) : media.pause();
         },
+        // block stops every player, and plays none from now (its site's
+        // videos blocked), or (false) lets them be again.
+        block(on) {
+            blocked = !!on;
+            if (!blocked) return;
+            for (const [key, player] of [...players]) {
+                const media = player.element;
+                media?.pause();
+                played?.(key, { t: Number.isFinite(media?.currentTime) ? media.currentTime : 0, playing: false, ended: false });
+                closePlayer(key);
+                failed?.(key, BLOCKED);
+            }
+            told();
+        },
         // autoplay allows the page's starting its players, or (false) pauses
         // them all and stops it doing so, till the person plays one.
         autoplay(on) {
@@ -693,6 +713,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             player.closeWatch = openPlayer(media, {
                 title: shortAddress(player.src),
                 skip: () => skip(key),
+                // A file's (a site's stream isn't one), saved by the server.
+                download: !player.stream && download ? (say) => download(player.src, say) : null,
                 closed: () => {
                     player.watching = false;
                     player.closeWatch = null;

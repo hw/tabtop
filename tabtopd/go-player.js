@@ -3,7 +3,7 @@
 // box (the same player, moved: what it's buffered, and a site's stream fed
 // to it, go on), with controls of its own: play and pause, back and on 10
 // seconds, where it is, its speed, Skip, full screen, and closing it (back
-// to its box). Its proportions kept (the screen's black around it). Full
+// to its box), and saving it (a file's: Download). Its proportions kept (the screen's black around it). Full
 // screen on a phone, the screen's turned to the video's way: a tall video
 // upright, a wide one sideways, however the phone's held (where the
 // browser lets a page turn it: Android's, not an iPhone's).
@@ -15,9 +15,11 @@ const IDLE = 3000;  // the controls hidden, playing, after so long untouched
 const ICONS = {
     play: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
     pause: '<path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" stroke="none"/>',
-    back: '<path d="M11 6a7 7 0 1 1-6.3 4"/><path d="M4 5v5h5"/><text x="12" y="16" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-family="system-ui">10</text>',
-    on: '<path d="M13 6a7 7 0 1 0 6.3 4"/><path d="M20 5v5h-5"/><text x="12" y="16" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-family="system-ui">10</text>',
+    // Back and on: a turn the clock's way back, or on, 10 in it.
+    back: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3.5 3.5V8h4.5"/><text x="12.5" y="15.5" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" font-family="system-ui, sans-serif">10</text>',
+    on: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5V8H16"/><text x="11.5" y="15.5" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" font-family="system-ui, sans-serif">10</text>',
     skip: '<path d="M5 5l9 7-9 7z M16 5h3v14h-3z" fill="currentColor" stroke="none"/>',
+    download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
     full: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     unfull: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
     close: '<path d="M6 6l12 12M18 6L6 18"/>',
@@ -35,7 +37,7 @@ function clock(t) {
 // player, full screen; skip (if given) skips it (the page told it played
 // to its end); closed is called, the element given back, as it's closed.
 // It returns close.
-export function openPlayer(media, { title = "", skip, closed } = {}) {
+export function openPlayer(media, { title = "", skip, download, closed } = {}) {
     const box = document.createElement("div");
     box.id = "go_player";
     box.setAttribute("role", "dialog");
@@ -44,9 +46,9 @@ export function openPlayer(media, { title = "", skip, closed } = {}) {
     box.tabIndex = -1;
     const stage = Object.assign(document.createElement("div"), { className: "stage" });
     const bar = Object.assign(document.createElement("div"), { className: "bar" });
-    const button = (name, label, act) => {
-        const b = Object.assign(document.createElement("button"), { type: "button", className: "glyph", title: label });
-        b.setAttribute("aria-label", label);
+    const button = (name, label, act, className = "glyph") => {
+        const b = Object.assign(document.createElement("button"), { type: "button", className, title: label });
+        b.setAttribute("aria-label", label.replace(/ \(.*\)$/, ""));
         b.innerHTML = icon(name);
         b.addEventListener("click", (e) => { e.stopPropagation(); act(); awake(); });
         return b;
@@ -54,9 +56,9 @@ export function openPlayer(media, { title = "", skip, closed } = {}) {
     const seek = Object.assign(document.createElement("input"), { type: "range", min: "0", max: "0", step: "0.1", value: "0", className: "seek" });
     seek.setAttribute("aria-label", "Where in the video");
     const time = Object.assign(document.createElement("span"), { className: "time" });
-    const play = button("play", "Play (Space)", () => (media.paused || media.ended ? media.play().catch(() => {}) : media.pause()));
-    const back = button("back", `Back ${STEP} seconds (←)`, () => by(-STEP));
-    const on = button("on", `On ${STEP} seconds (→)`, () => by(STEP));
+    const play = button("play", "Play (Space)", () => (media.paused || media.ended ? media.play().catch(() => {}) : media.pause()), "glyph big");
+    const back = button("back", `Back ${STEP} seconds (←, or a double tap at the left)`, () => by(-STEP), "glyph mid");
+    const on = button("on", `On ${STEP} seconds (→, or a double tap at the right)`, () => by(STEP), "glyph mid");
     const speed = document.createElement("select");
     speed.className = "speed";
     speed.setAttribute("aria-label", "Speed");
@@ -65,14 +67,31 @@ export function openPlayer(media, { title = "", skip, closed } = {}) {
     if (!SPEEDS.includes(media.playbackRate)) speed.value = "1";
     speed.addEventListener("change", () => { media.playbackRate = Number(speed.value); awake(); });
     speed.addEventListener("click", (e) => e.stopPropagation());
+    // Download: saved into Downloads (the server's: Files), how it goes said
+    // under its title.
+    const note = Object.assign(document.createElement("span"), { className: "note" });
+    note.setAttribute("role", "status");
+    const saved = download ? button("download", "Download it into Downloads", () => download((text) => { note.textContent = text; awake(); })) : null;
     const skipped = skip ? button("skip", "Skip to its end (Shift+N)", () => { skip(); close(); }) : null;
     const full = button("full", "Full screen (F)", () => toggleFull());
     const shut = button("close", "Close the player (Esc)", () => close());
+    // At its top, what it is and closing it; in its middle, back, play and
+    // on; at its bottom, where it is, its speed, and the rest. All hidden
+    // together while it plays untouched (awake).
+    const top = Object.assign(document.createElement("div"), { className: "top" });
+    const about = Object.assign(document.createElement("div"), { className: "about" });
+    about.append(Object.assign(document.createElement("span"), { className: "title", textContent: title }), note);
+    top.append(about, shut);
+    const middle = Object.assign(document.createElement("div"), { className: "middle" });
+    middle.append(back, play, on);
     const row = Object.assign(document.createElement("div"), { className: "row" });
     const spacer = Object.assign(document.createElement("span"), { className: "spacer" });
-    row.append(back, play, on, time, spacer, speed, ...(skipped ? [skipped] : []), full, shut);
+    row.append(time, spacer, speed, ...(saved ? [saved] : []), ...(skipped ? [skipped] : []), full);
     bar.append(seek, row);
-    box.append(stage, bar);
+    // A double tap's mark: back or on, where it was.
+    const flash = Object.assign(document.createElement("div"), { className: "flash" });
+    flash.setAttribute("aria-hidden", "true");
+    box.append(stage, top, middle, bar, flash);
 
     // The video, taken from its box: its own controls off (these instead),
     // as it was given back.
@@ -115,20 +134,30 @@ export function openPlayer(media, { title = "", skip, closed } = {}) {
         idle = setTimeout(() => { if (!media.paused && !bar.contains(document.activeElement)) box.classList.remove("awake"); }, IDLE);
     }
     box.addEventListener("pointermove", awake);
-    // A tap on the video: the controls shown (or, shown, hidden); a double
-    // tap at its left or right third: back or on, as video apps do.
-    let lastTap = 0;
-    stage.addEventListener("click", (e) => {
-        const now = performance.now(), r = stage.getBoundingClientRect(), third = (e.clientX - r.left) / r.width;
-        if (now - lastTap < 300 && (third < 1 / 3 || third > 2 / 3)) {
-            by(third < 1 / 3 ? -STEP : STEP);
-            lastTap = 0;
-            awake();
+    // A tap on the video: the controls shown (or, shown, hidden), a moment
+    // after (a second tap may follow); a double tap at its left or right
+    // half: back or on 10 s, as video apps do, marked where it was (more
+    // taps, more: each another 10 s).
+    let lastTap = 0, tapTimer = 0, flashTimer = 0;
+    const show = () => {
+        if (box.classList.contains("awake") && !media.paused) box.classList.remove("awake");
+        else awake();
+    };
+    box.addEventListener("click", (e) => {
+        if (e.target.closest("button, select, input")) return;
+        const now = performance.now(), r = box.getBoundingClientRect(), right = e.clientX - r.left > r.width / 2;
+        if (now - lastTap < 350) {
+            clearTimeout(tapTimer);
+            by(right ? STEP : -STEP);
+            flash.textContent = right ? `${STEP} s ⏩` : `⏪ ${STEP} s`;
+            flash.className = "flash shown " + (right ? "right" : "left");
+            clearTimeout(flashTimer);
+            flashTimer = setTimeout(() => { flash.className = "flash"; }, 600);
+            lastTap = now;  // (and a third tap, another)
             return;
         }
         lastTap = now;
-        if (box.classList.contains("awake") && !media.paused) box.classList.remove("awake");
-        else awake();
+        tapTimer = setTimeout(show, 250);
     });
     box.addEventListener("keydown", (e) => {
         if (e.target === speed || e.target === seek && /^Arrow/.test(e.key)) return;
@@ -192,6 +221,8 @@ export function openPlayer(media, { title = "", skip, closed } = {}) {
         if (done) return;
         done = true;
         clearTimeout(idle);
+        clearTimeout(tapTimer);
+        clearTimeout(flashTimer);
         document.removeEventListener("fullscreenchange", fullChanged);
         for (const type of events) media.removeEventListener(type, shown);
         if (document.fullscreenElement === box) document.exitFullscreen().catch(() => {});

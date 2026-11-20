@@ -27,12 +27,15 @@ type goSiteSettings struct {
 	blocked   []string          // hosts: example.com blocks it and its subdomains
 	popups    map[string]string // site -> "allow" or "block"
 	noReferer bool              // what's fetched for a page doesn't say the page (Referer)
+	noVideos  []string          // sites whose pages' videos and sounds aren't played
 }
 
 type goSiteSettingsFile struct {
 	Blocked []string          `json:"blocked"`
 	Popups  map[string]string `json:"popups"`
 	Referer *bool             `json:"referer,omitempty"` // false: not sent; unsaid: sent
+	// Sites whose pages' videos and sounds aren't played.
+	NoVideos []string `json:"noVideos,omitempty"`
 }
 
 // goBlockedHost is whether a host is blocked in the settings: the engine's
@@ -68,6 +71,11 @@ func newGoSiteSettings(file string) *goSiteSettings {
 		}
 	}
 	s.noReferer = f.Referer != nil && !*f.Referer
+	for _, h := range f.NoVideos {
+		if h = goSettingHost(h); h != "" && !slices.Contains(s.noVideos, h) && len(s.noVideos) < maxGoSiteSettings {
+			s.noVideos = append(s.noVideos, h)
+		}
+	}
 	for site, v := range f.Popups {
 		if site = goSettingHost(site); site != "" && (v == "allow" || v == "block") && len(s.popups) < maxGoSiteSettings {
 			s.popups[site] = v
@@ -117,7 +125,7 @@ func (s *goSiteSettings) save() {
 	if s.file == "" {
 		return
 	}
-	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups}
+	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, NoVideos: s.noVideos}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -152,6 +160,23 @@ func (s *goSiteSettings) sendReferer() bool {
 	return !s.noReferer
 }
 
+// videosBlocked is whether a page at host may not play its videos and
+// sounds (its site's set so, or its subdomain's).
+func (s *goSiteSettings) videosBlocked(host string) bool {
+	host = strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
+	if host == "" || s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.noVideos {
+		if host == b || strings.HasSuffix(host, "."+b) {
+			return true
+		}
+	}
+	return false
+}
+
 // popup is what's said for a site's pop-ups: "allow", "block", or "" (ask).
 func (s *goSiteSettings) popup(site string) string {
 	s.mu.Lock()
@@ -159,8 +184,9 @@ func (s *goSiteSettings) popup(site string) string {
 	return s.popups[site]
 }
 
-// set changes a site's setting: "block" or "unblock" it, or its pop-ups
-// "popups-allow", "popups-block" or "popups-ask" (forget the answer).
+// set changes a site's setting: "block" or "unblock" it, its pop-ups
+// "popups-allow", "popups-block" or "popups-ask" (forget the answer), or
+// its videos "videos-block" or "videos-allow" (the whole site's).
 func (s *goSiteSettings) set(site, setting string) error {
 	if setting == "referer-on" || setting == "referer-off" {
 		// Not a site's: all of them.
@@ -173,6 +199,9 @@ func (s *goSiteSettings) set(site, setting string) error {
 	h := goSettingHost(site)
 	if h == "" {
 		return errors.New("That isn't a site's address.")
+	}
+	if setting == "videos-block" || setting == "videos-allow" {
+		h = goSite(h) // the whole site's (m.youtube.com: youtube.com)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,6 +223,16 @@ func (s *goSiteSettings) set(site, setting string) error {
 		s.popups[h] = strings.TrimPrefix(setting, "popups-")
 	case "popups-ask":
 		delete(s.popups, h)
+	case "videos-block":
+		if !slices.Contains(s.noVideos, h) {
+			if len(s.noVideos) >= maxGoSiteSettings {
+				return errors.New("Too many sites have their videos blocked.")
+			}
+			s.noVideos = append(s.noVideos, h)
+			slices.Sort(s.noVideos)
+		}
+	case "videos-allow":
+		s.noVideos = slices.DeleteFunc(s.noVideos, func(b string) bool { return b == h })
 	default:
 		return errors.New("That isn't a setting.")
 	}
@@ -208,7 +247,7 @@ func (s *goSiteSettings) report() map[string]any {
 	for k, v := range s.popups {
 		popups[k] = v
 	}
-	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": popups, "referer": !s.noReferer, "kept": s.file != ""}
+	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": popups, "referer": !s.noReferer, "noVideos": slices.Clone(s.noVideos), "kept": s.file != ""}
 }
 
 // routeGoSettings answers the settings page: what's set.

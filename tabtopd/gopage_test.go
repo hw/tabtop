@@ -73,16 +73,15 @@ func TestGoPage(t *testing.T) {
 	if res, _ := get("/tabtop/go-frame.js"); res.StatusCode != 200 {
 		t.Errorf("go-frame.js: %d", res.StatusCode)
 	}
-	// Its cookies' page, at go/cookie, and its script.
-	res, cookies := get("/go/cookie")
-	if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(cookies, `src="go-cookies.js"`) {
-		t.Errorf("the cookies page: %d %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
+	// Its cookies, at go/cookie: on its settings page now, gone to.
+	if res, _ := get("/go/cookie"); res.StatusCode != http.StatusFound || res.Header.Get("Location") != "settings#cookies" {
+		t.Errorf("go/cookie: %d to %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	if res, _ := get("/go/go-cookies.js"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
 		t.Errorf("go-cookies.js: %d", res.StatusCode)
 	}
-	// Its site settings' page, at go/settings.
-	if res, settings := get("/go/settings"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(settings, `src="go-settings.js"`) {
+	// Its site settings' page, with its cookies, at go/settings.
+	if res, settings := get("/go/settings"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(settings, `src="go-settings.js"`) || !strings.Contains(settings, `src="go-cookies.js"`) {
 		t.Errorf("the settings page: %d", res.StatusCode)
 	}
 }

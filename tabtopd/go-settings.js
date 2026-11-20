@@ -1,5 +1,7 @@
 // The remote browser's site settings, at go/settings (gosites.go): sites'
-// pop-ups (allowed, blocked, or asked about), and sites blocked.
+// pop-ups (allowed, blocked, or asked about), sites whose videos are
+// blocked, and sites blocked. (Its cookies and site data, on the same page:
+// go-cookies.js.)
 
 import { call, setLoginTitle } from "../tabtop/requests.js";
 
@@ -43,6 +45,16 @@ function show(r) {
     }));
     $("blocked_empty").hidden = blocked.length > 0;
     $("referer").checked = r.referer !== false;
+    const noVideos = Array.isArray(r.noVideos) ? r.noVideos : [];
+    $("videos").replaceChildren(...noVideos.map((site) => {
+        const li = document.createElement("li");
+        const b = Object.assign(document.createElement("button"), { type: "button", textContent: "Allow" });
+        b.setAttribute("aria-label", `Let ${site}'s videos play`);
+        b.addEventListener("click", () => set(site, "videos-allow", `${site}'s videos play again.`));
+        li.append(Object.assign(document.createElement("span"), { className: "site", textContent: site }), b);
+        return li;
+    }));
+    $("videos_empty").hidden = noVideos.length > 0;
 }
 
 async function set(name, setting, done) {
@@ -59,6 +71,13 @@ async function set(name, setting, done) {
 $("referer").addEventListener("change", () => {
     const on = $("referer").checked;
     set("", on ? "referer-on" : "referer-off", on ? "Pages' addresses are sent with what they load." : "Pages' addresses aren't sent with what they load.");
+});
+
+$("video_block").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const site = $("video_site").value.trim();
+    if (!site) return;
+    if (await set(site, "videos-block", `${site}'s videos blocked.`)) $("video_site").value = "";
 });
 
 $("block").addEventListener("submit", async (e) => {

@@ -1,4 +1,5 @@
-// The remote browser's cookies and site data, at go/cookie: the sites
+// The remote browser's cookies and site data, on its site settings page
+// (go/settings#cookies; go/cookie goes there): the sites
 // whose cookies are kept for the account (gocookies.go), or whose data is
 // in a /go tab open now; how many cookies, and when last set. A site's
 // deleted, or what sites set in a time is cleared. Only sites and counts
@@ -6,7 +7,6 @@
 
 import { call, setLoginTitle } from "../tabtop/requests.js";
 
-setLoginTitle("Cookies");
 
 const $ = (id) => document.getElementById(id);
 

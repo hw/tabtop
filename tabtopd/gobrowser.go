@@ -1396,7 +1396,9 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				b.send(map[string]any{"type": "go-file", "gen": gen, "url": u, "mime": media})
 				return
 			}
-			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At)})
+			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
+				// Its site's videos blocked (the site settings): not played here.
+				"noVideos": b.sites.videosBlocked(goURLHost(s.URL))})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return

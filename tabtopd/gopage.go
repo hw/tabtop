@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-player.js go-cookies.html go-cookies.js go-tabs.html go-tabs.js go-settings.html go-settings.js
+//go:embed go.html go.js go-media.js go-player.js go-cookies.js go-tabs.html go-tabs.js go-settings.html go-settings.js
 var goFiles embed.FS
 
 const (
@@ -82,12 +82,18 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go.html")
 		w.Write(page)
-	case "cookie", "settings":
-		// The cookies kept for it (gocookies.go), by site; its site
-		// settings (gosites.go). Their script, the tunnel, nothing else.
+	case "cookie":
+		// Its cookies and site data: on its site settings page, now. (Said
+		// as it is, relative: http.Redirect would make it a path from the
+		// root, without the base path a proxy serves TabTop under.)
+		h.Set("Location", "settings#cookies")
+		w.WriteHeader(http.StatusFound)
+	case "settings":
+		// Its site settings (gosites.go), and the cookies kept for it
+		// (gocookies.go), by site. Their scripts, the tunnel, nothing else.
 		h.Set("Content-Security-Policy", goCookiesCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		page, _ := goFiles.ReadFile(map[string]string{"cookie": "go-cookies.html", "settings": "go-settings.html"}[strings.TrimPrefix(r.URL.Path, goPrefix)])
+		page, _ := goFiles.ReadFile("go-settings.html")
 		w.Write(page)
 	case "go.js", "go-media.js", "go-player.js", "go-cookies.js", "go-tabs.js", "go-settings.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
