@@ -77,13 +77,13 @@
         }, true);
         // Players the page started or stopped since the last batch (media
         // events don't bubble: caught on their way down).
-        let played = new Set();
+        let played = new Map();
         // Not those said of how the person's player plays (gomedia.js fires
         // them as it's told, within the telling): the page's doing only.
         let tellingPlay = false;
         for (const type of ["play", "pause", "ended", "emptied"]) {
             document.addEventListener(type, (e) => {
-                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.add(e.target);
+                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.set(e.target, type === "play" || !e.target.paused && !e.target.ended);
             }, true);
         }
         let lastURL = "";
@@ -517,8 +517,8 @@
             observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
             lastURL = here();
             // What's playing already: said with the first batch.
-            played = new Set();
-            for (const m of document.querySelectorAll("video, audio")) if (!m.paused) played.add(m);
+            played = new Map();
+            for (const m of document.querySelectorAll("video, audio")) if (!m.paused && !m.ended) played.set(m, true);
             // All of what's observed, for the copy built from this.
             ioSent = new Set();
             ioOut = [];
@@ -528,6 +528,12 @@
             ioOut = [];
             return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll });
         }
+
+        let streamBatch = null;
+        document.addEventListener("__tabtop_stream", (e) => {
+            if (typeof e.detail !== "string" || e.detail.length > (1 << 20)) return;
+            try { streamBatch = JSON.parse(e.detail); } catch { /* malformed batch */ }
+        });
 
         function changes() {
             for (const r of observer.takeRecords()) {
@@ -616,10 +622,10 @@
                 sheetsAsked = performance.now();
                 window.postMessage({ __tabtop: "sheets" }, "*");  // posted: see the io-sync below
             }
-            for (const n of played) {
-                if (n.isConnected && known(n)) ops.push({ o: "m", i: ids.get(n), v: String(!n.paused && !n.ended) });
+            for (const [n, playing] of played) {
+                if (n.isConnected && known(n)) ops.push({ o: "m", i: ids.get(n), v: String(playing) });
             }
-            played = new Set();
+            played = new Map();
             for (const [n, last] of watched) {
                 if (!n.isConnected) { watched.delete(n); continue; }
                 const v = n.type === "checkbox" || n.type === "radio" ? String(n.checked) : n.value;
@@ -639,9 +645,12 @@
             const scrollsNow = [];
             for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
             scrollsOut = new Map();
-            if (!ops.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
+            streamBatch = null;
+            document.dispatchEvent(new Event("__tabtop_read_stream"));
+            const streams = Array.isArray(streamBatch) ? streamBatch : [];
+            if (!ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams });
         }
 
         function watch(el) {
@@ -731,6 +740,12 @@
                     const what = d?.play && typeof d.play === "object"
                         ? { play: { t: num(d.play.t), playing: !!d.play.playing, ended: !!d.play.ended } }  // how it plays
                         : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration) };
+                    if (what.play && Number.isSafeInteger(d.play.stream)) {
+                        const ranges = (list) => Array.isArray(list) ? list.slice(0, 16).map((r) => [num(r?.[0]), num(r?.[1])]) : [];
+                        Object.assign(what.play, { stream: d.play.stream, buffered: ranges(d.play.buffered),
+                            buffers: Array.isArray(d.play.buffers) ? d.play.buffers.slice(0, 8).map(ranges) : [] });
+                        if (Number.isSafeInteger(d.play.ack)) what.play.ack = d.play.ack;
+                    }
                     tellingPlay = !!what.play;
                     try {
                         el.dispatchEvent(new CustomEvent("__tabtop_media", { detail: JSON.stringify(what) }));

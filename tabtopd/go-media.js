@@ -74,12 +74,144 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
     const players = new Map();  // the frame's box's key -> {element, stopped}
     const abort = new AbortController();
     let layer = null;
+    const streams = new Map();
+    const streamLimit = 16 << 20;
+    let streamBytes = 0;
+
+    function releaseStream(stream) {
+        streamBytes -= stream.bytes;
+        stream.bytes = 0;
+        stream.queue.length = 0;
+        stream.closed = true;
+        if (stream.url) URL.revokeObjectURL(stream.url);
+    }
+
+    function drainStream(stream) {
+        const source = stream.source;
+        if (stream.closed || !source || source.readyState === "closed") return;
+        try {
+            while (stream.queue.length && !stream.buffers.some((buffer) => buffer?.updating)) {
+                const command = stream.queue.shift();
+                const size = typeof command.data === "string" ? command.data.length : 0;
+                streamBytes -= size;
+                stream.bytes -= size;
+                const buffer = stream.buffers[command.buffer];
+                switch (command.op) {
+                    case "add": {
+                        if (command.buffer !== stream.buffers.length || stream.buffers.length >= 8 ||
+                            typeof command.mime !== "string" || !MediaSource.isTypeSupported(command.mime)) throw new Error("Unsupported stream format.");
+                        const added = source.addSourceBuffer(command.mime);
+                        added.addEventListener("updateend", () => drainStream(stream));
+                        stream.buffers.push(added);
+                        break;
+                    }
+                    case "config":
+                        if (buffer.mode !== command.mode) buffer.mode = command.mode;
+                        if (buffer.timestampOffset !== command.offset) buffer.timestampOffset = command.offset;
+                        if (buffer.appendWindowStart !== command.start || buffer.appendWindowEnd !== (command.end ?? Infinity)) {
+                            buffer.appendWindowStart = 0;
+                            buffer.appendWindowEnd = command.end ?? Infinity;
+                            buffer.appendWindowStart = command.start;
+                        }
+                        break;
+                    case "append": buffer.appendBuffer(Uint8Array.from(atob(command.data), (c) => c.charCodeAt(0))); break;
+                    case "drop": source.removeSourceBuffer(buffer); stream.buffers[command.buffer] = null; break;
+                    case "remove": buffer.remove(command.start, command.end); break;
+                    // All chunks in this operation have reached native
+                    // updateend before execution reaches the acknowledgment.
+                    case "ack": stream.report(command.buffer); break;
+                    case "abort": buffer.abort(); break;
+                    case "type": buffer.changeType(command.mime); break;
+                    case "duration": source.duration = command.value ?? Infinity; break;
+                    case "end": source.endOfStream(); break;
+                    case "error": throw new Error("The site's media stream exceeded the relay limit.");
+                    default: throw new Error("Invalid media stream operation.");
+                }
+            }
+        } catch (error) {
+            failStream(stream, error.message);
+        }
+    }
+
+    function failStream(stream, error) {
+        stream.error = error;
+        releaseStream(stream);
+        if (stream.key === undefined) return;
+        closePlayer(stream.key);
+        failed?.(stream.key, error);
+    }
+
+    function receiveStreams(commands) {
+        if (!Array.isArray(commands)) return;
+        for (const raw of commands.slice(0, 64)) {
+            const id = raw?.stream;
+            if (!Number.isSafeInteger(id) || id < 1) continue;
+            let stream = streams.get(id);
+            if (!stream) {
+                if (streams.size >= 32) continue;
+                stream = { queue: [], buffers: [], bytes: 0 };
+                streams.set(id, stream);
+            }
+            if (stream.closed) continue;
+            // Keep only fields used by the relay. The remote page controls
+            // these commands and can never supply a URL to this player.
+            const command = { op: typeof raw.op === "string" ? raw.op.slice(0, 16) : "",
+                buffer: Number.isInteger(raw.buffer) ? raw.buffer : -1,
+                mime: typeof raw.mime === "string" ? raw.mime.slice(0, 256) : "",
+                mode: raw.mode === "sequence" ? "sequence" : "segments",
+                offset: Number.isFinite(raw.offset) ? raw.offset : 0,
+                start: Number.isFinite(raw.start) ? raw.start : 0,
+                end: Number.isFinite(raw.end) ? raw.end : null,
+                value: Number.isFinite(raw.value) ? raw.value : null,
+                data: typeof raw.data === "string" ? raw.data : "",
+            };
+            const size = command.data.length;
+            if (size > 65536 || streamBytes + size > streamLimit || stream.queue.length >= 512) {
+                failStream(stream, "The site's media stream exceeded the relay limit.");
+                continue;
+            }
+            stream.queue.push(command);
+            stream.bytes += size;
+            streamBytes += size;
+            drainStream(stream);
+        }
+    }
+
+    function streamPlayer(id, key, kind, entry) {
+        if (typeof MediaSource !== "function") throw new Error("This browser does not support Media Source Extensions.");
+        let stream = streams.get(id);
+        if (!stream) {
+            if (streams.size >= 32) throw new Error("Too many media streams on this page.");
+            stream = { queue: [], buffers: [], bytes: 0 };
+            streams.set(id, stream);
+        }
+        if (stream.closed || stream.source) throw new Error(stream.error || "The media stream is no longer available.");
+        const element = document.createElement(kind);
+        element.controls = true;
+        if (kind === "video") element.playsInline = true;
+        stream.key = key;
+        stream.source = new MediaSource();
+        stream.url = URL.createObjectURL(stream.source);
+        entry.stream = stream;
+        stream.source.addEventListener("sourceopen", () => drainStream(stream));
+        element.addEventListener("error", () => {
+            if (!stream.closed) failStream(stream, element.error?.message || "The media stream could not be decoded.");
+        });
+        element.src = stream.url;
+        return element;
+    }
+
 
     function closePlayer(key) {
         const player = players.get(key);
         if (!player) return;
         players.delete(key);
         player.controller.abort();
+        if (player.stream) {
+            releaseStream(player.stream);
+            player.element?.removeAttribute("src");
+            player.element?.load();
+        }
         player.element?.remove();
         if (player.poster) URL.revokeObjectURL(player.poster);
     }
@@ -158,10 +290,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
     }
 
     return {
+        streams: receiveStreams,
         // open makes a player for the box key, of kind, playing src (an
         // http(s) address the page had); its error, if it can't.
         async open({ key, kind, src, rect, clip, shown, fit, position, muted, loop, poster, play }) {
-            if (!["audio", "video"].includes(kind) || !Number.isSafeInteger(key) || typeof src !== "string" || !/^https?:\/\//i.test(src)) {
+            const streamId = typeof src === "string" && Number(/^blob:tabtop-media\/([1-9]\d*)$/.exec(src)?.[1]);
+            if (!["audio", "video"].includes(kind) || !Number.isSafeInteger(key) || typeof src !== "string" || !(Number.isSafeInteger(streamId) || /^https?:\/\//i.test(src))) {
                 return { error: "This media can't be played here." };
             }
             if (players.has(key)) return {};
@@ -174,17 +308,22 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             const cancel = () => tunnel?.close();
             signal.addEventListener("abort", cancel, { once: true });
             try {
-                // Its size, type and version, asked for first; it's read in
-                // parts as it plays.
-                tunnel = await tabCall({ type: "go-resource", resource: "media", url: src });
-                signal.throwIfAborted();
-                const info = tunnel.reply;
-                if (!tunnel.bytes) await collect(tunnel, 1, () => {});
-                if (!info.mime?.startsWith(kind + "/") && !(kind === "video" && info.mime?.startsWith("audio/"))) throw new Error("Not a supported media file.");
-                if (!Number.isSafeInteger(info.total_size) || info.total_size < 1) throw new Error("Not a supported media file.");
-                tunnel.close();
-                const file = { size: info.total_size, type: info.mime, mtime: info.validator, remote: true, via: "go-resource" };
-                const media = await mediaStream(info.url, file, signal);
+                let media;
+                if (streamId) {
+                    media = streamPlayer(streamId, key, kind, entry);
+                } else {
+                    // Its size, type and version, asked for first; it's read in
+                    // parts as it plays.
+                    tunnel = await tabCall({ type: "go-resource", resource: "media", url: src });
+                    signal.throwIfAborted();
+                    const info = tunnel.reply;
+                    if (!tunnel.bytes) await collect(tunnel, 1, () => {});
+                    if (!info.mime?.startsWith(kind + "/") && !(kind === "video" && info.mime?.startsWith("audio/"))) throw new Error("Not a supported media file.");
+                    if (!Number.isSafeInteger(info.total_size) || info.total_size < 1) throw new Error("Not a supported media file.");
+                    tunnel.close();
+                    const file = { size: info.total_size, type: info.mime, mtime: info.validator, remote: true, via: "go-resource" };
+                    media = await mediaStream(info.url, file, signal);
+                }
                 entry.element = media;
                 signal.throwIfAborted();
                 media.addEventListener("loadedmetadata", () => {
@@ -198,12 +337,23 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 // once it's playing): as it starts, stops or ends, and where
                 // it is, once a second.
                 let toldAt = -Infinity;
-                const playing = () => {
+                const report = (ack) => {
+                    if (signal.aborted) return;
                     toldAt = performance.now();
-                    played?.(key, { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: !media.paused && !media.ended, ended: media.ended });
+                    const state = { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: !media.paused && !media.ended, ended: media.ended };
+                    if (entry.stream) {
+                        const ranges = (list) => Array.from({ length: Math.min(list.length, 16) }, (_, i) => [list.start(i), list.end(i)]);
+                        state.stream = streamId;
+                        if (Number.isSafeInteger(ack)) state.ack = ack;
+                        state.buffered = ranges(media.buffered);
+                        const active = Array.from(entry.stream.source.sourceBuffers);
+                        state.buffers = entry.stream.buffers.map((buffer) => active.includes(buffer) ? ranges(buffer.buffered) : []);
+                    }
+                    played?.(key, state);
                 };
-                for (const type of ["playing", "pause", "ended", "seeked"]) media.addEventListener(type, playing);
-                media.addEventListener("timeupdate", () => { if (performance.now() - toldAt >= 1000) playing(); });
+                if (entry.stream) entry.stream.report = report;
+                for (const type of ["playing", "pause", "ended", "seeked"]) media.addEventListener(type, () => report());
+                media.addEventListener("timeupdate", () => { if (performance.now() - toldAt >= 1000) report(); });
                 media.muted = !!muted;
                 media.loop = !!loop;
                 if (kind === "video" && typeof poster === "string" && /^https?:\/\//i.test(poster) && picture) {
@@ -255,6 +405,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             abort.abort();
             for (const key of players.keys()) closePlayer(key);
             ahead.clear();
+            for (const stream of streams.values()) releaseStream(stream);
+            streams.clear();
             layer?.remove();
             layer = null;
         },

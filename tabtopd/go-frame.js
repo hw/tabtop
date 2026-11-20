@@ -138,7 +138,14 @@
             }
             // How it plays, likewise.
             if (engineId && m.play && typeof m.play === "object") {
-                send("media-meta", engineId, { value: JSON.stringify({ play: { t: num(m.play.t), playing: !!m.play.playing, ended: !!m.play.ended } }) });
+                const play = { t: num(m.play.t), playing: !!m.play.playing, ended: !!m.play.ended };
+                if (Number.isSafeInteger(m.play.stream)) {
+                    const ranges = (list) => Array.isArray(list) ? list.slice(0, 16).map((r) => [num(r?.[0]), num(r?.[1])]) : [];
+                    Object.assign(play, { stream: m.play.stream, buffered: ranges(m.play.buffered),
+                        buffers: Array.isArray(m.play.buffers) ? m.play.buffers.slice(0, 8).map(ranges) : [] });
+                    if (Number.isSafeInteger(m.play.ack)) play.ack = m.play.ack;
+                }
+                send("media-meta", engineId, { value: JSON.stringify({ play }) });
             }
         }
     });
@@ -638,7 +645,7 @@
     const mediaVisibility = new IntersectionObserver((entries) => {
         for (const entry of entries) {
             const m = media.get(mediaOf.get(entry.target)?.key);
-            if (m) m.intersection = entry;
+            if (m?.box === entry.target) m.intersection = entry;
         }
         mediaLater();
     }, { root: document, threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
@@ -648,6 +655,29 @@
         if (!m) return;
         mediaVisibility.unobserve(m.box);
         media.delete(key);
+    }
+    // A fresh snapshot of the same document replaces the boxes. Keep the
+    // native buffers of an active stream and move its player to the new box.
+    function keepRelayedPlayers(previous, next) {
+        if (!previous || previous.gen !== next.gen) return;
+        const active = new Map();
+        for (const [key, entry] of media) {
+            if (entry.top === previous && entry.asked && entry.src.startsWith("blob:tabtop-media/")) {
+                active.set(entry.src, { key, entry });
+            }
+        }
+        for (const [key, entry] of media) {
+            if (entry.top !== next) continue;
+            const kept = active.get(entry.src);
+            if (!kept || kept.entry.kind !== entry.kind) continue;
+            active.delete(entry.src);
+            forgetMedia(key);
+            mediaVisibility.unobserve(kept.entry.box);
+            entry.box.textContent = kept.entry.box.textContent;
+            mediaOf.get(entry.box).key = kept.key;
+            media.set(kept.key, { ...entry, asked: true, play: kept.entry.play });
+            mediaVisibility.observe(entry.box);
+        }
     }
     function mediaStyle(box) {
         const { size, style } = mediaOf.get(box);
@@ -699,7 +729,7 @@
         if (info.key) forgetMedia(info.key);  // its player stops (keep, in the page)
         info.key = 0;
         const what = info.tag === "video" ? "video" : "sound";
-        if (/^blob:/i.test(src)) {
+        if (/^blob:/i.test(src) && !/^blob:tabtop-media\/[1-9]\d*$/.test(src)) {
             // Fed by the page's own player (Media Source): nothing a player
             // here could read.
             box.textContent = `This ${what} is streamed by the site's own player, which can't play here.`;
@@ -707,7 +737,7 @@
             mediaLater();
             return;
         }
-        const url = src && web(src, d.base);
+        const url = /^blob:tabtop-media\/[1-9]\d*$/.test(src) ? src : src && web(src, d.base);
         if (!url) {
             box.textContent = `A ${what} with nothing to play.`;
             mediaLater();
@@ -753,6 +783,9 @@
                 mediaStyle(box);
                 return true;
             case "src":
+                // A relayed source already has live native buffers. A
+                // repeated assignment must not destroy that connection.
+                if (v === info.src && v?.startsWith("blob:tabtop-media/")) return true;
                 info.src = v;
                 mediaSource(d, box, v ?? "");
                 return true;
@@ -806,13 +839,14 @@
                 // Shorts as it goes to the next); laid over its box when shown.
                 const inView = clip !== null && clip.width >= 8 && clip.height >= 8;
                 const shown = visibility === "visible" && inView;
-                if (m.kind === "video" && !inView && !m.play) {
+                const relayed = m.src.startsWith("blob:tabtop-media/");
+                if (m.kind === "video" && !inView && !m.play && !relayed) {
                     if (m.asked) m.box.textContent = "";
                     m.asked = false;
                     continue;
                 }
                 const at = { key, rect, clip, shown, fit, position };
-                if (!m.asked && (inView || m.play)) {
+                if (!m.asked && (inView || m.play || relayed)) {
                     m.asked = true;
                     opening.push({ ...at, type: "media", gen: doc.gen, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
                 }
@@ -1080,6 +1114,7 @@
             defaults.textContent = MEDIA_DEFAULTS;
             (root.querySelector("head") ?? root).prepend(defaults);
             unobserveAll(doc);
+            if (m.again) keepRelayedPlayers(doc, d);
             doc = d;
             fontsFor(d.gen);  // the last page's faces gone
             // Boxes of this document only (the page stops the others').
