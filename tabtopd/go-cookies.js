@@ -40,6 +40,7 @@ function show(r) {
     const all = Array.isArray(r.sites) ? r.sites : [];
     $("sites").replaceChildren(...all.map((site) => {
         const li = document.createElement("li");
+        li.dataset.site = String(site.site);  // (the settings page's filter: go-settings.js)
         const what = Object.assign(document.createElement("div"), { className: "what" });
         const parts = [];
         if (site.cookies > 0) parts.push(`${site.cookies} cookie${site.cookies === 1 ? "" : "s"}`);

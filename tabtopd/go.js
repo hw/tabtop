@@ -100,6 +100,36 @@ $("go_menu_cache").innerHTML = `${icon("clear")}<span class="label">Clear cache<
 // Referer; cookies and site data (go/settings, go-settings.js and
 // go-cookies.js), in a tab of its own, this one's page kept.
 $("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings and cookies</span>`;
+// ...in a lightbox over the browser, not a window of its own: the settings
+// page (go/settings) in a frame of it, a new one each time it's opened (a
+// frame sent elsewhere is an entry in the browser's history, which the
+// device's back would go through; a new frame's first page isn't), gone
+// as it's closed: by its ✕, Esc, a click beside it, or the page's own
+// "close" (its header's link, which in the lightbox says so).
+const settingsBox = $("go_settings");
+let settingsFrame = null;
+function openSettings() {
+    openMenu(false);
+    settingsFrame?.remove();
+    // Filtered to the page's site, if there's a page (go-settings.js).
+    const there = new URL("settings", location.href);
+    const host = at >= 0 ? hostOf(entries[at].url).replace(/:\d+$/, "").replace(/^www\./, "") : "";
+    if (host && !entries[at].url.startsWith(SEARCH)) there.searchParams.set("site", host);
+    settingsFrame = Object.assign(document.createElement("iframe"), { title: "Site settings and cookies", src: there.href });
+    settingsBox.append(settingsFrame);
+    settingsBox.showModal();
+    settingsBox.querySelector(".close").focus();
+}
+$("go_menu_settings").addEventListener("click", openSettings);
+settingsBox.querySelector(".close").addEventListener("click", () => settingsBox.close());
+settingsBox.addEventListener("click", (e) => { if (e.target === settingsBox) settingsBox.close(); });  // beside it (its backdrop)
+settingsBox.addEventListener("close", () => {
+    settingsFrame?.remove();
+    settingsFrame = null;
+});
+window.addEventListener("message", (e) => {
+    if (settingsFrame && e.source === settingsFrame.contentWindow && e.origin === location.origin && e.data?.goSettings === "close") settingsBox.close();
+});
 const nav = navBar("go", { logOutIcon: true });
 for (const item of nav.children) {
     const label = document.createElement("span");

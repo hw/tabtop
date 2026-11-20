@@ -794,6 +794,40 @@ async function check(base, port, site) {
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
     });
 
+    await step("site settings and cookies open in a lightbox over the page, and close back to it", async () => {
+        const here = await ev(`document.getElementById("go_url").dataset.url`);
+        const inside = (expr) => ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d && (${expr}); })()`);
+        await ev(`document.getElementById("go_menu").click()`);
+        await ev(`document.getElementById("go_menu_settings").click()`);
+        await waitFor(`document.getElementById("go_settings").open`, "the lightbox open");
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d?.getElementById("popups") && !!d.getElementById("cookies") && d.documentElement.classList.contains("framed") && getComputedStyle(d.querySelector("header")).display === "none"; })()`, "the settings in it, its own header not shown", 15000);
+        // Its sections there (cookies listed: the page asked the server).
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return d.getElementById("about").textContent !== "Loading…"; })()`, "its cookies told", 15000);
+        // Filtered to the page's site: its rows only; cleared, all.
+        const host = new URL(here).hostname;
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return d.getElementById("filter").value === ${JSON.stringify(host)}; })()`, "the filter set to the page's site");
+        await inside(`(() => { const add = (list, site) => { const li = d.createElement("li"); li.dataset.site = site; li.textContent = site; d.getElementById(list).append(li); }; add("blocked", "other.example"); add("blocked", ${JSON.stringify(host)}); return true; })()`);
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; const shown = [...d.querySelectorAll("#blocked li")].filter((li) => getComputedStyle(li).display !== "none").map((li) => li.dataset.site); return shown.join() === ${JSON.stringify(host)}; })()`, "only the page's site's rows shown");
+        await inside(`(d.getElementById("filter_clear").click(), true)`);
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return d.getElementById("filter").value === "" && [...d.querySelectorAll("#blocked li")].every((li) => getComputedStyle(li).display !== "none"); })()`, "the filter cleared: all shown");
+        // The page's own close (its header's link) closes it; so do ✕ and Esc.
+        await inside(`(d.getElementById("back").click(), true)`);
+        await waitFor(`!document.getElementById("go_settings").open`, "closed by the page's link");
+        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+        await waitFor(`document.getElementById("go_settings").open`, "open again");
+        await ev(`document.querySelector("#go_settings .close").click()`);
+        await waitFor(`!document.getElementById("go_settings").open`, "closed by ✕");
+        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+        await waitFor(`document.getElementById("go_settings").open`, "open once more");
+        await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await waitFor(`!document.getElementById("go_settings").open`, "closed by Esc");
+        if ((await ev(`document.getElementById("go_url").dataset.url`)) !== here) throw new Error("the page changed under it");
+        // The browser's history as it was: the device's back still a page
+        // of the tab's (the lightbox's frames weren't entries of it).
+        if (await ev(`!!document.querySelector("#go_settings iframe")`)) throw new Error("its frame left behind");
+    });
+
     await step("back held lists the pages before, to go to one; forward's the pages after", async () => {
         // Held (a touch or the mouse): the list, the page just before first.
         await ev(`document.getElementById("go_back").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "touch" }))`);

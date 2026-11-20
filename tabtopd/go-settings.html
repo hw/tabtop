@@ -40,12 +40,22 @@ h2 { scroll-margin-top: 12px; }
 .done { position: sticky; top: 0; z-index: 1; background: #1c1c1e; min-height: 1.4em; margin: 10px 0; padding: 4px 0; color: #a8d8a8; }
 .done.error { color: #f2b8b5; }
 [hidden] { display: none !important; }
+/* The filter: a site's settings only (the page's, from the browser's lightbox), or all. */
+.filter { position: relative; margin: 12px 0 0; }
+.filter input { width: 100%; padding-right: 44px; }
+.filter button { position: absolute; right: 0; top: 0; width: 44px; height: 100%; padding: 0; border: 0; background: none; }
+li.filtered { display: none; }
+.nomatch { color: #a8a8ad; margin: 4px 0; }
+/* In the browser's lightbox: its header there. */
+.framed header { display: none; }
+.framed main { padding-top: 4px; }
 button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
 @media (pointer: coarse), (max-width: 600px) { button, select, input, header a { min-height: 44px; } }
 </style>
 <main>
     <header><a href="./" id="back">← Browser</a><h1>Site settings</h1></header>
     <nav class="toc" aria-label="On this page"><a href="#popups_h">Pop-ups</a><a href="#videos_h">Videos</a><a href="#blocked_h">Blocked sites</a><a href="#referer_h">What pages say</a><a href="#cookies">Cookies and site data</a></nav>
+    <div class="filter"><input id="filter" type="search" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Filter by site: all sites shown" aria-label="Filter by site"><button type="button" id="filter_clear" aria-label="Clear the filter: all sites" title="Clear the filter: all sites" hidden>✕</button></div>
     <p class="done" id="done" role="status" aria-live="polite"></p>
 
     <h2 id="popups_h">Pop-ups</h2>

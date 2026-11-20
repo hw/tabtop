@@ -28,10 +28,11 @@ const (
 	goTabsCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; " +
 		"frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-	// goCookiesCSP is the cookies page's: its script, the tunnel to the
-	// site, nothing else.
+	// goCookiesCSP is the site settings and cookies page's: its scripts,
+	// the tunnel to the site, nothing else; shown in a frame of the site's
+	// own only (the browser's lightbox, go.js), never another site's.
 	goCookiesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; " +
-		"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		"base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 
 	// goFrameCSP is the frame's: its own script and the CSS parser only,
 	// the page's styles inline, and pictures and fonts only as blob: and
