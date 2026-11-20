@@ -62,10 +62,11 @@ var mediaSniffed = struct {
 }{by: map[string]string{}}
 
 // sniffRemoteMedia is the media type of the file at u (labelled only as
-// bytes), by its first bytes, asked for with request's headers (its
-// cookies, Referer and user agent) through client; "" if it's none a
-// player here plays.
-func sniffRemoteMedia(ctx context.Context, client *http.Client, request *http.Request, u, validator string) string {
+// bytes), by its first bytes, asked for through client as userAgent, with
+// what the page's browser would send to u itself (from: u's own cookies
+// and Referer, never another address's); "" if it's none a player here
+// plays.
+func sniffRemoteMedia(ctx context.Context, client *http.Client, u, validator, userAgent string, from *goFrom) string {
 	key := u + "\x00" + validator
 	mediaSniffed.Lock()
 	media, ok := mediaSniffed.by[key]
@@ -77,11 +78,11 @@ func sniffRemoteMedia(ctx context.Context, client *http.Client, request *http.Re
 	if err != nil {
 		return ""
 	}
-	for _, h := range []string{"User-Agent", "Cookie", "Referer", "Accept-Encoding"} {
-		if v := request.Header.Get(h); v != "" {
-			first.Header.Set(h, v)
-		}
+	first.Header.Set("Accept-Encoding", "identity")
+	if userAgent != "" {
+		first.Header.Set("User-Agent", userAgent)
 	}
+	from.apply(first) // (and anew at each redirect: client's CheckRedirect)
 	first.Header.Set("Range", fmt.Sprintf("bytes=0-%d", mediaSniffLen-1))
 	response, err := client.Do(first)
 	if err != nil {

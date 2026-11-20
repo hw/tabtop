@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -81,5 +82,41 @@ func TestGoMediaUnlabelled(t *testing.T) {
 	}
 	if _, _, err := goFetchMedia(ctx, "session", tunnelRequest{Resource: "media", URL: site.URL + "/page.mp4"}, client, goResourceSlots, "UA", nil); err == nil || !strings.Contains(err.Error(), "unsupported content type") {
 		t.Errorf("a page labelled as bytes: %v", err)
+	}
+}
+
+// Looked at after a redirect, the file's start is asked for with the
+// cookies of where it is, not of where it was asked for.
+func TestGoMediaUnlabelledRedirected(t *testing.T) {
+	clip := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41"), bytes.Repeat([]byte{7}, 2000)...)
+	var sniffCookie atomic.Value
+	sniffCookie.Store("")
+	there := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-511" {
+			sniffCookie.Store(r.Header.Get("Cookie"))
+		}
+		w.Header().Set("Content-Type", "binary/octet-stream")
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(clip))
+	}))
+	defer there.Close()
+	here := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, there.URL+"/clip", http.StatusFound)
+	}))
+	defer here.Close()
+	goTestPorts(t, portOf(t, here.URL), portOf(t, there.URL)) // (redirects followed only to these)
+	from := &goFrom{cookies: func(u *url.URL) string {
+		if "http://"+u.Host == there.URL {
+			return "theirs=1"
+		}
+		return "first-site-secret=1"
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, probe, err := goFetchMedia(ctx, "session", tunnelRequest{Resource: "media", URL: here.URL + "/clip"}, newGoResourceClient(allowAll), goResourceSlots, "UA", from)
+	if err != nil || probe["mime"] != "video/mp4" {
+		t.Fatalf("probe: %v %v", probe, err)
+	}
+	if got := sniffCookie.Load(); got != "theirs=1" {
+		t.Errorf("its start asked for with cookies %q", got)
 	}
 }

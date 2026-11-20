@@ -210,7 +210,7 @@ func fetchRemoteResource(ctx context.Context, req tunnelRequest, client *http.Cl
 	if req.Resource == "media" && goUnlabelled(media) {
 		// Labelled only as bytes (some CDNs say so of everything): what
 		// its first bytes say it is, if it's audio or video.
-		media = sniffRemoteMedia(ctx, &c, request, response.Request.URL.String(), validator)
+		media = sniffRemoteMedia(ctx, &c, response.Request.URL.String(), validator, userAgent, from)
 	}
 	if !previewResourceType(req.Resource, media) {
 		return fail("The external resource has an unsupported content type.")
