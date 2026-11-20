@@ -460,6 +460,23 @@ async function check(base, port, site) {
             if (layout.font < 16 || layout.radius > 6 || !layout.targets || !layout.nav || !layout.forward || layout.overflow || layout.top !== layout.barBottom || Math.abs(layout.bottom - layout.height) > 1) {
                 throw new Error(JSON.stringify(layout));
             }
+            // A notch and a home bar (where this Chrome can say so): the bar
+            // below the one, the page above the other.
+            const insets = await cdp("Emulation.setSafeAreaInsetsOverride", { insets: { top: 47, topMax: 47, bottom: 34, bottomMax: 34, left: 0, right: 0 } }).then(() => true, () => false);
+            if (insets) {
+                try {
+                    await waitFor(`parseFloat(getComputedStyle(document.getElementById("go_bar")).paddingTop) === 47`, "the bar below the notch", 5000);
+                    const clear = await ev(`(() => {
+                        const bar = document.getElementById("go_bar").getBoundingClientRect(), view = document.getElementById("go_view").getBoundingClientRect();
+                        const input = document.getElementById("go_url").getBoundingClientRect();
+                        return { input: input.top >= 47, view: view.top === bar.bottom && Math.abs(view.bottom - (document.body.getBoundingClientRect().bottom - 34)) <= 1,
+                            pull: getComputedStyle(document.documentElement).overscrollBehaviorY === "none" };
+                    })()`);
+                    if (!clear.input || !clear.view || !clear.pull) throw new Error(`with a notch and home bar: ${JSON.stringify(clear)}`);
+                } finally {
+                    await cdp("Emulation.setSafeAreaInsetsOverride", { insets: {} }).catch(() => {});
+                }
+            }
         } finally {
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }

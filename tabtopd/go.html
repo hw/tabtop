@@ -1,14 +1,21 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Browser</title>
 <style>
-:root { --bar-height: 44px; }
-html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; font: 13px system-ui, sans-serif; color: #e8e8ea; }
-body { height: 100dvh; display: grid; grid-template-rows: var(--bar-height) minmax(0, 1fr); }
-#go_bar { position: relative; grid-row: 1; height: var(--bar-height); box-sizing: border-box; display: flex; align-items: center;
-    gap: 4px; padding: 0 8px; background: #2c2c2e; border-bottom: 1px solid #3a3a3c; }
+:root { --bar-height: 44px;
+    /* A phone's notch, rounded corners and home bar (viewport-fit=cover):
+       the bar and the page kept clear of them; 0 elsewhere. */
+    --safe-top: env(safe-area-inset-top, 0px); --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px); --safe-left: env(safe-area-inset-left, 0px);
+    --bar-total: calc(var(--bar-height) + var(--safe-top)); }
+/* No pull-to-refresh (it would reload this page, not the page shown) nor
+   overscroll bounce: a page's own scrolling ends at its ends. */
+html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; overscroll-behavior: none; font: 13px system-ui, sans-serif; color: #e8e8ea; }
+body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minmax(0, 1fr); }
+#go_bar { position: relative; grid-row: 1; height: var(--bar-total); box-sizing: border-box; display: flex; align-items: center;
+    gap: 4px; padding: var(--safe-top) calc(8px + var(--safe-right)) 0 calc(8px + var(--safe-left)); background: #2c2c2e; border-bottom: 1px solid #3a3a3c; }
 #go_bar button { flex: 0 0 auto; min-width: 30px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
     font: 16px system-ui, sans-serif; color: #e8e8ea; background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
 #go_bar button svg { display: block; width: 18px; height: 18px; }
@@ -41,19 +48,21 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-height) minm
 #go_menu_panel .label { color: #e8e8ea; }
 /* The session warning, which the shared pages put in their bar of links:
    here, below this bar. And the login summary, at the bottom. */
-#tabtop_expiry { position: fixed !important; top: calc(var(--bar-height) + 8px); left: 50%; transform: translateX(-50%); z-index: 7;
+#tabtop_expiry { position: fixed !important; top: calc(var(--bar-total) + 8px); left: 50%; transform: translateX(-50%); z-index: 7;
     max-width: calc(100vw - 24px); line-height: 28px !important; box-shadow: 0 2px 12px rgba(0, 0, 0, .4); }
-#tabtop_login_summary { top: auto !important; bottom: 16px; }
+#tabtop_login_summary { top: auto !important; bottom: calc(16px + var(--safe-bottom)); }
 #tabtop_login_summary button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
-#go_view { grid-row: 2; grid-column: 1; min-height: 0; width: 100%; height: 100%; border: 0; background: #fff; transition: opacity .2s; }
+#go_view { grid-row: 2; grid-column: 1; min-height: 0; min-width: 0; margin: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+    width: calc(100% - var(--safe-left) - var(--safe-right)); height: calc(100% - var(--safe-bottom));
+    border: 0; background: #fff; transition: opacity .2s; }
 /* The page being left, while the next is slow to come: dimmed. */
 #go_view.leaving { opacity: .45; }
-#go_status { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); box-sizing: border-box; padding: 4px 10px;
+#go_status { position: absolute; left: calc(8px + var(--safe-left)); bottom: calc(8px + var(--safe-bottom)); max-width: calc(100% - 16px - var(--safe-left) - var(--safe-right)); box-sizing: border-box; padding: 4px 10px;
     color: #e8e8ea; background: rgba(44, 44, 46, .92); border: 1px solid #3a3a3c; border-radius: 6px; pointer-events: none; }
 #go_status:empty { display: none; }
-#go_notice { position: absolute; top: calc(var(--bar-height) + 10px); left: 50%; transform: translateX(-50%); width: min(34rem, calc(100% - 24px)); box-sizing: border-box;
+#go_notice { position: absolute; top: calc(var(--bar-total) + 10px); left: 50%; transform: translateX(-50%); width: min(34rem, calc(100% - 24px)); box-sizing: border-box;
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 8px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; max-height: calc(100% - var(--bar-height) - 24px); overflow: auto; }
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; max-height: calc(100% - var(--bar-total) - var(--safe-bottom) - 24px); overflow: auto; }
 #go_notice[hidden] { display: none; }
 #go_notice.error { border-color: #d96b6b; }
 #go_notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
@@ -70,7 +79,8 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-height) minm
 #go_dialog .quiet { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; font-size: .9em; color: #b8b8bd; }
 #go_dialog .quiet input { width: auto; margin: 0; }
 #go_dialog [hidden] { display: none; }
-#go_start { grid-row: 2; grid-column: 1; z-index: 1; display: grid; place-content: center; padding: 24px;
+#go_start { grid-row: 2; grid-column: 1; z-index: 1; display: grid; place-content: center;
+    padding: 24px calc(24px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(24px + var(--safe-left));
     text-align: center; color: #a8a8ad; background: #1c1c1e; }
 #go_start[hidden] { display: none; }
 #go_start h1 { margin: 0 0 8px; font-size: 20px; color: #e8e8ea; }
@@ -86,12 +96,12 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 #go_progress::after { content: ""; display: block; width: 35%; height: 100%; background: #8ab4f8; animation: go-progress 1.2s ease-in-out infinite; }
 @keyframes go-progress { from { transform: translateX(-100%); } to { transform: translateX(390%); } }
 @media (prefers-reduced-motion: reduce) { #go_progress::after { width: 100%; animation: none; } }
-#tabtop_reconnect { top: calc(var(--bar-height) + 8px) !important; }
+#tabtop_reconnect { top: calc(var(--bar-total) + 8px) !important; }
 #go_notice .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #go_notice button[hidden] { display: none; }
 @media (pointer: coarse), (max-width: 600px) {
     :root { --bar-height: 56px; }
-    #go_bar { padding: 0 4px; }
+    #go_bar { padding: var(--safe-top) calc(4px + var(--safe-right)) 0 calc(4px + var(--safe-left)); }
     #go_bar button { min-width: 44px; height: 44px; }
     #go_bar #go_address button { min-width: 44px; }
     #go_address input { height: 44px; padding-right: 44px; font-size: 16px; }
