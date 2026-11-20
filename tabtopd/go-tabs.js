@@ -68,11 +68,16 @@ function close(t) {
     const i = tabs.indexOf(t);
     if (i < 0) return;
     tabs.splice(i, 1);
-    t.frame.remove();  // its tunnel, and engine, closed with it
+    // Its engine closed at once, not kept for a connection to come back
+    // (goresume.go): told first, then its frame (and tunnel) goes.
+    tell(t, { type: "close" });
+    t.frame.hidden = true;
+    setTimeout(() => t.frame.remove(), 300);
     t.el.remove();
     try {
         sessionStorage.removeItem(`tabtop-go-kept:${t.id}`);
         sessionStorage.removeItem(`tabtop-go-history:${t.id}`);
+        sessionStorage.removeItem(`tabtop-go-resume:${t.id}`);
     } catch { /* none */ }
     if (!tabs.length) open();
     else if (shown === t) showTab(tabs[Math.min(i, tabs.length - 1)]);

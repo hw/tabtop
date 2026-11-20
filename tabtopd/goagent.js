@@ -526,7 +526,10 @@
             ioNew();
             const ioAll = ioOut;
             ioOut = [];
-            return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll });
+            // Where the window's scrolled (as the copy last scrolled it): a
+            // copy built afresh (a tab taken back) starts there.
+            const at = [Math.round(scrollX) || 0, Math.round(scrollY) || 0];
+            return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll, at });
         }
 
         let streamBatch = null;

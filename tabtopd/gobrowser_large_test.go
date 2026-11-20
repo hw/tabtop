@@ -48,7 +48,8 @@ func TestGoSendLarge(t *testing.T) {
 		{"doesn't shrink", true, noise, false},
 	} {
 		w := &goWrites{}
-		b := &goBrowser{t: w, deflate: c.deflate}
+		conn := &goConn{cur: newGoLink(w, c.deflate)} // the connection lent the tab takes it, or not
+		b := &goBrowser{t: conn, conn: conn}
 		b.sendLarge(c.msg)
 		if c.compress {
 			if w.typ[0] != websocket.MessageBinary || !bytes.Equal(w.msg[0][:4], []byte{0, 0, 0, 0}) || len(w.msg[0]) > len(c.msg)/4 {

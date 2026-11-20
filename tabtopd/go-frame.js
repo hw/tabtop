@@ -649,11 +649,13 @@
         }
         mediaLater();
     }, { root: document, threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
+    const mediaSizes = new ResizeObserver(mediaLater);
     let mediaSoon = false;
     function forgetMedia(key) {
         const m = media.get(key);
         if (!m) return;
         mediaVisibility.unobserve(m.box);
+        mediaSizes.unobserve(m.box);
         media.delete(key);
     }
     // A fresh snapshot of the same document replaces the boxes. Keep the
@@ -673,10 +675,12 @@
             active.delete(entry.src);
             forgetMedia(key);
             mediaVisibility.unobserve(kept.entry.box);
+            mediaSizes.unobserve(kept.entry.box);
             entry.box.textContent = kept.entry.box.textContent;
             mediaOf.get(entry.box).key = kept.key;
             media.set(kept.key, { ...entry, asked: true, play: kept.entry.play });
             mediaVisibility.observe(entry.box);
+            mediaSizes.observe(entry.box);
         }
     }
     function mediaStyle(box) {
@@ -750,6 +754,7 @@
         // page's): not asked for, nor dropped, before that.
         media.set(key, { top: d.top ?? d, box, kind: info.tag, src: url, poster, muted: info.muted, loop: info.loop, play: info.play, asked: false });
         mediaVisibility.observe(box);
+        mediaSizes.observe(box);
         mediaLater();
     }
     // mediaChanged follows what the page changed of a player (op, a batch's)
@@ -831,6 +836,19 @@
                 }
                 const r = m.box.getBoundingClientRect();
                 const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+                const geometry = `${innerWidth}:${innerHeight}:${r.width}:${r.height}`;
+                if (geometry !== m.geometry) {
+                    m.geometry = geometry;
+                    m.intersection = null;
+                    mediaVisibility.unobserve(m.box);
+                    mediaVisibility.observe(m.box);
+                }
+                // An unset intersection is waiting for a fresh measurement.
+                // Keep an open player alive through the layout transition.
+                if (!m.intersection) {
+                    if (m.asked) positions.push({ key, rect, shown: false });
+                    continue;
+                }
                 const clip = mediaClip(r, m.intersection);
                 const { objectFit: fit, objectPosition: position, visibility } = getComputedStyle(m.box);
                 // In view, or played by the page, it's played (hidden too, as
@@ -1115,6 +1133,10 @@
             (root.querySelector("head") ?? root).prepend(defaults);
             unobserveAll(doc);
             if (m.again) keepRelayedPlayers(doc, d);
+            // The same document still shown here (read again): it keeps its
+            // place; a copy built afresh (a tab taken back after a reload)
+            // starts where the page in the engine is scrolled.
+            const kept = doc?.gen === d.gen;
             doc = d;
             fontsFor(d.gen);  // the last page's faces gone
             // Boxes of this document only (the page stops the others').
@@ -1126,7 +1148,9 @@
                 d.ioLater = null;
             }
             if (m.again) {
-                scrollTo(at.x, at.y);  // the same document, read again
+                const engineAt = Array.isArray(m.at) && m.at.length === 2 && m.at.every((v) => Number.isFinite(v) && v >= 0) ? m.at : null;
+                if (!kept && engineAt) scrollTo(engineAt[0], engineAt[1]);
+                else scrollTo(at.x, at.y);  // the same document, read again
                 if (focused) giveFocus(d, focused);
             } else {
                 const hash = d.url ? new URL(d.url).hash.slice(1) : "";

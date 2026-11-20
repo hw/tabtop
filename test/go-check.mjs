@@ -270,6 +270,8 @@ $("tap").onclick = () => status("tapped, touches " + touches);
 <video id="a" src="clip.mp4?skip" width="320" height="180" muted></video><p id="a-out">a not ended</p>
 <video id="b" src="clip.mp4?slow" width="320" height="180" muted></video><p id="b-out">b not ended</p>
 <script>for (const id of ["a", "b"]) { const v = document.getElementById(id); v.addEventListener("ended", () => { document.getElementById(id + "-out").textContent = id + " ended at " + Math.round(v.currentTime) + " " + v.ended; }); v.play().catch(() => {}); }</script>`,
+        "resume.html": `<!doctype html><title>Resume</title><input id="t" aria-label="kept"><p id="n">0</p><div style="height:4000px"></div><p id="end">end</p>
+<script>let n = 0; setInterval(() => { document.getElementById("n").textContent = String(++n); }, 200);</script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -1243,6 +1245,43 @@ async function check(base, port, site) {
                 rect.width === 320 && rect.height === 180 && style.clipPath.startsWith("inset(50px") &&
                 style.objectFit === "cover" && style.objectPosition === "75% 25%";
         })()`, "the partly scrolled video retains its size and fit");
+        await ev(`(() => {
+            const v = window.rotatingPlayer = document.querySelector("video");
+            v.currentTime = 0;
+            return v.play();
+        })()`);
+        await frame(`window.addEventListener("resize", () => {
+            setTimeout(() => {
+                const box = document.getElementById("clip");
+                const landscape = innerWidth > innerHeight;
+                box.style.width = landscape ? "440px" : "280px";
+                box.style.height = landscape ? "248px" : "158px";
+            }, 120);
+        })`);
+        try {
+            for (const [width, height, type, angle, expected] of [
+                [500, 800, "portraitPrimary", 0, 280],
+                [900, 500, "landscapePrimary", 90, 440],
+                [500, 800, "portraitPrimary", 0, 280],
+            ]) {
+                await cdp("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false, screenOrientation: { type, angle } });
+                await frameWait(`document.getElementById("clip").getBoundingClientRect().width === ${expected}`, "the delayed player layout");
+                const box = await frame(`(() => { const r = document.getElementById("clip").getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+                await waitFor(`(() => {
+                    const v = window.rotatingPlayer, f = document.getElementById("go_view").getBoundingClientRect();
+                    const r = v.getBoundingClientRect(), b = ${JSON.stringify(box)};
+                    return v.isConnected && Math.abs(r.x - f.x - b.x) < 1 && Math.abs(r.y - f.y - b.y) < 1 &&
+                        Math.abs(r.width - b.w) < 1 && Math.abs(r.height - b.h) < 1 &&
+                        b.y < -1 && Math.abs(parseFloat(getComputedStyle(v).clipPath.slice(6)) + b.y) < 1 &&
+                        getComputedStyle(v).objectFit === "cover";
+                })()`, "the same clipped overlay follows the rotated box");
+            }
+            const time = await ev(`window.rotatingPlayer.currentTime`);
+            await waitFor(`window.rotatingPlayer.currentTime > ${time}`, "playback continues after rotation");
+        } finally {
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
     });
@@ -1254,6 +1293,43 @@ async function check(base, port, site) {
             return Math.round(l.width) === 320 && Math.round(l.height) === 180 && l.left >= f.left && l.top >= f.top; })()`);
         if (!over) throw new Error("the loading box isn't over the video's box");
         await waitFor(`!document.querySelector(".go-media-loading") && document.querySelector("video")?.readyState >= 2`, "the video ready, the loading box gone", 60000);
+    });
+
+    await step("a tab carries on while its connection's lost, and is taken back as it is: after a drop, and after a reload", async () => {
+        await goTo(site + "resume.html", "Resume");
+        await frameClick("#t");
+        await browser.type("kept text");
+        await frame(`scrollTo(0, 1500)`);
+        const count = async () => Number(await frame(`document.getElementById("n").textContent`));
+        await frameWait(`Number(document.getElementById("n").textContent) > 5`, "the page counting");
+        await sleep(1000);  // the field's text and the scroll with the engine
+        // The page reloaded (the same browser tab): taken back, the copy
+        // built afresh, where the page was scrolled and what was typed. (Its
+        // sockets kept a note of, from here, to cut them below.)
+        const atReload = await count();
+        const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `{ const W = WebSocket; window.__sockets = []; window.WebSocket = class extends W { constructor(...a) { super(...a); __sockets.push(this); } }; }` });
+        try {
+            await cdp("Page.reload");
+            await waitFor(`document.title.startsWith("Resume") && !!window.__sockets`, "the page back after the reload", 30000);
+            await frameWait(`Number(document.getElementById("n").textContent) >= ${atReload}`, "the count carried on, not restarted", 15000);
+            await frameWait(`document.getElementById("t")?.value === "kept text"`, "the field's text kept", 10000);
+            await frameWait(`scrollY > 1200`, "the place it was scrolled to", 10000);
+            // The connection lost (its sockets cut), a few seconds: the page
+            // runs on, and is taken back, not loaded again (the count goes
+            // on: a new load would start again at 0).
+            const before = await count();
+            await ev(`__sockets.filter((s) => s.readyState === 1).forEach((s) => s.close())`);
+            await waitFor(`!!document.getElementById("tabtop_reconnect")`, "the connection lost", 15000);
+            await sleep(3000);
+            await ev(`document.querySelector("#tabtop_reconnect button")?.click()`);  // (Try now)
+            await waitFor(`!document.getElementById("tabtop_reconnect")`, "connected again", 60000);
+            await frameWait(`Number(document.getElementById("n").textContent) > ${before + 10}`, "the count gone on meanwhile", 15000);
+            if ((await frame(`document.getElementById("t").value`)) !== "kept text") throw new Error("the field's text was lost");
+            if (!((await frame(`scrollY`)) > 1200)) throw new Error("its place was lost");
+        } finally {
+            await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+        }
+        return `counted to ${await count()}`;
     });
 
     await step("a video skipped is, to the page, played to its end, whether playing or still loading", async () => {

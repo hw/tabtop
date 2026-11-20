@@ -206,7 +206,6 @@ type goBrowser struct {
 	framesSent     int
 	ctx            context.Context
 	cancel         context.CancelFunc
-	deflate        bool // the page takes large messages compressed (sendLarge)
 	// The page's requests not yet answered, and whether it was last said to
 	// be busy loading (network): the page shown waits for it to settle.
 	inflight map[string]bool
@@ -220,6 +219,13 @@ type goBrowser struct {
 	jobs, acts *goQueue
 	results    chan func()
 	stop       chan struct{}
+
+	loadingURL string // where the generation loading goes (resume)
+
+	// The person's connection, whichever is lent the tab now (none while
+	// it's lost: goresume.go), as t; connections lent it come by attach.
+	conn   *goConn
+	attach chan *goLink
 }
 
 // goQueue runs functions one at a time, in order, on a goroutine of its
@@ -480,9 +486,10 @@ func (v goView) clamped() goView {
 	return v
 }
 
-func newGoBrowser(t msgConn, e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
+func newGoBrowser(e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &goBrowser{t: t, e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
+	conn := &goConn{}
+	return &goBrowser{t: conn, conn: conn, attach: make(chan *goLink), e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
 		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
 		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
 }
@@ -527,7 +534,7 @@ const goDeflateFrom = 16 << 10
 // deflate; else as text. Snapshots shrink four to seven times: what's
 // compressed is the page's own content, which its site has already.
 func (b *goBrowser) sendLarge(p []byte) error {
-	if b.deflate && len(p) >= goDeflateFrom {
+	if b.conn.deflate() && len(p) >= goDeflateFrom {
 		var z bytes.Buffer
 		z.Write([]byte{0, 0, 0, 0})
 		w, _ := flate.NewWriter(&z, flate.BestSpeed)
@@ -567,28 +574,44 @@ func (b *goBrowser) post(f func()) {
 
 func (b *goBrowser) run() {
 	msgs := make(chan goClientMsg)
+	lost := make(chan *goLink)
 	stop := b.stop
 	defer close(stop)
 	defer b.cancel()
-	go func() {
-		defer close(msgs)
-		for {
-			typ, p, err := b.t.Read(context.Background())
-			if err != nil {
-				return
-			}
-			var m goClientMsg
-			if typ != websocket.MessageText || json.Unmarshal(p, &m) != nil {
-				b.t.Close(websocket.StatusPolicyViolation, "bad message")
-				return
-			}
-			select {
-			case msgs <- m:
-			case <-stop:
-				return
-			}
+	// Whichever connection's lent it lets go as it ends.
+	defer func() {
+		if l := b.conn.swap(nil); l != nil {
+			l.release()
 		}
 	}()
+	// read reads what the person sends over l, till it goes.
+	read := func(l *goLink) {
+		go func() {
+			for {
+				typ, p, err := l.conn.Read(context.Background())
+				var m goClientMsg
+				if err == nil && (typ != websocket.MessageText || json.Unmarshal(p, &m) != nil) {
+					l.conn.Close(websocket.StatusPolicyViolation, "bad message")
+					err = errors.New("bad message")
+				}
+				if err != nil {
+					select {
+					case lost <- l:
+					case <-stop:
+					}
+					return
+				}
+				select {
+				case msgs <- m:
+				case <-stop:
+					return
+				}
+			}
+		}()
+	}
+	// No connection: the tab runs on so long (goDetachedFor), then ends.
+	var detached <-chan time.Time
+	taken := false // taken by a connection yet (the first, or one back)
 	go b.jobs.run(stop)
 	go b.acts.run(stop)
 	// The page's fetch, patched for data: URLs (gofetch.js), and its
@@ -617,10 +640,33 @@ func (b *goBrowser) run() {
 	var loadTimeout, dialogTimeout <-chan time.Time
 	for {
 		select {
-		case m, ok := <-msgs:
-			if !ok {
-				return
+		case l := <-b.attach:
+			// A connection: the first, or one back for the tab, or one
+			// taking it from another (the same tab opened again elsewhere,
+			// or the old connection not yet seen to be gone).
+			if was := b.conn.swap(l); was != nil {
+				writeJSON(was.conn, map[string]any{"type": "go-taken"})
+				was.conn.Close(websocket.StatusNormalClosure, "This tab was opened in another window.")
+				was.release()
 			}
+			detached = nil
+			read(l)
+			if taken {
+				b.resume()
+			}
+			taken = true
+		case l := <-lost:
+			if b.conn.link() != l {
+				l.release() // one already let go
+				continue
+			}
+			b.conn.swap(nil)
+			l.release()
+			detached = time.After(goDetachedFor)
+			goDebugf("tab detached: kept %v", goDetachedFor)
+		case <-detached:
+			return // not taken back in time
+		case m := <-msgs:
 			goDebugf("op %s %s id %d gen %d (tab at gen %d, shown %d, loading %d)", m.Op, m.Kind, m.ID, m.Gen, b.gen, b.shown, b.loading)
 			// What the person does (not a resync, which the client asks for
 			// by itself): the engine's work for it isn't a runaway page's.
@@ -633,6 +679,9 @@ func (b *goBrowser) run() {
 				}
 			}
 			switch m.Op {
+			case "close":
+				// Closed by the person (its tab): not kept.
+				return
 			case "popup-answer":
 				b.popupAnswer(m.ID, m.Accept, m.Remember)
 			case "navigate":
@@ -739,6 +788,39 @@ func (b *goBrowser) run() {
 	}
 }
 
+// resume tells a connection taking the tab back what's there now: the
+// page loading (its snapshot follows as it would), or the page shown, read
+// whole, as the same document again (a copy still shown keeps its place,
+// a new one starts where the page is scrolled); and what it's asking. A
+// page that failed is loaded again by the person, as before.
+func (b *goBrowser) resume() {
+	switch {
+	case b.loading != 0:
+		b.send(map[string]any{"type": "go-loading", "gen": b.loading, "url": b.loadingURL, "by": "resume"})
+	case b.shown == b.gen && b.gen != 0:
+		b.lastAgain = time.Time{} // at once
+		b.readAgain(b.gen)
+	default:
+		// Nothing shown (its load failed, or it was a file): the page
+		// loads its address again, as without a tab to take back.
+		b.send(map[string]any{"type": "go-reload", "gen": b.gen})
+	}
+	b.askAgain()
+	for id, a := range b.popupAsks {
+		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": id, "url": a.url, "site": a.site})
+	}
+}
+
+// goScrollAt is where a page says it's scrolled, within reason.
+func goScrollAt(at [2]float64) [2]float64 {
+	for i, v := range at {
+		if !(v >= 0 && v <= 1e7) {
+			at[i] = 0
+		}
+	}
+	return at
+}
+
 // askAgain sends the open dialog again, of the generation now loading: a
 // page that asked and then went (Lightpanda loads a window the page opens
 // in its place, a dialog still open) is still waiting, and the page here
@@ -764,6 +846,7 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 		return nil
 	}
 	b.loading, b.navigated, b.world, b.dirty, b.docType = gen, false, 0, false, ""
+	b.loadingURL = u
 	b.popupAsks = nil // asked about by the page left: gone with it
 	b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
 	b.askAgain()
@@ -1022,6 +1105,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			// redirect by script.
 			b.gen++
 			b.loading, b.navigated = b.gen, true
+			b.loadingURL = u
 			b.popupAsks = nil // asked about by the page left: gone with it
 			b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": "page"})
 			loadTimeout = time.After(goLoadTimeout)
@@ -1201,12 +1285,13 @@ func (b *goBrowser) makeWorld(ctx context.Context) (int, error) {
 }
 
 type goSnapshot struct {
-	URL   string  `json:"url"`
-	Base  string  `json:"base"`
-	Title string  `json:"title"`
-	Type  string  `json:"type"`
-	Doc   *goNode `json:"doc"`
-	IO    []goIO  `json:"io"`
+	URL   string     `json:"url"`
+	Base  string     `json:"base"`
+	Title string     `json:"title"`
+	Type  string     `json:"type"`
+	Doc   *goNode    `json:"doc"`
+	IO    []goIO     `json:"io"`
+	At    [2]float64 `json:"at"` // where the window's scrolled
 }
 
 // goShownTypes are the documents shown as pages; anything else (a PDF, a
@@ -1276,7 +1361,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				b.send(map[string]any{"type": "go-file", "gen": gen, "url": u, "mime": media})
 				return
 			}
-			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO)})
+			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return

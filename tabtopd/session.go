@@ -197,6 +197,7 @@ func (g *server) endSession(id, reason string, asking *tunnel) {
 	g.mu.Unlock()
 	if ok {
 		closeTunnels(s, reason, asking)
+		g.goSessionEnded(id) // its remote browser tabs too, connected or not
 	}
 }
 
@@ -233,13 +234,18 @@ func (g *server) endSessionByHandle(handle, asking, ip string) bool {
 func (g *server) endAllSessions(reason string, asking *tunnel) {
 	g.mu.Lock()
 	ended := []*session{}
+	ids := []string{}
 	for id, s := range g.sessions {
 		g.endLocked(id, s)
 		ended = append(ended, s)
+		ids = append(ids, id)
 	}
 	g.mu.Unlock()
 	for _, s := range ended {
 		closeTunnels(s, reason, asking)
+	}
+	for _, id := range ids {
+		g.goSessionEnded(id)
 	}
 }
 

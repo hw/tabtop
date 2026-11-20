@@ -96,18 +96,85 @@ func (g *server) routeGo(c *tunnelCall) {
 		c.r.fail("The remote browser is unavailable: " + g.goWhy + ".")
 		return
 	}
+	c.t.c.SetReadLimit(goClientMessage + tunnelOverhead)
+	sandboxed := g.goMode == goSandboxed
+	// A tab kept while its connection was lost (goresume.go), its token
+	// brought back from the same session: taken back as it is. (A token
+	// of a tab gone, or another session's: a new tab, as before.)
+	tabs := g.goTabList()
+	if t := tabs.find(c.req.Resume, c.session); t != nil {
+		if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token, "resumed": true}) {
+			return
+		}
+		logGoTab("taken back", c.ip)
+		if t.lend(newGoLink(c.t, c.req.Deflate)) {
+			logGoTab("connection gone", c.ip)
+		}
+		return
+	}
 	if !g.openGo(c.session) {
 		c.r.fail("Too many remote browser tabs are open.")
 		return
 	}
-	defer g.closeGo(c.session)
 	e, err := startGoEngine(g.goConfig)
 	if err != nil {
+		g.closeGo(c.session)
 		log.Printf("go: engine for %s: %v", c.ip, err)
 		c.r.fail("The remote browser's engine didn't start.")
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+	cdp, err := dialCDP(ctx, e)
+	var page, target string
+	if err == nil {
+		page, target, err = cdp.newPageTarget(ctx)
+	}
+	for _, m := range []string{"Page.enable", "Runtime.enable", "Network.enable"} {
+		if err == nil {
+			err = cdp.call(ctx, page, m, nil, nil)
+		}
+	}
+	cancel()
+	if err != nil {
+		if cdp != nil {
+			cdp.close()
+		}
+		e.kill("its tab didn't start")
+		g.closeGo(c.session)
+		log.Printf("go: engine for %s: %v", c.ip, err)
+		c.r.fail("The remote browser's engine didn't start.")
+		return
+	}
+	b := newGoBrowser(e, cdp, page, target)
+	b.resources, b.session = g.goResources, c.session
+	// The account's cookies, given before anything's loaded; what the
+	// tab's sites set taken back as it closes (gocookies.go).
+	b.jar = g.goCookies
+	b.sites = g.goSites
+	t := &goTab{token: goToken(), session: c.session, b: b, ended: make(chan struct{})}
+	if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token}) {
+		cdp.close()
+		e.kill("its tab was closed")
+		g.closeGo(c.session)
+		return
+	}
+	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
+	tabs.add(t)
+	go g.runGoTab(t, tabs, c.ip)
+	if t.lend(newGoLink(c.t, c.req.Deflate)) {
+		logGoTab("connection gone", c.ip)
+	}
+}
+
+// runGoTab runs a tab, from its first connection till it ends: closed,
+// its engine gone, its session ended, or not taken back in time.
+func (g *server) runGoTab(t *goTab, tabs *goTabs, ip string) {
+	b, e := t.b, t.b.e
+	defer close(t.ended)
+	defer tabs.remove(t)
+	defer g.closeGo(t.session)
 	defer e.kill("its tab was closed")
+	defer b.cdp.close()
 	defer goPruneCacheSoon(g.goConfig.cache) // what it added, kept to size
 	if dir := g.goConfig.cache; dir != "" {
 		// And while it runs: a tab kept open for hours adds to it too.
@@ -126,44 +193,12 @@ func (g *server) routeGo(c *tunnelCall) {
 		}()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
-	cdp, err := dialCDP(ctx, e)
-	var page, target string
-	if err == nil {
-		page, target, err = cdp.newPageTarget(ctx)
-	}
-	for _, m := range []string{"Page.enable", "Runtime.enable", "Network.enable"} {
-		if err == nil {
-			err = cdp.call(ctx, page, m, nil, nil)
-		}
-	}
-	cancel()
-	if err != nil {
-		if cdp != nil {
-			cdp.close()
-		}
-		log.Printf("go: engine for %s: %v", c.ip, err)
-		c.r.fail("The remote browser's engine didn't start.")
-		return
-	}
-	defer cdp.close()
-	c.t.c.SetReadLimit(goClientMessage + tunnelOverhead)
-	if !c.r.accept(map[string]any{"sandboxed": g.goMode == goSandboxed}) {
-		return
-	}
-	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
-	b := newGoBrowser(c.t, e, cdp, page, target)
-	b.resources, b.session, b.deflate = g.goResources, c.session, c.req.Deflate
-	// The account's cookies, given before anything's loaded; what the
-	// tab's sites set taken back as it closes (gocookies.go).
-	b.jar = g.goCookies
-	b.sites = g.goSites
-	ctx, cancel = context.WithTimeout(context.Background(), goCallTimeout)
 	b.startUA(ctx)
 	b.startCookies(ctx)
 	cancel()
 	defer b.endCookies()
 	b.run()
-	log.Printf("go: remote browser tab from %s closed", c.ip)
+	log.Printf("go: remote browser tab from %s closed", ip)
 }
 
 // goURL checks a URL the page asked for: HTTP or HTTPS, with a host and no

@@ -46,6 +46,14 @@ const KEPT = "tabtop-go-kept" + (tabId ? ":" + tabId : "");
 // Its pages back and forward, likewise (the tab's own history has an entry
 // for each, on this page's address, which says which: see remember).
 const KEPT_HISTORY = "tabtop-go-history" + (tabId ? ":" + tabId : "");
+// Its token on the server: the tab there runs on a while (5 minutes) if
+// the connection's lost, and a connection bringing this takes it back,
+// as it is (goresume.go). This browser tab's only: a reload takes it back.
+const KEPT_RESUME = "tabtop-go-resume" + (tabId ? ":" + tabId : "");
+const resumeToken = {
+    get() { try { return sessionStorage.getItem(KEPT_RESUME) || ""; } catch { return ""; } },
+    set(token) { try { token ? sessionStorage.setItem(KEPT_RESUME, token) : sessionStorage.removeItem(KEPT_RESUME); } catch { /* not kept */ } },
+};
 // Sites opened, newest first, for the start (localStorage: this device's
 // only, never sent anywhere; forgotten from the start).
 const RECENT = "tabtop-go-recent";
@@ -532,7 +540,8 @@ function stop() {
 // trying again, else true.
 function connect() {
     return new Promise((resolve) => {
-        const s = new TunnelSocket({ type: "go", deflate: canInflate }, { title: "Browser" });
+        const resume = resumeToken.get();
+        const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}) }, { title: "Browser" });
         show("Connecting to TabTop…");
         $("go_progress").hidden = false;
         s.onopen = () => {
@@ -540,7 +549,18 @@ function connect() {
             gen = shown = 0;
             show("");
             $("go_progress").hidden = true;
-            if (at >= 0) load(entries[at].url, { push: false });
+            const reply = s.reply ?? {};
+            resumeToken.set(typeof reply.resume === "string" && reply.resume.length <= 64 ? reply.resume : "");
+            if (reply.resumed) {
+                // The tab, as it is now: the page it shows (or is loading)
+                // comes as it does, at this window's size; not loaded again.
+                sentView = view();
+                ws.send(JSON.stringify({ op: "viewport", view: sentView }));
+                notice.hidden = true;
+                show("Carrying on…");
+            } else if (at >= 0) {
+                load(entries[at].url, { push: false });
+            }
             resolve(true);
         };
         // In the order they come, though a compressed one takes a moment to
@@ -563,6 +583,12 @@ function connect() {
             }
             let m;
             try { m = JSON.parse(data); } catch { return; }
+            if (m.type === "go-taken") {
+                // This tab opened in another window (a duplicated browser
+                // tab), which has it now: this one starts its own next.
+                resumeToken.set("");
+                return;
+            }
             if (m.type === "go-res") {
                 resHeader(m);  // of any page: not a generation's
                 return;
@@ -582,7 +608,9 @@ function connect() {
                 forgetSession(s.session);
                 storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
             } else if (e.lost) {
-                if (was) reconnect("Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
+                if (was) reconnect(resumeToken.get()
+                    ? "Connection lost. The page carries on on the server for 5 minutes; reconnecting picks it up where it is."
+                    : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
             } else {
                 show("");
                 warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0 });
@@ -615,6 +643,11 @@ function message(m) {
             show(`Loading ${hostOf(m.url)}…`);
             update();
             break;
+        case "go-reload":
+            // Taken back with nothing to show: loaded again.
+            if (at >= 0) load(entries[at].url, { push: false });
+            else show("");
+            break;
         case "go-snapshot": {
             loading = false;
             rendering = true;
@@ -632,7 +665,7 @@ function message(m) {
                 media = goMedia(frame, mediaHelp);
             }
             shown = m.gen;
-            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io };
+            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at };
             toFrame(lastRender);
             update();
             break;
@@ -1222,6 +1255,11 @@ window.addEventListener("message", (e) => {
         }
         case "cache-cleared":
             forgetResources();
+            break;
+        case "close":
+            // Closed by the person: not kept on the server either.
+            resumeToken.set("");
+            ws?.send(JSON.stringify({ op: "close" }));
             break;
         case "count":
             $("go_tabs").hidden = !m.compact;

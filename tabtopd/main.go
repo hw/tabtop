@@ -115,6 +115,8 @@ type server struct {
 	goSites *goSiteSettings
 	// goEngines counts the remote browser's engines open, by session.
 	goEngines map[string]int
+	// The remote browser\'s tabs, by token: kept a while without a connection (goresume.go).
+	goTabs *goTabs
 	// rootProblems are configured roots left out at startup (see
 	// parseFileRootsAll).
 	rootProblems []rootProblem

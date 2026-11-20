@@ -22,6 +22,10 @@ func newGoServer(t *testing.T, engine string) (*server, string, testSession) {
 	t.Helper()
 	g, srv := newE2EServer(t)
 	g.goOn, g.goMode = true, goUnsandboxed
+	// A tab whose connection goes ends soon after, in tests, as it once did
+	// at once (not set back as a test ends: a tab let go then would be kept
+	// the five minutes): tests that take one back keep it longer meanwhile.
+	goDetachedFor = goTestDetachedFor
 	g.goConfig = fakeEngineConfig(t, goUnsandboxed, "ok")
 	if engine != "" {
 		bwrap, _ := exec.LookPath("bwrap")
@@ -32,6 +36,8 @@ func newGoServer(t *testing.T, engine string) (*server, string, testSession) {
 	}
 	return g, srv.URL, login(t, testCtx(t), srv.URL, code(0))
 }
+
+const goTestDetachedFor = 100 * time.Millisecond
 
 // sendGo sends the page's message m on the go tunnel.
 func sendGo(t *testing.T, ctx context.Context, tc *tunnelClient, m map[string]any) {
@@ -69,10 +75,17 @@ func TestGoRouteOffAndUnavailable(t *testing.T) {
 
 func TestGoRouteBrowses(t *testing.T) {
 	g, url, s := newGoServer(t, "")
+	goDetachedFor = time.Minute // to take it back
+	defer func() { goDetachedFor = goTestDetachedFor }()
 	ctx := testCtx(t)
 	tc := openSession(t, ctx, url, s)
-	if r := tc.request(t, ctx, map[string]any{"type": "go"}); r["ok"] != true || r["sandboxed"] != false {
+	r := tc.request(t, ctx, map[string]any{"type": "go"})
+	if r["ok"] != true || r["sandboxed"] != false || r["resumed"] == true {
 		t.Fatalf("opening: %v", r)
+	}
+	token, _ := r["resume"].(string)
+	if len(token) < 20 {
+		t.Fatalf("no token to take it back by: %v", r)
 	}
 	expect := func(typ string, gen int) map[string]any {
 		t.Helper()
@@ -124,14 +137,83 @@ func TestGoRouteBrowses(t *testing.T) {
 	if dirs := goEngineRunDirs(t); len(dirs) != 1 {
 		t.Errorf("%d engines running, want 1", len(dirs))
 	}
-	// Closing the tab kills its engine.
+	// The connection lost: the tab's kept (goresume.go), and taken back by
+	// its token, as it is, from the same session; not from another.
 	tc.c.CloseNow()
-	waitFor(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	time.Sleep(300 * time.Millisecond)
+	if dirs := goEngineRunDirs(t); len(dirs) != 1 {
+		t.Fatalf("%d engines running once the connection went, want the tab's kept", len(dirs))
+	}
+	other := openSession(t, ctx, url, login(t, ctx, url, code(1)))
+	if r := other.request(t, ctx, map[string]any{"type": "go", "resume": token}); r["ok"] != true || r["resumed"] == true || r["resume"] == token {
+		t.Errorf("another session's connection with the token: %v", r)
+	}
+	sendGo(t, ctx, other, map[string]any{"op": "close"}) // (a new tab of its own: closed)
+	tc = openSession(t, ctx, url, s)
+	if r := tc.request(t, ctx, map[string]any{"type": "go", "resume": token}); r["ok"] != true || r["resumed"] != true || r["resume"] != token {
+		t.Fatalf("taking it back: %v", r)
+	}
+	expect("go-reload", 5) // its last page failed: nothing shown, loaded again by the page
+	// Closed by the person: its engine killed at once.
+	sendGo(t, ctx, tc, map[string]any{"op": "close"})
 	waitFor(t, "the engine to be uncounted", func() bool {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		return len(g.goEngines) == 0
 	})
+}
+
+// A tab no one takes back in time ends.
+func TestGoRouteDetachedEnds(t *testing.T) {
+	g, url, s := newGoServer(t, "")
+	goDetachedFor = 300 * time.Millisecond
+	defer func() { goDetachedFor = goTestDetachedFor }()
+	ctx := testCtx(t)
+	tc := openSession(t, ctx, url, s)
+	r := tc.request(t, ctx, map[string]any{"type": "go"})
+	if r["ok"] != true {
+		t.Fatal(r)
+	}
+	tc.c.CloseNow()
+	waitFor(t, "the tab to end, not taken back", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitFor(t, "the engine to be uncounted", func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return len(g.goEngines) == 0
+	})
+	// Its token, then: a new tab.
+	tc = openSession(t, ctx, url, s)
+	if r := tc.request(t, ctx, map[string]any{"type": "go", "resume": r["resume"]}); r["ok"] != true || r["resumed"] == true {
+		t.Errorf("a token of a tab gone: %v", r)
+	}
+	sendGo(t, ctx, tc, map[string]any{"op": "close"})
+	waitFor(t, "the new tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+}
+
+// A connection taking the tab from one still open (the same tab opened in
+// another window): the other's told, and closed; the tab's the new one's.
+func TestGoRouteTakenElsewhere(t *testing.T) {
+	_, url, s := newGoServer(t, "")
+	goDetachedFor = time.Minute
+	defer func() { goDetachedFor = goTestDetachedFor }()
+	ctx := testCtx(t)
+	first := openSession(t, ctx, url, s)
+	r := first.request(t, ctx, map[string]any{"type": "go"})
+	if r["ok"] != true {
+		t.Fatal(r)
+	}
+	second := openSession(t, ctx, url, s)
+	if r := second.request(t, ctx, map[string]any{"type": "go", "resume": r["resume"]}); r["resumed"] != true {
+		t.Fatalf("taking it: %v", r)
+	}
+	if m := first.readJSON(t, ctx); m["type"] != "go-taken" {
+		t.Errorf("the first was told %v", m)
+	}
+	if dirs := goEngineRunDirs(t); len(dirs) != 1 {
+		t.Errorf("%d engines, want the one tab's", len(dirs))
+	}
+	sendGo(t, ctx, second, map[string]any{"op": "close"})
+	waitFor(t, "the tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }
 
 func TestGoRouteLimitsEngines(t *testing.T) {
@@ -142,7 +224,7 @@ func TestGoRouteLimitsEngines(t *testing.T) {
 		if r := tc.request(t, ctx, map[string]any{"type": "go"}); r["ok"] != true {
 			t.Fatalf("tab %d: %v", i+1, r)
 		}
-		defer tc.c.CloseNow()
+		defer sendGo(t, ctx, tc, map[string]any{"op": "close"})
 	}
 	r := openSession(t, ctx, url, s).request(t, ctx, map[string]any{"type": "go"})
 	if !strings.Contains(r["error"].(string), "Too many") {

@@ -58,7 +58,9 @@ type tunnelRequest struct {
 	// upload: replace a file that has the name, rather than save under a
 	// free one
 	Replace bool `json:"replace,omitempty"`
-	// upload: the id of one cut off, to carry on with (see keepPartial)
+	// upload: the id of one cut off, to carry on with (see keepPartial);
+	// go: the token of a tab to take back, kept while its connection was
+	// lost (goresume.go)
 	Resume string `json:"resume,omitempty"`
 	// upload with Replace, and the edits below: only if the file there is
 	// still as the page read it, with this version (see fileVersion) and
