@@ -1495,7 +1495,9 @@ async function check(base, port, site) {
         await press('#go_player button[aria-label^="Back"]');
         await waitFor(`document.querySelector("#go_player video").currentTime < 2`, "back 10 s (to its start)");
         // A double tap at the right: on 10 s (to its end), marked there.
-        if (!(await ev(`!!document.querySelector('#go_player button[aria-label^="Download"]')`))) throw new Error("no Download");
+        // Download: offered where Files are on (it saves into Downloads), not where they're off.
+        const offered = await ev(`!!document.querySelector('#go_player button[aria-label^="Download"]')`);
+        if (offered !== (process.env.GO_NO_FS !== "1")) throw new Error(`Download ${offered ? "offered, Files off" : "not offered"}`);
         const right = await ev(`(() => { const r = document.getElementById("go_player").getBoundingClientRect(); return { x: Math.round(r.right - r.width * 0.2), y: Math.round(r.top + r.height * 0.3) }; })()`);
         for (const n of [1, 2]) {
             await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...right, button: "left", buttons: 1, clickCount: n });
