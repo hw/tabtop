@@ -257,11 +257,19 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
 
     // place lays a player over its box, kept within the frame's area (the
     // frame says where the box is); hidden while its box isn't shown.
+    document.addEventListener("fullscreenchange", () => {
+        for (const player of players.values()) place(player.placement);
+    }, { signal: abort.signal });
+
     function place({ key, rect, clip, shown, fit, position }) {
         const player = players.get(key);
         if (!player) return;
         player.placement = { key, rect, clip, shown, fit, position };
         const media = player.element, loading = player.loading?.box;
+        if (media && document.fullscreenElement === media) {
+            media.style.clipPath = "none";
+            return;
+        }
         const hide = () => {
             if (media) media.style.display = "none";
             if (loading) loading.hidden = true;
