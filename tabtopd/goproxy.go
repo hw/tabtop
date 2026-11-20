@@ -223,6 +223,10 @@ func (p *goProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		goRefuse(w, "port", http.StatusForbidden)
 		return
 	}
+	if goBlockedHost(r.URL.Hostname()) {
+		goRefuse(w, "blocked", http.StatusForbidden)
+		return
+	}
 	p.forward.ServeHTTP(w, r)
 }
 
@@ -233,6 +237,10 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil || host == "" || !p.ports[port] {
 		http.Error(w, "Tunnels go only to ports 80 and 443.", http.StatusForbidden)
+		return
+	}
+	if goBlockedHost(host) {
+		goRefuse(w, "blocked", http.StatusForbidden)
 		return
 	}
 	up, err := p.dialer.DialContext(r.Context(), "tcp", r.Host)
@@ -341,6 +349,7 @@ var goRefusals = map[string]string{
 	"busy":        "Too many connections.",
 	"budget":      errGoProxyBytes.Error(),
 	"rate":        "Too many requests; slow down.",
+	"blocked":     "This site is blocked in the browser's settings (☰ → Site settings).",
 }
 
 // goRefuse answers with the proxy's refusal, for why.

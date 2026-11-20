@@ -71,6 +71,7 @@ const ICONS = {
     clear: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
     sites: '<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="13.5" r="1"/><circle cx="10.5" cy="15" r="1"/>',
+    settings: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 back.innerHTML = icon("back");
@@ -86,6 +87,8 @@ menuForward.innerHTML = `${icon("forward")}<span class="label">Forward</span>`;
 // Cookies and site data: a page of its own (go/cookie, go-cookies.js),
 // in a tab of its own, this one's page kept.
 $("go_menu_sites").innerHTML = `${icon("sites")}<span class="label">Cookies and site data</span>`;
+// Site settings: sites blocked, pop-ups (go/settings, go-settings.js).
+$("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Site settings</span>`;
 const nav = navBar("go", { logOutIcon: true });
 for (const item of nav.children) {
     const label = document.createElement("span");
@@ -214,6 +217,47 @@ function warn(message, { retry = null, error = true, label = "Try again", edit =
 }
 notice.querySelector(".dismiss").addEventListener("click", () => { notice.hidden = true; });
 notice.querySelector(".edit").addEventListener("click", () => { notice.hidden = true; address.focus(); address.select(); });
+
+// --- Pop-ups the page wants to open -------------------------------------
+//
+// Asked about one at a time: open it (in a tab of its own) or not, the
+// answer kept for the site that asked unless the person unticks it.
+const popupBox = $("go_popup");
+let popupAsks = [];
+function askPopup(m) {
+    if (popupAsks.length >= 8) return;
+    popupAsks.push(m);
+    if (popupAsks.length === 1) showPopupAsk();
+}
+function showPopupAsk() {
+    const m = popupAsks[0];
+    if (!m) {
+        popupBox.hidden = true;
+        return;
+    }
+    const site = typeof m.site === "string" && m.site ? m.site : "This page";
+    $("go_popup_text").textContent = `${site} wants to open a pop-up: ${hostOf(m.url)}`;
+    popupBox.querySelector(".remember span").textContent = m.site ? `Remember for ${m.site}` : "Remember for this site";
+    popupBox.querySelector(".remember").hidden = !m.site;
+    popupBox.querySelector(".remember input").checked = true;
+    popupBox.hidden = false;
+    popupBox.querySelector(".open").focus();
+}
+function answerPopup(accept) {
+    const m = popupAsks.shift();
+    if (m && ws) ws.send(JSON.stringify({ op: "popup-answer", id: m.id, accept, remember: !!m.site && popupBox.querySelector(".remember input").checked }));
+    showPopupAsk();
+}
+popupBox.querySelector(".open").addEventListener("click", () => answerPopup(true));
+popupBox.querySelector(".refuse").addEventListener("click", () => answerPopup(false));
+popupBox.addEventListener("keydown", (e) => { if (e.key === "Escape") answerPopup(false); });
+// note says something for a few seconds (in the status), then goes.
+let noteTimer = 0;
+function note(text) {
+    show(text);
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => { if (status.textContent === text) show(""); }, 4000);
+}
 
 // The page being left, while the next is slow to come: dimmed, and its
 // players paused, after a second.
@@ -535,6 +579,10 @@ function message(m) {
             loading = true;
             rendering = false;
             notice.hidden = true;
+            // Pop-ups the page left asked about are gone with it, as a
+            // browser's notice of them is.
+            popupAsks = [];
+            popupBox.hidden = true;
             // A question the page is waiting on is gone with it; what it
             // only said (a notice) stays, read or not.
             if (!noticing) closeDialog();
@@ -564,6 +612,7 @@ function message(m) {
             break;
         }
         case "go-changes":
+            if (m.gen === shown) media.streams(m.streams);
             if (m.gen === shown) toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls });
             break;
         case "go-net":
@@ -605,6 +654,13 @@ function message(m) {
                 if (inTabs) toTabs({ type: "popup", url: m.url });
                 else load(m.url);
             }
+            break;
+        case "go-popup-ask":
+            // A site with nothing said of its pop-ups: the person's asked.
+            if (Number.isSafeInteger(m.id) && typeof m.url === "string") askPopup(m);
+            break;
+        case "go-popup-blocked":
+            note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (☰ → Site settings).`);
             break;
         case "go-file":
             loading = rendering = false;

@@ -112,6 +112,10 @@ type goBrowser struct {
 	// The account's cookies (gocookies.go), and this tab's part of them.
 	jar     *goCookieJar
 	cookies goCookieTab
+	// The site settings (gosites.go), and the pop-ups the person's asked about.
+	sites     *goSiteSettings
+	popupAsk  int
+	popupAsks map[int]goPopupAsk
 	// What it says it is (gouseragent.go): the engine's own, or, on a
 	// phone (phone, set by a job), Chrome on Android's.
 	engineUA  string
@@ -323,6 +327,9 @@ type goClientMsg struct {
 	Length  int64  `json:"length"`
 	IfSize  int64  `json:"if_size"`
 	IfMtime string `json:"if_mtime"`
+	// popup-answer: the pop-up (ID), opened or not (Accept), and the
+	// answer kept for its site.
+	Remember bool `json:"remember"`
 }
 
 // goIO is one of a page's IntersectionObserver targets, for the client to
@@ -606,6 +613,8 @@ func (b *goBrowser) run() {
 				}
 			}
 			switch m.Op {
+			case "popup-answer":
+				b.popupAnswer(m.ID, m.Accept, m.Remember)
 			case "navigate":
 				if m.View != nil {
 					b.setView(*m.View) // before the page loads, at its size
@@ -727,7 +736,15 @@ func (b *goBrowser) askAgain() {
 func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 	b.gen++
 	gen := b.gen
+	if goBlockedHost(goURLHost(u)) {
+		// Not asked for: the proxy would refuse it, as anything of it.
+		b.loading = 0
+		b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
+		b.fail(gen, goRefusals["blocked"])
+		return nil
+	}
 	b.loading, b.navigated, b.world, b.dirty, b.docType = gen, false, 0, false, ""
+	b.popupAsks = nil // asked about by the page left: gone with it
 	b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
 	b.askAgain()
 	// A load another one replaces is given up: its Page.navigate (which an
@@ -886,7 +903,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 				defer cancel()
 				b.cdp.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": info.TargetID}, nil)
 			}()
-			b.send(map[string]any{"type": "go-popup", "gen": b.gen, "url": u})
+			b.popup(u) // opened, refused or asked about, as its site's set (gosites.go)
 		}
 		return loadTimeout, dialogTimeout
 	}
@@ -955,7 +972,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			// as a popup's is (Target.targetCreated, above).
 			if u, err := goURL(p.Frame.URL); err == nil {
 				b.popups[p.Frame.ID] = true
-				b.send(map[string]any{"type": "go-popup", "gen": b.gen, "url": u}) // as a popup's (above)
+				b.popup(u) // as a popup's (above)
 			}
 			break
 		}
@@ -978,6 +995,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			// redirect by script.
 			b.gen++
 			b.loading, b.navigated = b.gen, true
+			b.popupAsks = nil // asked about by the page left: gone with it
 			b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": "page"})
 			loadTimeout = time.After(goLoadTimeout)
 			b.askAgain()
@@ -1202,6 +1220,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			if err != nil {
+				goDebugf("snapshot gen %d: read failed: %v", gen, err)
 				b.fail(gen, "The page couldn't be read.")
 				return
 			}
@@ -1212,6 +1231,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			}
 			var s goSnapshot
 			if err := json.Unmarshal([]byte(raw), &s); err != nil || goClean(s.Doc) == nil {
+				goDebugf("snapshot gen %d: invalid document (%d bytes, JSON error: %t)", gen, len(raw), err != nil)
 				b.fail(gen, "The page couldn't be read.")
 				return
 			}
@@ -1253,11 +1273,12 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 }
 
 type goChanges struct {
-	Seq   int               `json:"seq"`
-	URL   string            `json:"url"`
-	Title string            `json:"title"`
-	Ops   []json.RawMessage `json:"ops"`
-	IO    []goIO            `json:"io"`
+	Streams []json.RawMessage `json:"streams"`
+	Seq     int               `json:"seq"`
+	URL     string            `json:"url"`
+	Title   string            `json:"title"`
+	Ops     []json.RawMessage `json:"ops"`
+	IO      []goIO            `json:"io"`
 	// Again: what changed can't be said as changes (the engine named nodes
 	// of the page's world): the document's to be read again whole.
 	Again bool `json:"again"`
@@ -1358,10 +1379,10 @@ func (b *goBrowser) readChanges() {
 				goDebugf("dialog %s asked, answered by the engine", q.Kind)
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
-			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(io) > 0 || len(scrolls) > 0 {
+			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(io) > 0 || len(scrolls) > 0 {
 				ops := goCleanOps(c.Ops)
 				goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
-				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls})
+				p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams})
 				b.sendLarge(p)
 			}
 			if b.dirty {

@@ -95,7 +95,7 @@ func newGoResourceClient(allow func(netip.Addr) bool) *http.Client {
 	client.Transport = transport
 	redirects := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if next.URL.User != nil || next.URL.Scheme != "http" && next.URL.Scheme != "https" || !goPortAllowed(next.URL) {
+		if next.URL.User != nil || next.URL.Scheme != "http" && next.URL.Scheme != "https" || !goPortAllowed(next.URL) || goBlockedHost(next.URL.Hostname()) {
 			return http.ErrUseLastResponse
 		}
 		next.Header.Del("Referer")
@@ -159,6 +159,9 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	}
 	if !goPortAllowed(u) {
 		return fail("Resources load only from ports 80 and 443.")
+	}
+	if goBlockedHost(u.Hostname()) {
+		return fail(goRefusals["blocked"])
 	}
 	mine, ok := goSessionSlots.acquire(ctx, session)
 	if !ok {
@@ -240,6 +243,10 @@ func (g *server) routeGoResource(c *tunnelCall) {
 		u, err := url.Parse(c.req.URL)
 		if err != nil || len(c.req.URL) > maxGoURL || !goPortAllowed(u) {
 			c.r.fail("Media loads only from ports 80 and 443.")
+			return
+		}
+		if goBlockedHost(u.Hostname()) {
+			c.r.fail(goRefusals["blocked"])
 			return
 		}
 		// The session's share of the broker's slots, as its pictures'

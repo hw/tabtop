@@ -84,6 +84,7 @@ as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
     -passkeys-file "$USER_HOME/.config/tabtop/passkeys.json" \
     -go-cookies-file "$USER_HOME/.config/tabtop/go-cookies.sealed" \
     -go-cookies-key-file "$USER_HOME/.config/tabtop/go-cookies.key" \
+    -go-sites-file "$USER_HOME/.config/tabtop/go-sites.json" \
     -remote-approval-url "${WEB_REMOTE_APPROVAL_URL:-}" \
     -offline-client="$WEB_OFFLINE_CLIENT" \
     -fetch="$WEB_GO_FETCH" \

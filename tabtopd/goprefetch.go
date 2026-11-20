@@ -177,6 +177,10 @@ func (b *goBrowser) serveMedia(m goClientMsg) {
 		fail(errors.New("Media loads only from ports 80 and 443."))
 		return
 	}
+	if goBlockedHost(u.Hostname()) {
+		fail(errors.New(goRefusals["blocked"]))
+		return
+	}
 	if b.resources == nil {
 		fail(errGoNoResources)
 		return

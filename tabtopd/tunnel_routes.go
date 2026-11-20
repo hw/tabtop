@@ -89,6 +89,9 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// Its cookies, kept for the account (gocookies.go): their page, go/cookie.
 	"go-cookies":        other((*server).routeGoCookies),
 	"go-cookies-forget": other((*server).routeGoCookiesForget),
+	// Its site settings: sites blocked, pop-ups (gosites.go): their page, go/settings.
+	"go-settings":     other((*server).routeGoSettings),
+	"go-settings-set": other((*server).routeGoSettingsSet),
 
 	// Sessions, and the activity log: kept with file support off.
 	"logout":           other((*server).routeLogout),

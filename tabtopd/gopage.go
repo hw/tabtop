@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-cookies.html go-cookies.js go-tabs.html go-tabs.js
+//go:embed go.html go.js go-media.js go-cookies.html go-cookies.js go-tabs.html go-tabs.js go-settings.html go-settings.js
 var goFiles embed.FS
 
 const (
@@ -21,7 +21,7 @@ const (
 	// players' parts from the streaming service worker (go-media.js), at
 	// the page's own origin.
 	goPageCSP = "default-src 'none'; script-src 'self'; connect-src 'self' data:; style-src 'unsafe-inline'; " +
-		"img-src 'self' data: blob:; media-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+		"img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 
 	// goTabsCSP is the tabs' page's, at go/: each tab a frame of the site's
 	// (go/tab), the login's tunnel, nothing else.
@@ -82,13 +82,14 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go.html")
 		w.Write(page)
-	case "cookie":
-		// The cookies kept for it (gocookies.go), by site.
+	case "cookie", "settings":
+		// The cookies kept for it (gocookies.go), by site; its site
+		// settings (gosites.go). Their script, the tunnel, nothing else.
 		h.Set("Content-Security-Policy", goCookiesCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		page, _ := goFiles.ReadFile("go-cookies.html")
+		page, _ := goFiles.ReadFile(map[string]string{"cookie": "go-cookies.html", "settings": "go-settings.html"}[strings.TrimPrefix(r.URL.Path, goPrefix)])
 		w.Write(page)
-	case "go.js", "go-media.js", "go-cookies.js", "go-tabs.js":
+	case "go.js", "go-media.js", "go-cookies.js", "go-tabs.js", "go-settings.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)

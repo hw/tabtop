@@ -111,6 +111,8 @@ type server struct {
 	goResources *http.Client
 	// goCookies is the remote browser's cookies, kept for the account.
 	goCookies *goCookieJar
+	// goSites is its site settings: blocked sites, pop-ups.
+	goSites *goSiteSettings
 	// goEngines counts the remote browser's engines open, by session.
 	goEngines map[string]int
 	// rootProblems are configured roots left out at startup (see
@@ -172,6 +174,7 @@ func main() {
 	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
 	flag.StringVar(&c.passkeysFile, "passkeys-file", c.passkeysFile, "where passkeys added to log in with are kept; empty keeps them in memory, till a restart")
 	flag.StringVar(&c.goCookiesFile, "go-cookies-file", c.goCookiesFile, "where the remote browser's cookies are kept, sealed, to last across tabs and restarts; empty keeps them in memory, till a restart")
+	flag.StringVar(&c.goSitesFile, "go-sites-file", c.goSitesFile, "where the remote browser's site settings (blocked sites, pop-ups) are kept; empty keeps them in memory, till a restart")
 	flag.StringVar(&c.goCookiesKeyFile, "go-cookies-key-file", c.goCookiesKeyFile, "the key the remote browser's cookies are sealed with; needed to keep them in -go-cookies-file")
 	flag.StringVar(&c.remoteApprovalURL, "remote-approval-url", "", "trusted HTTPS approval page URL; empty uses this deployment at /auth/approve")
 	flag.BoolVar(&c.offlineClient, "offline-client", false, "accept the tunnel from the offline client (tabtop.html from the bootstrap pack, opened as a file: origin \"null\")")

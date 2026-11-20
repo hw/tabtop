@@ -81,6 +81,10 @@ func TestGoPage(t *testing.T) {
 	if res, _ := get("/go/go-cookies.js"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
 		t.Errorf("go-cookies.js: %d", res.StatusCode)
 	}
+	// Its site settings' page, at go/settings.
+	if res, settings := get("/go/settings"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(settings, `src="go-settings.js"`) {
+		t.Errorf("the settings page: %d", res.StatusCode)
+	}
 }
 
 // TestGoFrameCSP holds the frame's policy to what keeps a page in: no

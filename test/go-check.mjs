@@ -172,6 +172,35 @@ $("under").addEventListener("click", () => log("under clicked"));
 <script>document.getElementById("streamed").src = URL.createObjectURL(new Blob(["x"]));
 const clip = document.getElementById("clip");
 clip.addEventListener("loadedmetadata", () => { document.getElementById("meta").textContent = clip.videoWidth + "x" + clip.videoHeight + " " + Math.round(clip.duration) + " s"; });</script>`,
+        "relay.html": `<!doctype html><title>Relay</title>
+<video id="player" src="clip.mp4" muted width="320" height="180"></video>
+<p id="status">playing clip</p>
+<script>
+const video = document.getElementById("player");
+const status = document.getElementById("status");
+video.addEventListener("ended", () => {
+    if (video.src.startsWith("blob:tabtop-media/")) return;
+    const source = new MediaSource();
+    source.onsourceopen = async () => {
+        try {
+            const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+            buffer.onupdateend = () => {
+                buffer.onupdateend = null;
+                if (!buffer.buffered.length) {
+                    status.textContent = "updateend before media was buffered";
+                    return;
+                }
+                source.endOfStream();
+                status.textContent = "stream supplied";
+            };
+            const reply = await fetch("stream.mp4");
+            buffer.appendBuffer(await reply.arrayBuffer());
+            await video.play();
+        } catch (error) { status.textContent = String(error); }
+    };
+    video.src = URL.createObjectURL(source);
+}, { once: true });
+</script>`,
         "feed.html": `<!doctype html><title>Feed</title><p id="status">ready</p>
 <button id="nextclip">next</button><video id="a" src="clip.mp4" width="320" height="180" muted></video><video id="b" width="320" height="180" muted></video>
 <div id="scroller" style="height:150px;width:300px;overflow:auto"><div style="height:3000px">scroll me</div></div>
@@ -350,6 +379,9 @@ http.createServer((req, res) => {
     // A short clip, for the players the page lays over the copy.
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "5",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", join(dir, "clip.mp4")]);
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "3",
+        "-c:v", "libx264", "-profile:v", "baseline", "-level:v", "1.2", "-pix_fmt", "yuv420p",
+        "-movflags", "+empty_moov+frag_keyframe+default_base_moof", join(dir, "stream.mp4")]);
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
     writeFileSync(join(dir, "font.ttf"), systemFont());
 }
@@ -667,7 +699,7 @@ async function check(base, port, site) {
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
-        if (!/^Forward,Cookies and site data,.+,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
+        if (!/^Forward,Site settings,Cookies and site data,.+,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         await waitFor(`document.getElementById("go_menu_panel").hidden`, "the menu closed");
         // The device's back (the tab's history: a swipe, a button): a page
@@ -877,7 +909,54 @@ async function check(base, port, site) {
         await waitFor(`document.title.startsWith("Interact")`, "back", 30000);
         await frameWait(`!!document.getElementById("open")`, "the page");
         await frameClick("#open");
+        // Asked first (a site with nothing said of its pop-ups): opened, the
+        // answer not kept (the pop-ups' step, below, has that).
+        await waitFor(`!document.getElementById("go_popup").hidden`, "asked about the pop-up", 30000);
+        await ev(`(() => { document.querySelector("#go_popup .remember input").checked = false; document.querySelector("#go_popup .open").click(); })()`);
         await waitFor(`document.title.startsWith("Second")`, "the opened window, here", 30000);
+    });
+
+    await step("pop-ups are asked about, the answer kept for the site; blocked sites aren't loaded; both at go/settings", async () => {
+        const host = new URL(site).hostname;
+        const settings = (req) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call(${JSON.stringify(req)}); t.close(); return JSON.stringify(t.reply); })`);
+        const openPopup = async () => {
+            await goTo(site + "interact.html", "Interact");
+            await frameWait(`!!document.getElementById("open")`, "the page");
+            await frameClick("#open");
+        };
+        // Asked; opened, and kept: the next opens without asking.
+        await openPopup();
+        await waitFor(`!document.getElementById("go_popup").hidden && document.getElementById("go_popup_text").textContent.includes(${JSON.stringify(host)})`, "asked, naming the site", 30000);
+        await ev(`document.querySelector("#go_popup .open").click()`);
+        await waitFor(`document.title.startsWith("Second")`, "the pop-up opened", 30000);
+        if (JSON.parse(await settings({ type: "go-settings" })).popups[host] !== "allow") throw new Error("the answer wasn't kept");
+        await openPopup();
+        await waitFor(`document.title.startsWith("Second")`, "opened without asking", 30000);
+        if (await ev(`!document.getElementById("go_popup").hidden`)) throw new Error("asked again");
+        // Blocked for the site: not opened, and said.
+        await settings({ type: "go-settings-set", name: host, setting: "popups-block" });
+        await openPopup();
+        await waitFor(`/pop-up from .* was blocked/.test(document.getElementById("go_status").textContent)`, "the pop-up refused, and said", 30000);
+        await sleep(1500);
+        if (!(await ev(`document.title.startsWith("Interact")`))) throw new Error("the refused pop-up loaded");
+        // A blocked site: not loaded, nor its pictures for others; then
+        // unblocked.
+        await settings({ type: "go-settings-set", name: host, setting: "block" });
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "second.html")}; i.form.requestSubmit(); })()`);
+        await waitFor(`!document.getElementById("go_notice").hidden && /blocked/.test(document.querySelector("#go_notice p").textContent)`, "the blocked site refused", 30000);
+        await settings({ type: "go-settings-set", name: host, setting: "unblock" });
+        // The page: both listed, a site blocked and unblocked from it.
+        await ev(`location.href = ${JSON.stringify(new URL("go/settings", base).href)}`);
+        await waitFor(`[...document.querySelectorAll("#popups li")].some((li) => li.querySelector(".site").textContent === ${JSON.stringify(host)} && li.querySelector("select").value === "block")`, "the site's pop-ups, blocked, listed", 20000);
+        await ev(`(() => { document.getElementById("site").value = "https://www.ads.example/x"; document.getElementById("block").requestSubmit(); })()`);
+        await waitFor(`[...document.querySelectorAll("#blocked .site")].some((s) => s.textContent === "ads.example")`, "a site blocked from the page");
+        await ev(`[...document.querySelectorAll("#blocked li")].find((li) => li.querySelector(".site").textContent === "ads.example").querySelector("button").click()`);
+        await waitFor(`!document.querySelector("#blocked li")`, "unblocked from the page");
+        // Back to asking, for the steps after.
+        await settings({ type: "go-settings-set", name: host, setting: "popups-ask" });
+        await ev(`location.href = ${JSON.stringify(new URL("go/tab", base).href)}`);
+        // (The page it was at, loaded again, before the next.)
+        await waitFor(`!!document.getElementById("go_url") && document.title.startsWith("Second")`, "the browser page again, at its page", 30000);
     });
 
     await step("a link to a file offers to save it", async () => {
@@ -1010,6 +1089,15 @@ async function check(base, port, site) {
         await sleep(800);
         const n = await frame(`document.getElementById("n").textContent`);
         if (n !== "4") throw new Error(`counted ${n}, not 4: the press let go outside clicked too`);
+    });
+
+    await step("the same video switches from a file to a MediaSource stream", async () => {
+        await goTo(site + "relay.html", "Relay");
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 2 && Math.abs(v.duration - 5) < 0.5)`, "the preroll", 30000);
+        await ev(`(() => { const v = document.querySelector("video"); v.currentTime = v.duration - 0.2; return v.play(); })()`);
+        await frameWait(`document.getElementById("status").textContent === "stream supplied"`, "the site handed over the stream");
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.src.startsWith("blob:") && Math.abs(v.duration - 3) < 0.5 && v.currentTime > 0.25)`,
+            "the relayed main video advancing", 30000);
     });
 
     await step("a video plays in a player laid over the copy, its file read through the server", async () => {
@@ -1263,6 +1351,9 @@ async function check(base, port, site) {
         const at = await ev(`(() => { const f = document.querySelectorAll("#frames iframe")[0]; const r = f.getBoundingClientRect(), v = f.contentDocument.getElementById("go_view").getBoundingClientRect(); return { x: r.x + v.x, y: r.y + v.y }; })()`);
         const b = JSON.parse(await frame(`(() => { const b = document.getElementById("open").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); })()`));
         for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: at.x + b.x, y: at.y + b.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        // Asked about (the site's pop-ups have no setting): opened.
+        await waitFor(`!document.querySelector("#frames iframe").contentDocument.getElementById("go_popup").hidden`, "asked about the pop-up", 30000);
+        await inTab(0, `(() => { document.querySelector("#go_popup .remember input").checked = false; document.querySelector("#go_popup .open").click(); return true; })()`);
         await waitFor(`document.querySelectorAll("#frames iframe").length === 2 && /^Second/.test(document.querySelectorAll(".tab .title")[1]?.textContent || "")`, "the opened window, in a tab of its own", 30000);
         if ((await shownTab()) !== 1) throw new Error("the new tab isn't shown");
         if (!/^Interact/.test(await inTab(0, "document.title"))) throw new Error("the first tab left its page");

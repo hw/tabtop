@@ -68,6 +68,15 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 8px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; max-height: calc(100% - var(--bar-total) - var(--safe-bottom) - 24px); overflow: auto; }
 #go_notice[hidden] { display: none; }
+/* A pop-up the page wants to open: asked (gosites.go). */
+#go_popup { position: absolute; top: calc(var(--bar-total) + 10px); right: calc(12px + var(--safe-right)); width: min(24rem, calc(100% - 24px)); box-sizing: border-box;
+    padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 6; }
+#go_popup[hidden] { display: none; }
+#go_popup p { margin: 0 0 10px; overflow-wrap: anywhere; }
+#go_popup .remember { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; color: #b8b8bd; }
+#go_popup .actions { display: flex; gap: 8px; justify-content: flex-end; }
+#go_popup button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
+#go_popup button.open { background: #2f5ea8; border-color: #2f5ea8; }
 #go_notice.error { border-color: #d96b6b; }
 #go_notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
 #go_notice button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
@@ -109,7 +118,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     #go_bar button { min-width: 44px; height: 44px; }
     #go_bar #go_address button { min-width: 44px; }
     #go_address input { height: 44px; padding-right: 44px; font-size: 16px; }
-    #go_notice button, #go_dialog button, #tabtop_login_summary button { min-height: 44px; }
+    #go_notice button, #go_dialog button, #tabtop_login_summary button, #go_popup button { min-height: 44px; }
     #go_menu_panel .item, #go_menu_panel .tabtop-nav > * { min-height: 44px; }
     #go_recent button { min-height: 44px; }
     /* Forward is in the menu: room for the address. */
@@ -129,6 +138,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
     <div id="go_menu_panel" hidden>
         <button type="button" class="item" id="go_menu_forward" disabled></button>
+        <a class="item" id="go_menu_settings" href="settings" target="tabtop-go-settings"></a>
         <a class="item" id="go_menu_sites" href="cookie" target="tabtop-go-cookie"></a>
     </div>
     <div id="go_progress" aria-hidden="true" hidden></div>
@@ -142,6 +152,9 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         <button type="button" id="go_recent_clear" hidden>Forget recent sites</button>
     </div>
 </div>
+<div id="go_popup" role="alertdialog" aria-labelledby="go_popup_text" hidden><p id="go_popup_text"></p>
+    <label class="remember"><input type="checkbox" checked> <span>Remember for this site</span></label>
+    <div class="actions"><button type="button" class="open">Open</button><button type="button" class="refuse">Don’t open</button></div></div>
 <div id="go_status" role="status" aria-live="polite"></div>
 <div id="go_notice" role="alert" hidden><p></p><div class="actions"><button type="button" class="primary">Try again</button>
     <button type="button" class="edit" hidden>Edit address</button><button type="button" class="dismiss">Dismiss</button></div></div>

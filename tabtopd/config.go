@@ -60,6 +60,7 @@ type serverConfig struct {
 	passkeysFile                          string // where passkeys are kept; "" for in memory
 	goCookiesFile                         string // the remote browser's cookies, sealed; "" for in memory
 	goCookiesKeyFile                      string // what they're sealed with
+	goSitesFile                           string // its site settings; "" for in memory
 	shareKeyFile                          string // what share links' tokens are sealed with; "" for a key in memory
 	audioBitrate                          int
 }
@@ -132,7 +133,7 @@ func newServer(c serverConfig) (*server, error) {
 		// passkeys, the share links' key...): through it they'd be read,
 		// by whoever a folder above them is shared with, and written, by
 		// whoever has a session, which would then be a login for good.
-		state := []string{c.usersFile, c.vncPasswordFile, c.sharesFile, c.shareKeyFile, c.activityFile, c.passkeysFile, c.goCookiesFile, c.goCookiesKeyFile}
+		state := []string{c.usersFile, c.vncPasswordFile, c.sharesFile, c.shareKeyFile, c.activityFile, c.passkeysFile, c.goCookiesFile, c.goCookiesKeyFile, c.goSitesFile}
 		g.roots = slices.DeleteFunc(g.roots, func(root *fileRoot) bool {
 			dir := root.Path
 			if dir == "" {
@@ -197,6 +198,8 @@ func newServer(c serverConfig) (*server, error) {
 			}
 			if g.goMode != goUnavailable {
 				g.goCookies = newGoCookieJar(c.goCookiesFile, c.goCookiesKeyFile)
+				g.goSites = newGoSiteSettings(c.goSitesFile)
+				goBlockedHost = g.goSites.isBlocked
 				g.goResources = newGoResourceClient(fetchPolicy(c.goPrivate))
 				sweepGoRunDirs()
 			}
