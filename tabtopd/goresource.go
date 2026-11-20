@@ -9,6 +9,7 @@ package main
 // connection and redirect. Nothing is sent but the request: no cookies, no
 // referrer, a fixed User-Agent.
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -17,8 +18,11 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/andybalholm/brotli"
 )
 
 const (
@@ -181,6 +185,9 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	}
 	request.Header.Set("User-Agent", userAgent) // the tab's (gouseragent.go)
 	request.Header.Set("Accept", map[string]string{"image": "image/*", "css": "text/css", "font": "font/*, application/font-woff, */*;q=0.1"}[kind])
+	// Brotli and gzip, as a browser asks (decoded below; asked here, not by
+	// the transport, which would then decode gzip alone).
+	request.Header.Set("Accept-Encoding", "br, gzip")
 	response, err := client.Do(request)
 	if err != nil {
 		return goFetched{err: fetchError(err)}
@@ -189,10 +196,22 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	if response.StatusCode != http.StatusOK {
 		return fail("The resource wasn't found (HTTP " + strconv.Itoa(response.StatusCode) + ").")
 	}
-	if enc := response.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
-		// gzip is decompressed as it's read (and the header removed);
-		// anything else wasn't asked for.
-		return fail("The resource came in an encoding that isn't supported.")
+	// Decoded as it's read: what's limited below is what it decodes to (a
+	// small file that decodes to a great deal is stopped there).
+	body := io.Reader(response.Body)
+	switch enc := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding"))); enc {
+	case "", "identity":
+	case "br":
+		body = brotli.NewReader(response.Body)
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(response.Body)
+		if err != nil {
+			return fail("The resource couldn't be read.")
+		}
+		defer zr.Close()
+		body = zr
+	default:
+		return fail("The resource came in an encoding that isn't supported.") // not asked for
 	}
 	media, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	// A picture labelled as just bytes (some storage services say
@@ -206,7 +225,7 @@ func goFetchResource(ctx context.Context, client *http.Client, session, kind, ra
 	if response.ContentLength > limit {
 		return fail(tooLarge)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
 		return fail("The resource couldn't be read.")
 	}

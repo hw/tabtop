@@ -328,7 +328,7 @@ h1 { font-family: "Fixture Font", sans-serif; }`,
         "fonts.css": `@font-face { font-family: "Used Font"; src: url(old.eot); src: url(old.eot?#iefix) format("embedded-opentype"), url(icons.svg#f) format("svg"), url(font.ttf?used) format("truetype"), url(fallback.woff) format("woff"); }
 @font-face { font-family: "Unused Font"; src: url(unused.woff2) format("woff2"); }
 #used { font-family: "Used Font", monospace; }`,
-        "serve.js": `const http = require("http"), fs = require("fs"), path = require("path");
+        "serve.js": `const http = require("http"), fs = require("fs"), path = require("path"), zlib = require("zlib");
 const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
 http.createServer((req, res) => {
@@ -367,6 +367,12 @@ http.createServer((req, res) => {
       if (first > last) { res.writeHead(416, { "Content-Range": "bytes */" + data.length }); return res.end(); }
       res.writeHead(206, { "Content-Type": type, "Content-Range": "bytes " + first + "-" + last + "/" + data.length, "Accept-Ranges": "bytes", "ETag": '"clip"' });
       return res.end(data.subarray(first, last + 1));
+    }
+    // Stylesheets in Brotli to who asks, as sites send them.
+    if (type === "text/css" && /\\bbr\\b/.test(req.headers["accept-encoding"] || "")) {
+      seen.brotli = (seen.brotli || 0) + 1;
+      res.writeHead(200, { "Content-Type": type, "Content-Encoding": "br", "Vary": "Accept-Encoding" });
+      return res.end(zlib.brotliCompressSync(data));
     }
     res.writeHead(200, { "Content-Type": type, "Accept-Ranges": "bytes" });
     res.end(data);
@@ -781,6 +787,8 @@ async function check(base, port, site) {
         await sleep(1000);
         await goTo(site + "seen", "Seen");
         const fonts = JSON.parse(await frame(`document.getElementById("s").textContent`)).fonts ?? [];
+        // (The stylesheets were sent in Brotli, and shown: the steps above.)
+        if (!(JSON.parse(await frame(`document.getElementById("s").textContent`)).brotli > 0)) throw new Error("no stylesheet was sent in Brotli");
         if (!fonts.includes("/font.ttf?used")) throw new Error(`the font used wasn't fetched: ${fonts}`);
         const extra = fonts.filter((f) => /eot|svg|fallback|unused/.test(f));
         if (extra.length) throw new Error(`fetched too: ${extra}`);

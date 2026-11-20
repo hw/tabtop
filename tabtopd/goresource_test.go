@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andybalholm/brotli"
 )
 
 // readGoResource reads a go-resource reply's bytes, acknowledging each
@@ -39,6 +41,16 @@ func TestGoResource(t *testing.T) {
 	zw := gzip.NewWriter(&gzipped)
 	zw.Write(css)
 	zw.Close()
+	// Brotli, as a site sends it to a browser that asks; and a Brotli bomb.
+	var brotlied, brBomb bytes.Buffer
+	bw := brotli.NewWriter(&brotlied)
+	bw.Write(css)
+	bw.Close()
+	bw = brotli.NewWriter(&brBomb)
+	for i := 0; i < maxGoCSS/(1<<20)+2; i++ {
+		bw.Write(make([]byte, 1<<20))
+	}
+	bw.Close()
 	var bomb bytes.Buffer // 1 MB compressed to almost nothing, many times over the limit
 	zw = gzip.NewWriter(&bomb)
 	for i := 0; i < maxGoCSS/(1<<20)+2; i++ {
@@ -75,9 +87,24 @@ func TestGoResource(t *testing.T) {
 			w.Header().Set("Content-Encoding", "gzip")
 			w.Write(bomb.Bytes())
 		case "/brotli.css":
+			if !strings.Contains(r.Header.Get("Accept-Encoding"), "br") {
+				t.Errorf("Brotli not asked for: %q", r.Header.Get("Accept-Encoding"))
+			}
+			w.Header().Set("Content-Type", "text/css")
+			w.Header().Set("Content-Encoding", "br")
+			w.Write(brotlied.Bytes())
+		case "/broken.br.css":
 			w.Header().Set("Content-Type", "text/css")
 			w.Header().Set("Content-Encoding", "br")
 			w.Write([]byte("not really brotli"))
+		case "/bomb.br.css":
+			w.Header().Set("Content-Type", "text/css")
+			w.Header().Set("Content-Encoding", "br")
+			w.Write(brBomb.Bytes())
+		case "/zstd.css":
+			w.Header().Set("Content-Type", "text/css")
+			w.Header().Set("Content-Encoding", "zstd")
+			w.Write([]byte("not asked for"))
 		case "/font.woff2":
 			w.Header().Set("Content-Type", "font/woff2")
 			w.Write(woff2)
@@ -130,6 +157,7 @@ func TestGoResource(t *testing.T) {
 		{"image", "/moved.png", "image/png", png},
 		{"image", "/unlabelled.png", "image/png", png}, // labelled as bytes, seen to be a PNG
 		{"css", "/style.css", "text/css", css},         // decompressed
+		{"css", "/brotli.css", "text/css", css},        // Brotli, decoded
 		{"font", "/font.woff2", "font/woff2", woff2},
 	} {
 		reply, conn := fetch(tc.kind, tc.path)
@@ -147,7 +175,9 @@ func TestGoResource(t *testing.T) {
 
 	for _, tc := range []struct{ kind, path, want string }{
 		{"css", "/bomb.css", "too large"},
-		{"css", "/brotli.css", "encoding"},
+		{"css", "/broken.br.css", "couldn't be read"},
+		{"css", "/bomb.br.css", "too large"},
+		{"css", "/zstd.css", "encoding"}, // not asked for
 		{"font", "/fake-font.woff2", "font"},
 		{"image", "/page.html", "type"},
 		{"image", "/unlabelled.html", "type"},
