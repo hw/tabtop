@@ -38,6 +38,7 @@ const (
 	goPrefetchBytes = 128 << 20 // and their bytes (the page's own budget)
 	goPrefetchers   = 4         // fetching at once for it
 	goResServesMax  = 64        // a tab's requests answered at once
+	goResQueueMax   = 2000      // and waiting their turn (more: refused)
 )
 
 // goResCache is a tab's resources: fetched, or being fetched, by kind and
@@ -150,17 +151,27 @@ func (b *goBrowser) serveRes(m goClientMsg) {
 		return
 	}
 	if b.serving >= goResServesMax {
+		// Its turn waited for, not refused (a page asks for hundreds at
+		// once); dropped if the page is left first (leftPage).
+		if len(b.resQueue) < goResQueueMax {
+			b.resQueue = append(b.resQueue, m)
+			return
+		}
 		b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": "Too many resources are loading; try again."})
 		return
 	}
 	b.serving++
+	ctx := b.resCtx
 	go func() {
-		defer b.post(func() { b.serving-- })
+		defer b.post(func() {
+			b.serving--
+			b.nextRes()
+		})
 		if m.Kind == "media" {
 			b.serveMedia(m)
 			return
 		}
-		f := b.resource(b.ctx, m.Kind, m.URL)
+		f := b.resource(ctx, m.Kind, m.URL)
 		if f.err != nil {
 			goDebugf("res %s %s: %v", m.Kind, goHost(m.URL), f.err)
 			b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": f.err.Error()})
@@ -177,6 +188,33 @@ func (b *goBrowser) serveRes(m goClientMsg) {
 			}
 		}
 	}()
+}
+
+// nextRes starts the requests waiting their turn, as there's room.
+func (b *goBrowser) nextRes() {
+	for b.serving < goResServesMax && len(b.resQueue) > 0 {
+		m := b.resQueue[0]
+		b.resQueue = b.resQueue[1:]
+		b.serveRes(m)
+	}
+	if len(b.resQueue) == 0 {
+		b.resQueue = nil // its array let go
+	}
+}
+
+// leftPage drops what the page being left asked for and hasn't had: those
+// waiting their turn (told so, the page's requests ended), and those
+// waiting on what's being fetched, which goes on, kept for whoever asks
+// next. The next page's aren't held up behind them.
+func (b *goBrowser) leftPage() {
+	for _, m := range b.resQueue {
+		b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": "The page was left."})
+	}
+	b.resQueue = nil
+	if b.resCancel != nil {
+		b.resCancel()
+	}
+	b.resCtx, b.resCancel = context.WithCancel(b.ctx)
 }
 
 // serveMedia answers a player's request for a range of its file (see

@@ -218,6 +218,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         player.element?.remove();
         player.loading?.done();
         player.skipButton?.remove();
+        clearTimeout(player.skipTimer);
         if (player.poster) URL.revokeObjectURL(player.poster);
     }
 
@@ -305,11 +306,33 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             Object.assign(loading.style, box);
             loading.hidden = false;
         }
-        // Skip, at the top right of what's shown of it, while it's not ended.
+        // Skip, at the bottom right of what's shown of it, above the player's
+        // controls (a small player's: its corner), while it's not ended.
         if (skip && !player.skipped && right - left >= 80 && bottom - top >= 40) {
-            Object.assign(skip.style, { left: `${area.left - host.left + right - 8}px`, top: `${area.top - host.top + top + 8}px` });
+            const above = bottom - top >= 150 ? 56 : 8;
+            Object.assign(skip.style, { left: `${area.left - host.left + right - 8}px`, top: `${area.top - host.top + bottom - above}px` });
             skip.hidden = false;
+            showSkip(player);
         }
+    }
+
+    // showSkip shows a player's Skip while it's wanted: loading, paused, or
+    // for SKIP_SHOWN after the pointer moved over it or it was tapped.
+    const SKIP_SHOWN = 3000;
+    function showSkip(player) {
+        const skip = player.skipButton;
+        if (!skip) return;
+        const media = player.element;
+        const wanted = !player.skipped && (!media || player.loading?.box.isConnected || media.paused || performance.now() < (player.skipUntil ?? 0) || skip.matches(":hover, :focus-visible"));
+        skip.classList.toggle("shown", wanted);
+        clearTimeout(player.skipTimer);
+        if (wanted && media && !media.paused) player.skipTimer = setTimeout(() => showSkip(player), Math.max(250, (player.skipUntil ?? 0) - performance.now()));
+    }
+    // A player noticed (the pointer over it, a tap, its focus): its Skip
+    // shown a while.
+    function noticed(player) {
+        player.skipUntil = performance.now() + SKIP_SHOWN;
+        showSkip(player);
     }
 
     // skip treats a player as played to its end: the page is told it ended
@@ -429,6 +452,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         const ready = () => {
             for (const type of events) media.removeEventListener(type, update);
             loading.done();
+            for (const player of players.values()) if (player.loading === loading) showSkip(player);
         };
         for (const type of events) media.addEventListener(type, type === "error" ? ready : update);
         update();
@@ -463,10 +487,13 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             const loading = entry.loading = loader(kind, src, !!streamId);
             if (kind === "video") {
                 const button = entry.skipButton = Object.assign(document.createElement("button"), { type: "button", className: "go-media-skip", hidden: true });
-                button.innerHTML = `Skip <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>`;
-                button.title = "Skip: as if it had played to its end";
+                button.innerHTML = `Skip <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>`;
+                button.title = "Skip to the end of this video (Shift+N)";
                 button.setAttribute("aria-label", "Skip this video");
+                button.setAttribute("aria-keyshortcuts", "Shift+N");
                 button.addEventListener("click", () => skip(key));
+                button.addEventListener("pointerenter", () => noticed(entry));
+                button.addEventListener("blur", () => showSkip(entry));
                 layerHere().append(button);
             }
             loading.stage(null, streamId ? "Starting the stream…" : "Asking the site…");
@@ -542,6 +569,17 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 Object.assign(media.style, { position: "absolute", background: "#000", zIndex: "2", display: "none" });
                 media.style.pointerEvents = "auto";
                 passScrolling(media);
+                if (entry.skipButton) {
+                    for (const type of ["pointermove", "pointerdown", "focus"]) media.addEventListener(type, () => noticed(entry), { passive: true });
+                    for (const type of ["play", "pause", "playing", "ended"]) media.addEventListener(type, () => showSkip(entry));
+                    // Shift+N, as video sites' "next video": skipped.
+                    media.addEventListener("keydown", (e) => {
+                        if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") {
+                            e.preventDefault();
+                            skip(key);
+                        }
+                    });
+                }
                 layerHere().append(media);
                 place(entry.placement);
                 if (entry.play) start(media);

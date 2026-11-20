@@ -37,7 +37,12 @@ const (
 
 // goResourceSlots bounds the broker's fetches at once, across sessions; a
 // request waits a while for one, as a page asks for many together.
-var goResourceSlots = newBoundedWork(8, 20*time.Second)
+var goResourceSlots = newBoundedWork(8, goResourceWait)
+
+// goResourceWait is how long a fetch waits for a slot: a page's requests
+// wait their turn (a page asks for hundreds at once, and a slow site holds
+// slots), not refused soon; one the page no longer wants gives up then.
+const goResourceWait = 2 * time.Minute
 
 // goResourcePerSession bounds one session's share of those, so that tabs
 // of one session waiting on a slow site can't hold up everyone else's: its
@@ -61,7 +66,7 @@ func (s *goSessionWork) acquire(ctx context.Context, session string) (func(), bo
 	s.mu.Lock()
 	share := s.work[session]
 	if share == nil {
-		share = &goSessionShare{work: newBoundedWork(goResourcePerSession, 20*time.Second)}
+		share = &goSessionShare{work: newBoundedWork(goResourcePerSession, goResourceWait)}
 		s.work[session] = share
 	}
 	share.users++

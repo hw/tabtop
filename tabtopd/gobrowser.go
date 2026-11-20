@@ -221,7 +221,12 @@ type goBrowser struct {
 	stop       chan struct{}
 
 	loadingURL string // where the generation loading goes (resume)
-	sentGen    int    // the generation of the last snapshot the person was sent (resume)
+	// The page's requests waiting their turn (serveRes), and what those
+	// being answered wait with: both ended as the page is left (leftPage).
+	resQueue  []goClientMsg
+	resCtx    context.Context
+	resCancel context.CancelFunc
+	sentGen   int // the generation of the last snapshot the person was sent (resume)
 
 	// The person's connection, whichever is lent the tab now (none while
 	// it's lost: goresume.go), as t; connections lent it come by attach.
@@ -490,7 +495,8 @@ func (v goView) clamped() goView {
 func newGoBrowser(e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn := &goConn{}
-	return &goBrowser{t: conn, conn: conn, attach: make(chan *goLink), e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
+	resCtx, resCancel := context.WithCancel(ctx)
+	return &goBrowser{resCtx: resCtx, resCancel: resCancel, t: conn, conn: conn, attach: make(chan *goLink), e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
 		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
 		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
 }
@@ -863,6 +869,7 @@ func (b *goBrowser) askAgain() {
 // (the page itself, as when it opens a window); it returns the generation's
 // load timeout.
 func (b *goBrowser) navigate(u, by string) <-chan time.Time {
+	b.leftPage()
 	b.gen++
 	gen := b.gen
 	if goBlockedHost(goURLHost(u)) {
@@ -1130,6 +1137,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		} else if u, err := goURL(p.Frame.URL); err == nil {
 			// The page went somewhere by itself: a link, a form, a
 			// redirect by script.
+			b.leftPage()
 			b.gen++
 			b.loading, b.navigated = b.gen, true
 			b.loadingURL = u

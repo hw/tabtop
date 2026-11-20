@@ -275,6 +275,7 @@ $("tap").onclick = () => status("tapped, touches " + touches);
         "swipe.html": `<!doctype html><title>Swipe</title><style>body { margin: 0 } button { display: block; width: 100%; height: 120px; font-size: 20px }</style><p id="out">clicks 0</p>
 ${Array.from({ length: 40 }, (_, i) => `<button id="b${i}">button ${i}</button>`).join("")}
 <script>let clicks = 0; for (const b of document.querySelectorAll("button")) b.addEventListener("click", () => { document.getElementById("out").textContent = "clicks " + ++clicks + " " + b.id; });</script>`,
+        "many.html": `<!doctype html><title>Many</title><p id="n">loading</p><div>${Array.from({ length: 80 }, (_, i) => `<img src="pic.png?many=${i}&slow" width="4" height="4" alt="">`).join("")}</div>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -1343,9 +1344,18 @@ async function check(base, port, site) {
         await ev(`${skips}[1].click()`);
         await frameWait(`document.getElementById("b-out").textContent === "b ended at 0 true"`, "the second ended, to its page");
         await waitFor(`!document.querySelector(".go-media-loading")`, "its loading gone");
-        // The first playing: skipped, at its end.
+        // The first playing: its Skip faded away a while after, untouched;
+        // shown as the pointer moves over it; skipped by Shift+N, at its end.
         await waitFor(`[...document.querySelectorAll("video")].some((v) => !v.paused && v.currentTime > 0.3)`, "the first playing", 30000);
-        await ev(`${skips}[0].click()`);
+        await waitFor(`!${skips}[0].classList.contains("shown")`, "Skip faded away as it plays", 8000);
+        const v = await ev(`(() => { const r = [...document.querySelectorAll("video")].find((v) => !v.paused).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+        await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: v.x, y: v.y });
+        await waitFor(`${skips}[0].classList.contains("shown")`, "Skip shown, the pointer over it", 3000);
+        const place = await ev(`(() => { const s = ${skips}[0].getBoundingClientRect(), p = [...document.querySelectorAll("video")].find((v) => !v.paused).getBoundingClientRect(); return { right: p.right - s.right, below: p.bottom - s.bottom }; })()`);
+        if (!(place.right >= 0 && place.right < 20 && place.below > 40)) throw new Error(`Skip isn't at the bottom right, above the controls: ${JSON.stringify(place)}`);
+        await ev(`[...document.querySelectorAll("video")].find((v) => !v.paused).focus()`);
+        await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "N", code: "KeyN", modifiers: 8, windowsVirtualKeyCode: 78 });
+        await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "N", code: "KeyN", modifiers: 8, windowsVirtualKeyCode: 78 });
         await frameWait(`document.getElementById("a-out").textContent === "a ended at 5 true"`, "the first ended at its end, to its page");
         await waitFor(`(() => { const v = [...document.querySelectorAll("video")]; return v.length === 1 && v[0].paused && Math.round(v[0].currentTime) === 5; })()`, "its player paused at the end, the other's closed");
         if (await ev(`${skips}.length`)) throw new Error("Skip still shown once skipped");
@@ -1429,6 +1439,11 @@ async function check(base, port, site) {
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
         }
+    });
+
+    await step("a page asking for more than a tab fetches at once has them all, in turn, not refused", async () => {
+        await goTo(site + "many.html", "Many");
+        await frameWait(`(() => { const imgs = [...document.images]; return imgs.length === 80 && imgs.every((i) => i.complete && i.naturalWidth > 0); })()`, "all 80 pictures (each sent slowly)", 90000);
     });
 
     await step("a touch swipe that scrolls the page clicks nothing; a tap still clicks", async () => {
