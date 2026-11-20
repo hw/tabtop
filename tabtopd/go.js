@@ -30,18 +30,77 @@ import { goMedia } from "./go-media.js";
 const SEARCH = "https://html.duckduckgo.com/html/?q=";
 // The address this tab last showed, kept for its reloads (sessionStorage).
 const KEPT = "tabtop-go-kept";
+// Its pages back and forward, likewise (the tab's own history has an entry
+// for each, on this page's address, which says which: see remember).
+const KEPT_HISTORY = "tabtop-go-history";
+// Sites opened, newest first, for the start (localStorage: this device's
+// only, never sent anywhere; forgotten from the start).
+const RECENT = "tabtop-go-recent";
+const RECENT_MAX = 8;
 // What the frame may have fetched for one page, in all.
 const PAGE_BUDGET = 128 << 20;
 const RESOURCE_LIMITS = { image: 10 << 20, css: 4 << 20, font: 8 << 20 };
 
 nameTab("go");
 setLoginTitle("Browser");
-document.body.prepend(navBar("go", { logOutIcon: true }));
-warnExpiry();
-
 const $ = (id) => document.getElementById(id);
 const back = $("go_back"), forward = $("go_forward"), reload = $("go_reload");
 const address = $("go_url"), status = $("go_status"), notice = $("go_notice"), start = $("go_start");
+
+// The bar's icons (drawn, not characters: the same on every device).
+const ICONS = {
+    back: '<path d="M15 5l-7 7 7 7"/>',
+    forward: '<path d="M9 5l7 7-7 7"/>',
+    reload: '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4v4h-4"/>',
+    stop: '<path d="M6 6l12 12M18 6L6 18"/>',
+    clear: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+};
+const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+back.innerHTML = icon("back");
+forward.innerHTML = icon("forward");
+$("go_clear").innerHTML = icon("clear");
+
+// The menu, at the end of the bar: forward, then the other pages and
+// logging out (the bar of links the other pages have at the top, here in
+// the menu to leave the page the room).
+const menu = $("go_menu"), menuPanel = $("go_menu_panel"), menuForward = $("go_menu_forward");
+menu.innerHTML = icon("menu");
+menuForward.innerHTML = `${icon("forward")}<span class="label">Forward</span>`;
+const nav = navBar("go", { logOutIcon: true });
+for (const item of nav.children) {
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = (item.title || "").replace(/ \(.*$/, "");
+    item.append(label);
+}
+menuPanel.append(nav);
+// The session's warning, which goes in that bar: shown below this one.
+new MutationObserver(() => {
+    const warning = nav.querySelector("#tabtop_expiry");
+    if (warning) document.body.append(warning);
+}).observe(nav, { childList: true });
+function openMenu(open) {
+    menuPanel.hidden = !open;
+    menu.setAttribute("aria-expanded", String(open));
+    if (open) (menuPanel.querySelector("button:not(:disabled), a:not([hidden])") ?? menuPanel).focus();
+}
+menu.addEventListener("click", () => openMenu(menuPanel.hidden));
+menuPanel.addEventListener("click", (e) => {
+    if (e.target.closest("a, button")) openMenu(false);
+});
+document.addEventListener("pointerdown", (e) => {
+    if (!menuPanel.hidden && !menuPanel.contains(e.target) && !menu.contains(e.target)) openMenu(false);
+}, true);
+// (The page's own frame takes the pointer: leaving for it closes it too.)
+window.addEventListener("blur", () => openMenu(false));
+menuPanel.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+        openMenu(false);
+        menu.focus();
+    }
+});
+warnExpiry();
 
 // The frame: sandboxed with scripts only, its document from the server,
 // with a CSP that lets it load nothing from the web (see gopage.go).
@@ -137,17 +196,33 @@ function warn(message, { retry = null, error = true, label = "Try again", edit =
 notice.querySelector(".dismiss").addEventListener("click", () => { notice.hidden = true; });
 notice.querySelector(".edit").addEventListener("click", () => { notice.hidden = true; address.focus(); address.select(); });
 
+// The page being left, while the next is slow to come: dimmed, and its
+// players paused, after a second.
+let leaving = 0;
 function update() {
     $("go_progress").hidden = !(loading || rendering);
     frame.setAttribute("aria-busy", String(loading || rendering));
+    if ((loading || rendering) && !leaving && !frame.classList.contains("leaving")) {
+        leaving = setTimeout(() => {
+            leaving = 0;
+            if (!loading && !rendering) return;
+            frame.classList.add("leaving");
+            if (loading) media.pauseAll();  // (not the next page's: rendering, they're its)
+        }, 1000);
+    } else if (!loading && !rendering) {
+        clearTimeout(leaving);
+        leaving = 0;
+        frame.classList.remove("leaving");
+    }
     back.disabled = at <= 0;
-    forward.disabled = at >= entries.length - 1;
+    forward.disabled = menuForward.disabled = at >= entries.length - 1;
     reload.disabled = at < 0;
-    reload.textContent = loading ? "✕" : "⟳";
+    reload.innerHTML = icon(loading ? "stop" : "reload");
     reload.title = loading ? "Stop" : "Reload";
     reload.setAttribute("aria-label", reload.title);
     const entry = entries[at];
-    if (entry && document.activeElement !== address) address.value = entry.url;
+    if (entry && document.activeElement !== address) showSite(entry.url);
+    addressButtons();
     frame.title = entry ? entry.title || hostOf(entry.url) : "Page";
     document.title = entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
     if (entry) {
@@ -155,8 +230,110 @@ function update() {
         // start, below): not in the tab's own address (/go/#…), which the
         // browser keeps in its history (and syncs), and shows to whoever
         // sees the screen.
-        try { sessionStorage.setItem(KEPT, entry.url); } catch { /* not kept */ }
+        try {
+            sessionStorage.setItem(KEPT, entry.url);
+            sessionStorage.setItem(KEPT_HISTORY, JSON.stringify({ entries: entries.slice(-50).map((e) => ({ url: e.url, title: e.title })), at: at - Math.max(0, entries.length - 50) }));
+        } catch { /* not kept */ }
     }
+}
+
+// The address bar, but while it's edited, shows the site only (the words
+// searched for, for a search), the whole address in data-url; an address
+// that isn't https marked so.
+function showSite(url) {
+    let text = url, insecure = false;
+    try {
+        const u = new URL(url);
+        insecure = u.protocol !== "https:";
+        text = url.startsWith(SEARCH) ? u.searchParams.get("q") || u.host : (insecure ? "http://" : "") + u.host.replace(/^www\./, "");
+    } catch { /* as it is */ }
+    address.value = text;
+    address.dataset.url = url;
+    address.title = url;
+    address.classList.add("site");
+    address.classList.toggle("insecure", insecure);
+}
+function editAddress() {
+    const entry = entries[at];
+    if (address.classList.contains("site")) {
+        address.classList.remove("site", "insecure");
+        if (entry) address.value = entry.url;
+    }
+}
+// Reload (or stop) at the end of the address, or, while it's edited and
+// has something in it, clear.
+function addressButtons() {
+    const editing = document.activeElement === address;
+    $("go_clear").hidden = !editing || !address.value;
+    reload.hidden = editing;
+}
+
+// recent keeps the site of an address opened, for the start: the site
+// only (not the page), not a search, this device's only.
+function recent(url) {
+    let origin;
+    try {
+        const u = new URL(url);
+        if (url.startsWith(SEARCH) || !/^https?:$/.test(u.protocol)) return;
+        origin = u.origin;
+    } catch { return; }
+    try {
+        const list = recentSites().filter((o) => o !== origin);
+        localStorage.setItem(RECENT, JSON.stringify([origin, ...list].slice(0, RECENT_MAX)));
+    } catch { /* not kept */ }
+}
+function recentSites() {
+    try {
+        const list = JSON.parse(localStorage.getItem(RECENT) || "[]");
+        return Array.isArray(list) ? list.filter((o) => typeof o === "string" && /^https?:\/\/[^/]+$/i.test(o)).slice(0, RECENT_MAX) : [];
+    } catch { return []; }
+}
+function showRecent() {
+    const list = $("go_recent"), sites = recentSites();
+    list.replaceChildren(...sites.map((origin) => {
+        const li = document.createElement("li");
+        const b = Object.assign(document.createElement("button"), { type: "button", textContent: hostOf(origin).replace(/^www\./, "") });
+        b.title = origin;
+        b.addEventListener("click", () => load(origin));
+        li.append(b);
+        return li;
+    }));
+    list.hidden = $("go_recent_clear").hidden = !sites.length;
+}
+$("go_recent_clear").addEventListener("click", () => {
+    try { localStorage.removeItem(RECENT); } catch { /* none */ }
+    showRecent();
+    address.focus();
+});
+
+// remember gives the entry now shown one of the tab's own history (on this
+// page's address: the page's own never goes there, nor to the browser's
+// history), so the device's back (a swipe, a button) goes back a page
+// here (see popstate), not away from this page. The first is this page's
+// own entry.
+function remember() {
+    try {
+        if (at === 0) history.replaceState({ goAt: 0 }, "");
+        else history.pushState({ goAt: at }, "");
+    } catch { /* not kept: the bar's buttons still go back */ }
+}
+window.addEventListener("popstate", (e) => {
+    const i = e.state?.goAt;
+    if (!Number.isSafeInteger(i) || i < 0 || i >= entries.length || i === at) return;
+    at = i;
+    load(entries[at].url, { push: false });
+});
+// goBy goes back (-1) or forward (1) a page: by the tab's history, when
+// it's this page's (so it stays in step), else here.
+function goBy(step) {
+    const to = at + step;
+    if (to < 0 || to >= entries.length) return;
+    if (history.state?.goAt === at) {
+        step < 0 ? history.back() : history.forward();
+        return;
+    }
+    at = to;
+    load(entries[at].url, { push: false });
 }
 
 function hostOf(url) {
@@ -170,6 +347,7 @@ function load(url, { push = true } = {}) {
         entries = entries.slice(0, at + 1);
         entries.push({ url, title: "" });
         at = entries.length - 1;
+        remember();
     }
     start.hidden = true;
     notice.hidden = true;
@@ -208,13 +386,22 @@ const viewSizes = new ResizeObserver(() => {
     clearTimeout(viewTimer);
     viewTimer = setTimeout(() => {
         const v = view();
-        if (!ws || !v.w || !v.h || sameView(v, sentView)) return;
+        if (!ws || !v.w || !v.h || sameView(v, sentView) || keyboardUp()) return;
         sentView = v;
         ws.send(JSON.stringify({ op: "viewport", view: v }));
     }, 250);
 });
 viewSizes.observe(frame);
 viewSizes.observe(document.documentElement);  // the window: the display
+// A device's keyboard, up for typing here or in the page: the frame's
+// shorter for it (below), but the page in the engine keeps its size (as a
+// phone's browser keeps a page's layout as its keyboard comes and goes),
+// so it isn't laid out again, its scripts told of a resize, for each.
+function keyboardUp() {
+    const vv = window.visualViewport;
+    const typing = document.activeElement === address || document.activeElement === frame;
+    return !!vv && typing && navigator.maxTouchPoints > 0 && window.innerHeight - vv.height > 100;
+}
 // Mobile keyboards resize the visual viewport even when the layout viewport
 // stays unchanged. Keep the toolbar and the remaining page in that space.
 function fitViewport() {
@@ -307,6 +494,7 @@ function message(m) {
                 entries = entries.slice(0, at + 1);
                 entries.push({ url: m.url, title: "" });
                 at = entries.length - 1;
+                remember();
             }
             loading = true;
             rendering = false;
@@ -324,6 +512,7 @@ function message(m) {
             if (entry) {
                 entry.url = typeof m.url === "string" && /^https?:/i.test(m.url) ? m.url : entry.url;
                 entry.title = typeof m.title === "string" ? m.title : "";
+                if (!m.again) recent(entry.url);
             }
             if (!m.again) spent = 0;
             show("Preparing images and styles…");
@@ -353,6 +542,7 @@ function message(m) {
                 entries = entries.slice(0, at + 1);
                 entries.push({ url: m.url, title: m.title || entries[at].title });
                 at++;
+                remember();
                 update();
             }
             break;
@@ -734,13 +924,28 @@ let selectAddressOnClick = false;
 address.addEventListener("pointerdown", () => {
     selectAddressOnClick = document.activeElement !== address;
 });
-address.addEventListener("focus", () => address.select());
+address.addEventListener("focus", () => {
+    editAddress();
+    address.select();
+    addressButtons();
+});
+address.addEventListener("input", addressButtons);
+$("go_clear").addEventListener("pointerdown", (e) => e.preventDefault());  // the address keeps the focus
+$("go_clear").addEventListener("click", () => {
+    address.value = "";
+    address.focus();
+    addressButtons();
+});
 address.addEventListener("click", () => {
     // The focusing click may collapse the selection made by focus.
     if (selectAddressOnClick) address.select();
     selectAddressOnClick = false;
 });
-address.addEventListener("blur", () => { selectAddressOnClick = false; });
+address.addEventListener("blur", () => {
+    selectAddressOnClick = false;
+    // What was typed and not sent goes, as a browser's bar has it.
+    setTimeout(() => { if (document.activeElement !== address) update(); });
+});
 
 $("go_address").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -750,14 +955,16 @@ $("go_address").addEventListener("submit", (e) => {
         load(url);
     }
 });
-back.addEventListener("click", () => { if (at > 0) { at--; load(entries[at].url, { push: false }); } });
-forward.addEventListener("click", () => { if (at < entries.length - 1) { at++; load(entries[at].url, { push: false }); } });
+back.addEventListener("click", () => goBy(-1));
+forward.addEventListener("click", () => goBy(1));
+menuForward.addEventListener("click", () => goBy(1));
 reload.addEventListener("click", () => (loading ? stop() : at >= 0 && load(entries[at].url, { push: false })));
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && document.activeElement === address) {
         address.value = entries[at]?.url || "";
         address.blur();
     }
+    if (e.key === "Escape" && !menuPanel.hidden) openMenu(false);
     if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); back.click(); }
     if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); forward.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") { e.preventDefault(); address.focus(); address.select(); }
@@ -787,13 +994,25 @@ if (linked) {
 } else {
     try { first = sessionStorage.getItem(KEPT); } catch { /* not kept */ }
     if (first && !/^https?:\/\//i.test(first)) first = null;
+    // Its pages back and forward too, if they're this one's.
+    try {
+        const kept = JSON.parse(sessionStorage.getItem(KEPT_HISTORY) || "null");
+        const list = Array.isArray(kept?.entries) ? kept.entries.filter((e) => typeof e?.url === "string" && /^https?:\/\//i.test(e.url)).slice(-50) : [];
+        if (first && Number.isSafeInteger(kept?.at) && list[kept.at]?.url === first) {
+            entries = list.map((e) => ({ url: e.url, title: typeof e.title === "string" ? e.title : "" }));
+            at = kept.at;
+        }
+    } catch { /* not kept */ }
 }
 // Connected at once, as the terminal is: the login form shows now if
 // there's no session, and the engine is ready before the first address.
-if (first) {
+if (first && entries[at]?.url === first) {
+    load(first, { push: false });
+} else if (first) {
     load(first);
 } else {
     update();
+    showRecent();
     address.focus();
     connecting = connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
 }

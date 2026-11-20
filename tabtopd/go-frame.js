@@ -1413,6 +1413,13 @@
     const textLike = (el) => el.localName === "textarea" || el.localName === "input"
         && !/^(checkbox|radio|file|image|submit|reset|button|range|color|date|datetime-local|month|time|week)$/i.test(el.type);
 
+    // The frame made shorter (a device's keyboard come up): the field being
+    // typed in kept in view.
+    window.addEventListener("resize", () => {
+        const a = document.activeElement;
+        if (a?.nodeType === 1 && textLike(a)) a.scrollIntoView({ block: "nearest" });
+    });
+
     let lastClick = 0;
     let labelled = null;  // the field of the label clicked last
     let lastEnter = 0;

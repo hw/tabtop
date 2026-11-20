@@ -449,11 +449,15 @@ async function check(base, port, site) {
                 const input = document.getElementById("go_url"), bar = document.getElementById("go_bar");
                 const view = document.getElementById("go_view").getBoundingClientRect();
                 return { font: parseFloat(getComputedStyle(input).fontSize), radius: parseFloat(getComputedStyle(input).borderRadius),
-                    targets: [...bar.querySelectorAll("button")].every(b => b.getBoundingClientRect().height >= 44 && b.getBoundingClientRect().width >= 44),
+                    targets: [...bar.querySelectorAll("button")].filter((b) => b.getClientRects().length).every(b => b.getBoundingClientRect().height >= 44 && b.getBoundingClientRect().width >= 44),
+                    // The bar of links in the menu, not above: this bar's at the top.
+                    nav: !!document.querySelector("#go_menu_panel .tabtop-nav") && bar.getBoundingClientRect().top === 0,
+                    // Forward in the menu, not the bar: room for the address.
+                    forward: getComputedStyle(document.getElementById("go_forward")).display === "none",
                     top: view.top, barBottom: bar.getBoundingClientRect().bottom, bottom: view.bottom, height: visualViewport.height,
                     overflow: document.documentElement.scrollWidth > innerWidth };
             })()`);
-            if (layout.font < 16 || layout.radius > 6 || !layout.targets || layout.overflow || layout.top !== layout.barBottom || Math.abs(layout.bottom - layout.height) > 1) {
+            if (layout.font < 16 || layout.radius > 6 || !layout.targets || !layout.nav || !layout.forward || layout.overflow || layout.top !== layout.barBottom || Math.abs(layout.bottom - layout.height) > 1) {
                 throw new Error(JSON.stringify(layout));
             }
         } finally {
@@ -477,7 +481,7 @@ async function check(base, port, site) {
         }
         const ws = await frame(`document.getElementById("ws").textContent`);
         if (ws !== "portable binary\ncode") throw new Error(`whitespace between elements was lost: ${JSON.stringify(ws)}`);
-        return await ev(`document.getElementById("go_url").value`);
+        return await ev(`(document.getElementById("go_url").dataset.url || document.getElementById("go_url").value)`);
     });
 
     await step("stylesheets, imports, fonts and pictures through the server", async () => {
@@ -570,7 +574,7 @@ async function check(base, port, site) {
     await step("a link loads the next page through the engine", async () => {
         await frameClick("#next");
         await waitFor(`document.title.startsWith("Second")`, "the second page", 30000);
-        if (!(await ev(`document.getElementById("go_url").value`)).endsWith("/second.html")) throw new Error("the address bar didn't follow");
+        if (!(await ev(`(document.getElementById("go_url").dataset.url || document.getElementById("go_url").value)`)).endsWith("/second.html")) throw new Error("the address bar didn't follow");
     });
 
     await step("back and forward", async () => {
@@ -586,9 +590,34 @@ async function check(base, port, site) {
         await pageShown();
         for (let i = 0; i < 50 && !(await frame(`!!document.getElementById("jump")`).catch(() => false)); i++) await sleep(100);
         await frameClick("#jump");
-        await waitFor(`document.getElementById("go_url").value.endsWith("#end")`, "the address with #end");
+        await waitFor(`(document.getElementById("go_url").dataset.url || document.getElementById("go_url").value).endsWith("#end")`, "the address with #end");
         const y = await frame(`scrollY`);
         if (!(y > 1000)) throw new Error(`scrolled to ${y}`);
+    });
+
+    await step("the address shows its site till edited, the menu has the other pages, and the device's back goes back a page", async () => {
+        await goTo(site + "second.html", "Second");
+        const siteShown = (new URL(site).protocol === "https:" ? "" : "http://") + new URL(site).host.replace(/^www\./, "");
+        const bar = await ev(`(() => { const a = document.getElementById("go_url"); return { value: a.value, url: a.dataset.url }; })()`);
+        if (bar.value !== siteShown || !bar.url.endsWith("/second.html")) throw new Error(`the bar shows ${JSON.stringify(bar)}`);
+        await ev(`document.getElementById("go_url").focus()`);
+        if (!(await ev(`document.getElementById("go_url").value`)).endsWith("/second.html")) throw new Error("the whole address isn't there to edit");
+        await ev(`document.getElementById("go_url").blur()`);
+        await waitFor(`document.getElementById("go_url").value === ${JSON.stringify(siteShown)}`, "the site again, not edited");
+        // The menu: forward, then the pages and logging out.
+        await ev(`document.getElementById("go_menu").click()`);
+        const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
+        if (!/^Forward,.*Files.*,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+        await waitFor(`document.getElementById("go_menu_panel").hidden`, "the menu closed");
+        // The device's back (the tab's history: a swipe, a button): a page
+        // back here, still on this page.
+        const here = await ev(`location.href`);
+        await ev(`history.back()`);
+        await waitFor(`document.title.startsWith("Second") === false && !document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "the page before", 30000);
+        if ((await ev(`location.href`)) !== here) throw new Error("left the browser page");
+        await ev(`history.forward()`);
+        await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
     });
 
     await step("this machine's addresses are refused", async () => {
@@ -616,7 +645,7 @@ async function check(base, port, site) {
         // In one go, to a new address: the page there before can't put its
         // own address back in between.
         await ev(`sessionStorage.clear(); location.replace(location.pathname + "?linked#" + ${JSON.stringify(url)})`);
-        await waitFor(`!!document.getElementById("go_url") && document.getElementById("go_url").value === ${JSON.stringify(url)}`, "the address waiting", 30000);
+        await waitFor(`!!document.getElementById("go_url") && (document.getElementById("go_url").dataset.url || document.getElementById("go_url").value) === ${JSON.stringify(url)}`, "the address waiting", 30000);
         if ((await ev(`location.hash`)) !== "") throw new Error("the linked address stayed in the tab's address");
         await sleep(1500);
         if (await ev(`document.title.startsWith("Result")`)) throw new Error("it loaded without Enter");
@@ -655,7 +684,7 @@ async function check(base, port, site) {
 
     await step("a route by history.pushState shows in the address bar", async () => {
         await frameClick("#push");
-        await waitFor(`document.getElementById("go_url").value.endsWith("/routed")`, "the routed address");
+        await waitFor(`(document.getElementById("go_url").dataset.url || document.getElementById("go_url").value).endsWith("/routed")`, "the routed address");
         await frameWait(`document.getElementById("status").textContent === "routed"`, "the routed status");
     });
 
@@ -694,7 +723,7 @@ async function check(base, port, site) {
         await frameClick("#go");
         await waitFor(`document.title.startsWith("Result")`, "the result page", 30000);
         await frameWait(`document.getElementById("p")?.textContent === "query cats"`, "the query");
-        if (!(await ev(`document.getElementById("go_url").value`)).includes("result.html?q=cats")) throw new Error("the address bar didn't follow");
+        if (!(await ev(`(document.getElementById("go_url").dataset.url || document.getElementById("go_url").value)`)).includes("result.html?q=cats")) throw new Error("the address bar didn't follow");
     });
 
     await step("a POST form", async () => {

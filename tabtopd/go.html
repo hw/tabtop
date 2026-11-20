@@ -4,34 +4,56 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Browser</title>
 <style>
-:root { --nav-height: 30px; --bar-height: 44px; }
+:root { --bar-height: 44px; }
 html, body { margin: 0; height: 100%; background: #1c1c1e; overflow: hidden; font: 13px system-ui, sans-serif; color: #e8e8ea; }
-body { height: 100dvh; display: grid; grid-template-rows: var(--nav-height) var(--bar-height) minmax(0, 1fr); }
-.tabtop-nav { position: relative; grid-row: 1; height: var(--nav-height); box-sizing: border-box; display: flex; align-items: center;
-    gap: .5rem; padding: 0 .75rem; color: #a8a8ad; background: #1c1c1e; border-bottom: 1px solid #2c2c2e; }
-.tabtop-nav .page { display: inline-flex; align-items: center; justify-content: center; padding: 2px; border-radius: 4px; color: #8ab4f8; }
-.tabtop-nav .page svg { display: block; width: 20px; height: 20px; }
-.tabtop-nav a.page:hover { background: #2c2c2e; }
-.tabtop-nav .page[aria-current] { color: #e8e8ea; background: #3a3a3c; }
-.tabtop-nav button { margin-left: auto; font: inherit; color: inherit; background: none; border: 1px solid #3a3a3c;
-    border-radius: 4px; padding: 1px 6px; cursor: pointer; display: inline-flex; align-items: center; }
-.tabtop-nav button svg { display: block; width: 18px; height: 18px; }
-#go_bar { position: relative; grid-row: 2; height: var(--bar-height); box-sizing: border-box; display: flex; align-items: center;
+body { height: 100dvh; display: grid; grid-template-rows: var(--bar-height) minmax(0, 1fr); }
+#go_bar { position: relative; grid-row: 1; height: var(--bar-height); box-sizing: border-box; display: flex; align-items: center;
     gap: 4px; padding: 0 8px; background: #2c2c2e; border-bottom: 1px solid #3a3a3c; }
-#go_bar button { flex: 0 0 auto; min-width: 30px; height: 28px; font: 16px system-ui, sans-serif; color: #e8e8ea; background: none;
-    border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+#go_bar button { flex: 0 0 auto; min-width: 30px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    font: 16px system-ui, sans-serif; color: #e8e8ea; background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+#go_bar button svg { display: block; width: 18px; height: 18px; }
 #go_bar button:hover:not(:disabled) { background: #3a3a3c; }
 #go_bar button:disabled { color: #6c6c70; cursor: default; }
-#go_address { flex: 1; min-width: 0; display: flex; }
-#go_address input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 10px; font: 14px system-ui, sans-serif;
-    color: #e8e8ea; background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 5px; }
-#go_view { grid-row: 3; grid-column: 1; min-height: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+/* The address: the site only, but when it's being edited (the whole
+   address then); reload, or stop while loading, or clear while editing, at
+   its end. */
+#go_address { position: relative; flex: 1; min-width: 0; display: flex; }
+#go_address input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 32px 0 10px; font: 14px system-ui, sans-serif;
+    color: #e8e8ea; background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 5px; text-overflow: ellipsis; }
+#go_address input.site { text-align: center; }
+#go_address input.insecure { color: #f2b8b5; }
+#go_bar #go_address button { position: absolute; right: 0; top: 0; bottom: 0; height: auto; min-width: 30px; color: #a8a8ad; }
+#go_bar #go_address button[hidden] { display: none; }
+/* The menu: the other pages, forward, logging out. */
+#go_menu_panel { position: absolute; top: calc(100% + 4px); right: 4px; z-index: 6; min-width: 13rem; box-sizing: border-box; padding: 4px;
+    background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); }
+#go_menu_panel[hidden] { display: none; }
+#go_menu_panel .item, #go_menu_panel .tabtop-nav > * { display: flex; align-items: center; gap: 10px; width: 100%; box-sizing: border-box;
+    min-height: 36px; height: auto; padding: 0 10px; font: 14px system-ui, sans-serif; color: #e8e8ea; text-decoration: none; text-align: left;
+    justify-content: flex-start; background: none; border: 0; border-radius: 6px; cursor: pointer; }
+#go_menu_panel .item:hover:not(:disabled), #go_menu_panel .tabtop-nav > a:hover, #go_menu_panel .tabtop-nav > button:hover { background: #3a3a3c; }
+#go_menu_panel .item:disabled { color: #6c6c70; cursor: default; }
+#go_menu_panel .tabtop-nav { display: flex; flex-direction: column; margin-top: 4px; padding-top: 4px; border-top: 1px solid #3a3a3c; }
+#go_menu_panel .tabtop-nav > [hidden] { display: none; }
+#go_menu_panel .tabtop-nav .page { color: #8ab4f8; }
+#go_menu_panel .tabtop-nav .page[aria-current] { display: none; }  /* this page */
+#go_menu_panel svg { flex: 0 0 auto; display: block; width: 20px; height: 20px; }
+#go_menu_panel .label { color: #e8e8ea; }
+/* The session warning, which the shared pages put in their bar of links:
+   here, below this bar. And the login summary, at the bottom. */
+#tabtop_expiry { position: fixed !important; top: calc(var(--bar-height) + 8px); left: 50%; transform: translateX(-50%); z-index: 7;
+    max-width: calc(100vw - 24px); line-height: 28px !important; box-shadow: 0 2px 12px rgba(0, 0, 0, .4); }
+#tabtop_login_summary { top: auto !important; bottom: 16px; }
+#tabtop_login_summary button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
+#go_view { grid-row: 2; grid-column: 1; min-height: 0; width: 100%; height: 100%; border: 0; background: #fff; transition: opacity .2s; }
+/* The page being left, while the next is slow to come: dimmed. */
+#go_view.leaving { opacity: .45; }
 #go_status { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); box-sizing: border-box; padding: 4px 10px;
     color: #e8e8ea; background: rgba(44, 44, 46, .92); border: 1px solid #3a3a3c; border-radius: 6px; pointer-events: none; }
 #go_status:empty { display: none; }
-#go_notice { position: absolute; top: calc(var(--nav-height) + var(--bar-height) + 10px); left: 50%; transform: translateX(-50%); width: min(34rem, calc(100% - 24px)); box-sizing: border-box;
+#go_notice { position: absolute; top: calc(var(--bar-height) + 10px); left: 50%; transform: translateX(-50%); width: min(34rem, calc(100% - 24px)); box-sizing: border-box;
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 8px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; max-height: calc(100% - var(--nav-height) - var(--bar-height) - 24px); overflow: auto; }
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; max-height: calc(100% - var(--bar-height) - 24px); overflow: auto; }
 #go_notice[hidden] { display: none; }
 #go_notice.error { border-color: #d96b6b; }
 #go_notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
@@ -48,44 +70,60 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--nav-height) var(
 #go_dialog .quiet { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; font-size: .9em; color: #b8b8bd; }
 #go_dialog .quiet input { width: auto; margin: 0; }
 #go_dialog [hidden] { display: none; }
-#go_start { grid-row: 3; grid-column: 1; z-index: 1; display: grid; place-content: center; padding: 24px;
+#go_start { grid-row: 2; grid-column: 1; z-index: 1; display: grid; place-content: center; padding: 24px;
     text-align: center; color: #a8a8ad; background: #1c1c1e; }
 #go_start[hidden] { display: none; }
 #go_start h1 { margin: 0 0 8px; font-size: 20px; color: #e8e8ea; }
-#go_start p { margin: 4px 0; max-width: 34rem; }
+#go_start p { margin: 4px auto; max-width: 34rem; }
+#go_recent { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 20px auto 0; padding: 0; max-width: 34rem; list-style: none; }
+#go_recent[hidden], #go_recent_clear[hidden] { display: none; }
+#go_recent button { min-height: 36px; padding: 0 14px; font: 14px system-ui, sans-serif; color: #e8e8ea; background: #2c2c2e;
+    border: 1px solid #3a3a3c; border-radius: 18px; cursor: pointer; }
+#go_recent_clear { margin-top: 12px; font: 13px system-ui, sans-serif; color: #a8a8ad; background: none; border: 0; text-decoration: underline; cursor: pointer; }
 button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
-#go_progress { position: absolute; bottom: 0; left: 0; right: 0; height: 2px; overflow: hidden; pointer-events: none; }
+#go_progress { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; overflow: hidden; pointer-events: none; }
 #go_progress[hidden] { display: none; }
 #go_progress::after { content: ""; display: block; width: 35%; height: 100%; background: #8ab4f8; animation: go-progress 1.2s ease-in-out infinite; }
 @keyframes go-progress { from { transform: translateX(-100%); } to { transform: translateX(390%); } }
 @media (prefers-reduced-motion: reduce) { #go_progress::after { width: 100%; animation: none; } }
-#tabtop_reconnect { top: calc(var(--nav-height) + var(--bar-height) + 8px) !important; }
+#tabtop_reconnect { top: calc(var(--bar-height) + 8px) !important; }
 #go_notice .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #go_notice button[hidden] { display: none; }
 @media (pointer: coarse), (max-width: 600px) {
-    :root { --nav-height: 44px; --bar-height: 56px; }
-    .tabtop-nav .page, .tabtop-nav button { min-width: 44px; min-height: 44px; box-sizing: border-box; }
+    :root { --bar-height: 56px; }
     #go_bar { padding: 0 4px; }
     #go_bar button { min-width: 44px; height: 44px; }
-    #go_address input { height: 44px; font-size: 16px; }
-    #go_notice button, #go_dialog button { min-height: 44px; }
+    #go_bar #go_address button { min-width: 44px; }
+    #go_address input { height: 44px; padding-right: 44px; font-size: 16px; }
+    #go_notice button, #go_dialog button, #tabtop_login_summary button { min-height: 44px; }
+    #go_menu_panel .item, #go_menu_panel .tabtop-nav > * { min-height: 44px; }
+    #go_recent button { min-height: 44px; }
+    /* Forward is in the menu: room for the address. */
+    #go_forward { display: none !important; }
 }
 </style>
 <div id="go_bar">
     <button type="button" id="go_back" title="Back (Alt+←)" aria-label="Back" disabled>←</button>
     <button type="button" id="go_forward" title="Forward (Alt+→)" aria-label="Forward" disabled>→</button>
-    <button type="button" id="go_reload" title="Reload" aria-label="Reload" disabled>⟳</button>
     <form id="go_address" role="search">
-        <input id="go_url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Address, or words to search for"
+        <input id="go_url" type="text" inputmode="url" enterkeyhint="go" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Address, or words to search for"
             placeholder="Address, or words to search for">
+        <button type="button" id="go_reload" title="Reload" aria-label="Reload" disabled>⟳</button>
+        <button type="button" id="go_clear" title="Clear" aria-label="Clear the address" hidden>✕</button>
     </form>
+    <button type="button" id="go_menu" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="go_menu_panel"></button>
+    <div id="go_menu_panel" hidden>
+        <button type="button" class="item" id="go_menu_forward" disabled></button>
+    </div>
     <div id="go_progress" aria-hidden="true" hidden></div>
 </div>
 <div id="go_start">
     <div>
         <h1>Browser</h1>
-        <p>Pages open on the server, in an engine of their own, and are shown here as a copy: your device never contacts the site.</p>
-        <p>Videos, sounds and drawings made by scripts aren't shown.</p>
+        <p>Type an address, or words to search for, above.</p>
+        <p>Pages open on the server and are shown here as a copy: sites see the server, never this device.</p>
+        <ul id="go_recent" aria-label="Recent sites" hidden></ul>
+        <button type="button" id="go_recent_clear" hidden>Forget recent sites</button>
     </div>
 </div>
 <div id="go_status" role="status" aria-live="polite"></div>

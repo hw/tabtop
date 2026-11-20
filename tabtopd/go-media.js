@@ -243,6 +243,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             const media = player.element;
             if (media) on ? start(media) : media.pause();
         },
+        // pauseAll pauses every player: the page they're on is being left.
+        pauseAll() {
+            for (const player of players.values()) player.element?.pause();
+        },
         // keep stops the players of boxes not among keys: gone from the page.
         keep(keys) {
             for (const key of players.keys()) if (!keys.has(key)) closePlayer(key);
