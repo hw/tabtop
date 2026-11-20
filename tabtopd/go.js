@@ -369,10 +369,16 @@ function load(url, { push = true } = {}) {
 // on the frame element, not asked of what's in it; sent with each
 // navigation, and again when it changes.
 let sentView = null;
+// The copy's layout size, as the frame says (its scroll bars left out: a
+// page is laid out in what's left of the frame, and the engine's window,
+// which has none, is made that, not the frame's whole width, or what the
+// page places by its width, a carousel's slides, is off by a scroll bar).
+let laidOut = null;
 function view() {
     const r = frame.getBoundingClientRect();
+    const inside = (v, frameSize) => Math.round(laidOut && v > 0 && v <= frameSize ? v : frameSize);
     return {
-        w: Math.round(r.width), h: Math.round(r.height), dpr: Math.round((window.devicePixelRatio || 1) * 100) / 100,
+        w: inside(laidOut?.w, r.width), h: inside(laidOut?.h, r.height), dpr: Math.round((window.devicePixelRatio || 1) * 100) / 100,
         // The display, to the page: this window (its own screen isn't told).
         sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
         // Touch, if this device has it: the page offers what it offers to
@@ -382,7 +388,8 @@ function view() {
 }
 const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch"].every((k) => a[k] === b[k]);
 let viewTimer = 0;
-const viewSizes = new ResizeObserver(() => {
+const viewSizes = new ResizeObserver(() => viewSoon());
+function viewSoon() {
     clearTimeout(viewTimer);
     viewTimer = setTimeout(() => {
         const v = view();
@@ -390,7 +397,7 @@ const viewSizes = new ResizeObserver(() => {
         sentView = v;
         ws.send(JSON.stringify({ op: "viewport", view: v }));
     }, 250);
-});
+}
 viewSizes.observe(frame);
 viewSizes.observe(document.documentElement);  // the window: the display
 // A device's keyboard, up for typing here or in the page: the frame's
@@ -723,6 +730,12 @@ window.addEventListener("message", (e) => {
     switch (m.type) {
         case "ready":
             frameReady();
+            break;
+        case "layout":
+            if (Number.isFinite(m.w) && Number.isFinite(m.h) && m.w > 0 && m.h > 0) {
+                laidOut = { w: m.w, h: m.h };
+                viewSoon();
+            }
             break;
         case "resource":
             cachedResource(m.kind, m.url).then(

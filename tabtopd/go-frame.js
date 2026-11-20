@@ -107,6 +107,7 @@
         if (m.type === "hello" && typeof m.token === "string" && !token) {
             token = m.token;
             tell({ type: "ready" });
+            tellLayout();
         } else if (m.type === "resource" && waiting.has(m.id)) {
             const done = waiting.get(m.id);
             waiting.delete(m.id);
@@ -723,7 +724,17 @@
     }
     window.addEventListener("scroll", mediaLater, { passive: true, capture: true });
     window.addEventListener("resize", mediaLater);
-    new ResizeObserver(mediaLater).observe(document.documentElement);
+    // Observers of the document's root: watching each page's, as each
+    // replaces the last (see render).
+    const rootWatchers = new Set();
+    function watchRoot(observer) {
+        if (observer) rootWatchers.add(observer);
+        for (const o of observer ? [observer] : rootWatchers) {
+            o.disconnect();
+            if (document.documentElement) o.observe(document.documentElement);
+        }
+    }
+    watchRoot(new ResizeObserver(mediaLater));
 
     function element(d, n, ns) {
         const name = n.n;
@@ -963,6 +974,7 @@
             // (Document.replaceChildren refuses a second element even as
             // it replaces the first.)
             document.documentElement ? document.documentElement.replaceWith(root) : document.append(root);
+            watchRoot();
             const defaults = document.createElement("style");
             defaults.textContent = MEDIA_DEFAULTS;
             (root.querySelector("head") ?? root).prepend(defaults);
@@ -1412,6 +1424,17 @@
     }
     const textLike = (el) => el.localName === "textarea" || el.localName === "input"
         && !/^(checkbox|radio|file|image|submit|reset|button|range|color|date|datetime-local|month|time|week)$/i.test(el.type);
+
+    // The layout's size (the frame's but for its scroll bars), told the page
+    // above as it changes: the engine's window is made it (see go.js's view).
+    let laidOut = "";
+    function tellLayout() {
+        const w = document.documentElement.clientWidth, h = document.documentElement.clientHeight;
+        if (!token || !w || !h || laidOut === w + "x" + h) return;
+        laidOut = w + "x" + h;
+        tell({ type: "layout", w, h });
+    }
+    watchRoot(new ResizeObserver(tellLayout));
 
     // The frame made shorter (a device's keyboard come up): the field being
     // typed in kept in view.

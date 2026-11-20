@@ -108,6 +108,7 @@ setTimeout(() => { const p = document.createElement("p"); p.id = "late"; p.textC
         "view.html": `<!doctype html><title>View</title><style>body { margin: 0 } #hd { height: 123px; background: #eee } .wide-only { display: none } @media (min-width: 900px) { .wide-only { display: block } }</style>
 <header id="hd"><button id="menu">Menu</button></header><p id="w"></p><p id="mq"></p><p class="wide-only" id="wide">wide</p>
 <script>
+if (location.search === "?tall") document.body.append(Object.assign(document.createElement("div"), { style: "height: 3000px" }));
 const show = () => { document.getElementById("w").textContent = "width " + innerWidth; document.getElementById("mq").textContent = matchMedia("(min-width: 900px)").matches ? "wide" : "narrow"; };
 show(); addEventListener("resize", show);
 document.getElementById("menu").onclick = () => { const o = document.createElement("div"); o.id = "overlay"; o.style.cssText = "position: fixed; left: 0; right: 0; bottom: 0; background: #def"; o.style.top = document.getElementById("hd").getBoundingClientRect().bottom + "px"; o.textContent = "menu"; document.body.append(o); };
@@ -800,9 +801,17 @@ async function check(base, port, site) {
     });
 
     await step("the page is laid out at the frame's size, and follows it", async () => {
-        await goTo(site + "view.html", "View");
-        const frameWidth = () => ev(`Math.round(document.getElementById("go_view").getBoundingClientRect().width)`);
+        // The width it's laid out in here: the frame's, but for a scroll bar.
+        const frameWidth = () => frame(`document.documentElement.clientWidth`);
+        // Taller than the frame, with a scroll bar here: the engine's window
+        // is the width left beside it (what's placed by the width, a
+        // carousel's slides, is where it's shown).
+        await goTo(site + "view.html?tall", "View");
         let fw = await frameWidth();
+        if (fw >= await ev(`Math.round(document.getElementById("go_view").getBoundingClientRect().width)`)) throw new Error("no scroll bar to leave out");
+        await frameWait(`document.getElementById("w")?.textContent === "width ${fw}"`, `the tall page at ${fw} wide, beside its scroll bar`);
+        await goTo(site + "view.html", "View");
+        fw = await frameWidth();
         await frameWait(`document.getElementById("w")?.textContent === "width ${fw}" && document.getElementById("mq").textContent === "wide"`, `the page at ${fw} wide`);
         // Narrower: the page's own resize handler and media query follow.
         await cdp("Emulation.setDeviceMetricsOverride", { width: 600, height: 800, deviceScaleFactor: 1, mobile: false });
