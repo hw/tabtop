@@ -57,6 +57,11 @@ type goInput struct {
 	// what was touched (touchID) if it's a tap.
 	touching bool
 	touchID  int
+	// Each finger's place in the engine less its place on the person's
+	// screen, from when it went down: it moves as the finger does there
+	// (not by what's under it, which a swipe scrolling the copy keeps the
+	// same, a finger that moves seeming still, and its swipe a tap).
+	fingers  map[int][2]float64
 	dragging bool // something from outside is being dragged over the page
 }
 
@@ -97,6 +102,21 @@ type goTouchPoint struct {
 	FX float64 `json:"fx"`
 	FY float64 `json:"fy"`
 	T  int     `json:"t"`
+	// Where the finger is on the person's screen (the copy's window, the
+	// engine's size), to move it by.
+	CX *float64 `json:"cx"`
+	CY *float64 `json:"cy"`
+}
+
+// screenAt is where p says it is on the person's screen, if it says, and
+// within reason.
+func (p goTouchPoint) screenAt() (float64, float64, bool) {
+	if p.CX == nil || p.CY == nil {
+		return 0, 0, false
+	}
+	x, y := *p.CX, *p.CY
+	ok := x >= -1e5 && x <= 1e5 && y >= -1e5 && y <= 1e5 // (NaN's neither)
+	return x, y, ok
 }
 
 func goModifiers(m goClientMsg) int {
@@ -483,11 +503,25 @@ func (in *goInput) touch(b *goBrowser, world, gen int, m goClientMsg) {
 		if m.Type == "move" && !in.touching {
 			return
 		}
+		if m.Type == "start" || in.fingers == nil {
+			in.fingers = map[int][2]float64{}
+		}
 		var points []map[string]any
 		for _, p := range m.Points {
-			if x, y, ok := b.at(ctx, world, p.ID, p.FX, p.FY); ok {
-				points = append(points, map[string]any{"x": x, "y": y, "id": p.T & 0xffff, "radiusX": 1, "radiusY": 1, "force": 1})
+			id := p.T & 0xffff
+			cx, cy, onScreen := p.screenAt()
+			var x, y float64
+			if off, ok := in.fingers[id]; ok && onScreen {
+				x, y = cx+off[0], cy+off[1] // moved as it moved there
+			} else if ex, ey, ok := b.at(ctx, world, p.ID, p.FX, p.FY); ok {
+				x, y = ex, ey // down: on what's under it
+				if onScreen {
+					in.fingers[id] = [2]float64{ex - cx, ey - cy}
+				}
+			} else {
+				continue
 			}
+			points = append(points, map[string]any{"x": x, "y": y, "id": id, "radiusX": 1, "radiusY": 1, "force": 1})
 		}
 		if len(points) == 0 {
 			if m.Type == "start" && !in.touching && len(m.Points) > 0 {
@@ -503,6 +537,7 @@ func (in *goInput) touch(b *goBrowser, world, gen int, m goClientMsg) {
 			in.touching = true
 		}
 	case "end", "cancel":
+		in.fingers = nil
 		if in.touching {
 			in.touching = false
 			b.touchInput(ctx, "touchEnd", nil, m)

@@ -272,6 +272,9 @@ $("tap").onclick = () => status("tapped, touches " + touches);
 <script>for (const id of ["a", "b"]) { const v = document.getElementById(id); v.addEventListener("ended", () => { document.getElementById(id + "-out").textContent = id + " ended at " + Math.round(v.currentTime) + " " + v.ended; }); v.play().catch(() => {}); }</script>`,
         "resume.html": `<!doctype html><title>Resume</title><input id="t" aria-label="kept"><p id="n">0</p><div style="height:4000px"></div><p id="end">end</p>
 <script>let n = 0; setInterval(() => { document.getElementById("n").textContent = String(++n); }, 200);</script>`,
+        "swipe.html": `<!doctype html><title>Swipe</title><style>body { margin: 0 } button { display: block; width: 100%; height: 120px; font-size: 20px }</style><p id="out">clicks 0</p>
+${Array.from({ length: 40 }, (_, i) => `<button id="b${i}">button ${i}</button>`).join("")}
+<script>let clicks = 0; for (const b of document.querySelectorAll("button")) b.addEventListener("click", () => { document.getElementById("out").textContent = "clicks " + ++clicks + " " + b.id; });</script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -795,7 +798,7 @@ async function check(base, port, site) {
         // A new tab (this page loaded again: its engine closed, a new one
         // started): given the cookie.
         const browserPage = async (path = "go/tab") => {
-            await ev(`(() => { sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
+            await ev(`(() => { sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); sessionStorage.removeItem("tabtop-go-resume"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
             await sleep(500);
         };
         const newTab = async () => {
@@ -1423,6 +1426,39 @@ async function check(base, port, site) {
             await sleep(500);
             const now = await frame(`document.getElementById("status").textContent`);
             if (now !== "tapped, touches 1") throw new Error(`then ${now}: clicked twice?`);
+        } finally {
+            await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
+        }
+    });
+
+    await step("a touch swipe that scrolls the page clicks nothing; a tap still clicks", async () => {
+        await goTo(site + "swipe.html", "Swipe");
+        await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+        try {
+            // Swipes over the buttons, the copy scrolling under the finger as
+            // it moves (as a browser scrolls it): it stays over the same
+            // button, what's under it not moving. Fast and slow.
+            const view = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height * 0.7) }; })()`);
+            for (const [i, steps] of [[1, 10], [2, 4], [3, 2]]) {
+                const y0 = await frame(`scrollY`);
+                await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [view] });
+                for (let k = 1; k <= steps; k++) {
+                    const dy = Math.round(300 * k / steps);
+                    await frame(`scrollTo(0, ${y0 + dy})`);
+                    await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: view.x, y: view.y - dy }] });
+                    await sleep(30);
+                }
+                await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+                await sleep(800);
+                const out = await frame(`document.getElementById("out").textContent`);
+                if (out !== "clicks 0") throw new Error(`swipe ${i} clicked: ${out}`);
+            }
+            // A tap still a click, once.
+            await frame(`scrollTo(0, 0)`);
+            const tap = await at("#b1");
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [tap] });
+            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+            await frameWait(`document.getElementById("out").textContent === "clicks 1 b1"`, "the tap's click");
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
         }

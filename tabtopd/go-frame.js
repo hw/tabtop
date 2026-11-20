@@ -1710,7 +1710,8 @@
         const out = [];
         for (const t of list) {
             const w = whereAt(t.clientX, t.clientY);
-            if (w && !w.frame) out.push({ id: w.id, fx: w.fx, fy: w.fy, t: t.identifier & 0xffff });  // a frame's place isn't its iframe's
+            // (Where it is on the screen too: it's moved by that, see goinput.go.)
+            if (w && !w.frame) out.push({ id: w.id, fx: w.fx, fy: w.fy, t: t.identifier & 0xffff, cx: Math.round(t.clientX * 10) / 10, cy: Math.round(t.clientY * 10) / 10 });  // a frame's place isn't its iframe's
             if (out.length >= 10) break;
         }
         return out;
@@ -1780,6 +1781,15 @@
         if (e.touches.length && points.length) {
             touchNow("move", points, e);  // a finger lifted, others still down
             return;
+        }
+        // Where the last finger was let go: a flick quicker than its moves
+        // are sent, still a swipe, not a tap (and the engine given where it
+        // ended).
+        const last = e.changedTouches?.[0];
+        if (last && touchFrom && Math.hypot(last.clientX - touchFrom.x, last.clientY - touchFrom.y) > 10) {
+            touchMoved = true;
+            const ended = fingers([last]);
+            if (ended.length) touchNow("move", ended, e);
         }
         touchNow(e.type === "touchcancel" ? "cancel" : "end", [], e);
         touchSent = false;
