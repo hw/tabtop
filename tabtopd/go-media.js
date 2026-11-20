@@ -217,6 +217,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
         }
         player.element?.remove();
         player.loading?.done();
+        player.skipButton?.remove();
         if (player.poster) URL.revokeObjectURL(player.poster);
     }
 
@@ -265,6 +266,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             if (media) media.style.display = "none";
             if (loading) loading.hidden = true;
         };
+        const skip = player.skipButton;
+        if (skip) skip.hidden = true;
         if (!media && !loading) return;
         if (!shown || !rect || !clip || ![rect.x, rect.y, rect.width, rect.height, clip.x, clip.y, clip.width, clip.height].every(Number.isFinite)) {
             hide();
@@ -294,6 +297,35 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             Object.assign(loading.style, box);
             loading.hidden = false;
         }
+        // Skip, at the top right of what's shown of it, while it's not ended.
+        if (skip && !player.skipped && right - left >= 80 && bottom - top >= 40) {
+            Object.assign(skip.style, { left: `${area.left - host.left + right - 8}px`, top: `${area.top - host.top + top + 8}px` });
+            skip.hidden = false;
+        }
+    }
+
+    // skip treats a player as played to its end: the page is told it ended
+    // (pause, ended, its time its length), as when it plays to the end, so
+    // what it does then (the next video, the one after an advert) it does.
+    // One still loading stops loading; one loaded stays, at its end.
+    function skip(key) {
+        const player = players.get(key);
+        if (!player || player.skipped) return;
+        player.skipped = true;
+        player.play = false;
+        player.skipButton.hidden = true;
+        const media = player.element;
+        const length = Number.isFinite(media?.duration) && media.duration > 0 ? media.duration : player.length || 0;
+        if (!media) {
+            closePlayer(key);  // loading: no more of it
+        } else {
+            player.loading?.done();
+            media.pause();
+            if (length > 0 && media.seekable?.length) {
+                try { media.currentTime = length; } catch { /* where it was */ }
+            }
+        }
+        played?.(key, { t: length, playing: false, ended: true });
     }
 
     // layerHere is the layer the players are laid in, over the frame.
@@ -421,6 +453,14 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             players.set(key, entry);
             // Loading, over its box, till it can play.
             const loading = entry.loading = loader(kind, src, !!streamId);
+            if (kind === "video") {
+                const button = entry.skipButton = Object.assign(document.createElement("button"), { type: "button", className: "go-media-skip", hidden: true });
+                button.innerHTML = `Skip <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z"/></svg>`;
+                button.title = "Skip: as if it had played to its end";
+                button.setAttribute("aria-label", "Skip this video");
+                button.addEventListener("click", () => skip(key));
+                layerHere().append(button);
+            }
             loading.stage(null, streamId ? "Starting the stream…" : "Asking the site…");
             place(entry.placement);
             let tunnel;
@@ -455,6 +495,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                     // Its proportions for its box, and its size and length
                     // for the page (the engine has none of its own).
                     const meta = { w: media.videoWidth || 0, h: media.videoHeight || 0, duration: Number.isFinite(media.duration) ? media.duration : 0 };
+                    entry.length = meta.duration;
                     sized?.(key, media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 0, meta);
                 });
                 // How it plays, for the page (its player script goes by its
@@ -465,7 +506,11 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
                 const report = (ack) => {
                     if (signal.aborted) return;
                     toldAt = performance.now();
-                    const state = { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: !media.paused && !media.ended, ended: media.ended };
+                    // Skipped: ended, as said, till it's played again.
+                    if (entry.skipped && !media.paused) entry.skipped = false;
+                    const state = entry.skipped
+                        ? { t: Number.isFinite(media.duration) ? media.duration : 0, playing: false, ended: true }
+                        : { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: !media.paused && !media.ended, ended: media.ended };
                     if (entry.stream) {
                         const ranges = (list) => Array.from({ length: Math.min(list.length, 16) }, (_, i) => [list.start(i), list.end(i)]);
                         state.stream = streamId;
@@ -504,6 +549,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             }
         },
         place,
+        skip,
         // play starts or stops the player of a box as the page did its own
         // (or does once it's made).
         play(key, on) {
@@ -511,6 +557,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn }
             if (!player) return;
             player.play = on;
             const media = player.element;
+            if (on && player.skipped) {
+                // The page played it again: from its start, skippable again.
+                player.skipped = false;
+                if (media) media.currentTime = 0;
+                place(player.placement);
+            }
             if (media) on ? start(media) : media.pause();
         },
         // pauseAll pauses every player: the page they're on is being left.

@@ -266,6 +266,10 @@ $("tap").addEventListener("touchstart", () => touches++);
 $("tap").onclick = () => status("tapped, touches " + touches);
 </script>`,
         "slow.html": `<!doctype html><title>Slow video</title><video id="slow" src="clip.mp4?slow" width="320" height="180" muted></video>`,
+        "skip.html": `<!doctype html><title>Skip</title><style>body { margin: 0 } video { display: block }</style>
+<video id="a" src="clip.mp4?skip" width="320" height="180" muted></video><p id="a-out">a not ended</p>
+<video id="b" src="clip.mp4?slow" width="320" height="180" muted></video><p id="b-out">b not ended</p>
+<script>for (const id of ["a", "b"]) { const v = document.getElementById(id); v.addEventListener("ended", () => { document.getElementById(id + "-out").textContent = id + " ended at " + Math.round(v.currentTime) + " " + v.ended; }); v.play().catch(() => {}); }</script>`,
         "far.html": `<!doctype html><title>Far</title><video id="far" src="${process.env.GO_VIDEO_URL || "clip.mp4"}" width="640" height="360"></video>`,
         "trap.html": `<!doctype html><title>Trap</title><p id="status">safe</p><iframe id="f" src="trap-frame.html"></iframe>`,
         "trap-frame.html": `<!doctype html><p id="inner">inner</p>
@@ -1250,6 +1254,22 @@ async function check(base, port, site) {
             return Math.round(l.width) === 320 && Math.round(l.height) === 180 && l.left >= f.left && l.top >= f.top; })()`);
         if (!over) throw new Error("the loading box isn't over the video's box");
         await waitFor(`!document.querySelector(".go-media-loading") && document.querySelector("video")?.readyState >= 2`, "the video ready, the loading box gone", 60000);
+    });
+
+    await step("a video skipped is, to the page, played to its end, whether playing or still loading", async () => {
+        await goTo(site + "skip.html", "Skip");
+        const skips = `[...document.querySelectorAll(".go-media-skip")].filter((b) => !b.hidden).sort((x, y) => x.getBoundingClientRect().top - y.getBoundingClientRect().top)`;
+        // The second still loading (sent slowly): skipped, it stops.
+        await waitFor(`${skips}.length === 2 && !!document.querySelector(".go-media-loading:not([hidden])")`, "both videos' Skip, the second loading", 15000);
+        await ev(`${skips}[1].click()`);
+        await frameWait(`document.getElementById("b-out").textContent === "b ended at 0 true"`, "the second ended, to its page");
+        await waitFor(`!document.querySelector(".go-media-loading")`, "its loading gone");
+        // The first playing: skipped, at its end.
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => !v.paused && v.currentTime > 0.3)`, "the first playing", 30000);
+        await ev(`${skips}[0].click()`);
+        await frameWait(`document.getElementById("a-out").textContent === "a ended at 5 true"`, "the first ended at its end, to its page");
+        await waitFor(`(() => { const v = [...document.querySelectorAll("video")]; return v.length === 1 && v[0].paused && Math.round(v[0].currentTime) === 5; })()`, "its player paused at the end, the other's closed");
+        if (await ev(`${skips}.length`)) throw new Error("Skip still shown once skipped");
     });
 
     await step("prompt, a page asking as it loads, a frame asking, and a page asking in a loop", async () => {

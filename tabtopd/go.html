@@ -89,6 +89,14 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 .go-media-loading .bar { position: relative; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .2); overflow: hidden; }
 .go-media-loading .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; background: #8ab4f8; border-radius: 2px; transition: width .25s; }
 .go-media-loading .bar.unknown > i { width: 30%; animation: go-media-loading 1.2s ease-in-out infinite; transition: none; }
+/* Skip, at a player's top right: the page told it ended. */
+.go-media-skip { position: absolute; z-index: 4; transform: translateX(-100%); display: inline-flex; align-items: center; gap: 4px;
+    min-height: 32px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, .35); border-radius: 16px; background: rgba(0, 0, 0, .6);
+    color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; pointer-events: auto; }
+.go-media-skip:hover { background: rgba(0, 0, 0, .8); }
+.go-media-skip:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+.go-media-skip[hidden] { display: none; }
+@media (pointer: coarse) { .go-media-skip { min-height: 40px; padding: 0 16px; } }
 @keyframes go-media-loading { from { left: -30%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .go-media-loading .bar.unknown > i { animation: none; left: 0; width: 100%; opacity: .5; } }
 #go_status { position: absolute; left: calc(8px + var(--safe-left)); bottom: calc(8px + var(--safe-bottom)); max-width: calc(100% - 16px - var(--safe-left) - var(--safe-right)); box-sizing: border-box; padding: 4px 10px;
