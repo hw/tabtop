@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js
+//go:embed go.html go.js go-media.js go-cookies.html go-cookies.js
 var goFiles embed.FS
 
 const (
@@ -22,6 +22,11 @@ const (
 	// the page's own origin.
 	goPageCSP = "default-src 'none'; script-src 'self'; connect-src 'self' data:; style-src 'unsafe-inline'; " +
 		"img-src 'self' data: blob:; media-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+	// goCookiesCSP is the cookies page's: its script, the tunnel to the
+	// site, nothing else.
+	goCookiesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; " +
+		"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 	// goFrameCSP is the frame's: its own script and the CSS parser only,
 	// the page's styles inline, and pictures and fonts only as blob: and
@@ -64,7 +69,13 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go.html")
 		w.Write(page)
-	case "go.js", "go-media.js":
+	case "cookie":
+		// The cookies kept for it (gocookies.go), by site.
+		h.Set("Content-Security-Policy", goCookiesCSP)
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		page, _ := goFiles.ReadFile("go-cookies.html")
+		w.Write(page)
+	case "go.js", "go-media.js", "go-cookies.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)

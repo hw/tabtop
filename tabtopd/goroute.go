@@ -153,6 +153,13 @@ func (g *server) routeGo(c *tunnelCall) {
 	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
 	b := newGoBrowser(c.t, e, cdp, page, target)
 	b.resources, b.session, b.deflate = g.goResources, c.session, c.req.Deflate
+	// The account's cookies, given before anything's loaded; what the
+	// tab's sites set taken back as it closes (gocookies.go).
+	b.jar = g.goCookies
+	ctx, cancel = context.WithTimeout(context.Background(), goCallTimeout)
+	b.startCookies(ctx)
+	cancel()
+	defer b.endCookies()
 	b.run()
 	log.Printf("go: remote browser tab from %s closed", c.ip)
 }

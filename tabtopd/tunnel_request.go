@@ -46,11 +46,13 @@ type tunnelRequest struct {
 	Copy bool `json:"copy,omitempty"`
 
 	// --- Files ---
-	Path  string   `json:"path,omitempty"`
-	Name  string   `json:"name,omitempty"`  // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle
-	Size  int64    `json:"size,omitempty"`  // upload: its size
-	Names []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path
-	To    string   `json:"to,omitempty"`    // move: the folder to move what's at Path into
+	Path string `json:"path,omitempty"`
+	Name string `json:"name,omitempty"` // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle; go-cookies-forget: the site
+	// go-cookies-forget: what was set in the last Within seconds (0: all), when Name is "".
+	Within int64    `json:"within,omitempty"`
+	Size   int64    `json:"size,omitempty"`  // upload: its size
+	Names  []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path
+	To     string   `json:"to,omitempty"`    // move: the folder to move what's at Path into
 	// upload: replace a file that has the name, rather than save under a
 	// free one
 	Replace bool `json:"replace,omitempty"`

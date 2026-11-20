@@ -86,6 +86,9 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// The remote browser: one tunnel, one browsing context (goroute.go).
 	"go":          other((*server).routeGo),
 	"go-resource": other((*server).routeGoResource),
+	// Its cookies, kept for the account (gocookies.go): their page, go/cookie.
+	"go-cookies":        other((*server).routeGoCookies),
+	"go-cookies-forget": other((*server).routeGoCookiesForget),
 
 	// Sessions, and the activity log: kept with file support off.
 	"logout":           other((*server).routeLogout),

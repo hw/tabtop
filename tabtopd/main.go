@@ -109,6 +109,8 @@ type server struct {
 	goConfig goEngineConfig
 	// goResources is the client its resource broker fetches with.
 	goResources *http.Client
+	// goCookies is the remote browser's cookies, kept for the account.
+	goCookies *goCookieJar
 	// goEngines counts the remote browser's engines open, by session.
 	goEngines map[string]int
 	// rootProblems are configured roots left out at startup (see
@@ -169,6 +171,8 @@ func main() {
 	flag.StringVar(&c.shareKeyFile, "share-key-file", c.shareKeyFile, "the key share links' tokens are kept sealed with, to show them again; empty keeps one in memory")
 	flag.StringVar(&c.activityFile, "activity-file", c.activityFile, "where the activity log is kept, to last across restarts; empty keeps it in memory")
 	flag.StringVar(&c.passkeysFile, "passkeys-file", c.passkeysFile, "where passkeys added to log in with are kept; empty keeps them in memory, till a restart")
+	flag.StringVar(&c.goCookiesFile, "go-cookies-file", c.goCookiesFile, "where the remote browser's cookies are kept, sealed, to last across tabs and restarts; empty keeps them in memory, till a restart")
+	flag.StringVar(&c.goCookiesKeyFile, "go-cookies-key-file", c.goCookiesKeyFile, "the key the remote browser's cookies are sealed with; needed to keep them in -go-cookies-file")
 	flag.StringVar(&c.remoteApprovalURL, "remote-approval-url", "", "trusted HTTPS approval page URL; empty uses this deployment at /auth/approve")
 	flag.BoolVar(&c.offlineClient, "offline-client", false, "accept the tunnel from the offline client (tabtop.html from the bootstrap pack, opened as a file: origin \"null\")")
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")

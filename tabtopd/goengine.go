@@ -244,6 +244,9 @@ type goAdapter struct {
 	noDialogs bool
 	// env is what it's run with besides HOME, TMPDIR and PATH.
 	env []string
+	// cookieScopeLost: its cookies' domains come without the dot that
+	// says a domain cookie (Obscura's): see exportCookies.
+	cookieScopeLost bool
 	// data is its data segment's limit (RLIMIT_DATA) if it isn't its
 	// memory's: V8 counts some of what it reserves (not uses) against it.
 	// The resident memory the watchdog allows is the same for both.
@@ -276,7 +279,7 @@ var goAdapters = map[string]goAdapter{
 	// it uses is held to goEngineMemory by the watchdog, as Moli's is.
 	// Its page's events come on its own session as well as tabtopd's, and
 	// those that input causes (a link clicked) on its own only.
-	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, noDialogs: true,
+	"obscura": {name: "Obscura", data: 8 << 30, anySession: true, noDialogs: true, cookieScopeLost: true,
 		input: goInputGaps{pointer: true, activate: []string{" ", "Enter"}, tab: true, letGoClicks: true}, args: func(port int, proxy, userAgent, _ string) []string {
 			args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
 				"--proxy", proxy, "--quiet", "--allow-private-network"}

@@ -107,12 +107,15 @@ const (
 )
 
 type goBrowser struct {
-	t      msgConn
-	e      *goEngine
-	cdp    *cdpConn
-	page   string // the CDP session of its page
-	target string // its page's target
-	frame  string // its main frame
+	t msgConn
+	e *goEngine
+	// The account's cookies (gocookies.go), and this tab's part of them.
+	jar     *goCookieJar
+	cookies goCookieTab
+	cdp     *cdpConn
+	page    string // the CDP session of its page
+	target  string // its page's target
+	frame   string // its main frame
 
 	gen int // the newest generation
 	// loading is the generation waiting for its load, if any; navigated,
@@ -574,6 +577,9 @@ func (b *goBrowser) run() {
 	// stops Moli (1.1.25) following links within a page.
 	poll := time.NewTicker(goPollEvery)
 	defer poll.Stop()
+	// What its sites set in cookies, taken now and then (gocookies.go).
+	cookieSync := time.NewTicker(goCookiesEvery)
+	defer cookieSync.Stop()
 
 	var loadTimeout, dialogTimeout <-chan time.Time
 	for {
@@ -665,6 +671,8 @@ func (b *goBrowser) run() {
 				b.againGen = 0
 				b.readAgain(gen)
 			}
+		case <-cookieSync.C:
+			go b.syncCookies()
 		case <-poll.C:
 			// Often while the page changes; once a second once it's
 			// been still a while.
@@ -1217,6 +1225,10 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			b.shown, b.seq, b.lastChange = gen, 0, time.Now()
+			if !again {
+				b.visited(s.URL)
+				go b.syncCookies() // what it set as it loaded
+			}
 			b.framesAgain() // its iframes were drawn empty
 			if !again {
 				b.prefetch(s.Doc, s.Base) // what it'll ask for, on its way

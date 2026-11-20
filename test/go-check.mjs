@@ -296,6 +296,13 @@ h1 { font-family: "Fixture Font", sans-serif; }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path");
 const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
 http.createServer((req, res) => {
+  if (req.url.startsWith("/cookie")) {
+    // What the browser sent of its cookies; ?set sets one (for an hour).
+    const head = { "Content-Type": "text/html", "Cache-Control": "no-store" };
+    if (req.url.includes("?set")) head["Set-Cookie"] = "kept=yes; Path=/; Max-Age=3600; HttpOnly";
+    res.writeHead(200, head);
+    return res.end("<!doctype html><title>Cookie</title><p id=c>sent " + (req.headers.cookie || "nothing").replace(/[<&]/g, "") + "</p>");
+  }
   if (req.method === "POST") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -637,7 +644,8 @@ async function check(base, port, site) {
         // The menu: forward, then the pages and logging out.
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
-        if (!/^Forward,.*Files.*,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
+        // (The other pages are those the server has: Files, Terminal...)
+        if (!/^Forward,Cookies and site data,.+,Log out$/.test(items) || /Browser/.test(items)) throw new Error(`the menu has ${items}`);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         await waitFor(`document.getElementById("go_menu_panel").hidden`, "the menu closed");
         // The device's back (the tab's history: a swipe, a button): a page
@@ -648,6 +656,42 @@ async function check(base, port, site) {
         if ((await ev(`location.href`)) !== here) throw new Error("left the browser page");
         await ev(`history.forward()`);
         await waitFor(`document.getElementById("go_url").dataset.url.endsWith("/second.html")`, "forward again", 30000);
+    });
+
+    await step("a site's cookies are kept for new tabs, listed at go/cookie, and deleted by site or by time", async () => {
+        const sent = () => frame(`document.getElementById("c")?.textContent`);
+        const host = new URL(site).hostname;
+        await goTo(site + "cookie?set", "Cookie");
+        await goTo(site + "cookie", "Cookie");
+        if ((await sent()) !== "sent kept=yes") throw new Error(`the site was sent ${await sent()}`);
+        // A new tab (this page loaded again: its engine closed, a new one
+        // started): given the cookie.
+        const browserPage = async (path = "go/") => {
+            await ev(`(() => { sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
+            await sleep(500);
+        };
+        const newTab = async () => {
+            await browserPage();
+            await waitFor(`!!document.getElementById("go_url") && !!document.getElementById("go_menu")`, "the browser page again");
+            await sleep(1000);
+        };
+        await newTab();
+        await goTo(site + "cookie", "Cookie");
+        if ((await sent()) !== "sent kept=yes") throw new Error(`a new tab sent ${await sent()}`);
+        // The site deleted while this tab is open: gone from it too.
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-cookies-forget", name: ${JSON.stringify(host)} }); t.close(); return t.reply.forgotten; })`);
+        await goTo(site + "cookie", "Cookie");
+        if ((await sent()) !== "sent nothing") throw new Error(`after deleting the site, the open tab sent ${await sent()}`);
+        // The page at go/cookie: the site listed, then what was set in the
+        // last hour cleared there.
+        await goTo(site + "cookie?set", "Cookie");
+        await browserPage("go/cookie");
+        await waitFor(`[...document.querySelectorAll("#sites li")].some((li) => li.querySelector(".site").textContent === ${JSON.stringify(host)} && /1 cookie/.test(li.textContent))`, "the site listed with its cookie", 20000);
+        await ev(`(() => { document.getElementById("within").value = "3600"; document.getElementById("clear").click(); })()`);
+        await waitFor(`/Cleared/.test(document.getElementById("done").textContent) && !/cookie/.test(document.getElementById("sites").textContent)`, "the last hour's cleared");
+        await newTab();
+        await goTo(site + "cookie", "Cookie");
+        if ((await sent()) !== "sent nothing") throw new Error(`after clearing the last hour, a new tab sent ${await sent()}`);
     });
 
     await step("this machine's addresses are refused", async () => {

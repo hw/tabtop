@@ -55,6 +55,7 @@ const ICONS = {
     stop: '<path d="M6 6l12 12M18 6L6 18"/>',
     clear: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    sites: '<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="13.5" r="1"/><circle cx="10.5" cy="15" r="1"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 back.innerHTML = icon("back");
@@ -67,6 +68,9 @@ $("go_clear").innerHTML = icon("clear");
 const menu = $("go_menu"), menuPanel = $("go_menu_panel"), menuForward = $("go_menu_forward");
 menu.innerHTML = icon("menu");
 menuForward.innerHTML = `${icon("forward")}<span class="label">Forward</span>`;
+// Cookies and site data: a page of its own (go/cookie, go-cookies.js),
+// in a tab of its own, this one's page kept.
+$("go_menu_sites").innerHTML = `${icon("sites")}<span class="label">Cookies and site data</span>`;
 const nav = navBar("go", { logOutIcon: true });
 for (const item of nav.children) {
     const label = document.createElement("span");

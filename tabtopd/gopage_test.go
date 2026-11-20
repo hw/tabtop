@@ -65,6 +65,14 @@ func TestGoPage(t *testing.T) {
 	if res, _ := get("/tabtop/go-frame.js"); res.StatusCode != 200 {
 		t.Errorf("go-frame.js: %d", res.StatusCode)
 	}
+	// Its cookies' page, at go/cookie, and its script.
+	res, cookies := get("/go/cookie")
+	if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(cookies, `src="go-cookies.js"`) {
+		t.Errorf("the cookies page: %d %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
+	}
+	if res, _ := get("/go/go-cookies.js"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
+		t.Errorf("go-cookies.js: %d", res.StatusCode)
+	}
 }
 
 // TestGoFrameCSP holds the frame's policy to what keeps a page in: no
