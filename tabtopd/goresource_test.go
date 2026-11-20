@@ -51,8 +51,9 @@ func TestGoResource(t *testing.T) {
 				t.Errorf("the site was sent %s", h)
 			}
 		}
-		// What a tab says it is (no tab here: the desktop's), never TabTop.
-		if ua := r.Header.Get("User-Agent"); ua != goDesktopUA || strings.Contains(strings.ToLower(ua), "tabtop") {
+		// What a tab says it is (no tab here: the desktop's, an engine's own
+		// once one has said it, as in a test with Moli before), never TabTop.
+		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ") || !strings.Contains(ua, " Chrome/") || strings.Contains(strings.ToLower(ua), "tabtop") {
 			t.Errorf("User-Agent %q", ua)
 		}
 		switch r.URL.Path {
