@@ -570,8 +570,10 @@ func TestGoEngineWithMoli(t *testing.T) {
 			if r := e.killReason(); r != "it used too much memory" && r != "it exited" && r != "it stopped answering" {
 				t.Errorf("killed because %q", r)
 			}
-			if peak > limit {
-				t.Errorf("peak %d MB is over the limit", peak>>20)
+			// Held under the data segment's limit (it can't pass that), and
+			// stopped by the watchdog once over its memory.
+			if peak > goEngineDataFactor*limit {
+				t.Errorf("peak %d MB is over the data limit, %d MB", peak>>20, goEngineDataFactor*limit>>20)
 			}
 		})
 	}

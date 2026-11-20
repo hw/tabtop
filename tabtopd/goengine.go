@@ -79,6 +79,9 @@ const (
 	// segment's limit (RLIMIT_DATA, set by the bridge), and the resident
 	// memory the watchdog allows. Moli needs at least 640 MiB to start.
 	goEngineMemory = 1 << 30
+	// goEngineDataFactor is how many times its memory an engine's data
+	// segment may be (see startGoEngine).
+	goEngineDataFactor = 2
 	// goEngineTmp is the size of the sandbox's /tmp, where Moli keeps
 	// IndexedDB and OPFS without a profile: memory too, beside its own.
 	goEngineTmp = 256 << 20
@@ -253,13 +256,7 @@ var goAdapters = map[string]goAdapter{
 	// pages that measure themselves (a menu placed below its header) get
 	// real sizes and places, at the size of the person's window (see
 	// gobrowser.go's viewport).
-	// Its V8 reserves address space that RLIMIT_DATA counts, a page's
-	// WebAssembly memory most of all (Wikipedia's player, ogv.js, once its
-	// audio's length is known): at 1 GiB, V8 couldn't reserve it and ended
-	// the engine (SIGTRAP), and the page, loaded again, did the same, over
-	// and over. Its limit is 8 GiB, as Obscura's; what it uses is held to
-	// goEngineMemory by the watchdog.
-	"moli": {name: "Moli", cache: true, data: 8 << 30, args: func(port int, proxy, userAgent, cache string) []string {
+	"moli": {name: "Moli", cache: true, args: func(port int, proxy, userAgent, cache string) []string {
 		args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port),
 			"--http-proxy", proxy, "--log-level", "warn", "--layout"}
 		if userAgent != "" {
@@ -443,7 +440,14 @@ func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
 	if err != nil {
 		return fail(err)
 	}
-	data := cfg.memory
+	// The data segment's limit: twice the memory allowed, by default. An
+	// engine's V8 reserves address space RLIMIT_DATA counts beyond what it
+	// uses (Moli's: 1.27 GiB on heavy pages, using 460 MiB), and ends the
+	// engine (SIGTRAP, saying nothing) when it can't; at the memory limit
+	// itself, heavy pages ended it, and were loaded again, over and over.
+	// What's used is held to the memory limit by the watchdog; this is the
+	// ceiling it can't pass between the watchdog's looks.
+	data := goEngineDataFactor * cfg.memory
 	if cfg.data > 0 {
 		data = cfg.data
 	}
