@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-player.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-pages.js go-pages.css
+//go:embed go.html go.js go-media.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-pages.js go-pages.css
 var goFiles embed.FS
 
 const (
@@ -107,7 +107,7 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		html, _ := goFiles.ReadFile("go-" + page + ".html")
 		w.Write(html)
-	case "go.js", "go-media.js", "go-player.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-pages.js":
+	case "go.js", "go-media.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-pages.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)

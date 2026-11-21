@@ -12,7 +12,7 @@
 import { call, collect } from "../tabtop/requests.js";
 import { createMediaSource } from "../tabtop/media-source.js";
 import { mediaWorker } from "../tabtop/stream-worker.js";
-import { openPlayer } from "./go-player.js";
+import { openPlayer } from "../tabtop/video-player.js";
 
 const MAX_PLAYERS = 8;
 
@@ -335,7 +335,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
 
     // Its site's videos blocked (Site controls): none played, those
     // there stopped, the page told why in their boxes.
-    const BLOCKED = "Videos from this site are blocked (☰ → Site controls).";
+    const BLOCKED = "Videos from this site are blocked (Site controls: the button at the address’s start).";
     let blocked = false;
 
     // pageStarts plays a player the page started, unless autoplay's paused

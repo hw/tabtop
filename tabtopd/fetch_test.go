@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -498,5 +499,82 @@ func TestFetchFromGo(t *testing.T) {
 	fetches.goClient = newFetchClient(func(netip.Addr) bool { return true })
 	if last := try(); fetchedName(last) != "doc.pdf" {
 		t.Fatalf("not saved: %v", last)
+	}
+}
+
+// TestFetchFromGoSaysThePage holds a file saved from a /go tab (a video's
+// Download) to what the tab's page sent playing it: its user agent, and
+// the cookies and Referer its goFrom gives, at each address, after a
+// redirect too.
+func TestFetchFromGoSaysThePage(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	var mu sync.Mutex
+	seen := map[string]http.Header{}
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Clone()
+		mu.Unlock()
+		if r.URL.Path == "/watch/clip.mp4" {
+			http.Redirect(w, r, "/media/clip.mp4", http.StatusFound)
+			return
+		}
+		w.Write([]byte("video"))
+	}))
+	defer remote.Close()
+	fetches := g.defaultRoot().fetches
+	fetches.goClient = newFetchClient(func(netip.Addr) bool { return true })
+	from := &goFrom{
+		cookies: func(u *url.URL) string { return "session=" + u.Path },
+		referer: func(*url.URL) string { return "https://videos.example/watch?v=1" },
+	}
+	u, _ := url.Parse(remote.URL + "/watch/clip.mp4")
+	j, err := fetches.startGoWithContext(u, ".", "by", "127.0.0.1", "who", from, "Mozilla/5.0 (the tab's)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-j.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("not saved")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range []string{"/watch/clip.mp4", "/media/clip.mp4"} {
+		h := seen[path]
+		if h == nil {
+			t.Fatalf("%s wasn't asked for", path)
+		}
+		if h.Get("User-Agent") != "Mozilla/5.0 (the tab's)" || h.Get("Cookie") != "session="+path || h.Get("Referer") != "https://videos.example/watch?v=1" ||
+			h.Get("Accept-Encoding") != "identity" {
+			t.Errorf("%s was sent %v", path, h)
+		}
+	}
+}
+
+// TestFetchFromGoNoTab: a file saved from /go without a tab to say whose
+// page is fetched as before, saying nothing of a page.
+func TestFetchFromGoNoTab(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	var seen atomic.Pointer[http.Header]
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Clone()
+		seen.Store(&h)
+		w.Write([]byte("video"))
+	}))
+	defer remote.Close()
+	fetches := g.defaultRoot().fetches
+	fetches.goClient = newFetchClient(func(netip.Addr) bool { return true })
+	u, _ := url.Parse(remote.URL + "/plain.mp4")
+	j, err := fetches.startGo(u, ".", "by", "127.0.0.1", "who")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-j.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("not saved")
+	}
+	if h := seen.Load(); h == nil || h.Get("User-Agent") != "TabTop" || h.Get("Cookie") != "" || h.Get("Referer") != "" {
+		t.Errorf("without a tab, sent %v", h)
 	}
 }

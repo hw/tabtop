@@ -509,6 +509,7 @@ export function preview(dir, files, index, download, opts = {}) {
         const shownAs = await renderPreview({ file: current, path: join(current.dir, current.name), blob, url,
             kind: kind === "text" && format && viewShown(format) ? format : kind,
             fragment, location, open: follow, navigate: remember, signal: rendererAbort.signal, externalMode,
+            download: () => download(join(metadataFile.dir, metadataFile.name)),
             saveMetadata: readOnlyRoot() ? null : async (next, signal) => {
                 const reply = await uploadFile(new File([next], metadataFile.name, { type: next.type }), () => {}, metadataFile.dir,
                     signal, true, { expect: { mtime: metadataFile.mtime, size: metadataFile.size } });
@@ -808,6 +809,11 @@ export function preview(dir, files, index, download, opts = {}) {
     close.addEventListener("click", closeAsking);
     dialog.addEventListener("cancel", (e) => {
         if (e.target !== dialog) return;
+        // A video in the player (video-player.js): Esc's its, to close it.
+        if (dialog.querySelector("#video_player")) {
+            e.preventDefault();
+            return;
+        }
         if (editing) {
             e.preventDefault();
             closeAsking();

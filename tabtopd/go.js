@@ -97,7 +97,10 @@ const ICONS = {
     reload: '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4v4h-4"/>',
     stop: '<path d="M6 6l12 12M18 6L6 18"/>',
     clear: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
-    hideBrowser: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5M4 9h16"/>',
+    // The browser's own bars hidden, this one kept: a window, its top bar
+    // going up.
+    hideBrowser: '<rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 10h18M12 17v-4m-2.5 2L12 12.5l2.5 2.5"/>',
+    insecure: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.01"/>',
     fullscreen: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/>',
     exitFullscreen: '<path d="M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
@@ -117,13 +120,23 @@ $("go_clear").innerHTML = icon("clear");
 // logging out (the bar of links the other pages have at the top, here in
 // the menu to leave the page the room).
 const menu = $("go_menu"), menuPanel = $("go_menu_panel");
+// The menu's first row (go.html): Forward (on a phone, whose bar has no
+// room for it), Full screen, Hide browser, Desktop; each a glyph over its
+// name.
 const desktop = $("go_menu_desktop");
-$("go_menu_desktop_glyph").innerHTML = iconSVG("desktop");
+desktop.insertAdjacentHTML("afterbegin", iconSVG("desktop"));
 const desktopKey = "tabtop-go-desktop" + (tabId ? ":" + tabId : "");
-try { desktop.checked = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
-desktop.addEventListener("change", () => {
+let desktopOn = false;
+try { desktopOn = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
+desktop.setAttribute("aria-pressed", String(desktopOn));
+const menuForward = $("go_menu_forward");
+menuForward.insertAdjacentHTML("afterbegin", icon("forward"));
+menuForward.addEventListener("click", () => { openMenu(false); menu.focus(); goBy(1); });
+desktop.addEventListener("click", () => {
+    desktopOn = !desktopOn;
+    desktop.setAttribute("aria-pressed", String(desktopOn));
     try {
-        if (desktop.checked) sessionStorage.setItem(desktopKey, "1");
+        if (desktopOn) sessionStorage.setItem(desktopKey, "1");
         else sessionStorage.removeItem(desktopKey);
     } catch { /* this page only */ }
     openMenu(false);
@@ -134,8 +147,8 @@ desktop.addEventListener("change", () => {
 
 const hideBrowser = $("go_menu_hide_browser");
 const fullScreen = $("go_menu_fullscreen"), exitFullScreen = $("go_exit_fullscreen");
-hideBrowser.innerHTML = icon("hideBrowser");
-fullScreen.innerHTML = icon("fullscreen");
+hideBrowser.insertAdjacentHTML("afterbegin", icon("hideBrowser"));
+fullScreen.insertAdjacentHTML("afterbegin", icon("fullscreen"));
 exitFullScreen.innerHTML = icon("exitFullscreen");
 const fullScreenRoot = document.documentElement;
 let screenMode = "", nativeFullScreen = false, nativeRequest;
@@ -198,7 +211,6 @@ document.addEventListener("fullscreenchange", () => {
 
 
 menu.innerHTML = icon("menu");
-$("go_menu_sites").innerHTML = `${icon("controls")}<span class="label">Site controls</span>`;
 $("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Settings</span>`;
 // Open Site controls (go/sites) or Settings (go/settings) in a fresh
 // lightbox frame so it leaves the browser's back and forward history alone.
@@ -218,20 +230,42 @@ function openSettings(page) {
     settingsBox.showModal();
     settingsBox.querySelector(".close").focus();
 }
-$("go_menu_sites").addEventListener("click", () => openSettings("sites"));
-// Ads and trackers blocked on the page (goadblock.go): how many (sites
-// refused whole, and addresses), a shield in the bar; its site's controls,
-// to allow them, from it.
-const adsShown = $("go_ads");
-adsShown.insertAdjacentHTML("afterbegin", icon("shield"));
-function showAds(count) {
-    adsShown.hidden = !(count > 0);
-    adsShown.querySelector(".count").textContent = count > 0 ? String(count) : "";
-    const said = `${count} ${count === 1 ? "ad or tracker" : "ads and trackers"} blocked on this page`;
-    adsShown.title = said;
-    adsShown.setAttribute("aria-label", said);
+// The site's button, at the address's start: its controls (Site controls,
+// go/sites), and at a glance what's to know of it: not https (a warning),
+// ads and trackers blocked on the page (a shield, how many: sites refused
+// whole, and addresses; goadblock.go). Shown with a page's site, not while
+// the address is edited.
+const siteButton = $("go_site"), addressForm = $("go_address");
+let adsBlocked = 0;
+function showSiteButton() {
+    const entry = at >= 0 ? entries[at] : null;
+    const site = entry && !entry.url.startsWith(SEARCH) && address.classList.contains("site") ? hostOf(entry.url).replace(/:\d+$/, "").replace(/^www\./, "") : "";
+    siteButton.hidden = !site;
+    addressForm.classList.toggle("with-site", !!site);
+    if (!site) return;
+    const insecure = address.classList.contains("insecure");
+    // What's to know, each its glyph: not https; ads blocked (its count
+    // after it); neither, its controls.
+    const glyphs = [...(insecure ? ["insecure"] : []), ...(adsBlocked > 0 ? ["shield"] : []), ...(!insecure && !adsBlocked ? ["controls"] : [])].join();
+    if (siteButton.dataset.glyph !== glyphs) {
+        for (const svg of siteButton.querySelectorAll("svg")) svg.remove();
+        siteButton.querySelector(".count").insertAdjacentHTML("beforebegin", glyphs.split(",").map((g) => icon(g)).join(""));
+        siteButton.dataset.glyph = glyphs;
+    }
+    siteButton.classList.toggle("insecure", insecure);
+    siteButton.classList.toggle("ads", adsBlocked > 0);
+    siteButton.querySelector(".count").textContent = adsBlocked > 0 ? String(adsBlocked) : "";
+    const said = [`Site controls for ${site}`];
+    if (insecure) said.push("not secure (http)");
+    if (adsBlocked > 0) said.push(`${adsBlocked} ${adsBlocked === 1 ? "ad or tracker" : "ads and trackers"} blocked on this page`);
+    siteButton.title = siteButton.ariaLabel = said.join("; ");
+    addressForm.style.setProperty("--site-width", `${siteButton.offsetWidth + 4}px`);
 }
-adsShown.addEventListener("click", () => openSettings("sites"));
+function showAds(count) {
+    adsBlocked = count;
+    showSiteButton();
+}
+siteButton.addEventListener("click", () => openSettings("sites"));
 $("go_menu_settings").addEventListener("click", () => openSettings("settings"));
 settingsBox.querySelector(".close").addEventListener("click", () => settingsBox.close());
 settingsBox.addEventListener("click", (e) => { if (e.target === settingsBox) settingsBox.close(); });  // beside it (its backdrop)
@@ -427,7 +461,7 @@ async function blockVideos() {
         const t = await call({ type: "go-settings-set", name: url, setting: "videos-block" });
         t.close();
         if (entries[at]?.url === url) applyMediaPolicy("block");
-        warn(`Videos are blocked on ${site}: its pages' videos won't play (☰ → Site controls).`, {
+        warn(`Videos are blocked on ${site}: its pages' videos won't play (Site controls: the button at the address’s start).`, {
             error: false, label: "Undo",
             retry: async () => {
                 try {
@@ -651,7 +685,7 @@ function update() {
     // Back: a page back; with none, but some forward, the history panel
     // (Forward's there, on a phone: not in the bar).
     back.disabled = at <= 0 && at >= entries.length - 1;
-    forward.disabled = at >= entries.length - 1;
+    forward.disabled = menuForward.disabled = at >= entries.length - 1;
     reload.disabled = at < 0;
     reload.innerHTML = icon(loading ? "stop" : "reload");
     reload.title = loading ? "Stop" : "Reload";
@@ -690,12 +724,14 @@ function showSite(url) {
     address.title = url;
     address.classList.add("site");
     address.classList.toggle("insecure", insecure);
+    showSiteButton();
 }
 function editAddress() {
     const entry = entries[at];
     if (address.classList.contains("site")) {
         address.classList.remove("site", "insecure");
         if (entry) address.value = entry.url;
+        showSiteButton();
     }
 }
 // Reload (or stop) at the end of the address, or, while it's edited and
@@ -830,7 +866,7 @@ function view() {
         sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
         // Touch, if this device has it: the page offers what it offers to
         // touch screens, and takes the touches given it.
-        touch: navigator.maxTouchPoints > 0, desktop: desktop.checked,
+        touch: navigator.maxTouchPoints > 0, desktop: desktopOn,
         // Which way up the device is held: the page's screen.orientation and
         // (orientation: …) media queries follow it. Where the device doesn't
         // say, the window's shape.
@@ -1125,7 +1161,7 @@ function message(m) {
             if (Number.isSafeInteger(m.id) && typeof m.url === "string") askPopup(m);
             break;
         case "go-popup-blocked":
-            note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (☰ → Site controls).`);
+            note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (Site controls: the button at the address’s start).`);
             break;
         case "go-file":
             loading = rendering = false;
@@ -1473,7 +1509,7 @@ async function saveFile(url, say = null) {
     status(`Saving ${hostOf(url)}’s file into Downloads…`);
     let t;
     try {
-        t = await call({ type: "fetch", path: "", url, from_go: true });
+        t = await call({ type: "fetch", path: "", url, from_go: true, go_tab: resumeToken.get() });
         for (;;) {
             const m = await t.next();
             if (!m) throw new Error("the connection was lost; see the files page");

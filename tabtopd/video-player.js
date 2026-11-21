@@ -1,6 +1,7 @@
-// The remote browser's own video player (see docs/browser-plan.md, section
-// 6): a video of the page taken into it, over the whole screen, from its
-// box (the same player, moved: what it's buffered, and a site's stream fed
+// TabTop's own video player: the remote browser's (see
+// docs/browser-plan.md, section 6; go-media.js), and the files page's
+// preview's (preview-renderers.js). A video taken into it, over the whole
+// screen, from its box (the same player, moved: what it's buffered, and a site's stream fed
 // to it, go on), with controls of its own: play and pause, back and on 10
 // seconds, where it is, its speed, Skip, full screen, and closing it (back
 // to its box), and saving it (a file's: Download). Its proportions kept (the screen's black around it). Full
@@ -24,6 +25,69 @@ const ICONS = {
     unfull: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
     close: '<path d="M6 6l12 12M18 6L6 18"/>',
 };
+// Its look, put in the page once: the pages it's on allow inline styles,
+// not stylesheets of the site's.
+const STYLE = `
+/* The player: over everything, the
+   video kept to its proportions; at its top what it is and closing it, in
+   its middle back, play and on, at its bottom where it is and the rest:
+   all hidden together while it plays untouched, as video apps' are. Its
+   glyphs as the menu's. */
+#video_player { position: fixed; inset: 0; z-index: 50; background: #000; outline: none; color: #fff; font: 14px system-ui, sans-serif; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent; }
+/* The video has the whole screen (a notch's too); its controls over it
+   keep clear of the screen's edges (safe-area insets). */
+#video_player .stage { position: absolute; inset: 0; }
+/* No frame about it: not a tap's highlight, a focus ring, nor the menu's
+   outline of it (its row pointed at). */
+#video_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; border: 0; outline: none !important; box-shadow: none; }
+#video_player .top, #video_player .middle, #video_player .bar { transition: opacity .2s; }
+#video_player:not(.awake):not(.paused) :is(.top, .middle, .bar) { opacity: 0; pointer-events: none; }
+/* (Their buttons too, which take taps of their own when shown: hidden, a
+   tap's the video's, to show them, not an unseen button's.) */
+#video_player:not(.awake):not(.paused) :is(.top, .middle, .bar) * { pointer-events: none !important; }
+#video_player:not(.awake):not(.paused) { cursor: none; }
+#video_player .top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: flex-start; gap: 8px;
+    padding: calc(6px + env(safe-area-inset-top, 0)) calc(6px + env(safe-area-inset-right, 0)) 28px calc(16px + env(safe-area-inset-left, 0));
+    background: linear-gradient(rgba(0, 0, 0, .75), transparent); }
+#video_player .about { flex: 1; min-width: 0; padding-top: 11px; }
+#video_player .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#video_player .note { display: block; margin-top: 2px; font-size: 12px; color: #d0d0d4; }
+#video_player .middle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 36px; pointer-events: none; }
+#video_player .middle .glyph { pointer-events: auto; background: rgba(0, 0, 0, .4); }
+#video_player .bar { position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 28px calc(10px + env(safe-area-inset-right, 0)) calc(6px + env(safe-area-inset-bottom, 0)) calc(10px + env(safe-area-inset-left, 0));
+    background: linear-gradient(transparent, rgba(0, 0, 0, .8)); }
+#video_player .seek { width: 100%; margin: 0 0 2px; accent-color: #8ab4f8; height: 24px; }
+#video_player .row { display: flex; align-items: center; gap: 2px; }
+#video_player .spacer { flex: 1; }
+#video_player .time { margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
+#video_player .glyph { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0;
+    border-radius: 50%; background: none; color: #fff; cursor: pointer; }
+#video_player .glyph.mid { width: 56px; height: 56px; }
+#video_player .glyph.mid svg { width: 30px; height: 30px; }
+#video_player .glyph.big { width: 72px; height: 72px; }
+#video_player .glyph.big svg { width: 40px; height: 40px; }
+#video_player .glyph:hover { background: rgba(255, 255, 255, .18); }
+#video_player .glyph:focus-visible, #video_player .speed:focus-visible, #video_player .seek:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
+/* Its speed: a label as the glyphs are (no box), its choices the browser's. */
+#video_player .speed { -webkit-appearance: none; appearance: none; height: 44px; min-width: 44px; margin: 0; padding: 0 8px; border: 0; border-radius: 22px;
+    background: none; color: #fff; font: 700 14px system-ui, sans-serif; text-align: center; text-align-last: center; cursor: pointer; }
+#video_player .speed:hover { background: rgba(255, 255, 255, .18); }
+#video_player .speed option { color: #000; }
+#video_player .flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 10px 18px; border-radius: 24px; background: rgba(0, 0, 0, .6);
+    font-weight: 600; opacity: 0; transition: opacity .15s; pointer-events: none; }
+#video_player .flash.left { left: 10%; }
+#video_player .flash.right { right: 10%; }
+#video_player .flash.shown { opacity: 1; }
+@media (max-width: 420px) { #video_player .middle { gap: 24px; } #video_player .glyph { width: 40px; height: 40px; } #video_player .time { font-size: 12px; } }
+@media (prefers-reduced-motion: reduce) { #video_player :is(.top, .middle, .bar, .flash) { transition: none; } }
+`;
+function styled() {
+    if (document.getElementById("video_player_style")) return;
+    document.head.append(Object.assign(document.createElement("style"), { id: "video_player_style", textContent: STYLE }));
+}
+
 const icon = (name) => `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
 function clock(t) {
@@ -35,11 +99,14 @@ function clock(t) {
 
 // openPlayer takes media (a video element, the page's player's) into the
 // player, full screen; skip (if given) skips it (the page told it played
-// to its end); closed is called, the element given back, as it's closed.
-// It returns close.
-export function openPlayer(media, { title = "", skip, download, closed } = {}) {
+// to its end); download (if given) saves it, saying how it goes, by
+// downloadTitle; closed is called, the element given back, as it's
+// closed. It's put in into (the page's body; in a modal dialog, which is
+// over everything else, the dialog). It returns close.
+export function openPlayer(media, { title = "", skip, download, downloadTitle = "Download it into Downloads", closed, into = document.body } = {}) {
+    styled();
     const box = document.createElement("div");
-    box.id = "go_player";
+    box.id = "video_player";
     box.setAttribute("role", "dialog");
     box.setAttribute("aria-modal", "true");
     box.setAttribute("aria-label", title ? `Video: ${title}` : "Video");
@@ -71,7 +138,7 @@ export function openPlayer(media, { title = "", skip, download, closed } = {}) {
     // under its title.
     const note = Object.assign(document.createElement("span"), { className: "note" });
     note.setAttribute("role", "status");
-    const saved = download ? button("download", "Download it into Downloads", () => download((text) => { note.textContent = text; awake(); })) : null;
+    const saved = download ? button("download", downloadTitle, () => download((text) => { note.textContent = text; awake(); })) : null;
     const skipped = skip ? button("skip", "Skip to its end (Shift+N)", () => { skip(); close(); }) : null;
     const full = button("full", "Full screen (F)", () => toggleFull());
     const shut = button("close", "Close the player (Esc)", () => close());
@@ -99,9 +166,9 @@ export function openPlayer(media, { title = "", skip, download, closed } = {}) {
     media.controls = false;
     media.removeAttribute("style");
     media.tabIndex = -1;  // (focused by a click: no ring of its own)
-    media.dataset.player = "";  // (its box's scrolling isn't passed on: go-media.js)
+    media.dataset.player = "";  // (in the player: go-media.js passes its box's scrolling on, not this)
     stage.append(media);
-    document.body.append(box);
+    into.append(box);
 
     // Its state shown, as it plays.
     const shown = () => {

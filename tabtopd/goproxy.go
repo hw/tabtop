@@ -383,7 +383,7 @@ var goRefusals = map[string]string{
 	"busy":        "Too many connections.",
 	"budget":      errGoProxyBytes.Error(),
 	"rate":        "Too many requests; slow down.",
-	"blocked":     "This site is blocked in the browser's settings (☰ → Site controls).",
+	"blocked":     "This site is blocked in the browser's settings (Site controls: the button at the address’s start).",
 	"ads":         "Blocked as an ad or tracker (☰ → Settings → Ad blocking).",
 }
 

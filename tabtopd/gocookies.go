@@ -748,6 +748,23 @@ func (b *goBrowser) from() *goFrom {
 	return f
 }
 
+// fromNow is from, held to the page shown now, for a fetch that outlives
+// it (a file saved from it: a video's Download, a link to a file): it says
+// that page (Referer), and is sent the cookies that page's own requests
+// are (SameSite as for its site), as playing the video was, whichever page
+// the tab's gone on to by the time it asks again (a stall resumed, a
+// redirect).
+func (b *goBrowser) fromNow() *goFrom {
+	b.cookies.mu.Lock()
+	page, top := b.cookies.page, b.cookies.top
+	b.cookies.mu.Unlock()
+	f := &goFrom{cookies: func(u *url.URL) string { return b.siteCookiesAt(u, top) }, page: func() string { return page }}
+	if b.sites == nil || b.sites.sendReferer() {
+		f.referer = func(u *url.URL) string { return goReferrer(page, u) }
+	}
+	return f
+}
+
 // goFromNoTab is what's sent for a fetch with no tab to say whose page asks
 // (a go-resource request on a tunnel of its own): the jar's cookies any
 // page may send (SameSite=None), and no Referer (no page to say).
@@ -840,6 +857,13 @@ func (b *goBrowser) siteCookies(u *url.URL) string {
 	b.cookies.mu.Lock()
 	top := b.cookies.top
 	b.cookies.mu.Unlock()
+	return b.siteCookiesAt(u, top)
+}
+
+// siteCookiesAt is siteCookies for a page of the site top (SameSite's).
+// The engine's cookies while the tab is open; the account's kept ones once
+// it's gone.
+func (b *goBrowser) siteCookiesAt(u *url.URL, top string) string {
 	ctx, cancel := context.WithTimeout(b.ctx, 3*time.Second)
 	defer cancel()
 	var r struct {

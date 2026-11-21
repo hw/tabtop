@@ -164,7 +164,21 @@ var tunnelRoutes = map[string]tunnelRoute{
 
 	// Fetching into Downloads, and share links to it.
 	// A fetch with a name only reports on one; without, it starts one.
-	"fetch": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFetch(c.t, c.req, c.session, c.ip, c.r) }).
+	"fetch": tunnelRoute{files: true, access: readFileRoot, serve: func(g *server, c *tunnelCall) {
+		var from *goFrom
+		var userAgent string
+		if c.req.GoTab != "" {
+			t := g.goTabList().find(c.req.GoTab, c.session)
+			if t == nil {
+				c.r.fail("This browser tab is no longer connected; reopen the video and try again.")
+				return
+			}
+			// What playing it sent: the tab's user agent, cookies and
+			// Referer, held to the page it's on (fromNow).
+			from, userAgent = t.b.fromNow(), t.b.ua()
+		}
+		c.files.tunnelFetch(c.t, c.req, c.session, c.ip, c.r, from, userAgent)
+	}}.
 		writesWhen(func(req tunnelRequest) bool { return req.Name == "" }),
 	"fetches": readFiles((*fileService).routeFetches),
 	"share": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelShare(c.req, c.session, c.ip, c.r) }).

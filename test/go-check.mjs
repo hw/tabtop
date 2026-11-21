@@ -403,7 +403,10 @@ http.createServer(function handle(req, res) {
       '<script src="ads/ok.js"></script><script src="ads/track.js"></script>' +
       '<script>setTimeout(() => { const d = document.createElement("div"); d.className = "late-ad"; d.id = "late"; d.textContent = "A late ad"; document.body.append(d); }, 800);</script>');
   }
-  if (name === "/clip.mp4" || name === "/pic.png") seen[name] = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
+  // (The clip played is asked for in ranges; saved, whole: kept apart, the saves listed.)
+  const said = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
+  if (name === "/clip.mp4" && !req.headers.range) (seen.saved ??= []).push(said);
+  else if (name === "/clip.mp4" || name === "/pic.png") seen[name] = said;
   if (name === "/norange.mp4") {
     // A server without byte ranges: the whole file, whatever's asked.
     seen.norange = (seen.norange || 0) + 1;
@@ -802,18 +805,24 @@ async function check(base, port, site, adSite) {
         const siteShown = (new URL(site).protocol === "https:" ? "" : "http://") + new URL(site).host.replace(/^www\./, "");
         const bar = await ev(`(() => { const a = document.getElementById("go_url"); return { value: a.value, url: a.dataset.url }; })()`);
         if (bar.value !== siteShown || !bar.url.endsWith("/second.html")) throw new Error(`the bar shows ${JSON.stringify(bar)}`);
+        // The site's button at its start: its controls, not https said (the test site's http), out of the way while it's edited.
+        const siteHost = new URL(site).hostname;
+        await waitFor(`(() => { const b = document.getElementById("go_site"); return !b.hidden && b.classList.contains("insecure") && b.title.startsWith(${JSON.stringify("Site controls for " + siteHost + "; not secure")}) && b.getBoundingClientRect().right <= document.getElementById("go_url").getBoundingClientRect().left + parseFloat(getComputedStyle(document.getElementById("go_url")).paddingLeft); })()`, "the site's button, at the address's start, before its text");
         await ev(`document.getElementById("go_url").focus()`);
         if (!(await ev(`document.getElementById("go_url").value`)).endsWith("/second.html")) throw new Error("the whole address isn't there to edit");
+        if (!(await ev(`document.getElementById("go_site").hidden`))) throw new Error("the site's button while the address is edited");
         await ev(`document.getElementById("go_url").blur()`);
-        await waitFor(`document.getElementById("go_url").value === ${JSON.stringify(siteShown)}`, "the site again, not edited");
+        await waitFor(`document.getElementById("go_url").value === ${JSON.stringify(siteShown)} && !document.getElementById("go_site").hidden`, "the site again, not edited");
         // The menu: display modes, then the pages and logging out.
         await ev(`document.getElementById("go_menu").click()`);
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
-        if (items !== "Desktop,Site controls,Settings") throw new Error(`the menu has ${items}`);
-        const actions = await ev(`[...document.querySelectorAll("#go_menu_actions button")].map((button) => ({ name: button.getAttribute("aria-label"), top: button.getBoundingClientRect().top, glyph: !!button.querySelector("svg") }))`);
-        if (actions.map((action) => action.name).join() !== "Hide Original Browser,Full screen" ||
-            actions.some((action) => !action.glyph) || new Set(actions.map((action) => action.top)).size !== 1) throw new Error("the display controls should share a glyph row");
+        if (items !== "Settings") throw new Error(`the menu has ${items}`);
+        // Its first row: what's done most, each a glyph over its name (Forward's in the bar here, not a phone's).
+        const actions = await ev(`[...document.querySelectorAll("#go_menu_actions button")].filter((b) => b.getClientRects().length).map((button) => ({ name: button.textContent, top: button.getBoundingClientRect().top, glyph: !!button.querySelector("svg"), under: button.querySelector("svg")?.getBoundingClientRect().bottom <= button.querySelector(".caption").getBoundingClientRect().top }))`);
+        if (actions.map((action) => action.name).join() !== "Full screen,Hide browser,Desktop" ||
+            actions.some((action) => !action.glyph || !action.under) || new Set(actions.map((action) => action.top)).size !== 1) throw new Error(`the menu's first row: ${JSON.stringify(actions)}`);
+        if (await ev(`document.getElementById("go_menu_actions").compareDocumentPosition(document.getElementById("go_menu_settings")) & Node.DOCUMENT_POSITION_PRECEDING`)) throw new Error("Settings above the first row");
         // The other pages and logging out: one row, icons only (named for a
         // screen reader), logging out last.
         const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page, #go_menu_panel .tabtop-nav > button")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
@@ -837,8 +846,7 @@ async function check(base, port, site, adSite) {
     await step("Site controls and Settings open in a lightbox over the page, and close back to it", async () => {
         const here = await ev(`document.getElementById("go_url").dataset.url`);
         const inside = (expr) => ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d && (${expr}); })()`);
-        await ev(`document.getElementById("go_menu").click()`);
-        await ev(`document.getElementById("go_menu_sites").click()`);
+        await ev(`document.getElementById("go_site").click()`);
         await waitFor(`document.getElementById("go_settings").open`, "the lightbox open");
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d?.getElementById("popups") && !!d.getElementById("cookies") && d.documentElement.classList.contains("framed") && getComputedStyle(d.querySelector("header")).display === "none"; })()`, "the settings in it, its own header not shown", 15000);
         const host = new URL(here).hostname;
@@ -861,11 +869,11 @@ async function check(base, port, site, adSite) {
         if ((await ev(`document.getElementById("go_settings_h").textContent`)) !== "Settings") throw new Error("the lightbox isn't titled Settings");
         await ev(`document.querySelector("#go_settings .close").click()`);
         await waitFor(`!document.getElementById("go_settings").open`, "Settings closed by ✕");
-        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_sites").click()`);
+        await ev(`document.getElementById("go_site").click()`);
         await waitFor(`document.getElementById("go_settings").open`, "open again");
         await ev(`document.querySelector("#go_settings .close").click()`);
         await waitFor(`!document.getElementById("go_settings").open`, "closed by ✕");
-        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_sites").click()`);
+        await ev(`document.getElementById("go_site").click()`);
         await waitFor(`document.getElementById("go_settings").open`, "open once more");
         await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
         await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
@@ -1060,7 +1068,7 @@ async function check(base, port, site, adSite) {
         await shown();
         if ((await fetched()) !== first) throw new Error("fetched again, not cleared");
         await ev(`document.getElementById("go_menu").click()`);
-        await ev(`document.getElementById("go_menu_sites").click()`);
+        await ev(`document.getElementById("go_site").click()`);
         const settings = `document.querySelector("#go_settings iframe")?.contentDocument`;
         await waitFor(`!!(${settings})?.getElementById("show_browser")`, "Site controls open");
         await ev(`(${settings}).getElementById("show_browser").click()`);
@@ -1236,7 +1244,8 @@ async function check(base, port, site, adSite) {
         // The page: both listed, a site blocked and unblocked from it.
         await ev(`location.href = ${JSON.stringify(new URL("go/sites", base).href)}`);
         const siteRow = `document.querySelector('#sites li[data-site="${host}"]')`;
-        await waitFor(`document.getElementById("sort_sites").value === "recent" && /Pop-ups blocked/.test((${siteRow})?.textContent)`, "the site's pop-ups listed with Most recent selected", 20000);
+        // (The page left may answer first: ?.)
+        await waitFor(`document.getElementById("sort_sites")?.value === "recent" && /Pop-ups blocked/.test((${siteRow})?.textContent)`, "the site's pop-ups listed with Most recent selected", 20000);
         await ev(`(${siteRow}).querySelector("button").click()`);
         await waitFor(`!document.getElementById("site_settings").hidden && document.getElementById("popups").value === "block"`, "the site's pop-up setting");
         await ev(`document.getElementById("back_to_sites").click()`);
@@ -1297,10 +1306,10 @@ async function check(base, port, site, adSite) {
             if (asked["/ads/track.js"] || asked["/banner/ad.png"] || !asked["/ads/ok.js"]) throw new Error(`the page's site was asked for ${JSON.stringify(asked)}`);
             if (await frame(`document.getElementById("pathad").naturalWidth > 0`)) throw new Error("a picture blocked by its address shown");
             // The shield: three blocked on this page (the other site, the script, the picture).
-            await waitFor(`!document.getElementById("go_ads").hidden && document.querySelector("#go_ads .count").textContent === "3" && /3 ads and trackers blocked/.test(document.getElementById("go_ads").title)`, "the shield, saying three", 5000);
+            await waitFor(`document.getElementById("go_site").dataset.glyph === "insecure,shield" && document.querySelector("#go_site .count").textContent === "3" && /3 ads and trackers blocked/.test(document.getElementById("go_site").title)`, "the site's button, saying three", 5000);
             // The site's ads allowed, in its controls (from the shield): fetched, shown, no shield.
             const pageHost = new URL(site).hostname;
-            await ev(`document.getElementById("go_ads").click()`);
+            await ev(`document.getElementById("go_site").click()`);
             const sites = `document.querySelector("#go_settings iframe")?.contentDocument`;
             await waitFor(`(${sites})?.getElementById("ads")?.disabled === false && (${sites}).getElementById("site_heading").textContent === ${JSON.stringify(pageHost)} && /Default: Block/.test((${sites}).getElementById("ads_note").textContent)`, "the site's controls, from the shield", 15000);
             await ev(`(() => { const s = (${sites}).getElementById("ads"); s.value = "allow"; s.dispatchEvent(new Event("change")); })()`);
@@ -1309,7 +1318,7 @@ async function check(base, port, site, adSite) {
             await goTo(site + "ads?v=allowed&ad=" + encodeURIComponent(adSite), "Ads");
             await frameWait(`document.getElementById("ad")?.naturalWidth > 0`, "the other site's picture, ads allowed on the page's site");
             await frameWait(`getComputedStyle(document.getElementById("banner")).display !== "none"`, "the ad shown, ads allowed on the page's site");
-            if (!(await ev(`document.getElementById("go_ads").hidden`))) throw new Error("the shield, with ads allowed");
+            if ((await ev(`document.querySelector("#go_site .count").textContent`)) !== "") throw new Error("a count on the site's button, with ads allowed");
             await call({ type: "go-settings-set", name: pageHost, setting: "ads-default" });
             // My filters: the list off, the site named there instead.
             const listId = JSON.parse(await call({ type: "go-adblock" })).lists.find((l) => !l.builtIn).id;
@@ -1699,38 +1708,50 @@ async function check(base, port, site, adSite) {
         // proportions; its speed and back 10 s; closed, given back.
         await waitFor(`!!document.querySelector("#go_menu_media li .acts button:nth-child(1):not(:disabled)")`, "Watch offered");
         await press("#go_menu_media li .acts button:nth-child(1)");
-        await waitFor(`!!document.querySelector("#go_player .stage video") && document.fullscreenElement?.id === "go_player"`, "the video in the player, full screen", 10000);
-        const shape = await ev(`(() => { const v = document.querySelector("#go_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
+        await waitFor(`!!document.querySelector("#video_player .stage video") && document.fullscreenElement?.id === "video_player"`, "the video in the player, full screen", 10000);
+        const shape = await ev(`(() => { const v = document.querySelector("#video_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
         if (shape.fit !== "contain" || shape.controls) throw new Error(`in the player: ${JSON.stringify(shape)}`);
         // Its controls hidden as it plays untouched; a tap where its play
         // button is (unseen) shows them, and doesn't pause it.
-        await ev(`document.querySelector("#go_player video").play()`);
-        await waitFor(`!document.getElementById("go_player").classList.contains("awake") && !document.querySelector("#go_player video").paused`, "its controls hidden, playing", 8000);
-        await press('#go_player .glyph.big');
-        await waitFor(`document.getElementById("go_player").classList.contains("awake")`, "its controls shown by the tap");
-        if (await ev(`document.querySelector("#go_player video").paused`)) throw new Error("a tap on its hidden controls paused it");
-        await ev(`(() => { const s = document.querySelector("#go_player .speed"); s.value = "2"; s.dispatchEvent(new Event("change")); })()`);
-        if ((await ev(`document.querySelector("#go_player video").playbackRate`)) !== 2) throw new Error("its speed wasn't set");
-        await ev(`document.querySelector("#go_player video").currentTime = 3`);
-        await waitFor(`document.querySelector("#go_player video").currentTime >= 3`, "at 3 s");
-        await press('#go_player button[aria-label^="Back"]');
-        await waitFor(`document.querySelector("#go_player video").currentTime < 2`, "back 10 s (to its start)");
+        await ev(`document.querySelector("#video_player video").play()`);
+        await waitFor(`!document.getElementById("video_player").classList.contains("awake") && !document.querySelector("#video_player video").paused`, "its controls hidden, playing", 8000);
+        await press('#video_player .glyph.big');
+        await waitFor(`document.getElementById("video_player").classList.contains("awake")`, "its controls shown by the tap");
+        if (await ev(`document.querySelector("#video_player video").paused`)) throw new Error("a tap on its hidden controls paused it");
+        await ev(`(() => { const s = document.querySelector("#video_player .speed"); s.value = "2"; s.dispatchEvent(new Event("change")); })()`);
+        if ((await ev(`document.querySelector("#video_player video").playbackRate`)) !== 2) throw new Error("its speed wasn't set");
+        await ev(`document.querySelector("#video_player video").currentTime = 3`);
+        await waitFor(`document.querySelector("#video_player video").currentTime >= 3`, "at 3 s");
+        await press('#video_player button[aria-label^="Back"]');
+        await waitFor(`document.querySelector("#video_player video").currentTime < 2`, "back 10 s (to its start)");
         // A double tap at the right: on 10 s (to its end), marked there.
         // Download: offered where Files are on (it saves into Downloads), not where they're off.
-        const offered = await ev(`!!document.querySelector('#go_player button[aria-label^="Download"]')`);
+        const offered = await ev(`!!document.querySelector('#video_player button[aria-label^="Download"]')`);
         if (offered !== (process.env.GO_NO_FS !== "1")) throw new Error(`Download ${offered ? "offered, Files off" : "not offered"}`);
+        if (offered) {
+            // Saved, it's asked for as it was played: the tab's user agent, the site's cookies, the page as Referer.
+            const told = async () => JSON.parse((await (await fetch(site + "seen")).text()).match(/<pre id=s>(.*)<\/pre>/s)[1]);
+            const savesBefore = (await told()).saved?.length ?? 0;
+            await press('#video_player button[aria-label^="Download"]');
+            await waitFor(`/^Saved .* into Downloads\\.$/.test(document.querySelector("#video_player .note")?.textContent ?? "")`, "the clip saved into Downloads", 30000);
+            const s = await told();
+            const saved = s.saved?.at(-1), played = s["/clip.mp4"];
+            if (!(s.saved?.length > savesBefore) || !played?.ua || !played.referer || saved.ua !== played.ua || saved.cookie !== played.cookie || saved.referer !== played.referer) {
+                throw new Error(`saved with ${JSON.stringify(saved)}, played with ${JSON.stringify(played)}`);
+            }
+        }
         // (Paused: the clip loops, and 10 s on is its end, looped back from;
         // its mark noted as it's shown: it's gone in a moment.)
-        await ev(`(() => { const v = document.querySelector("#go_player video"); v.pause(); v.currentTime = 1; const f = document.querySelector("#go_player .flash"); window.__flashed = ""; new MutationObserver(() => { if (f.classList.contains("shown")) window.__flashed = f.className; }).observe(f, { attributes: true }); return 0; })()`);
-        await waitFor(`Math.abs(document.querySelector("#go_player video").currentTime - 1) < 0.2`, "at 1 s, paused");
-        const right = await ev(`(() => { const r = document.getElementById("go_player").getBoundingClientRect(); return { x: Math.round(r.right - r.width * 0.2), y: Math.round(r.top + r.height * 0.3) }; })()`);
+        await ev(`(() => { const v = document.querySelector("#video_player video"); v.pause(); v.currentTime = 1; const f = document.querySelector("#video_player .flash"); window.__flashed = ""; new MutationObserver(() => { if (f.classList.contains("shown")) window.__flashed = f.className; }).observe(f, { attributes: true }); return 0; })()`);
+        await waitFor(`Math.abs(document.querySelector("#video_player video").currentTime - 1) < 0.2`, "at 1 s, paused");
+        const right = await ev(`(() => { const r = document.getElementById("video_player").getBoundingClientRect(); return { x: Math.round(r.right - r.width * 0.2), y: Math.round(r.top + r.height * 0.3) }; })()`);
         for (const n of [1, 2]) {
             await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...right, button: "left", buttons: 1, clickCount: n });
             await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...right, button: "left", buttons: 0, clickCount: n });
         }
-        await waitFor(`document.querySelector("#go_player video").currentTime > 4 && /\\bright\\b/.test(window.__flashed)`, "on 10 s by a double tap at the right, marked there");
-        await press('#go_player button[aria-label^="Close the player"]');
-        await waitFor(`!document.getElementById("go_player") && !document.fullscreenElement && !!document.querySelector("video") && document.querySelector("video").controls && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
+        await waitFor(`document.querySelector("#video_player video").currentTime > 4 && /\\bright\\b/.test(window.__flashed)`, "on 10 s by a double tap at the right, marked there");
+        await press('#video_player button[aria-label^="Close the player"]');
+        await waitFor(`!document.getElementById("video_player") && !document.fullscreenElement && !!document.querySelector("video") && document.querySelector("video").controls && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
@@ -1747,10 +1768,12 @@ async function check(base, port, site, adSite) {
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused; })()`, "the video playing", 30000);
         await ev(`document.getElementById("go_menu").click()`);
         await waitFor(`!!document.querySelector("#go_menu_media li .acts button:last-child:not(:disabled)")`, "Skip offered");
-        // Held by a finger (a phone's), wavering a little as fingers do.
-        const at = await ev(`(() => { const r = document.querySelector("#go_menu_media li .acts button:last-child").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+        // Held by a finger (a phone's), wavering a little as fingers do. (Where it is
+        // measured with touch on: a touch screen's layout is roomier, and moves it.)
         await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
         try {
+            await sleep(300);
+            const at = await ev(`(() => { const r = document.querySelector("#go_menu_media li .acts button:last-child").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
             await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
             await sleep(300);
             await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: at.x + 3, y: at.y + 2 }] });
@@ -1814,8 +1837,8 @@ async function check(base, port, site, adSite) {
         await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the video hidden again");
         await ev(`document.getElementById("go_menu").click()`);
         await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(1)").click()`);
-        await waitFor(`!!document.querySelector("#go_player video")`, "the hidden video opened in the /go player");
-        await ev(`document.querySelector("#go_player button[aria-label^='Close the player']").click()`);
+        await waitFor(`!!document.querySelector("#video_player video")`, "the hidden video opened in the /go player");
+        await ev(`document.querySelector("#video_player button[aria-label^='Close the player']").click()`);
         await waitFor(`!!document.querySelector("video") && getComputedStyle(document.querySelector("video")).display !== "none"`, "the video restored from the /go player");
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });

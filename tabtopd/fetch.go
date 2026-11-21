@@ -70,6 +70,8 @@ type fetchJob struct {
 	real          string // dir, as it really is: links followed (see start)
 	by, ip, who   string // the handle of the session that started it, where from, and what it's called
 	client        *http.Client
+	from          *goFrom
+	userAgent     string
 	cancel        context.CancelFunc
 	done          chan struct{}
 
@@ -291,18 +293,26 @@ func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, er
 // startGo starts fetching u, a file the remote browser led to, with
 // goClient.
 func (m *fetchManager) startGo(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
+	return m.startGoWithContext(u, dir, by, ip, who, nil, "")
+}
+
+func (m *fetchManager) startGoWithContext(u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string) (*fetchJob, error) {
 	if m.goClient == nil {
 		return nil, errors.New("the remote browser is off, so its files can't be saved")
 	}
-	return m.startWith(m.goClient, u, dir, by, ip, who)
+	return m.startWithContext(m.goClient, u, dir, by, ip, who, from, userAgent)
 }
 
 func (m *fetchManager) startWith(client *http.Client, u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
+	return m.startWithContext(client, u, dir, by, ip, who, nil, "")
+}
+
+func (m *fetchManager) startWithContext(client *http.Client, u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string) (*fetchJob, error) {
 	b := make([]byte, 8)
 	rand.Read(b)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &fetchJob{id: hex.EncodeToString(b), host: u.Host, dir: dir, by: by, ip: ip, who: who, cancel: cancel, done: make(chan struct{}),
-		name: urlName(u), total: -1, client: client}
+		name: urlName(u), total: -1, client: client, from: from, userAgent: userAgent}
 	// Where the folder really is, found once, before m.mu's taken (it can
 	// take a while on a slow disk): what's recorded as written into, and
 	// what's written into, are then the same folder.
@@ -526,8 +536,15 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 			if err != nil {
 				return 0, false, err
 			}
-			req.Header.Set("User-Agent", "TabTop")
+			ua := j.userAgent
+			if ua == "" {
+				ua = "TabTop"
+			}
+			req.Header.Set("User-Agent", ua)
 			req.Header.Set("Accept-Encoding", "identity")
+			if j.from != nil {
+				j.from.apply(req)
+			}
 			if got > 0 {
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", got))
 				if validator != "" {
@@ -536,7 +553,23 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 			}
 			timer := time.AfterFunc(fetchStall, func() { stall(errFetchStalled) })
 			defer timer.Stop()
-			res, err := j.client.Do(req)
+			client := j.client
+			if j.from != nil {
+				copy := *client
+				previous := copy.CheckRedirect
+				copy.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+					j.from.apply(next)
+					if previous != nil {
+						return previous(next, via)
+					}
+					if len(via) >= 10 {
+						return errors.New("too many redirects")
+					}
+					return nil
+				}
+				client = &copy
+			}
+			res, err := client.Do(req)
 			if err != nil {
 				if context.Cause(actx) == errFetchStalled && ctx.Err() == nil {
 					return 0, true, errFetchStalled
@@ -729,7 +762,7 @@ func (g *fileService) noFetches() string {
 // and again every fetchTick, while the page follows it; the last has Done,
 // and the name it was saved as, or Error. A text message from the page
 // cancels it. The page going doesn't.
-func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder, from *goFrom, userAgent string) {
 	if g.root.fetches == nil {
 		r.fail(g.noFetches())
 		return
@@ -768,7 +801,13 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 		}
 		start := g.root.fetches.start
 		if req.FromGo {
-			start = g.root.fetches.startGo
+			if from != nil {
+				start = func(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
+					return g.root.fetches.startGoWithContext(u, dir, by, ip, who, from, userAgent)
+				}
+			} else {
+				start = g.root.fetches.startGo
+			}
 		}
 		if j, err = start(u, path.Clean(dir), sessionHandle(session), ip, g.sessionName(session)); err != nil {
 			r.fail(err.Error())
