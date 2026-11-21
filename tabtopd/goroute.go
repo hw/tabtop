@@ -465,6 +465,14 @@ var goCanvasGLExtensions = func() map[string]bool {
 	return out
 }()
 
+// goCanvasGLStringMethods take a string argument; goCanvasGLSequenceMethod
+// says which take a sequence (uniform*v and the like).
+var goCanvasGLStringMethods = map[string]bool{"shaderSource": true, "getExtension": true, "bindAttribLocation": true, "getUniformLocation": true, "getAttribLocation": true, "getFragDataLocation": true, "transformFeedbackVaryings": true}
+
+func goCanvasGLSequenceMethod(m string) bool {
+	return strings.HasSuffix(m, "v") || m == "drawBuffers" || strings.HasPrefix(m, "invalidate") || m == "transformFeedbackVaryings"
+}
+
 // goCanvasGLKeys are a command's fields: any other (or another case of one,
 // which encoding/json would take as it) is refused, so that what's checked
 // here is what the viewer reads.
@@ -538,6 +546,12 @@ func goCanvasGLCheck(encoded string, width, height, version int, prior *goGLStre
 		}
 		for _, arg := range command.Args {
 			if !goCanvasGLArg(arg) || !goCanvasGLRefsValid(arg, objects) {
+				return nil, false
+			}
+			// WebGL turns a string or an array into a number where it wants
+			// one: only the calls that take them may have them (go-frame.js's
+			// glCheck, the same).
+			if t := bytes.TrimSpace(arg); len(t) > 0 && (t[0] == '"' && !goCanvasGLStringMethods[command.Method] || t[0] == '[' && !goCanvasGLSequenceMethod(command.Method)) {
 				return nil, false
 			}
 		}

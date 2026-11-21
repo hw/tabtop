@@ -1188,16 +1188,27 @@
     const glLive = new Map();  // canvases with a replay context -> their document's generation
     const glAttached = new WeakSet();  // of those, the ones seen in the page
     let glLosses = 0;          // viewer contexts lost (GPU resets): after 3, no more WebGL here
+    // Calls a string may be passed to, and those a sequence may (uniform*v
+    // and the like): WebGL would turn any other string or array into a
+    // number, past the bounds checked here.
+    const glStringMethods = new Set(["shaderSource", "getExtension", "bindAttribLocation", "getUniformLocation", "getAttribLocation", "getFragDataLocation", "transformFeedbackVaryings"]);
+    const glSequenceMethod = (m) => m.endsWith("v") || m === "drawBuffers" || m.startsWith("invalidate") || m === "transformFeedbackVaryings";
     function glCheck(mirror, command) {
         const a = command.a, n = (i) => (typeof a[i] === "number" ? a[i] : 0);
+        for (const arg of a) {
+            if (typeof arg === "string" && !glStringMethods.has(command.m)) throw new Error("WebGL string argument");
+            if (Array.isArray(arg) && !glSequenceMethod(command.m)) throw new Error("WebGL array argument");
+        }
         const ref = (v) => (v && typeof v === "object" && Number.isInteger(v.ref) ? v.ref : 0);
-        const b = mirror.budget ||= { bound: new Map(), bytes: new Map(), total: 0, unit: 0 };
+        const b = mirror.budget ||= { bound: new Map(), bytes: new Map(), total: 0, unit: 0, vao: 0, vaoElements: new Map() };
         const dims = (w, h, d = 1, samples = 1) => {
             if (w < 0 || h < 0 || d < 0 || w > glLimits.size || h > glLimits.size || d > glLimits.depth || w * h * d > glLimits.texels || samples > glLimits.samples) throw new Error("WebGL allocation too large");
             return w * h * d * 4 * Math.max(1, samples);
         };
+        // (Storage given where nothing's bound would be a GL error; refused
+        // here too, so nothing can be counted to no object.)
         const store = (key, slot, bytes) => {
-            if (!key) return;
+            if (!key) throw new Error("WebGL storage for nothing bound");
             const per = b.bytes.get(key) ?? new Map();
             b.total += bytes - (per.get(slot) ?? 0);
             per.set(slot, bytes);
@@ -1207,7 +1218,15 @@
         const texture = (target) => b.bound.get(`t${b.unit}:${target >= 0x8515 && target <= 0x851A ? 0x8513 : target}`);
         switch (command.m) {
             case "activeTexture": b.unit = n(0); break;
-            case "bindBuffer": b.bound.set(`b${n(0)}`, ref(a[1])); break;
+            case "bindBuffer":
+                b.bound.set(`b${n(0)}`, ref(a[1]));
+                if (n(0) === 0x8893) b.vaoElements.set(b.vao, ref(a[1]));  // the vertex array's own
+                break;
+            case "bindBufferBase": case "bindBufferRange": b.bound.set(`b${n(0)}`, ref(a[2])); break;
+            case "bindVertexArray":
+                b.vao = ref(a[0]);
+                b.bound.set("b34963", b.vaoElements.get(b.vao) ?? 0);
+                break;
             case "bindTexture": b.bound.set(`t${b.unit}:${n(0)}`, ref(a[1])); break;
             case "bindRenderbuffer": b.bound.set("r", ref(a[1])); break;
             case "deleteBuffer": case "deleteTexture": case "deleteRenderbuffer": {
@@ -2061,7 +2080,12 @@
             // A canvas in a same-origin frame's copy: found through its iframes.
             if ((op.o === "g" || op.o === "p") && Array.isArray(op.path)) {
                 let at = d;
-                for (const owner of op.path.slice(0, 4)) at = Number.isSafeInteger(owner) ? frameRoots.get(at?.nodes.get(owner))?.child : null;
+                // Only through frames read by the page's own agent (docOf 0),
+                // numbered as its nodes are: not another site's, read apart.
+                for (const owner of op.path.slice(0, 4)) {
+                    const fr = Number.isSafeInteger(owner) ? frameRoots.get(at?.nodes.get(owner)) : null;
+                    at = fr && fr.docOf === 0 ? fr.child : null;
+                }
                 const el = at?.nodes.get(op.i);
                 if (el?.localName !== "canvas") continue;  // its frame's copy read again since
                 if (op.o === "g" && typeof op.v === "string") webglFrame(el, op.v, op.w, op.h, op.version, op.attributes, op.r === true, at);

@@ -496,11 +496,10 @@
                 return [];
             }
             const state = { child, depth, dirty: false };
-            // Its canvases answer here as the page's do (gogl.js and
-            // gocanvas.js run in it too).
-            if (!frameOwners.has(child)) {
-                for (const [type, f] of [["__tabtop_canvas_pixels", canvasReply], ["__tabtop_canvas_dirty", canvasDirty], ["__tabtop_webgl_dirty", canvasDirty]]) child.addEventListener(type, f, true);
-            }
+            // Its canvases are read by way of the page's gogl.js, which sends
+            // their replies and drawing on the iframe (tell, frameCanvas):
+            // nothing of this world's is handed to the frame's document,
+            // whose methods are the page's to replace.
             frameOwners.set(child, el);
             // This world's own MutationObserver, never the frame's: in both
             // engines a frame's window here is the page's own, and a page

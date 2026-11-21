@@ -102,6 +102,9 @@ func TestGoCanvasGLRefused(t *testing.T) {
 		`[{"m":"getExtension","a":["WEBGL_lose_context"]}]`,
 		`[{"m":"getExtension","a":["` + strings.Repeat("x", 1000) + `"]}]`,
 		`[{"m":"getExtension","a":[]}]`,
+		// A size as a string or an array, which WebGL would take as a number.
+		`[{"m":"createBuffer","a":[],"r":1},{"m":"bindBuffer","a":[34962,{"ref":1}]},{"m":"bufferData","a":[34962,"1073741824",35044]}]`,
+		`[{"m":"createBuffer","a":[],"r":1},{"m":"bindBuffer","a":[34962,{"ref":1}]},{"m":"bufferData","a":[34962,[1073741824],35044]}]`,
 		``,
 	} {
 		if goCanvasGLValid(log, 10, 10, 1) {

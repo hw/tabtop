@@ -22,6 +22,12 @@ test("allocations past the bounds are refused", () => {
         [["drawArrays", 4, 0, 2 ** 31 - 1]],
         [["drawArraysInstanced", 4, 0, 3, 2 ** 31 - 1]],
         [["getExtension", "WEBGL_lose_context"]],
+        // Sizes WebGL would take from a string or an array.
+        [["bindBuffer", 0x8892, { ref: 1 }], ["bufferData", 0x8892, "1073741824", 0x88E4]],
+        [["bindBuffer", 0x8892, { ref: 1 }], ["bufferData", 0x8892, [1 << 30], 0x88E4]],
+        // Storage counted to whatever's bound: by bindBufferBase, or the vertex array's own element buffer; none, refused.
+        [["bufferData", 0x8892, 1 << 20, 0x88E4]],
+        [["bindBuffer", 0x8893, { ref: 1 }], ["createVertexArray"], ["bindVertexArray", { ref: 2 }], ["bufferData", 0x8893, 1 << 20, 0x88E4]],
     ]) assert.throws(() => replay(commands), Error, JSON.stringify(commands.at(-1)));
 });
 
@@ -39,6 +45,14 @@ test("what a context holds at once is bounded, counting storage given again once
     for (let i = 1; i <= 5; i++) freed.push(["bindTexture", 0x0DE1, { ref: i }], ["texImage2D", 0x0DE1, 0, 0x1908, 4096, 4096, 0, 0x1908, 0x1401, null], ["deleteTexture", { ref: i }]);
     assert.equal(replay(freed).budget.total, 0);
     assert.ok(glLimits.context >= 4 * (64 << 20) - 1);
+});
+
+test("storage given by way of bindBufferBase and a vertex array is counted", () => {
+    const base = [];
+    for (let i = 1; i <= 5; i++) base.push(["bindBufferBase", 0x8A11, 0, { ref: i }], ["bufferData", 0x8A11, 60 << 20, 0x88E4]);
+    assert.throws(() => replay(base), /budget/);
+    const vao = replay([["bindVertexArray", { ref: 9 }], ["bindBuffer", 0x8893, { ref: 1 }], ["bufferData", 0x8893, 1 << 20, 0x88E4], ["bindVertexArray", null], ["bindVertexArray", { ref: 9 }], ["bufferData", 0x8893, 2 << 20, 0x88E4]]);
+    assert.equal(vao.budget.total, 2 << 20);
 });
 
 test("ordinary scenes pass", () => {
