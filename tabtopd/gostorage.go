@@ -435,7 +435,15 @@ func (b *goBrowser) storagePaused(ev cdpEvent) {
 			URL string `json:"url"`
 		} `json:"request"`
 	}
-	if ev.SessionID != b.page || json.Unmarshal(ev.Params, &p) != nil || p.ID == "" || b.cdp.interceptionDisabled.Load() {
+	if ev.SessionID != b.page || json.Unmarshal(ev.Params, &p) != nil || p.ID == "" {
+		return
+	}
+	if b.cdp.interceptionDisabled.Load() {
+		// Paused before interception was turned off, and come since: let
+		// go, as it is, or the page's load waits on it for good.
+		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+		defer cancel()
+		b.cdp.call(ctx, b.page, "Fetch.continueRequest", map[string]string{"requestId": p.ID}, nil)
 		return
 	}
 	if p.Frame == b.topFrame {
@@ -455,8 +463,7 @@ func (b *goBrowser) storagePaused(ev cdpEvent) {
 	if err == nil {
 		return
 	}
-	var protocolErr *cdpError
-	if errors.As(err, &protocolErr) && protocolErr.Code == -32000 && protocolErr.Message == "RequestNotFound" {
+	if cdpRequestGone(err) {
 		// Stop, or another navigation taking over, canceled the request.
 		return
 	}

@@ -150,6 +150,24 @@ func (c *cdpConn) queueEvent(ev cdpEvent) bool {
 	return false
 }
 
+// cdpRequestGone is whether err, letting a paused request go or failing
+// it, says the request's gone already: canceled (a stop), its document
+// overtaken by another navigation, or what asked for it no longer waiting
+// (a stylesheet a page dropped as it loaded): Moli's "RequestNotFound",
+// "Renderer Document is no longer current", "network load is no longer
+// waiting". Nothing's left waiting on it, so there's nothing to do.
+func cdpRequestGone(err error) bool {
+	var e *cdpError
+	if !errors.As(err, &e) || e.Code != -32000 {
+		return false
+	}
+	switch e.Message {
+	case "RequestNotFound", "Renderer Document is no longer current", "network load is no longer waiting":
+		return true
+	}
+	return false
+}
+
 // Moli releases pending requests when interception is disabled. Send the
 // command off the reader so it can still dispatch the response.
 func (c *cdpConn) disableInterception(session, reason string) {

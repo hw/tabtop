@@ -1829,10 +1829,14 @@ async function check(base, port, site, adSite) {
         await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the skipped video hidden");
         await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(2)").click()`);
         await waitFor(`getComputedStyle(document.querySelector("video")).display !== "none" && !document.querySelector("video").paused`, "the video restored by Play");
+        // (Each pressed once it's offered: Skip as the video can be skipped again, Hide once it's skipped.)
+        const offered = (what) => `(() => { const b = document.querySelector("#go_menu_media li .acts button:last-child"); return !!b && !b.disabled && b.getAttribute("aria-label").startsWith(${JSON.stringify(what)}); })()`;
         await ev(`document.getElementById("go_menu").click()`);
+        await waitFor(offered("Skip"), "Skip offered again");
         await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
         await waitFor(`document.querySelector("#go_menu_media .state").textContent === "Skipped"`, "the video ended again");
         await ev(`document.getElementById("go_menu").click()`);
+        await waitFor(offered("Hide"), "Hide offered again");
         await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
         await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the video hidden again");
         await ev(`document.getElementById("go_menu").click()`);
@@ -2181,12 +2185,30 @@ async function check(base, port, site, adSite) {
             await ev(`document.querySelector("#overview .done").click()`);
             // Hide browser asks for the browser's full screen, which a page gets only
             // from a person's own press: a tap, where the button is (in the tab's frame).
+            await waitFor(`document.getElementById("overview").hidden`, "the list of tabs gone");
+            // (What the tap brings, and what's asked of full screen, noted to say why, if it isn't.)
+            await ev(`(() => { const w = ${tabDoc}.defaultView; w.__said = []; const note = (s) => w.__said.push(s + "@" + Math.round(w.performance.now()));
+                for (const t of ["touchend", "click", "fullscreenchange", "fullscreenerror"]) w.document.addEventListener(t, (e) => note(t + ":" + (e.target.id || e.target.tagName) + ":" + w.navigator.userActivation.isActive), true);
+                const ask = w.Element.prototype.requestFullscreen, leave = w.Document.prototype.exitFullscreen;
+                w.Element.prototype.requestFullscreen = function (...a) { note("asked"); return ask.apply(this, a).then((v) => (note("granted"), v), (e) => { note("refused:" + e.message); throw e; }); };
+                w.Document.prototype.exitFullscreen = function (...a) { note("left:" + new Error().stack.split("\\n")[2]?.trim()); return leave.apply(this, a); }; })()`);
             await ev(`${tabDoc}.getElementById("go_menu").click()`);
-            const hideAt = await ev(`(() => { const f = [...document.querySelectorAll("#frames iframe")].find((f) => !f.hidden).getBoundingClientRect(),
-                b = ${tabDoc}.getElementById("go_menu_hide_browser").getBoundingClientRect(); return { x: Math.round(f.left + b.left + b.width / 2), y: Math.round(f.top + b.top + b.height / 2) }; })()`);
-            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [hideAt] });
+            // (Once nothing's over it: the list of tabs going, the menu shown. What's
+            // under the point, in the page and in the tab's frame, is the button.)
+            // (A touch's point is the screen's: the page's, as zoomed and panned on a phone.)
+            const hideAt = `(() => { const f = [...document.querySelectorAll("#frames iframe")].find((f) => !f.hidden), r = f.getBoundingClientRect(), v = visualViewport,
+                b = ${tabDoc}.getElementById("go_menu_hide_browser").getBoundingClientRect(), cx = r.left + b.left + b.width / 2, cy = r.top + b.top + b.height / 2;
+                return { f, cx, cy, x: Math.round((cx - v.offsetLeft) * v.scale), y: Math.round((cy - v.offsetTop) * v.scale), bx: b.left + b.width / 2, by: b.top + b.height / 2, v: [v.scale, v.offsetLeft, v.offsetTop] }; })()`;
+            await waitFor(`(() => { const p = ${hideAt}; return document.elementFromPoint(p.cx, p.cy) === p.f && ${tabDoc}.elementFromPoint(p.bx, p.by)?.closest("#go_menu_hide_browser"); })()`, "Hide browser under the finger");
+            const at = await ev(`(() => { const { x, y, v } = ${hideAt}; return { x, y, v }; })()`);
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
             await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-            await waitFor(`${tabDoc}.defaultView.document.fullscreenElement === ${tabDoc}.defaultView.document.documentElement && getComputedStyle(${tabDoc}.getElementById("go_bar")).display !== "none"`, "Hide Original Browser keeps the /go toolbar in fullscreen");
+            await waitFor(`${tabDoc}.defaultView.document.fullscreenElement === ${tabDoc}.defaultView.document.documentElement && getComputedStyle(${tabDoc}.getElementById("go_bar")).display !== "none"`, "Hide Original Browser keeps the /go toolbar in fullscreen").catch(async (err) => {
+                const state = await ev(`JSON.stringify({ pressed: ${tabDoc}.getElementById("go_menu_hide_browser").getAttribute("aria-pressed"), menu: !${tabDoc}.getElementById("go_menu_panel").hidden,
+                    enabled: ${tabDoc}.fullscreenEnabled, top: document.fullscreenElement?.tagName ?? null, notice: ${tabDoc}.getElementById("go_status")?.textContent || ${tabDoc}.querySelector("#go_notice:not([hidden]) p")?.textContent || "" })`).catch((e) => e.message);
+                const said = await ev(`JSON.stringify(${tabDoc}.defaultView.__said)`).catch((e) => e.message);
+                throw new Error(`${err.message} (it shows ${state}; in the tab: ${said}; tapped at ${JSON.stringify(at)})`);
+            });
             await ev(`${tabDoc}.getElementById("go_tabs").click()`);
             await waitFor(`!${tabDoc}.getElementById("go_window_list").hidden && ${tabDoc}.querySelectorAll("#go_window_list li").length === 2`, "the window list opens in fullscreen with the toolbar");
             await ev(`${tabDoc}.querySelector("#go_window_list .done").click(); ${tabDoc}.getElementById("go_menu").click(); ${tabDoc}.getElementById("go_menu_hide_browser").click()`);

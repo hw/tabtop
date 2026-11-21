@@ -1896,8 +1896,7 @@ func (b *goBrowser) resumePaused(ctx context.Context, err error) {
 	if err == nil {
 		return
 	}
-	var protocolErr *cdpError
-	if errors.As(err, &protocolErr) && protocolErr.Code == -32000 && protocolErr.Message == "RequestNotFound" {
+	if cdpRequestGone(err) {
 		return
 	}
 	b.cdp.disableInterception(b.page, "could not resume a request: "+err.Error())
