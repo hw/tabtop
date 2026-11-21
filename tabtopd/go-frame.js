@@ -1191,6 +1191,7 @@
     // Calls a string may be passed to, and those a sequence may (uniform*v
     // and the like): WebGL would turn any other string or array into a
     // number, past the bounds checked here.
+    const glAllocations = new Set(["bufferData", "texImage2D", "texImage3D", "copyTexImage2D", "compressedTexImage2D", "compressedTexImage3D", "texStorage2D", "texStorage3D", "renderbufferStorage", "renderbufferStorageMultisample"]);
     const glStringMethods = new Set(["shaderSource", "getExtension", "bindAttribLocation", "getUniformLocation", "getAttribLocation", "getFragDataLocation", "transformFeedbackVaryings"]);
     const glSequenceMethod = (m) => m.endsWith("v") || m === "drawBuffers" || m.startsWith("invalidate") || m === "transformFeedbackVaryings";
     function glCheck(mirror, command) {
@@ -1227,6 +1228,19 @@
                 b.vao = ref(a[0]);
                 b.bound.set("b34963", b.vaoElements.get(b.vao) ?? 0);
                 break;
+            // A transform feedback object brings buffers of its own: what's
+            // bound to its target is unknown till bound again.
+            case "bindTransformFeedback": b.bound.set("b35982", 0); break;
+            case "deleteVertexArray": {
+                // The bound one deleted: GL goes back to the default one.
+                const gone = ref(a[0]);
+                b.vaoElements.delete(gone);
+                if (gone && gone === b.vao) {
+                    b.vao = 0;
+                    b.bound.set("b34963", b.vaoElements.get(0) ?? 0);
+                }
+                break;
+            }
             case "bindTexture": b.bound.set(`t${b.unit}:${n(0)}`, ref(a[1])); break;
             case "bindRenderbuffer": b.bound.set("r", ref(a[1])); break;
             case "deleteBuffer": case "deleteTexture": case "deleteRenderbuffer": {
@@ -1425,6 +1439,11 @@
                     if (typeof fn !== "function") throw new Error("WebGL method unavailable");
                     result = fn.apply(gl, args);
                 }
+                // GL keeps the first error till it's asked: asked after each
+                // allocation, a call it refused before (a binding the budget
+                // took as made) ends the replay there, so the budget can't
+                // count storage to one object while GL gives it to another.
+                if (glAllocations.has(command.m) && gl.getError() !== gl.NO_ERROR) throw new Error("WebGL error before an allocation");
                 if (command.m === "getExtension" && typeof args[0] === "string" && result) mirror.extensions.set(args[0], result);
                 if (command.m === "compileShader" && !gl.getShaderParameter(args[0], gl.COMPILE_STATUS)) throw new Error("shader compile failed");
                 if (command.m === "linkProgram" && !gl.getProgramParameter(args[0], gl.LINK_STATUS)) throw new Error("program link failed");

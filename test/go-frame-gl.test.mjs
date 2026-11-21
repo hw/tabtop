@@ -53,6 +53,8 @@ test("storage given by way of bindBufferBase and a vertex array is counted", () 
     assert.throws(() => replay(base), /budget/);
     const vao = replay([["bindVertexArray", { ref: 9 }], ["bindBuffer", 0x8893, { ref: 1 }], ["bufferData", 0x8893, 1 << 20, 0x88E4], ["bindVertexArray", null], ["bindVertexArray", { ref: 9 }], ["bufferData", 0x8893, 2 << 20, 0x88E4]]);
     assert.equal(vao.budget.total, 2 << 20);
+    // The bound vertex array deleted: its element buffer is no longer what's bound.
+    assert.throws(() => replay([["bindVertexArray", { ref: 9 }], ["bindBuffer", 0x8893, { ref: 1 }], ["deleteVertexArray", { ref: 9 }], ["bufferData", 0x8893, 1 << 20, 0x88E4]]), /nothing bound/);
 });
 
 test("ordinary scenes pass", () => {
