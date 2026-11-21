@@ -2,12 +2,13 @@
 // 6). The copy of the page in the frame can't play anything (its policy
 // has no media, and it's at an origin of its own, which the streaming
 // service worker doesn't serve): where the page had a player with a file
-// to play, the frame draws a box, and here a native player is laid over it,
-// in this trusted page, its file read from the site by the server in parts
+// to play, the frame draws a transparent hole, and here a native player is
+// laid under the frame so images and chrome in the copy keep their z-order
+// above the pixels. The file is read from the site by the server in parts
 // as it plays (ranges through the service worker, as the files page's
 // previews play theirs, see preview-media.js; asked for over the tab's
-// tunnel, a few parts ahead). The site
-// isn't contacted from this device; the player is this page's, not the
+// tunnel, a few parts ahead). Loading chrome stays above the frame. The
+// site isn't contacted from this device; the player is this page's, not the
 // site's: its script doesn't run here.
 import { encryptedMedia } from "./go-eme.js";
 import { call, collect } from "../tabtop/requests.js";
@@ -27,7 +28,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -80,7 +81,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     const players = new Map();  // the frame's box's key -> {element, stopped}
     const ours = new WeakSet();  // players being started by the page (start), not the person
     const abort = new AbortController();
-    let layer = null;
+    // underlay: white page backdrop + players, behind the transparent frame.
+    // overlay: loading UI only, above the frame.
+    let underlay = null, backdrop = null, overlay = null;
     const streams = new Map();
     const streamLimit = 16 << 20;
     let streamBytes = 0;
@@ -222,7 +225,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         stream.capture ||= makeCapture(stream);
         const element = eme.player(entry.node, kind);
         eme.opened(entry.node, element);
-        element.controls = true;
+        // Under the frame: no native controls (they'd cover page chrome).
+        element.controls = false;
         if (kind === "video") element.playsInline = true;
         stream.key = key;
         stream.element = element;
@@ -268,36 +272,35 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // the player's own controls, are the player's still.
     function passScrolling(media, signal) {
         media.addEventListener("wheel", (e) => {
-            if ("player" in media.dataset) return;  // in the player: its own
+            if (!("player" in media.dataset)) return;
             const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
             e.preventDefault();
             passOn?.(e.clientX, e.clientY, e.deltaX * unit, e.deltaY * unit, "wheel");
         }, { passive: false, signal });
         let last = null;
         media.addEventListener("touchstart", (e) => {
+            if (!("player" in media.dataset)) return;
             const t = e.touches[0];
-            last = e.touches.length === 1 && t && !("player" in media.dataset) ? { x: t.clientX, y: t.clientY } : null;
-            // The finger down, for the page too (a swipe it takes itself:
-            // YouTube's Shorts on a phone go to the next by its script).
+            last = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : null;
             if (last) passOn?.(t.clientX, t.clientY, 0, 0, "drag-start");
         }, { passive: true, signal });
         media.addEventListener("touchmove", (e) => {
+            if (!("player" in media.dataset)) return;
             const t = e.touches[0];
-            if ("player" in media.dataset) return;
             if (!last || !t || e.touches.length !== 1) return;
             e.preventDefault();
             passOn?.(t.clientX, t.clientY, last.x - t.clientX, last.y - t.clientY, "drag");
             last = { x: t.clientX, y: t.clientY };
         }, { passive: false, signal });
-        // Its end: where a feed snaps to (see the frame's scrollUnder).
         const end = (e) => {
+            if (!("player" in media.dataset)) { last = null; return; }
             const t = e.changedTouches?.[0];
             if (last && t) passOn?.(t.clientX, t.clientY, 0, 0, "drag-end");
             last = null;
         };
         media.addEventListener("touchend", end, { passive: true, signal });
         media.addEventListener("touchcancel", end, { passive: true, signal });
-        media.style.touchAction = "none";  // its drags are passed on, not the browser's
+        media.style.touchAction = "none";
     }
 
     // place lays a player over its box, kept within the frame's area (the
@@ -311,9 +314,15 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // window's settled (a browser says its margins after it says it turned).
     let replaceTimer = 0;
     const replaceAll = () => {
-        requestAnimationFrame(() => { for (const player of players.values()) place(player.placement); });
+        requestAnimationFrame(() => {
+            syncBackdrop();
+            for (const player of players.values()) place(player.placement);
+        });
         clearTimeout(replaceTimer);
-        replaceTimer = setTimeout(() => { for (const player of players.values()) place(player.placement); }, 300);
+        replaceTimer = setTimeout(() => {
+            syncBackdrop();
+            for (const player of players.values()) place(player.placement);
+        }, 300);
     };
     window.addEventListener("resize", replaceAll, { signal: abort.signal });
     window.addEventListener("orientationchange", replaceAll, { signal: abort.signal });
@@ -325,9 +334,11 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         if (!player) return;
         player.placement = { key, rect, clip, shown, fit, position };
         const media = player.element, loading = player.loading?.box;
-        if (media && "player" in media.dataset) return;  // in the player (go-player.js), not its box
+        if (media && "player" in media.dataset) return;  // in the watch player, not its box
+        syncBackdrop();
         if (player.hidden) {
             if (media) media.style.display = "none";
+            if (loading) loading.hidden = true;
             return;
         }
         if (media && document.fullscreenElement === media) {
@@ -428,14 +439,33 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         told();
     }
 
-    // layerHere is the layer the players are laid in, over the frame.
-    function layerHere() {
-        if (!layer) {
-            layer = document.createElement("div");
-            Object.assign(layer.style, { position: "absolute", inset: "0", pointerEvents: "none", overflow: "hidden" });
-            frame.parentElement.append(layer);
+    function syncBackdrop() {
+        if (!backdrop || !frame.parentElement) return;
+        const area = frame.getBoundingClientRect(), host = frame.parentElement.getBoundingClientRect();
+        Object.assign(backdrop.style, {
+            left: `${area.left - host.left}px`, top: `${area.top - host.top}px`,
+            width: `${area.width}px`, height: `${area.height}px`,
+        });
+    }
+    function underlayHere() {
+        if (!underlay) {
+            underlay = document.createElement("div");
+            Object.assign(underlay.style, { position: "absolute", inset: "0", zIndex: "0", pointerEvents: "none", overflow: "hidden" });
+            backdrop = document.createElement("div");
+            Object.assign(backdrop.style, { position: "absolute", background: "#fff", zIndex: "0" });
+            underlay.append(backdrop);
+            frame.parentElement.insertBefore(underlay, frame);
+            syncBackdrop();
         }
-        return layer;
+        return underlay;
+    }
+    function overlayHere() {
+        if (!overlay) {
+            overlay = document.createElement("div");
+            Object.assign(overlay.style, { position: "absolute", inset: "0", zIndex: "2", pointerEvents: "none", overflow: "hidden" });
+            frame.parentElement.append(overlay);
+        }
+        return overlay;
     }
 
     // loader shows, over a player's box till it can play, that it's
@@ -463,7 +493,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             box.setAttribute("aria-label", `Loading the ${noun}: ${what.textContent}`);
             told();
         };
-        layerHere().append(box);
+        overlayHere().append(box);
         return {
             box,
             get said() { return done ? "" : what.textContent; },
@@ -650,9 +680,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                         if (!signal.aborted) media.poster = entry.poster = URL.createObjectURL(blob);
                     }, () => {});
                 }
-                Object.assign(media.style, { position: "absolute", background: "#000", zIndex: "2", display: "none" });
-                media.style.pointerEvents = "auto";
+                Object.assign(media.style, { position: "absolute", background: "#000", zIndex: "1", display: "none", pointerEvents: "none" });
                 passScrolling(media, signal);
+                media.addEventListener("playing", () => {
+                    if (entry.poster) { URL.revokeObjectURL(entry.poster); entry.poster = ""; }
+                    media.removeAttribute("poster");
+                }, { signal });
                 // Its state, for the menu's list of players.
                 for (const type of ["play", "playing", "pause", "ended", "emptied"]) media.addEventListener(type, told, { signal });
                 // Shift+N, as video sites' "next video": skipped.
@@ -662,7 +695,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                         skip(key);
                     }
                 }, { signal });
-                layerHere().append(media);
+                underlayHere().append(media);
                 place(entry.placement);
                 // Played by the person (its own controls, the player's): its
                 // page may play it from then on, autoplay paused or not.
@@ -694,18 +727,18 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (!player || player.kind !== "video" || !player.element) return;
             player.hidden = true;
             player.element.style.display = "none";
+            if (player.loading?.box) player.loading.box.hidden = true;
             told();
         },
-        // mark outlines a player's box (its row in the menu pointed at or
-        // focused), or none (key null).
+        // mark outlines a player's box in the copy (menu hover/focus).
         mark(key) {
             for (const [k, p] of players) {
-                if (p.watching) continue;  // in the player: no outline
-                for (const el of [p.element, p.loading?.box]) {
-                    if (el) el.style.outline = k === key ? "3px solid #8ab4f8" : "";
-                    if (el) el.style.outlineOffset = k === key ? "-3px" : "";
+                if (p.loading?.box && !p.watching) {
+                    p.loading.box.style.outline = k === key ? "3px solid #8ab4f8" : "";
+                    p.loading.box.style.outlineOffset = k === key ? "-3px" : "";
                 }
             }
+            marked?.(Number.isSafeInteger(key) ? key : null);
         },
         // list is the page's players, top first, for the menu: each's kind,
         // its address (whole, and short), and how it's doing.
@@ -818,18 +851,19 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 save: (say, opts) => saveMSE(player.stream, say, opts),
             }] : [];
             const manifests = player.stream ? (streamsToSave?.() ?? []) : [];
+            media.style.pointerEvents = "auto";
             player.closeWatch = openPlayer(media, {
                 title: player.stream ? "Streamed by the site's own player" : shortAddress(player.src),
                 skip: () => skip(key),
                 downloadTitle: player.stream && (mseSave.length || manifests.length) ? "Save stream into Downloads" : undefined,
-                // (The page's whole streams first, the picker taking the first:
-                // what's buffered is only what's played so far.)
                 streams: player.stream ? [...manifests, ...mseSave] : undefined,
                 download: !player.stream && download ? (say, opts) => download(player.src, say, opts)
                     : player.stream && mseSave.length === 1 && !manifests.length ? mseSave[0].save : null,
                 closed: () => {
                     player.watching = false;
                     player.closeWatch = null;
+                    media.style.pointerEvents = "none";
+                    if (underlay && media.parentElement !== underlay) underlay.append(media);
                     if (players.get(key) === player) place(player.placement);
                     told();
                 },
@@ -853,8 +887,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             ahead.clear();
             for (const stream of streams.values()) releaseStream(stream);
             streams.clear();
-            layer?.remove();
-            layer = null;
+            underlay?.remove();
+            overlay?.remove();
+            underlay = backdrop = overlay = null;
+            marked?.(null);
         },
     };
 }

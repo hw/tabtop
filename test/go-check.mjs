@@ -88,10 +88,129 @@ streamed.src = URL.createObjectURL(source);
 <p id="embedded-text" onclick="throw Error()">initial content</p><img src="../pic.png">
 <script>setTimeout(() => { document.getElementById("embedded-text").textContent = "updated content"; }, 1500);</script>`,
         "second.html": `<!doctype html><title>Second</title><p id="p">second page</p><a id="back" href="index.html">back</a>`,
-        // What a page is told of light or dark (Dark mode), as it changes;
-        // and a page with a dark look of its own, which Force dark leaves.
+        // WebGL drawn in the engine, replayed in the copy (gogl.js): a still
+        // WebGL1 and WebGL2 square on red; one that, clicked, changes colour,
+        // each tick drawn 50 times over so its log passes the 4,096-call cap
+        // and is compacted (a full log again) as it goes, and clicked again
+        // turns blue; and one that, clicked, draws past the cap with no clear
+        // between (which can't be compacted), so can't be shown any more.
+        "webgl.html": `<!doctype html><title>WebGL</title>
+<canvas id="still" width="64" height="64"></canvas> <canvas id="two" width="64" height="64"></canvas> <canvas id="moving" width="64" height="64"></canvas> <canvas id="broken" width="64" height="64"></canvas> <canvas id="overrun" width="64" height="64"></canvas> <canvas id="sized" width="64" height="64"></canvas>
+<p id="n">0</p><p id="io"></p><div style="position:absolute;top:4000px;width:1px;height:1px"></div>
+<script>
+new IntersectionObserver((seen) => { document.getElementById("io").textContent = seen.at(-1).isIntersecting ? "in" : "out"; }).observe(document.getElementById("moving"));
+function scene(canvas, kind) {
+    const gl = canvas.getContext(kind, { antialias: false });
+    const shader = (type, source) => { const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s); return s; };
+    const program = gl.createProgram();
+    gl.attachShader(program, shader(gl.VERTEX_SHADER, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }"));
+    gl.attachShader(program, shader(gl.FRAGMENT_SHADER, "precision mediump float; uniform vec4 c; void main() { gl_FragColor = c; }"));
+    gl.linkProgram(program);
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]), gl.STATIC_DRAW);
+    const at = gl.getAttribLocation(program, "p");
+    gl.enableVertexAttribArray(at);
+    gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
+    const c = gl.getUniformLocation(program, "c");
+    const draw = (color) => { gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); draw.over(color); };
+    draw.over = (color) => { gl.uniform4fv(c, color); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); };
+    return draw;
+}
+scene(document.getElementById("still"), "webgl")([0, 1, 0, 1]);
+scene(document.getElementById("two"), "webgl2")([0, 0, 1, 1]);
+// A shader the viewer can't compile (the engine's says it did): shown as
+// unavailable, not as a stale or partial picture.
+const broken = document.getElementById("broken").getContext("webgl"), bad = broken.createShader(broken.FRAGMENT_SHADER);
+broken.shaderSource(bad, "void main() { not glsl }");
+broken.compileShader(bad);
+broken.clearColor(0, 1, 0, 1);
+broken.clear(broken.COLOR_BUFFER_BIT);
+const moving = scene(document.getElementById("moving"), "webgl");
+let n = 0, tick = 0;
+moving([0, 0, 0, 1]);
+document.getElementById("moving").addEventListener("click", () => {
+    if (n === 30) { moving([0, 0, 1, 1]); document.getElementById("n").textContent = "clicked"; return; }
+    if (tick) return;
+    tick = setInterval(() => {
+        n++;
+        for (let i = 0; i < 50; i++) moving([n / 30, 1 - n / 30, 0.5, 1]);
+        document.getElementById("n").textContent = n;
+        if (n === 30) clearInterval(tick);
+    }, 150);
+});
+const overrun = scene(document.getElementById("overrun"), "webgl");
+overrun([0, 1, 0, 1]);
+document.getElementById("overrun").addEventListener("click", () => { for (let i = 0; i < 2500; i++) overrun.over([0, 1, 0, 1]); });
+// Resized by the page, then drawn again at its new size.
+const sizedCanvas = document.getElementById("sized"), sized = scene(sizedCanvas, "webgl");
+sized([0, 1, 0, 1]);
+sizedCanvas.addEventListener("click", () => {
+    sizedCanvas.width = 96;
+    sizedCanvas.height = 48;
+    const gl = sizedCanvas.getContext("webgl");
+    gl.viewport(0, 0, 96, 48);
+    sized([0, 0, 1, 1]);
+});
+</script>`,
+        // More WebGL canvases than a page may have mirrored (16).
+        "glmany.html": `<!doctype html><title>GL many</title><body><script>
+for (let i = 0; i < 20; i++) { const c = document.createElement("canvas"); c.width = c.height = 16; document.body.append(c); const gl = c.getContext("webgl"); gl.clearColor(0, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+</script>`,
+        // A WebGL canvas animating by itself: 20 ticks, from blue to red.
+        "glanim.html": `<!doctype html><title>GL anim</title><body><canvas id="a" width="64" height="64"></canvas><script>
+const gl = document.getElementById("a").getContext("webgl");
+let n = 0;
+gl.clearColor(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+setTimeout(() => { const t = setInterval(() => { n++; gl.clearColor(n / 20, 0, 1 - n / 20, 1); gl.clear(gl.COLOR_BUFFER_BIT); if (n === 20) clearInterval(t); }, 250); }, 1500);
+</script>`,
+        // WebGL in an embedded page: webgl.html, or the page ?src names.
+        "glframe.html": `<!doctype html><title>GL frame</title><iframe id="f" width="700" height="260"></iframe>
+<script>document.getElementById("f").src = new URLSearchParams(location.search).get("src") || "webgl.html";</script>`,
+        // three.js (the image's /opt/three, copied in by go-check.sh), drawing
+        // a red box on blue and turning it.
+        "three.html": `<!doctype html><title>Three</title><canvas id="three" width="128" height="128"></canvas> <canvas id="lit" width="128" height="128"></canvas><p id="s">starting</p><p id="f"></p>
+<script type="module">
+import * as THREE from "./three/three.module.js";
+try {
+    const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("three"), antialias: false });
+    renderer.setPixelRatio(1);
+    renderer.setSize(128, 128, false);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0000ff);
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 10);
+    camera.position.z = 3;
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+    scene.add(box);
+    // Turned by requestAnimationFrame, as pages animate: 20 frames.
+    let turns = 0;
+    const draw = () => { box.rotation.y = turns * 0.1; renderer.render(scene, camera); document.getElementById("f").textContent = turns; };
+    draw();
+    const turn = () => { draw(); if (++turns <= 20) requestAnimationFrame(turn); };
+    requestAnimationFrame(turn);
+    // Lit: a standard (physically based) material, a light, a texture.
+    const lit = new THREE.WebGLRenderer({ canvas: document.getElementById("lit"), antialias: false });
+    lit.setPixelRatio(1);
+    lit.setSize(128, 128, false);
+    const litScene = new THREE.Scene();
+    litScene.background = new THREE.Color(0x000000);
+    litScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 2);
+    sun.position.set(1, 2, 3);
+    litScene.add(sun);
+    const checks = new Uint8Array(4 * 4 * 4).map((_, i) => (i % 4 === 3 ? 255 : (i >> 2) % 2 ? 255 : 128));
+    const map = new THREE.DataTexture(checks, 4, 4);
+    map.needsUpdate = true;
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), new THREE.MeshStandardMaterial({ color: 0x00ff00, roughness: 0.6, map }));
+    litScene.add(ball);
+    lit.render(litScene, camera);
+    document.getElementById("s").textContent = "drawn";
+} catch (err) {
+    document.getElementById("s").textContent = "failed: " + err.message;
+}
+</script>`,
+        // What a page is told of light or dark (Dark mode), as it changes.
         "scheme.html": `<!doctype html><title>Scheme</title><p id="s"></p><script>const q = matchMedia("(prefers-color-scheme: dark)"); const say = () => { document.getElementById("s").textContent = q.matches ? "dark" : "light"; }; say(); q.addEventListener("change", say);</script>`,
-        "dark-page.html": `<!doctype html><title>Dark page</title><style>html { background: #111; color: #eee; }</style><p id="s">dark of its own</p>`,
         "interact.html": `<!doctype html><title>Interact</title>
 <p id="status">ready</p>
 <button id="add">Add</button><ul id="list"></ul>
@@ -389,7 +508,7 @@ h1 { font-family: "Fixture Font", sans-serif; }`,
 @font-face { font-family: "Unused Font"; src: url(unused.woff2) format("woff2"); }
 #used { font-family: "Used Font", monospace; }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path"), zlib = require("zlib");
-const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4" };
+const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4", ".js": "text/javascript" };
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
 http.createServer(function handle(req, res) {
   // ?slow: each answer a second and a half late (a player loading, seen).
@@ -649,7 +768,7 @@ async function check(base, port, site, adSite) {
     // default export, given the steps' helpers, to look into a site.
     if (process.env.GO_PROBE) {
         const probe = (await import(new URL(process.env.GO_PROBE, `file://${process.cwd()}/`).href)).default;
-        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, cdp, goTo, waitFor, sleep, writeFileSync, site })).catch(() => { process.exitCode = 1; });
+        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, frameClick, cdp, goTo, waitFor, sleep, writeFileSync, site, adSite })).catch(() => { process.exitCode = 1; });
         ws.close();
         browser.close();
         process.exit();
@@ -857,7 +976,7 @@ async function check(base, port, site, adSite) {
         if (items !== "Settings") throw new Error(`the menu has ${items}`);
         // Its first row: what's done most, each a glyph over its name (Forward's in the bar here, not a phone's).
         const actions = await ev(`[...document.querySelectorAll("#go_menu_actions button")].filter((b) => b.getClientRects().length).map((button) => ({ name: button.textContent, top: button.getBoundingClientRect().top, glyph: !!button.querySelector("svg"), under: button.querySelector("svg")?.getBoundingClientRect().bottom <= button.querySelector(".caption").getBoundingClientRect().top }))`);
-        if (actions.map((action) => action.name).join() !== "Full screen,Hide browser,Desktop" ||
+        if (actions.map((action) => action.name).join() !== "Desktop,Full screen,Hide browser" ||
             actions.some((action) => !action.glyph || !action.under) || new Set(actions.map((action) => action.top)).size !== 1) throw new Error(`the menu's first row: ${JSON.stringify(actions)}`);
         if (await ev(`document.getElementById("go_menu_actions").compareDocumentPosition(document.getElementById("go_menu_settings")) & Node.DOCUMENT_POSITION_PRECEDING`)) throw new Error("Settings above the first row");
         // The other pages and logging out: one row, icons only (named for a
@@ -1164,28 +1283,21 @@ async function check(base, port, site, adSite) {
         await sleep(1000);
     });
 
-    await step("Dark mode: pages told dark or light as their site's setting says, Force dark darkening a light page's copy, changed live from Site controls", async () => {
+    await step("Dark mode: pages told dark or light as their site's setting says, changed live from Site controls", async () => {
         const host = new URL(site).hostname;
         const setTheme = (setting) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: ${JSON.stringify(host)}, setting: ${JSON.stringify(setting)} }); t.close(); })`);
         const told = () => frame(`document.getElementById("s")?.textContent`);
-        const forced = () => frame(`!!document.getElementById("tabtop_force_dark")`);
         try {
             await goTo(site + "scheme.html", "Scheme");
-            if ((await told()) !== "light" || await forced()) throw new Error(`following the device (light): told ${await told()}, forced ${await forced()}`);
+            if ((await told()) !== "light") throw new Error(`following the device (light): told ${await told()}`);
             await setTheme("theme-dark");
             await goTo(site + "scheme.html", "Scheme");
-            if ((await told()) !== "dark" || await forced()) throw new Error(`Dark: told ${await told()}, forced ${await forced()}`);
-            await setTheme("theme-force");
-            await goTo(site + "scheme.html", "Scheme");
-            if ((await told()) !== "dark" || !(await forced())) throw new Error(`Force dark: told ${await told()}, forced ${await forced()}`);
-            await goTo(site + "dark-page.html", "Dark page");
-            if (await forced()) throw new Error("a page dark of its own darkened again");
+            if ((await told()) !== "dark") throw new Error(`Dark: told ${await told()}`);
             // Changed in Site controls (its lightbox), the page shown follows.
-            await goTo(site + "scheme.html", "Scheme");
             await ev(`document.getElementById("go_site").click()`);
-            await waitFor(`(() => { const d = document.querySelector("#go_settings iframe")?.contentDocument; return d?.getElementById("theme")?.value === "force" && !d.getElementById("theme").disabled; })()`, "the site's Dark mode in Site controls", 15000);
+            await waitFor(`(() => { const d = document.querySelector("#go_settings iframe")?.contentDocument; return d?.getElementById("theme")?.value === "dark" && !d.getElementById("theme").disabled; })()`, "the site's Dark mode in Site controls", 15000);
             await ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument, s = d.getElementById("theme"); s.value = "light"; s.dispatchEvent(new Event("change")); })()`);
-            await frameWait(`document.getElementById("s")?.textContent === "light" && !document.getElementById("tabtop_force_dark")`, "the page told light, and not darkened", 15000);
+            await frameWait(`document.getElementById("s")?.textContent === "light"`, "the page told light", 15000);
             await ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; d.getElementById("back").click(); })()`);
             await waitFor(`!document.getElementById("go_settings").open`, "Site controls closed");
         } finally {
@@ -1799,22 +1911,102 @@ async function check(base, port, site, adSite) {
         }
     });
 
-    await step("a video plays in a player laid over the copy, its file read through the server", async () => {
+    await step("WebGL drawn in the engine is replayed in the copy: WebGL1, WebGL2, an animation through its log's compaction, resizing, the viewer's context lost and back, embedded pages of the same site and another, three.js; a shader the viewer can't compile shown unavailable", async () => {
+        // The copy's canvas's pixel at (x, y) is within 4 of want's.
+        const glAt = (id, x, y, want) => `(() => { const c = document.getElementById(${JSON.stringify(id)}); const gl = c && (c.getContext("webgl2") || c.getContext("webgl"));
+            if (!gl) return false; const p = new Uint8Array(4); gl.readPixels(${x}, ${y}, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+            return ${JSON.stringify(want)}.every((v, i) => v === null || Math.abs(v - p[i]) <= 4); })()`;
+        const t0 = Date.now();
+        await goTo(site + "webgl.html", "WebGL");
+        await frameWait(`${glAt("still", 32, 32, [0, 255, 0, 255])} && ${glAt("still", 2, 2, [255, 0, 0, 255])}`, "the WebGL1 square, green on red");
+        await frameWait(`${glAt("two", 32, 32, [0, 0, 255, 255])} && ${glAt("two", 2, 2, [255, 0, 0, 255])}`, "the WebGL2 square, blue on red");
+        // The animation, started by a click given to the engine's page: frames
+        // as it goes (sent as the calls since the last), then its last one,
+        // after its log has been compacted and sent whole (the canvas
+        // replaced for it), and a click there still reaches the page.
+        await frameWait(glAt("moving", 32, 32, [0, 0, 0, 255]), "the animation's first frame");
+        await frameClick("#moving");
+        const seen = new Set();
+        for (const end = Date.now() + 20000; Date.now() < end; await sleep(150)) {
+            const p = await frame(`(() => { const gl = document.getElementById("moving").getContext("webgl"); const p = new Uint8Array(4); gl.readPixels(32, 32, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return p.join(); })()`);
+            seen.add(p);
+            if (p === "255,0,128,255") break;
+        }
+        if (!seen.has("255,0,128,255")) throw new Error(`the animation's last frame not shown: ${[...seen].join(" ")}`);
+        if (seen.size < 3) throw new Error(`the animation shown in ${seen.size} frames`);
+        const animated = Date.now() - t0;
+        await frameClick("#moving");
+        await frameWait(`${glAt("moving", 32, 32, [0, 0, 255, 255])} && document.getElementById("n").textContent === "clicked"`, "the animated canvas, clicked again, blue");
+        // The page's IntersectionObserver still sees it, scrolled out and in.
+        await frameWait(`document.getElementById("io").textContent === "in"`, "the page told its canvas is in view");
+        await frame(`scrollTo(0, 2500)`);
+        await frameWait(`document.getElementById("io").textContent === "out"`, "the page told its canvas, replaced, is out of view");
+        await frame(`scrollTo(0, 0)`);
+        await frameWait(`document.getElementById("io").textContent === "in"`, "the page told its canvas is in view again");
+        // Drawn past the cap: not shown, and its last frame not left either.
+        await frameWait(glAt("overrun", 32, 32, [0, 255, 0, 255]), "the canvas to overrun, green");
+        await frameClick("#overrun");
+        // (Its replay context given up, freeing the GPU's memory: nothing
+        // drawn, on a grey background.)
+        await frameWait(`(() => { const c = document.getElementById("overrun"); return /unsupported|unavailable/.test(c.title) && c.style.backgroundColor === "rgb(221, 221, 221)" && c.getContext("webgl").isContextLost(); })()`, "the overrun canvas unavailable, its context given up, greyed out");
+        // Resized by the page and drawn again: the copy's canvas too.
+        await frameWait(glAt("sized", 32, 32, [0, 255, 0, 255]), "the canvas to resize, green");
+        await frameClick("#sized");
+        await frameWait(`document.getElementById("sized").width === 96 && document.getElementById("sized").height === 48 && ${glAt("sized", 48, 24, [0, 0, 255, 255])} && ${glAt("sized", 2, 2, [255, 0, 0, 255])}`, "the resized canvas, 96 by 48, blue on red");
+        // The viewer's context lost and given back: replayed from what it kept.
+        await frame(`(() => { const c = document.getElementById("still"); window.__lose = c.getContext("webgl").getExtension("WEBGL_lose_context"); window.__lose.loseContext(); })()`);
+        await frameWait(`/unavailable/.test(document.getElementById("still").title)`, "the lost context labelled");
+        await frame(`window.__lose.restoreContext()`);
+        await frameWait(`/mirrored/.test(document.getElementById("still").title) && ${glAt("still", 32, 32, [0, 255, 0, 255])} && ${glAt("still", 2, 2, [255, 0, 0, 255])}`, "the context given back, drawn again");
+        const titles = await frame(`["still", "two", "moving", "broken"].map((id) => document.getElementById(id).title)`);
+        if (titles.slice(0, 3).some((t) => !/mirrored/.test(t)) || !/unavailable/.test(titles[3])) throw new Error(`the canvases say ${JSON.stringify(titles)}`);
+        // In embedded pages: the same site's (read by the page's agent, its
+        // canvases by way of the page's gogl.js) and another site's (read in
+        // a world of its own), still and animating.
+        const pixelIn = (id) => `(() => { let c; const walk = (r) => { for (const e of r.querySelectorAll("*")) { if (e.id === ${JSON.stringify(id)} && e.localName === "canvas") c = e; if (e.shadowRoot) walk(e.shadowRoot); } }; walk(document);
+            const gl = c?.getContext("webgl2") || c?.getContext("webgl"); if (!gl) return ""; const p = new Uint8Array(4); gl.readPixels(32, 32, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return p.join(); })()`;
+        const inFrame = (id, want) => `${pixelIn(id)} === ${JSON.stringify(want.join())}`;
+        for (const [frameSite, which] of [[site, "the same site's"], [adSite, "another site's"]]) {
+            await goTo(site + "glframe.html?src=" + encodeURIComponent(frameSite + "webgl.html"), "GL frame");
+            await frameWait(`${inFrame("still", [0, 255, 0, 255])} && ${inFrame("two", [0, 0, 255, 255])}`, `WebGL in ${which} frame`);
+            await goTo(site + "glframe.html?src=" + encodeURIComponent(frameSite + "glanim.html"), "GL frame");
+            const frames = new Set();
+            for (const end = Date.now() + 25000; Date.now() < end && !frames.has("255,0,0,255"); await sleep(100)) frames.add(await frame(pixelIn("a")));
+            frames.delete("");
+            if (!frames.has("255,0,0,255")) throw new Error(`the animation in ${which} frame not shown to its end: ${[...frames].join(" ")}`);
+            if (frameSite === site && frames.size < 5) throw new Error(`the animation in ${which} frame shown in ${frames.size} frames`);
+        }
+        // A page with more WebGL canvases than are mirrored: the rest so labelled.
+        await goTo(site + "glmany.html", "GL many");
+        await frameWait(`(() => { const t = [...document.querySelectorAll("canvas")].map((c) => c.title); return t.length === 20 && t.filter((x) => /mirrored/.test(x)).length === 16 && t.filter((x) => /unsupported|unavailable/.test(x)).length === 4; })()`, "16 of 20 canvases mirrored, 4 labelled");
+        // three.js: a red box on blue; a lit, textured green ball on black.
+        await goTo(site + "three.html", "Three");
+        await frameWait(`document.getElementById("s").textContent === "drawn"`, "three.js drawing in the engine");
+        await frameWait(`${glAt("three", 64, 64, [255, 0, 0, 255])} && ${glAt("three", 2, 2, [0, 0, 255, 255])}`, "three.js's red box on blue");
+        await frameWait(`document.getElementById("f").textContent === "20"`, "three.js's 20 frames of requestAnimationFrame", 20000);
+        await frameWait(`(() => { const gl = document.getElementById("lit").getContext("webgl2"); const p = new Uint8Array(4); gl.readPixels(64, 64, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+            return p[1] > 100 && p[0] < 100 && p[2] < 100; })() && ${glAt("lit", 2, 2, [0, 0, 0, 255])}`, "three.js's lit green ball on black");
+        return `${seen.size} frames of the animation seen, its last in ${animated} ms`;
+    });
+
+    await step("a video plays in a player under the copy, its file read through the server", async () => {
         await goTo(site + "video.html", "Video");
-        await frameWait(`document.querySelector("#clip[data-go-video]")?.textContent === ""`, "the clip's box, its player made");
+        await frameWait(`document.querySelector("#clip[data-go-video]")?.classList.contains("go-media-live")`, "the clip's box, its player made");
         const notes = await frame(`[document.getElementById("streamed").textContent, document.getElementById("silent").textContent]`);
         if (!/own player/.test(notes[0]) || !/nothing to play/.test(notes[1])) throw new Error(`the other boxes say ${JSON.stringify(notes)}`);
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1 && Math.abs(v.duration - 5) < 0.5)`, "the player's clip, 5 s", 30000);
         await ev(`document.querySelector("video").play()`);
         await waitFor(`document.querySelector("video").currentTime > 0.5`, "the clip playing", 30000);
-        // Over its box, within the frame.
-        const over = await ev(`(() => { const v = document.querySelector("video").getBoundingClientRect(), f = document.getElementById("go_view").getBoundingClientRect();
-            return v.width > 100 && v.left >= f.left && v.right <= f.right + 1 && v.top >= f.top; })()`);
-        if (!over) throw new Error("the player isn't over its box, within the frame");
+        // Aligned with its box, under the transparent frame.
+        const over = await ev(`(() => { const v = document.querySelector("video"), f = document.getElementById("go_view");
+            const vr = v.getBoundingClientRect(), fr = f.getBoundingClientRect();
+            const under = v.parentElement && f.compareDocumentPosition(v.parentElement) & Node.DOCUMENT_POSITION_PRECEDING;
+            return under && vr.width > 100 && vr.left >= fr.left && vr.right <= fr.right + 1 && vr.top >= fr.top; })()`);
+        if (!over) throw new Error("the player isn't under its box, within the frame");
         // The page in the engine told the file's size and length, as a
         // browser's player would (gomedia.js): the engine has no media.
         await frameWait(`/^[1-9][0-9]*x[1-9][0-9]* 5 s$/.test(document.getElementById("meta").textContent)`, "the page told the video's size and length");
-        // The wheel turned over the player scrolls the page under it.
+        // The wheel turned over the video hole scrolls the page (hits the frame).
         const y0 = await frame(`scrollY`);
         const p = await ev(`(() => { const r = document.querySelector("video").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
         await cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: 0, deltaY: 200 });
@@ -1971,10 +2163,18 @@ async function check(base, port, site, adSite) {
         };
         await goTo(site + "auto.html", "Autoplay");
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3; })()`, "the page's video playing", 30000);
-        await ev(`document.getElementById("go_menu").click()`);
+        // (Opened, not toggled: a step before may have left it open.)
+        await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
         await waitFor(`!!document.querySelector("#go_menu_media li") && document.getElementById("go_menu_autoplay").getAttribute("aria-checked") === "true"`, "the menu's videos");
         // Autoplay paused: the video paused, its page told; the page
         // playing it again held back; played from the menu, it plays.
+        // (Pressed where it is once the menu's list has settled: rows drawn
+        // as the players report move it.)
+        for (let last = "", end = Date.now() + 5000; Date.now() < end; await sleep(150)) {
+            const at = await ev(`JSON.stringify(document.getElementById("go_menu_autoplay").getBoundingClientRect())`);
+            if (at === last) break;
+            last = at;
+        }
         await press("#go_menu_autoplay");
         try {
             await waitFor(`document.querySelector("video").paused && document.getElementById("go_menu_autoplay").getAttribute("aria-checked") === "false"`, "paused by the switch");
@@ -2036,7 +2236,7 @@ async function check(base, port, site, adSite) {
         }
         await waitFor(`document.querySelector("#video_player video").currentTime > 4 && /\\bright\\b/.test(window.__flashed)`, "on 10 s by a double tap at the right, marked there");
         await press('#video_player button[aria-label^="Close the player"]');
-        await waitFor(`!document.getElementById("video_player") && !document.fullscreenElement && !!document.querySelector("video") && document.querySelector("video").controls && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
+        await waitFor(`!document.getElementById("video_player") && !document.fullscreenElement && !!document.querySelector("video") && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
@@ -2227,18 +2427,18 @@ async function check(base, port, site, adSite) {
         await frameWait(`(() => { const imgs = [...document.images]; return imgs.length === 80 && imgs.every((i) => i.complete && i.naturalWidth > 0); })()`, "all 80 pictures (each sent slowly)", 90000);
     });
 
-    await step("a swipe over a video a page swipes by its own script (as YouTube's Shorts on a phone) reaches the page; a tap there's the player's", async () => {
+    await step("a swipe over a video a page swipes by its own script (as YouTube's Shorts on a phone) reaches the page, as a tap there does (the player's under the page)", async () => {
         await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
         await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
         try {
             await goTo(site + "swiped.html", "Swiped");
-            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && getComputedStyle(v).display !== "none" && v.getBoundingClientRect().height > 300; })()`, "the reel's player, over the page", 30000);
+            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && getComputedStyle(v).display !== "none" && v.getBoundingClientRect().height > 300; })()`, "the reel's player, under the page", 30000);
             const p = await ev(`(() => { const r = document.querySelector("video").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height * 0.7) }; })()`);
-            // A tap: the player's, not the page's (no click, no swipe).
+            // A tap: the page's, as on a page whose own player it is (a click,
+            // no swipe): the player is under the copy (go-media.js).
             await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [p] });
             await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-            await sleep(1000);
-            if ((await frame(`document.getElementById("out").textContent`)) !== "at 0, clicks 0") throw new Error(`a tap on the player: ${await frame(`document.getElementById("out").textContent`)}`);
+            await frameWait(`document.getElementById("out").textContent === "at 0, clicks 1"`, "the tap's click, on the page");
             // A swipe up over it: the page's own script goes to the next.
             await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [p] });
             for (let k = 1; k <= 8; k++) {
@@ -2246,7 +2446,7 @@ async function check(base, port, site, adSite) {
                 await sleep(30);
             }
             await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-            await frameWait(`document.getElementById("out").textContent === "at 1, clicks 0"`, "the next reel, by the page's swipe");
+            await frameWait(`document.getElementById("out").textContent === "at 1, clicks 1"`, "the next reel, by the page's swipe (no click)");
         } finally {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
@@ -2343,7 +2543,7 @@ async function check(base, port, site, adSite) {
         await frameClick("#load");
         await frameWait(`document.getElementById("status")?.textContent === "playing"`, "the page told its video plays");
         await frameWait(`getComputedStyle(document.getElementById("wrap")).visibility === "visible"`, "the player shown by the page");
-        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5 && v.style.display !== "none" && v.getBoundingClientRect().width > 300)`, "it laid over its box, playing", 30000);
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5 && v.style.display !== "none" && v.getBoundingClientRect().width > 300)`, "it under its box, playing", 30000);
         await frameWait(`/^time [1-9][0-9.]*$/.test(document.getElementById("time")?.textContent)`, "the page reading where it is, going on");
     });
 

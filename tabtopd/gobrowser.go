@@ -47,6 +47,9 @@ var goAgentJS string
 //go:embed gocanvas.js
 var goCanvasJS string
 
+//go:embed gogl.js
+var goGLJS string
+
 // goObserveJS is the page's IntersectionObserver, run before its scripts
 // (see goobserve.js).
 //
@@ -106,7 +109,7 @@ const (
 	goPollQuiet  = 10 * time.Second
 	// goChangesLimit is the largest batch of changes sent; a bigger one is
 	// sent as the whole document again.
-	goChangesLimit = 4 << 20
+	goChangesLimit = 8 << 20
 	// goDialogWait is how long a dialog waits for the person, before it's
 	// answered for them: OK for an alert, Cancel for a question.
 	goDialogWait = 60 * time.Second
@@ -177,10 +180,13 @@ type goBrowser struct {
 	readSoon <-chan time.Time
 	// lastAgain is when the document was last read again whole; againGen,
 	// the generation waiting to be (0: none), at againSoon.
-	lastAgain  time.Time
-	againGen   int
-	againSoon  <-chan time.Time
-	reading    bool // a read of changes is going
+	lastAgain time.Time
+	againGen  int
+	againSoon <-chan time.Time
+	reading   bool // a read of changes is going
+	// glStreams are the WebGL streams of the document shown, by canvas
+	// (goGLStream): set by each snapshot, carried on by its changes.
+	glStreams  map[int]*goGLStream
 	lastRead   time.Time
 	lastChange time.Time      // when the document last changed
 	dialog     bool           // a dialog is open
@@ -662,7 +668,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goEMEJS + "\n" + goSheetsJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLJS + "\n" + goEMEJS + "\n" + goSheetsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -1476,6 +1482,8 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			b.url = s.URL
+			b.glStreams = make(map[int]*goGLStream)
+			goGLStreamsOf(s.Doc, b.glStreams)
 			if media := b.docType; !goShownType(media) || !goShownType(s.Type) {
 				// A file, not a page.
 				if goShownType(media) {
@@ -1490,7 +1498,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
-				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "theme": b.sites.themeFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc)})
+				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return
@@ -1624,7 +1632,10 @@ func (b *goBrowser) readChanges() {
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
 			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(c.EME) > 0 || len(io) > 0 || len(scrolls) > 0 {
-				var seen goSeen
+				if b.glStreams == nil {
+					b.glStreams = make(map[int]*goGLStream)
+				}
+				seen := goSeen{gl: b.glStreams}
 				ops := goCleanOps(c.Ops, &seen)
 				goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
 				changes := map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams}
@@ -1637,6 +1648,14 @@ func (b *goBrowser) readChanges() {
 				}
 				p, _ := json.Marshal(changes)
 				b.sendLarge(p)
+				// A WebGL canvas drawn since the last read is likely being
+				// animated: read again at the least interval, not the poll's.
+				for _, op := range ops {
+					if m, ok := op.(map[string]any); ok && m["o"] == "g" && b.readSoon == nil {
+						b.readSoon = time.After(goChangesEvery)
+						break
+					}
+				}
 			}
 			if b.dirty {
 				b.readChanges()
@@ -1669,6 +1688,44 @@ func (b *goBrowser) relayout(ctx context.Context) error {
 type goSeen struct {
 	nodes []*goNode
 	attrs [][2]string
+	// gl is the tab's WebGL streams by canvas node ID (goGLStream): a delta
+	// is checked against its canvas's, and a full log starts it afresh.
+	gl map[int]*goGLStream
+}
+
+// goCanvasOp adds to a canvas's op the iframes it's within (a same-origin
+// frame's canvas, numbered as the page's nodes are), if they're plausible.
+func goCanvasOp(op map[string]any, path []int) map[string]any {
+	if len(path) == 0 || len(path) > 4 {
+		return op
+	}
+	for _, id := range path {
+		if id <= 0 {
+			return op
+		}
+	}
+	op["path"] = path
+	return op
+}
+
+// glStreamOK says whether canvas id has a stream.
+func (s *goSeen) glStreamOK(id int) (*goGLStream, bool) {
+	if s == nil || s.gl == nil {
+		return nil, false
+	}
+	stream, ok := s.gl[id]
+	return stream, ok
+}
+
+// glFull says whether the document has as many WebGL canvases as it may.
+func (s *goSeen) glFull() bool { return s != nil && s.gl != nil && len(s.gl) >= goGLStreamsMax }
+
+// glStream is the WebGL stream checked so far for canvas id, if any.
+func (s *goSeen) glStream(id int) *goGLStream {
+	if s == nil || s.gl == nil {
+		return nil
+	}
+	return s.gl[id]
 }
 
 // goCleanOps takes event handler attributes and what's never shown out of a
@@ -1678,12 +1735,18 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 	out := []any{} // [] if none, not null: a batch may bring only what's observed
 	for _, r := range raw {
 		var op struct {
-			O  string    `json:"o"`
-			I  int       `json:"i"`
-			N  string    `json:"n"`
-			V  *string   `json:"v"`
-			PE string    `json:"pe"`
-			C  []*goNode `json:"c"`
+			O          string    `json:"o"`
+			I          int       `json:"i"`
+			N          string    `json:"n"`
+			V          *string   `json:"v"`
+			PE         string    `json:"pe"`
+			W          int       `json:"w"`
+			H          int       `json:"h"`
+			R          bool      `json:"r"`
+			Version    int       `json:"version"`
+			Attributes int       `json:"attributes"`
+			Path       []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
+			C          []*goNode `json:"c"`
 		}
 		if json.Unmarshal(r, &op) != nil {
 			continue
@@ -1701,6 +1764,9 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 					kids = append(kids, c)
 					if seen != nil {
 						seen.nodes = append(seen.nodes, k)
+						if seen.gl != nil {
+							goGLStreamsOf(c, seen.gl)
+						}
 					}
 				}
 			}
@@ -1719,6 +1785,9 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 			if op.I <= 0 {
 				continue
 			}
+			if seen != nil && seen.gl != nil {
+				delete(seen.gl, op.I) // a WebGL canvas shown otherwise needs a full log again
+			}
 			pixels := ""
 			if op.V != nil && goCanvasPNGValid(*op.V) {
 				pixels = *op.V
@@ -1727,7 +1796,37 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 			if pixels != "" {
 				reason = ""
 			}
-			out = append(out, map[string]any{"o": "p", "i": op.I, "v": pixels, "pe": reason})
+			out = append(out, goCanvasOp(map[string]any{"o": "p", "i": op.I, "v": pixels, "pe": reason}, op.Path))
+		case "g": // bounded WebGL replay log: a full one (r), or the calls since the last
+			if op.I <= 0 {
+				continue
+			}
+			// A delta continues the stream the server has checked so far;
+			// without one (refused before, or never sent whole) it's refused.
+			var prior *goGLStream
+			ok := op.V != nil && op.Attributes >= 0 && op.Attributes <= 63
+			if ok && !op.R {
+				prior = seen.glStream(op.I)
+				ok = prior != nil
+			}
+			if _, known := seen.glStreamOK(op.I); ok && op.R && !known && seen.glFull() {
+				ok = false // one WebGL canvas too many
+			}
+			var stream *goGLStream
+			if ok {
+				stream, ok = goCanvasGLCheck(*op.V, op.W, op.H, op.Version, prior)
+			}
+			if ok && seen != nil && seen.gl != nil {
+				seen.gl[op.I] = stream
+			}
+			if ok {
+				out = append(out, goCanvasOp(map[string]any{"o": "g", "i": op.I, "v": *op.V, "w": op.W, "h": op.H, "r": op.R, "version": op.Version, "attributes": op.Attributes}, op.Path))
+			} else {
+				if seen != nil && seen.gl != nil {
+					delete(seen.gl, op.I)
+				}
+				out = append(out, goCanvasOp(map[string]any{"o": "p", "i": op.I, "v": "", "pe": "unsupported"}, op.Path))
+			}
 		case "t", "v":
 			v := ""
 			if op.V != nil {

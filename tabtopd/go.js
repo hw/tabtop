@@ -380,9 +380,9 @@ warnExpiry();
 // The frame: sandboxed with scripts only, its document from the server,
 // with a CSP that lets it load nothing from the web (see gopage.go).
 const frame = document.createElement("iframe");
-// The page's players, laid over the copy's boxes (go-media.js): their
-// posters fetched as the page's pictures are; a video's proportions told to
-// its box.
+// The page's players, laid under the copy's boxes (go-media.js) so images
+// and chrome in the copy keep z-order above the pixels; posters fetched as
+// the page's pictures are; a video's proportions told to its box.
 let media = null;
 const mediaHelp = {
     picture: (url) => cachedResource("image", url),
@@ -391,13 +391,15 @@ const mediaHelp = {
     range: (url, part) => (ws?.readyState === TunnelSocket.OPEN ? mediaViaTab(ws, url, part) : null),
     sized: (key, ratio, meta) => frame.contentWindow?.postMessage({ type: "media-state", key, ratio, meta }, "*"),
     played: (key, play) => frame.contentWindow?.postMessage({ type: "media-state", key, play }, "*"),
-    // Scrolling done over a player (go-media.js), for the frame to do in
+    // Scrolling done over a player in the watch UI, for the frame to do in
     // the page under it: where (in the frame) and by how much.
     passOn: (x, y, dx, dy, how) => {
         const f = frame.getBoundingClientRect();
         frame.contentWindow?.postMessage({ type: "media-scroll", x: x - f.left, y: y - f.top, dx, dy, how }, "*");
     },
     failed: (key, error, blocked) => frame.contentWindow?.postMessage({ type: "media-state", key, error, blocked }, "*"),
+    // Outline the copy's media box (underlaid pixels can't show an outline).
+    marked: (key) => frame.contentWindow?.postMessage({ type: "media-mark", key }, "*"),
     // A player's state changed: the menu's list of them (mediaMenu).
     changed: () => mediaMenu(),
     // A video's file saved into Downloads (the player's Download), saying
@@ -451,8 +453,7 @@ function applyMediaPolicy(policy) {
 }
 
 // refreshTheme takes Dark mode for the page shown afresh (changed in Site
-// controls): the engine tells the page again what it prefers, and the
-// copy's darkened, or not, as Force dark says.
+// controls): the engine tells the page again what it prefers.
 async function refreshTheme() {
     const entry = entries[at];
     if (!entry) return;
@@ -461,8 +462,6 @@ async function refreshTheme() {
         t.close();
         if (entries[at] !== entry) return;
         ws?.send(JSON.stringify({ op: "theme" }));
-        if (lastRender) lastRender.theme = t.reply.effectiveTheme;
-        toFrame({ type: "theme", theme: t.reply.effectiveTheme });
     } catch { /* the next snapshot says it */ }
 }
 
@@ -1280,7 +1279,7 @@ function message(m) {
             shown = m.gen;
             applyMediaPolicy(m.mediaPolicy ?? "allow");
             media.blockHosts(m.videoHosts);
-            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide, theme: m.theme };
+            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide };
             toFrame(lastRender);
             update();
             break;

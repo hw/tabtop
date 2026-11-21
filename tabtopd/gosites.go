@@ -35,9 +35,8 @@ type goSiteSettings struct {
 	videoHosts   []string          // hosts whose videos aren't played, on any page (a Skip held: go.js)
 	popupDefault string
 	mediaDefault string
-	// Dark mode: site -> "auto" (as the person's device), "light", "dark"
-	// (what pages are told the person prefers), or "force" (dark, and a
-	// page without a dark look of its own darkened: go-frame.js).
+	// Dark mode: site -> "auto" (as the person's device), "light", or "dark"
+	// (what pages are told the person prefers).
 	theme        map[string]string
 	themeDefault string
 	// Search engine for words typed in the address bar (go.js; chosen in
@@ -135,12 +134,12 @@ func newGoSiteSettings(file string) *goSiteSettings {
 			s.popups[site] = v
 		}
 	}
-	if themePolicy(f.ThemeDefault) {
-		s.themeDefault = f.ThemeDefault
+	if t := themeStored(f.ThemeDefault); themePolicy(t) {
+		s.themeDefault = t
 	}
 	for site, v := range f.Theme {
-		if site = goSettingHost(site); site != "" && themePolicy(v) && len(s.theme) < maxGoSiteSettings {
-			s.theme[goSite(site)] = v
+		if site = goSettingHost(site); site != "" && themePolicy(themeStored(v)) && len(s.theme) < maxGoSiteSettings {
+			s.theme[goSite(site)] = themeStored(v)
 		}
 	}
 	if goSearchEngines[f.SearchEngine] {
@@ -233,7 +232,16 @@ func mediaPolicy(value string) bool {
 }
 
 func themePolicy(value string) bool {
-	return value == "auto" || value == "light" || value == "dark" || value == "force"
+	return value == "auto" || value == "light" || value == "dark"
+}
+
+// themeStored maps a kept Dark mode value to today's: old "force" (invert
+// filter on the copy) is "dark" (pages told dark only).
+func themeStored(value string) string {
+	if value == "force" {
+		return "dark"
+	}
+	return value
 }
 
 // themeFor is Dark mode for a page of host: its site's, or the default.
@@ -398,7 +406,7 @@ func (s *goSiteSettings) set(site, setting string) error {
 		}
 	case "videos-host-allow":
 		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
-	case "theme-auto", "theme-light", "theme-dark", "theme-force":
+	case "theme-auto", "theme-light", "theme-dark":
 		if _, ok := s.theme[h]; !ok && len(s.theme) >= maxGoSiteSettings {
 			return errors.New("Too many sites have Dark mode settings.")
 		}

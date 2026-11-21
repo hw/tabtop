@@ -269,6 +269,7 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		}
 		doc := &goNode{ID: s.Doc.ID, Type: 9, Base: s.Base, Kids: s.Doc.Kids}
 		c.doc = goClean(doc)
+		goGLStreamsOf(c.doc, make(map[int]*goGLStream)) // its WebGL canvases bounded as a page's are
 		c.due = false
 		// One that changes every time is read less often, up to every
 		// goFrameWaitMax; one that's settled, every round.

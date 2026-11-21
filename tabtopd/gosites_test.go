@@ -190,7 +190,7 @@ func TestGoSiteTheme(t *testing.T) {
 	if got := s.themeFor("example.com"); got != "auto" {
 		t.Errorf("at first %q", got)
 	}
-	for _, c := range [][2]string{{"", "theme-dark"}, {"news.example.com", "theme-force"}, {"light.example", "theme-light"}} {
+	for _, c := range [][2]string{{"", "theme-dark"}, {"news.example.com", "theme-dark"}, {"light.example", "theme-light"}} {
 		if err := s.set(c[0], c[1]); err != nil {
 			t.Fatal(c, err)
 		}
@@ -198,8 +198,11 @@ func TestGoSiteTheme(t *testing.T) {
 	if err := s.set("", "theme-sepia"); err == nil {
 		t.Error("an unknown Dark mode taken")
 	}
+	if err := s.set("old.example", "theme-force"); err == nil {
+		t.Error("Force dark still taken")
+	}
 	again := newGoSiteSettings(file)
-	for host, want := range map[string]string{"other.com": "dark", "www.example.com": "force", "light.example": "light"} {
+	for host, want := range map[string]string{"other.com": "dark", "www.example.com": "dark", "light.example": "light"} {
 		if got := again.themeFor(host); got != want {
 			t.Errorf("%s: %q, want %q", host, got, want)
 		}
@@ -217,5 +220,16 @@ func TestGoSiteTheme(t *testing.T) {
 	again.set("example.com", "forget")
 	if got := again.themeFor("example.com"); got != "auto" {
 		t.Errorf("after forgetting, %q", got)
+	}
+	legacy := filepath.Join(t.TempDir(), "legacy-theme.json")
+	if err := os.WriteFile(legacy, []byte(`{"themeDefault":"force","theme":{"old.example":"force"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromLegacy := newGoSiteSettings(legacy)
+	if got := fromLegacy.themeFor("anywhere.com"); got != "dark" {
+		t.Fatalf("legacy default force: %q", got)
+	}
+	if got := fromLegacy.themeFor("old.example"); got != "dark" {
+		t.Fatalf("legacy site force: %q", got)
 	}
 }

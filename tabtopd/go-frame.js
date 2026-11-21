@@ -140,9 +140,6 @@
             render(m).catch((err) => tell({ type: "rendered", gen: m.gen, report: { error: String(err?.message || err) } }));
         } else if (m.type === "changes") {
             apply(m);
-        } else if (m.type === "theme" && typeof m.theme === "string") {
-            theme = m.theme;
-            darken();
         } else if (m.type === "net" && Number.isSafeInteger(m.gen)) {
             netGen = m.gen;
             netBusy = !!m.busy;
@@ -155,11 +152,14 @@
                 entry.asked = false;
             }
             mediaLater();
+        } else if (m.type === "media-mark") {
+            for (const entry of media.values()) entry.box?.classList.toggle("go-media-mark", entry.key === m.key);
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
             const entry = media.get(m.key), box = entry?.box;
             if (box && typeof m.error === "string") {
                 entry.policyBlocked = m.blocked === true;
                 box.textContent = m.error;
+                setMediaLive(box, m.error === "" && !entry.policyBlocked);
             }
             // The video's own proportions, which its box takes.
             if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) {
@@ -723,43 +723,130 @@
     let media = new Map();  // key -> {box, kind, src, ...}, of the document shown
     // The boxes' sizes but for the page's own rules (which win: :where has
     // no weight), as a browser's players' are.
-    // Force dark (Dark mode, go/sites): a page that has no dark look of its
-    // own, darkened: its colours turned about (their hues kept), and its
-    // pictures, videos, canvases and frames turned back, so they look as
-    // they are. A page already dark (its background's) is left as it is.
-    let theme = "auto";
-    const FORCE_DARK = "html { filter: invert(1) hue-rotate(180deg) !important; background-color: #fff !important; } " +
-        ":is(img, video, canvas, iframe, embed, object, svg image, [data-go-video]):not(:is(img, video, canvas, iframe, embed, object, [data-go-video]) *) " +
-        "{ filter: invert(1) hue-rotate(180deg) !important; }";
-    const forceDarkSheet = new CSSStyleSheet();
-    forceDarkSheet.replaceSync(FORCE_DARK);
-    function lightness(color) {
-        const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?/.exec(color || "");
-        if (!m || m[4] !== undefined && Number(m[4]) < 0.1) return null;  // (none: what's under it)
-        const [r, g, b] = [m[1], m[2], m[3]].map((v) => Number(v) / 255);
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    }
-    function darken() {
-        const sheets = document.adoptedStyleSheets.filter((sheet) => sheet !== forceDarkSheet);
-        if (theme !== "force" || !document.documentElement) {
-            document.adoptedStyleSheets = sheets;
-            return;
-        }
-        // The page's background: its html's, else its body's, else white.
-        const own = lightness(getComputedStyle(document.documentElement).backgroundColor) ??
-            (document.body ? lightness(getComputedStyle(document.body).backgroundColor) : null) ?? 1;
-        if (own < 0.4) {
-            document.adoptedStyleSheets = sheets;
-            return;
-        }
-        document.adoptedStyleSheets = [...sheets, forceDarkSheet];
-    }
-    const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, auto); aspect-ratio: var(--tabtop-media-ratio, 16 / 9); object-fit: contain; } " +
+    // Live media boxes are transparent holes through the frame so underlaid
+    // players show. Opaque ancestors and large poster layers are cleared;
+    // small chrome images keep their z-order above the pixels.
+    const MEDIA_DEFAULTS = "html, body { background: transparent; } " +
+        ":where([data-go-video]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, auto); aspect-ratio: var(--tabtop-media-ratio, 16 / 9); object-fit: contain; } " +
         ":where([data-go-audio]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, 54px); } " +
         ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
+        "[data-go-video].go-media-live, [data-go-audio].go-media-live { padding: 0 !important; background: transparent !important; background-image: none !important; color: transparent !important; border-color: transparent !important; box-shadow: none !important; } " +
+        ":where([data-go-video].go-media-mark, [data-go-audio].go-media-mark) { outline: 3px solid #8ab4f8; outline-offset: -3px; } " +
         "[data-go-wait] { visibility: hidden !important; }";
     let mediaKey = 0;
-    const mediaOf = new WeakMap();  // a box -> {tag, key, src, poster, muted, loop, play}: the page's player's
+    const mediaOf = new WeakMap();
+    const mediaHoleAncestors = new WeakMap();
+    const mediaHoleCovers = new WeakMap();
+    const mediaHoleFor = new WeakMap();
+    function mediaBackgroundBlocks(el) {
+        const style = getComputedStyle(el);
+        if (style.backgroundImage && style.backgroundImage !== "none") return true;
+        const color = style.backgroundColor;
+        if (!color || color === "transparent") return false;
+        const match = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/.exec(color);
+        if (match) return (match[4] === undefined ? 1 : Number(match[4])) > 0;
+        return color !== "rgba(0, 0, 0, 0)";
+    }
+    function mediaRectOverlap(a, b) {
+        const left = Math.max(a.left, b.left), top = Math.max(a.top, b.top);
+        const right = Math.min(a.right, b.right), bottom = Math.min(a.bottom, b.bottom);
+        const w = right - left, h = bottom - top;
+        if (w <= 0 || h <= 0) return 0;
+        const area = a.width * a.height;
+        return area > 0 ? (w * h) / area : 0;
+    }
+    function punchMediaAncestor(el) {
+        let state = mediaHoleAncestors.get(el);
+        if (state) { state.refs++; return; }
+        state = { refs: 1, background: el.style.background, backgroundImage: el.style.backgroundImage, backgroundColor: el.style.backgroundColor };
+        mediaHoleAncestors.set(el, state);
+        el.style.setProperty("background", "transparent", "important");
+        el.style.setProperty("background-image", "none", "important");
+        el.style.setProperty("background-color", "transparent", "important");
+    }
+    function sealMediaAncestor(el) {
+        const state = mediaHoleAncestors.get(el);
+        if (!state || --state.refs > 0) return;
+        mediaHoleAncestors.delete(el);
+        for (const [name, value] of [["background", state.background], ["background-image", state.backgroundImage], ["background-color", state.backgroundColor]]) {
+            if (value) el.style.setProperty(name, value); else el.style.removeProperty(name);
+        }
+    }
+    function punchMediaCover(el) {
+        let state = mediaHoleCovers.get(el);
+        if (state) { state.refs++; return; }
+        state = { refs: 1, opacity: el.style.opacity, visibility: el.style.visibility };
+        mediaHoleCovers.set(el, state);
+        el.style.setProperty("opacity", "0", "important");
+        el.style.setProperty("visibility", "hidden", "important");
+    }
+    function sealMediaCover(el) {
+        const state = mediaHoleCovers.get(el);
+        if (!state || --state.refs > 0) return;
+        mediaHoleCovers.delete(el);
+        if (state.opacity) el.style.setProperty("opacity", state.opacity); else el.style.removeProperty("opacity");
+        if (state.visibility) el.style.setProperty("visibility", state.visibility); else el.style.removeProperty("visibility");
+    }
+    function sealMediaHole(box) {
+        const punched = mediaHoleFor.get(box);
+        if (!punched) return;
+        mediaHoleFor.delete(box);
+        for (const el of punched.ancestors) sealMediaAncestor(el);
+        for (const el of punched.covers) sealMediaCover(el);
+    }
+    function punchMediaHole(box) {
+        sealMediaHole(box);
+        if (!box?.isConnected) return;
+        const ancestors = [];
+        for (let el = box.parentElement; el; el = el.parentElement) {
+            if (mediaBackgroundBlocks(el) || el === document.body || el === document.documentElement) {
+                punchMediaAncestor(el);
+                ancestors.push(el);
+            }
+            if (el === document.documentElement) break;
+        }
+        const covers = [];
+        const hole = box.getBoundingClientRect();
+        if (hole.width >= 8 && hole.height >= 8 && document.body) {
+            for (const el of document.body.querySelectorAll("img, picture, canvas, svg, video")) {
+                if (el === box || box.contains(el) || el.contains(box)) continue;
+                if (el.closest("[data-go-video], [data-go-audio]")) continue;
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 48 || rect.height < 48) continue;
+                if (rect.width * rect.height < hole.width * hole.height * 0.4) continue;
+                if (mediaRectOverlap(hole, rect) < 0.6) continue;
+                const style = getComputedStyle(el);
+                if (style.visibility === "hidden" || Number(style.opacity) === 0) continue;
+                if (rect.width < hole.width * 0.35 && rect.height > hole.height * 0.5) continue;
+                punchMediaCover(el);
+                covers.push(el);
+                if (covers.length >= 12) break;
+            }
+            for (const el of document.body.querySelectorAll("div, span")) {
+                if (covers.length >= 12) break;
+                if (el === box || box.contains(el) || el.contains(box)) continue;
+                if (el.querySelector("img, video, canvas, svg, button, a, input")) continue;
+                const rect = el.getBoundingClientRect();
+                if (rect.width * rect.height < hole.width * hole.height * 0.5) continue;
+                if (mediaRectOverlap(hole, rect) < 0.7) continue;
+                if (!mediaBackgroundBlocks(el)) continue;
+                punchMediaCover(el);
+                covers.push(el);
+            }
+        }
+        mediaHoleFor.set(box, { ancestors, covers });
+    }
+    function setMediaLive(box, live) {
+        if (!box) return;
+        const on = !!live;
+        if (box.classList.contains("go-media-live") === on) {
+            if (on) punchMediaHole(box);
+            return;
+        }
+        box.classList.toggle("go-media-live", on);
+        if (on) punchMediaHole(box);
+        else sealMediaHole(box);
+    }
     const mediaVisibility = new IntersectionObserver((entries) => {
         for (const entry of entries) {
             const m = media.get(mediaOf.get(entry.target)?.key);
@@ -774,6 +861,8 @@
         if (!m) return;
         mediaVisibility.unobserve(m.box);
         mediaSizes.unobserve(m.box);
+        setMediaLive(m.box, false);
+        m.box.classList.remove("go-media-mark");
         media.delete(key);
     }
     // A fresh snapshot of the same document replaces the boxes. Keep the
@@ -792,11 +881,17 @@
             if (!kept || kept.entry.kind !== entry.kind) continue;
             active.delete(entry.src);
             forgetMedia(key);
+            const wasLive = kept.entry.box.classList.contains("go-media-live");
+            const wasMarked = kept.entry.box.classList.contains("go-media-mark");
             mediaVisibility.unobserve(kept.entry.box);
             mediaSizes.unobserve(kept.entry.box);
+            setMediaLive(kept.entry.box, false);
+            kept.entry.box.classList.remove("go-media-mark");
             entry.box.textContent = kept.entry.box.textContent;
             mediaOf.get(entry.box).key = kept.key;
             media.set(kept.key, { ...entry, asked: true, play: kept.entry.play });
+            setMediaLive(entry.box, wasLive);
+            entry.box.classList.toggle("go-media-mark", wasMarked);
             mediaVisibility.observe(entry.box);
             mediaSizes.observe(entry.box);
         }
@@ -854,6 +949,8 @@
         if (/^blob:/i.test(src) && !/^blob:tabtop-media\/[1-9]\d*$/.test(src)) {
             // Fed by the page's own player (Media Source): nothing a player
             // here could read.
+            setMediaLive(box, false);
+            box.classList.remove("go-media-mark");
             box.textContent = `This ${what} is streamed by the site's own player, which can't play here.`;
             leave(d, info.tag);
             mediaLater();
@@ -861,10 +958,13 @@
         }
         const url = /^blob:tabtop-media\/[1-9]\d*$/.test(src) ? src : src && web(src, d.base);
         if (!url) {
+            setMediaLive(box, false);
+            box.classList.remove("go-media-mark");
             box.textContent = `A ${what} with nothing to play.`;
             mediaLater();
             return;
         }
+        setMediaLive(box, false);
         box.textContent = `Loading the ${what}…`;
         const key = info.key = ++mediaKey;
         const poster = info.tag === "video" ? web(info.poster, d.base) : null;
@@ -891,6 +991,7 @@
             if (!m) return true;
             m.play = info.play;
             if (m.asked && doc && m.top === doc) tell({ type: "media-play", gen: doc.gen, key: info.key, play: m.play });
+            mediaLater();
             return true;
         }
         if (op.o !== "a") return false;
@@ -979,18 +1080,28 @@
                     continue;
                 }
                 const clip = mediaClip(r, m.intersection);
-                const { objectFit: fit, objectPosition: position, visibility } = getComputedStyle(m.box);
-                // In view, or played by the page, it's played (hidden too, as
-                // a browser's is: a page may show a player, and move it to
-                // where it's seen, only once its video plays, YouTube's
-                // Shorts as it goes to the next); laid over its box when shown.
+                const { objectFit: fit, objectPosition: position, visibility, opacity } = getComputedStyle(m.box);
+                // Underlaid player: show once in view when the box is visible,
+                // or when the page wants play (Shorts stays visibility:hidden
+                // until it hears playing). Page images above the hole keep
+                // z-order; large posters are punched out separately.
                 const inView = clip !== null && clip.width >= 8 && clip.height >= 8;
-                const shown = visibility === "visible" && inView;
+                const boxShown = visibility === "visible" && Number(opacity) > 0.05;
+                const shown = inView && (boxShown || !!m.play);
                 const relayed = m.src.startsWith("blob:tabtop-media/");
                 if (m.kind === "video" && !inView && !m.play && !relayed) {
-                    if (m.asked) m.box.textContent = "";
+                    if (m.asked) {
+                        setMediaLive(m.box, false);
+                        m.box.classList.remove("go-media-mark");
+                        m.box.textContent = "";
+                    }
                     m.asked = false;
                     continue;
+                }
+                const geometryHole = `${Math.round(r.x)}:${Math.round(r.y)}:${Math.round(r.width)}:${Math.round(r.height)}`;
+                if (m.asked && m.box.classList.contains("go-media-live") && m.holeGeometry !== geometryHole) {
+                    m.holeGeometry = geometryHole;
+                    punchMediaHole(m.box);
                 }
                 const at = { key, rect, clip, shown, fit, position };
                 if (!m.asked && (inView || m.play || relayed)) {
@@ -1019,12 +1130,344 @@
     watchRoot(new ResizeObserver(mediaLater));
 
     const canvasDraws = new WeakMap();
+    const canvasNoted = new WeakMap();  // a canvas given a note's title -> its own title and label
+    const glCanvases = new WeakMap();
+    const glContextListeners = new WeakSet();
+    const glGrayed = new WeakSet();  // canvases given a grey background by a failed replay
+    const glMethods = new Set(("activeTexture attachShader disableVertexAttribArray validateProgram bindAttribLocation bindBuffer bindFramebuffer bindRenderbuffer bindTexture blendColor blendEquation blendEquationSeparate blendFunc blendFuncSeparate bufferData bufferSubData clear clearColor clearDepth clearStencil colorMask compileShader copyTexImage2D copyTexSubImage2D cullFace deleteBuffer deleteFramebuffer deleteProgram deleteRenderbuffer deleteShader deleteTexture depthFunc depthMask depthRange detachShader disable enable enableVertexAttribArray framebufferRenderbuffer framebufferTexture2D frontFace generateMipmap getAttribLocation getExtension getUniformLocation hint lineWidth linkProgram pixelStorei polygonOffset renderbufferStorage sampleCoverage scissor shaderSource stencilFunc stencilFuncSeparate stencilMask stencilMaskSeparate stencilOp stencilOpSeparate texImage2D texParameterf texParameteri texSubImage2D uniform1f uniform1fv uniform1i uniform1iv uniform2f uniform2fv uniform2i uniform2iv uniform3f uniform3fv uniform3i uniform3iv uniform4f uniform4fv uniform4i uniform4iv uniformMatrix2fv uniformMatrix3fv uniformMatrix4fv useProgram vertexAttrib1f vertexAttrib1fv vertexAttrib2f vertexAttrib2fv vertexAttrib3f vertexAttrib3fv vertexAttrib4f vertexAttrib4fv vertexAttribPointer viewport drawArrays drawElements createBuffer createFramebuffer createProgram createRenderbuffer createShader createTexture bindBufferBase bindBufferRange bindVertexArray blitFramebuffer clearBufferfi clearBufferfv clearBufferiv clearBufferuiv copyTexSubImage3D createVertexArray deleteVertexArray drawArraysInstanced drawElementsInstanced drawRangeElements framebufferTextureLayer readBuffer renderbufferStorageMultisample texImage3D texStorage2D texStorage3D texSubImage3D vertexAttribDivisor drawBuffers samplerParameterf samplerParameteri bindSampler createSampler deleteSampler bindTransformFeedback beginTransformFeedback endTransformFeedback createTransformFeedback deleteTransformFeedback pauseTransformFeedback resumeTransformFeedback createQuery deleteQuery beginQuery endQuery queryCounter getQuery getQueryParameter getFragDataLocation enableiOES disableiOES blendEquationiOES blendEquationSeparateiOES blendFunciOES blendFuncSeparateiOES colorMaskiOES polygonModeWEBGL copyBufferSubData invalidateFramebuffer invalidateSubFramebuffer compressedTexImage2D compressedTexSubImage2D compressedTexImage3D compressedTexSubImage3D uniform1ui uniform1uiv uniform2ui uniform2uiv uniform3ui uniform3uiv uniform4ui uniform4uiv uniformMatrix2x3fv uniformMatrix2x4fv uniformMatrix3x2fv uniformMatrix3x4fv uniformMatrix4x2fv uniformMatrix4x3fv uniformBlockBinding transformFeedbackVaryings vertexAttribIPointer vertexAttribI4i vertexAttribI4iv vertexAttribI4ui vertexAttribI4uiv").split(/\s+/));
+    const gl2OnlyMethods = new Set(("bindBufferBase bindBufferRange bindSampler bindTransformFeedback beginQuery beginTransformFeedback bindVertexArray blitFramebuffer clearBufferfi clearBufferfv clearBufferiv clearBufferuiv compressedTexImage3D compressedTexSubImage3D copyBufferSubData copyTexSubImage3D createQuery createSampler createTransformFeedback createVertexArray deleteQuery deleteSampler deleteTransformFeedback deleteVertexArray drawArraysInstanced drawBuffers drawElementsInstanced drawRangeElements endQuery endTransformFeedback framebufferTextureLayer getFragDataLocation getQuery getQueryParameter enableiOES disableiOES blendEquationiOES blendEquationSeparateiOES blendFunciOES blendFuncSeparateiOES colorMaskiOES invalidateFramebuffer invalidateSubFramebuffer pauseTransformFeedback queryCounter readBuffer renderbufferStorageMultisample resumeTransformFeedback samplerParameterf samplerParameteri texImage3D texStorage2D texStorage3D texSubImage3D transformFeedbackVaryings uniform1ui uniform1uiv uniform2ui uniform2uiv uniform3ui uniform3uiv uniform4ui uniform4uiv uniformBlockBinding uniformMatrix2x3fv uniformMatrix2x4fv uniformMatrix3x2fv uniformMatrix3x4fv uniformMatrix4x2fv uniformMatrix4x3fv vertexAttribDivisor vertexAttribIPointer vertexAttribI4i vertexAttribI4iv vertexAttribI4ui vertexAttribI4uiv").split(/\s+/));
+    const extensionMethods = { createVertexArray: ["OES_vertex_array_object", "createVertexArrayOES"], bindVertexArray: ["OES_vertex_array_object", "bindVertexArrayOES"], deleteVertexArray: ["OES_vertex_array_object", "deleteVertexArrayOES"], drawArraysInstanced: ["ANGLE_instanced_arrays", "drawArraysInstancedANGLE", "WEBGL_multi_draw", "multiDrawArraysInstancedWEBGL"], drawElementsInstanced: ["ANGLE_instanced_arrays", "drawElementsInstancedANGLE", "WEBGL_multi_draw", "multiDrawElementsInstancedWEBGL"], vertexAttribDivisor: ["ANGLE_instanced_arrays", "vertexAttribDivisorANGLE"], drawBuffers: ["WEBGL_draw_buffers", "drawBuffersWEBGL"] };
+    const extensionCommandMethods = Object.fromEntries(["enableiOES", "disableiOES", "blendEquationiOES", "blendEquationSeparateiOES", "blendFunciOES", "blendFuncSeparateiOES", "colorMaskiOES"].map((name) => [name, ["OES_draw_buffers_indexed", name]]));
+    extensionCommandMethods.polygonModeWEBGL = ["WEBGL_polygon_mode", "polygonModeWEBGL"];
+    const requiredRenderingExtensions = new Set(["OES_element_index_uint", "OES_standard_derivatives", "WEBGL_depth_texture", "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float", "OES_texture_half_float_linear", "EXT_color_buffer_float", "EXT_color_buffer_half_float", "EXT_float_blend", "OES_draw_buffers_indexed", "WEBGL_polygon_mode", "EXT_texture_filter_anisotropic"]);
+    const webgl2CoreExtensions = new Set(["OES_element_index_uint", "OES_standard_derivatives", "WEBGL_depth_texture", "OES_texture_float", "OES_texture_half_float", "OES_texture_half_float_linear", "OES_vertex_array_object", "ANGLE_instanced_arrays", "WEBGL_draw_buffers", "WEBGL_compressed_texture_etc"]);
+    const glTyped = { Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array, ...(typeof Float16Array === "function" ? { Float16Array } : {}) };
+    // freshCanvas puts a new canvas in place of el, for a full WebGL log to
+    // be replayed from a context's first state: the old context's objects
+    // and state, or a 2D fallback drawn on it, can't be taken back.
+    function freshCanvas(d, el) {
+        const id = d?.ids.get(el);
+        if (id === undefined || !el.parentNode) return el;
+        const fresh = document.createElement("canvas");
+        for (const a of el.attributes) if (a.name !== "title" && a.name !== "aria-label") fresh.setAttribute(a.name, a.value);
+        if (glGrayed.has(el)) fresh.style.removeProperty("background-color");
+        try { glCanvases.get(el)?.gl?.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* already lost */ }
+        glCanvases.delete(el);
+        glLive.delete(el);
+        // Not left hidden over a video's hole by its copy of el's style: the
+        // next look at the holes hides it again if it should be.
+        const cover = mediaHoleCovers.get(el);
+        if (cover) {
+            if (cover.opacity) fresh.style.setProperty("opacity", cover.opacity); else fresh.style.removeProperty("opacity");
+            if (cover.visibility) fresh.style.setProperty("visibility", cover.visibility); else fresh.style.removeProperty("visibility");
+        }
+        el.replaceWith(fresh);
+        own(d, id, fresh);
+        // What the page observes of it (its IntersectionObservers and
+        // ResizeObservers, observed here) goes on with the new canvas.
+        for (const rec of d.io?.values?.() ?? []) {
+            if (!rec.ids.has(el)) continue;
+            rec.ids.set(fresh, rec.ids.get(el));
+            rec.ids.delete(el);
+            rec.observer.unobserve(el);
+            rec.observer.observe(fresh);
+        }
+        const sized = d.sized?.get(el);
+        if (sized) {
+            d.sized.delete(el);
+            d.sized.set(fresh, { ...sized, last: "" });
+        }
+        return fresh;
+    }
+    // What replay may ask of the viewer's GPU, whatever the page asked of
+    // Moli: each allocation and draw is bounded, and so is what a context
+    // holds at once (its objects' storage, by what's bound when it's given).
+    const glExtensionList = ["OES_element_index_uint", "OES_standard_derivatives", "WEBGL_depth_texture", "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float", "OES_texture_half_float_linear", "EXT_color_buffer_float", "EXT_color_buffer_half_float", "EXT_float_blend", "OES_draw_buffers_indexed", "WEBGL_polygon_mode", "EXT_texture_filter_anisotropic", "EXT_disjoint_timer_query", "EXT_disjoint_timer_query_webgl2", "OES_vertex_array_object", "ANGLE_instanced_arrays", "WEBGL_draw_buffers", "WEBGL_multi_draw", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_pvrtc", "WEBGL_compressed_texture_atc", "WEBGL_compressed_texture_astc", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc"];
+    const glExtensionNames = new Set(glExtensionList);
+    const glLimits = { size: 4096, depth: 256, texels: 64 << 20, levels: 13, samples: 8, buffer: 64 << 20, draw: 16 << 20, instances: 1 << 20, context: 256 << 20, mirrors: 16 };
+    const glLive = new Map();  // canvases with a replay context -> their document's generation
+    const glAttached = new WeakSet();  // of those, the ones seen in the page
+    let glLosses = 0;          // viewer contexts lost (GPU resets): after 3, no more WebGL here
+    function glCheck(mirror, command) {
+        const a = command.a, n = (i) => (typeof a[i] === "number" ? a[i] : 0);
+        const ref = (v) => (v && typeof v === "object" && Number.isInteger(v.ref) ? v.ref : 0);
+        const b = mirror.budget ||= { bound: new Map(), bytes: new Map(), total: 0, unit: 0 };
+        const dims = (w, h, d = 1, samples = 1) => {
+            if (w < 0 || h < 0 || d < 0 || w > glLimits.size || h > glLimits.size || d > glLimits.depth || w * h * d > glLimits.texels || samples > glLimits.samples) throw new Error("WebGL allocation too large");
+            return w * h * d * 4 * Math.max(1, samples);
+        };
+        const store = (key, slot, bytes) => {
+            if (!key) return;
+            const per = b.bytes.get(key) ?? new Map();
+            b.total += bytes - (per.get(slot) ?? 0);
+            per.set(slot, bytes);
+            b.bytes.set(key, per);
+            if (b.total > glLimits.context) throw new Error("WebGL memory budget");
+        };
+        const texture = (target) => b.bound.get(`t${b.unit}:${target >= 0x8515 && target <= 0x851A ? 0x8513 : target}`);
+        switch (command.m) {
+            case "activeTexture": b.unit = n(0); break;
+            case "bindBuffer": b.bound.set(`b${n(0)}`, ref(a[1])); break;
+            case "bindTexture": b.bound.set(`t${b.unit}:${n(0)}`, ref(a[1])); break;
+            case "bindRenderbuffer": b.bound.set("r", ref(a[1])); break;
+            case "deleteBuffer": case "deleteTexture": case "deleteRenderbuffer": {
+                const per = b.bytes.get(ref(a[0]));
+                if (per) for (const v of per.values()) b.total -= v;
+                b.bytes.delete(ref(a[0]));
+                break;
+            }
+            case "bufferData": {
+                const bytes = typeof a[1] === "number" ? a[1] : 0;
+                if (bytes < 0 || bytes > glLimits.buffer) throw new Error("WebGL buffer too large");
+                store(b.bound.get(`b${n(0)}`), 0, bytes || (a[1]?.data?.length ?? 0) * 0.75);
+                break;
+            }
+            case "texImage2D": case "copyTexImage2D": case "compressedTexImage2D": {
+                const [w, h] = command.m === "copyTexImage2D" ? [n(5), n(6)] : a.length >= 8 ? [n(3), n(4)] : [a[5]?.width ?? 0, a[5]?.height ?? 0];
+                store(texture(n(0)), `${n(0)}:${n(1)}`, dims(w, h));
+                if (command.m === "compressedTexImage2D" && typeof a[6] === "number" && a[6] > glLimits.buffer) throw new Error("WebGL upload too large");
+                break;
+            }
+            case "texImage3D": case "compressedTexImage3D":
+                store(texture(n(0)), `${n(0)}:${n(1)}`, dims(n(3), n(4), n(5)));
+                if (command.m === "compressedTexImage3D" && typeof a[7] === "number" && a[7] > glLimits.buffer) throw new Error("WebGL upload too large");
+                break;
+            case "texStorage2D": case "texStorage3D": {
+                if (n(1) < 1 || n(1) > glLimits.levels) throw new Error("WebGL texture levels");
+                const bytes = command.m === "texStorage2D" ? dims(n(3), n(4)) : dims(n(3), n(4), n(5));
+                store(texture(n(0)), "storage", Math.ceil(bytes * (n(1) > 1 ? 4 / 3 : 1)) * (n(0) === 0x8513 ? 6 : 1));
+                break;
+            }
+            case "renderbufferStorage": store(b.bound.get("r"), 0, dims(n(2), n(3))); break;
+            case "renderbufferStorageMultisample": store(b.bound.get("r"), 0, dims(n(3), n(4), 1, n(1))); break;
+            case "drawArrays": if (n(2) > glLimits.draw) throw new Error("WebGL draw too large"); break;
+            case "drawElements": if (n(1) > glLimits.draw) throw new Error("WebGL draw too large"); break;
+            case "drawRangeElements": if (n(3) > glLimits.draw) throw new Error("WebGL draw too large"); break;
+            case "drawArraysInstanced": if (n(2) > glLimits.draw || n(3) > glLimits.instances || n(2) * n(3) > glLimits.draw * 4) throw new Error("WebGL draw too large"); break;
+            case "drawElementsInstanced": if (n(1) > glLimits.draw || n(4) > glLimits.instances || n(1) * n(4) > glLimits.draw * 4) throw new Error("WebGL draw too large"); break;
+            case "getExtension": if (!glExtensionNames.has(a[0])) throw new Error("WebGL extension not mirrored"); break;
+        }
+    }
+    // glDrop gives up a canvas's replay context, freeing what it holds on
+    // the GPU; its last frame goes with it.
+    function glDrop(el) {
+        const mirror = glCanvases.get(el);
+        glLive.delete(el);
+        if (!mirror?.gl) return;
+        mirror.history = null;  // not replayed again
+        try { if (!mirror.gl.isContextLost()) mirror.gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* lost already */ }
+    }
+    // An attribute the viewer's shader compiler left out (its location -1):
+    // calls setting it up are skipped, as they'd do nothing here.
+    const glSkip = Symbol("inactive attribute");
+    function webglFrame(el, encoded, width, height, version = 1, attributes = 27, reset = true, d = null) {
+        if (reset && (glCanvases.has(el) || canvasDraws.has(el))) el = freshCanvas(d, el);
+        try {
+            if (typeof encoded !== "string" || encoded.length > (4 << 20) || !Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(attributes) || attributes < 0 || attributes > 63 || !Number.isInteger(version) || ![1, 2].includes(version) || width < 1 || height < 1 || width > 4096 || height > 4096 || width * height > (16 << 20)) throw new Error("limits");
+            const commands = JSON.parse(encoded);
+            if (!Array.isArray(commands) || commands.length > 4096) throw new Error("commands");
+            let mirror = !reset ? glCanvases.get(el) : null;
+            if (mirror?.failed) throw new Error("WebGL mirror requires a full snapshot");
+            if (!reset && !mirror) throw new Error("WebGL calls without their log");
+            if (!mirror) {
+                if (glLosses >= 3) throw new Error("WebGL off after repeated GPU resets");
+                // Those gone from the copy give theirs up: of a document since
+                // replaced (still shown while the next is made), or seen in it
+                // and not now. (One being made, in a snapshot not yet shown,
+                // isn't in it yet.)
+                for (const [live, gen] of glLive) {
+                    if (gen !== current) glDrop(live);
+                    else if (live.isConnected) glAttached.add(live);
+                    else if (glAttached.has(live)) glDrop(live);
+                }
+                if (glLive.size >= glLimits.mirrors) throw new Error("too many WebGL canvases");
+                el.width = width;
+                el.height = height;
+                const gl = el.getContext(version === 2 ? "webgl2" : "webgl", { alpha: (attributes & 1) !== 0, depth: (attributes & 2) !== 0, stencil: (attributes & 4) !== 0, antialias: (attributes & 8) !== 0, premultipliedAlpha: (attributes & 16) !== 0, preserveDrawingBuffer: true, failIfMajorPerformanceCaveat: false });
+                if (!gl) throw new Error("WebGL unavailable");
+                const actual = gl.getContextAttributes();
+                if (!actual || actual.alpha !== ((attributes & 1) !== 0) || actual.depth !== ((attributes & 2) !== 0) || actual.stencil !== ((attributes & 4) !== 0) || actual.antialias !== ((attributes & 8) !== 0) || actual.premultipliedAlpha !== ((attributes & 16) !== 0)) throw new Error("WebGL context attributes differ");
+                mirror = { gl, objects: new Map(), extensions: new Map(), version, attributes, history: [], historyBytes: 2 };
+                glLive.set(el, d?.gen ?? current);
+                glCanvases.set(el, mirror);
+                if (!glContextListeners.has(el)) {
+                    glContextListeners.add(el);
+                    el.addEventListener("webglcontextlost", (event) => {
+                        const current = glCanvases.get(el);
+                        // Given back at most once, and not a context we gave up
+                        // or one whose replay failed: a log that resets the GPU
+                        // isn't replayed again and again.
+                        if (current?.history && !current.failed && !current.restored && ++glLosses < 3) event.preventDefault();
+                        else glLive.delete(el);
+                        if (current) current.failed = true;
+                        el.title = "WebGL content is unavailable in the remote view";
+                        el.setAttribute("aria-label", el.title);
+                    });
+                    el.addEventListener("webglcontextrestored", () => {
+                        const current = glCanvases.get(el);
+                        if (!current || !current.history || current.restored) return;
+                        glCanvases.delete(el);
+                        glLive.delete(el);
+                        webglFrame(el, JSON.stringify(current.history), el.width, el.height, current.version, current.attributes, true);
+                        const again = glCanvases.get(el);
+                        if (again) again.restored = true;
+                    });
+                }
+            } else if (mirror.version !== version) {
+                throw new Error("WebGL version changed");
+            } else if (mirror.attributes !== attributes) {
+                throw new Error("WebGL context attributes changed");
+            } else if (el.width !== width || el.height !== height) {
+                el.width = width;
+                el.height = height;
+            }
+            const { gl, objects } = mirror;
+            if (gl.isContextLost()) throw new Error("WebGL context lost");
+            const restore = (value) => {
+                if (value === null || typeof value !== "object") return value;
+                if (Array.isArray(value)) return value.map(restore);
+                if (Number.isInteger(value.ref)) {
+                    if (!objects.has(value.ref)) throw new Error("unknown object");
+                    return objects.get(value.ref);
+                }
+                if (typeof value.typed === "string" && typeof value.data === "string" && Object.hasOwn(glTyped, value.typed)) {
+                    if (value.data.length > (3 << 20) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.data)) throw new Error("typed data");
+                    const binary = atob(value.data), bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    const Ctor = glTyped[value.typed];
+                    if (bytes.byteLength % Ctor.BYTES_PER_ELEMENT) throw new Error("typed alignment");
+                    return new Ctor(bytes.buffer);
+                }
+                if (Number.isInteger(value.width) && Number.isInteger(value.height) && value.width > 0 && value.height > 0 && value.width <= 4096 && value.height <= 4096 && value.width * value.height <= (16 << 20) && value.pixels) {
+                    const pixels = restore(value.pixels);
+                    if (!(pixels instanceof Uint8ClampedArray) || pixels.byteLength !== value.width * value.height * 4) throw new Error("texture pixels");
+                    const source = document.createElement("canvas");
+                    source.width = value.width;
+                    source.height = value.height;
+                    source.getContext("2d").putImageData(new ImageData(pixels, value.width, value.height), 0, 0);
+                    return source;
+                }
+                if (typeof value.location === "string" && Number.isInteger(value.program)) {
+                    const program = objects.get(value.program);
+                    if (!program) throw new Error("unknown program");
+                    const location = gl.getAttribLocation(program, value.location);
+                    return location < 0 ? glSkip : location;
+                }
+                throw new Error("invalid argument");
+            };
+            for (const command of commands) {
+                if (!command || !glMethods.has(command.m) || !Array.isArray(command.a) || command.a.length > 16) throw new Error("invalid command");
+                glCheck(mirror, command);
+                if (version === 1 && gl2OnlyMethods.has(command.m)) {
+                    const requirements = extensionMethods[command.m];
+                    if (!requirements || !requirements.some((_, i) => i % 2 === 0 && typeof requirements[i] === "string" && mirror.extensions.has(requirements[i]))) throw new Error("WebGL2 command in WebGL1 stream");
+                }
+                const args = command.a.map(restore);
+                if (args.includes(glSkip)) continue;
+                if (command.up !== undefined) {
+                    if (!Number.isInteger(command.up) || command.up < 1 || !objects.has(command.up)) throw new Error("unknown uniform program");
+                    gl.useProgram(objects.get(command.up));
+                }
+                if (command.pr !== undefined) {
+                    if (!Number.isInteger(command.pr) || command.pr < 0 || command.pr > 0 && !objects.has(command.pr)) throw new Error("unknown draw program");
+                    gl.useProgram(command.pr ? objects.get(command.pr) : null);
+                }
+                const supportedExtensions = glExtensionList;
+                const compatExtension = command.m === "getExtension" && supportedExtensions.includes(args[0]);
+                let result;
+                if (compatExtension) {
+                    result = gl.getExtension(args[0]);
+                    const needsExtension = requiredRenderingExtensions.has(args[0]) || args[0].startsWith("WEBGL_compressed_texture_") || args[0].startsWith("EXT_texture_compression_");
+                    const providedByCore = version === 2 && webgl2CoreExtensions.has(args[0]);
+                    if (!result && needsExtension && !providedByCore) throw new Error("required rendering extension unavailable");
+                    if (!result) result = Object.create(null);
+                }
+                else if (extensionCommandMethods[command.m]) {
+                    const [name, method] = extensionCommandMethods[command.m];
+                    const extension = mirror.extensions.get(name);
+                    const fn = extension?.[method];
+                    if (typeof fn !== "function") throw new Error("indexed draw buffer extension method unavailable");
+                    result = fn.apply(extension, args);
+                }
+                else if (extensionMethods[command.m] && version === 1) {
+                    const mapping = extensionMethods[command.m];
+                    let extension, fn;
+                    for (let i = 0; i + 1 < mapping.length; i += 2) {
+                        extension = mirror.extensions.get(mapping[i]);
+                        fn = extension?.[mapping[i + 1]];
+                        if (typeof fn === "function") break;
+                    }
+                    if (typeof fn !== "function") throw new Error("WebGL extension method unavailable");
+                    if (command.m === "drawArraysInstanced" && mapping.length > 2 && extension === mirror.extensions.get("WEBGL_multi_draw")) result = fn.call(extension, args[0], new Int32Array([args[1]]), 0, new Int32Array([args[2]]), 0, new Int32Array([args[3]]), 0, 1);
+                    else if (command.m === "drawElementsInstanced" && mapping.length > 2 && extension === mirror.extensions.get("WEBGL_multi_draw")) result = fn.call(extension, args[0], new Int32Array([args[1]]), 0, args[2], new Int32Array([args[3]]), 0, new Int32Array([args[4]]), 0, 1);
+                    else result = fn.apply(extension, args);
+                } else {
+                    const fn = gl[command.m];
+                    if (typeof fn !== "function") throw new Error("WebGL method unavailable");
+                    result = fn.apply(gl, args);
+                }
+                if (command.m === "getExtension" && typeof args[0] === "string" && result) mirror.extensions.set(args[0], result);
+                if (command.m === "compileShader" && !gl.getShaderParameter(args[0], gl.COMPILE_STATUS)) throw new Error("shader compile failed");
+                if (command.m === "linkProgram" && !gl.getProgramParameter(args[0], gl.LINK_STATUS)) throw new Error("program link failed");
+                if (Number.isInteger(command.q)) {
+                    if (!Number.isInteger(command.program) || typeof command.name !== "string") throw new Error("invalid attribute query");
+                    if (!objects.get(command.program)) throw new Error("unknown program");
+                }
+                if (Number.isInteger(command.r) && command.r > 0) {
+                    // A uniform the viewer's compiler left out has no location:
+                    // setting it does nothing, as in a browser.
+                    if (result == null && command.m !== "getUniformLocation") throw new Error("object creation failed");
+                    objects.set(command.r, result);
+                }
+            }
+            const replayError = gl.getError();
+            if (replayError !== gl.NO_ERROR) throw new Error(`WebGL replay generated error 0x${replayError.toString(16)}`);
+            // What's been replayed, kept for a context the viewer loses and
+            // gets back (webglcontextrestored): the page's log, bounded as it is.
+            if (reset) {
+                mirror.history = commands;
+                mirror.historyBytes = encoded.length;
+            } else {
+                for (const command of commands) mirror.history.push(command);
+                mirror.historyBytes += encoded.length;
+            }
+            if (mirror.history.length > 4096 || mirror.historyBytes > (4 << 20)) throw new Error("history limits");
+            el.removeAttribute("aria-label");
+            el.title = "WebGL rendering mirrored from the remote page";
+        } catch {
+            // A canvas that owns a WebGL context cannot draw a 2D fallback.
+            const mirror = glCanvases.get(el);
+            if (mirror) mirror.failed = true;
+            else glCanvases.set(el, { failed: true });
+            glDrop(el);
+            el.title = "WebGL content is unavailable in the remote view";
+            el.setAttribute("aria-label", el.title);
+            if (!el.style.backgroundColor) {
+                el.style.backgroundColor = "#ddd";
+                glGrayed.add(el);
+            }
+        }
+        return el;
+    }
     function canvasFrame(el, pixels, reason) {
         const serial = (canvasDraws.get(el) ?? 0) + 1;
         canvasDraws.set(el, serial);
         const fallback = () => {
             if (canvasDraws.get(el) !== serial) return;
-            const ctx = el.getContext("2d");
+            // A WebGL canvas the page's hook gave up on: no 2D context to
+            // draw the note with, and its last frame not to be left.
+            if (glCanvases.get(el)?.gl) {
+                glCanvases.get(el).failed = true;
+                glDrop(el);
+                if (!el.style.backgroundColor) {
+                    el.style.backgroundColor = "#ddd";
+                    glGrayed.add(el);
+                }
+            }
+            const ctx = glCanvases.get(el)?.gl ? null : el.getContext("2d");
+            if (!canvasNoted.has(el)) canvasNoted.set(el, [el.getAttribute("title"), el.getAttribute("aria-label")]);
+            el.title = reason === "unsupported" ? "Canvas content is unsupported in the remote view" : "Canvas pixels are unavailable in the remote view";
+            el.setAttribute("aria-label", el.title);
             if (!ctx || !el.width || !el.height) return;
             ctx.clearRect(0, 0, el.width, el.height);
             ctx.fillStyle = "#eee";
@@ -1050,6 +1493,12 @@
             if (!ctx) return fallback();
             ctx.clearRect(0, 0, el.width, el.height);
             ctx.drawImage(img, 0, 0, el.width, el.height);
+            // Shown again: the page's own title, not the note's.
+            const was = canvasNoted.get(el);
+            if (was) {
+                canvasNoted.delete(el);
+                for (const [name, value] of [["title", was[0]], ["aria-label", was[1]]]) if (value === null) el.removeAttribute(name); else el.setAttribute(name, value);
+            }
         };
         img.onerror = fallback;
         img.src = `data:image/png;base64,${pixels}`;
@@ -1063,7 +1512,8 @@
         }
         own(d, n.i, el);
         d.report.elements++;
-        canvasFrame(el, n.p, n.pe);
+        if (typeof n.g === "string") webglFrame(el, n.g, n.gw, n.gh, n.gv, Number.isInteger(n.ga) && n.ga >= 1 && n.ga <= 64 ? n.ga - 1 : 27, true, d);
+        else canvasFrame(el, n.p, n.pe);
         return el;
     }
 
@@ -1348,8 +1798,6 @@
                 const hash = d.url ? new URL(d.url).hash.slice(1) : "";
                 hash ? scrollToFragment(hash) : scrollTo(0, 0);
             }
-            theme = typeof m.theme === "string" ? m.theme : "auto";
-            darken();
             tell({ type: "rendered", gen: d.gen, report: d.report });
             if (building === d) building = null;
         })();
@@ -1610,6 +2058,16 @@
         // (A batch may bring only what the page observes: no changes.)
         for (const op of Array.isArray(m.ops) ? m.ops : []) {
             if (!op || typeof op !== "object") continue;
+            // A canvas in a same-origin frame's copy: found through its iframes.
+            if ((op.o === "g" || op.o === "p") && Array.isArray(op.path)) {
+                let at = d;
+                for (const owner of op.path.slice(0, 4)) at = Number.isSafeInteger(owner) ? frameRoots.get(at?.nodes.get(owner))?.child : null;
+                const el = at?.nodes.get(op.i);
+                if (el?.localName !== "canvas") continue;  // its frame's copy read again since
+                if (op.o === "g" && typeof op.v === "string") webglFrame(el, op.v, op.w, op.h, op.version, op.attributes, op.r === true, at);
+                else if (op.o === "p") canvasFrame(el, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
+                continue;
+            }
             const target = d.nodes.get(op.i);
             if (target === undefined) return resync(d);
             if (op.o === "t" && d.styleOf.has(op.i)) {
@@ -1623,6 +2081,10 @@
                 case "p":
                     if (target.localName !== "canvas") return resync(d);
                     canvasFrame(target, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
+                    break;
+                case "g":
+                    if (target.localName !== "canvas" || typeof op.v !== "string") return resync(d);
+                    webglFrame(target, op.v, op.w, op.h, op.version, op.attributes, op.r === true, d);
                     break;
                 case "c":
                     if (frameRoots.has(target)) {

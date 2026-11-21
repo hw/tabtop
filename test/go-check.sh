@@ -64,6 +64,9 @@ if [[ -z "$go_image" ]]; then
 fi
 cid=$(docker create "$image")
 docker cp -q "$cid:/opt/noble" "$work/noble"
+# three.js, for the site's WebGL page (go-check.mjs, three.html).
+mkdir -p "$work/site/three"
+for f in three.module.js three.core.js; do docker cp -q "$cid:/opt/three/$f" "$work/site/three/$f"; done
 docker rm "$cid" >/dev/null
 # The login's secret is "12345678901234567890" (see go-check.mjs).
 printf 'HOTP/T30/6\tuser\t-\t%s\n' "$(printf 12345678901234567890 | od -An -tx1 | tr -d ' \n')" > "$work/users.oath"

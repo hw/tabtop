@@ -3,12 +3,10 @@ package main
 // Dark mode in the remote browser (go/sites: a default, and each site's
 // own): what a tab's pages are told the person prefers, light or dark
 // (prefers-color-scheme, in CSS and matchMedia), as the setting for the
-// page's site says (Light, Dark; Force dark is Dark too), or else as the
-// person's own device does (Follow device: goView.Scheme). Told as each top
-// document is asked for (storagePaused; or, without that, as it's
-// committed), before its styles are read; and again as the device's
-// changes, or the setting does. Force dark's darkening of a page without a
-// dark look of its own is the viewer's (go-frame.js).
+// page's site says (Light, Dark), or else as the person's own device does
+// (Follow device: goView.Scheme). Told as each top document is asked for
+// (storagePaused; or, without that, as it's committed), before its styles
+// are read; and again as the device's changes, or the setting does.
 
 import (
 	"context"
@@ -28,7 +26,7 @@ func (b *goBrowser) schemeFor(raw, device string) string {
 	switch b.sites.themeFor(goURLHost(raw)) {
 	case "light":
 		return "light"
-	case "dark", "force":
+	case "dark":
 		return "dark"
 	}
 	return device

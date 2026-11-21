@@ -47,7 +47,8 @@
         });
     }
 
-    document.addEventListener("__tabtop_canvas_capture", (event) => {
+    // On the window: a frame keeps it from its first (about:blank) document.
+    globalThis.addEventListener("__tabtop_canvas_capture", (event) => {
         const canvas = event.target;
         if (!(canvas instanceof Canvas)) return;
         let result;

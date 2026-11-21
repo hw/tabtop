@@ -42,7 +42,7 @@ function override(map, site) {
 }
 
 const policyLabel = { ask: "Ask", allow: "Allow", block: "Block", "no-autoplay": "No autoplay" };
-const themeLabel = { auto: "Follow device", light: "Light", dark: "Dark", force: "Force dark" };
+const themeLabel = { auto: "Follow device", light: "Light", dark: "Dark" };
 
 // siteHasData is whether a site keeps cookies or localStorage: what Clear
 // data clears.
@@ -106,7 +106,7 @@ function siteState(name) {
     const ads = override(settings?.ads, name);
     if (ads !== "default") chips.push([{ block: "Ads: blocked", allow: "Ads: allowed" }[ads]]);
     const theme = override(settings?.theme, name);
-    if (theme !== "default") chips.push([{ auto: "Dark mode: device", light: "Dark mode: light", dark: "Dark mode: dark", force: "Dark mode: forced" }[theme]]);
+    if (theme !== "default") chips.push([{ auto: "Dark mode: device", light: "Dark mode: light", dark: "Dark mode: dark" }[theme]]);
     return { chips, blocked, custom: popup !== "default" || media !== "default" || ads !== "default" || theme !== "default" || videoHost };
 }
 

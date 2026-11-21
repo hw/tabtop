@@ -368,25 +368,97 @@
 
         const canvasReplies = new WeakMap();
         const dirtyCanvases = new Set();
+        const canvasLater = new Set();  // WebGL canvases left out of a batch, for the next
         let canvasReads = 0, canvasReadBytes = 0;
-        document.addEventListener("__tabtop_canvas_pixels", (event) => {
+        let canvasGLReadBytes = 0, canvasGLSnapshotBytes = 0;
+        // A canvas here or in a same-origin frame read here (frameKids): a
+        // frame's elements aren't this world's HTMLCanvasElement.
+        const frameOwners = new WeakMap();  // a frame's document -> its iframe
+        const isCanvas = (el) => el instanceof HTMLCanvasElement || el?.nodeType === 1 && el.localName === "canvas" && frameOwners.has(el.ownerDocument);
+        // framePath is the iframes (outermost first) a canvas is within, by
+        // number, for the copy to find it in its frame's copy; null if one
+        // isn't known.
+        function framePath(el) {
+            const path = [];
+            for (let d = el.ownerDocument; d !== document; d = frameOwners.get(d)?.ownerDocument) {
+                const owner = d && frameOwners.get(d);
+                if (!owner || !known(owner) || path.length >= 4) return null;
+                path.unshift(ids.get(owner));
+            }
+            return path;
+        }
+        // tell sends a canvas one of the page hooks' events (gogl.js,
+        // gocanvas.js). A same-origin frame's, by way of this page's gogl.js
+        // (__tabtop_frame_canvas, on its iframe): Moli doesn't take this
+        // world's events to a frame's page, and the reply comes back the
+        // same way (frameCanvasReply). One frame deep.
+        const frameCanvases = (doc) => Reflect.apply(Document.prototype.querySelectorAll, doc, ["canvas"]);
+        function tell(el, type, detail) {
+            const doc = el.ownerDocument;
+            if (doc === document) return Reflect.apply(EventTarget.prototype.dispatchEvent, el, [new CustomEvent(type, { bubbles: true, detail })]);
+            const owner = frameOwners.get(doc);
+            if (owner?.ownerDocument !== document) return;
+            const index = Array.prototype.indexOf.call(frameCanvases(doc), el);
+            if (index >= 0) Reflect.apply(EventTarget.prototype.dispatchEvent, owner, [new CustomEvent("__tabtop_frame_canvas", { bubbles: true, detail: JSON.stringify({ index, type, detail }) })]);
+        }
+        // What the page's gogl.js passes back from a frame's canvas: its
+        // reply to a read, or that it was drawn on.
+        function frameCanvas(event, f) {
+            const owner = event.target;
+            if (!(owner instanceof HTMLIFrameElement) || typeof event.detail !== "string" || event.detail.length > (4 << 20) + 256) return;
+            try {
+                const m = JSON.parse(event.detail);
+                let doc;
+                try { doc = owner.contentDocument; } catch { return; }
+                const el = doc && frameOwners.get(doc) === owner && Number.isInteger(m?.index) ? frameCanvases(doc)[m.index] : null;
+                if (el) f(el, m);
+            } catch { /* malformed or forged */ }
+        }
+        document.addEventListener("__tabtop_frame_canvas_reply", (event) => frameCanvas(event, (el, m) => typeof m.reply === "string" && canvasReply({ target: el, detail: m.reply })), true);
+        document.addEventListener("__tabtop_frame_canvas_dirty", (event) => frameCanvas(event, (el) => canvasDirty({ target: el })), true);
+        function canvasReply(event) {
             const el = event.target;
-            if (!(el instanceof HTMLCanvasElement) || typeof event.detail !== "string" || event.detail.length > (1 << 20) + 64) return;
+            if (!isCanvas(el) || typeof event.detail !== "string" || event.detail.length > (4 << 20) + 64) return;
             try {
                 const result = JSON.parse(event.detail);
                 if (typeof result?.p === "string" && result.p.length <= (1 << 20)) canvasReplies.set(el, { p: result.p });
+                else if (typeof result?.g === "string" && result.g.length <= (4 << 20) && Number.isInteger(result.w) && Number.isInteger(result.h) && [1, 2].includes(result.version) && Number.isInteger(result.attributes) && result.attributes >= 0 && result.attributes <= 63 && result.w > 0 && result.h > 0 && result.w <= 4096 && result.h <= 4096) canvasReplies.set(el, { g: result.g, w: result.w, h: result.h, r: result.r === true, version: result.version, attributes: result.attributes });
                 else if (["unsupported", "tainted", "large"].includes(result?.e)) canvasReplies.set(el, { e: result.e });
             } catch { /* malformed or forged canvas notification */ }
-        }, true);
-        document.addEventListener("__tabtop_canvas_dirty", (event) => {
+        }
+        document.addEventListener("__tabtop_canvas_pixels", canvasReply, true);
+        function canvasDirty(event) {
             const el = event.target;
-            if (el instanceof HTMLCanvasElement && known(el) && el.isConnected && dirtyCanvases.size < 64) dirtyCanvases.add(el);
-        }, true);
-        function canvasPixels(el) {
-            if (!(el instanceof HTMLCanvasElement) || ++canvasReads > 32) return { e: "large" };
+            if (isCanvas(el) && known(el) && el.isConnected && dirtyCanvases.size < 64) dirtyCanvases.add(el);
+        }
+        document.addEventListener("__tabtop_canvas_dirty", canvasDirty, true);
+        document.addEventListener("__tabtop_webgl_dirty", canvasDirty, true);
+        // canvasPixels reads a canvas: a WebGL one's command log (whole, with
+        // full; else what's new since the last read) or a 2D one's PNG. A
+        // WebGL log that doesn't fit this batch is given back to the page's
+        // hook (gogl.js) to be read again, and, with later, comes next batch.
+        function canvasPixels(el, full = false) {
+            if (!isCanvas(el)) return { e: "unsupported" };
+            if (++canvasReads > 32) return full ? { e: "large" } : { later: true };
             canvasReplies.delete(el);
             try {
-                Reflect.apply(EventTarget.prototype.dispatchEvent, el, [new Event("__tabtop_canvas_capture", { bubbles: true })]);
+                tell(el, "__tabtop_webgl_capture", full ? "full" : "delta");
+                const gl = canvasReplies.get(el);
+                if (gl?.g) {
+                    const actualFull = full || gl.r === true;
+                    if (actualFull ? canvasGLSnapshotBytes + gl.g.length > (4 << 20) : canvasGLReadBytes + gl.g.length > (3 << 20)) {
+                        tell(el, "__tabtop_webgl_undo", actualFull ? "full" : "delta");
+                        // Whole, it's sent with the next changes if it would fit them.
+                        if (gl.g.length > (3 << 20)) return { e: "large" };
+                        if (full) canvasLater.add(el);
+                        return full ? { e: "large" } : { later: true };
+                    }
+                    canvasGLReadBytes += gl.g.length;
+                    if (actualFull) canvasGLSnapshotBytes += gl.g.length;
+                    return gl;
+                }
+                if (gl?.e) return gl;
+                tell(el, "__tabtop_canvas_capture", null);
             } catch { return { e: "unsupported" }; }
             const result = canvasReplies.get(el) ?? { e: "unsupported" };
             if (result.p) {
@@ -424,6 +496,12 @@
                 return [];
             }
             const state = { child, depth, dirty: false };
+            // Its canvases answer here as the page's do (gogl.js and
+            // gocanvas.js run in it too).
+            if (!frameOwners.has(child)) {
+                for (const [type, f] of [["__tabtop_canvas_pixels", canvasReply], ["__tabtop_canvas_dirty", canvasDirty], ["__tabtop_webgl_dirty", canvasDirty]]) child.addEventListener(type, f, true);
+            }
+            frameOwners.set(child, el);
             // This world's own MutationObserver, never the frame's: in both
             // engines a frame's window here is the page's own, and a page
             // can replace its constructor and be handed this callback (and
@@ -467,8 +545,9 @@
             const out = { i: id(n), t: 1, n: name };
             if (a.length) out.a = a;
             if (name === "canvas") {
-                const pixels = canvasPixels(n);
+                const pixels = canvasPixels(n, true);
                 if (pixels.p) out.p = pixels.p;
+                if (pixels.g) { out.g = pixels.g; out.gw = pixels.w; out.gh = pixels.h; out.gr = pixels.r; out.gv = pixels.version; out.ga = pixels.attributes + 1; }
                 if (pixels.e) out.pe = pixels.e;
             }
             let c;
@@ -562,7 +641,10 @@
             count = 0;
             canvasReads = 0;
             canvasReadBytes = 0;
+            canvasGLReadBytes = 0;
+            canvasGLSnapshotBytes = 0;
             dirtyCanvases.clear();
+            canvasLater.clear();
             for (const frame of frames.values()) frame.observer?.disconnect();
             frames.clear();
             observer.disconnect();
@@ -638,6 +720,8 @@
             count = 0;
             canvasReads = 0;
             canvasReadBytes = 0;
+            canvasGLReadBytes = 0;
+            canvasGLSnapshotBytes = 0;
             // Only nodes numbered before now: new ones come whole, inside
             // their parent's children.
             const before = next;
@@ -735,12 +819,19 @@
                 }
             }
             let canvasFrames = 0;
+            for (const el of canvasLater) if (dirtyCanvases.size < 64) dirtyCanvases.add(el);
+            canvasLater.clear();
             for (const el of dirtyCanvases) {
                 if (canvasFrames >= 3 || canvasReadBytes >= (3 << 20)) break;
                 dirtyCanvases.delete(el);
                 if (!el.isConnected || !known(el)) continue;
+                const path = framePath(el);
+                if (!path) continue;
                 const pixels = canvasPixels(el);
-                ops.push({ o: "p", i: ids.get(el), v: pixels.p ?? "", pe: pixels.e ?? "" });
+                const where = path.length ? { path } : {};
+                if (pixels.later) canvasLater.add(el);
+                else if (pixels.g) ops.push({ o: "g", i: ids.get(el), v: pixels.g, w: pixels.w, h: pixels.h, r: pixels.r, version: pixels.version, attributes: pixels.attributes, ...where });
+                else ops.push({ o: "p", i: ids.get(el), v: pixels.p ?? "", pe: pixels.e ?? "", ...where });
                 canvasFrames++;
             }
             parents = new Set(); attrs = new Map(); texts = new Set();

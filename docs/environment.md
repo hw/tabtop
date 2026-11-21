@@ -809,9 +809,11 @@ right clicks are done for it by TabTop. Obscura keeps no HTTP cache of its
 own, so `WEB_GO_CACHE` doesn't apply to it.
 
 Videos and sounds with a file to play are played by a player of this page's,
-laid over the page, the file read from the site by the server as it plays;
+laid under the page so the site's own overlays stay visible, the file read from the site by the server as it plays;
 those a site's own player streams (YouTube's, and most streaming sites')
-aren't. What isn't shown: what scripts draw (canvas, WebGL).
+aren't. What scripts draw is shown too: a 2D canvas as a picture, and WebGL
+(three.js's included) drawn again by your browser from the page's calls, at
+a few frames a second; a canvas that can't be shown so says it.
 The page is laid out at your window's size (sites see that size, not your
 screen's), so pages made for phones or wide screens, and menus placed by
 measuring the page, work; the engine's fonts aren't the site's, so such
