@@ -2179,7 +2179,13 @@ async function check(base, port, site, adSite) {
             await ev(`${tabDoc}.getElementById("go_tabs").click()`);
             await waitFor(`!document.getElementById("overview").hidden && document.querySelectorAll("#overview li").length === 2`, "the list of tabs");
             await ev(`document.querySelector("#overview .done").click()`);
-            await ev(`${tabDoc}.getElementById("go_menu").click(); ${tabDoc}.getElementById("go_menu_hide_browser").click()`);
+            // Hide browser asks for the browser's full screen, which a page gets only
+            // from a person's own press: a tap, where the button is (in the tab's frame).
+            await ev(`${tabDoc}.getElementById("go_menu").click()`);
+            const hideAt = await ev(`(() => { const f = [...document.querySelectorAll("#frames iframe")].find((f) => !f.hidden).getBoundingClientRect(),
+                b = ${tabDoc}.getElementById("go_menu_hide_browser").getBoundingClientRect(); return { x: Math.round(f.left + b.left + b.width / 2), y: Math.round(f.top + b.top + b.height / 2) }; })()`);
+            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [hideAt] });
+            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
             await waitFor(`${tabDoc}.defaultView.document.fullscreenElement === ${tabDoc}.defaultView.document.documentElement && getComputedStyle(${tabDoc}.getElementById("go_bar")).display !== "none"`, "Hide Original Browser keeps the /go toolbar in fullscreen");
             await ev(`${tabDoc}.getElementById("go_tabs").click()`);
             await waitFor(`!${tabDoc}.getElementById("go_window_list").hidden && ${tabDoc}.querySelectorAll("#go_window_list li").length === 2`, "the window list opens in fullscreen with the toolbar");
