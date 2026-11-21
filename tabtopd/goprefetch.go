@@ -239,6 +239,10 @@ func (b *goBrowser) serveMedia(m goClientMsg) {
 		fail(errors.New(goRefusals["blocked"]))
 		return
 	}
+	if b.sites.videoHostBlocked(u.Hostname()) {
+		fail(errors.New(goRefusals["videos"]))
+		return
+	}
 	if b.resources == nil {
 		fail(errGoNoResources)
 		return

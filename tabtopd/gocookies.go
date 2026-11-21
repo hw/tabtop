@@ -656,10 +656,11 @@ func (b *goBrowser) visited(rawURL string) {
 // cookies for an address, and its Referer, worked out for each address
 // (the first, and each a redirect goes to). nil: neither.
 type goFrom struct {
-	cookies func(*url.URL) string
-	referer func(*url.URL) string
-	page    func() string     // the page's address, for ad blocking; nil: none known
-	onAd    func(what string) // told what was refused as an ad's: a host, or an address
+	holdDownload func() (func(), error)
+	cookies      func(*url.URL) string
+	referer      func(*url.URL) string
+	page         func() string     // the page's address, for ad blocking; nil: none known
+	onAd         func(what string) // told what was refused as an ad's: a host, or an address
 }
 
 // adBlocked is whether a fetch of u for the page, of kind (image, css,

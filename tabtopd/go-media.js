@@ -25,7 +25,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, download } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, download, streamsToSave } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -337,6 +337,13 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // there stopped, the page told why in their boxes.
     const BLOCKED = "Videos from this site are blocked (Site controls: the button at the address’s start).";
     let blocked = false;
+    // Hosts whose videos aren't played, whatever page they're on (a Skip
+    // held, go.js; Site controls): by the host in the video's own address.
+    const HOST_BLOCKED = "Videos from this host are blocked (Site controls: the button at the address’s start).";
+    let blockedHosts = new Set();
+    const videoHost = (src) => {
+        try { return /^https?:/i.test(src) ? new URL(src).hostname.toLowerCase().replace(/^www\./, "") : ""; } catch { return ""; }
+    };
 
     // pageStarts plays a player the page started, unless autoplay's paused
     // (and it's not one the person played): then the page's told it's
@@ -522,6 +529,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             }
             if (players.has(key)) return {};
             if (blocked) return { error: BLOCKED, blocked: true };
+            if (blockedHosts.has(videoHost(src))) return { error: HOST_BLOCKED, blocked: true };
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
             const controller = new AbortController();
             const { signal } = controller;
@@ -693,6 +701,20 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             }
             if (media) on ? pageStarts(key, player) : media.pause();
         },
+        // blockHosts sets the hosts whose videos aren't played (videoHost):
+        // those playing from them stopped, the page told why in their boxes.
+        blockHosts(hosts) {
+            blockedHosts = new Set((Array.isArray(hosts) ? hosts : []).filter((h) => typeof h === "string").map((h) => h.toLowerCase().replace(/^www\./, "")));
+            for (const [key, player] of [...players]) {
+                if (!blockedHosts.has(videoHost(player.src))) continue;
+                const media = player.element;
+                media?.pause();
+                played?.(key, { t: Number.isFinite(media?.currentTime) ? media.currentTime : 0, playing: false, ended: false });
+                closePlayer(key);
+                failed?.(key, HOST_BLOCKED, true);
+            }
+            told();
+        },
         // block stops every player, and plays none from now (its site's
         // videos blocked), or (false) lets them be again.
         block(on) {
@@ -748,8 +770,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             player.closeWatch = openPlayer(media, {
                 title: shortAddress(player.src),
                 skip: () => skip(key),
-                // A file's (a site's stream isn't one), saved by the server.
-                download: !player.stream && download ? (say) => download(player.src, say) : null,
+                downloadTitle: player.stream ? "Save stream into Downloads" : undefined,
+                streams: player.stream ? streamsToSave?.() : undefined,
+                download: !player.stream && download ? (say, opts) => download(player.src, say, opts) : null,
                 closed: () => {
                     player.watching = false;
                     player.closeWatch = null;

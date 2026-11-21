@@ -38,6 +38,7 @@ type session struct {
 	created        time.Time
 	expiry         time.Time
 	open           map[*tunnel]bool
+	downloads      int          // running downloads owned by remote browser tabs
 	idleSince      time.Time    // when its last tunnel closed (or it was made)
 	uses           []sessionUse // where its tunnels came from: the login's first
 	browser        string       // what logged in, as browserName says
@@ -64,7 +65,7 @@ type loginEvent struct {
 // liveLocked reports whether s can still be used. g.mu must be held.
 func (g *server) liveLocked(s *session, now time.Time) bool {
 	return now.Before(s.expiry) &&
-		(len(s.open) > 0 || g.sessionIdle == 0 || now.Sub(s.idleSince) < g.sessionIdle)
+		(len(s.open) > 0 || s.downloads > 0 || g.sessionIdle == 0 || now.Sub(s.idleSince) < g.sessionIdle)
 }
 
 // newSession starts a session for a login from ip, by browser (see
@@ -173,11 +174,15 @@ func (g *server) attach(id, ip string, t *tunnel) (func(), error) {
 			return
 		}
 		delete(s.open, t)
-		if len(s.open) == 0 {
-			s.idleSince = g.clock.Now()
-			g.armIdleLocked(id, s)
-		}
+		g.idleIfUnusedLocked(id, s)
 	}, nil
+}
+
+func (g *server) idleIfUnusedLocked(id string, s *session) {
+	if len(s.open) == 0 && s.downloads == 0 {
+		s.idleSince = g.clock.Now()
+		g.armIdleLocked(id, s)
+	}
 }
 
 var (

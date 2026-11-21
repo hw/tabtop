@@ -167,6 +167,12 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"fetch": tunnelRoute{files: true, access: readFileRoot, serve: func(g *server, c *tunnelCall) {
 		var from *goFrom
 		var userAgent string
+		// A stream's saved as its tab played it (its cookies, Referer and
+		// user agent): from that tab only, never without them.
+		if c.req.SaveStream && c.req.GoTab == "" {
+			c.r.fail("Save stream from the browser tab that plays it.")
+			return
+		}
 		if c.req.GoTab != "" {
 			t := g.goTabList().find(c.req.GoTab, c.session)
 			if t == nil {
@@ -176,6 +182,7 @@ var tunnelRoutes = map[string]tunnelRoute{
 			// What playing it sent: the tab's user agent, cookies and
 			// Referer, held to the page it's on (fromNow).
 			from, userAgent = t.b.fromNow(), t.b.ua()
+			from.holdDownload = func() (func(), error) { return g.holdDownload(t) }
 		}
 		c.files.tunnelFetch(c.t, c.req, c.session, c.ip, c.r, from, userAgent)
 	}}.

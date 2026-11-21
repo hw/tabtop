@@ -32,6 +32,7 @@ type goSiteSettings struct {
 	noReferer    bool              // what's fetched for a page doesn't say the page (Referer)
 	media        map[string]string
 	ads          map[string]string // site -> "allow" or "block": its ads, whatever ad blocking's default
+	videoHosts   []string          // hosts whose videos aren't played, on any page (a Skip held: go.js)
 	popupDefault string
 	mediaDefault string
 }
@@ -46,6 +47,7 @@ type goSiteSettingsFile struct {
 	PopupDefault string            `json:"popupDefault,omitempty"`
 	MediaDefault string            `json:"mediaDefault,omitempty"`
 	Ads          map[string]string `json:"ads,omitempty"`
+	VideoHosts   []string          `json:"videoHosts,omitempty"`
 }
 
 // goBlockedHost is whether a host is blocked in the settings: the engine's
@@ -97,6 +99,11 @@ func newGoSiteSettings(file string) *goSiteSettings {
 			if _, exists := s.media[site]; exists || len(s.media) < maxGoSiteSettings {
 				s.media[site] = v
 			}
+		}
+	}
+	for _, h := range f.VideoHosts {
+		if h = goSettingHost(h); h != "" && !slices.Contains(s.videoHosts, h) && len(s.videoHosts) < maxGoSiteSettings {
+			s.videoHosts = append(s.videoHosts, h)
 		}
 	}
 	for site, v := range f.Ads {
@@ -153,7 +160,7 @@ func (s *goSiteSettings) save() {
 	if s.file == "" {
 		return
 	}
-	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads}
+	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -221,6 +228,28 @@ func (s *goSiteSettings) adsFor(host string) string {
 	return s.ads[goSite(strings.Trim(host, "[]"))]
 }
 
+// videoHostBlocked is whether videos from host aren't played (its own
+// host, as a Skip held named it; not its subdomains).
+func (s *goSiteSettings) videoHostBlocked(host string) bool {
+	if s == nil {
+		return false
+	}
+	h := goSettingHost(host)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return h != "" && slices.Contains(s.videoHosts, h)
+}
+
+// videoHostList is the hosts whose videos aren't played.
+func (s *goSiteSettings) videoHostList() []string {
+	if s == nil {
+		return []string{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string{}, s.videoHosts...)
+}
+
 // adsBlocked is whether any site's set to have its ads blocked.
 func (s *goSiteSettings) adsBlocked() bool {
 	if s == nil {
@@ -267,8 +296,10 @@ func (s *goSiteSettings) set(site, setting string) error {
 	if h == "" {
 		return errors.New("That isn't a site's address.")
 	}
-	if strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") {
-		h = goSite(h) // the whole site's (m.youtube.com: youtube.com)
+	// The whole site's (m.youtube.com: youtube.com); a video host's, its
+	// own host (cdn.example.com, as its videos' addresses name it).
+	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-")) && !strings.HasPrefix(setting, "videos-host-") {
+		h = goSite(h)
 	}
 	switch setting {
 	case "block":
@@ -302,6 +333,18 @@ func (s *goSiteSettings) set(site, setting string) error {
 		s.ads[h] = strings.TrimPrefix(setting, "ads-")
 	case "ads-default":
 		delete(s.ads, h)
+	case "videos-host-block":
+		// The host a video comes from (not the page's site): its videos
+		// played nowhere.
+		if !slices.Contains(s.videoHosts, h) {
+			if len(s.videoHosts) >= maxGoSiteSettings {
+				return errors.New("Too many video hosts are blocked.")
+			}
+			s.videoHosts = append(s.videoHosts, h)
+			slices.Sort(s.videoHosts)
+		}
+	case "videos-host-allow":
+		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
 	default:
 		return errors.New("That isn't a setting.")
 	}
@@ -321,7 +364,7 @@ func (s *goSiteSettings) report() map[string]any {
 	slices.Sort(noVideos)
 	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": maps.Clone(s.popups), "referer": !s.noReferer,
 		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
-		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "kept": s.file != ""}
+		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != ""}
 }
 
 // routeGoSettings answers the settings page: what's set.

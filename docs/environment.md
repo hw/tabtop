@@ -825,7 +825,20 @@ not use: a video player shows its picture, and a check that wants a click
 can't be clicked. A
 file the site sends (a PDF, an archive) is offered to save into Downloads
 (`WEB_FS=1`), as fetches are saved, but from private networks only when
-both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`. Pictures, stylesheets and fonts are
+both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`.
+
+With Files enabled, **Save stream** in the browser menu lists HLS and DASH
+manifests observed on the current page. Choose a manifest to save the full
+on-demand video into Downloads as a fragmented MP4. The server copies the
+encoded samples and combines separate audio and video tracks. This works
+with unencrypted fragmented MP4 segments served as individual files.
+Live playlists, byte-range segments, and multi-period DASH are unsupported.
+The player’s download button changes to **Cancel download** while saving.
+The browser menu also lists active downloads with a cancel action, including
+after a reload. A disconnected tab stays available until its usual five-minute
+reconnect window and all its downloads have ended.
+
+Pictures, stylesheets and fonts are
 fetched by the server for you, without the site's cookies, so those that
 need you logged in to the site don't show. Signing in to a site works for as
 long as the tab is open; nothing is kept after it closes. A site that asks for a password

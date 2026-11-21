@@ -68,6 +68,7 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_menu_panel .label { color: #e8e8ea; }
 /* The page's videos and sounds, at the menu's top: each's state, its
    address, and Skip. The menu's button marked while there are any. */
+#go_streams { max-height: 25dvh; max-width: min(24rem, 90vw); overflow: auto; overflow-wrap: anywhere; }
 #go_menu_media { padding: 4px 6px 8px; margin-bottom: 4px; border-bottom: 1px solid #545458; }
 #go_menu_media[hidden] { display: none; }
 #go_menu_media h2 { margin: 2px 4px 6px; font: 600 12px system-ui, sans-serif; color: #a8a8ad; text-transform: uppercase; letter-spacing: .04em; }
@@ -272,6 +273,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
             <button type="button" id="go_menu_hide_browser" title="Hide the browser's own bars, keeping this one" aria-pressed="false"><span class="caption">Hide browser</span></button>
             <button type="button" id="go_menu_desktop" title="Ask sites for their desktop pages" aria-pressed="false"><span class="caption">Desktop</span></button>
         </div>
+        <div id="go_downloads"></div>
+        <div id="go_streams" hidden></div>
         <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay"></button></div><ul></ul></section>
         <button type="button" class="item" id="go_menu_settings" aria-haspopup="dialog"></button>
     </div>

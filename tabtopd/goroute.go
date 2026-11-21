@@ -156,14 +156,16 @@ func (g *server) routeGo(c *tunnelCall) {
 	b.jar, b.storage = g.goCookies, g.goStorage
 	b.sites = g.goSites
 	t := &goTab{token: goToken(), session: c.session, b: b, ended: make(chan struct{})}
+	tabs.add(t) // the token can be used as soon as the reply arrives
 	if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token}) {
+		tabs.remove(t)
+		close(t.ended)
 		cdp.close()
 		e.kill("its tab was closed")
 		g.closeGo(c.session)
 		return
 	}
 	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
-	tabs.add(t)
 	go g.runGoTab(t, tabs, c.ip)
 	if t.lend(newGoLink(c.t, c.req.Deflate), false) {
 		logGoTab("connection gone", c.ip)

@@ -385,6 +385,7 @@ var goRefusals = map[string]string{
 	"rate":        "Too many requests; slow down.",
 	"blocked":     "This site is blocked in the browser's settings (Site controls: the button at the address’s start).",
 	"ads":         "Blocked as an ad or tracker (☰ → Settings → Ad blocking).",
+	"videos":      "Videos from this host are blocked (Site controls: the button at the address’s start).",
 }
 
 // goRefuse answers with the proxy's refusal, for why.

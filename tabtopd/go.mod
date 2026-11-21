@@ -3,9 +3,11 @@ module tabtop/tabtopd
 go 1.27.3
 
 require (
+	github.com/Eyevinn/mp4ff v0.63.0
 	github.com/andybalholm/brotli v1.3.0
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
+	github.com/grafov/m3u8 v0.12.1
 	github.com/jfreymuth/pulse v0.1.3
 	github.com/klauspost/compress v1.18.0
 	github.com/microcosm-cc/bluemonday v1.0.27

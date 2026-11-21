@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -188,6 +189,100 @@ func TestGoRouteDetachedEnds(t *testing.T) {
 	}
 	sendGo(t, ctx, tc, map[string]any{"op": "close"})
 	waitFor(t, "the new tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+}
+
+// Downloads hold both the disconnected tab and its otherwise idle login.
+// The final job finishing, failing or being cancelled releases both holds.
+func TestGoRouteDownloadKeepsDetachedTab(t *testing.T) {
+	for _, outcome := range []string{"saved", "failed", "cancelled"} {
+		t.Run(outcome, func(t *testing.T) {
+			g, base, s := newGoServer(t, "")
+			g.sessionIdle = 2 * goTestDetachedFor
+			g.defaultRoot().fetches = &fetchManager{files: g.defaultFiles(), goClient: newFetchClient(func(netip.Addr) bool { return true })}
+			ctx := testCtx(t)
+			tc := openSession(t, ctx, base, s)
+			r := tc.request(t, ctx, tunnelRequest{Type: "go"})
+			token := r["resume"].(string)
+			tab := g.goTabList().find(token, s.id)
+			release := make(chan struct{})
+			extra, finishExtra := context.WithCancel(ctx)
+			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-release:
+				}
+				if r.URL.Path == "/second.mp4" {
+					select {
+					case <-extra.Done():
+					case <-r.Context().Done():
+						return
+					}
+				}
+				if outcome == "failed" {
+					http.Error(w, "gone", http.StatusGone)
+					return
+				}
+				io.WriteString(w, "ok")
+			}))
+			defer remote.Close()
+			defer finishExtra()
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			defer unblock()
+			download := openSession(t, ctx, base, s)
+			reply := download.request(t, ctx, tunnelRequest{Type: "fetch", FromGo: true, GoTab: token, URL: remote.URL + "/movie.mp4"})
+			if reply["ok"] != true {
+				t.Fatal(reply)
+			}
+			id := reply["fetch"].(map[string]any)["id"].(string)
+			download.c.CloseNow()
+			if outcome == "saved" {
+				other := openSession(t, ctx, base, s)
+				if r := other.request(t, ctx, tunnelRequest{Type: "fetch", FromGo: true, GoTab: token, URL: remote.URL + "/second.mp4"}); r["ok"] != true {
+					t.Fatal(r)
+				}
+				other.c.CloseNow()
+			}
+			tc.c.CloseNow()
+			waitFor(t, "all connections detached", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sessions[s.id].open) == 0 })
+			time.Sleep(3 * goTestDetachedFor)
+			if _, ok := g.sessionSecret(s.id); !ok {
+				t.Fatal("idle session expired during download")
+			}
+			if g.goTabList().find(token, s.id) != tab || g.goTabList().makeRoom(s.id) {
+				t.Fatal("tab lost during download")
+			}
+			if outcome == "cancelled" {
+				follower := openSession(t, ctx, base, s)
+				if reply := follower.request(t, ctx, tunnelRequest{Type: "fetch", Name: id}); reply["ok"] != true {
+					t.Fatal(reply)
+				}
+				if err := follower.write(ctx, msgText, []byte(`{"cancel":true}`)); err != nil {
+					t.Fatal(err)
+				}
+				if last := follow(t, follower); last["error"] != "cancelled" {
+					t.Fatal(last)
+				}
+			} else {
+				unblock()
+				if outcome == "saved" {
+					<-g.defaultRoot().fetches.job(id).done
+					resumed := openSession(t, ctx, base, s)
+					if r := resumed.request(t, ctx, tunnelRequest{Type: "go", Resume: token}); r["resumed"] != true {
+						t.Fatalf("download did not preserve the original tab: %v", r)
+					}
+					resumed.c.CloseNow()
+					finishExtra()
+				}
+			}
+			select {
+			case <-tab.ended:
+			case <-time.After(3 * time.Second):
+				t.Fatal("detached tab kept after download ended")
+			}
+		})
+	}
 }
 
 // A connection taking the tab from one still open (the same tab opened in

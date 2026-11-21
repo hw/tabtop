@@ -49,9 +49,12 @@ var errGoDetached = errors.New("no one's connected to the tab")
 // goConn is a tab's connection, whichever is lent it now (none, while
 // it's lost): what's written goes to that one.
 type goConn struct {
-	mu    sync.Mutex
-	cur   *goLink
-	since time.Time // when it was let go, with none since (zero: one's lent)
+	mu            sync.Mutex
+	cur           *goLink
+	downloads     int
+	downloadsDone chan struct{}
+	retiring      bool
+	since         time.Time // when it was let go, with none since (zero: one's lent)
 }
 
 func (c *goConn) detachedAt(at time.Time) {
@@ -62,11 +65,71 @@ func (c *goConn) detachedAt(at time.Time) {
 	c.mu.Unlock()
 }
 
-// detached is when the tab was last let go, if no one's connected now.
+// detached reports when an unclaimed tab eligible for eviction was let go.
 func (c *goConn) detached() (time.Time, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.since, c.cur == nil && !c.since.IsZero()
+	return c.since, c.cur == nil && !c.since.IsZero() && c.downloads == 0 && !c.retiring
+}
+
+// retireDetached reserves an idle tab for cleanup. A download starting at
+// the deadline either holds the tab first or sees that it has already ended.
+func (c *goConn) retireDetached() (bool, <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cur != nil || c.since.IsZero() || c.retiring {
+		return false, nil
+	}
+	if c.downloads > 0 {
+		return false, c.downloadsDone
+	}
+	c.retiring = true
+	return true, nil
+}
+
+// holdDownload counts the job, independently of the tunnel following it.
+func (g *server) holdDownload(t *goTab) (func(), error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[t.session]
+	if s == nil || !g.liveLocked(s, g.clock.Now()) {
+		return nil, errSessionEnded
+	}
+	c := t.b.conn
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.retiring {
+		return nil, errGoDetached
+	}
+	select {
+	case <-t.ended:
+		return nil, errGoDetached
+	default:
+	}
+	if c.downloads == 0 {
+		c.downloadsDone = make(chan struct{})
+	}
+	c.downloads++
+	s.downloads++
+	if s.idle != nil {
+		s.idle.Stop()
+		s.idle = nil
+	}
+	return func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.downloads--
+		if c.downloads == 0 {
+			close(c.downloadsDone)
+			c.downloadsDone = nil
+		}
+		s.downloads--
+		if g.sessions[t.session] == s {
+			g.idleIfUnusedLocked(t.session, s)
+		}
+	}, nil
 }
 
 func (c *goConn) link() *goLink {
@@ -255,6 +318,9 @@ func (ts *goTabs) makeRoom(session string) bool {
 		}
 	}
 	if oldest == nil {
+		return false
+	}
+	if ok, _ := oldest.b.conn.retireDetached(); !ok {
 		return false
 	}
 	oldest.b.e.kill("a new tab took its place")

@@ -46,6 +46,8 @@ Go modules (see `tabtopd/go.mod`), and the C libraries it links.
 |---|---|---|
 | [Go](https://go.dev/) | The language and its standard library | BSD 3-Clause |
 | [coder/websocket](https://github.com/coder/websocket) | WebSockets | ISC |
+| [Eyevinn/mp4ff](https://github.com/Eyevinn/mp4ff) | Reading and combining fragmented MP4 tracks | MIT |
+| [grafov/m3u8](https://github.com/grafov/m3u8) | Reading HLS playlists | BSD 3-Clause |
 | [creack/pty](https://github.com/creack/pty) | The terminal's PTY | MIT |
 | [jfreymuth/pulse](https://github.com/jfreymuth/pulse) | Recording sound over the PulseAudio protocol | MIT |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | ChaCha20-Poly1305 for the tunnel | BSD 3-Clause |

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -91,5 +92,34 @@ func TestGoSitePolicyDefaults(t *testing.T) {
 	}
 	if err := s.set("allowed.example", "videos-default"); err != nil || s.mediaFor("sub.allowed.example") != "no-autoplay" {
 		t.Fatalf("resetting a media override should restore the browser default: %v", err)
+	}
+}
+
+// TestGoVideoHosts blocks videos by the host in their own address (a Skip
+// held): that host exactly, kept as given, not its site, nor the page's.
+func TestGoVideoHosts(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "go-sites.json")
+	s := newGoSiteSettings(file)
+	if err := s.set("https://cdn.videos.example/clips/1.mp4", "videos-host-block"); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]bool{"cdn.videos.example": true, "CDN.Videos.Example": true, "www.cdn.videos.example": true,
+		"videos.example": false, "a.cdn.videos.example": false, "other.example": false} {
+		if got := s.videoHostBlocked(host); got != want {
+			t.Errorf("%s: blocked %v, want %v", host, got, want)
+		}
+	}
+	if s.mediaFor("cdn.videos.example") == "block" || s.mediaFor("videos.example") == "block" {
+		t.Error("the host's site's own pages' videos blocked too")
+	}
+	if got := s.report()["videoHosts"].([]string); !slices.Equal(got, []string{"cdn.videos.example"}) {
+		t.Errorf("reported %q", got)
+	}
+	// Kept.
+	if !newGoSiteSettings(file).videoHostBlocked("cdn.videos.example") {
+		t.Error("not kept")
+	}
+	if err := s.set("cdn.videos.example", "videos-host-allow"); err != nil || s.videoHostBlocked("cdn.videos.example") {
+		t.Errorf("allowed again: %v, still blocked %v", err, s.videoHostBlocked("cdn.videos.example"))
 	}
 }

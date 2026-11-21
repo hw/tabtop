@@ -71,35 +71,39 @@ type fetchJob struct {
 	by, ip, who   string // the handle of the session that started it, where from, and what it's called
 	client        *http.Client
 	from          *goFrom
+	stream        bool
 	userAgent     string
 	cancel        context.CancelFunc
 	done          chan struct{}
 
-	mu         sync.Mutex
-	name       string // what it's called so far; once done, what it was saved as
-	got, total int64  // total is -1 if not known
-	err        string // why it failed, once it has
-	cancelled  bool
-	warning    string
-	tmp        string // its temporary file, in ~/Downloads, while it goes
+	mu               sync.Mutex
+	name             string // what it's called so far; once done, what it was saved as
+	parts, partsDone int
+	got, total       int64  // total is -1 if not known
+	err              string // why it failed, once it has
+	cancelled        bool
+	warning          string
+	tmp              string // its temporary file, in ~/Downloads, while it goes
 }
 
 // fetchState is a fetch as the page sees it.
 type fetchState struct {
-	ID    string `json:"id"`
-	Host  string `json:"host"`
-	Dir   string `json:"dir"`
-	Name  string `json:"name"`
-	Got   int64  `json:"got"`
-	Total int64  `json:"total"`
-	Done  bool   `json:"done,omitempty"`
-	Error string `json:"error,omitempty"`
+	ID        string `json:"id"`
+	Host      string `json:"host"`
+	Dir       string `json:"dir"`
+	Name      string `json:"name"`
+	Got       int64  `json:"got"`
+	Total     int64  `json:"total"`
+	Parts     int    `json:"parts,omitempty"`
+	PartsDone int    `json:"partsDone,omitempty"`
+	Done      bool   `json:"done,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func (j *fetchJob) state() fetchState {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	s := fetchState{ID: j.id, Host: j.host, Dir: j.dir, Name: j.name, Got: j.got, Total: j.total, Error: j.err}
+	s := fetchState{ID: j.id, Host: j.host, Dir: j.dir, Name: j.name, Got: j.got, Total: j.total, Parts: j.parts, PartsDone: j.partsDone, Error: j.err}
 	select {
 	case <-j.done:
 		s.Done = true
@@ -300,19 +304,31 @@ func (m *fetchManager) startGoWithContext(u *url.URL, dir, by, ip, who string, f
 	if m.goClient == nil {
 		return nil, errors.New("the remote browser is off, so its files can't be saved")
 	}
-	return m.startWithContext(m.goClient, u, dir, by, ip, who, from, userAgent)
+	return m.startWithContext(m.goClient, u, dir, by, ip, who, from, userAgent, false)
 }
 
 func (m *fetchManager) startWith(client *http.Client, u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
-	return m.startWithContext(client, u, dir, by, ip, who, nil, "")
+	return m.startWithContext(client, u, dir, by, ip, who, nil, "", false)
 }
 
-func (m *fetchManager) startWithContext(client *http.Client, u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string) (*fetchJob, error) {
+func (m *fetchManager) startWithContext(client *http.Client, u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string, stream bool) (job *fetchJob, err error) {
+	var releaseTab func()
+	if from != nil && from.holdDownload != nil {
+		releaseTab, err = from.holdDownload()
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err != nil {
+				releaseTab()
+			}
+		}()
+	}
 	b := make([]byte, 8)
 	rand.Read(b)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &fetchJob{id: hex.EncodeToString(b), host: u.Host, dir: dir, by: by, ip: ip, who: who, cancel: cancel, done: make(chan struct{}),
-		name: urlName(u), total: -1, client: client, from: from, userAgent: userAgent}
+		name: urlName(u), total: -1, client: client, from: from, userAgent: userAgent, stream: stream}
 	// Where the folder really is, found once, before m.mu's taken (it can
 	// take a while on a slow disk): what's recorded as written into, and
 	// what's written into, are then the same folder.
@@ -371,6 +387,9 @@ func (m *fetchManager) startWithContext(client *http.Client, u *url.URL, dir, by
 			}
 		})
 		close(j.done)
+		if releaseTab != nil {
+			releaseTab()
+		}
 		s := j.state()
 		switch {
 		case err == nil:
@@ -521,7 +540,13 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 		ranges    bool        // the server said it takes ranges
 		name      string
 	)
-	for try := 0; ; try++ {
+	if j.stream {
+		name, err = m.saveStream(ctx, j, u, up)
+		if err != nil {
+			return err
+		}
+	}
+	for try := 0; !j.stream; try++ {
 		if try > 0 {
 			select {
 			case <-time.After(time.Duration(min(1<<try, 30)) * time.Second):
@@ -676,7 +701,9 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 			j.warning = "saved, but the disk didn't confirm it"
 		}
 	})
-	log.Printf("fetched %q (%s) from %s", path.Join(j.dir, as), humanSize(got), j.host)
+	// (What was fetched, as the job counted it: a stream's parts too, which
+	// the loop above doesn't count.)
+	log.Printf("fetched %q (%s) from %s", path.Join(j.dir, as), humanSize(max(got, j.state().Got)), j.host)
 	return nil
 }
 
@@ -800,7 +827,20 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 			dir = "."
 		}
 		start := g.root.fetches.start
-		if req.FromGo {
+		if req.SaveStream {
+			if !req.FromGo || g.root.fetches.goClient == nil {
+				r.fail("Stream saving requires the remote browser.")
+				return
+			}
+			if from == nil {
+				// (Its tab's cookies and headers: see the fetch route.)
+				r.fail("Save stream from the browser tab that plays it.")
+				return
+			}
+			start = func(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
+				return g.root.fetches.startWithContext(g.root.fetches.goClient, u, dir, by, ip, who, from, userAgent, true)
+			}
+		} else if req.FromGo {
 			if from != nil {
 				start = func(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
 					return g.root.fetches.startGoWithContext(u, dir, by, ip, who, from, userAgent)

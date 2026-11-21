@@ -45,7 +45,9 @@ async function mediaView({ path, file, signal, download }) {
         closePlayer = openPlayer(media, {
             title: file.name,
             // The preview's own download: through the tunnel, to this device.
-            download: download ? (say) => { download(); say(`Downloading ${file.name}…`); } : null,
+            // (Not followed here: the browser's own download. Nothing to show a
+            // player opened again, so its attach asks nothing.)
+            download: download ? (say, opts) => { if (opts?.attach || opts?.detach) return; download(); say(`Downloading ${file.name}…`); } : null,
             downloadTitle: "Download it",
             into: box.closest("dialog") ?? document.body,
             closed: () => {

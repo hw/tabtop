@@ -290,6 +290,10 @@ func (g *server) routeGoResource(c *tunnelCall) {
 			c.r.fail(goRefusals["blocked"])
 			return
 		}
+		if g.goSites.videoHostBlocked(u.Hostname()) {
+			c.r.fail(goRefusals["videos"])
+			return
+		}
 		// The session's share of the broker's slots, as its pictures'
 		// are (goSessionSlots): one session's players can't hold them all.
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

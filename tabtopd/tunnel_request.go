@@ -140,7 +140,8 @@ type tunnelRequest struct {
 	URL string `json:"url,omitempty"`
 	// fetch: a file the remote browser (/go) led to, fetched only where
 	// both fetches and the remote browser may go (see fetchManager).
-	FromGo bool `json:"from_go,omitempty"`
+	SaveStream bool `json:"save_stream,omitempty"`
+	FromGo     bool `json:"from_go,omitempty"`
 	// go: the page can take its large messages compressed (raw deflate,
 	// see goBrowser.sendLarge).
 	Deflate bool `json:"deflate,omitempty"`

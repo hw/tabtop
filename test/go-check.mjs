@@ -348,7 +348,11 @@ $("h").addEventListener("mouseenter", () => { $("hs").textContent = "hovered"; }
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
-        "stream-save.html": `<!doctype html><title>Save stream</title><script>fetch("movie.m3u8").then(r => r.text())</script>`,
+        "stream-save.html": `<!doctype html><title>Save stream</title><script>fetch(location.search ? "cancel.m3u8" : "movie.m3u8").then(r => r.text())</script>`,
+        "cancel.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npending.m4s\n#EXT-X-ENDLIST\n",
+        // A master playlist, and its variant, fetched after it, as a player does.
+        "stream-master.html": `<!doctype html><title>Master stream</title><script>fetch("master.m3u8").then(r => r.text()).then(() => fetch("movie.m3u8")).then(r => r.text())</script>`,
+        "master.m3u8": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nmovie.m3u8\n",
         "movie.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npart.m4s\n#EXT-X-ENDLIST\n",
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
@@ -394,6 +398,12 @@ http.createServer(function handle(req, res) {
     res.writeHead(200, { "Content-Type": "text/plain" });
     return res.end("[Adblock Plus 2.0]\\n! Title: TabTop check list\\n! Expires: 1 days\\n||" + host + "^\\n##.ad\\n##.late-ad\\n/ads/*$script\\n@@/ads/ok.js\\n/banner/*$image\\n" + (page ? page + "##.native\\n" : ""));
   }
+  if (name === "/auto-from") {
+    // The autoplay page, its video from another site (?from=: its address).
+    const from = (new URLSearchParams(req.url.split("?")[1] || "").get("from") || "").replace(/[^\\w.:/-]/g, "");
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end(fs.readFileSync("/srv/auto.html", "utf8").replace('src="clip.mp4?auto"', 'src="' + from + 'clip.mp4?auto"'));
+  }
   if (name === "/ads") {
     // A page with another site's picture (?ad=, its address), and its own.
     const q = new URLSearchParams(req.url.split("?")[1] || "");
@@ -409,6 +419,7 @@ http.createServer(function handle(req, res) {
   const said = { ua: req.headers["user-agent"] || "", cookie: req.headers.cookie || "", referer: req.headers.referer || "" };
   if (name === "/clip.mp4" && !req.headers.range) (seen.saved ??= []).push(said);
   else if (name === "/clip.mp4" || name === "/pic.png") seen[name] = said;
+  if (name === "/pending.m4s") { res.writeHead(200); res.write("pending"); return; }
   if (name === "/norange.mp4") {
     // A server without byte ranges: the whole file, whatever's asked.
     seen.norange = (seen.norange || 0) + 1;
@@ -1370,6 +1381,24 @@ async function check(base, port, site, adSite) {
         await waitFor(`!!document.querySelector("#go_streams button")`, "the stream detected");
         await ev(`document.querySelector("#go_menu").click(); document.querySelector("#go_streams button").click()`);
         await waitFor(`document.querySelector("#go_notice p").textContent.startsWith("Saved movie.mp4")`, "the assembled stream in Downloads");
+        // A master playlist and the variant it names: one stream, the master's (the variant,
+        // saved alone, would be the video without its sound).
+        await goTo(site + "stream-master.html", "Master stream");
+        await waitFor(`[...document.querySelectorAll("#go_streams button")].some((b) => b.textContent.includes("master.m3u8"))`, "the master's stream");
+        await sleep(1500);  // (the variant's fetched, and read, by now)
+        const offered = await ev(`[...document.querySelectorAll("#go_streams button")].map((b) => b.textContent)`);
+        if (offered.length !== 1) throw new Error(`a master and its variant offered as ${JSON.stringify(offered)}`);
+        await goTo(site + "stream-save.html?cancel", "Save stream");
+        await waitFor(`document.querySelector("#go_streams button")?.textContent.includes("cancel.m3u8")`, "the slow stream");
+        await ev(`document.querySelector("#go_streams button").click()`);
+        await waitFor(`Object.keys(sessionStorage).some(k => k.startsWith("tabtop-go-downloads:") && JSON.parse(sessionStorage[k]).length)`, "the download ID kept");
+        await ev(`location.reload()`);
+        await waitFor(`!!document.querySelector("#go_downloads button")`, "Cancel available after reconnecting");
+        // The page's stream offered again, though this page didn't see it load.
+        await waitFor(`document.querySelector("#go_streams button")?.textContent.includes("cancel.m3u8")`, "the stream offered again after reconnecting");
+        await ev(`document.querySelector("#go_downloads button").click()`);
+        await waitFor(`document.querySelector("#go_notice p")?.textContent === "Download cancelled." && !document.querySelector("#go_downloads button")`, "the download cancelled");
+
     });
 
     await step("a link to a file offers to save it", async () => {
@@ -1774,16 +1803,20 @@ async function check(base, port, site, adSite) {
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
-    await step("Skip held blocks the site's videos: stopped, kept in Site controls, and Undo has them again", async () => {
+    await step("Skip held blocks videos from the video's own host, not the page's site: stopped, kept in Site controls, and Undo has them again", async () => {
         const press = async (sel, hold = 0) => {
             const p = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
             await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
             if (hold) await sleep(hold);
             await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...p, button: "left", buttons: 0, clickCount: 1 });
         };
-        const settings = async () => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings" }); t.close(); return t.reply.noVideos ?? []; })`);
+        const settings = async () => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings" }); t.close(); return { hosts: t.reply.videoHosts ?? [], sites: t.reply.noVideos ?? [] }; })`);
         const host = new URL(site).hostname;
-        await goTo(site + "auto.html", "Autoplay");
+        // The page this site's, its video another's (as test.com's page with a video from
+        // something.com): that one's host is what's blocked.
+        const page = adSite ? site + "auto-from?from=" + encodeURIComponent(adSite) : site + "auto.html";
+        const videoHost = adSite ? new URL(adSite).hostname : host;
+        await goTo(page, "Autoplay");
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused; })()`, "the video playing", 30000);
         await ev(`document.getElementById("go_menu").click()`);
         await waitFor(`!!document.querySelector("#go_menu_media li .acts button:last-child:not(:disabled)")`, "Skip offered");
@@ -1802,22 +1835,28 @@ async function check(base, port, site, adSite) {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
         }
         try {
-            await waitFor(`!document.querySelector("video") && /Videos are blocked/.test(document.getElementById("go_notice").textContent)`, "its video stopped, said so");
+            await waitFor(`!document.querySelector("video") && document.getElementById("go_notice").textContent.includes(${JSON.stringify("Videos from " + videoHost + " are blocked")})`, "its video stopped, said so");
             await frameWait(`/blocked/.test(document.getElementById("v").textContent)`, "its box says why");
             await frameWait(`document.getElementById("out").textContent === "pause paused"`, "the page told it's paused");
-            if (!(await settings()).includes(host)) throw new Error(`the site settings: ${JSON.stringify(await settings())}`);
+            const set = await settings();
+            if (!set.hosts.includes(videoHost) || set.sites.includes(host) || adSite && set.hosts.includes(host)) throw new Error(`the settings: ${JSON.stringify(set)}`);
             // Loaded again: still none.
             await ev(`document.getElementById("go_reload").click()`);
             await sleep(3000);
             await frameWait(`/blocked/.test(document.getElementById("v").textContent)`, "blocked, loaded again");
-            if (await ev(`!!document.querySelector("video")`)) throw new Error("a player, the site's videos blocked");
+            if (await ev(`!!document.querySelector("video")`)) throw new Error("a player, its host's videos blocked");
+            // The page's site's own video, from its own host: played.
+            if (adSite) {
+                await goTo(site + "auto.html", "Autoplay");
+                await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused; })()`, "the site's own video playing", 30000);
+            }
             // Undo (from the notice, still there? if not, the setting).
         } finally {
             const undo = await ev(`(() => { const n = document.getElementById("go_notice"); const b = n.querySelector(".primary"); if (!n.hidden && b && !b.hidden && b.textContent === "Undo") { b.click(); return true; } return false; })()`);
-            if (!undo) await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: ${JSON.stringify(host)}, setting: "videos-allow" }); t.close(); })`);
+            if (!undo) await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: ${JSON.stringify(videoHost)}, setting: "videos-host-allow" }); t.close(); })`);
         }
-        if ((await settings()).includes(host)) throw new Error("still blocked after Undo");
-        await goTo(site + "auto.html", "Autoplay");
+        if ((await settings()).hosts.includes(videoHost)) throw new Error("still blocked after Undo");
+        await goTo(page, "Autoplay");
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused; })()`, "its video playing again", 30000);
     });
 

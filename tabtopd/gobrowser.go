@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -118,6 +119,8 @@ type goBrowser struct {
 	topFrame string
 	// adCount is the hosts refused as ads' for the page (goadblock.go).
 	adCount goAdCount
+	// streams are the streams the page plays: Save stream (gostreams.go).
+	streams goStreams
 	// hider is what's hidden on the page, as its classes and ids come
 	// (goadblock.go); nil for nothing.
 	hideMu  sync.Mutex
@@ -630,6 +633,7 @@ func (b *goBrowser) run() {
 	}
 	// No connection: the tab runs on so long (goDetachedFor), then ends.
 	var detached <-chan time.Time
+	var downloadsDone <-chan struct{}
 	taken := false // taken by a connection yet (the first, or one back)
 	go b.jobs.run(stop)
 	go b.acts.run(stop)
@@ -686,6 +690,7 @@ func (b *goBrowser) run() {
 				}()
 			}
 			detached = nil
+			downloadsDone = nil
 			read(l)
 			if taken {
 				b.resume()
@@ -702,7 +707,18 @@ func (b *goBrowser) run() {
 			detached = time.After(goDetachedFor)
 			goDebugf("tab detached: kept %v", goDetachedFor)
 		case <-detached:
-			return // not taken back in time
+			detached = nil
+			var retire bool
+			retire, downloadsDone = b.conn.retireDetached()
+			if retire {
+				return
+			}
+		case <-downloadsDone:
+			var retire bool
+			retire, downloadsDone = b.conn.retireDetached()
+			if retire {
+				return
+			}
 		case m := <-msgs:
 			goDebugf("op %s %s id %d gen %d (tab at gen %d, shown %d, loading %d)", m.Op, m.Kind, m.ID, m.Gen, b.gen, b.shown, b.loading)
 			// What the person does (not a resync, which the client asks for
@@ -854,6 +870,7 @@ func (b *goBrowser) resume() {
 	for id, a := range b.popupAsks {
 		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": id, "url": a.url, "site": a.site})
 	}
+	b.resendStreams() // Save stream offered again (gostreams.go)
 }
 
 // goScrollAt is where a page says it's scrolled, within reason.
@@ -1169,14 +1186,22 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		}
 	case "Network.responseReceived":
 		var p struct {
-			Type     string `json:"type"`
-			FrameID  string `json:"frameId"`
-			Response struct {
+			RequestID string `json:"requestId"`
+			Type      string `json:"type"`
+			FrameID   string `json:"frameId"`
+			Response  struct {
+				URL      string            `json:"url"`
 				MimeType string            `json:"mimeType"`
 				Headers  map[string]string `json:"headers"`
 			} `json:"response"`
 		}
 		json.Unmarshal(ev.Params, &p)
+		// A stream's manifest: read once it's loaded, to offer it as Save
+		// stream (gostreams.go).
+		if u, err := url.Parse(p.Response.URL); err == nil && len(p.Response.URL) <= 8192 && (u.Scheme == "https" || u.Scheme == "http") &&
+			goManifestResponse(p.Response.MimeType, u.Path) {
+			b.streamSeen(p.RequestID, p.Response.URL)
+		}
 		if p.Type == "Document" && (p.FrameID == b.frame || b.frame == "") {
 			// The proxy's refusal, shown as the page by an engine that
 			// doesn't fail the load (Obscura): the person's told instead.
@@ -1191,6 +1216,12 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			b.docType = strings.ToLower(strings.TrimSpace(media))
 		}
 	case "Network.requestWillBeSent", "Network.loadingFinished", "Network.loadingFailed":
+		switch ev.Method {
+		case "Network.loadingFinished":
+			b.streamLoaded(ev)
+		case "Network.loadingFailed":
+			b.streamFailed(ev)
+		}
 		b.network(ev)
 	case "Page.domContentEventFired", "Page.loadEventFired":
 		// The page is shown once its document's been read and its deferred
@@ -1207,6 +1238,17 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 	case "Page.navigatedWithinDocument":
 		// A fragment followed: the address, read with the next changes.
 		b.changed(0)
+		// Or a single-page site's next video (pushState, an address of its
+		// own, not just a fragment's): its streams afresh.
+		var p struct {
+			FrameID string `json:"frameId"`
+			URL     string `json:"url"`
+		}
+		json.Unmarshal(ev.Params, &p)
+		unfragment := func(u string) string { u, _, _ = strings.Cut(u, "#"); return u }
+		if (p.FrameID == b.frame || b.frame == "") && p.URL != "" && unfragment(p.URL) != unfragment(b.url) {
+			b.streamsLeft()
+		}
 	}
 	return loadTimeout, dialogTimeout
 }
@@ -1418,7 +1460,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
-				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "hide": b.startHiding(s.URL, s.Doc)})
+				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return

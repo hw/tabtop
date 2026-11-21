@@ -42,11 +42,17 @@ const STYLE = `
    outline of it (its row pointed at). */
 #video_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; border: 0; outline: none !important; box-shadow: none; }
 #video_player .top, #video_player .middle, #video_player .bar { transition: opacity .2s; }
-#video_player:not(.awake):not(.paused) :is(.top, .middle, .bar) { opacity: 0; pointer-events: none; }
+#video_player:is(.controls-hidden, :not(.awake):not(.paused)) :is(.top, .middle, .bar) { opacity: 0; pointer-events: none; }
 /* (Their buttons too, which take taps of their own when shown: hidden, a
    tap's the video's, to show them, not an unseen button's.) */
-#video_player:not(.awake):not(.paused) :is(.top, .middle, .bar) * { pointer-events: none !important; }
-#video_player:not(.awake):not(.paused) { cursor: none; }
+#video_player:is(.controls-hidden, :not(.awake):not(.paused)) :is(.top, .middle, .bar) * { pointer-events: none !important; }
+#video_player:is(.controls-hidden, :not(.awake):not(.paused)) { cursor: none; }
+#video_player .download-progress { position: absolute; inset: auto 0 0; height: 2px; overflow: hidden; pointer-events: none; }
+#video_player .download-progress[hidden] { display: none; }
+#video_player .download-progress::after { content: ""; display: block; height: 100%; width: var(--download-width, 0%); background: #fff; }
+#video_player .download-progress:not([aria-valuenow])::after { width: 25%; animation: video-download 1.2s linear infinite; }
+@keyframes video-download { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
+@media (prefers-reduced-motion: reduce) { #video_player .download-progress:not([aria-valuenow])::after { animation: none; } }
 #video_player .top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: flex-start; gap: 8px;
     padding: calc(6px + env(safe-area-inset-top, 0)) calc(6px + env(safe-area-inset-right, 0)) 28px calc(16px + env(safe-area-inset-left, 0));
     background: linear-gradient(rgba(0, 0, 0, .75), transparent); }
@@ -58,7 +64,13 @@ const STYLE = `
 #video_player .bar { position: absolute; left: 0; right: 0; bottom: 0;
     padding: 28px calc(10px + env(safe-area-inset-right, 0)) calc(6px + env(safe-area-inset-bottom, 0)) calc(10px + env(safe-area-inset-left, 0));
     background: linear-gradient(transparent, rgba(0, 0, 0, .8)); }
-#video_player .seek { width: 100%; margin: 0 0 2px; accent-color: #8ab4f8; height: 24px; }
+#video_player .seek { width: 100%; margin: 0 0 2px; height: 24px; appearance: none; background: transparent;
+    --seek-track: linear-gradient(to right, #8ab4f8 var(--played, 0%), transparent 0%), var(--buffered, none); }
+#video_player .seek::-webkit-slider-runnable-track { height: 5px; border-radius: 3px; background: var(--seek-track) #45454b; }
+#video_player .seek::-moz-range-track { height: 5px; border-radius: 3px; background: var(--seek-track) #45454b; }
+#video_player .seek::-webkit-slider-thumb { appearance: none; width: 15px; height: 15px; margin-top: -5px;
+    border: 0; border-radius: 50%; background: #8ab4f8; }
+#video_player .seek::-moz-range-thumb { width: 15px; height: 15px; border: 0; border-radius: 50%; background: #8ab4f8; }
 #video_player .row { display: flex; align-items: center; gap: 2px; }
 #video_player .spacer { flex: 1; }
 #video_player .time { margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
@@ -73,6 +85,7 @@ const STYLE = `
 /* Its speed: a label as the glyphs are (no box), its choices the browser's. */
 #video_player .speed { -webkit-appearance: none; appearance: none; height: 44px; min-width: 44px; margin: 0; padding: 0 8px; border: 0; border-radius: 22px;
     background: none; color: #fff; font: 700 14px system-ui, sans-serif; text-align: center; text-align-last: center; cursor: pointer; }
+#video_player .stream-picker { max-width: 30vw; min-width: 0; }
 #video_player .speed:hover { background: rgba(255, 255, 255, .18); }
 #video_player .speed option { color: #000; }
 #video_player .flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 10px 18px; border-radius: 24px; background: rgba(0, 0, 0, .6);
@@ -103,7 +116,7 @@ function clock(t) {
 // downloadTitle; closed is called, the element given back, as it's
 // closed. It's put in into (the page's body; in a modal dialog, which is
 // over everything else, the dialog). It returns close.
-export function openPlayer(media, { title = "", skip, download, downloadTitle = "Download it into Downloads", closed, into = document.body } = {}) {
+export function openPlayer(media, { title = "", skip, download, streams = [], downloadTitle = "Download it into Downloads", closed, into = document.body } = {}) {
     styled();
     const box = document.createElement("div");
     box.id = "video_player";
@@ -134,11 +147,50 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
     if (!SPEEDS.includes(media.playbackRate)) speed.value = "1";
     speed.addEventListener("change", () => { media.playbackRate = Number(speed.value); awake(); });
     speed.addEventListener("click", (e) => e.stopPropagation());
-    // Download: saved into Downloads (the server's: Files), how it goes said
-    // under its title.
     const note = Object.assign(document.createElement("span"), { className: "note" });
     note.setAttribute("role", "status");
-    const saved = download ? button("download", downloadTitle, () => download((text) => { note.textContent = text; awake(); })) : null;
+    const downloadProgress = Object.assign(document.createElement("div"), { className: "download-progress", hidden: true });
+    downloadProgress.setAttribute("role", "progressbar");
+    downloadProgress.setAttribute("aria-label", "Video download");
+    let streamPicker;
+    if (streams.length > 1) {
+        streamPicker = Object.assign(document.createElement("select"), { className: "speed stream-picker" });
+        streamPicker.setAttribute("aria-label", "Stream to save from this page");
+        for (const stream of streams) streamPicker.add(new Option(stream.label));
+    }
+    if (streams.length) download = (say, opts) => streams[streamPicker?.selectedIndex ?? 0].save(say, opts);
+    let cancelDownload;
+    const saved = download ? button("download", downloadTitle, () => {
+        if (cancelDownload) cancelDownload();
+        else download(updateDownload);
+    }) : null;
+    function updateDownload(text, fraction, cancel) {
+        const active = fraction !== undefined;
+        downloadProgress.hidden = !active;
+        cancelDownload = active && cancel;
+        saved.disabled = active && !cancel;
+        saved.title = active ? "Cancel download" : downloadTitle;
+        saved.setAttribute("aria-label", saved.title);
+        saved.innerHTML = icon(active ? "close" : "download");
+        note.textContent = active ? "" : text;
+        if (typeof fraction === "number") {
+            const percent = fraction * 100;
+            downloadProgress.style.setProperty("--download-width", `${percent}%`);
+            downloadProgress.setAttribute("aria-valuenow", String(Math.floor(percent)));
+        } else {
+            downloadProgress.removeAttribute("aria-valuenow");
+        }
+    }
+    // A download of it going on (the player closed and opened again while
+    // it saves): shown, its Cancel too, not offered again. Another stream
+    // picked: its download, if one's going on; else Download, for it (not
+    // Cancel, for the one picked before).
+    if (download) download(updateDownload, { attach: true });
+    streamPicker?.addEventListener("change", () => {
+        download(updateDownload, { detach: true });
+        updateDownload("", undefined);
+        download(updateDownload, { attach: true });
+    });
     const skipped = skip ? button("skip", "Skip to its end (Shift+N)", () => { skip(); close(); }) : null;
     const full = button("full", "Full screen (F)", () => toggleFull());
     const shut = button("close", "Close the player (Esc)", () => close());
@@ -153,12 +205,12 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
     middle.append(back, play, on);
     const row = Object.assign(document.createElement("div"), { className: "row" });
     const spacer = Object.assign(document.createElement("span"), { className: "spacer" });
-    row.append(time, spacer, speed, ...(saved ? [saved] : []), ...(skipped ? [skipped] : []), full);
+    row.append(time, spacer, speed, ...(streamPicker ? [streamPicker] : []), ...(saved ? [saved] : []), ...(skipped ? [skipped] : []), full);
     bar.append(seek, row);
     // A double tap's mark: back or on, where it was.
     const flash = Object.assign(document.createElement("div"), { className: "flash" });
     flash.setAttribute("aria-hidden", "true");
-    box.append(stage, top, middle, bar, flash);
+    box.append(stage, top, middle, bar, flash, downloadProgress);
 
     // The video, taken from its box: its own controls off (these instead),
     // as it was given back.
@@ -170,11 +222,36 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
     stage.append(media);
     into.append(box);
 
+    const showBuffered = () => {
+        const duration = media.duration;
+        const stops = [];
+        if (Number.isFinite(duration) && duration > 0) {
+            const ranges = media.buffered;
+            for (let i = 0; i < ranges.length; i++) {
+                const start = Math.max(0, ranges.start(i));
+                const end = Math.min(duration, ranges.end(i));
+                if (end <= start) continue;
+                const from = `${100 * start / duration}%`, to = `${100 * end / duration}%`;
+                stops.push(`transparent ${from}, #929299 ${from} ${to}, transparent ${to}`);
+            }
+        }
+        seek.style.setProperty("--buffered", stops.length ? `linear-gradient(to right, ${stops.join(", ")})` : "none");
+    };
+    const showPlayed = () => {
+        seek.style.setProperty("--played", `${seek.max > 0 ? 100 * seek.value / seek.max : 0}%`);
+    };
+    // Poll as well as listening for progress: Media Source buffers can
+    // change while playback is paused without a media element event.
+    const bufferEvents = ["progress", "durationchange", "emptied"];
+    for (const type of bufferEvents) media.addEventListener(type, showBuffered);
+    const bufferTimer = setInterval(showBuffered, 500);
+
     // Its state shown, as it plays.
     const shown = () => {
         const d = Number.isFinite(media.duration) ? media.duration : 0;
         seek.max = String(d || 0);
         if (!seeking) seek.value = String(media.currentTime || 0);
+        showPlayed();
         seek.disabled = !d;
         time.textContent = `${clock(media.currentTime)} / ${clock(d)}`;
         const paused = media.paused || media.ended;
@@ -187,7 +264,7 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
     for (const type of events) media.addEventListener(type, shown);
     media.addEventListener("ratechange", () => { speed.value = String(media.playbackRate); });
     let seeking = false;
-    seek.addEventListener("input", () => { seeking = true; time.textContent = `${clock(Number(seek.value))} / ${clock(media.duration)}`; awake(); });
+    seek.addEventListener("input", () => { seeking = true; showPlayed(); time.textContent = `${clock(Number(seek.value))} / ${clock(media.duration)}`; awake(); });
     seek.addEventListener("change", () => { seeking = false; media.currentTime = Number(seek.value); });
     const by = (s) => {
         const d = Number.isFinite(media.duration) ? media.duration : Infinity;
@@ -197,10 +274,14 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
     // The controls: hidden while it plays untouched, shown as it's touched.
     let idle = 0;
     function awake() {
+        box.classList.remove("controls-hidden");
         box.classList.add("awake");
         clearTimeout(idle);
-        idle = setTimeout(() => { if (!media.paused && !bar.contains(document.activeElement)) box.classList.remove("awake"); }, IDLE);
+        idle = setTimeout(() => { if (!media.paused && !bar.querySelector(":focus-visible")) box.classList.remove("awake"); }, IDLE);
     }
+    box.addEventListener("focusin", (e) => {
+        if (e.target.matches("button:focus-visible, select:focus-visible, input:focus-visible")) awake();
+    });
     box.addEventListener("pointermove", awake);
     // A tap on the video: the controls shown (or, shown, hidden), a moment
     // after (a second tap may follow); a double tap at its left or right
@@ -208,8 +289,12 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
     // taps, more: each another 10 s).
     let lastTap = 0, tapTimer = 0, flashTimer = 0;
     const show = () => {
-        if (box.classList.contains("awake") && !media.paused) box.classList.remove("awake");
-        else awake();
+        if (box.classList.contains("controls-hidden") || !box.classList.contains("awake") && !media.paused) {
+            awake();
+        } else {
+            box.focus();
+            box.classList.add("controls-hidden");
+        }
     };
     box.addEventListener("click", (e) => {
         if (e.target.closest("button, select, input")) return;
@@ -228,7 +313,7 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
         tapTimer = setTimeout(show, 250);
     });
     box.addEventListener("keydown", (e) => {
-        if (e.target === speed || e.target === seek && /^Arrow/.test(e.key)) return;
+        if (e.target.tagName === "SELECT" || e.target === seek && /^Arrow/.test(e.key)) return;
         const key = e.key;
         if (key === "Escape") {
             if (!document.fullscreenElement) { e.preventDefault(); close(); }
@@ -293,6 +378,8 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
         clearTimeout(flashTimer);
         document.removeEventListener("fullscreenchange", fullChanged);
         for (const type of events) media.removeEventListener(type, shown);
+        for (const type of bufferEvents) media.removeEventListener(type, showBuffered);
+        clearInterval(bufferTimer);
         if (document.fullscreenElement === box) document.exitFullscreen().catch(() => {});
         screen.orientation?.unlock?.();
         // Given back to its box, as it was.
@@ -301,12 +388,15 @@ export function openPlayer(media, { title = "", skip, download, downloadTitle = 
         if (was.tabIndex === null) media.removeAttribute("tabindex");
         else media.setAttribute("tabindex", was.tabIndex);
         delete media.dataset.player;
+        // What its download says goes to the page now, not to it, gone.
+        download?.(updateDownload, { detach: true });
         if (was.parent?.isConnected) was.parent.insertBefore(media, was.next?.parentNode === was.parent ? was.next : null);
         box.remove();
         closed?.();
     }
 
     shown();
+    showBuffered();
     awake();
     box.focus();
     toggleFull();  // (asked as it's opened: the person's click, in the menu)

@@ -355,7 +355,13 @@ const mediaHelp = {
     changed: () => mediaMenu(),
     // A video's file saved into Downloads (the player's Download), saying
     // how it goes there; where Files are off, not offered.
-    download: pages.some((p) => p.id === "files") ? (url, say) => saveFile(url, say) : null,
+    // (Newest first: the player's picker takes the first, the stream
+    // the page played last, not one it played before, an ad, say.)
+    streamsToSave: () => Array.from(manifests).reverse().map(url => ({
+        label: new URL(url).host + new URL(url).pathname,
+        save: (say, opts) => saveFile(url, say, true, undefined, opts),
+    })),
+    download: pages.some((p) => p.id === "files") ? (url, say, opts) => saveFile(url, say, false, undefined, opts) : null,
 };
 
 // mediaMenu lists the page's videos and sounds at the menu's top: how
@@ -399,7 +405,10 @@ async function refreshMediaPolicy() {
     try {
         const t = await call({ type: "go-settings", name: entry.url });
         t.close();
-        if (request === mediaPolicyRequest && entries[at] === entry && shown === shownBefore) applyMediaPolicy(t.reply.effectiveMedia);
+        if (request === mediaPolicyRequest && entries[at] === entry && shown === shownBefore) {
+            applyMediaPolicy(t.reply.effectiveMedia);
+            media?.blockHosts(t.reply.videoHosts);
+        }
     } catch { /* the next snapshot includes the server setting */ }
 }
 
@@ -420,16 +429,20 @@ function glyph(name, label, act, { disabled = false, pressed } = {}) {
     return b;
 }
 // holdToBlock has a Skip held (half a second; or its context menu: a right
-// click, a long touch's) block the site's videos: the page's stopped, and
-// none played on its pages (Site controls), with Undo.
-function holdToBlock(button) {
+// click, a long touch's) block the videos from the host the video comes
+// from (its own address's, not the page's: test.com's page with a video
+// from something.com blocks something.com's), wherever they're played:
+// those playing stopped, none played after (Site controls), with Undo. A
+// video the site streams by its own player has no address of its own: its
+// page's site's videos are blocked.
+function holdToBlock(button, p) {
     button.classList.add("hold");
     let timer = 0, held = false;
     const block = () => {
         held = true;
         navigator.vibrate?.(30);  // (a phone's: felt as it's done)
         openMenu(false);
-        blockVideos();
+        blockVideos(p);
     };
     button.addEventListener("pointerdown", (e) => {
         if (e.button !== 0) return;
@@ -450,9 +463,34 @@ function holdToBlock(button) {
         held = false;
     }, true);
 }
-async function blockVideos() {
+async function blockVideos(p) {
     const url = entries[at]?.url;
     if (!url) return;
+    let host = "";
+    try { host = /^https?:/i.test(p?.src ?? "") ? new URL(p.src).hostname.replace(/^www\./, "") : ""; } catch { /* none */ }
+    if (host) {
+        // Its own host's: blocked, those playing from it stopped; Undo
+        // lets it be again, and loads the page again.
+        try {
+            const t = await call({ type: "go-settings-set", name: host, setting: "videos-host-block" });
+            t.close();
+            media?.blockHosts(t.reply.videoHosts);
+            warn(`Videos from ${host} are blocked: they won't play, on any page (Site controls: the button at the address’s start).`, {
+                error: false, label: "Undo",
+                retry: async () => {
+                    try {
+                        const u = await call({ type: "go-settings-set", name: host, setting: "videos-host-allow" });
+                        u.close();
+                        media?.blockHosts(u.reply.videoHosts);
+                        if (entries[at]?.url === url) load(url, { push: false });
+                    } catch (err) { warn(err.message); }
+                },
+            });
+        } catch (err) {
+            warn(err.message || "Its videos couldn't be blocked.");
+        }
+        return;
+    }
     const site = hostOf(url).replace(/^www\./, "");
     try {
         const previous = await call({ type: "go-settings", name: url });
@@ -528,8 +566,8 @@ function mediaMenu() {
         const endedVideo = p.kind === "video" && (p.state === "Ended" || p.state === "Skipped");
         const skip = endedVideo
             ? glyph("hide", `Hide ${which} from the page`, () => media?.hide(p.key))
-            : glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block this site's videos`, () => media?.skip(p.key), { disabled: !p.skippable });
-        if (!endedVideo) holdToBlock(skip);
+            : glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block videos from its host`, () => media?.skip(p.key), { disabled: !p.skippable });
+        if (!endedVideo) holdToBlock(skip, p);
         const acts = [
             ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
             glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
@@ -1056,9 +1094,53 @@ function open() {
     });
 }
 
+const manifests = new Set();
+let manifestGeneration;
 function message(m) {
     switch (m.type) {
+        case "go-manifest": {
+            // A page this one didn't see load (a tab taken back, its page
+            // shown already): its streams, from scratch. (An older page's
+            // never come here: see the socket's handler.)
+            if (m.gen !== manifestGeneration) {
+                manifestGeneration = m.gen;
+                manifests.clear();
+                $("go_streams").replaceChildren();
+                $("go_streams").hidden = true;
+            }
+            if (typeof m.url !== "string" || !pages.some(p => p.id === "files") || manifests.has(m.url)) break;
+            // The newest kept: past 24, the oldest goes (as the server's).
+            if (manifests.size >= 24) {
+                const oldest = manifests.values().next().value;
+                manifests.delete(oldest);
+                [...$("go_streams").children].find((b) => b.dataset.url === oldest)?.remove();
+            }
+            manifests.add(m.url);
+            const button = document.createElement("button");
+            button.className = "item";
+            const url = new URL(m.url);
+            button.textContent = "Save stream · " + (url.pathname.split("/").pop() || url.host);
+            button.title = url.host + url.pathname;
+            button.dataset.url = m.url;
+            button.addEventListener("click", () => { openMenu(false); saveFile(m.url, null, true); });
+            $("go_streams").append(button);
+            $("go_streams").hidden = false;
+            break;
+        }
+        case "go-manifests-clear":
+            // The page gone to another place in itself (a single-page site's
+            // next video): its streams afresh.
+            if (m.gen === manifestGeneration) {
+                manifests.clear();
+                $("go_streams").replaceChildren();
+                $("go_streams").hidden = true;
+            }
+            break;
         case "go-loading":
+            manifestGeneration = m.gen;
+            manifests.clear();
+            $("go_streams").replaceChildren();
+            $("go_streams").hidden = true;
             showAds(0);
             if (m.by === "page" && typeof m.url === "string") {
                 // The page went somewhere itself: a link, a form, a script.
@@ -1103,6 +1185,7 @@ function message(m) {
             }
             shown = m.gen;
             applyMediaPolicy(m.mediaPolicy ?? "allow");
+            media.blockHosts(m.videoHosts);
             lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide };
             toFrame(lastRender);
             update();
@@ -1504,39 +1587,181 @@ function offerFile(url, mime) {
 }
 // saveFile saves url into Downloads, saying how it goes (say: where, as
 // the player does over the page; else the page's status, and its notice).
-async function saveFile(url, say = null) {
-    const status = say ?? show;
-    status(`Saving ${hostOf(url)}’s file into Downloads…`);
+const downloadKey = "tabtop-go-downloads:" + tabId;
+const downloads = new Set();
+function rememberDownloads() {
+    try { sessionStorage.setItem(downloadKey, JSON.stringify([...downloads].filter(job => job.id))); } catch { /* storage unavailable */ }
+}
+// followDownload follows a download being saved, by its id, through a lost
+// connection: asked again, less and less often, for FOLLOW_FOR; then given
+// up on here (the server may still be saving it: Downloads shows it).
+const FOLLOW_FOR = 120000;
+async function followDownload(id) {
+    const until = Date.now() + FOLLOW_FOR;
+    for (let delay = 1000; ; delay = Math.min(delay * 2, 15000)) {
+        try { return await call({ type: "fetch", name: id }); }
+        catch (err) {
+            if (!err.lost) throw err;
+            if (Date.now() >= until) throw Object.assign(new Error("lost touch with the server"), { lostTouch: true });
+        }
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+}
+// runningDownload is the download of url (a file, or a stream) going on,
+// if there is one: a player opened again shows it, not a second one.
+function runningDownload(url, stream) {
+    for (const job of downloads) if (url && job.url === url && job.stream === stream && !job.cancelling) return job;
+    return null;
+}
+// saveFile saves url (a stream's manifest, if stream) into Downloads, as a
+// job that's followed here, through lost connections and the page's
+// reloads, saying how it goes to say (a player's) or the page. With attach,
+// only a running one's said, to a player opened again; and one of the same
+// is never started twice: the player asking is told of the one going on.
+async function saveFile(url, say = null, stream = false, job = { id: "", label: hostOf(url), cancelling: false }, { attach = false, detach = false } = {}) {
+    // A player closed: what it was shown goes to the page instead (its
+    // status, then its notice), not to the player gone.
+    if (detach) {
+        for (const running of downloads) {
+            if (running.say !== say) continue;
+            running.say = null;
+            running.tell?.();
+        }
+        return;
+    }
+    // (Taken back after the page's reload: its address and kind, kept.)
+    if (!url && job.url) {
+        url = job.url;
+        stream = !!job.stream;
+    }
+    const running = job.id ? null : runningDownload(url, stream);
+    if (running || attach) {
+        if (running && say) {
+            running.say = say;
+            running.tell?.();
+        }
+        return;
+    }
+    job.url = url;
+    job.stream = stream;
+    job.say = say;
     let t;
+    const button = document.createElement("button");
+    button.className = "item";
+    const labelButton = () => {
+        button.textContent = (job.cancelling ? "Cancelling " : "Cancel download · ") + job.label;
+        button.disabled = job.cancelling;
+    };
+    const sendCancel = () => {
+        try { t?.sendText(JSON.stringify({ cancel: true })); } catch { /* sent when reconnected */ }
+    };
+    const cancel = () => {
+        job.cancelling = true;
+        labelButton();
+        rememberDownloads();
+        sendCancel();
+        if (job.say) job.say("Cancelling download…", null);
+    };
+    // What it says now, to a player that comes to show it.
+    let saying = [`Saving ${job.label} into Downloads…`, null];
+    job.tell = () => {
+        if (job.say) job.say(saying[0], saying[1], job.cancelling ? null : cancel);
+        else show(saying[0] + (typeof saying[1] === "number" ? ` · ${Math.floor(saying[1] * 100)}%` : ""));
+    };
+    downloads.add(job);
+    button.onclick = cancel;
+    labelButton();
+    $("go_downloads").append(button);
+    const starting = `Saving ${job.label} into Downloads…`;
+    if (job.say) job.say(starting, null, cancel);
+    else show(starting);
     try {
-        t = await call({ type: "fetch", path: "", url, from_go: true, go_tab: resumeToken.get() });
+        t = job.id ? await followDownload(job.id)
+            : await call({ type: "fetch", path: "", url, from_go: true, save_stream: stream, go_tab: resumeToken.get() });
+        job.id = t.reply.fetch.id;
+        rememberDownloads();
+        if (job.cancelling) sendCancel();
         for (;;) {
             const m = await t.next();
-            if (!m) throw new Error("the connection was lost; see the files page");
+            if (!m) {
+                t.close();
+                t = null;
+                t = await followDownload(job.id);
+                if (job.cancelling) sendCancel();
+                continue;
+            }
             if (m.text === undefined) continue;
             const res = JSON.parse(m.text);
             if (res.error) throw new Error(res.error);
             if (res.fetch && !res.fetch.done) {
                 const { got, total, name } = res.fetch;
+                if (name && name !== job.label) {
+                    job.label = name;
+                    labelButton();
+                    rememberDownloads();
+                }
+                const fraction = res.fetch.parts > 0 ? (res.fetch.partsDone || 0) / res.fetch.parts : Number.isFinite(total) && total > 0 && Number.isFinite(got) && got >= 0
+                    ? Math.min(1, got / total) : null;
+                saying = [`Saving ${name || "file"} into Downloads…`, fraction];
+                if (job.say) {
+                    job.tell();
+                    continue;
+                }
                 const amount = Number.isFinite(got) && got >= 0 ? `${(got / 1048576).toFixed(1)} MB` : "";
-                const progress = Number.isFinite(total) && total > 0 && amount
-                    ? `${Math.min(100, Math.floor(got / total * 100))}% · ${amount}` : amount;
-                status(`Saving ${name || "file"} from ${hostOf(url)}${progress ? ` · ${progress}` : ""}…`);
+                const progress = fraction !== null ? `${Math.floor(fraction * 100)}% · ${amount}` : amount;
+                show(`Saving ${name || "file"}${progress ? ` · ${progress}` : ""}…`);
             }
             if (res.fetch?.done) {
-                if (say) return say(`Saved ${res.fetch.name} into Downloads.`);
+                if (job.say) return job.say(`Saved ${res.fetch.name} into Downloads.`);
                 show("");
                 warn(`Saved ${res.fetch.name} into Downloads.`, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
                 return;
             }
         }
     } catch (err) {
-        if (say) return say(`Not saved: ${err.message}`);
+        if (err.message === "cancelled") {
+            if (job.say) return job.say("Download cancelled.");
+            show("");
+            warn("Download cancelled.", { error: false });
+            return;
+        }
+        if (err.lostTouch) {
+            // (Not that it failed: it may still be saving, on the server.)
+            const said = `Lost touch with the download of ${job.label}; it may still be saving: see Downloads.`;
+            if (job.say) return job.say(said);
+            show("");
+            warn(said, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
+            return;
+        }
+        if (err.message === "That fetch finished a while ago.") {
+            // Followed again after long enough that the server's forgotten how
+            // it ended: not that it failed (it may well be in Downloads).
+            const said = `The download of ${job.label} finished a while ago: see Downloads.`;
+            if (job.say) return job.say(said);
+            show("");
+            warn(said, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
+            return;
+        }
+        if (job.say) return job.say(`Not saved: ${err.message}`);
         show("");
-        warn(`Not saved: ${err.message}`, { retry: () => saveFile(url), label: "Retry save" });
+        warn(`Not saved: ${err.message}`, { retry: url ? () => saveFile(url, null, stream) : () => openPage("files"), label: url ? "Retry save" : "Open Downloads" });
     } finally {
         t?.close();
+        downloads.delete(job);
+        button.remove();
+        rememberDownloads();
     }
+}
+if (pages.some(p => p.id === "files")) {
+    try {
+        for (const job of JSON.parse(sessionStorage.getItem(downloadKey) || "[]")) {
+            if (!/^[0-9a-f]{16}$/.test(job?.id) || typeof job.label !== "string") continue;
+            // (What it saves, as kept: an http(s) address, a stream or not.)
+            job.url = typeof job.url === "string" && /^https?:\/\//i.test(job.url) && job.url.length <= 8192 ? job.url : null;
+            job.stream = job.stream === true;
+            saveFile(null, null, false, job);
+        }
+    } catch { /* nothing to resume */ }
 }
 
 // --- Controls ---------------------------------------------------------

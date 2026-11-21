@@ -39,7 +39,7 @@ function renderSites() {
     const usage = new Map((data?.sites ?? []).map((info) => [info.site, info]));
     const names = new Set([
         ...usage.keys(), ...(settings?.blocked ?? []), ...Object.keys(settings?.media ?? {}),
-        ...Object.keys(settings?.popups ?? {}), ...Object.keys(settings?.ads ?? {}),
+        ...Object.keys(settings?.popups ?? {}), ...Object.keys(settings?.ads ?? {}), ...(settings?.videoHosts ?? []),
     ]);
     const sort = $("sort_sites").value;
     const score = (info) => sort === "size" ? info?.storage ?? 0
@@ -58,6 +58,7 @@ function renderSites() {
         if (media !== "default") parts.push({ block: "Videos and sound blocked", allow: "Videos and sound allowed", "no-autoplay": "No autoplay" }[media]);
         const ads = override(settings?.ads, name);
         if (ads !== "default") parts.push({ block: "Ads blocked", allow: "Ads allowed" }[ads]);
+        if (settings?.videoHosts?.includes(name)) parts.push("Videos from here blocked");
         parts.push(...siteDataSummary(usage.get(name)));
         row.append(Object.assign(document.createElement("span"), { className: "site", textContent: name }));
         if (parts.length) row.append(Object.assign(document.createElement("span"), { className: "detail", textContent: parts.join(" · ") }));
@@ -80,6 +81,8 @@ function renderSite() {
     $("site_heading").textContent = host;
     $("access").textContent = blocked ? "Unblock site" : "Block site";
     $("access").disabled = state.busy;
+    $("video_host_row").hidden = !settings.videoHosts?.includes(host);
+    $("video_host").disabled = state.busy;
     $("access_note").textContent = blocked && blocked !== host ? `Blocked by the rule for ${blocked}.`
         : blocked ? "This site and its subdomains are blocked." : "Allowed";
     const scope = site === host ? "" : `Applies to ${site}. `;
@@ -168,6 +171,8 @@ $("find_site").addEventListener("submit", (event) => {
     const name = $("filter").value.trim();
     if (name) openSite(name);
 });
+// A video host's block (a Skip held, in the browser): lifted.
+$("video_host").addEventListener("click", () => set(selected.host, "videos-host-allow", "Videos from this host are allowed again."));
 $("access").addEventListener("click", () => {
     const { host } = selected;
     const blocked = covering(host, settings.blocked);
