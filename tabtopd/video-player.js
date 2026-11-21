@@ -3,7 +3,8 @@
 // preview's (preview-renderers.js). A video taken into it, over the whole
 // screen, from its box (the same player, moved: what it's buffered, and a site's stream fed
 // to it, go on), with controls of its own: play and pause, back and on 10
-// seconds, where it is, its speed, Skip, full screen, and closing it (back
+// seconds, where it is, its speed, Skip, Turn (the other way: portrait or
+// landscape), full screen, and closing it (back
 // to its box), and saving it (a file's: Download). Its proportions kept (the screen's black around it). Full
 // screen on a phone, the screen's turned to the video's way: a tall video
 // upright, a wide one sideways, however the phone's held (where the
@@ -21,9 +22,14 @@ const ICONS = {
     on: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5V8H16"/><text x="11.5" y="15.5" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" font-family="system-ui, sans-serif">10</text>',
     skip: '<path d="M5 5l9 7-9 7z M16 5h3v14h-3z" fill="currentColor" stroke="none"/>',
     download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    // Turn: two arrows around, the other way to watch it.
+    turn: '<path d="M4 12a8 8 0 0 1 13.7-5.6M20 3.5V8h-4.5"/><path d="M20 12a8 8 0 0 1-13.7 5.6M4 20.5V16h4.5"/>',
     full: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     unfull: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
     close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    // Saving: a stop square in a ring, the ring filled as it goes (--done,
+    // a percent; unknown, a quarter turning).
+    saving: '<circle class="ring-track" cx="12" cy="12" r="10"/><circle class="ring" cx="12" cy="12" r="10" pathLength="100"/><rect x="8.5" y="8.5" width="7" height="7" rx="1" fill="currentColor" stroke="none"/>',
 };
 // Its look, put in the page once: the pages it's on allow inline styles,
 // not stylesheets of the site's.
@@ -41,6 +47,10 @@ const STYLE = `
 /* No frame about it: not a tap's highlight, a focus ring, nor the menu's
    outline of it (its row pointed at). */
 #video_player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; border: 0; outline: none !important; box-shadow: none; }
+/* Turned (Turn, where the screen can't be turned instead): the video a
+   quarter turn round, its width the screen's height. */
+#video_player.turned video { position: absolute; top: 50%; left: 50%; width: 100vh; width: 100dvh; height: 100vw; transform: translate(-50%, -50%) rotate(90deg); }
+#video_player .glyph[aria-pressed="true"] { background: rgba(138, 180, 248, .3); }
 #video_player .top, #video_player .middle, #video_player .bar { transition: opacity .2s; }
 #video_player:is(.controls-hidden, :not(.awake):not(.paused)) :is(.top, .middle, .bar) { opacity: 0; pointer-events: none; }
 /* (Their buttons too, which take taps of their own when shown: hidden, a
@@ -53,12 +63,21 @@ const STYLE = `
 #video_player .download-progress:not([aria-valuenow])::after { width: 25%; animation: video-download 1.2s linear infinite; }
 @keyframes video-download { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
 @media (prefers-reduced-motion: reduce) { #video_player .download-progress:not([aria-valuenow])::after { animation: none; } }
+/* Download, saving: its ring filled as it goes; Cancel by a tap. */
+#video_player .glyph.saving .ring-track { stroke: rgba(255, 255, 255, .3); }
+#video_player .glyph.saving .ring { stroke: #8ab4f8; stroke-dasharray: var(--done, 25) 100; transform: rotate(-90deg); transform-origin: 12px 12px; }
+#video_player .glyph.saving:not([data-done]) .ring { animation: video-saving 1.2s linear infinite; }
+@keyframes video-saving { to { transform: rotate(270deg); } }
+@media (prefers-reduced-motion: reduce) { #video_player .glyph.saving .ring { animation: none; } }
+#video_player .glyph:disabled { opacity: .5; cursor: default; }
+#video_player .glyph:disabled:hover { background: none; }
 #video_player .top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: flex-start; gap: 8px;
     padding: calc(6px + env(safe-area-inset-top, 0)) calc(6px + env(safe-area-inset-right, 0)) 28px calc(16px + env(safe-area-inset-left, 0));
     background: linear-gradient(rgba(0, 0, 0, .75), transparent); }
 #video_player .about { flex: 1; min-width: 0; padding-top: 11px; }
 #video_player .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-#video_player .note { display: block; margin-top: 2px; font-size: 12px; color: #d0d0d4; }
+#video_player .note { display: block; margin-top: 2px; font-size: 12px; color: #d0d0d4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#video_player .note:empty { display: none; }
 #video_player .middle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 36px; pointer-events: none; }
 #video_player .middle .glyph { pointer-events: auto; background: rgba(0, 0, 0, .4); }
 #video_player .bar { position: absolute; left: 0; right: 0; bottom: 0;
@@ -85,7 +104,7 @@ const STYLE = `
 /* Its speed: a label as the glyphs are (no box), its choices the browser's. */
 #video_player .speed { -webkit-appearance: none; appearance: none; height: 44px; min-width: 44px; margin: 0; padding: 0 8px; border: 0; border-radius: 22px;
     background: none; color: #fff; font: 700 14px system-ui, sans-serif; text-align: center; text-align-last: center; cursor: pointer; }
-#video_player .stream-picker { max-width: 30vw; min-width: 0; }
+#video_player .stream-picker { max-width: 30vw; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #video_player .speed:hover { background: rgba(255, 255, 255, .18); }
 #video_player .speed option { color: #000; }
 #video_player .flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 10px 18px; border-radius: 24px; background: rgba(0, 0, 0, .6);
@@ -164,22 +183,40 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         if (cancelDownload) cancelDownload();
         else download(updateDownload);
     }) : null;
+    // updateDownload shows what the download says: text, and, while it
+    // saves, fraction (a number, or null: not known how far) and cancel
+    // (none while it's cancelling). Saving, Download's a ring that fills,
+    // a tap cancelling it, and the text (its percent too) under the title;
+    // done, the text alone, the controls shown for it.
+    let wasActive = false, live = false;  // (live: opened, not closed)
     function updateDownload(text, fraction, cancel) {
         const active = fraction !== undefined;
+        const percent = typeof fraction === "number" ? Math.floor(fraction * 100) : null;
         downloadProgress.hidden = !active;
         cancelDownload = active && cancel;
         saved.disabled = active && !cancel;
-        saved.title = active ? "Cancel download" : downloadTitle;
-        saved.setAttribute("aria-label", saved.title);
-        saved.innerHTML = icon(active ? "close" : "download");
-        note.textContent = active ? "" : text;
-        if (typeof fraction === "number") {
-            const percent = fraction * 100;
+        saved.classList.toggle("saving", active);
+        const label = !active ? downloadTitle : cancel ? `Cancel download${percent !== null ? ` (${percent}%)` : ""}` : "Cancelling download";
+        saved.title = label;
+        saved.setAttribute("aria-label", label);
+        if (saved.dataset.icon !== (active ? "saving" : "download")) {
+            saved.dataset.icon = active ? "saving" : "download";
+            saved.innerHTML = icon(saved.dataset.icon);
+        }
+        note.textContent = active && percent !== null ? `${text.replace(/…$/, "")} · ${percent}%` : text || "";
+        if (percent !== null) {
+            saved.dataset.done = "";
+            saved.style.setProperty("--done", String(Math.max(percent, 1)));
             downloadProgress.style.setProperty("--download-width", `${percent}%`);
-            downloadProgress.setAttribute("aria-valuenow", String(Math.floor(percent)));
+            downloadProgress.setAttribute("aria-valuenow", String(percent));
         } else {
+            delete saved.dataset.done;
+            saved.style.removeProperty("--done");
             downloadProgress.removeAttribute("aria-valuenow");
         }
+        // Started, or ended: shown, not missed under controls hidden.
+        if (active !== wasActive && text && live) awake();
+        wasActive = active;
     }
     // A download of it going on (the player closed and opened again while
     // it saves): shown, its Cancel too, not offered again. Another stream
@@ -192,6 +229,8 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         download(updateDownload, { attach: true });
     });
     const skipped = skip ? button("skip", "Skip to its end (Shift+N)", () => { skip(); close(); }) : null;
+    const turn = button("turn", "Turn it the other way (R)", () => { turned = !turned; turn.setAttribute("aria-pressed", String(turned)); turnScreen(); });
+    turn.setAttribute("aria-pressed", "false");
     const full = button("full", "Full screen (F)", () => toggleFull());
     const shut = button("close", "Close the player (Esc)", () => close());
     // At its top, what it is and closing it; in its middle, back, play and
@@ -205,7 +244,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
     middle.append(back, play, on);
     const row = Object.assign(document.createElement("div"), { className: "row" });
     const spacer = Object.assign(document.createElement("span"), { className: "spacer" });
-    row.append(time, spacer, speed, ...(streamPicker ? [streamPicker] : []), ...(saved ? [saved] : []), ...(skipped ? [skipped] : []), full);
+    row.append(time, spacer, speed, ...(streamPicker ? [streamPicker] : []), ...(saved ? [saved] : []), ...(skipped ? [skipped] : []), turn, full);
     bar.append(seek, row);
     // A double tap's mark: back or on, where it was.
     const flash = Object.assign(document.createElement("div"), { className: "flash" });
@@ -325,6 +364,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
             ArrowLeft: () => by(-STEP), j: () => by(-STEP),
             ArrowRight: () => by(STEP), l: () => by(STEP),
             f: () => toggleFull(),
+            r: () => turn.click(),
             "<": () => rate(-1), ">": () => rate(1),
             N: () => skip && (skip(), close()),
         };
@@ -341,15 +381,25 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
     };
 
     // Full screen: the player's; on a phone, the screen turned the video's
-    // way, where the browser lets it be.
-    function turnScreen() {
-        if (navigator.maxTouchPoints <= 0 || !screen.orientation?.lock) return;
-        const w = media.videoWidth, h = media.videoHeight;
-        if (!w || !h) {
-            media.addEventListener("loadedmetadata", turnScreen, { once: true });
-            return;
+    // way, where the browser lets it be. Turn (turned) overrides that: the
+    // screen turned the other way; where it can't be (not full screen, an
+    // iPhone, a desktop), the video itself turned a quarter round.
+    let turned = false;
+    async function turnScreen() {
+        let byScreen = false;
+        if (document.fullscreenElement === box && navigator.maxTouchPoints > 0 && screen.orientation?.lock) {
+            const w = media.videoWidth, h = media.videoHeight;
+            if (!w || !h) {
+                media.addEventListener("loadedmetadata", turnScreen, { once: true });
+                box.classList.toggle("turned", turned);
+                return;
+            }
+            try {
+                await screen.orientation.lock((h > w) !== turned ? "portrait" : "landscape");
+                byScreen = true;
+            } catch { /* not here: the video turned instead */ }
         }
-        screen.orientation.lock(h > w ? "portrait" : "landscape").catch(() => {});
+        if (!done) box.classList.toggle("turned", turned && !byScreen);
     }
     async function toggleFull() {
         try {
@@ -365,7 +415,10 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         full.innerHTML = icon(isFull ? "unfull" : "full");
         full.setAttribute("aria-label", isFull ? "Leave full screen" : "Full screen");
         full.title = isFull ? "Leave full screen (F)" : "Full screen (F)";
-        if (!isFull) screen.orientation?.unlock?.();
+        if (!isFull) {
+            screen.orientation?.unlock?.();
+            if (turned) turnScreen();  // (turned by the screen no more: the video, then)
+        }
     };
     document.addEventListener("fullscreenchange", fullChanged);
 
@@ -373,6 +426,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
     function close() {
         if (done) return;
         done = true;
+        live = false;
         clearTimeout(idle);
         clearTimeout(tapTimer);
         clearTimeout(flashTimer);
@@ -397,6 +451,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
 
     shown();
     showBuffered();
+    live = true;
     awake();
     box.focus();
     toggleFull();  // (asked as it's opened: the person's click, in the menu)
