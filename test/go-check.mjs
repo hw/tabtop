@@ -348,6 +348,8 @@ $("h").addEventListener("mouseenter", () => { $("hs").textContent = "hovered"; }
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
+        "stream-save.html": `<!doctype html><title>Save stream</title><script>fetch("movie.m3u8").then(r => r.text())</script>`,
+        "movie.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npart.m4s\n#EXT-X-ENDLIST\n",
         "doc.pdf": "%PDF-1.4 not really",
         "style.css": `@import "more.css";
 @font-face { font-family: "Fixture Font"; src: url(font.ttf) format("truetype"); }
@@ -481,6 +483,11 @@ http.createServer(function handle(req, res) {
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "3",
         "-c:v", "libx264", "-profile:v", "baseline", "-level:v", "1.2", "-pix_fmt", "yuv420p",
         "-movflags", "+empty_moov+frag_keyframe+default_base_moof", join(dir, "stream.mp4")]);
+    const fragmented = readFileSync(join(dir, "stream.mp4"));
+    let split = 0;
+    while (split < fragmented.length && fragmented.toString("ascii", split + 4, split + 8) !== "moof") split += fragmented.readUInt32BE(split);
+    writeFileSync(join(dir, "init.mp4"), fragmented.subarray(0, split));
+    writeFileSync(join(dir, "part.m4s"), fragmented.subarray(split));
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
     writeFileSync(join(dir, "font.ttf"), systemFont());
 }
@@ -826,7 +833,8 @@ async function check(base, port, site, adSite) {
         // The other pages and logging out: one row, icons only (named for a
         // screen reader), logging out last.
         const pages = await ev(`[...document.querySelectorAll("#go_menu_panel .tabtop-nav > .page, #go_menu_panel .tabtop-nav > button")].filter((p) => p.getClientRects().length).map((p) => ({ top: Math.round(p.getBoundingClientRect().top), name: p.getAttribute("aria-label") }))`);
-        if (pages.length < 2 || new Set(pages.map((p) => p.top)).size !== 1 || pages.some((p) => !p.name || /Browser/.test(p.name)) || !/^Log out/.test(pages.at(-1).name)) throw new Error(`the pages: ${JSON.stringify(pages)}`);
+        const hasFiles = pages.some((p) => p.name?.startsWith("Files ("));
+        if (hasFiles !== (process.env.GO_NO_FS !== "1") || new Set(pages.map((p) => p.top)).size !== 1 || pages.some((p) => !p.name || /Browser/.test(p.name)) || !/^Log out/.test(pages.at(-1).name)) throw new Error(`the pages: ${JSON.stringify(pages)}`);
         // Set apart: the browser's items, then the other pages, then logging out.
         const parts = await ev(`(() => { const nav = document.querySelector("#go_menu_panel .tabtop-nav"), sep = nav.querySelector(".sep");
             return { navLine: getComputedStyle(nav).borderTopWidth, sep: sep ? Math.round(sep.getBoundingClientRect().height) : 0, before: sep?.nextElementSibling?.textContent, after: sep?.previousElementSibling?.textContent }; })()`);
@@ -1351,6 +1359,17 @@ async function check(base, port, site, adSite) {
             await call({ type: "go-settings-set", name: new URL(site).hostname, setting: "ads-default" });
             for (const l of state.lists ?? []) if (!l.builtIn) await call({ type: "go-adblock-set", setting: "list-remove", name: l.id });
         }
+    });
+
+    await step("an on-demand stream can be saved from the browser menu", async () => {
+        await goTo(site + "stream-save.html", "Save stream");
+        if (process.env.GO_NO_FS === "1") {
+            if (await ev(`!!document.querySelector("#go_streams button")`)) throw new Error("Save stream offered with Files off");
+            return;
+        }
+        await waitFor(`!!document.querySelector("#go_streams button")`, "the stream detected");
+        await ev(`document.querySelector("#go_menu").click(); document.querySelector("#go_streams button").click()`);
+        await waitFor(`document.querySelector("#go_notice p").textContent.startsWith("Saved movie.mp4")`, "the assembled stream in Downloads");
     });
 
     await step("a link to a file offers to save it", async () => {
@@ -2184,11 +2203,13 @@ async function check(base, port, site, adSite) {
             await waitFor(`!document.getElementById("overview").hidden && document.querySelectorAll("#overview li").length === 2`, "the list of tabs");
             await ev(`document.querySelector("#overview .done").click()`);
             // Hide browser asks for the browser's full screen, which a page gets only
-            // from a person's own press: a tap, where the button is (in the tab's frame).
+            // from a person's own press: the mouse's, where the button is (in the tab's
+            // frame). (Not a finger's: a phone's browser moves a tap to what's near it
+            // that takes one, which may be the tabs' page's, not the button.)
             await waitFor(`document.getElementById("overview").hidden`, "the list of tabs gone");
             // (What the tap brings, and what's asked of full screen, noted to say why, if it isn't.)
             await ev(`(() => { const w = ${tabDoc}.defaultView; w.__said = []; const note = (s) => w.__said.push(s + "@" + Math.round(w.performance.now()));
-                for (const t of ["touchend", "click", "fullscreenchange", "fullscreenerror"]) w.document.addEventListener(t, (e) => note(t + ":" + (e.target.id || e.target.tagName) + ":" + w.navigator.userActivation.isActive), true);
+                for (const t of ["touchend", "pointerdown", "click", "fullscreenchange", "fullscreenerror"]) w.document.addEventListener(t, (e) => note(t + ":" + (e.target.id || e.target.tagName) + ":" + w.navigator.userActivation.isActive), true);
                 const ask = w.Element.prototype.requestFullscreen, leave = w.Document.prototype.exitFullscreen;
                 w.Element.prototype.requestFullscreen = function (...a) { note("asked"); return ask.apply(this, a).then((v) => (note("granted"), v), (e) => { note("refused:" + e.message); throw e; }); };
                 w.Document.prototype.exitFullscreen = function (...a) { note("left:" + new Error().stack.split("\\n")[2]?.trim()); return leave.apply(this, a); }; })()`);
@@ -2201,8 +2222,17 @@ async function check(base, port, site, adSite) {
                 return { f, cx, cy, x: Math.round((cx - v.offsetLeft) * v.scale), y: Math.round((cy - v.offsetTop) * v.scale), bx: b.left + b.width / 2, by: b.top + b.height / 2, v: [v.scale, v.offsetLeft, v.offsetTop] }; })()`;
             await waitFor(`(() => { const p = ${hideAt}; return document.elementFromPoint(p.cx, p.cy) === p.f && ${tabDoc}.elementFromPoint(p.bx, p.by)?.closest("#go_menu_hide_browser"); })()`, "Hide browser under the finger");
             const at = await ev(`(() => { const { x, y, v } = ${hideAt}; return { x, y, v }; })()`);
-            await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
-            await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+            // (The first input after the phone's emulated can go nowhere, headless Chrome's
+            // seen here: the mouse moved to the button till the tab sees it, then pressed.)
+            await cdp("Page.bringToFront");
+            await ev(`${tabDoc}.defaultView.__moved = false; ${tabDoc}.getElementById("go_menu_hide_browser").addEventListener("mousemove", () => { ${tabDoc}.defaultView.__moved = true; }, { once: true })`);
+            for (let i = 0; i < 50 && !(await ev(`${tabDoc}.defaultView.__moved`)); i++) {
+                await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x + (i % 2), y: at.y });
+                await sleep(200);
+            }
+            if (!(await ev(`${tabDoc}.defaultView.__moved`))) throw new Error("Chrome did not deliver pointer input to Hide browser");
+            await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x: at.x, y: at.y, button: "left", buttons: 1, clickCount: 1 });
+            await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y, button: "left", buttons: 0, clickCount: 1 });
             await waitFor(`${tabDoc}.defaultView.document.fullscreenElement === ${tabDoc}.defaultView.document.documentElement && getComputedStyle(${tabDoc}.getElementById("go_bar")).display !== "none"`, "Hide Original Browser keeps the /go toolbar in fullscreen").catch(async (err) => {
                 const state = await ev(`JSON.stringify({ pressed: ${tabDoc}.getElementById("go_menu_hide_browser").getAttribute("aria-pressed"), menu: !${tabDoc}.getElementById("go_menu_panel").hidden,
                     enabled: ${tabDoc}.fullscreenEnabled, top: document.fullscreenElement?.tagName ?? null, notice: ${tabDoc}.getElementById("go_status")?.textContent || ${tabDoc}.querySelector("#go_notice:not([hidden]) p")?.textContent || "" })`).catch((e) => e.message);
