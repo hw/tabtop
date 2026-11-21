@@ -138,6 +138,7 @@ type fetchManager struct {
 	jobs      map[string]*fetchJob
 	outcomes  map[string]fetchOutcome // by ID, those no longer listed
 	mseStages map[string]*mseStage    // spill staging by id (gostreammse.go)
+	mseBytes  int64                   // what they hold on disk, together
 	wg        sync.WaitGroup
 }
 

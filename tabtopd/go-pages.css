@@ -62,8 +62,6 @@ nav {
 }
 nav button { flex: 1 1 auto; border-color: transparent; background: transparent; white-space: nowrap; }
 nav button[aria-current] { background: #2f405c; border-color: #4c6287; color: #e5eeff; }
-#open_site { background: #2f405c; border-color: #4c6287; color: #e5eeff; }
-#open_site:not(:disabled):hover { background: #3a5073; }
 section, .card { margin-top: 16px; }
 .card { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 14px 16px; }
 .card > :last-child { margin-bottom: 0; }
@@ -71,14 +69,38 @@ section, .card { margin-top: 16px; }
 ul { margin: 12px 0; padding: 0; list-style: none; }
 #sites:not(:empty) { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 4px; }
 #sites li { display: flex; align-items: flex-start; gap: 2px; }
-#sites li > input[type="checkbox"] { flex: none; margin: 12px 4px 0 10px; width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
+/* Selecting (Select): each row a toggle, a selected one bordered in the
+   accent, its quick actions and chevron put away. */
+#sites.selecting .site-row { margin: 2px; border-radius: 10px; box-shadow: inset 0 0 0 1px transparent; }
+#sites.selecting .site-row[aria-pressed="true"] { background: #24304a; box-shadow: inset 0 0 0 2px var(--accent); }
+#sites.selecting .site-row:not([aria-pressed="true"]):hover { box-shadow: inset 0 0 0 1px #62626d; }
+#sites.selecting .chev, #sites.selecting .row-more, #sites.selecting .open-row { display: none; }
+#sites.selecting li + li { border-top-color: transparent; }
+button.quiet { border-color: transparent; background: transparent; color: var(--accent); font-weight: 550; }
+.list-head #select_sites { margin-left: auto; }
+/* A site typed that isn't listed: opened from the list's first row. */
+#sites .open-row .site-row { color: var(--accent); }
+#sites .open-row .site::after { content: " ›"; }
 li + li { border-top: 1px solid var(--line); }
 .site-row { display: grid; flex: 1; min-width: 0; text-align: left; gap: 3px; padding: 10px 12px; border: 0; background: transparent; }
 .site-row:focus-visible { background: var(--control); }
 .site { overflow-wrap: anywhere; }
-.selection-bar { margin-top: 12px; }
-.selection-bar .select-all { display: inline-flex; align-items: center; gap: 8px; }
-.selection-bar #clear_selected { margin-left: auto; }
+/* Selecting: how many, Select all, Done; and what's done to them, each
+   with how many it's for; kept in sight as the list scrolls. On a phone,
+   the actions under the rest. */
+.selection-bar { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 12px;
+    padding: 6px 8px 6px 15px; border: 1px solid #4c6287; border-radius: 12px; background: #24304a; }
+.selection-bar .sel-head, .selection-bar .sel-actions { display: flex; align-items: center; gap: 6px; }
+.selection-bar .sel-head { flex: 1 1 auto; }
+.selection-bar #selection_count { font-weight: 550; white-space: nowrap; margin-right: auto; }
+.selection-bar button { white-space: nowrap; }
+.selection-bar #clear_selection { order: 1; }
+@media (max-width: 600px) {
+    .selection-bar { padding-left: 12px; padding-right: 6px; }
+    .selection-bar .sel-actions { flex: 1 1 100%; }
+    .selection-bar .sel-actions button { flex: 1; }
+    .selection-bar button { padding-inline: 10px; font-size: .875rem; }
+}
 .site-title { display: flex; align-items: center; gap: 12px; }
 .site-title h2 { min-width: 0; }
 #back_to_sites { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; margin-left: auto; }
@@ -89,9 +111,21 @@ li + li { border-top: 1px solid var(--line); }
 .question .hint { display: block; margin-top: 4px; }
 .danger { color: #ffc1ba; border-color: #794b4a; background: #3a292b; }
 .danger:not(:disabled):hover { background: #4d3033; border-color: #a46a65; }
+.safe { color: #baffc1; border-color: #4a794b; background: #293a2b; }
+.safe:not(:disabled):hover { background: #304d33; border-color: #65a46a; }
+/* What was done (or why not): a toast at the foot of the window, in sight
+   wherever the page is scrolled; with an action by it, if there's one. */
+/* (Centred by its margins, not a shift: that would hold it to half the
+   window's width.) */
+.toast { position: fixed; left: 0; right: 0; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 20; display: flex; align-items: center; gap: 12px;
+    width: max-content; max-width: calc(100% - 32px); margin-inline: auto; padding: 8px 8px 8px 16px; border: 1px solid var(--line); border-radius: 12px;
+    background: #2a2a2f; box-shadow: 0 8px 24px #0009; transform: translateY(12px); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
+.toast.shown { opacity: 1; transform: none; pointer-events: auto; }
+.toast:not(:has(#done_action:not([hidden]))) { padding-right: 16px; }
 #done { color: #b2dab1; margin: 0; }
-#done:not(:empty) { margin: 12px 0; }
 #done.error { color: #ffb4ab; }
+#done_action { flex: none; color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
 dialog { width: min(420px, calc(100% - 32px)); border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: inherit; padding: 20px; }
 dialog::backdrop { background: #0009; }
 dialog .tools { justify-content: flex-end; }
@@ -157,3 +191,71 @@ code { font: .85em ui-monospace, SFMono-Regular, Menlo, monospace; background: v
     #back_to_site .back-label { display: none; }
     .entry summary { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
+/* All sites: filters; each site's settings as chips, its data and when,
+   a chevron to its controls, and ⋯ for its quick actions; the storage
+   used, as a meter. */
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.filters button { min-height: 32px; padding: 4px 12px; border-radius: 999px; font-size: .875rem; font-weight: 500; }
+.filters button[aria-pressed="true"] { background: #2f405c; border-color: #4c6287; color: #e5eeff; }
+.list-head { padding-bottom: 0; }
+.site-row { grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; }
+.site-row > * { grid-column: 1; }
+.site-row > .chev { grid-column: 2; grid-row: 1 / span 3; align-self: center; width: 8px; height: 8px; margin-right: 4px;
+    border: solid var(--muted); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; background: #2c2c31; color: #d6d6dc; font-size: .75rem; font-weight: 500; line-height: 1.5; }
+.chip.blocked { color: #ffc1ba; border-color: #794b4a; background: #3a292b; }
+#sites li > .row-more { flex: none; align-self: center; width: 40px; min-height: 40px; margin-right: 4px; padding: 0; border-color: transparent; background: transparent;
+    font-size: 1.2rem; line-height: 1; color: var(--muted); }
+#sites li > .row-more:not(:disabled):hover, #sites li > .row-more[aria-expanded="true"] { background: var(--control); color: inherit; }
+.row-menu { position: absolute; z-index: 5; min-width: 13rem; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: #2a2a2f;
+    box-shadow: 0 8px 24px #0008; }
+.row-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; font-weight: 500; }
+.row-menu button:not(:disabled):hover, .row-menu button:focus-visible { background: var(--hover); outline: none; }
+.row-menu .danger { color: #ffc1ba; background: transparent; }
+.storage-meter { margin-top: 12px; font-size: .875rem; color: var(--muted); }
+.storage-text { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.storage-text span:first-child { color: inherit; font-weight: 550; }
+.meter { height: 6px; border-radius: 3px; background: var(--control); overflow: hidden; }
+.meter span { display: block; height: 100%; min-width: 2px; background: var(--accent); }
+@media (min-width: 601px) {
+    /* Wide: the data and when it was, right of the name, so they line up. */
+    .site-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+    .site-row > .detail { grid-column: 2; grid-row: 1 / span 2; align-self: center; text-align: right; }
+    .site-row > .chev { grid-column: 3; }
+}
+/* Current site: its icon (or initial), its name, what its settings cover
+   and whether the page is secure; settings in groups, each row its name,
+   the default and its control, a changed one marked, with ↺ to put it
+   back; on a phone, every control under its name. */
+.site-icon { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; background: var(--control);
+    font-weight: 700; font-size: 1.1rem; color: var(--accent); overflow: hidden; }
+.site-icon img { width: 24px; height: 24px; }
+.site-name { display: grid; gap: 2px; min-width: 0; }
+.site-name .hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.badge { padding: 1px 8px; border-radius: 999px; font-size: .75rem; font-weight: 600; border: 1px solid var(--line); }
+.badge.insecure { color: #ffc1ba; border-color: #794b4a; background: #3a292b; }
+.badge.secure { color: #b2dab1; border-color: #3f6b45; background: #24342a; }
+.card h3 { margin-bottom: 2px; color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+.setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 16px; padding: 10px 0; }
+.setting + .setting { border-top: 1px solid var(--line); }
+.setting .what { display: grid; gap: 3px; }
+.setting .how { display: flex; align-items: center; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.setting.changed .what::before { content: ""; position: absolute; width: 7px; height: 7px; margin: .55em 0 0 -12px; border-radius: 50%; background: var(--accent); }
+.setting .what { position: relative; }
+.setting .changed-note { color: var(--accent); }
+.setting .undo { width: 38px; padding: 0; font-size: 1.1rem; }
+.setting .what .hint a, .setting .what .hint button.link { color: var(--accent); }
+button.link { min-height: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.reset-list { margin: 4px 0 12px; padding-left: 1.2em; list-style: disc; }
+.reset-list li + li { border-top: 0; }
+#reset_unblock_row { margin-bottom: 8px; }
+@media (max-width: 600px) {
+    .setting { grid-template-columns: minmax(0, 1fr); }
+    .setting .how { justify-content: flex-start; }
+    .setting .how .select { flex: 1; }
+}
+/* Room at the page's foot for the toast, so it covers nothing to reach. */
+main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+/* A card's note on all its settings, under its heading. */
+.card-note { margin: 0 0 4px; }

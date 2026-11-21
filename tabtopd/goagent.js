@@ -529,9 +529,15 @@
             const doc = ser(document, 0);
             observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
             lastURL = here();
-            // What's playing already: said with the first batch.
+            // What's playing already: said with the first batch; and what the
+            // page started or stopped that wasn't said yet (the page read
+            // again, the copy having asked, between its play() and the batch
+            // that would have said it: its stream's player, paused till told,
+            // would wait for good).
+            const unsaid = played;
             played = new Map();
             for (const m of document.querySelectorAll("video, audio")) if (!m.paused && !m.ended) played.set(m, true);
+            for (const [m, playing] of unsaid) played.set(m, playing);
             // All of what's observed, for the copy built from this.
             ioSent = new Set();
             ioOut = [];
@@ -626,6 +632,10 @@
             }
             for (const [n, names] of attrs) {
                 if (n.localName === "source" && names.has("src") && n.parentElement instanceof HTMLMediaElement) changedMedia.add(n.parentElement);
+                // A player's children (its sources, tracks) aren't drawn: the
+                // copy has one player for them, told their address above. An
+                // op of theirs would name a node it hasn't, and ask it all again.
+                if (n.parentElement instanceof HTMLMediaElement) continue;
                 if (!n.isConnected || !old(n)) continue;
                 for (const name of names) {
                     if (/^on/i.test(name)) continue;

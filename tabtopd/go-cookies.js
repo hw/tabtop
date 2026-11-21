@@ -10,6 +10,6 @@ export function siteDataSummary(site) {
     const parts = [];
     if (site?.cookies) parts.push(`${site.cookies} cookie${site.cookies === 1 ? "" : "s"}`);
     if (site?.storageItems) parts.push(`${storageSize(site.storage ?? 0)} in ${site.storageItems} item${site.storageItems === 1 ? "" : "s"}`);
-    if (site?.open) parts.push("Data in an open tab");
+    if (site?.open) parts.push("Used by an open tab");
     return parts;
 }

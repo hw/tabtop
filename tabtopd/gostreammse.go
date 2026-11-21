@@ -23,6 +23,16 @@ import (
 	"github.com/coder/websocket"
 )
 
+// What buffered streams may stage, so tabs can't fill the disk with them:
+// a stage's most (mseStageLimit); a tab's stages at once, and everyone's;
+// all stages' bytes together; and, as a download does (fetchSpare), the
+// disk's room left after each piece.
+const (
+	mseStagesPerTab = 4 // (a feed loads its next video while one plays)
+	mseStagesMax    = 16
+	mseStagedMax    = 2 << 30
+)
+
 const (
 	mseStageLimit   = 512 << 20
 	mseChunk        = 256 << 10
@@ -35,6 +45,9 @@ const (
 // mseStage holds spilled clear-MP4 pieces on disk until Save remuxes them.
 type mseStage struct {
 	id, tab, folder, dir string // folder is the logical Downloads path; dir is the staging folder
+
+	m       *fetchManager
+	writing func() // its folder's write, going on while it's staged (folderWrites)
 
 	mu          sync.Mutex
 	bytes       int64
@@ -56,8 +69,22 @@ func (m *fetchManager) stagesLocked() map[string]*mseStage {
 	return m.mseStages
 }
 
-// openMSEStage creates a staging folder for tab. It does not take a fetch slot.
+// openMSEStage creates a staging folder for tab. It does not take a fetch
+// slot, but counts against the stages a tab, and everyone, may have; and
+// is a write into its folder (not deleted or moved meanwhile) till it's
+// forgotten.
 func (m *fetchManager) openMSEStage(tab, dir string) (*mseStage, error) {
+	m.mu.Lock()
+	mine, all := 0, len(m.mseStages)
+	for _, s := range m.mseStages {
+		if s.tab == tab {
+			mine++
+		}
+	}
+	m.mu.Unlock()
+	if mine >= mseStagesPerTab || all >= mseStagesMax {
+		return nil, errors.New("too many buffered streams are being kept just now: save or close one")
+	}
 	dir = path.Clean(strings.Trim(dir, "/"))
 	if dir == "" || dir == "." {
 		dir = "."
@@ -72,20 +99,32 @@ func (m *fetchManager) openMSEStage(tab, dir string) (*mseStage, error) {
 	if err != nil || !st.IsDir() {
 		return nil, errors.New("the download folder isn't available")
 	}
+	writing, err := m.files.root.writes.begin(real)
+	if err != nil {
+		return nil, err
+	}
 	b := make([]byte, 8)
 	rand.Read(b)
 	id := hex.EncodeToString(b)
 	stageDir := path.Join(real, uploadTempPrefix+id+".mse")
 	if err := store.root.Mkdir(stageDir, 0o700); err != nil {
+		writing()
 		return nil, err
 	}
 	s := &mseStage{
-		id: id, tab: tab, folder: dir, dir: stageDir,
+		id: id, tab: tab, folder: dir, dir: stageDir, m: m, writing: writing,
 		tracks: map[int]*mseStageTrack{},
 		abort:  make(chan struct{}),
 	}
 	m.mu.Lock()
-	m.stagesLocked()[id] = s
+	if n := len(m.stagesLocked()); n >= mseStagesMax {
+		// (Others opened meanwhile.)
+		m.mu.Unlock()
+		store.root.RemoveAll(stageDir)
+		writing()
+		return nil, errors.New("too many buffered streams are being kept just now: save or close one")
+	}
+	m.mseStages[id] = s
 	m.mu.Unlock()
 	time.AfterFunc(mseStageKept, func() { m.forgetMSEStage(id) })
 	return s, nil
@@ -112,12 +151,36 @@ func (m *fetchManager) forgetMSEStage(id string) {
 		s.done = true
 		close(s.abort)
 	}
-	dir := s.dir
+	dir, held := s.dir, s.bytes
+	s.bytes = 0
 	s.mu.Unlock()
 	if store, err := m.files.openStore(); err == nil {
 		store.root.RemoveAll(dir)
 		store.Close()
 	}
+	m.mu.Lock()
+	m.mseBytes = max(0, m.mseBytes-held)
+	m.mu.Unlock()
+	if s.writing != nil {
+		s.writing()
+	}
+}
+
+// stageWrite writes data to the stage's file name (appended, or a new
+// file), if the disk keeps fetchSpare free after it, as a download does.
+func (s *mseStage) stageWrite(store *downloadStore, name string, flags int, data []byte) error {
+	f, err := store.root.OpenFile(name, flags, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if s.m != nil {
+		if free, _, ok := s.m.files.uploadRoom(f); ok && free < int64(len(data))+fetchSpare {
+			return errors.New("insufficient disk space for the buffered stream")
+		}
+	}
+	_, err = f.Write(data)
+	return err
 }
 
 func (m *fetchManager) abortMSEStagesForTab(tab string) {
@@ -157,34 +220,41 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 	if s.bytes+int64(len(data)) > mseStageLimit {
 		return errors.New("buffered stream is too large")
 	}
+	// All stages' bytes together, held for this piece (given back if it
+	// isn't kept).
+	if s.m != nil {
+		s.m.mu.Lock()
+		if s.m.mseBytes+int64(len(data)) > mseStagedMax {
+			s.m.mu.Unlock()
+			return errors.New("buffered streams are holding too much just now: save or close one")
+		}
+		s.m.mseBytes += int64(len(data))
+		s.m.mu.Unlock()
+	}
+	kept := false
+	defer func() {
+		if kept {
+			s.bytes += int64(len(data))
+		} else if s.m != nil {
+			s.m.mu.Lock()
+			s.m.mseBytes -= int64(len(data))
+			s.m.mu.Unlock()
+		}
+	}()
 	switch kind {
 	case mseKindProgress:
 		if len(s.tracks) > 0 {
 			return errors.New("invalid buffered stream")
 		}
 		name := path.Join(s.dir, "progressive.mp4")
+		flags := os.O_WRONLY | os.O_APPEND
 		if s.progressive == "" {
-			s.progressive = name
-			f, err := store.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-			if err != nil {
-				return err
-			}
-			_, err = f.Write(data)
-			f.Close()
-			if err != nil {
-				return err
-			}
-		} else {
-			f, err := store.root.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0o644)
-			if err != nil {
-				return err
-			}
-			_, err = f.Write(data)
-			f.Close()
-			if err != nil {
-				return err
-			}
+			flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
 		}
+		if err := s.stageWrite(store, name, flags, data); err != nil {
+			return err
+		}
+		s.progressive = name
 	case mseKindInit:
 		if s.progressive != "" {
 			return errors.New("invalid buffered stream")
@@ -198,7 +268,7 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 			return errors.New("stream init already sent")
 		}
 		name := path.Join(s.dir, fmt.Sprintf("t%d-init", track))
-		if err := store.root.WriteFile(name, data, 0o644); err != nil {
+		if err := s.stageWrite(store, name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, data); err != nil {
 			return err
 		}
 		tr.init = name
@@ -211,14 +281,14 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 			return errors.New("stream part before init")
 		}
 		name := path.Join(s.dir, fmt.Sprintf("t%d-p%d", track, len(tr.parts)))
-		if err := store.root.WriteFile(name, data, 0o644); err != nil {
+		if err := s.stageWrite(store, name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, data); err != nil {
 			return err
 		}
 		tr.parts = append(tr.parts, name)
 	default:
 		return errors.New("invalid stream frame")
 	}
-	s.bytes += int64(len(data))
+	kept = true
 	return nil
 }
 

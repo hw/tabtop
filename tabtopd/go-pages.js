@@ -19,9 +19,29 @@ export function told(what) {
     if (window.parent !== window) parent.postMessage({ goSettings: what }, location.origin);
 }
 
-export function say(text, error = false) {
-    $("done").textContent = text;
-    $("done").classList.toggle("error", error);
+// say says what was done, or (error) why it wasn't, in a toast kept in
+// sight as the page scrolls (the status line), with an action if given
+// ({label, run}: Reload page, say). What was done goes after a while;
+// an error stays till the next thing's done.
+let sayTimer = 0;
+export function say(text, error = false, action = null) {
+    const done = $("done");
+    let button = $("done_action");
+    if (!button) {
+        // (Its own element, not in the status line: what's said is its text.)
+        const toast = Object.assign(document.createElement("div"), { className: "toast", id: "toast" });
+        done.replaceWith(toast);
+        button = Object.assign(document.createElement("button"), { type: "button", id: "done_action", hidden: true });
+        toast.append(done, button);
+    }
+    done.textContent = text;
+    done.classList.toggle("error", error);
+    button.hidden = !action;
+    button.textContent = action?.label ?? "";
+    button.onclick = action ? () => { say(""); action.run(); } : null;
+    $("toast").classList.toggle("shown", !!text);
+    clearTimeout(sayTimer);
+    if (text && !error) sayTimer = setTimeout(() => $("toast").classList.remove("shown"), action ? 10000 : 5000);
 }
 
 export async function ask(req) {
@@ -42,7 +62,8 @@ export function runner(render) {
         render();
         try {
             await action();
-            if (done) say(done);
+            // (done: what's said, or {text, action} with an action by it.)
+            if (done) typeof done === "string" ? say(done) : say(done.text, false, done.action);
             return true;
         } catch (err) {
             say(err.message, true);

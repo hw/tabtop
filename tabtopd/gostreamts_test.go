@@ -152,3 +152,29 @@ func newTestFileServer(t *testing.T, dir string) string {
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
+
+// TestTSRemuxMalformed: what a website sends that the parsers can't take
+// (parameter sets cut short, a segment of noise) is an error, not a panic
+// that would end tabtopd.
+func TestTSRemuxMalformed(t *testing.T) {
+	for _, v := range []*tsStream{
+		{video: true, sps: [][]byte{{0x67}}, pps: [][]byte{{0x68}}},
+		{video: true, hevc: true, vps: [][]byte{{0x40}}, sps: [][]byte{{0x42}}, pps: [][]byte{{0x44}}},
+	} {
+		r := newTSRemux(&tsClock{})
+		r.video = v
+		if _, err := r.header(); err == nil {
+			t.Errorf("hevc %t: no error", v.hevc)
+		}
+	}
+	noise := make([]byte, 188*4)
+	for i := range noise {
+		noise[i] = byte(i * 7)
+	}
+	for i := 0; i < len(noise); i += 188 {
+		noise[i] = 0x47
+	}
+	if err := newTSRemux(&tsClock{}).probe(noise); err == nil {
+		t.Error("noise: no error")
+	}
+}

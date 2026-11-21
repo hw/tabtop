@@ -139,6 +139,9 @@
             render(m).catch((err) => tell({ type: "rendered", gen: m.gen, report: { error: String(err?.message || err) } }));
         } else if (m.type === "changes") {
             apply(m);
+        } else if (m.type === "theme" && typeof m.theme === "string") {
+            theme = m.theme;
+            darken();
         } else if (m.type === "net" && Number.isSafeInteger(m.gen)) {
             netGen = m.gen;
             netBusy = !!m.busy;
@@ -681,6 +684,37 @@
     let media = new Map();  // key -> {box, kind, src, ...}, of the document shown
     // The boxes' sizes but for the page's own rules (which win: :where has
     // no weight), as a browser's players' are.
+    // Force dark (Dark mode, go/sites): a page that has no dark look of its
+    // own, darkened: its colours turned about (their hues kept), and its
+    // pictures, videos, canvases and frames turned back, so they look as
+    // they are. A page already dark (its background's) is left as it is.
+    let theme = "auto";
+    const FORCE_DARK = "html { filter: invert(1) hue-rotate(180deg) !important; background-color: #fff !important; } " +
+        ":is(img, video, canvas, iframe, embed, object, svg image, [data-go-video]):not(:is(img, video, canvas, iframe, embed, object, [data-go-video]) *) " +
+        "{ filter: invert(1) hue-rotate(180deg) !important; }";
+    const forceDarkSheet = new CSSStyleSheet();
+    forceDarkSheet.replaceSync(FORCE_DARK);
+    function lightness(color) {
+        const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?/.exec(color || "");
+        if (!m || m[4] !== undefined && Number(m[4]) < 0.1) return null;  // (none: what's under it)
+        const [r, g, b] = [m[1], m[2], m[3]].map((v) => Number(v) / 255);
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+    function darken() {
+        const sheets = document.adoptedStyleSheets.filter((sheet) => sheet !== forceDarkSheet);
+        if (theme !== "force" || !document.documentElement) {
+            document.adoptedStyleSheets = sheets;
+            return;
+        }
+        // The page's background: its html's, else its body's, else white.
+        const own = lightness(getComputedStyle(document.documentElement).backgroundColor) ??
+            (document.body ? lightness(getComputedStyle(document.body).backgroundColor) : null) ?? 1;
+        if (own < 0.4) {
+            document.adoptedStyleSheets = sheets;
+            return;
+        }
+        document.adoptedStyleSheets = [...sheets, forceDarkSheet];
+    }
     const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, auto); aspect-ratio: var(--tabtop-media-ratio, 16 / 9); object-fit: contain; } " +
         ":where([data-go-audio]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, 54px); } " +
         ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
@@ -1225,6 +1259,8 @@
                 const hash = d.url ? new URL(d.url).hash.slice(1) : "";
                 hash ? scrollToFragment(hash) : scrollTo(0, 0);
             }
+            theme = typeof m.theme === "string" ? m.theme : "auto";
+            darken();
             tell({ type: "rendered", gen: d.gen, report: d.report });
             if (building === d) building = null;
         })();
@@ -1622,17 +1658,45 @@
     // first of its path (one in a copy is retargeted to the copy's box).
     const real = (e) => e.composedPath?.()[0] ?? e.target;
     function targetOf(node) {
-        const root = node?.getRootNode?.();
-        if (root instanceof ShadowRoot) {
-            const fr = frameRoots.get(root.host), host = doc?.ids.get(root.host);
-            for (let n = node; n && n !== root && fr?.child && host; n = n.parentNode) {
-                const i = fr.child.ids.get(n);
-                if (i) return { id: host, frame: i, fdoc: fr.docOf ?? 0, node: n };
+        // Walk out through every copied iframe. Each hop names the iframe
+        // in its parent document and the document number that supplied it;
+        // the server uses the chain to reach the matching nested CDP frame.
+        let n = node, leaf = null, route = [], docs = [];
+        for (;;) {
+            const root = n?.getRootNode?.();
+            if (!(root instanceof ShadowRoot)) {
+                const at = idOf(n);
+                if (!at) return null;
+                if (!leaf) return { ...at, frame: 0 };
+                route.push(at.id);
+                docs.push(doc?.gen ?? 0);
+                return { id: route[0], frame: leaf.id, fdoc: leaf.fdoc, route, docs, node: leaf.node };
             }
-            return null;
+            const host = root.host, fr = frameRoots.get(host);
+            if (!fr?.child) return null;
+            let found = null;
+            for (let at = n; at && at !== root; at = at.parentNode) {
+                const i = fr.child.ids.get(at);
+                if (i && at.nodeType === 1) { found = { id: i, node: at }; break; }
+            }
+            if (!found) return null;
+            if (!leaf) leaf = { ...found, fdoc: fr.docOf ?? 0 };
+            const parentRoot = host.getRootNode?.();
+            if (parentRoot instanceof ShadowRoot) {
+                const parentFr = frameRoots.get(parentRoot.host);
+                const owner = parentFr?.child?.ids.get(host);
+                if (!owner) return null;
+                route.unshift(owner);
+                docs.unshift(parentFr.docOf ?? 0);
+                n = host;
+                continue;
+            }
+            const owner = doc?.ids.get(host);
+            if (!owner) return null;
+            route.unshift(owner);
+            docs.unshift(doc?.gen ?? 0);
+            return { id: route[0], frame: leaf.id, fdoc: leaf.fdoc, route, docs, node: leaf.node };
         }
-        const at = idOf(node);
-        return at && { ...at, frame: 0 };
     }
     function send(kind, id, extra = {}) {
         if (!doc || current !== doc.gen) return;

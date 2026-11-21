@@ -35,6 +35,14 @@ type goSiteSettings struct {
 	videoHosts   []string          // hosts whose videos aren't played, on any page (a Skip held: go.js)
 	popupDefault string
 	mediaDefault string
+	// Dark mode: site -> "auto" (as the person's device), "light", "dark"
+	// (what pages are told the person prefers), or "force" (dark, and a
+	// page without a dark look of its own darkened: go-frame.js).
+	theme        map[string]string
+	themeDefault string
+	// Search engine for words typed in the address bar (go.js; chosen in
+	// Settings). An id from goSearchEngines; default duckduckgo.
+	searchEngine string
 }
 
 type goSiteSettingsFile struct {
@@ -48,6 +56,16 @@ type goSiteSettingsFile struct {
 	MediaDefault string            `json:"mediaDefault,omitempty"`
 	Ads          map[string]string `json:"ads,omitempty"`
 	VideoHosts   []string          `json:"videoHosts,omitempty"`
+	Theme        map[string]string `json:"theme,omitempty"`
+	ThemeDefault string            `json:"themeDefault,omitempty"`
+	SearchEngine string            `json:"searchEngine,omitempty"`
+}
+
+// goSearchEngines are the address bar's search engines (Settings; go.js
+// builds the URL). DuckDuckGo's HTML version is the default: it works
+// with less of the page's own scripts than the others.
+var goSearchEngines = map[string]bool{
+	"duckduckgo": true, "google": true, "bing": true, "brave": true,
 }
 
 // goBlockedHost is whether a host is blocked in the settings: the engine's
@@ -56,7 +74,8 @@ type goSiteSettingsFile struct {
 var goBlockedHost = func(string) bool { return false }
 
 func newGoSiteSettings(file string) *goSiteSettings {
-	s := &goSiteSettings{file: file, popups: map[string]string{}, media: map[string]string{}, ads: map[string]string{}, popupDefault: "ask", mediaDefault: "allow"}
+	s := &goSiteSettings{file: file, popups: map[string]string{}, media: map[string]string{}, ads: map[string]string{}, popupDefault: "ask", mediaDefault: "allow",
+		theme: map[string]string{}, themeDefault: "auto", searchEngine: "duckduckgo"}
 	if file == "" {
 		return s
 	}
@@ -116,6 +135,17 @@ func newGoSiteSettings(file string) *goSiteSettings {
 			s.popups[site] = v
 		}
 	}
+	if themePolicy(f.ThemeDefault) {
+		s.themeDefault = f.ThemeDefault
+	}
+	for site, v := range f.Theme {
+		if site = goSettingHost(site); site != "" && themePolicy(v) && len(s.theme) < maxGoSiteSettings {
+			s.theme[goSite(site)] = v
+		}
+	}
+	if goSearchEngines[f.SearchEngine] {
+		s.searchEngine = f.SearchEngine
+	}
 	return s
 }
 
@@ -160,7 +190,8 @@ func (s *goSiteSettings) save() {
 	if s.file == "" {
 		return
 	}
-	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts}
+	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts,
+		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -199,6 +230,23 @@ func popupPolicy(value string) bool { return value == "allow" || value == "block
 
 func mediaPolicy(value string) bool {
 	return value == "allow" || value == "block" || value == "no-autoplay"
+}
+
+func themePolicy(value string) bool {
+	return value == "auto" || value == "light" || value == "dark" || value == "force"
+}
+
+// themeFor is Dark mode for a page of host: its site's, or the default.
+func (s *goSiteSettings) themeFor(host string) string {
+	if s == nil {
+		return "auto"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t := s.theme[goSite(strings.Trim(host, "[]"))]; t != "" {
+		return t
+	}
+	return s.themeDefault
 }
 
 func (s *goSiteSettings) mediaFor(host string) string {
@@ -274,7 +322,8 @@ func (s *goSiteSettings) popup(site string) string {
 	return s.popupDefault
 }
 
-// set changes a browser-wide default, site access, or a site's override.
+// set changes a browser-wide default, site access, or a site's override;
+// or (forget) deletes all a site's.
 func (s *goSiteSettings) set(site, setting string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -286,6 +335,10 @@ func (s *goSiteSettings) set(site, setting string) error {
 			s.popupDefault = strings.TrimPrefix(setting, "popups-")
 		case strings.HasPrefix(setting, "videos-") && mediaPolicy(strings.TrimPrefix(setting, "videos-")):
 			s.mediaDefault = strings.TrimPrefix(setting, "videos-")
+		case strings.HasPrefix(setting, "theme-") && themePolicy(strings.TrimPrefix(setting, "theme-")):
+			s.themeDefault = strings.TrimPrefix(setting, "theme-")
+		case strings.HasPrefix(setting, "search-") && goSearchEngines[strings.TrimPrefix(setting, "search-")]:
+			s.searchEngine = strings.TrimPrefix(setting, "search-")
 		default:
 			return errors.New("That isn't a browser-wide setting.")
 		}
@@ -298,7 +351,7 @@ func (s *goSiteSettings) set(site, setting string) error {
 	}
 	// The whole site's (m.youtube.com: youtube.com); a video host's, its
 	// own host (cdn.example.com, as its videos' addresses name it).
-	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-")) && !strings.HasPrefix(setting, "videos-host-") {
+	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") || strings.HasPrefix(setting, "theme-")) && !strings.HasPrefix(setting, "videos-host-") {
 		h = goSite(h)
 	}
 	switch setting {
@@ -345,6 +398,23 @@ func (s *goSiteSettings) set(site, setting string) error {
 		}
 	case "videos-host-allow":
 		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
+	case "theme-auto", "theme-light", "theme-dark", "theme-force":
+		if _, ok := s.theme[h]; !ok && len(s.theme) >= maxGoSiteSettings {
+			return errors.New("Too many sites have Dark mode settings.")
+		}
+		s.theme[h] = strings.TrimPrefix(setting, "theme-")
+	case "theme-default":
+		delete(s.theme, h)
+	case "forget":
+		// Everything kept under the name: its block, its pop-ups, videos and
+		// ads, its videos blocked by host. (A block of a domain over it, kept
+		// under that domain's name, stays.)
+		s.blocked = slices.DeleteFunc(s.blocked, func(b string) bool { return b == h })
+		delete(s.popups, h)
+		delete(s.media, h)
+		delete(s.ads, h)
+		delete(s.theme, h)
+		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
 	default:
 		return errors.New("That isn't a setting.")
 	}
@@ -364,7 +434,8 @@ func (s *goSiteSettings) report() map[string]any {
 	slices.Sort(noVideos)
 	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": maps.Clone(s.popups), "referer": !s.noReferer,
 		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
-		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != ""}
+		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
+		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine}
 }
 
 // routeGoSettings answers the settings page: what's set.
@@ -382,6 +453,7 @@ func (g *server) routeGoSettings(c *tunnelCall) {
 		}
 		report["host"], report["site"] = host, goSite(host)
 		report["effectiveMedia"] = g.goSites.mediaFor(host)
+		report["effectiveTheme"] = g.goSites.themeFor(host)
 	}
 	if g.goAds != nil {
 		report["adblock"] = g.goAds.on.Load() // ad blocking's default, on or off (Settings)

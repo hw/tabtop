@@ -13,11 +13,11 @@
 // comes back as changes, or a new page; dialogs the page opens are asked
 // here, and files it leads to are offered to be saved into Downloads.
 //
-// The address bar takes an address, or words to search for (with
-// DuckDuckGo). Back, forward and reload are this page's: each loads an
-// address again in the engine. The address shown is kept in this page's
-// own address, after #, so reloading the tab carries on where it was. If
-// the connection is lost, the page tries again by itself (see
+// The address bar takes an address, or words to search for (the search
+// engine chosen in Settings). Back, forward and reload are this page's:
+// each loads an address again in the engine. The address shown is kept in
+// this page's own address, after #, so reloading the tab carries on where
+// it was. If the connection is lost, the page tries again by itself (see
 // reconnect.js), with a new engine, loading the page that was shown.
 
 import { navBar, nameTab, pages, openPage } from "../tabtop/nav.js";
@@ -28,7 +28,34 @@ import { warnExpiry } from "../tabtop/expiry.js";
 import { call, collect, setLoginTitle } from "../tabtop/requests.js";
 import { goMedia } from "./go-media.js";
 
-const SEARCH = "https://html.duckduckgo.com/html/?q=";
+// Address-bar search engines (Settings; gosites.go's goSearchEngines).
+// prefix is the URL up to and including the query parameter's "="; param
+// is that parameter's name (for showing the words searched for).
+const SEARCH_ENGINES = {
+    duckduckgo: { prefix: "https://html.duckduckgo.com/html/?q=", param: "q" },
+    google: { prefix: "https://www.google.com/search?q=", param: "q" },
+    bing: { prefix: "https://www.bing.com/search?q=", param: "q" },
+    brave: { prefix: "https://search.brave.com/search?q=", param: "q" },
+};
+let searchEngine = "duckduckgo";
+function searchOf(id = searchEngine) { return SEARCH_ENGINES[id] ?? SEARCH_ENGINES.duckduckgo; }
+function isSearch(url) { return Object.values(SEARCH_ENGINES).some((e) => url.startsWith(e.prefix)); }
+function searchWords(url) {
+    for (const e of Object.values(SEARCH_ENGINES)) {
+        if (!url.startsWith(e.prefix)) continue;
+        try { return new URL(url).searchParams.get(e.param) || ""; } catch { return ""; }
+    }
+    return null;
+}
+async function loadSearchEngine() {
+    try {
+        const t = await call({ type: "go-settings" });
+        const id = t.reply?.searchEngine;
+        t.close();
+        if (typeof id === "string" && SEARCH_ENGINES[id]) searchEngine = id;
+    } catch { /* keep the default */ }
+}
+loadSearchEngine();
 // One of the tabs' page's tabs (go-tabs.js: go/tab?id=N in a frame of it),
 // or on its own: its number keeps what it keeps apart from the others',
 // and the tabs' page has its history (and the device's back).
@@ -221,12 +248,26 @@ function openSettings(page) {
     settingsFrame?.remove();
     const there = new URL(page, location.href);
     // Site controls open at the page's site when there's a page.
-    const host = at >= 0 && !entries[at].url.startsWith(SEARCH) ? hostOf(entries[at].url).replace(/:\d+$/, "") : "";
-    if (page === "sites" && host) there.searchParams.set("site", host);
+    const host = at >= 0 && !isSearch(entries[at].url) ? hostOf(entries[at].url).replace(/:\d+$/, "") : "";
+    if (page === "sites" && host) {
+        there.searchParams.set("site", host);
+        // Whether the page is secure (https), for Site controls to say.
+        there.searchParams.set("secure", entries[at].url.startsWith("https:") ? "1" : "0");
+    }
     const title = page === "sites" ? "Site controls" : "Settings";
     $("go_settings_h").textContent = title;
     settingsFrame = Object.assign(document.createElement("iframe"), { title, src: there.href });
     settingsBox.append(settingsFrame);
+    // The site's icon (its /favicon.ico, through the server as the page's
+    // pictures are), for Site controls to show by its name.
+    if (page === "sites" && host) {
+        const frame = settingsFrame, origin = new URL(entries[at].url).origin;
+        frame.addEventListener("load", () => {
+            cachedResource("image", origin + "/favicon.ico").then((blob) => {
+                if (settingsFrame === frame) frame.contentWindow?.postMessage({ goSiteIcon: blob, host }, location.origin);
+            }, () => {});
+        }, { once: true });
+    }
     settingsBox.showModal();
     settingsBox.querySelector(".close").focus();
 }
@@ -239,7 +280,7 @@ const siteButton = $("go_site"), addressForm = $("go_address");
 let adsBlocked = 0;
 function showSiteButton() {
     const entry = at >= 0 ? entries[at] : null;
-    const site = entry && !entry.url.startsWith(SEARCH) && address.classList.contains("site") ? hostOf(entry.url).replace(/:\d+$/, "").replace(/^www\./, "") : "";
+    const site = entry && !isSearch(entry.url) && address.classList.contains("site") ? hostOf(entry.url).replace(/:\d+$/, "").replace(/^www\./, "") : "";
     siteButton.hidden = !site;
     addressForm.classList.toggle("with-site", !!site);
     if (!site) return;
@@ -280,6 +321,12 @@ window.addEventListener("message", (e) => {
     if (!settingsFrame || e.source !== settingsFrame.contentWindow || e.origin !== location.origin) return;
     if (e.data?.goSettings === "close") settingsBox.close();
     else if (e.data?.goSettings === "media-changed") refreshMediaPolicy();
+    else if (e.data?.goSettings === "theme-changed") refreshTheme();
+    else if (e.data?.goSettings === "search-changed") loadSearchEngine();
+    // Site controls' Reload page (a change that holds for what loads next),
+    // and its link to Settings.
+    else if (e.data?.goSettings === "reload" && at >= 0) { settingsBox.close(); load(entries[at].url, { push: false }); }
+    else if (e.data?.goSettings === "open-settings") openSettings("settings");
 });
 const nav = navBar("go", { logOutIcon: true });
 for (const item of nav.children) {
@@ -401,6 +448,22 @@ function applyMediaPolicy(policy) {
     media?.autoplay(shouldAutoplay());
     if (wasBlocked && policy !== "block") toFrame({ type: "media-allowed" });
     mediaMenu();
+}
+
+// refreshTheme takes Dark mode for the page shown afresh (changed in Site
+// controls): the engine tells the page again what it prefers, and the
+// copy's darkened, or not, as Force dark says.
+async function refreshTheme() {
+    const entry = entries[at];
+    if (!entry) return;
+    try {
+        const t = await call({ type: "go-settings", name: entry.url });
+        t.close();
+        if (entries[at] !== entry) return;
+        ws?.send(JSON.stringify({ op: "theme" }));
+        if (lastRender) lastRender.theme = t.reply.effectiveTheme;
+        toFrame({ type: "theme", theme: t.reply.effectiveTheme });
+    } catch { /* the next snapshot says it */ }
 }
 
 async function refreshMediaPolicy() {
@@ -644,13 +707,13 @@ let rendering = false; // snapshot received; the frame is preparing styles and r
 let spent = 0;  // bytes fetched for the frame for the page shown
 
 // target turns what was typed into an address: one as it is, a host
-// with https://, or words searched for.
+// with https://, or words searched for (the engine in Settings).
 function target(text) {
     const s = text.trim();
     if (!s) return null;
     if (/^https?:\/\//i.test(s)) return s;
     if (!/\s/.test(s) && /^[^/]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(s) || /^localhost(:\d+)?(\/|$)/i.test(s)) return "https://" + s;
-    return SEARCH + encodeURIComponent(s);
+    return searchOf().prefix + encodeURIComponent(s);
 }
 
 function show(text) {
@@ -764,7 +827,8 @@ function showSite(url) {
     try {
         const u = new URL(url);
         insecure = u.protocol !== "https:";
-        text = url.startsWith(SEARCH) ? u.searchParams.get("q") || u.host : (insecure ? "http://" : "") + u.host.replace(/^www\./, "");
+        const words = searchWords(url);
+        text = words !== null ? (words || u.host) : (insecure ? "http://" : "") + u.host.replace(/^www\./, "");
     } catch { /* as it is */ }
     address.value = text;
     address.dataset.url = url;
@@ -795,7 +859,7 @@ function recent(url) {
     let origin;
     try {
         const u = new URL(url);
-        if (url.startsWith(SEARCH) || !/^https?:$/.test(u.protocol)) return;
+        if (isSearch(url) || !/^https?:$/.test(u.protocol)) return;
         origin = u.origin;
     } catch { return; }
     try {
@@ -1216,7 +1280,7 @@ function message(m) {
             shown = m.gen;
             applyMediaPolicy(m.mediaPolicy ?? "allow");
             media.blockHosts(m.videoHosts);
-            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide };
+            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide, theme: m.theme };
             toFrame(lastRender);
             update();
             break;

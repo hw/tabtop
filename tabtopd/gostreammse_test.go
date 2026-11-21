@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"path"
 	"testing"
 )
@@ -151,4 +152,102 @@ func (w *mseWriter) u32(v uint32) {
 func (w *mseWriter) bytes(p []byte) {
 	w.u32(uint32(len(p)))
 	w.b = append(w.b, p...)
+}
+
+// TestMSEStageLimits: buffered streams can't fill the disk. A tab may keep
+// mseStagesPerTab stages, and everyone mseStagesMax; all stages' bytes
+// together are held to mseStagedMax (given back as a stage is forgotten);
+// a piece that would leave less than fetchSpare free isn't written; and a
+// stage is a write into its folder, which can't be deleted meanwhile.
+func TestMSEStageLimits(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var stages []*mseStage
+	for range mseStagesPerTab {
+		s, err := m.openMSEStage("tab-a", ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stages = append(stages, s)
+	}
+	if _, err := m.openMSEStage("tab-a", "."); err == nil {
+		t.Error("a tab kept more stages than it may")
+	}
+	for i := 0; len(stages) < mseStagesMax; i++ {
+		s, err := m.openMSEStage(fmt.Sprintf("tab-%d", i), ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stages = append(stages, s)
+	}
+	if _, err := m.openMSEStage("tab-new", "."); err == nil {
+		t.Error("more stages kept than everyone may")
+	}
+
+	// The folder's being written: not deleted meanwhile.
+	if end, busy := g.defaultRoot().writes.startDeleting("."); !busy {
+		end()
+		t.Error("the staging folder could be deleted while a stream's staged in it")
+	}
+
+	// All stages' bytes together.
+	m.mu.Lock()
+	m.mseBytes = mseStagedMax - 10
+	m.mu.Unlock()
+	if err := stages[0].appendFrame(store, 0, mseKindInit, make([]byte, 20)); err == nil {
+		t.Error("staged past what all stages may hold")
+	}
+	m.mu.Lock()
+	m.mseBytes = 0
+	m.mu.Unlock()
+	if err := stages[0].appendFrame(store, 0, mseKindInit, make([]byte, 20)); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	held := m.mseBytes
+	m.mu.Unlock()
+	if held != 20 {
+		t.Errorf("held %d bytes, want 20", held)
+	}
+
+	// The disk's room, less what's kept spare.
+	if free, _, ok := diskSpace(g.downloadsDir); ok {
+		old := fetchSpare
+		fetchSpare = free + 1<<30 // (no room at all)
+		err := stages[1].appendFrame(store, 0, mseKindInit, make([]byte, 20))
+		fetchSpare = old
+		if err == nil {
+			t.Error("staged with no room left on the disk")
+		}
+		m.mu.Lock()
+		held = m.mseBytes
+		m.mu.Unlock()
+		if held != 20 {
+			t.Errorf("a piece refused still held: %d bytes", held)
+		}
+	}
+
+	for _, s := range stages {
+		m.forgetMSEStage(s.id)
+	}
+	m.mu.Lock()
+	held = m.mseBytes
+	m.mu.Unlock()
+	if held != 0 {
+		t.Errorf("%d bytes still held, every stage forgotten", held)
+	}
+	if end, busy := g.defaultRoot().writes.startDeleting("."); busy {
+		t.Error("the folder still busy, every stage forgotten")
+	} else {
+		end()
+	}
+	if _, err := m.openMSEStage("tab-a", "."); err != nil {
+		t.Errorf("a stage refused, every other forgotten: %v", err)
+	}
 }

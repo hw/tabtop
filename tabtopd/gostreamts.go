@@ -83,13 +83,23 @@ type tsRemux struct {
 	firstOK bool
 }
 
+// tsRecover has a panic in reading a stream a website sent (mp4ff's, on a
+// malformed parameter set, say) be an error, not the end of tabtopd: the
+// save runs in a fetch's goroutine.
+func tsRecover(err *error) {
+	if r := recover(); r != nil {
+		*err = errors.New("the stream's MPEG-TS segments couldn't be read")
+	}
+}
+
 func newTSRemux(clock *tsClock) *tsRemux {
 	return &tsRemux{clock: clock, streams: map[uint16]*tsStream{}}
 }
 
 // probe reads the first segment for what the header needs, and when the
 // stream starts (told to the clock).
-func (r *tsRemux) probe(seg []byte) error {
+func (r *tsRemux) probe(seg []byte) (err error) {
+	defer tsRecover(&err)
 	r.probing = true
 	defer func() { r.probing = false }()
 	if err := r.read(seg); err != nil {
@@ -116,8 +126,9 @@ func (r *tsRemux) probe(seg []byte) error {
 
 // header is the MP4 header for the stream's tracks: the video (track 1)
 // and the sound.
-func (r *tsRemux) header() (*mp4.InitSegment, error) {
-	init := mp4.CreateEmptyInit()
+func (r *tsRemux) header() (init *mp4.InitSegment, err error) {
+	defer tsRecover(&err)
+	init = mp4.CreateEmptyInit()
 	if v := r.video; v != nil {
 		trak := init.AddEmptyTrack(tsClockRate, "video", "und")
 		var err error
@@ -151,7 +162,8 @@ func (r *tsRemux) header() (*mp4.InitSegment, error) {
 // segment is a segment's samples as an MP4 fragment (its track IDs the
 // header's, its sequence number seq), or nil if it has none (yet: the
 // video's last sample is held for the next segment).
-func (r *tsRemux) segment(seg []byte, discontinuity bool, seq uint32) ([]byte, error) {
+func (r *tsRemux) segment(seg []byte, discontinuity bool, seq uint32) (frag []byte, err error) {
+	defer tsRecover(&err)
 	if discontinuity {
 		r.jumped = true
 		for _, s := range r.streams {
@@ -165,7 +177,8 @@ func (r *tsRemux) segment(seg []byte, discontinuity bool, seq uint32) ([]byte, e
 }
 
 // finish is the last samples (the video's held one) as a fragment.
-func (r *tsRemux) finish(seq uint32) ([]byte, error) {
+func (r *tsRemux) finish(seq uint32) (frag []byte, err error) {
+	defer tsRecover(&err)
 	if v := r.video; v != nil && v.held != nil {
 		v.held.Dur = max(v.lastDur, 1)
 		v.samples = append(v.samples, *v.held)

@@ -449,6 +449,7 @@ func (b *goBrowser) storagePaused(ev cdpEvent) {
 	}
 	if p.Frame == b.topFrame {
 		b.pageAt(p.Request.URL)
+		b.schemeAt(p.Request.URL) // (before its styles are read: gotheme.go)
 		b.newAdPage()
 	} else if b.adRefused(p.ID, p.Request.URL, goAdTSubdocument) {
 		return // an embedded page that's an ad's

@@ -12,6 +12,18 @@
     <p id="done" role="status" aria-live="polite"></p>
 
     <section id="browser_settings" aria-label="Settings">
+        <div class="card" id="search_engine_card">
+            <h3>Search engine</h3>
+            <div class="question">
+                <label for="search_engine">Default search engine<span class="hint">Used when the address bar has words, not an address. DuckDuckGo’s HTML version is the default; others may need more of the page’s own scripts.</span></label>
+                <span class="select"><select id="search_engine" disabled>
+                    <option value="duckduckgo">DuckDuckGo</option>
+                    <option value="google">Google</option>
+                    <option value="bing">Bing</option>
+                    <option value="brave">Brave Search</option>
+                </select></span>
+            </div>
+        </div>
         <div class="card" id="adblock">
             <h3>Ad blocking</h3>
             <label class="toggle"><input type="checkbox" id="adblock_on" disabled> Block ads and trackers</label>

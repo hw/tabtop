@@ -54,7 +54,8 @@ type tunnelRequest struct {
 	// origins' localStorage items, to delete.
 	Cookie  *goCookieRef  `json:"cookie,omitempty"`
 	Storage *goStorageRef `json:"storage,omitempty"`
-	// go-settings-set: the change to the site (Name): block, unblock, popups-allow, popups-block, popups-ask.
+	// go-settings-set: the change to the site (Name): block, unblock, popups-allow, popups-block, popups-ask;
+	// empty Name: a browser-wide default (popups-…, videos-…, theme-…, search-…, referer-on/off).
 	Setting string `json:"setting,omitempty"`
 	// go-adblock-set, with Setting "filters": My filters, the person's own
 	// ad blocking rules.

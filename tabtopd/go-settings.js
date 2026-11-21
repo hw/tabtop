@@ -1,14 +1,25 @@
-// Settings (go/settings): the browser's own, ad blocking and its filter
-// lists (goadblock.go). Each site's, and the defaults for them all, are in
-// Site controls (go/sites, go-sites.js).
+// Settings (go/settings): the browser's own, the address bar's search
+// engine, ad blocking and its filter lists (goadblock.go). Each site's,
+// and the defaults for them all, are in Site controls (go/sites, go-sites.js).
 import { setLoginTitle } from "../tabtop/requests.js";
-import { $, ask, runner } from "./go-pages.js";
+import { $, ask, runner, told } from "./go-pages.js";
 
 setLoginTitle("Settings");
 
 let ads;
-const state = runner(renderAds);
+let searchEngine = "duckduckgo";
+const state = runner(render);
 const run = state.run;
+
+function render() {
+    renderSearch();
+    renderAds();
+}
+
+function renderSearch() {
+    $("search_engine").value = searchEngine;
+    $("search_engine").disabled = state.busy;
+}
 
 // ago says how long ago a time (ms) was, roughly.
 function ago(ms) {
@@ -92,17 +103,25 @@ function setAds(setting, extra = {}, done = "Setting saved.") {
     }, done);
 }
 
+$("search_engine").addEventListener("change", () => {
+    const id = $("search_engine").value;
+    run(async () => {
+        const reply = await ask({ type: "go-settings-set", setting: "search-" + id });
+        searchEngine = reply.searchEngine || id;
+        told("search-changed");
+    }, "Search engine saved.");
+});
 $("adblock_on").addEventListener("change", () => setAds($("adblock_on").checked ? "on" : "off", {},
     $("adblock_on").checked ? "Ad blocking is on." : "Ad blocking is off."));
 $("ad_interval").addEventListener("change", () => setAds($("ad_interval").value));
-$("ad_url").addEventListener("input", renderAds);
+$("ad_url").addEventListener("input", render);
 $("ad_add").addEventListener("submit", (event) => {
     event.preventDefault();
     const url = $("ad_url").value.trim();
     if (!url) return;
     setAds("list-add", { url }, "List added.").then((ok) => {
         if (ok) $("ad_url").value = "";
-        renderAds();
+        render();
     });
 });
 $("my_filters").addEventListener("input", () => {
@@ -120,7 +139,11 @@ $("ad_update").addEventListener("click", () => run(async () => {
 }, "Filter lists updated."));
 
 async function load() {
-    ads = await ask({ type: "go-adblock" });
+    const [adblock, settings] = await Promise.all([ask({ type: "go-adblock" }), ask({ type: "go-settings" })]);
+    ads = adblock;
+    if (typeof settings?.searchEngine === "string" && $("search_engine").querySelector(`option[value="${CSS.escape(settings.searchEngine)}"]`)) {
+        searchEngine = settings.searchEngine;
+    }
 }
 run(load);
 document.addEventListener("visibilitychange", () => {

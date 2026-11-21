@@ -124,6 +124,8 @@ type goBrowser struct {
 	adCount goAdCount
 	// streams are the streams the page plays: Save stream (gostreams.go).
 	streams goStreams
+	// colors is what its pages are told of light or dark (gotheme.go).
+	colors goColors
 	// hider is what's hidden on the page, as its classes and ids come
 	// (goadblock.go); nil for nothing.
 	hideMu  sync.Mutex
@@ -780,6 +782,9 @@ func (b *goBrowser) run() {
 				if m.View != nil {
 					b.setView(*m.View)
 				}
+			case "theme":
+				// Dark mode changed (Site controls): the page told again.
+				b.job(func() any { b.schemeAt(""); return nil }, func(any) {})
 			case "res":
 				// A resource for the page shown, from any generation: a
 				// page being left may still ask, and it's kept.
@@ -1051,12 +1056,9 @@ func (b *goBrowser) setView(v goView) {
 			}
 		}
 		if err == nil && scheme {
-			// The person's light or dark: CSS and matchMedia in the engine.
-			if serr := b.cdp.call(ctx, b.page, "Emulation.setEmulatedMedia", map[string]any{
-				"features": []map[string]string{{"name": "prefers-color-scheme", "value": v.Scheme}},
-			}, nil); serr != nil {
-				goDebugf("color scheme emulation %q: %v", v.Scheme, serr)
-			}
+			// The person's light or dark: CSS and matchMedia in the engine,
+			// unless the page's site's Dark mode says otherwise (gotheme.go).
+			b.deviceScheme(v.Scheme)
 		}
 		if err == nil {
 			err = b.relayout(ctx)
@@ -1181,6 +1183,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		b.docURL = ""
 		if u, err := goURL(p.Frame.URL); err == nil {
 			b.docURL = u
+			b.schemeAt(u) // (told already, where its request was paused)
 			if b.cdp != nil && b.cdp.interceptionDisabled.Load() {
 				b.pageAt(u)
 				b.newAdPage()
@@ -1479,7 +1482,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
-				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc)})
+				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "theme": b.sites.themeFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return

@@ -18,40 +18,70 @@
 
     <section id="all_sites" aria-label="All sites" hidden>
         <form id="find_site" class="tools">
-            <input id="filter" type="search" inputmode="url" placeholder="Search or enter a site" aria-label="Search or enter a site" autocomplete="off" autocapitalize="off" spellcheck="false">
-            <button type="submit" id="open_site">Open site</button>
+            <input id="filter" type="search" inputmode="url" placeholder="Search sites, or enter one to open" aria-label="Search sites, or enter one to open" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
         </form>
-        <div class="question">
-            <span class="hint" id="storage_usage" hidden></span>
+        <div class="filters" role="group" aria-label="Show">
+            <button type="button" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" data-filter="data" aria-pressed="false">Has data</button>
+            <button type="button" data-filter="blocked" aria-pressed="false">Blocked</button>
+            <button type="button" data-filter="custom" aria-pressed="false" title="Sites whose permissions differ from the browser's defaults" aria-label="Custom permissions">Custom</button>
+        </div>
+        <div class="question list-head">
+            <span class="hint" id="site_count" role="status"></span>
+            <button type="button" id="select_sites" class="quiet">Select</button>
             <label>Sort <span class="select"><select id="sort_sites"><option value="recent">Most recent</option><option value="name">A–Z</option><option value="size">Largest first</option></select></span></label>
         </div>
-        <div class="tools selection-bar" id="selection_bar" hidden>
-            <label class="select-all"><input type="checkbox" id="select_all"> Select all</label>
-            <span class="hint" id="selection_count"></span>
-            <button type="button" id="clear_selected" class="danger" disabled>Clear selected…</button>
+        <div class="selection-bar" id="selection_bar" role="region" aria-label="Selecting sites" hidden>
+            <div class="sel-head">
+                <span id="selection_count" role="status"></span>
+                <button type="button" id="select_all" class="quiet"></button>
+                <button type="button" id="clear_selection">Done</button>
+            </div>
+            <div class="sel-actions">
+                <button type="button" id="clear_selected" class="danger">Clear data…</button>
+                <button type="button" id="forget_selected" class="danger">Delete settings…</button>
+            </div>
         </div>
         <ul id="sites" aria-label="Sites"></ul>
         <p id="empty" class="hint" hidden></p>
+        <div class="storage-meter" id="storage_usage" hidden>
+            <div class="storage-text"><span>Site storage</span><span id="storage_text"></span></div>
+            <div class="meter" aria-hidden="true"><span id="storage_fill"></span></div>
+        </div>
+        <div id="row_menu" class="row-menu" role="menu" hidden></div>
     </section>
 
     <section id="site_settings" aria-labelledby="site_heading" hidden>
         <div class="site-title">
-            <h2 id="site_heading" tabindex="-1"></h2>
+            <span class="site-icon" id="site_icon" aria-hidden="true"></span>
+            <div class="site-name">
+                <h2 id="site_heading" tabindex="-1"></h2>
+                <span class="hint" id="site_scope"></span>
+            </div>
             <button type="button" id="back_to_sites" aria-label="Back to All sites" title="Back to All sites" hidden>
                 <span id="back_to_sites_glyph" aria-hidden="true"></span><span class="back-label">Back to All sites</span>
             </button>
         </div>
+        <!-- Each setting: its name, the default (said, as it is, when changed),
+             its control; changed, marked, with ↺ to put it back. -->
         <div class="card">
-            <div class="question"><div>Site access<span class="hint" id="access_note"></span></div><button type="button" id="access"></button></div>
-            <div class="question"><label for="popups">Pop-ups<span class="hint" id="popup_scope"></span></label><span class="select"><select id="popups"><option value="default">Use browser default</option><option value="ask">Ask</option><option value="allow">Allow</option><option value="block">Block</option></select></span></div>
-            <div class="question"><label for="videos">Videos and sound<span class="hint" id="video_note"></span></label><span class="select"><select id="videos"><option value="default">Use browser default</option><option value="allow">Allow</option><option value="no-autoplay">No autoplay</option><option value="block">Block</option></select></span></div>
-            <div class="question" id="video_host_row" hidden><div>Videos from this host<span class="hint">Blocked: its videos aren't played, on any site's page (Skip, held).</span></div><button type="button" id="video_host">Allow videos</button></div>
-            <div class="question"><label for="ads">Ads and trackers<span class="hint" id="ads_note"></span></label><span class="select"><select id="ads"><option value="default">Use browser default</option><option value="block">Block</option><option value="allow">Allow</option></select></span></div>
+            <h3>Access</h3>
+            <div class="setting" id="access_row"><div class="what">Site access<span class="hint" id="access_note"></span></div><div class="how"><button type="button" id="access"></button></div></div>
+            <div class="setting" id="video_host_row" hidden><div class="what">Videos from this host<span class="hint">Blocked: its videos aren't played, on any site's page (Skip, held).</span></div><div class="how"><button type="button" id="video_host">Allow videos</button></div></div>
         </div>
-        <div class="card" id="cookies">
-            <h3>Cookies and site data</h3>
-            <p id="site_data" class="detail"></p>
-            <div class="tools"><button type="button" id="inspect_site">Inspect</button><button type="button" id="clear_site" class="danger">Clear site data…</button></div>
+        <div class="card">
+            <h3>Content</h3>
+            <div class="setting" data-setting="popups"><label class="what" for="popups">Pop-ups<span class="hint" id="popup_scope"></span></label><div class="how"><span class="select"><select id="popups"><option value="default">Default</option><option value="ask">Ask</option><option value="allow">Allow</option><option value="block">Block</option></select></span><button type="button" class="undo" data-reset="popups" hidden>↺</button></div></div>
+            <div class="setting" data-setting="videos"><label class="what" for="videos">Videos and sound<span class="hint" id="video_note"></span></label><div class="how"><span class="select"><select id="videos"><option value="default">Default</option><option value="allow">Allow</option><option value="no-autoplay">No autoplay</option><option value="block">Block</option></select></span><button type="button" class="undo" data-reset="videos" hidden>↺</button></div></div>
+            <div class="setting" data-setting="theme"><label class="what" for="theme">Dark mode<span class="hint" id="theme_note"></span></label><div class="how"><span class="select"><select id="theme"><option value="default">Default</option><option value="auto">Follow device</option><option value="light">Light</option><option value="dark">Dark</option><option value="force">Force dark</option></select></span><button type="button" class="undo" data-reset="theme" hidden>↺</button></div></div>
+        </div>
+        <div class="card">
+            <h3>Privacy</h3>
+            <div class="setting" data-setting="ads"><label class="what" for="ads">Ads and trackers<span class="hint" id="ads_note"></span></label><div class="how"><span class="select"><select id="ads"><option value="default">Default</option><option value="block">Block</option><option value="allow">Allow</option></select></span><button type="button" class="undo" data-reset="ads" hidden>↺</button></div></div>
+            <div class="setting data-row" id="cookies"><div class="what">Cookies and site data<span class="hint" id="site_data"></span></div><div class="how"><button type="button" id="inspect_site">Inspect</button><button type="button" id="clear_site" class="danger">Clear data…</button></div></div>
+        </div>
+        <div class="card reset-card">
+            <div class="setting"><div class="what">Reset site settings<span class="hint" id="reset_note"></span></div><div class="how"><button type="button" id="reset_site" class="danger">Reset…</button></div></div>
         </div>
     </section>
 
@@ -79,9 +109,10 @@
         <h2 id="browser_heading" tabindex="-1">Browser-wide settings</h2>
         <div class="card">
             <h3>Site defaults</h3>
-            <div class="question"><label for="default_popups">Pop-ups</label><span class="select"><select id="default_popups"><option value="ask">Ask</option><option value="allow">Allow</option><option value="block">Block</option></select></span></div>
-            <div class="question"><label for="default_videos">Videos and sound</label><span class="select"><select id="default_videos"><option value="allow">Allow</option><option value="no-autoplay">No autoplay</option><option value="block">Block</option></select></span></div>
-            <p class="hint">No autoplay lets you play media manually. Individual sites can override these defaults.</p>
+            <p class="hint card-note">For every site; each site can override them in its own settings.</p>
+            <div class="setting"><label class="what" for="default_popups">Pop-ups</label><div class="how"><span class="select"><select id="default_popups"><option value="ask">Ask</option><option value="allow">Allow</option><option value="block">Block</option></select></span></div></div>
+            <div class="setting"><label class="what" for="default_videos">Videos and sound<span class="hint">No autoplay: pages don't start their media; you play it yourself.</span></label><div class="how"><span class="select"><select id="default_videos"><option value="allow">Allow</option><option value="no-autoplay">No autoplay</option><option value="block">Block</option></select></span></div></div>
+            <div class="setting"><label class="what" for="default_theme">Dark mode<span class="hint">Dark asks pages for their dark look; Force dark also darkens pages that have none, pictures and videos kept as they are.</span></label><div class="how"><span class="select"><select id="default_theme"><option value="auto">Follow device</option><option value="light">Light</option><option value="dark">Dark</option><option value="force">Force dark</option></select></span></div></div>
         </div>
         <div class="card">
             <label><input type="checkbox" id="referer"> Send referring page information</label>
@@ -111,6 +142,15 @@
             <option value="0">All time</option>
         </select></span></label></p>
         <form method="dialog" class="tools"><button autofocus>Cancel</button><button value="clear" class="danger" id="clear">Clear data</button></form>
+    </dialog>
+
+    <dialog id="confirm_reset" aria-labelledby="reset_heading">
+        <h2 id="reset_heading"></h2>
+        <p class="hint">Back to the browser's defaults:</p>
+        <ul id="reset_list" class="reset-list"></ul>
+        <label class="toggle" id="reset_unblock_row"><input type="checkbox" id="reset_unblock"> <span id="reset_unblock_label"></span></label>
+        <p class="hint">Its cookies and site data are kept: Clear data clears those.</p>
+        <form method="dialog" class="tools"><button autofocus>Cancel</button><button value="reset" class="danger" id="reset_confirm">Reset</button></form>
     </dialog>
 </main>
 <script type="module" src="go-sites.js"></script>

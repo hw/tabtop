@@ -95,6 +95,31 @@ func TestGoSitePolicyDefaults(t *testing.T) {
 	}
 }
 
+// TestGoSearchEngine keeps the address bar's search engine (Settings) and
+// refuses one that isn't offered.
+func TestGoSearchEngine(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sites.json")
+	s := newGoSiteSettings(file)
+	if got := s.report()["searchEngine"]; got != "duckduckgo" {
+		t.Fatalf("default searchEngine = %v", got)
+	}
+	if err := s.set("", "search-google"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.report()["searchEngine"]; got != "google" {
+		t.Fatalf("after set: %v", got)
+	}
+	if again := newGoSiteSettings(file).report()["searchEngine"]; again != "google" {
+		t.Fatalf("not kept: %v", again)
+	}
+	if err := s.set("", "search-nosuch"); err == nil {
+		t.Fatal("took a search engine that isn't offered")
+	}
+	if err := s.set("example.com", "search-bing"); err == nil {
+		t.Fatal("took a search engine as a site setting")
+	}
+}
+
 // TestGoVideoHosts blocks videos by the host in their own address (a Skip
 // held): that host exactly, kept as given, not its site, nor the page's.
 func TestGoVideoHosts(t *testing.T) {
@@ -121,5 +146,76 @@ func TestGoVideoHosts(t *testing.T) {
 	}
 	if err := s.set("cdn.videos.example", "videos-host-allow"); err != nil || s.videoHostBlocked("cdn.videos.example") {
 		t.Errorf("allowed again: %v, still blocked %v", err, s.videoHostBlocked("cdn.videos.example"))
+	}
+}
+
+// TestGoSiteForget deletes all a site's settings kept under its name: its
+// block, pop-ups, videos, ads and videos blocked by host; not another
+// site's, nor a domain's block over it; kept so, across a restart.
+func TestGoSiteForget(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sites.json")
+	s := newGoSiteSettings(file)
+	for _, c := range [][2]string{
+		{"gone.example", "block"}, {"gone.example", "popups-allow"}, {"gone.example", "videos-block"},
+		{"gone.example", "ads-allow"}, {"gone.example", "videos-host-block"},
+		{"kept.example", "popups-block"}, {"example", "block"},
+	} {
+		if err := s.set(c[0], c[1]); err != nil {
+			t.Fatal(c, err)
+		}
+	}
+	if err := s.set("gone.example", "forget"); err != nil {
+		t.Fatal(err)
+	}
+	for _, again := range []*goSiteSettings{s, newGoSiteSettings(file)} {
+		r := again.report()
+		if slices.Contains(r["blocked"].([]string), "gone.example") || r["popups"].(map[string]string)["gone.example"] != "" ||
+			r["media"].(map[string]string)["gone.example"] != "" || r["ads"].(map[string]string)["gone.example"] != "" ||
+			slices.Contains(r["videoHosts"].([]string), "gone.example") {
+			t.Errorf("still kept: %v", r)
+		}
+		if r["popups"].(map[string]string)["kept.example"] != "block" || !slices.Contains(r["blocked"].([]string), "example") {
+			t.Errorf("another's deleted too: %v", r)
+		}
+	}
+}
+
+// TestGoSiteTheme keeps Dark mode: a default (Follow device at first) and
+// each site's own, for its subdomains too; deleted with the site's other
+// settings; kept across a restart. What a page is told follows it, or the
+// device where it's Follow device.
+func TestGoSiteTheme(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sites.json")
+	s := newGoSiteSettings(file)
+	if got := s.themeFor("example.com"); got != "auto" {
+		t.Errorf("at first %q", got)
+	}
+	for _, c := range [][2]string{{"", "theme-dark"}, {"news.example.com", "theme-force"}, {"light.example", "theme-light"}} {
+		if err := s.set(c[0], c[1]); err != nil {
+			t.Fatal(c, err)
+		}
+	}
+	if err := s.set("", "theme-sepia"); err == nil {
+		t.Error("an unknown Dark mode taken")
+	}
+	again := newGoSiteSettings(file)
+	for host, want := range map[string]string{"other.com": "dark", "www.example.com": "force", "light.example": "light"} {
+		if got := again.themeFor(host); got != want {
+			t.Errorf("%s: %q, want %q", host, got, want)
+		}
+	}
+	b := &goBrowser{sites: again}
+	for host, want := range map[string]string{"light.example": "light", "example.com": "dark", "other.com": "dark"} {
+		if got := b.schemeFor("https://"+host+"/", "light"); got != want {
+			t.Errorf("%s told %q, want %q", host, got, want)
+		}
+	}
+	again.set("", "theme-auto")
+	if got := b.schemeFor("https://other.com/", "light"); got != "light" {
+		t.Errorf("Follow device told %q", got)
+	}
+	again.set("example.com", "forget")
+	if got := again.themeFor("example.com"); got != "auto" {
+		t.Errorf("after forgetting, %q", got)
 	}
 }

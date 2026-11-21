@@ -88,6 +88,10 @@ streamed.src = URL.createObjectURL(source);
 <p id="embedded-text" onclick="throw Error()">initial content</p><img src="../pic.png">
 <script>setTimeout(() => { document.getElementById("embedded-text").textContent = "updated content"; }, 1500);</script>`,
         "second.html": `<!doctype html><title>Second</title><p id="p">second page</p><a id="back" href="index.html">back</a>`,
+        // What a page is told of light or dark (Dark mode), as it changes;
+        // and a page with a dark look of its own, which Force dark leaves.
+        "scheme.html": `<!doctype html><title>Scheme</title><p id="s"></p><script>const q = matchMedia("(prefers-color-scheme: dark)"); const say = () => { document.getElementById("s").textContent = q.matches ? "dark" : "light"; }; say(); q.addEventListener("change", say);</script>`,
+        "dark-page.html": `<!doctype html><title>Dark page</title><style>html { background: #111; color: #eee; }</style><p id="s">dark of its own</p>`,
         "interact.html": `<!doctype html><title>Interact</title>
 <p id="status">ready</p>
 <button id="add">Add</button><ul id="list"></ul>
@@ -884,7 +888,7 @@ async function check(base, port, site, adSite) {
         await waitFor(`document.getElementById("go_settings").open`, "the lightbox open");
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d?.getElementById("popups") && !!d.getElementById("cookies") && d.documentElement.classList.contains("framed") && getComputedStyle(d.querySelector("header")).display === "none"; })()`, "the settings in it, its own header not shown", 15000);
         const host = new URL(here).hostname;
-        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("site_settings").hidden && d.getElementById("site_heading").textContent === ${JSON.stringify(host)} && d.getElementById("popups").value === "default" && d.getElementById("popup_scope").textContent.includes("Ask"); })()`, "the current site and its default permission");
+        await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("site_settings").hidden && d.getElementById("site_heading").textContent === ${JSON.stringify(host)} && d.getElementById("popups").value === "default" && d.getElementById("popups").selectedOptions[0].textContent === "Default (Ask)"; })()`, "the current site and its default permission");
         await inside(`(d.getElementById("show_all").click(), true)`);
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("all_sites").hidden && d.activeElement === d.getElementById("filter"); })()`, "All sites opens with search focused");
         await inside(`(d.getElementById("show_browser").click(), true)`);
@@ -1077,6 +1081,140 @@ async function check(base, port, site, adSite) {
         if (storage) {
             await goTo(site + "storage", "Site storage");
             if ((await frame(`document.getElementById("storage")?.textContent`)) !== "empty") throw new Error("the deleted item was restored");
+        }
+    });
+
+    await step("All sites: Select, any site selected (bordered), Clear data and Delete settings for those each applies to; a site typed opened from the list", async () => {
+        const host = new URL(site).hostname;
+        await goTo(site + "cookie?set", "Cookie");
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: "rules-only.example", setting: "popups-block" }); t.close(); })`);
+        await ev(`(() => { window.__leaving = true; location.href = ${JSON.stringify(new URL("go/sites", base).href)}; })()`);
+        await waitFor(`!window.__leaving && document.readyState === "complete"`, "Site controls", 30000);
+        await ev(`document.getElementById("show_all").click()`);
+        const row = (name) => `document.querySelector('#sites li[data-site=${JSON.stringify(name)}]')`;
+        await waitFor(`!!${row(host)} && !!${row("rules-only.example")}`, "both sites listed", 20000);
+        // No boxes: Select makes each row a toggle, its state a border.
+        if (await ev(`!!document.querySelector("#sites input[type=checkbox]") || !document.getElementById("selection_bar").hidden`)) throw new Error("boxes, or the selection bar, before selecting");
+        await ev(`document.getElementById("select_sites").click()`);
+        if (!(await ev(`!document.getElementById("selection_bar").hidden && document.getElementById("sites").classList.contains("selecting") && ${row(host)}.querySelector(".site-row").getAttribute("aria-pressed") === "false"`))) throw new Error("Select didn't make the rows toggles");
+        const bar = () => ev(`[document.getElementById("selection_count").textContent, document.getElementById("clear_selected").textContent, document.getElementById("clear_selected").disabled, document.getElementById("forget_selected").textContent, document.getElementById("forget_selected").disabled].join("|")`);
+        // A site with data and one with only a setting: each action counts
+        // those it's for.
+        await ev(`${row(host)}.querySelector(".site-row").click()`);
+        if ((await bar()) !== "1 selected|Clear data (1)…|false|Delete settings…|true") throw new Error(`a site with data selected: ${await bar()}`);
+        await ev(`${row("rules-only.example")}.querySelector(".site-row").click()`);
+        if ((await bar()) !== "2 selected|Clear data (1)…|false|Delete settings (1)…|false") throw new Error(`a settings-only site selected too: ${await bar()}`);
+        if (!(await ev(`${row("rules-only.example")}.querySelector(".site-row").getAttribute("aria-pressed") === "true" && getComputedStyle(${row("rules-only.example")}.querySelector(".site-row")).boxShadow !== "none"`))) throw new Error("a selected row not bordered");
+        // Delete settings, for those selected: the settings-only site gone.
+        await ev(`window.confirm = () => true; document.getElementById("forget_selected").click()`);
+        await waitFor(`/Deleted the saved settings for rules-only\\.example/.test(document.getElementById("done").textContent) && !${row("rules-only.example")}`, "the selected site's settings deleted");
+        if ((await bar()) !== "1 selected|Clear data (1)…|false|Delete settings…|true") throw new Error(`after deleting settings: ${await bar()}`);
+        // Done (or Esc): rows open their sites again.
+        await ev(`document.getElementById("clear_selection").click()`);
+        if (!(await ev(`document.getElementById("selection_bar").hidden && !${row(host)}.querySelector(".site-row").hasAttribute("aria-pressed")`))) throw new Error("Done kept selecting");
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: "rules-only.example", setting: "popups-block" }); t.close(); })`);
+        await ev(`document.dispatchEvent(new Event("visibilitychange"))`);
+        await waitFor(`!!${row("rules-only.example")}`, "the settings-only site listed again");
+        // Its settings as chips, a count, and the filters.
+        if (!(await ev(`/Pop-ups: blocked/.test(${row("rules-only.example")}.querySelector(".chips")?.textContent ?? "") && /^\\d+ sites?$/.test(document.getElementById("site_count").textContent)`))) throw new Error("no chips, or no count");
+        await ev(`document.querySelector('.filters [data-filter="custom"]').click()`);
+        if (!(await ev(`!!${row("rules-only.example")} && !${row(host)} && /^\\d+ of \\d+ sites$/.test(document.getElementById("site_count").textContent)`))) throw new Error("Custom permissions didn't filter to the sites with them");
+        await ev(`document.querySelector('.filters [data-filter="all"]').click()`);
+        // A host under a listed site: found as it.
+        await ev(`(() => { const f = document.getElementById("filter"); f.value = "www.sub.rules-only.example"; f.dispatchEvent(new Event("input")); })()`);
+        if (!(await ev(`/Includes sub\\.rules-only\\.example/.test(${row("rules-only.example")}?.textContent ?? "") && !document.querySelector("#sites .open-row")`))) throw new Error("a host under a listed site not found as it");
+        await ev(`(() => { const f = document.getElementById("filter"); f.value = ""; f.dispatchEvent(new Event("input")); })()`);
+        // ⋯: its quick actions; Reset permissions puts it back to the defaults.
+        await ev(`${row("rules-only.example")}.querySelector(".row-more").click()`);
+        const items = await ev(`[...document.querySelectorAll("#row_menu button")].map((b) => b.textContent)`);
+        if (items.join() !== "Open site settings,Reset permissions,Delete settings…") throw new Error(`the row's menu: ${JSON.stringify(items)}`);
+        await ev(`[...document.querySelectorAll("#row_menu button")].find((b) => b.textContent === "Reset permissions").click()`);
+        await waitFor(`/back to the browser's defaults/.test(document.getElementById("done").textContent) && !${row("rules-only.example")}`, "its permissions reset, and it gone from the list");
+        // Reset to defaults, in a site's own view.
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: "rules-only.example", setting: "videos-block" }); t.close(); })`);
+        await ev(`document.dispatchEvent(new Event("visibilitychange"))`);
+        await waitFor(`!!${row("rules-only.example")}`, "listed again with its video setting");
+        await ev(`${row("rules-only.example")}.querySelector(".site-row").click()`);
+        await waitFor(`!document.getElementById("site_settings").hidden && !document.getElementById("reset_site").disabled && document.getElementById("videos").value === "block"`, "its controls, Reset offered");
+        // Reset…: what'll change listed, then all of it at once.
+        await ev(`document.getElementById("reset_site").click()`);
+        await waitFor(`document.getElementById("confirm_reset").open && /Videos and sound: Block → Allow/.test(document.getElementById("reset_list").textContent)`, "what Reset will change, listed");
+        await ev(`document.getElementById("reset_confirm").click()`);
+        await waitFor(`document.getElementById("videos").value === "default" && document.getElementById("reset_site").disabled`, "reset to the defaults");
+        await ev(`document.getElementById("show_all").click()`);
+        // Delete settings, from a row's ⋯: its block and permissions gone, and
+        // it, with no data, from the list.
+        for (const setting of ["block", "popups-allow"]) await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: "rules-only.example", setting: ${JSON.stringify(setting)} }); t.close(); })`);
+        await ev(`document.dispatchEvent(new Event("visibilitychange"))`);
+        await waitFor(`/Blocked/.test(${row("rules-only.example")}?.textContent ?? "")`, "blocked, with its pop-ups allowed");
+        await ev(`${row("rules-only.example")}.querySelector(".row-more").click()`);
+        await ev(`window.confirm = () => true; [...document.querySelectorAll("#row_menu button")].find((b) => b.textContent === "Delete settings…").click()`);
+        await waitFor(`/Deleted the saved settings for rules-only\\.example/.test(document.getElementById("done").textContent) && !${row("rules-only.example")}`, "its settings deleted, and it gone");
+        const left = await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings" }); t.close(); return t.reply; })`);
+        if (left.blocked?.includes("rules-only.example") || left.popups?.["rules-only.example"]) throw new Error(`still kept: ${JSON.stringify(left)}`);
+        // A site typed that isn't listed: a row to open it; Enter does too.
+        await ev(`(() => { const f = document.getElementById("filter"); f.value = "typed-site.example"; f.dispatchEvent(new Event("input")); })()`);
+        if (!(await ev(`/Open settings for typed-site\.example/.test(document.querySelector("#sites .open-row")?.textContent ?? "") && !document.getElementById("open_site")`))) throw new Error("no row to open a site typed");
+        await ev(`document.querySelector("#sites .open-row button").click()`);
+        await waitFor(`!document.getElementById("site_settings").hidden && document.getElementById("site_heading").textContent === "typed-site.example"`, "the typed site's controls");
+        if (!(await ev(`document.getElementById("reset_site").disabled`))) throw new Error("Reset offered with nothing changed");
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: "rules-only.example", setting: "popups-default" }); t.close(); })`).catch(() => {});
+        await ev(`(() => { window.__leaving = true; location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
+        await waitFor(`!window.__leaving && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "the browser again", 30000);
+        await sleep(1000);
+    });
+
+    await step("Dark mode: pages told dark or light as their site's setting says, Force dark darkening a light page's copy, changed live from Site controls", async () => {
+        const host = new URL(site).hostname;
+        const setTheme = (setting) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: ${JSON.stringify(host)}, setting: ${JSON.stringify(setting)} }); t.close(); })`);
+        const told = () => frame(`document.getElementById("s")?.textContent`);
+        const forced = () => frame(`!!document.getElementById("tabtop_force_dark")`);
+        try {
+            await goTo(site + "scheme.html", "Scheme");
+            if ((await told()) !== "light" || await forced()) throw new Error(`following the device (light): told ${await told()}, forced ${await forced()}`);
+            await setTheme("theme-dark");
+            await goTo(site + "scheme.html", "Scheme");
+            if ((await told()) !== "dark" || await forced()) throw new Error(`Dark: told ${await told()}, forced ${await forced()}`);
+            await setTheme("theme-force");
+            await goTo(site + "scheme.html", "Scheme");
+            if ((await told()) !== "dark" || !(await forced())) throw new Error(`Force dark: told ${await told()}, forced ${await forced()}`);
+            await goTo(site + "dark-page.html", "Dark page");
+            if (await forced()) throw new Error("a page dark of its own darkened again");
+            // Changed in Site controls (its lightbox), the page shown follows.
+            await goTo(site + "scheme.html", "Scheme");
+            await ev(`document.getElementById("go_site").click()`);
+            await waitFor(`(() => { const d = document.querySelector("#go_settings iframe")?.contentDocument; return d?.getElementById("theme")?.value === "force" && !d.getElementById("theme").disabled; })()`, "the site's Dark mode in Site controls", 15000);
+            await ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument, s = d.getElementById("theme"); s.value = "light"; s.dispatchEvent(new Event("change")); })()`);
+            await frameWait(`document.getElementById("s")?.textContent === "light" && !document.getElementById("tabtop_force_dark")`, "the page told light, and not darkened", 15000);
+            await ev(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; d.getElementById("back").click(); })()`);
+            await waitFor(`!document.getElementById("go_settings").open`, "Site controls closed");
+        } finally {
+            await setTheme("theme-default").catch(() => {});
+        }
+    });
+
+    await step("Current site: what applies shown in each control, a change marked with its default and ↺, Reload page offered, Not secure said, data counts opening the inspector", async () => {
+        const host = new URL(site).hostname;
+        await goTo(site + "cookie?set", "Cookie");
+        const d = `document.querySelector("#go_settings iframe")?.contentDocument`;
+        await ev(`document.getElementById("go_site").click()`);
+        try {
+            await waitFor(`(${d})?.getElementById("site_heading")?.textContent === ${JSON.stringify(host)} && !(${d}).getElementById("popups").disabled`, "the site's controls", 15000);
+            const head = await ev(`(${d}).getElementById("site_scope").textContent + "|" + (${d}).getElementById("site_icon").textContent`);
+            if (!/Not secure/.test(head) || !/subdomains/.test(head)) throw new Error(`its header says ${head}`);
+            if ((await ev(`(${d}).getElementById("popups").selectedOptions[0].textContent`)) !== "Default (Ask)") throw new Error("the default not shown as what applies");
+            // Changed: marked, its default said, ↺; and, holding for what loads
+            // next, Reload page by what's said.
+            await ev(`(() => { const s = (${d}).getElementById("popups"); s.value = "allow"; s.dispatchEvent(new Event("change")); })()`);
+            await waitFor(`(() => { const doc = ${d}, row = doc.getElementById("popups").closest(".setting"); return row.classList.contains("changed") && !row.querySelector(".undo").hidden && /default: Ask/.test(doc.getElementById("popup_scope").textContent) && doc.getElementById("done").textContent === "Setting saved." && !doc.getElementById("done_action").hidden && doc.getElementById("done_action").textContent === "Reload page"; })()`, "the change marked, Reload page offered");
+            await ev(`(${d}).querySelector('[data-reset="popups"]').click()`);
+            await waitFor(`(() => { const doc = ${d}; return doc.getElementById("popups").value === "default" && !doc.getElementById("popups").closest(".setting").classList.contains("changed"); })()`, "↺ put it back");
+            // Its data's counts: links to the inspector, at them.
+            await ev(`(${d}).querySelector("#site_data button.link").click()`);
+            await waitFor(`(() => { const doc = ${d}; return !doc.getElementById("site_inspect").hidden && doc.getElementById("show_cookies").getAttribute("aria-current") === "true"; })()`, "the inspector, at its cookies", 15000);
+        } finally {
+            await ev(`document.getElementById("go_settings").open && document.getElementById("go_settings").close()`).catch(() => {});
+            await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: ${JSON.stringify(host)}, setting: "popups-default" }); t.close(); })`).catch(() => {});
         }
     });
 
@@ -1325,14 +1463,14 @@ async function check(base, port, site, adSite) {
         await ev(`location.href = ${JSON.stringify(new URL("go/sites", base).href)}`);
         const siteRow = `document.querySelector('#sites li[data-site="${host}"]')`;
         // (The page left may answer first: ?.)
-        await waitFor(`document.getElementById("sort_sites")?.value === "recent" && /Pop-ups blocked/.test((${siteRow})?.textContent)`, "the site's pop-ups listed with Most recent selected", 20000);
+        await waitFor(`document.getElementById("sort_sites")?.value === "recent" && /Pop-ups: blocked/.test((${siteRow})?.textContent)`, "the site's pop-ups listed with Most recent selected", 20000);
         await ev(`(${siteRow}).querySelector("button").click()`);
         await waitFor(`!document.getElementById("site_settings").hidden && document.getElementById("popups").value === "block"`, "the site's pop-up setting");
         await ev(`document.getElementById("back_to_sites").click()`);
         await waitFor(`!document.getElementById("all_sites").hidden && document.activeElement === (${siteRow})?.querySelector("button")`, "back to All sites returns focus to the selected row");
         await ev(`document.getElementById("filter").value = "https://www.ads.example/x"; document.getElementById("find_site").requestSubmit();`);
         await waitFor(`document.getElementById("site_heading").textContent === "ads.example" && !document.getElementById("site_settings").hidden`, "settings for a newly entered site");
-        await ev(`document.getElementById("access").click()`);
+        await ev(`window.confirm = () => true; document.getElementById("access").click()`);
         await waitFor(`document.getElementById("access").textContent === "Unblock site"`, "a site blocked from the page");
         await ev(`document.getElementById("access").click()`);
         await waitFor(`document.getElementById("access").textContent === "Block site"`, "unblocked from the page");
@@ -1391,7 +1529,7 @@ async function check(base, port, site, adSite) {
             const pageHost = new URL(site).hostname;
             await ev(`document.getElementById("go_site").click()`);
             const sites = `document.querySelector("#go_settings iframe")?.contentDocument`;
-            await waitFor(`(${sites})?.getElementById("ads")?.disabled === false && (${sites}).getElementById("site_heading").textContent === ${JSON.stringify(pageHost)} && /Default: Block/.test((${sites}).getElementById("ads_note").textContent)`, "the site's controls, from the shield", 15000);
+            await waitFor(`(${sites})?.getElementById("ads")?.disabled === false && (${sites}).getElementById("site_heading").textContent === ${JSON.stringify(pageHost)} && (${sites}).getElementById("ads").selectedOptions[0].textContent === "Default (Block)"`, "the site's controls, from the shield", 15000);
             await ev(`(() => { const s = (${sites}).getElementById("ads"); s.value = "allow"; s.dispatchEvent(new Event("change")); })()`);
             await waitFor(`(${sites}).getElementById("done").textContent === "Setting saved."`, "the site's ads allowed");
             await ev(`document.querySelector("#go_settings .close").click()`);
