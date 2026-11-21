@@ -33,8 +33,11 @@ package main
 // still the page's, so the page that shows it sanitizes it again, and loads
 // nothing from the web itself.
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"image/png"
 	"log"
 	"net/url"
 	"os"
@@ -243,13 +246,48 @@ func goNavError(err error) string {
 
 // goNode is a node of a snapshot.
 type goNode struct {
-	ID    int       `json:"i"`
-	Type  int       `json:"t"`
-	Name  string    `json:"n,omitempty"`
-	Value string    `json:"v,omitempty"`
-	Base  string    `json:"b,omitempty"` // base URL of an embedded document
-	Attrs []string  `json:"a,omitempty"`
-	Kids  []*goNode `json:"c,omitempty"`
+	ID        int       `json:"i"`
+	Type      int       `json:"t"`
+	Name      string    `json:"n,omitempty"`
+	Value     string    `json:"v,omitempty"`
+	Base      string    `json:"b,omitempty"`  // base URL of an embedded document
+	FrameDoc  int       `json:"f,omitempty"`  // identity of a separately read iframe document
+	CanvasPNG string    `json:"p,omitempty"`  // bounded Canvas2D PNG, base64
+	CanvasErr string    `json:"pe,omitempty"` // why the canvas has no readable pixels
+	Attrs     []string  `json:"a,omitempty"`
+	Kids      []*goNode `json:"c,omitempty"`
+}
+
+const (
+	goCanvasPNGMax    = 1 << 20
+	goCanvasPixelsMax = 16 << 20
+	goCanvasSizeMax   = 4096
+)
+
+// goCanvasPNGValid accepts only a bounded, decodable PNG. Canvas messages
+// originate in the page's main world and are untrusted like the DOM tree.
+func goCanvasPNGValid(encoded string) bool {
+	if encoded == "" || len(encoded) > goCanvasPNGMax || len(encoded)%4 != 0 {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(raw) > goCanvasPNGMax {
+		return false
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || cfg.Width < 1 || cfg.Height < 1 || cfg.Width > goCanvasSizeMax || cfg.Height > goCanvasSizeMax {
+		return false
+	}
+	return int64(cfg.Width)*int64(cfg.Height) <= goCanvasPixelsMax
+}
+
+func goCanvasError(reason string) string {
+	switch reason {
+	case "tainted", "large", "unsupported", "unavailable":
+		return reason
+	default:
+		return "unavailable"
+	}
 }
 
 // goDropped are elements a snapshot leaves out, with all inside them:
@@ -269,6 +307,19 @@ func goClean(n *goNode) *goNode {
 		n.Base = ""
 		if goDropped[strings.ToLower(n.Name)] {
 			return nil
+		}
+		if strings.EqualFold(n.Name, "canvas") {
+			if n.CanvasPNG != "" && !goCanvasPNGValid(n.CanvasPNG) {
+				n.CanvasPNG = ""
+				n.CanvasErr = "unavailable"
+			}
+			if n.CanvasPNG == "" {
+				n.CanvasErr = goCanvasError(n.CanvasErr)
+			} else {
+				n.CanvasErr = ""
+			}
+		} else {
+			n.CanvasPNG, n.CanvasErr = "", ""
 		}
 		var attrs []string
 		for i := 0; i+1 < len(n.Attrs); i += 2 {

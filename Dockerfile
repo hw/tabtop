@@ -413,29 +413,6 @@ RUN set -e; case "$TARGETARCH" in amd64|arm64) ;; *) echo "no Moli build for $TA
  && cp /src/licenses/* /src/license-metadata.json /moli/ \
  && chmod -R u=rwX,go=rX /moli && chmod 755 /moli/moli
 
-# Obscura, the other page engine /go can use (WEB_GO_ENGINE=obscura): a
-# headless browser on V8 (Apache-2.0). Its release has no licence file, so
-# the repository's at the same tag is taken. Bump OBSCURA_VERSION, both
-# checksums and the licence's together; they are of the release's
-# obscura-<arch>-linux.tar.gz (the build that renders: /go lays pages out).
-FROM debian:trixie-slim AS obscura
-ARG TARGETARCH
-ARG OBSCURA_VERSION=0.2.7
-ARG OBSCURA_AMD64_SHA256=11b53d27cd743e00e196e216920e7f3f794cf378e3f1792b8d25d3beabaf9cad
-ARG OBSCURA_ARM64_SHA256=4ee0aeeb38fa8bb2cb004ba104abe1c79f1bdfd02f51672c694e8234a5ae0e5c
-ARG OBSCURA_LICENSE_SHA256=50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a
-ADD --checksum=sha256:${OBSCURA_AMD64_SHA256} \
-    https://github.com/h4ckf0r0day/obscura/releases/download/v${OBSCURA_VERSION}/obscura-x86_64-linux.tar.gz /obscura-amd64.tar.gz
-ADD --checksum=sha256:${OBSCURA_ARM64_SHA256} \
-    https://github.com/h4ckf0r0day/obscura/releases/download/v${OBSCURA_VERSION}/obscura-aarch64-linux.tar.gz /obscura-arm64.tar.gz
-ADD --checksum=sha256:${OBSCURA_LICENSE_SHA256} \
-    https://raw.githubusercontent.com/h4ckf0r0day/obscura/v${OBSCURA_VERSION}/LICENSE /LICENSE.obscura
-RUN set -e; case "$TARGETARCH" in amd64|arm64) ;; *) echo "no Obscura build for $TARGETARCH" >&2; exit 1 ;; esac \
- && mkdir /obscura \
- && tar -xzf /obscura-$TARGETARCH.tar.gz -C /obscura --no-same-owner obscura \
- && cp /LICENSE.obscura /obscura/LICENSE.obscura \
- && chmod -R u=rwX,go=rX /obscura && chmod 755 /obscura/obscura
-
 # The Go version matches mise.toml, which pins it for local development.
 # tabtopd encodes audio with libopus and checks logins with liboath, through
 # cgo, so it links the system's libraries and glibc; the final stage is the
@@ -685,7 +662,6 @@ COPY --from=inpaint /inpaint /opt/inpaint
 COPY --from=segment /segment /opt/segment
 COPY --from=three /three /opt/three
 COPY --from=moli /moli /opt/moli
-COPY --from=obscura /obscura /opt/obscura
 # The seccomp profile a container needs for /go (docs/environment.md, WEB_GO),
 # to copy out of the image.
 COPY --chmod=644 scripts/go-seccomp/tabtop-go.json /opt/moli/tabtop-go-seccomp.json

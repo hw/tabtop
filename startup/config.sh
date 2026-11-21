@@ -24,8 +24,8 @@ WEB_GO_FETCH="${WEB_GO_FETCH:-1}"
 WEB_GO_FETCH_PRIVATE="${WEB_GO_FETCH_PRIVATE:-0}"
 WEB_PREVIEW_FETCH_PRIVATE="${WEB_PREVIEW_FETCH_PRIVATE:-0}"
 WEB_GO="${WEB_GO:-0}"
-# The page engine: one of the image's, by name (moli, the default, or
-# obscura; see the Dockerfile), or the path of one.
+# The page engine: bundled Moli, or an external engine by path. The
+# convenience name "obscura" resolves to /opt/obscura/obscura if supplied.
 WEB_GO_ENGINE="${WEB_GO_ENGINE:-moli}"
 case "$WEB_GO_ENGINE" in
     moli) WEB_GO_ENGINE=/opt/moli/moli ;;
@@ -191,7 +191,7 @@ case "$WEB_GO_CACHE" in
     *) echo "WEB_GO_CACHE must be 0 or 1 (got '${WEB_GO_CACHE}')." >&2; exit 1 ;;
 esac
 if [ "$WEB_GO" = 1 ] && [ ! -x "$WEB_GO_ENGINE" ]; then
-    echo "WEB_GO=1 needs WEB_GO_ENGINE: moli, obscura, or the path of a Moli, Obscura or Lightpanda binary (got '${WEB_GO_ENGINE}', which isn't one)." >&2; exit 1
+    echo "WEB_GO=1 needs bundled Moli (moli), an executable engine path, or an Obscura binary at /opt/obscura/obscura (got '${WEB_GO_ENGINE}', which isn't executable)." >&2; exit 1
 fi
 # none, all, or some of x86, arm64, capstone, riscv and mips, with commas between.
 if ! [[ "$WEB_DISASM_DISABLE" =~ ^(none|all|(x86|arm64|capstone|riscv|mips)(,(x86|arm64|capstone|riscv|mips))*)$ ]]; then

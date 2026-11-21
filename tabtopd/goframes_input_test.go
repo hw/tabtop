@@ -35,3 +35,20 @@ func TestGoFrameInputForItsDocument(t *testing.T) {
 		}
 	}
 }
+
+func TestGoFrameInputNestedRoute(t *testing.T) {
+	b := &goBrowser{acts: newGoQueue(), world: 3, frame: "main", children: map[string]*goChild{
+		"outer": {parent: "main", owner: 10, world: 42},
+		"inner": {parent: "outer", owner: 20, world: 77},
+	}}
+	world, child := b.frameWorldPath(10, []int{10, 20}, []int{0, 42})
+	if world != 77 || child == nil || child.owner != 20 {
+		t.Fatalf("nested route resolved to world %d, child %#v", world, child)
+	}
+	if world, child = b.frameWorldPath(10, []int{10, 20}, []int{0, 41}); world != 0 || child != nil {
+		t.Fatalf("stale parent document accepted: world %d, child %#v", world, child)
+	}
+	if world, child = b.frameWorldPath(10, []int{10, 99}, []int{0, 42}); world != 0 || child != nil {
+		t.Fatalf("unknown nested owner accepted: world %d, child %#v", world, child)
+	}
+}

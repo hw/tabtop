@@ -148,7 +148,7 @@ $("go_clear").innerHTML = icon("clear");
 // the menu to leave the page the room).
 const menu = $("go_menu"), menuPanel = $("go_menu_panel");
 // The menu's first row (go.html): Forward (on a phone, whose bar has no
-// room for it), Full screen, Hide browser, Desktop; each a glyph over its
+// room for it), Desktop, Full screen, Hide browser; each a glyph over its
 // name.
 const desktop = $("go_menu_desktop");
 desktop.insertAdjacentHTML("afterbegin", iconSVG("desktop"));
@@ -1538,6 +1538,7 @@ window.addEventListener("message", (e) => {
                 const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
                     buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
                     location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy), tap: !!m.tap, frame: num(m.frame), fdoc: num(m.fdoc),
+                    route: (Array.isArray(m.route) ? m.route.slice(0, 2) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 2) : []).map(num),
                     points: (Array.isArray(m.points) ? m.points.slice(0, 10) : []).map((p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
                     items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })) };
                 ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter, ...input }));

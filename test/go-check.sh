@@ -15,8 +15,8 @@
 # seccomp profile /go needs (docs/environment.md, WEB_GO); first, that with
 # Docker's default settings it starts and says /go is unavailable.
 # GO_UNSANDBOXED=1 checks it with Docker's default settings and
-# WEB_GO_UNSANDBOXED=1 (with GO_IMAGE only). GO_ENGINE=obscura checks the
-# image's other engine (WEB_GO_ENGINE). WEB_BASE_PATH=/tabtop/ serves
+# WEB_GO_UNSANDBOXED=1 (with GO_IMAGE only). GO_ENGINE selects the configured
+# engine binary (it must be present in the image). WEB_BASE_PATH=/tabtop/ serves
 # it all under that path (-base-path, or the image's WEB_BASE_PATH), as
 # behind a proxy.
 set -euo pipefail

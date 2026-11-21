@@ -99,6 +99,126 @@ setTimeout(() => { location.href = "/next"; }, 4000);
 	tc.c.CloseNow()
 }
 
+// TestGoNestedFramesWithMoli exercises a cross-origin frame inside another
+// cross-origin frame: discovery, incremental rendering, and routed input.
+func TestGoNestedFramesWithMoli(t *testing.T) {
+	moli := os.Getenv("TABTOP_TEST_MOLI")
+	if moli == "" {
+		t.Skip("TABTOP_TEST_MOLI isn't set to a Moli binary")
+	}
+	inner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<!doctype html><button id=b onclick="document.getElementById('p').textContent='nested clicked'">click nested</button><p id=p>nested ready</p>`)
+	}))
+	defer inner.Close()
+	middle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<!doctype html><title>middle</title><iframe id=nested src="`+inner.URL+`/inner"></iframe>`)
+	}))
+	defer middle.Close()
+	top := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<!doctype html><title>top</title><iframe id=outer src="`+middle.URL+`/middle"></iframe>`)
+	}))
+	defer top.Close()
+	goTestPorts(t, portOf(t, top.URL), portOf(t, middle.URL), portOf(t, inner.URL))
+	g, url, s := newGoServer(t, moli)
+	t.Logf("engine mode: %s", g.goMode)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	tc := openSession(t, ctx, url, s)
+	if r := tc.request(t, ctx, map[string]any{"type": "go"}); r["ok"] != true {
+		t.Fatal(r)
+	}
+	sendGo(t, ctx, tc, map[string]any{"op": "navigate", "url": top.URL + "/page"})
+	var gen, outerOwner float64
+	for outerOwner == 0 {
+		m := tc.readJSON(t, ctx)
+		if m["type"] != "go-snapshot" {
+			continue
+		}
+		gen, _ = m["gen"].(float64)
+		doc := m["doc"].(map[string]any)
+		normal(doc)
+		var find func(map[string]any)
+		find = func(n map[string]any) {
+			if n["n"] == "iframe" {
+				outerOwner, _ = n["i"].(float64)
+			}
+			for _, k := range n["c"].([]any) {
+				find(k.(map[string]any))
+			}
+		}
+		find(doc)
+	}
+	var nestedOwner, outerWorld, innerWorld, button float64
+	for button == 0 {
+		m := tc.readJSON(t, ctx)
+		if m["type"] != "go-changes" {
+			continue
+		}
+		for _, raw := range m["ops"].([]any) {
+			op := raw.(map[string]any)
+			if op["o"] != "c" || op["i"] != outerOwner {
+				continue
+			}
+			kids := op["c"].([]any)
+			if len(kids) != 1 {
+				continue
+			}
+			doc := kids[0].(map[string]any)
+			normal(doc)
+			outerWorld, _ = op["f"].(float64)
+			var findNested func(map[string]any)
+			findNested = func(n map[string]any) {
+				if n["n"] == "iframe" && n["f"] != nil {
+					nestedOwner, _ = n["i"].(float64)
+					innerWorld, _ = n["f"].(float64)
+					if children, ok := n["c"].([]any); ok && len(children) != 0 {
+						var findButton func(map[string]any)
+						findButton = func(node map[string]any) {
+							if node["n"] == "button" {
+								button, _ = node["i"].(float64)
+							}
+							for _, k := range node["c"].([]any) {
+								findButton(k.(map[string]any))
+							}
+						}
+						findButton(children[0].(map[string]any))
+					}
+				}
+				for _, k := range n["c"].([]any) {
+					findNested(k.(map[string]any))
+				}
+			}
+			findNested(doc)
+		}
+	}
+	if outerWorld == 0 || innerWorld == 0 || nestedOwner == 0 {
+		t.Fatalf("missing nested frame identity: owner=%v outer=%v inner=%v", nestedOwner, outerWorld, innerWorld)
+	}
+	for _, phase := range []string{"down", "up"} {
+		buttons := 1
+		if phase == "up" {
+			buttons = 0
+		}
+		sendGo(t, ctx, tc, map[string]any{"op": "event", "gen": gen, "kind": "mouse", "id": outerOwner,
+			"frame": button, "fdoc": innerWorld, "route": []int{int(outerOwner), int(nestedOwner)}, "docs": []int{0, int(outerWorld)},
+			"type": phase, "fx": .5, "fy": .5, "button": 0, "buttons": buttons})
+	}
+	for {
+		m := tc.readJSON(t, ctx)
+		if m["type"] != "go-changes" {
+			continue
+		}
+		b, _ := json.Marshal(m["ops"])
+		if strings.Contains(string(b), "nested clicked") {
+			break
+		}
+	}
+	tc.c.CloseNow()
+}
+
 // normal gives every node in a snapshot its children list, for walking.
 func normal(n map[string]any) {
 	if _, ok := n["c"].([]any); !ok {

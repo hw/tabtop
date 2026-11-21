@@ -12,8 +12,9 @@
 // of a document the engine on the server loaded and ran (see goroute.go),
 // its nodes as {i, t, n, v, a, c}. This rebuilds it here from an allowlist:
 // elements that load or run something (objects, embeds, scripts, base,
-// meta) are left out, an iframe's page drawn as a view-only copy in a box
-// (embeddedFrame), video, audio and canvas shown as a note, and
+// meta) are left out, an iframe's page drawn as a sanitized copy in a box
+// (embeddedFrame), video and audio shown as notes, and canvas pixels copied as
+// bounded PNG snapshots, and
 // attributes that run script (on…) or load (src, srcset, href, style's
 // url()s) are dropped or pointed at pictures, stylesheets and fonts the page
 // fetches through the server: {type: "resource", id, kind, url}, answered
@@ -43,7 +44,7 @@
     const dropped = new Set(["script", "noscript", "template", "iframe", "frame", "frameset", "object", "embed", "applet",
         "base", "meta", "portal", "fencedframe", "param", "source", "track", "slot"]);
     // Shown as a note: what plays, or draws from script.
-    const placeholders = { canvas: "A drawing made by script" };
+    const placeholders = {};
     // Elements drawn as a box of their own, and the attribute their box has,
     // which the page's rules for them are rewritten to.
     const drawnAs = { iframe: "data-go-iframe", video: "data-go-video", audio: "data-go-audio" };
@@ -609,12 +610,27 @@
         // numbers its nodes anew, and what was typed for one isn't the
         // other's. What wasn't sent of it is dropped.
         const fr = frameRoots.get(el), was = fr.child, focused = el.shadowRoot?.activeElement;
+        const nested = new Map();
+        if (was) for (const [i, node] of was.nodes) {
+            const childFrame = frameRoots.get(node);
+            if (!childFrame?.docOf || !childFrame.snapshot) continue;
+            const active = node.shadowRoot?.activeElement;
+            const activeID = active && childFrame.child?.ids.get(active);
+            const value = activeID && pending.has(active) ? active.value : undefined;
+            const caret = activeID && textLike(active) ? [active.selectionStart, active.selectionEnd] : null;
+            if (activeID && pending.has(active)) {
+                clearTimeout(pending.get(active));
+                pending.delete(active);
+            }
+            nested.set(i, { snapshot: childFrame.snapshot, docOf: childFrame.docOf, activeID, value, caret });
+        }
         const same = fr.docOf === docOf && was?.base === web(frame?.b, "about:blank");
         if (!same && focused && pending.has(focused)) {
             clearTimeout(pending.get(focused));
             pending.delete(focused);
         }
         fr.docOf = docOf;
+        fr.snapshot = frame;
         const keep = same && was && focused && was.ids.get(focused) ? {
             i: was.ids.get(focused), old: focused, value: pending.has(focused) ? focused.value : undefined,
             caret: textLike(focused) ? [focused.selectionStart, focused.selectionEnd] : null,
@@ -626,6 +642,29 @@
         child.budget = d.budget;
         child.report = d.report;
         children(child, content, frame.c, HTML);
+        for (const [i, saved] of nested) {
+            const host = child.nodes.get(i), childFrame = frameRoots.get(host);
+            if (!childFrame) continue;
+            // The containing snapshot may already carry a newer nested
+            // document. Restore the saved copy only when it carried no
+            // separately-read document; otherwise this would roll a
+            // navigated child back to stale content and stale input IDs.
+            if (!childFrame.docOf) renderFrame(d, host, [saved.snapshot], saved.docOf);
+            // The old focus/value belongs to that document too. New frames
+            // can reuse its node numbers, so don't restore them after a
+            // navigation even if a number happens to match.
+            const currentFrame = frameRoots.get(host);
+            if (currentFrame?.docOf !== saved.docOf) continue;
+            const restored = currentFrame.child?.nodes.get(saved.activeID);
+            if (restored?.nodeType === 1) {
+                if (saved.value !== undefined && textLike(restored)) {
+                    restored.value = saved.value;
+                    pending.set(restored, setTimeout(() => flush(restored), 150));
+                }
+                restored.focus({ preventScroll: true });
+                if (saved.caret) try { restored.setSelectionRange(...saved.caret); } catch { /* no caret */ }
+            }
+        }
         d.waits.push(...child.waits);
         viewport.replaceChildren(content);
         const now = keep && child.nodes.get(keep.i);
@@ -642,8 +681,8 @@
     }
 
     function embeddedFrame(d, n) {
-        // A shadow tree contains the embedded styles. There is no local
-        // browsing context and the copied content does not receive input.
+        // A shadow tree contains the embedded styles. It has no local
+        // browsing context; supported input is routed back to the engine.
         const el = document.createElement("span");
         el.setAttribute("data-go-iframe", "");  // what the page's iframe rules apply to
         const shadow = el.attachShadow({ mode: "open" });
@@ -669,7 +708,7 @@
             }
         }
         own(d, n.i, el);
-        renderFrame(d, el, n.c);
+        renderFrame(d, el, n.c, Number.isSafeInteger(n.f) ? n.f : 0);
         return el;
     }
 
@@ -979,6 +1018,55 @@
     }
     watchRoot(new ResizeObserver(mediaLater));
 
+    const canvasDraws = new WeakMap();
+    function canvasFrame(el, pixels, reason) {
+        const serial = (canvasDraws.get(el) ?? 0) + 1;
+        canvasDraws.set(el, serial);
+        const fallback = () => {
+            if (canvasDraws.get(el) !== serial) return;
+            const ctx = el.getContext("2d");
+            if (!ctx || !el.width || !el.height) return;
+            ctx.clearRect(0, 0, el.width, el.height);
+            ctx.fillStyle = "#eee";
+            ctx.fillRect(0, 0, el.width, el.height);
+            ctx.strokeStyle = "#888";
+            ctx.setLineDash([4, 3]);
+            ctx.strokeRect(1, 1, Math.max(0, el.width - 2), Math.max(0, el.height - 2));
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#555";
+            ctx.font = "14px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(reason === "tainted" ? "Canvas pixels are protected" : "Canvas unavailable", el.width / 2, el.height / 2, Math.max(1, el.width - 12));
+        };
+        if (typeof pixels !== "string" || pixels.length > (1 << 20) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(pixels)) {
+            fallback();
+            return;
+        }
+        const img = new Image();
+        img.onload = () => {
+            if (canvasDraws.get(el) !== serial) return;
+            const ctx = el.getContext("2d");
+            if (!ctx) return fallback();
+            ctx.clearRect(0, 0, el.width, el.height);
+            ctx.drawImage(img, 0, 0, el.width, el.height);
+        };
+        img.onerror = fallback;
+        img.src = `data:image/png;base64,${pixels}`;
+    }
+
+    function canvasElement(d, n, ns) {
+        const el = document.createElement("canvas");
+        const attrs = Array.isArray(n.a) ? n.a : [];
+        for (let i = 0; i + 1 < attrs.length; i += 2) {
+            if (typeof attrs[i] === "string" && typeof attrs[i + 1] === "string") attribute(d, el, ns, "canvas", attrs[i], attrs[i + 1]);
+        }
+        own(d, n.i, el);
+        d.report.elements++;
+        canvasFrame(el, n.p, n.pe);
+        return el;
+    }
+
     function element(d, n, ns) {
         const name = n.n;
         if (typeof name !== "string" || !validName.test(name) || name.includes(":")) {
@@ -1001,6 +1089,7 @@
             return style;
         }
         if (ns === HTML && (tag === "video" || tag === "audio")) return mediaBox(d, n, tag);
+        if (ns === HTML && tag === "canvas") return canvasElement(d, n, ns);
         if (ns === HTML && placeholders[tag]) {
             leave(d, tag);
             const note = document.createElement("div");
@@ -1531,11 +1620,23 @@
             if (target === null) continue;  // left out
             if (target.nodeType === 1 && mediaChanged(d, target, op)) continue;
             switch (op.o) {
+                case "p":
+                    if (target.localName !== "canvas") return resync(d);
+                    canvasFrame(target, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
+                    break;
                 case "c":
                     if (frameRoots.has(target)) {
                         // An embedded page read in a world of its own: which
                         // document it is (its world, the server's word).
-                        renderFrame(d, target, op.c, Number.isSafeInteger(op.f) ? op.f : 0);
+                        let box = target;
+                        if (Array.isArray(op.path)) {
+                            for (const owner of op.path) {
+                                const fr = frameRoots.get(box);
+                                box = Number.isSafeInteger(owner) ? fr?.child?.nodes.get(owner) : null;
+                                if (!frameRoots.has(box)) return resync(d);
+                            }
+                        }
+                        renderFrame(d, box, op.c, Number.isSafeInteger(op.f) ? op.f : 0);
                         break;
                     }
                     if (!reconcile(d, target, op.c)) return resync(d);
@@ -1669,7 +1770,7 @@
                 if (!at) return null;
                 if (!leaf) return { ...at, frame: 0 };
                 route.push(at.id);
-                docs.push(doc?.gen ?? 0);
+                docs.push(0); // the top document is identified by its generation
                 return { id: route[0], frame: leaf.id, fdoc: leaf.fdoc, route, docs, node: leaf.node };
             }
             const host = root.host, fr = frameRoots.get(host);
@@ -1694,7 +1795,7 @@
             const owner = doc?.ids.get(host);
             if (!owner) return null;
             route.unshift(owner);
-            docs.unshift(doc?.gen ?? 0);
+            docs.unshift(0);
             return { id: route[0], frame: leaf.id, fdoc: leaf.fdoc, route, docs, node: leaf.node };
         }
     }
@@ -1702,6 +1803,7 @@
         if (!doc || current !== doc.gen) return;
         tell({ type: "event", gen: doc.gen, kind, id, ...extra });
     }
+    const frameFields = (at) => ({ frame: at.frame, fdoc: at.fdoc, route: at.route, docs: at.docs });
 
     // Typing is sent a moment after it stops, and at once before a key or a
     // form sent that might use it.
@@ -1712,7 +1814,7 @@
         clearTimeout(timer);
         pending.delete(field);
         const at = targetOf(field);
-        if (at) send("input", at.id, { value: field.value, frame: at.frame, fdoc: at.fdoc });
+        if (at) send("input", at.id, { value: field.value, ...frameFields(at) });
     }
     function flushAll(within) {
         for (const field of [...pending.keys()]) if (!within || within.contains(field)) flush(field);
@@ -1769,12 +1871,20 @@
         // these: the frame's size and scroll differ).
         const fr = frameRoots.get(at.node);
         if (fr) {
-            const inner = at.node.shadowRoot?.elementFromPoint?.(cx, cy);
-            for (let n = inner; n && fr.child; n = n.parentNode) {
-                const i = fr.child.ids.get(n);
-                if (i && n.nodeType === 1) return { id: at.id, frame: i, fdoc: fr.docOf ?? 0, ...place(n) };
+            let host = at.node, n;
+            for (;;) {
+                const current = frameRoots.get(host);
+                const inner = host.shadowRoot?.elementFromPoint?.(cx, cy);
+                n = null;
+                for (let x = inner; x && current?.child; x = x.parentNode) {
+                    if (current.child.ids.has(x) && x.nodeType === 1) { n = x; break; }
+                }
+                if (!n) return null;
+                if (!frameRoots.has(n)) break;
+                host = n;
             }
-            return null;
+            const target = targetOf(n);
+            return target && { ...target, ...place(n) };
         }
         return { id: at.id, ...place(at.node) };
     }
@@ -1788,7 +1898,7 @@
         lastClick = performance.now();
         held |= 1 << e.button;
         pressedAt = w;
-        send("mouse", w.id, { phase: "down", frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+        send("mouse", w.id, { phase: "down", ...frameFields(w), fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     document.addEventListener("mouseup", (e) => {
         if (!e.isTrusted || fromTouch(e) || !(held & (1 << e.button))) return;
@@ -1798,7 +1908,7 @@
         // Let go outside the frame: let go, away from what was pressed (no
         // click).
         if (!w) send("mouse", 0, { phase: "cancel", button: e.button });
-        else send("mouse", w.id, { phase: "up", frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
+        else send("mouse", w.id, { phase: "up", ...frameFields(w), fx: w.fx, fy: w.fy, button: e.button, buttons: e.buttons, count: e.detail || 1, ...mods(e) });
     }, true);
     // Let go outside the frame, or the window left: nothing stays pressed.
     const cancel = () => {
@@ -1898,7 +2008,7 @@
         const t = e.changedTouches[0];
         if (touchMoved || !t || Math.hypot(t.clientX - touchFrom.x, t.clientY - touchFrom.y) > 10) return;
         lastClick = performance.now();
-        const at = { frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, button: 0, count: 1, ...mods(e) };
+        const at = { ...frameFields(w), fx: w.fx, fy: w.fy, button: 0, count: 1, ...mods(e) };
         send("mouse", w.id, { phase: "move", ...at, buttons: 0 });
         send("mouse", w.id, { phase: "down", ...at, buttons: 1 });
         send("mouse", w.id, { phase: "up", ...at, buttons: 0 });
@@ -1998,7 +2108,7 @@
         if (!e.isTrusted || fromTouch(e)) return;
         const w = where(e);
         if (!w) return;
-        move = { phase: "move", id: w.id, frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
+        move = { phase: "move", id: w.id, ...frameFields(w), fx: w.fx, fy: w.fy, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, true);
     document.addEventListener("wheel", (e) => {
@@ -2006,7 +2116,7 @@
         const w = where(e);
         if (!w) return;
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
-        wheel = { phase: "wheel", id: w.id, frame: w.frame, fdoc: w.fdoc, fx: w.fx, fy: w.fy, dx: (wheel?.frame === w.frame ? wheel?.dx ?? 0 : 0) + e.deltaX * unit, dy: (wheel?.frame === w.frame ? wheel?.dy ?? 0 : 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
+        wheel = { phase: "wheel", id: w.id, ...frameFields(w), fx: w.fx, fy: w.fy, dx: (wheel?.frame === w.frame ? wheel?.dx ?? 0 : 0) + e.deltaX * unit, dy: (wheel?.frame === w.frame ? wheel?.dy ?? 0 : 0) + e.deltaY * unit, buttons: e.buttons, ...mods(e) };
         pointerSoon();
     }, { capture: true, passive: true });
 
@@ -2187,7 +2297,7 @@
         const at = targetOf(el);
         // (Boxes are ticked by their clicks; text by its typing.)
         if (!e.isTrusted || !at || at.node !== el || textLike(el) || el.type === "checkbox" || el.type === "radio") return;
-        send("change", at.id, { value: String(el.value ?? ""), frame: at.frame, fdoc: at.fdoc });
+        send("change", at.id, { value: String(el.value ?? ""), ...frameFields(at) });
     }, true);
     // Keys: given to the engine as keys, every one, to what has the focus
     // here (the engine gives it the focus first). What's typed is typed here
@@ -2200,7 +2310,7 @@
         flush(at.node);  // what was typed, before the key that may use it
         if (type === "down" && (e.key === "Enter" || e.key === " ")) lastActivation = performance.now();
         if (type === "down" && e.key === "Enter") lastEnter = performance.now();
-        send("key", at.id, { phase: type, frame: at.frame, fdoc: at.fdoc, key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
+        send("key", at.id, { phase: type, ...frameFields(at), key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
     }
     document.addEventListener("keydown", (e) => keyEvent(e, "down"), true);
     document.addEventListener("keyup", (e) => keyEvent(e, "up"), true);
@@ -2208,7 +2318,7 @@
     document.addEventListener("focusin", (e) => {
         if (!e.isTrusted) return;
         const n = real(e), at = targetOf(n);
-        if (at && at.node === n && n.nodeType === 1) send("focus", at.id, { frame: at.frame, fdoc: at.fdoc });
+        if (at && at.node === n && n.nodeType === 1) send("focus", at.id, frameFields(at));
     }, true);
     // Forms aren't sent from here (form-action 'none'): the engine sends
     // them. Enter in a field sends its form there already, with its key.
@@ -2221,7 +2331,7 @@
         if (!form) return;
         flushAll(real(e));
         const by = e.submitter ? targetOf(e.submitter) : null;
-        send("submit", form.id, { submitter: (form.frame ? by?.frame : by?.id) || 0, frame: form.frame, fdoc: form.fdoc });
+        send("submit", form.id, { submitter: (form.frame ? by?.frame : by?.id) || 0, ...frameFields(form) });
     }, true);
 
     // A link goes nowhere here (its href is "#"); where it goes is kept.

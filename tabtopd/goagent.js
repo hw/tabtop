@@ -366,6 +366,36 @@
             return n && n.isConnected ? n : null;
         }
 
+        const canvasReplies = new WeakMap();
+        const dirtyCanvases = new Set();
+        let canvasReads = 0, canvasReadBytes = 0;
+        document.addEventListener("__tabtop_canvas_pixels", (event) => {
+            const el = event.target;
+            if (!(el instanceof HTMLCanvasElement) || typeof event.detail !== "string" || event.detail.length > (1 << 20) + 64) return;
+            try {
+                const result = JSON.parse(event.detail);
+                if (typeof result?.p === "string" && result.p.length <= (1 << 20)) canvasReplies.set(el, { p: result.p });
+                else if (["unsupported", "tainted", "large"].includes(result?.e)) canvasReplies.set(el, { e: result.e });
+            } catch { /* malformed or forged canvas notification */ }
+        }, true);
+        document.addEventListener("__tabtop_canvas_dirty", (event) => {
+            const el = event.target;
+            if (el instanceof HTMLCanvasElement && known(el) && el.isConnected && dirtyCanvases.size < 64) dirtyCanvases.add(el);
+        }, true);
+        function canvasPixels(el) {
+            if (!(el instanceof HTMLCanvasElement) || ++canvasReads > 32) return { e: "large" };
+            canvasReplies.delete(el);
+            try {
+                Reflect.apply(EventTarget.prototype.dispatchEvent, el, [new Event("__tabtop_canvas_capture", { bubbles: true })]);
+            } catch { return { e: "unsupported" }; }
+            const result = canvasReplies.get(el) ?? { e: "unsupported" };
+            if (result.p) {
+                canvasReadBytes += result.p.length;
+                if (canvasReadBytes > 4 << 20) return { e: "large" };
+            }
+            return result;
+        }
+
         let count = 0;
         const frames = new Map();
         // framePrintChanged: whether a frame's markup changed since it was
@@ -436,6 +466,11 @@
             }
             const out = { i: id(n), t: 1, n: name };
             if (a.length) out.a = a;
+            if (name === "canvas") {
+                const pixels = canvasPixels(n);
+                if (pixels.p) out.p = pixels.p;
+                if (pixels.e) out.pe = pixels.e;
+            }
             let c;
             if (name === "style" && n.namespaceURI === "http://www.w3.org/1999/xhtml" && !n.textContent.trim()) {
                 // Rules put in by script (styled-components, Emotion: in
@@ -450,7 +485,11 @@
                 }
             }
             if (name === "iframe") {
-                c = n.ownerDocument === document && depth < 600 && (frames.has(n) || frames.size < 64) ? frameKids(n, depth) : [];
+                // Include same-origin descendants of readable iframe
+                // documents too. Their iframe owners still belong to this
+                // agent's node-number space, which the server needs to route
+                // a deeper cross-origin frame through its parent document.
+                c = depth < 600 && (frames.has(n) || frames.size < 64) ? frameKids(n, depth) : [];
             } else {
                 c = name === "textarea" ? [{ i: id(n.firstChild || n), t: 3, v: n.value }] : depth < 600 ? kids(n, depth) : [];
             }
@@ -514,12 +553,16 @@
                 else if (r.type === "attributes") {
                     if (!attrs.has(r.target)) attrs.set(r.target, new Set());
                     attrs.get(r.target).add(r.attributeName);
+                    if (r.target instanceof HTMLCanvasElement && (r.attributeName === "width" || r.attributeName === "height") && dirtyCanvases.size < 64) dirtyCanvases.add(r.target);
                 }
             }
         });
 
         function snapshot() {
             count = 0;
+            canvasReads = 0;
+            canvasReadBytes = 0;
+            dirtyCanvases.clear();
             for (const frame of frames.values()) frame.observer?.disconnect();
             frames.clear();
             observer.disconnect();
@@ -593,6 +636,8 @@
             }
             const ops = [];
             count = 0;
+            canvasReads = 0;
+            canvasReadBytes = 0;
             // Only nodes numbered before now: new ones come whole, inside
             // their parent's children.
             const before = next;
@@ -688,6 +733,15 @@
                     watched.set(n, v);
                     ops.push({ o: "v", i: ids.get(n), v });
                 }
+            }
+            let canvasFrames = 0;
+            for (const el of dirtyCanvases) {
+                if (canvasFrames >= 3 || canvasReadBytes >= (3 << 20)) break;
+                dirtyCanvases.delete(el);
+                if (!el.isConnected || !known(el)) continue;
+                const pixels = canvasPixels(el);
+                ops.push({ o: "p", i: ids.get(el), v: pixels.p ?? "", pe: pixels.e ?? "" });
+                canvasFrames++;
             }
             parents = new Set(); attrs = new Map(); texts = new Set();
             const moved = here() !== lastURL;

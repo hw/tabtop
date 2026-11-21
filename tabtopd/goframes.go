@@ -1,20 +1,16 @@
 package main
 
 // A page's embedded pages from other origins (see docs/browser-plan.md,
-// section 6). The agent in the page's world reads the frames of its own
-// origin into the snapshot itself (goagent.js); another origin's it can't
-// see into. Those are read here, each in an isolated world of its own, and
-// sent after the page, each whole, as its iframe's content, as the agent
-// sends a frame of its own origin that's changed: {o: "c", i: the iframe's
-// number, c: [its document]}. A slow, looping or huge frame then holds up
-// nothing but itself.
+// section 6). Each is read in an isolated world and matched to its iframe
+// in the parent document. The frame tree is followed through two levels;
+// nested snapshots are attached to their iframe copies, while changes and
+// input carry the owner-ID chain back to the correct frame world.
 //
 // Once a second, while a page is shown: the page's frames are listed
 // (Page.getFrameTree); a new one is matched to its iframe (DOM.getFrameOwner,
 // then the agent's number for it, which the copy must have already); and
 // each that's new, navigated, or changed (its agent's changes) is read
-// again. Only the page's own frames: a frame's frames, of yet another
-// origin, show as unavailable. Resends are budgeted per tab, and a frame
+// again. Resends are budgeted per tab, and a frame
 // that changes every time waits longer each time.
 
 import (
@@ -37,24 +33,37 @@ const (
 
 // goChild is one of the page's frames from another origin.
 type goChild struct {
-	owner   int       // the agent's number for its iframe (0: not found yet)
-	same    bool      // its page is the page's origin's: the agent reads it
-	world   int       // its isolated world (0: to make)
-	url     string    // its address, as last seen
-	due     bool      // to be read whole
-	next    time.Time // not read again before
-	wait    time.Duration
-	changed int // times in a row it's changed
+	id          string    // CDP frame ID
+	parent      string    // CDP frame containing the iframe (the main frame at the top)
+	parentWorld int       // agent world whose IDs name the iframe owner
+	owner       int       // the agent's number for its iframe (0: not found yet)
+	same        bool      // its page is the page's origin's: the agent reads it
+	world       int       // its isolated world (0: to make)
+	url         string    // its address, as last seen
+	due         bool      // to be read whole
+	next        time.Time // not read again before
+	wait        time.Duration
+	changed     int     // times in a row it's changed
+	doc         *goNode // last document snapshot, for grafting nested frame copies
 }
 
 // goFrameRead is what a round of reading found of one frame.
 type goFrameRead struct {
-	id, url string
-	owner   int
-	same    bool
-	world   int
-	doc     []byte // its snapshot, if read
-	changed bool
+	id, parent, url string
+	parentWorld     int
+	owner           int
+	same            bool
+	world           int
+	doc             []byte // its snapshot, if read
+	changed         bool
+}
+
+type goCDPFrame struct {
+	Frame struct {
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	} `json:"frame"`
+	ChildFrames []goCDPFrame `json:"childFrames"`
 }
 
 // framesSoon reads the page's frames, if it's time and nothing's reading.
@@ -95,43 +104,49 @@ func (b *goBrowser) readFrames(world int, main string, known map[string]goChild)
 	var tree struct {
 		FrameTree struct {
 			Frame       struct{ ID string }
-			ChildFrames []struct {
-				Frame struct{ ID, URL string }
-			}
+			ChildFrames []goCDPFrame
 		}
 	}
 	if b.cdp.call(ctx, b.page, "Page.getFrameTree", nil, &tree) != nil || tree.FrameTree.Frame.ID != main {
 		return nil
 	}
+	goDebugf("frame tree: %d direct children", len(tree.FrameTree.ChildFrames))
 	var out []goFrameRead
 	now := time.Now()
-	for _, f := range tree.FrameTree.ChildFrames {
-		if len(out) >= goFramesMax {
-			break
-		}
-		c, had := known[f.Frame.ID]
-		r := goFrameRead{id: f.Frame.ID, url: f.Frame.URL, owner: c.owner, same: c.same, world: c.world}
-		if had && c.url != f.Frame.URL {
-			// Navigated: a new document, its owner perhaps another origin now.
-			r.owner, r.same, r.world, c.due = 0, false, 0, true
-		}
-		if r.owner == 0 {
-			r.owner, r.same = b.frameOwner(ctx, world, f.Frame.ID)
-			c.due = true
-		}
-		if r.owner == 0 || r.same {
-			out = append(out, r) // not shown yet, or the agent's to read
-			continue
-		}
-		if !c.due && now.Before(c.next) {
+	var walk func([]goCDPFrame, string, int, int)
+	walk = func(frames []goCDPFrame, parent string, parentWorld, depth int) {
+		for _, f := range frames {
+			if len(out) >= goFramesMax {
+				return
+			}
+			c, had := known[f.Frame.ID]
+			r := goFrameRead{id: f.Frame.ID, parent: parent, parentWorld: parentWorld, url: f.Frame.URL, owner: c.owner, same: c.same, world: c.world}
+			if had && (c.url != f.Frame.URL || c.parent != parent || c.parentWorld != parentWorld) {
+				r.owner, r.same, r.world, c.due = 0, false, 0, true
+			}
+			if r.owner == 0 {
+				r.owner, r.same = b.frameOwner(ctx, parentWorld, f.Frame.ID)
+				c.due = true
+			}
+			goDebugf("frame %s under %s owner %d same %v children %d", f.Frame.ID, parent, r.owner, r.same, len(f.ChildFrames))
+			if r.owner != 0 && !r.same {
+				if c.due || !had || !now.Before(c.next) {
+					fctx, fcancel := context.WithTimeout(context.Background(), goFrameTimeout)
+					r.doc, r.world, r.changed = b.readFrame(fctx, f.Frame.ID, r.world, c.due || !had)
+					fcancel()
+				}
+			}
 			out = append(out, r)
-			continue
+			childWorld := parentWorld
+			if !r.same {
+				childWorld = r.world
+			}
+			if depth < 2 {
+				walk(f.ChildFrames, f.Frame.ID, childWorld, depth+1)
+			}
 		}
-		fctx, fcancel := context.WithTimeout(context.Background(), goFrameTimeout)
-		r.doc, r.world, r.changed = b.readFrame(fctx, f.Frame.ID, r.world, c.due)
-		fcancel()
-		out = append(out, r)
 	}
+	walk(tree.FrameTree.ChildFrames, main, world, 1)
 	return out
 }
 
@@ -200,14 +215,18 @@ func (b *goBrowser) readFrame(ctx context.Context, frame string, world int, whol
 		ExecutionContextID int `json:"executionContextId"`
 	}
 	if b.cdp.call(ctx, b.page, "Page.createIsolatedWorld", map[string]any{"frameId": frame, "worldName": "tabtop"}, &made) != nil {
+		goDebugf("frame %s: cannot create isolated world", frame)
 		return nil, 0, false
 	}
 	world = made.ExecutionContextID
 	raw, err := run(goAgentJS)
 	if err != nil {
+		goDebugf("frame %s world %d: cannot install agent: %v", frame, world, err)
 		return nil, 0, false
 	}
-	return goFrameDoc(raw), world, true
+	doc := goFrameDoc(raw)
+	goDebugf("frame %s world %d: snapshot %d bytes", frame, world, len(doc))
+	return doc, world, true
 }
 
 // goFrameDoc is a frame's snapshot, if it's within the limit.
@@ -240,7 +259,7 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		if c.url != r.url || c.owner != r.owner {
 			c.due = true
 		}
-		c.url, c.owner, c.same, c.world = r.url, r.owner, r.same, r.world
+		c.id, c.parent, c.parentWorld, c.url, c.owner, c.same, c.world = r.id, r.parent, r.parentWorld, r.url, r.owner, r.same, r.world
 		if r.doc == nil {
 			continue
 		}
@@ -249,18 +268,7 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 			continue
 		}
 		doc := &goNode{ID: s.Doc.ID, Type: 9, Base: s.Base, Kids: s.Doc.Kids}
-		goClean(doc)
-		// f: which document it is, its world (made anew for each), for the
-		// copy to say with what's done in it (inFrame checks it).
-		op, _ := json.Marshal(map[string]any{"o": "c", "i": c.owner, "c": []*goNode{doc}, "f": c.world})
-		if b.framesSent+len(op) > goFramesBytes {
-			c.due = true // next round
-			continue
-		}
-		b.framesSent += len(op)
-		p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": b.gen, "seq": b.seq, "ops": []json.RawMessage{op}})
-		goDebugf("frame %d: %d bytes", c.owner, len(p))
-		b.sendLarge(p)
+		c.doc = goClean(doc)
 		c.due = false
 		// One that changes every time is read less often, up to every
 		// goFrameWaitMax; one that's settled, every round.
@@ -273,10 +281,77 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		}
 		c.next = now.Add(c.wait)
 		if b.prefetcher != nil {
-			for _, w := range goWants(doc, s.Base) {
+			for _, w := range goWants(c.doc, s.Base) {
 				b.prefetcher.want(b, w, 0)
 			}
 		}
+	}
+	// Graft deepest documents first, so a refreshed parent snapshot retains
+	// every already-read nested frame when the outer copy is resent.
+	for i := len(reads) - 1; i >= 0; i-- {
+		r := reads[i]
+		c := b.children[r.id]
+		if c == nil || c.doc == nil || c.same || c.parent == b.frame {
+			continue
+		}
+		parent := b.children[c.parent]
+		if parent == nil || parent.doc == nil {
+			continue
+		}
+		owner := findGoNode(parent.doc, c.owner)
+		if owner != nil && owner.Name == "iframe" {
+			owner.Kids = []*goNode{c.doc}
+			owner.FrameDoc = c.world
+		}
+	}
+	// Address nested updates by the chain of iframe IDs in each parent
+	// document. This keeps focus and pending text in containing copies intact.
+	sent := map[string]bool{}
+	for _, r := range reads {
+		if r.doc == nil {
+			continue
+		}
+		c := b.children[r.id]
+		if c == nil || c.doc == nil {
+			continue
+		}
+		root := c
+		var path []int
+		for root.parent != b.frame {
+			path = append(path, root.owner)
+			root = b.children[root.parent]
+			if root == nil {
+				break
+			}
+		}
+		if root == nil || (root.doc == nil && !root.same) {
+			continue
+		}
+		key, content, frameDoc := r.id, c.doc, c.world
+		if c == root {
+			key, content, frameDoc = root.id, root.doc, root.world
+		} else {
+			for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+				path[i], path[j] = path[j], path[i]
+			}
+		}
+		if sent[key] || (c != root && sent[root.id]) {
+			continue
+		}
+		sent[key] = true
+		opData := map[string]any{"o": "c", "i": root.owner, "c": []*goNode{content}, "f": frameDoc}
+		if c != root {
+			opData["path"] = path
+		}
+		op, _ := json.Marshal(opData)
+		if b.framesSent+len(op) > goFramesBytes {
+			c.due = true
+			continue
+		}
+		b.framesSent += len(op)
+		p, _ := json.Marshal(map[string]any{"type": "go-changes", "gen": b.gen, "seq": b.seq, "ops": []json.RawMessage{op}})
+		goDebugf("frame %d nested %v: %d bytes", root.owner, path, len(p))
+		b.sendLarge(p)
 	}
 	for id := range b.children {
 		if !seen[id] {
@@ -288,4 +363,24 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 			c.changed-- // settling
 		}
 	}
+}
+
+func findGoNode(n *goNode, id int) *goNode {
+	if n == nil {
+		return nil
+	}
+	if n.ID == id {
+		return n
+	}
+	// A separately read document has its own node-number space. Never find
+	// an iframe owner by matching a node inside that document.
+	if n.Type == 1 && n.Name == "iframe" && n.FrameDoc != 0 {
+		return nil
+	}
+	for _, child := range n.Kids {
+		if found := findGoNode(child, id); found != nil {
+			return found
+		}
+	}
+	return nil
 }

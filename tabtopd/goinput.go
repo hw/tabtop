@@ -247,7 +247,7 @@ func (b *goBrowser) drag(m goClientMsg) {
 // if it's none of the page's frames (any more).
 func (b *goBrowser) frameWorld(owner int) (int, *goChild) {
 	for _, c := range b.children {
-		if c.owner == owner {
+		if c.owner == owner && (c.parent == "" || c.parent == b.frame) {
 			if c.same {
 				return b.world, c
 			}
@@ -257,12 +257,52 @@ func (b *goBrowser) frameWorld(owner int) (int, *goChild) {
 	return 0, nil
 }
 
+// frameWorldPath resolves each iframe owner in its containing frame. The
+// owner IDs are local to that document, so matching only the outer iframe
+// would send nested input to the wrong agent and node-number space.
+func (b *goBrowser) frameWorldPath(owner int, route, docs []int) (int, *goChild) {
+	if len(route) == 0 {
+		return b.frameWorld(owner)
+	}
+	if len(route) > 2 || route[0] != owner || (len(docs) != 0 && len(docs) != len(route)) {
+		return 0, nil
+	}
+	parent, parentWorld := b.frame, b.world
+	var child *goChild
+	for i, id := range route {
+		if i == 0 && len(docs) != 0 && docs[i] != 0 {
+			return 0, nil
+		}
+		child = nil
+		for key, candidate := range b.children {
+			if candidate.parent == parent && candidate.owner == id {
+				child = candidate
+				parent = key
+				break
+			}
+		}
+		if child == nil {
+			return 0, nil
+		}
+		if i > 0 && len(docs) != 0 && docs[i] != 0 && docs[i] != parentWorld {
+			return 0, nil
+		}
+		if child.same {
+			// Same-origin frames are serialized and numbered by their parent's
+			// agent, so their document runs in that same isolated world.
+		} else {
+			parentWorld = child.world
+		}
+	}
+	return parentWorld, child
+}
+
 // inFrame runs one of the agent's calls in an embedded page's world, on
 // the acts' queue, in that world only (were it gone, another world's
 // numbers are another document's: evaluate would make the page's); then
 // the frame is read again on the next round, and what the page changed.
-func (b *goBrowser) inFrame(owner, fdoc int, what string, expr string) {
-	world, child := b.frameWorld(owner)
+func (b *goBrowser) inFrame(owner, fdoc int, route, docs []int, what string, expr string) {
+	world, child := b.frameWorldPath(owner, route, docs)
 	if world == 0 || b.acts.waiting() >= goActsWaiting {
 		return
 	}
@@ -310,7 +350,7 @@ func (b *goBrowser) pointerInFrame(m goClientMsg) {
 		"dx": goClamp(m.DX, -10000, 10000), "dy": goClamp(m.DY, -10000, 10000),
 		"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
 	arg, _ := json.Marshal(string(what))
-	b.inFrame(m.ID, m.FDoc, "mouse "+m.Type, "__tabtop.scripted("+string(arg)+")")
+	b.inFrame(m.ID, m.FDoc, m.Route, m.Docs, "mouse "+m.Type, "__tabtop.scripted("+string(arg)+")")
 }
 
 // actInFrame does what the person did in an embedded page (typing, a
@@ -324,7 +364,7 @@ func (b *goBrowser) actInFrame(m goClientMsg) {
 	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.Frame, "value": m.Value, "checked": m.Checked, "key": m.Key,
 		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": submitter})
 	arg, _ := json.Marshal(string(a))
-	b.inFrame(m.ID, m.FDoc, m.Kind, "__tabtop.act("+string(arg)+")")
+	b.inFrame(m.ID, m.FDoc, m.Route, m.Docs, m.Kind, "__tabtop.act("+string(arg)+")")
 }
 
 // movesOn queues the waiting move, wheel turn, touch move and drag, if

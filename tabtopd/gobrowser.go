@@ -41,6 +41,12 @@ import (
 //go:embed goagent.js
 var goAgentJS string
 
+// goCanvasJS watches the page's Canvas2D draw calls before its scripts run.
+// The isolated agent reads pixels only after a draw or during a snapshot.
+//
+//go:embed gocanvas.js
+var goCanvasJS string
+
 // goObserveJS is the page's IntersectionObserver, run before its scripts
 // (see goobserve.js).
 //
@@ -343,7 +349,9 @@ type goClientMsg struct {
 	// mouse in an embedded page: its element, by the frame's own number
 	// (ID being its iframe's).
 	Frame  int            `json:"frame"`
-	FDoc   int            `json:"fdoc"` // which of its documents Frame is of (its world, as its copy came)
+	FDoc   int            `json:"fdoc"`            // which of its documents Frame is of (its world, as its copy came)
+	Route  []int          `json:"route,omitempty"` // iframe owner IDs, outermost to innermost
+	Docs   []int          `json:"docs,omitempty"`  // parent document identities for Route
 	Points []goTouchPoint `json:"points"`
 	Tap    bool           `json:"tap"`
 	// drag: Type over, drop or cancel, at the element and place a mouse
@@ -654,7 +662,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goEMEJS + "\n" + goSheetsJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goEMEJS + "\n" + goSheetsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -1670,11 +1678,12 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 	out := []any{} // [] if none, not null: a batch may bring only what's observed
 	for _, r := range raw {
 		var op struct {
-			O string    `json:"o"`
-			I int       `json:"i"`
-			N string    `json:"n"`
-			V *string   `json:"v"`
-			C []*goNode `json:"c"`
+			O  string    `json:"o"`
+			I  int       `json:"i"`
+			N  string    `json:"n"`
+			V  *string   `json:"v"`
+			PE string    `json:"pe"`
+			C  []*goNode `json:"c"`
 		}
 		if json.Unmarshal(r, &op) != nil {
 			continue
@@ -1706,6 +1715,19 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 			}
 		case "m": // a player started or stopped by the page
 			out = append(out, map[string]any{"o": "m", "i": op.I, "v": op.V != nil && *op.V == "true"})
+		case "p": // a Canvas2D pixel update: PNG only, size checked again here
+			if op.I <= 0 {
+				continue
+			}
+			pixels := ""
+			if op.V != nil && goCanvasPNGValid(*op.V) {
+				pixels = *op.V
+			}
+			reason := goCanvasError(op.PE)
+			if pixels != "" {
+				reason = ""
+			}
+			out = append(out, map[string]any{"o": "p", "i": op.I, "v": pixels, "pe": reason})
 		case "t", "v":
 			v := ""
 			if op.V != nil {

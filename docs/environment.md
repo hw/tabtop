@@ -40,7 +40,7 @@
 | [WEB_GO_FETCH_PRIVATE](#web_go_fetch-and-web_go_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
 | [WEB_PREVIEW_FETCH_PRIVATE](#web_preview_fetch_private) | `0` | `1` lets previews in Proxy mode load a document's images, styles, fonts and media from private networks too. |
 | [WEB_GO](#web_go) | `0` | `1` serves the remote browser at `/go`: pages run on the server, in a sandboxed engine, and are shown as a copy. |
-| [WEB_GO_ENGINE](#web_go) | `moli` | The remote browser's page engine: `moli` ([Moli](https://github.com/lexmount/moli)) or `obscura` ([Obscura](https://github.com/h4ckf0r0day/obscura)), both in the image, or the path of either's binary. Obscura can't yet do everything Moli does: see WEB_GO. |
+| [WEB_GO_ENGINE](#web_go) | `moli` | The remote browser's page engine: bundled `moli` ([Moli](https://github.com/lexmount/moli)), or the path of an external Moli, Obscura, or Lightpanda binary. `obscura` is a shortcut for `/opt/obscura/obscura`, if you mount or install it there. Obscura can't yet do everything Moli does: see WEB_GO. |
 | [WEB_GO_UNSANDBOXED](#web_go) | `0` | `1` runs the remote browser's engine even where it can't be sandboxed. |
 | [WEB_GO_PRIVATE](#web_go) | `0` | `1` lets the remote browser reach private networks too, not only the internet. |
 | [WEB_GO_CACHE](#web_go) | `1` | `1` lets the remote browser's engines share a cache on disk, so sites' scripts and stylesheets are kept between tabs. `0` turns it off. |
@@ -792,12 +792,13 @@ and shown on your device as a sanitized copy of its document: your device
 never contacts the site, and none of the site's scripts run on it. Links,
 forms, typing, buttons, back, forward, reload and the page's own dialogs
 work; what you do is done in the engine, and what the page changes is sent
-back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` names the engine; the
-image has Moli at `/opt/moli/moli` and Obscura at `/opt/obscura/obscura` (their
-licences are beside them), chosen by `WEB_GO_ENGINE=moli` (the default) or
-`WEB_GO_ENGINE=obscura`. A [Lightpanda](https://github.com/lightpanda-io/browser)
-binary (named `lightpanda`) can be given by its path too; the image doesn't
-have one (it's AGPL-3.0), and less of a page works with it (see
+back. `WEB_GO_FETCH=0` turns it off too. `WEB_GO_ENGINE` selects the engine;
+the image bundles Moli at `/opt/moli/moli`. Obscura is no longer bundled: set
+`WEB_GO_ENGINE` to its executable path, or mount it at `/opt/obscura/obscura`
+and select `WEB_GO_ENGINE=obscura`. A
+[Lightpanda](https://github.com/lightpanda-io/browser) binary (named
+`lightpanda`) can also be given by its path; the image doesn't bundle one (it's
+AGPL-3.0), and less of a page works with it (see
 docs/browser-plan.md, Lightpanda). With Obscura (0.2.7) some of that doesn't work yet: it
 answers the page's `confirm` and `prompt` itself, at once (Cancel, nothing),
 so you're shown what was asked but can't answer it (an `alert` is shown as
