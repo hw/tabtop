@@ -60,6 +60,9 @@ var goFetchJS string
 //go:embed gomedia.js
 var goMediaJS string
 
+//go:embed goeme.js
+var goEMEJS string
+
 // goSheetsJS tells the agent the rules a page's script put into its
 // <style> elements (gosheets.js).
 //
@@ -475,6 +478,9 @@ type goView struct {
 	// angle), told the page as its screen's.
 	Orientation string `json:"o"`
 	Angle       int    `json:"a"`
+	// The person's prefers-color-scheme (light or dark): the page's
+	// (prefers-color-scheme: …) media queries and matchMedia follow it.
+	Scheme string `json:"scheme"`
 }
 
 // goOrientations are screen.orientation's types, as CDP names them.
@@ -503,6 +509,9 @@ func (v goView) clamped() goView {
 	}
 	if v.Angle%90 != 0 || v.Angle < 0 || v.Angle >= 360 {
 		v.Angle = 0
+	}
+	if v.Scheme != "light" && v.Scheme != "dark" {
+		v.Scheme = "light"
 	}
 	return v
 }
@@ -643,7 +652,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goSheetsJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goEMEJS + "\n" + goSheetsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -1010,7 +1019,9 @@ func (b *goBrowser) setView(v goView) {
 	if v == b.view {
 		return
 	}
-	touch := v.Touch != b.view.Touch || b.view == (goView{})
+	first := b.view == (goView{})
+	touch := v.Touch != b.view.Touch || first
+	scheme := v.Scheme != b.view.Scheme || first
 	b.view = v
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
@@ -1039,12 +1050,20 @@ func (b *goBrowser) setView(v goView) {
 				goDebugf("touch emulation %v: %v", v.Touch, terr)
 			}
 		}
+		if err == nil && scheme {
+			// The person's light or dark: CSS and matchMedia in the engine.
+			if serr := b.cdp.call(ctx, b.page, "Emulation.setEmulatedMedia", map[string]any{
+				"features": []map[string]string{{"name": "prefers-color-scheme", "value": v.Scheme}},
+			}, nil); serr != nil {
+				goDebugf("color scheme emulation %q: %v", v.Scheme, serr)
+			}
+		}
 		if err == nil {
 			err = b.relayout(ctx)
 		}
 		return err
 	}, func(r any) {
-		goDebugf("view %dx%d at %g on %dx%d %s %d, touch %v: %v", v.W, v.H, v.DPR, v.SW, v.SH, v.Orientation, v.Angle, v.Touch, r)
+		goDebugf("view %dx%d at %g on %dx%d %s %d, touch %v, %s: %v", v.W, v.H, v.DPR, v.SW, v.SH, v.Orientation, v.Angle, v.Touch, v.Scheme, r)
 		b.changed(goChangesEvery)
 	})
 }
@@ -1486,6 +1505,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 }
 
 type goChanges struct {
+	EME     []json.RawMessage `json:"eme"`
 	Streams []json.RawMessage `json:"streams"`
 	Seq     int               `json:"seq"`
 	URL     string            `json:"url"`
@@ -1592,11 +1612,14 @@ func (b *goBrowser) readChanges() {
 				goDebugf("dialog %s asked, answered by the engine", q.Kind)
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
-			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(io) > 0 || len(scrolls) > 0 {
+			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(c.EME) > 0 || len(io) > 0 || len(scrolls) > 0 {
 				var seen goSeen
 				ops := goCleanOps(c.Ops, &seen)
 				goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
 				changes := map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams}
+				if strings.HasPrefix(b.docURL, "https://") && len(c.EME) <= 4 {
+					changes["eme"] = c.EME
+				}
 				// What its new classes and ids bring to hide, with them.
 				if hide := b.moreHiding(seen.nodes, seen.attrs); len(hide) > 0 {
 					changes["hide"] = hide
@@ -1724,7 +1747,7 @@ func (b *goBrowser) act(m goClientMsg) {
 		return
 	}
 	switch m.Kind {
-	case "click", "input", "change", "key", "submit", "focus", "scroll", "media-meta":
+	case "click", "input", "change", "key", "submit", "focus", "scroll", "media-meta", "eme-reply":
 	default:
 		return
 	}

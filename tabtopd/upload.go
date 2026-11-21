@@ -44,6 +44,9 @@ var uploadTempName = regexp.MustCompile(`^` + regexp.QuoteMeta(uploadTempPrefix)
 // its file in (see publish); one left by a crash still holds a link to it.
 var uploadStageName = regexp.MustCompile(`^` + regexp.QuoteMeta(uploadTempPrefix) + `[0-9a-f]{32}\.stage$`)
 
+// uploadMseStageName matches MSE spill staging folders (gostreammse.go).
+var uploadMseStageName = regexp.MustCompile(`^` + regexp.QuoteMeta(uploadTempPrefix) + `[0-9a-f]{16}\.mse$`)
+
 // removeStaleUploads removes the temporary files under dir of uploads cut
 // off by a crash or a forced stop, which no one else removes: those last
 // written before started. It runs before the gateway serves anything, so
@@ -105,7 +108,7 @@ func walkStaleUploads(root *os.Root, dirs []string, started time.Time, stop *ato
 				switch {
 				case topFolder(d) && trashName(de.Name()): // walked without following links, so d is real
 					continue // Trash owns retention of its contents.
-				case de.IsDir() && uploadStageName.MatchString(de.Name()):
+				case de.IsDir() && (uploadStageName.MatchString(de.Name()) || uploadMseStageName.MatchString(de.Name())):
 					if info, err := de.Info(); err == nil && info.ModTime().Before(started) && !stop.Load() && root.RemoveAll(p) == nil {
 						n++
 					}

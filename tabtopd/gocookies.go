@@ -356,7 +356,8 @@ func (j *goCookieJar) apply(prev, now map[goCookieKey]goCookie) (changed int) {
 var goForgetWithin = []int64{0, 3600, 86400, 7 * 86400, 30 * 86400, 182 * 86400}
 
 // routeGoCookies lists the sites with cookies kept, or data in a tab
-// open: their names and counts, never their cookies' values.
+// open: their names and counts, never their cookies' values (a site's
+// Inspect has those: gosite_data.go).
 func (g *server) routeGoCookies(c *tunnelCall) {
 	if !g.goOn || g.goCookies == nil {
 		c.r.fail("The remote browser is off or unavailable, so it keeps no cookies.")
@@ -365,32 +366,68 @@ func (g *server) routeGoCookies(c *tunnelCall) {
 	c.r.finish(g.goCookiesReport(nil))
 }
 
-// routeGoCookiesForget deletes a site's cookies and data (Name), or (Name
-// "") what was set in the last Within seconds (0: all).
+// routeGoCookiesForget deletes a site's cookies and data (Name), several
+// sites (Names), or (both empty) what was set in the last Within seconds
+// (0: all).
 func (g *server) routeGoCookiesForget(c *tunnelCall) {
 	if !g.goOn || g.goCookies == nil {
 		c.r.fail("The remote browser is off or unavailable, so it keeps no cookies.")
 		return
 	}
-	site, within := strings.ToLower(strings.TrimSpace(c.req.Name)), c.req.Within
-	if len(site) > 253 || site == "" && !slices.Contains(goForgetWithin, within) {
+	within := c.req.Within
+	sites := make([]string, 0, 1+len(c.req.Names))
+	if name := strings.ToLower(strings.TrimSpace(c.req.Name)); name != "" {
+		sites = append(sites, name)
+	}
+	for _, raw := range c.req.Names {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" || slices.Contains(sites, name) {
+			continue
+		}
+		sites = append(sites, name)
+	}
+	if len(sites) == 0 && !slices.Contains(goForgetWithin, within) {
 		c.r.fail("That isn't a site or a time to clear.")
 		return
 	}
+	for _, site := range sites {
+		if site == "" || len(site) > 253 {
+			c.r.fail("That isn't a site or a time to clear.")
+			return
+		}
+	}
+	if len(sites) > 500 {
+		c.r.fail("Too many sites to clear at once.")
+		return
+	}
 	var since time.Time
-	if site == "" && within > 0 {
+	if len(sites) == 0 && within > 0 {
 		since = time.Now().Add(-time.Duration(within) * time.Second)
 	}
+	forgetOne := func(site string) int {
+		var n int
+		if g.goStorage != nil {
+			g.goStorage.forget(site, since, func(selected map[string]bool) {
+				n = g.goCookies.forgetWithStorage(site, since, selected)
+			})
+		} else {
+			n = g.goCookies.forget(site, since)
+		}
+		return n
+	}
 	var n int
-	if g.goStorage != nil {
-		g.goStorage.forget(site, since, func(selected map[string]bool) {
-			n = g.goCookies.forgetWithStorage(site, since, selected)
-		})
+	if len(sites) == 0 {
+		n = forgetOne("")
 	} else {
-		n = g.goCookies.forget(site, since)
+		for _, site := range sites {
+			n += forgetOne(site)
+		}
 	}
 	what := "a site's"
-	if site == "" {
+	switch {
+	case len(sites) > 1:
+		what = strconv.Itoa(len(sites)) + " sites'"
+	case len(sites) == 0:
 		what = "the last " + strconv.FormatInt(within, 10) + " s's"
 		if within == 0 {
 			what = "all"
@@ -657,6 +694,7 @@ func (b *goBrowser) visited(rawURL string) {
 // (the first, and each a redirect goes to). nil: neither.
 type goFrom struct {
 	holdDownload func() (func(), error)
+	ended        <-chan struct{} // closed when the tab ends; nil: unknown
 	cookies      func(*url.URL) string
 	referer      func(*url.URL) string
 	page         func() string     // the page's address, for ad blocking; nil: none known

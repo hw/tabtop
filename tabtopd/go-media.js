@@ -9,10 +9,12 @@
 // tunnel, a few parts ahead). The site
 // isn't contacted from this device; the player is this page's, not the
 // site's: its script doesn't run here.
+import { encryptedMedia } from "./go-eme.js";
 import { call, collect } from "../tabtop/requests.js";
 import { createMediaSource } from "../tabtop/media-source.js";
 import { mediaWorker } from "../tabtop/stream-worker.js";
 import { openPlayer } from "../tabtop/video-player.js";
+import { createCapture } from "./mse-capture.js";
 
 const MAX_PLAYERS = 8;
 
@@ -25,7 +27,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, download, streamsToSave } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -74,6 +76,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     } });
 
+    const eme = encryptedMedia(emeReply, () => !blocked && !abort.signal.aborted);
     const players = new Map();  // the frame's box's key -> {element, stopped}
     const ours = new WeakSet();  // players being started by the page (start), not the person
     const abort = new AbortController();
@@ -83,11 +86,18 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     let streamBytes = 0;
 
     function releaseStream(stream) {
+        abortMSE?.(stream);
         streamBytes -= stream.bytes;
         stream.bytes = 0;
         stream.queue.length = 0;
         stream.closed = true;
         if (stream.url) URL.revokeObjectURL(stream.url);
+    }
+
+    function makeCapture(stream) {
+        return createCapture({
+            spill: spillMSE ? (ev) => spillMSE(stream, ev) : undefined,
+        });
     }
 
     function drainStream(stream) {
@@ -107,6 +117,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                         const added = source.addSourceBuffer(command.mime);
                         added.addEventListener("updateend", () => drainStream(stream));
                         stream.buffers.push(added);
+                        stream.capture?.add(command.buffer, command.mime);
                         break;
                     }
                     case "config":
@@ -118,16 +129,27 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                             buffer.appendWindowStart = command.start;
                         }
                         break;
-                    case "append": buffer.appendBuffer(Uint8Array.from(atob(command.data), (c) => c.charCodeAt(0))); break;
+                    case "append": {
+                        const bytes = Uint8Array.from(atob(command.data), (c) => c.charCodeAt(0));
+                        stream.capture?.append(command.buffer, bytes);
+                        buffer.appendBuffer(bytes);
+                        break;
+                    }
                     case "drop": source.removeSourceBuffer(buffer); stream.buffers[command.buffer] = null; break;
                     case "remove": buffer.remove(command.start, command.end); break;
                     // All chunks in this operation have reached native
                     // updateend before execution reaches the acknowledgment.
                     case "ack": stream.report(command.buffer); break;
                     case "abort": buffer.abort(); break;
-                    case "type": buffer.changeType(command.mime); break;
+                    case "type":
+                        buffer.changeType(command.mime);
+                        stream.capture?.add(command.buffer, command.mime);
+                        break;
                     case "duration": source.duration = command.value ?? Infinity; break;
-                    case "end": source.endOfStream(); break;
+                    case "end":
+                        stream.capture?.end();
+                        source.endOfStream();
+                        break;
                     case "error": throw new Error("The site's media stream exceeded the relay limit.");
                     default: throw new Error("Invalid media stream operation.");
                 }
@@ -153,7 +175,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             let stream = streams.get(id);
             if (!stream) {
                 if (streams.size >= 32) continue;
-                stream = { queue: [], buffers: [], bytes: 0 };
+                stream = newStream();
                 streams.set(id, stream);
             }
             if (stream.closed) continue;
@@ -182,26 +204,40 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     }
 
+    function newStream() {
+        const stream = { queue: [], buffers: [], bytes: 0 };
+        stream.capture = makeCapture(stream);
+        return stream;
+    }
+
     function streamPlayer(id, key, kind, entry) {
         if (typeof MediaSource !== "function") throw new Error("This browser does not support Media Source Extensions.");
         let stream = streams.get(id);
         if (!stream) {
             if (streams.size >= 32) throw new Error("Too many media streams on this page.");
-            stream = { queue: [], buffers: [], bytes: 0 };
+            stream = newStream();
             streams.set(id, stream);
         }
         if (stream.closed || stream.source) throw new Error(stream.error || "The media stream is no longer available.");
-        const element = document.createElement(kind);
+        stream.capture ||= makeCapture(stream);
+        const element = eme.player(entry.node, kind);
+        eme.opened(entry.node, element);
         element.controls = true;
         if (kind === "video") element.playsInline = true;
         stream.key = key;
+        stream.element = element;
         stream.source = new MediaSource();
         stream.url = URL.createObjectURL(stream.source);
         entry.stream = stream;
         stream.source.addEventListener("sourceopen", () => drainStream(stream));
         element.addEventListener("error", () => {
             if (!stream.closed) failStream(stream, element.error?.message || "The media stream could not be decoded.");
-        });
+        }, { signal: entry.controller.signal });
+        // Encrypted Media: once the page asks for keys, the capture mustn't be saved.
+        element.addEventListener("encrypted", () => {
+            stream.capture?.markEncrypted();
+            abortMSE?.(stream);
+        }, { signal: entry.controller.signal });
         element.src = stream.url;
         return element;
     }
@@ -211,6 +247,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         const player = players.get(key);
         if (!player) return;
         players.delete(key);
+        eme.closed(player.node, player.element);
         player.closeWatch?.();
         player.controller.abort();
         if (player.stream) {
@@ -229,13 +266,13 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // feed of videos scrolled through, the video taking the screen), not
     // the player: what it's given goes to the frame (passOn). Taps, and
     // the player's own controls, are the player's still.
-    function passScrolling(media) {
+    function passScrolling(media, signal) {
         media.addEventListener("wheel", (e) => {
             if ("player" in media.dataset) return;  // in the player: its own
             const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
             e.preventDefault();
             passOn?.(e.clientX, e.clientY, e.deltaX * unit, e.deltaY * unit, "wheel");
-        }, { passive: false });
+        }, { passive: false, signal });
         let last = null;
         media.addEventListener("touchstart", (e) => {
             const t = e.touches[0];
@@ -243,7 +280,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             // The finger down, for the page too (a swipe it takes itself:
             // YouTube's Shorts on a phone go to the next by its script).
             if (last) passOn?.(t.clientX, t.clientY, 0, 0, "drag-start");
-        }, { passive: true });
+        }, { passive: true, signal });
         media.addEventListener("touchmove", (e) => {
             const t = e.touches[0];
             if ("player" in media.dataset) return;
@@ -251,15 +288,15 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             e.preventDefault();
             passOn?.(t.clientX, t.clientY, last.x - t.clientX, last.y - t.clientY, "drag");
             last = { x: t.clientX, y: t.clientY };
-        }, { passive: false });
+        }, { passive: false, signal });
         // Its end: where a feed snaps to (see the frame's scrollUnder).
         const end = (e) => {
             const t = e.changedTouches?.[0];
             if (last && t) passOn?.(t.clientX, t.clientY, 0, 0, "drag-end");
             last = null;
         };
-        media.addEventListener("touchend", end, { passive: true });
-        media.addEventListener("touchcancel", end, { passive: true });
+        media.addEventListener("touchend", end, { passive: true, signal });
+        media.addEventListener("touchcancel", end, { passive: true, signal });
         media.style.touchAction = "none";  // its drags are passed on, not the browser's
     }
 
@@ -474,7 +511,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // How near to playing a player is: its stages, then what it has ahead
     // of where it plays, of the few seconds a browser wants to start.
     const READY_AHEAD = 3;
-    function loadingUntilReady(media, loading, wantsPlay) {
+    function loadingUntilReady(media, loading, wantsPlay, signal) {
         const ahead = () => {
             const t = media.currentTime || 0;
             for (let i = 0; i < media.buffered.length; i++) {
@@ -499,7 +536,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             for (const type of events) media.removeEventListener(type, update);
             loading.done();
         };
-        for (const type of events) media.addEventListener(type, type === "error" ? ready : update);
+        for (const type of events) media.addEventListener(type, type === "error" ? ready : update, { signal });
         update();
     }
 
@@ -520,9 +557,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
 
     return {
         streams: receiveStreams,
+        eme: eme.receive,
         // open makes a player for the box key, of kind, playing src (an
         // http(s) address the page had); its error, if it can't.
-        async open({ key, kind, src, rect, clip, shown, fit, position, muted, loop, poster, play }) {
+        async open({ key, node, kind, src, rect, clip, shown, fit, position, muted, loop, poster, play }) {
             const streamId = typeof src === "string" && Number(/^blob:tabtop-media\/([1-9]\d*)$/.exec(src)?.[1]);
             if (!["audio", "video"].includes(kind) || !Number.isSafeInteger(key) || typeof src !== "string" || !(Number.isSafeInteger(streamId) || /^https?:\/\//i.test(src))) {
                 return { error: "This media can't be played here." };
@@ -533,7 +571,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
             const controller = new AbortController();
             const { signal } = controller;
-            const entry = { controller, play: !!play, placement: { key, rect, clip, shown: shown !== false, fit, position } };
+            const entry = { controller, node, play: !!play, placement: { key, rect, clip, shown: shown !== false, fit, position } };
             players.set(key, entry);
             // Loading, over its box, till it can play.
             const loading = entry.loading = loader(kind, src, !!streamId);
@@ -564,18 +602,21 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                     loading.stage(0.15, "Loading…");
                     arrived.set(info.url, (n) => loading.arrived(n));
                     signal.addEventListener("abort", () => arrived.delete(info.url), { once: true });
-                    media = await mediaStream(info.url, file, signal);
+                    const element = eme.player(node, kind);
+                    eme.opened(node, element);
+                    entry.element = element;
+                    media = await mediaStream(info.url, file, signal, element);
                 }
                 entry.element = media;
                 signal.throwIfAborted();
-                loadingUntilReady(media, loading, () => entry.play);
+                loadingUntilReady(media, loading, () => entry.play, signal);
                 media.addEventListener("loadedmetadata", () => {
                     // Its proportions for its box, and its size and length
                     // for the page (the engine has none of its own).
                     const meta = { w: media.videoWidth || 0, h: media.videoHeight || 0, duration: Number.isFinite(media.duration) ? media.duration : 0 };
                     entry.length = meta.duration;
                     sized?.(key, media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 0, meta);
-                });
+                }, { signal });
                 // How it plays, for the page (its player script goes by its
                 // element's: YouTube's Shorts shows the next video's player
                 // once it's playing): as it starts, stops or ends, and where
@@ -600,8 +641,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                     played?.(key, state);
                 };
                 if (entry.stream) entry.stream.report = report;
-                for (const type of ["playing", "pause", "ended", "seeked"]) media.addEventListener(type, () => report());
-                media.addEventListener("timeupdate", () => { if (performance.now() - toldAt >= 1000) report(); });
+                for (const type of ["playing", "pause", "ended", "seeked"]) media.addEventListener(type, () => report(), { signal });
+                media.addEventListener("timeupdate", () => { if (performance.now() - toldAt >= 1000) report(); }, { signal });
                 media.muted = !!muted;
                 media.loop = !!loop;
                 if (kind === "video" && typeof poster === "string" && /^https?:\/\//i.test(poster) && picture) {
@@ -611,16 +652,16 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 }
                 Object.assign(media.style, { position: "absolute", background: "#000", zIndex: "2", display: "none" });
                 media.style.pointerEvents = "auto";
-                passScrolling(media);
+                passScrolling(media, signal);
                 // Its state, for the menu's list of players.
-                for (const type of ["play", "playing", "pause", "ended", "emptied"]) media.addEventListener(type, told);
+                for (const type of ["play", "playing", "pause", "ended", "emptied"]) media.addEventListener(type, told, { signal });
                 // Shift+N, as video sites' "next video": skipped.
                 media.addEventListener("keydown", (e) => {
                     if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") {
                         e.preventDefault();
                         skip(key);
                     }
-                });
+                }, { signal });
                 layerHere().append(media);
                 place(entry.placement);
                 // Played by the person (its own controls, the player's): its
@@ -631,7 +672,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                         place(entry.placement);
                     }
                     if (!ours.has(media)) entry.chosen = true;
-                });
+                }, { signal });
                 if (entry.play) pageStarts(key, entry);
                 return {};
             } catch (error) {
@@ -767,12 +808,25 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (player.placement) place(player.placement);
             player.chosen = true;
             player.loading?.done();
+            const mse = player.stream?.capture;
+            if (media.mediaKeys) {
+                mse?.markEncrypted();
+                abortMSE?.(player.stream);
+            }
+            const mseSave = saveMSE && mse?.saveable() ? [{
+                label: "Buffered stream",
+                save: (say, opts) => saveMSE(player.stream, say, opts),
+            }] : [];
+            const manifests = player.stream ? (streamsToSave?.() ?? []) : [];
             player.closeWatch = openPlayer(media, {
-                title: shortAddress(player.src),
+                title: player.stream ? "Streamed by the site's own player" : shortAddress(player.src),
                 skip: () => skip(key),
-                downloadTitle: player.stream ? "Save stream into Downloads" : undefined,
-                streams: player.stream ? streamsToSave?.() : undefined,
-                download: !player.stream && download ? (say, opts) => download(player.src, say, opts) : null,
+                downloadTitle: player.stream && (mseSave.length || manifests.length) ? "Save stream into Downloads" : undefined,
+                // (The page's whole streams first, the picker taking the first:
+                // what's buffered is only what's played so far.)
+                streams: player.stream ? [...manifests, ...mseSave] : undefined,
+                download: !player.stream && download ? (say, opts) => download(player.src, say, opts)
+                    : player.stream && mseSave.length === 1 && !manifests.length ? mseSave[0].save : null,
                 closed: () => {
                     player.watching = false;
                     player.closeWatch = null;
@@ -792,6 +846,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             for (const key of players.keys()) if (!keys.has(key)) closePlayer(key);
         },
         stop() {
+            eme.stop();
             abort.abort();
             clearTimeout(replaceTimer);
             for (const key of players.keys()) closePlayer(key);

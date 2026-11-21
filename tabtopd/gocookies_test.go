@@ -108,6 +108,35 @@ func TestGoCookieJarForget(t *testing.T) {
 	}
 }
 
+// Several sites cleared in one request (All sites' multi-select).
+func TestGoCookiesForgetNames(t *testing.T) {
+	g, srv := newE2EServer(t)
+	if g.goCookies == nil {
+		t.Skip("remote browser cookies unavailable")
+	}
+	j := g.goCookies
+	j.apply(nil, goCookieMap(
+		goTestCookie("a", "1", ".alpha.com"),
+		goTestCookie("b", "1", ".beta.com"),
+		goTestCookie("c", "1", ".keep.com"),
+	))
+	s := login(t, testCtx(t), srv.URL, code(0))
+	tc := openSession(t, testCtx(t), srv.URL, s)
+	reply := tc.request(t, testCtx(t), tunnelRequest{Type: "go-cookies-forget", Names: []string{"alpha.com", "beta.com"}})
+	if reply["ok"] != true {
+		t.Fatalf("forget names: %v", reply)
+	}
+	if _, ok := j.cookies[goCookieKey{"a", ".alpha.com", "/"}]; ok {
+		t.Error("alpha.com still kept")
+	}
+	if _, ok := j.cookies[goCookieKey{"b", ".beta.com", "/"}]; ok {
+		t.Error("beta.com still kept")
+	}
+	if _, ok := j.cookies[goCookieKey{"c", ".keep.com", "/"}]; !ok {
+		t.Error("keep.com was cleared")
+	}
+}
+
 // Kept sealed: read back as it was, session cookies not kept, and a file
 // that can't be read set aside rather than overwritten.
 func TestGoCookieJarSealed(t *testing.T) {

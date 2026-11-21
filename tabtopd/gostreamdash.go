@@ -154,6 +154,9 @@ func dashTracks(data []byte, u *url.URL) ([]streamTrack, error) {
 			if t.init == "" || len(t.parts) == 0 {
 				return nil, errors.New("DASH requires an MP4 initialization segment and media segments")
 			}
+			if durationErr == nil {
+				t.length = seconds
+			}
 			tracks = append(tracks, t)
 			found = true
 			break

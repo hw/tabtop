@@ -9,11 +9,11 @@ export function createMediaSource({ call, collect, getWorker, onError,
     document = globalThis.document, serviceWorker = globalThis.navigator?.serviceWorker,
     randomUUID = () => crypto.randomUUID(), urlAPI = URL, baseURL = import.meta.url }) {
     const readRange = createRangedFileReader({ call, collect });
-    return async function mediaStream(path, file, signal) {
+    return async function mediaStream(path, file, signal, element) {
         const worker = await getWorker();
         signal?.throwIfAborted();
         const kind = file.type.startsWith("audio/") ? "audio" : "video";
-        const media = document.createElement(kind);
+        const media = element ?? document.createElement(kind);
         Object.assign(media, { controls: true, playsInline: true, preload: "metadata" });
         media.dataset.bytes = "0";
         let stopped = false;

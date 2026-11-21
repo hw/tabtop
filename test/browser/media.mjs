@@ -102,9 +102,9 @@ export async function checkVideo(checks) {
         await waitFor(`${video}.currentTime > 24.2 && ${video}.videoWidth === 320`, "playback after seeking", 15000);
         await ev(`${video}.pause()`);
         // Watch: the video taken into TabTop's own player (video-player.js, the
-        // remote browser's), within the preview, and given back as it's closed.
+        // remote browser's), from the preview toolbar, and given back as it's closed.
         await ev(`${video}.currentTime = 2`);
-        await click(`document.querySelector("dialog.preview .video-view button.watch")`);
+        await click(`document.querySelector("dialog.preview .head button.watch")`);
         const player = 'document.querySelector("dialog.preview #video_player")';
         await waitFor(`!!${player}?.querySelector("video") && !${player}.querySelector("video").controls && !${player}.querySelector("video").paused && ${player}.getAttribute("aria-label") === "Video: range.mp4"`, "the video playing in the player", 15000);
         if (!(await ev(`!!${player}.querySelector('button[aria-label="Download it"]') && !!${player}.querySelector('button[aria-label^="Close"]')`))) throw new Error("the player's Download or Close missing");
@@ -121,10 +121,10 @@ export async function checkVideo(checks) {
             await new Promise((r) => setTimeout(r, 300));
         }
         await waitFor(`!${player} && document.querySelector("dialog.preview[open] .video-view video") === document.querySelector("dialog.preview video")`, "the player closed by Esc, the preview open, its video back");
-        const back = await ev(`({ at: ${video}.currentTime, controls: ${video}.controls, name: document.querySelector("dialog.preview .head strong")?.textContent, watch: !document.querySelector("dialog.preview button.watch").hidden })`);
+        const back = await ev(`({ at: ${video}.currentTime, controls: ${video}.controls, name: document.querySelector("dialog.preview .head strong")?.textContent, watch: !document.querySelector("dialog.preview .head button.watch").hidden })`);
         if (!(back.at > 12 && back.at < 14) || !back.controls || back.name !== "range.mp4" || !back.watch) throw new Error(`after the player: ${JSON.stringify(back)}`);
         // Its ✕ closes it too.
-        await click(`document.querySelector("dialog.preview .video-view button.watch")`);
+        await click(`document.querySelector("dialog.preview .head button.watch")`);
         await waitFor(`!!${player}?.querySelector("video")`, "the player again");
         await ev(`${player}.querySelector('button[aria-label^="Close"]').click()`);
         await waitFor(`!${player} && !!document.querySelector("dialog.preview[open] .video-view video")`, "the player closed by its button");

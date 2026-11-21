@@ -134,10 +134,11 @@ type fetchManager struct {
 	// once to maxFetches across the gateway (nil: this one's own count).
 	slots chan struct{}
 
-	mu       sync.Mutex
-	jobs     map[string]*fetchJob
-	outcomes map[string]fetchOutcome // by ID, those no longer listed
-	wg       sync.WaitGroup
+	mu        sync.Mutex
+	jobs      map[string]*fetchJob
+	outcomes  map[string]fetchOutcome // by ID, those no longer listed
+	mseStages map[string]*mseStage    // spill staging by id (gostreammse.go)
+	wg        sync.WaitGroup
 }
 
 // fetchOutcome is how a fetch ended: its last state, and any warning.
@@ -816,6 +817,36 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 			}
 			return
 		}
+	} else if req.SaveMSE {
+		if !req.FromGo || g.root.fetches.goClient == nil {
+			r.fail("Stream saving requires the remote browser.")
+			return
+		}
+		if from == nil {
+			r.fail("Save stream from the browser tab that plays it.")
+			return
+		}
+		dir := strings.Trim(req.Path, "/")
+		if dir == "" {
+			dir = "."
+		}
+		dir = path.Clean(dir)
+		by, who := sessionHandle(session), g.sessionName(session)
+		if req.MseStage {
+			stage, err := g.root.fetches.openMSEStage(req.GoTab, dir)
+			if err != nil {
+				r.fail(err.Error())
+				return
+			}
+			if !r.accept(map[string]any{"stage": stage.id}) {
+				g.root.fetches.forgetMSEStage(stage.id)
+				return
+			}
+			g.root.fetches.serveMSEStage(t, stage, r, by, ip, who, from, userAgent)
+			return
+		}
+		r.fail("buffered stream must be spilled (mse_stage)")
+		return
 	} else {
 		u, err := url.Parse(strings.TrimSpace(req.URL))
 		if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {

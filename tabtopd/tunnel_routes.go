@@ -89,6 +89,10 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// Its cookies, kept for the account (gocookies.go): their page, go/cookie.
 	"go-cookies":        other((*server).routeGoCookies),
 	"go-cookies-forget": other((*server).routeGoCookiesForget),
+	// A site's cookies and localStorage, each, for the inspector in go/sites
+	// (gosite_data.go); one deleted.
+	"go-site-data":        other((*server).routeGoSiteData),
+	"go-site-data-delete": other((*server).routeGoSiteDataDelete),
 	// Its site settings: sites blocked, pop-ups (gosites.go): their page, go/sites
 	// (Site controls).
 	"go-settings":     other((*server).routeGoSettings),
@@ -169,7 +173,7 @@ var tunnelRoutes = map[string]tunnelRoute{
 		var userAgent string
 		// A stream's saved as its tab played it (its cookies, Referer and
 		// user agent): from that tab only, never without them.
-		if c.req.SaveStream && c.req.GoTab == "" {
+		if (c.req.SaveStream || c.req.SaveMSE) && c.req.GoTab == "" {
 			c.r.fail("Save stream from the browser tab that plays it.")
 			return
 		}
@@ -183,6 +187,7 @@ var tunnelRoutes = map[string]tunnelRoute{
 			// Referer, held to the page it's on (fromNow).
 			from, userAgent = t.b.fromNow(), t.b.ua()
 			from.holdDownload = func() (func(), error) { return g.holdDownload(t) }
+			from.ended = t.ended
 		}
 		c.files.tunnelFetch(c.t, c.req, c.session, c.ip, c.r, from, userAgent)
 	}}.

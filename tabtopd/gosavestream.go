@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"path"
@@ -26,7 +27,16 @@ type streamTrack struct {
 	init   string
 	parts  []string
 	starts []float64 // each part's start, in seconds; nil if not known
+	length float64   // how long it lasts, in seconds, as its manifest says; 0 if it doesn't
 	ids    map[uint32]uint32
+	// MPEG-TS segments (no init): taken into MP4 as they're read
+	// (gostreamts.go), each part after a discontinuity said so.
+	ts    *tsRemux
+	jumps map[int]bool
+	first []byte // its first part, read for the header: not read again
+	// In-memory segments (MSE capture): used instead of init/parts URLs.
+	initData []byte
+	partData [][]byte
 }
 
 // A stream's request is tried streamTries times, for what can pass (a
@@ -131,7 +141,7 @@ func (s streamReader) playlist(base *url.URL, ref string, master bool) ([]stream
 	if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("#EXTM3U")) {
 		return dashTracks(data, u)
 	}
-	playlist, _, err := m3u8.Decode(*bytes.NewBuffer(data), true)
+	playlist, _, err := decodeM3U8(data)
 	if err != nil {
 		return nil, err
 	}
@@ -186,20 +196,33 @@ func (s streamReader) playlist(base *url.URL, ref string, master bool) ([]stream
 		if p.Map != nil {
 			t.init = p.Map.URI
 		}
+		// No init: MPEG-TS segments, taken into MP4 (gostreamts.go), across
+		// discontinuities too (an ad's, say, its own clock).
+		ts := t.init == ""
 		at := 0.0
 		for _, seg := range p.Segments {
 			if seg == nil {
 				continue
 			}
-			if seg.Key != nil && seg.Key.Method != "NONE" || seg.Discontinuity || seg.Limit != 0 || seg.Map != nil && (seg.Map.URI != t.init || seg.Map.Limit != 0) {
+			if seg.Key != nil && seg.Key.Method != "NONE" || seg.Discontinuity && !ts || seg.Limit != 0 || seg.Map != nil && (seg.Map.URI != t.init || seg.Map.Limit != 0) {
 				return nil, errors.New("unsupported encryption, byte range, or track change")
+			}
+			if seg.Discontinuity {
+				if t.jumps == nil {
+					t.jumps = map[int]bool{}
+				}
+				t.jumps[len(t.parts)] = true
 			}
 			t.parts = append(t.parts, seg.URI)
 			t.starts = append(t.starts, at)
 			at += seg.Duration
 		}
-		if t.init == "" || len(t.parts) == 0 || p.Map.Limit != 0 {
-			return nil, errors.New("Save stream requires fragmented MP4 segments")
+		t.length = at
+		if len(t.parts) == 0 || !ts && p.Map.Limit != 0 {
+			return nil, errors.New("Save stream requires fragmented MP4 or MPEG-TS segments")
+		}
+		if ts {
+			t.ts = newTSRemux(nil) // (its clock, the stream's: saveStream's)
 		}
 		return []streamTrack{t}, nil
 	}
@@ -236,7 +259,11 @@ func streamBoxes(data []byte, visit func([]byte, []byte) error) error {
 	return nil
 }
 
-func rewriteStreamFragment(data []byte, ids map[uint32]uint32, seq *uint32) error {
+// rewriteStreamFragment renumbers a segment's fragments (seq) and their
+// tracks (ids: the segment's own to the file's), and notes in times, if
+// given, when each track's first sample in it is (its tfdt, in its media's
+// timescale): for the file's index (streamIndex).
+func rewriteStreamFragment(data []byte, ids map[uint32]uint32, seq *uint32, times map[uint32]uint64) error {
 	var moof, mdat bool
 	err := streamBoxes(data, func(kind, body []byte) error {
 		switch string(kind) {
@@ -253,6 +280,7 @@ func rewriteStreamFragment(data []byte, ids map[uint32]uint32, seq *uint32) erro
 					*seq++
 					binary.BigEndian.PutUint32(b[4:], *seq)
 				case "traf":
+					var track uint32
 					return streamBoxes(b, func(k, f []byte) error {
 						if string(k) == "senc" {
 							return errors.New("encrypted fragments are unsupported")
@@ -266,6 +294,16 @@ func rewriteStreamFragment(data []byte, ids map[uint32]uint32, seq *uint32) erro
 								return errors.New("unsupported fragment addressing")
 							}
 							binary.BigEndian.PutUint32(f[4:], id)
+							track = id
+						}
+						if string(k) == "tfdt" && times != nil && track != 0 && len(f) >= 8 {
+							t := uint64(binary.BigEndian.Uint32(f[4:]))
+							if f[0] == 1 && len(f) >= 12 {
+								t = binary.BigEndian.Uint64(f[4:])
+							}
+							if _, had := times[track]; !had {
+								times[track] = t
+							}
 						}
 						return nil
 					})
@@ -284,6 +322,18 @@ func rewriteStreamFragment(data []byte, ids map[uint32]uint32, seq *uint32) erro
 		return errors.New("invalid fragmented MP4 segment")
 	}
 	return err
+}
+
+// decodeM3U8 decodes an HLS playlist a website sent. The m3u8 package can
+// panic on what's malformed, and a panic would end tabtopd (it runs in a
+// fetch's goroutine, or the tab's): an error instead.
+func decodeM3U8(data []byte) (p m3u8.Playlist, kind m3u8.ListType, err error) {
+	defer func() {
+		if recover() != nil {
+			p, err = nil, errors.New("invalid HLS playlist")
+		}
+	}()
+	return m3u8.Decode(*bytes.NewBuffer(data), true)
 }
 
 func decodeStreamInit(data []byte) (init *mp4.InitSegment, err error) {
@@ -345,15 +395,44 @@ func (m *fetchManager) saveStream(ctx context.Context, j *fetchJob, u *url.URL, 
 	if err != nil {
 		return "", err
 	}
+	return m.writeStreamTracks(ctx, j, tracks, &reader, up, name)
+}
+
+// writeStreamTracks remuxes tracks into up as a fragmented MP4. reader is
+// used to fetch HTTP segments; nil when parts are already in memory (MSE).
+func (m *fetchManager) writeStreamTracks(ctx context.Context, j *fetchJob, tracks []streamTrack, reader *streamReader, up *upload, name string) (string, error) {
 	var init *mp4.InitSegment
 	var nextID uint32 = 1
+	clock := &tsClock{} // (MPEG-TS renditions': one clock)
+	var err error
 	for i := range tracks {
 		t := &tracks[i]
-		data, _, err := reader.read(t.base, t.init, manifestLimit)
-		if err != nil {
-			return "", err
+		var header *mp4.InitSegment
+		if t.ts != nil {
+			// Its header made from its first segment's tracks.
+			t.ts.clock = clock
+			if t.first == nil {
+				if reader == nil {
+					return "", errors.New("missing MPEG-TS segment")
+				}
+				if t.first, _, err = reader.read(t.base, t.parts[0], segmentLimit); err != nil {
+					return "", err
+				}
+			}
+			if err = t.ts.probe(t.first); err == nil {
+				header, err = t.ts.header()
+			}
+		} else if len(t.initData) > 0 {
+			header, err = decodeStreamInit(t.initData)
+		} else {
+			var data []byte
+			if reader == nil {
+				return "", errors.New("missing MP4 initialization segment")
+			}
+			if data, _, err = reader.read(t.base, t.init, manifestLimit); err == nil {
+				header, err = decodeStreamInit(data)
+			}
 		}
-		header, err := decodeStreamInit(data)
 		if err != nil {
 			return "", err
 		}
@@ -405,36 +484,234 @@ func (m *fetchManager) saveStream(ctx context.Context, j *fetchJob, u *url.URL, 
 		return "", errors.New("no media tracks")
 	}
 	init.Moov.Mvhd.NextTrackID = nextID
+	// How long it lasts, as its manifest says, in its header: a fragmented
+	// MP4's is otherwise unsaid (0), and a player reading it as a file
+	// (Chrome's) takes its first fragment's for the whole.
+	length := 0.0
+	for _, t := range tracks {
+		length = max(length, t.length)
+	}
+	if scale := init.Moov.Mvhd.Timescale; length > 0 && scale > 0 {
+		d := uint64(math.Round(length * float64(scale)))
+		init.Moov.Mvhd.Duration = d
+		for _, trak := range init.Moov.Traks {
+			trak.Tkhd.Duration = d
+		}
+		mvex := init.Moov.Mvex
+		if mvex.Mehd == nil {
+			// (First in its mvex, before the trex boxes, as the format has it.)
+			mvex.Mehd = &mp4.MehdBox{}
+			mvex.Children = append([]mp4.Box{mvex.Mehd}, mvex.Children...)
+		}
+		mvex.Mehd.Version, mvex.Mehd.FragmentDuration = 1, int64(d)
+	}
 	if err := init.Encode(up); err != nil {
 		return "", err
 	}
-	totalParts := 0
+	totalParts, tsTracks := 0, 0
 	for _, t := range tracks {
-		totalParts += len(t.parts)
+		if t.partData != nil {
+			totalParts += len(t.partData)
+		} else {
+			totalParts += len(t.parts)
+		}
+		if t.ts != nil {
+			tsTracks++
+		}
 	}
 	j.set(func(j *fetchJob) { j.parts = totalParts })
+	// Room for the file's index, after its header: filled in at its end.
+	index := newStreamIndex(init, int64(init.Size()), totalParts+tsTracks, length)
+	if _, err := up.Write(index.reserved()); err != nil {
+		return "", err
+	}
 	var seq uint32
+	write := func(t *streamTrack, data, read []byte) error {
+		if len(data) > 0 {
+			times := map[uint32]uint64{}
+			if err := rewriteStreamFragment(data, t.ids, &seq, times); err != nil {
+				return err
+			}
+			if free, _, ok := m.files.uploadRoom(up.f); ok && free < int64(len(data))+fetchSpare {
+				return errors.New("insufficient disk space for stream")
+			}
+			if _, err := up.Write(data); err != nil {
+				return err
+			}
+			index.add(len(data), times)
+		}
+		if read != nil {
+			j.set(func(j *fetchJob) { j.got += int64(len(read)); j.partsDone++ })
+		}
+		return nil
+	}
 	for _, part := range streamOrder(tracks) {
-		t := tracks[part.track]
-		data, _, err := reader.read(t.base, t.parts[part.i], segmentLimit)
-		if err != nil {
+		t := &tracks[part.track]
+		var data []byte
+		if t.ts != nil && part.i == 0 && t.first != nil {
+			data, t.first = t.first, nil
+		} else if t.partData != nil {
+			if part.i >= len(t.partData) {
+				return "", errors.New("missing media segment")
+			}
+			data = t.partData[part.i]
+		} else if reader == nil {
+			return "", errors.New("missing media segment")
+		} else if data, _, err = reader.read(t.base, t.parts[part.i], segmentLimit); err != nil {
 			return "", err
 		}
-		if err := rewriteStreamFragment(data, t.ids, &seq); err != nil {
+		if t.ts != nil {
+			// Taken into an MP4 fragment (none, yet, if it's held).
+			frag, err := t.ts.segment(data, t.jumps[part.i], seq+1)
+			if err != nil {
+				return "", err
+			}
+			if err := write(t, frag, data); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if err := write(t, data, data); err != nil {
 			return "", err
 		}
-		if free, _, ok := m.files.uploadRoom(up.f); ok && free < int64(len(data))+fetchSpare {
-			return "", errors.New("insufficient disk space for stream")
+	}
+	// The MPEG-TS tracks' last samples, held for a next segment there isn't.
+	for i := range tracks {
+		if t := &tracks[i]; t.ts != nil {
+			frag, err := t.ts.finish(seq + 1)
+			if err != nil {
+				return "", err
+			}
+			if err := write(t, frag, nil); err != nil {
+				return "", err
+			}
 		}
-		if _, err := up.Write(data); err != nil {
-			return "", err
-		}
-		j.set(func(j *fetchJob) { j.got += int64(len(data)); j.partsDone++ })
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	if box := index.boxes(); box != nil {
+		if _, err := up.f.WriteAt(box, index.at); err != nil {
+			return "", err
+		}
+	}
 	return name, nil
+}
+
+// streamIndex is a saved stream's index (a sidx box for each track, as
+// ffmpeg's global_sidx writes them): each segment written, its size, and
+// how long each track's part of it lasts. A fragmented MP4's header has no
+// samples; without an index, a player reading it as a file (Chrome's,
+// through FFmpeg) takes its first fragment's length for the whole, and
+// can't seek past it. Its room is reserved after the header, as the
+// segments' number is known (at most one entry each, and one for each
+// MPEG-TS track's last samples), and filled in once they're written.
+type streamIndex struct {
+	at      int64 // where it goes in the file
+	room    int   // the bytes reserved for it
+	tracks  []streamIndexTrack
+	sizes   []int
+	times   []map[uint32]uint64
+	length  float64 // the stream's, in seconds, as its manifest says (0: not said)
+	entries int     // the most it was reserved for
+}
+
+type streamIndexTrack struct{ id, scale uint32 }
+
+func streamIndexSize(entries int) int { return 40 + 12*entries } // a version 1 sidx
+
+func newStreamIndex(init *mp4.InitSegment, at int64, entries int, length float64) *streamIndex {
+	x := &streamIndex{at: at, length: length, entries: entries}
+	for _, trak := range init.Moov.Traks {
+		if trak.Mdia != nil && trak.Mdia.Mdhd != nil && trak.Mdia.Mdhd.Timescale > 0 {
+			x.tracks = append(x.tracks, streamIndexTrack{trak.Tkhd.TrackID, trak.Mdia.Mdhd.Timescale})
+		}
+	}
+	x.room = len(x.tracks)*streamIndexSize(entries) + 8 // (and a free box's header, at least)
+	return x
+}
+
+// reserved is its room, as a free box, written after the header.
+func (x *streamIndex) reserved() []byte {
+	b := make([]byte, x.room)
+	binary.BigEndian.PutUint32(b, uint32(x.room))
+	copy(b[4:], "free")
+	return b
+}
+
+func (x *streamIndex) add(size int, times map[uint32]uint64) {
+	x.sizes = append(x.sizes, size)
+	x.times = append(x.times, times)
+}
+
+// boxes is the index, and a free box filling the rest of its room; nil if
+// it can't be said (more segments than its room, or none).
+func (x *streamIndex) boxes() []byte {
+	n := len(x.sizes)
+	if n == 0 || n > x.entries || len(x.tracks) == 0 {
+		return nil
+	}
+	var out []byte
+	for _, tr := range x.tracks {
+		// Each segment's part of this track: from its first time to the next
+		// segment's with any of it (to the stream's end, the last).
+		durs := make([]uint64, n)
+		first, last := -1, -1
+		for i := range n {
+			t, ok := x.times[i][tr.id]
+			if !ok {
+				continue
+			}
+			if last >= 0 {
+				if prev := x.times[last][tr.id]; t > prev {
+					durs[last] = t - prev
+				}
+			} else {
+				first = i
+			}
+			last = i
+		}
+		if first < 0 {
+			continue
+		}
+		start := x.times[first][tr.id]
+		if end := uint64(math.Round(x.length * float64(tr.scale))); end > x.times[last][tr.id] {
+			durs[last] = end - x.times[last][tr.id]
+		} else if last > first {
+			durs[last] = (x.times[last][tr.id] - start) / uint64(last-first) // (an average: its length unsaid)
+		}
+		box := make([]byte, streamIndexSize(n))
+		binary.BigEndian.PutUint32(box, uint32(len(box)))
+		copy(box[4:], "sidx")
+		box[8] = 1 // version 1: 64-bit times and offsets
+		binary.BigEndian.PutUint32(box[12:], tr.id)
+		binary.BigEndian.PutUint32(box[16:], tr.scale)
+		binary.BigEndian.PutUint64(box[20:], start)
+		// (first_offset, from this box's end to the first segment's: the
+		// later tracks' boxes and the free box between; set below)
+		binary.BigEndian.PutUint16(box[38:], uint16(min(n, 0xffff)))
+		for i := range n {
+			e := box[40+12*i:]
+			binary.BigEndian.PutUint32(e, uint32(x.sizes[i])&0x7fffffff)
+			binary.BigEndian.PutUint32(e[4:], uint32(min(durs[i], math.MaxUint32)))
+			binary.BigEndian.PutUint32(e[8:], 0x80000000) // starts with a SAP (each segment does)
+		}
+		out = append(out, box...)
+	}
+	if len(out) == 0 || n > 0xffff {
+		return nil
+	}
+	rest := x.room - len(out)
+	// first_offset: what's between each box's end and the first segment.
+	for at := 0; at < len(out); {
+		size := int(binary.BigEndian.Uint32(out[at:]))
+		binary.BigEndian.PutUint64(out[at+28:], uint64(len(out)-(at+size)+rest))
+		at += size
+	}
+	free := make([]byte, rest)
+	binary.BigEndian.PutUint32(free, uint32(rest))
+	copy(free[4:], "free")
+	return append(out, free...)
 }
 
 type streamPart struct{ track, i int }
@@ -444,17 +721,24 @@ type streamPart struct{ track, i int }
 // same time, though their parts' lengths differ (2 s of audio, 6 s of
 // video); a track whose times aren't known, part by part, in turn with the
 // others.
+func streamPartCount(t streamTrack) int {
+	if t.partData != nil {
+		return len(t.partData)
+	}
+	return len(t.parts)
+}
+
 func streamOrder(tracks []streamTrack) []streamPart {
 	var out []streamPart
 	timed := true
 	for _, t := range tracks {
-		timed = timed && len(t.starts) == len(t.parts)
+		timed = timed && len(t.starts) == streamPartCount(t)
 	}
 	next := make([]int, len(tracks))
 	for {
 		pick := -1
 		for k, t := range tracks {
-			if next[k] >= len(t.parts) {
+			if next[k] >= streamPartCount(t) {
 				continue
 			}
 			if pick < 0 {

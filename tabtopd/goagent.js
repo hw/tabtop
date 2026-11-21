@@ -347,11 +347,15 @@
             return "ok";
         }
 
+        // setMediaKeys may precede insertion of the video. Reserve its
+        // number without marking it as already serialized to the frame.
+        const reservedMedia = new WeakMap();
         const known = (n) => ids.has(n);
         function id(n) {
             let i = ids.get(n);
             if (!i) {
-                i = next++;
+                i = reservedMedia.get(n) ?? next++;
+                reservedMedia.delete(n);
                 ids.set(n, i);
                 byId.set(i, new WeakRef(n));
             }
@@ -402,6 +406,11 @@
             state.printed = performance.now();
             return [{ i: id(child), t: 9, b: child.baseURI, c: kids(child, depth + 1) }];
         }
+        // Media children are represented by one player in the viewer. Send
+        // its selected URL even when only a child source's attribute changed.
+        const mediaURLs = new WeakMap();
+        const mediaURL = el => el.getAttribute("src") ?? el.querySelector(":scope > source[src]")?.getAttribute("src") ?? null;
+
         function ser(n, depth) {
             if (++count > 400000) throw new Error("too many nodes");
             if (n.nodeType === 3 || n.nodeType === 4) return { i: id(n), t: 3, v: n.data };
@@ -415,7 +424,11 @@
                 for (let j = 0; j < a.length; j += 2) if (a[j] === k) { a.splice(j, 2); break; }
                 if (v !== null) a.push(k, v);
             };
-            if (name === "input") {
+            if (n instanceof HTMLMediaElement) {
+                const url = mediaURL(n);
+                set("src", url);
+                mediaURLs.set(n, url);
+            } else if (name === "input") {
                 if (/^(checkbox|radio)$/i.test(n.type)) set("checked", n.checked ? "" : null);
                 else if (!/^(file|image|submit|reset|button)$/i.test(n.type)) set("value", n.value);
             } else if (name === "option") {
@@ -532,6 +545,24 @@
             return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll, at });
         }
 
+        let emeNode = 0, emeBatch = [];
+        document.addEventListener("__tabtop_eme_element", e => {
+            const el = e.relatedTarget;
+            emeNode = 0;
+            if (!(el instanceof HTMLMediaElement)) return;
+            emeNode = ids.get(el) ?? reservedMedia.get(el);
+            if (!emeNode) {
+                emeNode = next++;
+                reservedMedia.set(el, emeNode);
+            }
+        });
+        document.addEventListener("__tabtop_eme_command", e => {
+            if (typeof e.detail === "string" && e.detail.length <= 49152 && emeBatch.length < 4) {
+                try { emeBatch.push({ ...JSON.parse(e.detail), node: emeNode }); } catch { /* malformed command */ }
+            }
+            emeNode = 0;
+        });
+
         let streamBatch = null;
         document.addEventListener("__tabtop_stream", (e) => {
             if (typeof e.detail !== "string" || e.detail.length > (1 << 20)) return;
@@ -577,7 +608,9 @@
                     if (child) ops.push({ o: "c", i: id(el), c });
                 }
             }
+            const changedMedia = new Set();
             for (const p of parents) {
+                if (p instanceof HTMLMediaElement) { changedMedia.add(p); continue; }
                 if (p.localName === "iframe") continue; // its rendered children come from its document
                 if (!p.isConnected || !old(p) || p.nodeType === 1 && dropped.has(p.localName.toLowerCase())) continue;
                 const c = [];
@@ -592,11 +625,20 @@
                 ops.push({ o: "c", i: ids.get(p), c });
             }
             for (const [n, names] of attrs) {
+                if (n.localName === "source" && names.has("src") && n.parentElement instanceof HTMLMediaElement) changedMedia.add(n.parentElement);
                 if (!n.isConnected || !old(n)) continue;
                 for (const name of names) {
                     if (/^on/i.test(name)) continue;
+                    if (name === "src" && n instanceof HTMLMediaElement) { changedMedia.add(n); continue; }
                     ops.push({ o: "a", i: ids.get(n), n: name, v: n.getAttribute(name) });
                 }
+            }
+            for (const el of changedMedia) {
+                if (!el.isConnected || !old(el)) continue;
+                const url = mediaURL(el);
+                if (url === mediaURLs.get(el)) continue;
+                mediaURLs.set(el, url);
+                ops.push({ o: "a", i: id(el), n: "src", v: url });
             }
             for (const n of texts) {
                 if (n.isConnected && old(n)) ops.push({ o: "t", i: ids.get(n), v: n.data });
@@ -651,9 +693,13 @@
             streamBatch = null;
             document.dispatchEvent(new Event("__tabtop_read_stream"));
             const streams = Array.isArray(streamBatch) ? streamBatch : [];
-            if (!ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
+            emeBatch = [];
+            emeNode = 0;
+            document.dispatchEvent(new Event("__tabtop_read_eme"));
+            const eme = emeBatch;
+            if (!eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme });
         }
 
         function watch(el) {
@@ -678,6 +724,11 @@
 
         function act(json) {
             const a = JSON.parse(json);
+            if (a.kind === "eme-reply") {
+                const target = a.id ? node(a.id) : document;
+                target?.dispatchEvent(new CustomEvent("__tabtop_eme_reply", { detail: a.value, bubbles: true }));
+                return "ok";
+            }
             const el = node(a.id);
             if (!el) return "gone";
             switch (a.kind) {

@@ -827,16 +827,28 @@ file the site sends (a PDF, an archive) is offered to save into Downloads
 (`WEB_FS=1`), as fetches are saved, but from private networks only when
 both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`.
 
-With Files enabled, **Save stream** in the browser menu lists HLS and DASH
-manifests observed on the current page. Choose a manifest to save the full
-on-demand video into Downloads as a fragmented MP4. The server copies the
-encoded samples and combines separate audio and video tracks. This works
-with unencrypted fragmented MP4 segments served as individual files.
-Live playlists, byte-range segments, and multi-period DASH are unsupported.
-The player’s download button changes to **Cancel download** while saving.
-The browser menu also lists active downloads with a cancel action, including
-after a reload. A disconnected tab stays available until its usual five-minute
-reconnect window and all its downloads have ended.
+With Files enabled, **Save stream** is in the browser's video player (open a
+page's video with Watch, in the menu): it saves the HLS or DASH stream the
+page loaded, the full on-demand video, into Downloads as an MP4. Where the
+page loaded several, a picker lists them by quality, length and site, the
+longest first; a short one beside a long one (an ad's) and live ones aren't
+offered. The server copies the encoded samples and combines separate audio
+and video tracks. This works with unencrypted fragmented MP4 segments, and
+with HLS's MPEG-TS segments (H.264 or H.265 video, AAC or MP3 sound; their
+discontinuities too), served as individual files; the file is indexed, so
+players show its whole length and seek in it. Live playlists, byte-range
+segments, multi-period DASH, and MPEG-TS sound in other formats (AC-3, say)
+are unsupported.
+A page that streams through Media Source Extensions (no `.m3u8` / `.mpd`)
+can still be saved from the fullscreen player when the samples are clear
+fragmented or progressive MP4: completed pieces spill to the server while
+the stream plays (about 16 MiB kept in the viewer; at most 512 MiB staged
+on disk), and Save remuxes them into Downloads. Encrypted (EME) and WebM
+captures are not offered. The player’s download button changes to
+**Cancel download** while saving. The browser menu also lists active downloads
+with a cancel action, including after a reload. A disconnected tab stays
+available until its usual five-minute reconnect window and all its downloads
+have ended.
 
 Pictures, stylesheets and fonts are
 fetched by the server for you, without the site's cookies, so those that

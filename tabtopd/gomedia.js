@@ -262,16 +262,17 @@
     };
 
     const attached = new WeakMap();
+    const sourceURL = el => el.getAttribute("src") ?? el.querySelector(":scope > source[src]")?.getAttribute("src");
     const nativeBuffered = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "buffered");
     if (nativeBuffered?.get && nativeBuffered.configurable) {
         Object.defineProperty(HTMLMediaElement.prototype, "buffered", { ...nativeBuffered, get() {
             const source = attached.get(this);
-            return this.getAttribute("src") === prefix + source?.id ? timeRanges(source.ranges) : nativeBuffered.get.call(this);
+            return source && sourceURL(this) === prefix + source.id ? timeRanges(source.ranges) : nativeBuffered.get.call(this);
         } });
     }
     document.addEventListener("__tabtop_media", (e) => {
         const source = attached.get(e.target);
-        if (!source || e.target.getAttribute("src") !== prefix + source.id) return;
+        if (!source || sourceURL(e.target) !== prefix + source.id) return;
         let play;
         try { play = JSON.parse(e.detail)?.play; } catch { return; }
         if (play?.stream !== source.id) return;
@@ -282,15 +283,26 @@
         }
     }, true);
     function attach(el) {
-        const source = positions.get(el.getAttribute("src"));
+        const url = sourceURL(el);
+        const old = attached.get(el);
+        if (old && url === prefix + old.id) return;
+        if (old) {
+            attached.delete(el);
+            old.readyState = "closed";
+            old.dispatchEvent(new Event("sourceclose"));
+        }
+        const source = positions.get(url);
         if (!source || source.readyState !== "closed") return;
         attached.set(el, source);
         source.readyState = "open";
-        setTimeout(() => source.dispatchEvent(new Event("sourceopen")), 0);
+        setTimeout(() => {
+            if (attached.get(el) === source && source.readyState === "open") source.dispatchEvent(new Event("sourceopen"));
+        }, 0);
     }
     new MutationObserver((records) => {
         for (const record of records) {
-            if (record.type === "attributes" && record.target instanceof HTMLMediaElement) attach(record.target);
+            if (record.target instanceof HTMLMediaElement) attach(record.target);
+            if (record.target.localName === "source" && record.target.parentElement instanceof HTMLMediaElement) attach(record.target.parentElement);
             for (const node of record.addedNodes) {
                 if (node instanceof HTMLMediaElement) attach(node);
                 node.querySelectorAll?.("video, audio").forEach(attach);
@@ -299,11 +311,16 @@
     }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
 
     document.addEventListener("error", (e) => {
-        if (e.target instanceof HTMLMediaElement && e.target.getAttribute("src")?.startsWith(prefix)) e.stopImmediatePropagation();
+        if (e.target instanceof HTMLMediaElement && sourceURL(e.target)?.startsWith(prefix)) e.stopImmediatePropagation();
     }, true);
+    const load = HTMLMediaElement.prototype.load;
+    HTMLMediaElement.prototype.load = function () {
+        attach(this);
+        if (!sourceURL(this)?.startsWith(prefix)) return load.call(this);
+    };
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
-        if (!this.getAttribute("src")?.startsWith(prefix)) return play.call(this);
+        if (!sourceURL(this)?.startsWith(prefix)) return play.call(this);
         attach(this);
         this.dispatchEvent(new Event("play"));
         return Promise.resolve();

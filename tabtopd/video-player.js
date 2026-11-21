@@ -178,6 +178,8 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         for (const stream of streams) streamPicker.add(new Option(stream.label));
     }
     if (streams.length) download = (say, opts) => streams[streamPicker?.selectedIndex ?? 0].save(say, opts);
+    // One stream: what it is on Save (more: in the picker).
+    if (streams.length === 1 && streams[0].label) downloadTitle = `${downloadTitle} · ${streams[0].label}`;
     let cancelDownload;
     const saved = download ? button("download", downloadTitle, () => {
         if (cancelDownload) cancelDownload();

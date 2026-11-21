@@ -355,13 +355,18 @@ const mediaHelp = {
     changed: () => mediaMenu(),
     // A video's file saved into Downloads (the player's Download), saying
     // how it goes there; where Files are off, not offered.
-    // (Newest first: the player's picker takes the first, the stream
-    // the page played last, not one it played before, an ad, say.)
-    streamsToSave: () => Array.from(manifests).reverse().map(url => ({
-        label: new URL(url).host + new URL(url).pathname,
+    // (The likeliest first, the player's picker taking it: the longest,
+    // not an ad's, which isn't offered; see savedStreams.)
+    streamsToSave: () => savedStreams().map(({ url, about }) => ({
+        label: streamName(url, about),
         save: (say, opts) => saveFile(url, say, true, undefined, opts),
     })),
     download: pages.some((p) => p.id === "files") ? (url, say, opts) => saveFile(url, say, false, undefined, opts) : null,
+    // A clear Media Source buffer the player already has (no HLS/DASH
+    // manifest): spilled to the server while it plays, remuxed on Save.
+    saveMSE: pages.some((p) => p.id === "files") ? (stream, say, opts) => saveMSECapture(stream, say, opts) : null,
+    spillMSE: pages.some((p) => p.id === "files") ? (stream, ev) => spillMSECapture(stream, ev) : null,
+    abortMSE: pages.some((p) => p.id === "files") ? (stream) => abortMSECapture(stream) : null,
 };
 
 // mediaMenu lists the page's videos and sounds at the menu's top: how
@@ -413,7 +418,11 @@ async function refreshMediaPolicy() {
 }
 
 function newMedia() {
-    const m = goMedia(frame, mediaHelp);
+    const m = goMedia(frame, { ...mediaHelp, emeReply(message, id) {
+        if (m !== media || ws?.readyState !== TunnelSocket.OPEN) return;
+        const value = JSON.stringify(message);
+        if (value.length <= 49152) ws.send(JSON.stringify({ op: "event", kind: "eme-reply", id, gen: shown, value }));
+    } });
     m.autoplay(shouldAutoplay());
     return m;
 }
@@ -909,6 +918,9 @@ function view() {
         // (orientation: …) media queries follow it. Where the device doesn't
         // say, the window's shape.
         ...orientation(),
+        // Light or dark, as this browser is: the page's (prefers-color-scheme)
+        // and matchMedia follow it.
+        scheme: colorScheme.matches ? "dark" : "light",
     };
 }
 function orientation() {
@@ -917,7 +929,8 @@ function orientation() {
     const portrait = window.innerHeight >= window.innerWidth;
     return { o: portrait ? "portrait-primary" : "landscape-primary", a: portrait ? 0 : 90 };
 }
-const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch", "desktop", "o", "a"].every((k) => a[k] === b[k]);
+const colorScheme = matchMedia("(prefers-color-scheme: dark)");
+const sameView = (a, b) => !!a && !!b && ["w", "h", "dpr", "sw", "sh", "touch", "desktop", "o", "a", "scheme"].every((k) => a[k] === b[k]);
 let viewTimer = 0;
 const viewSizes = new ResizeObserver(() => viewSoon());
 function viewSoon() {
@@ -934,6 +947,8 @@ viewSizes.observe(document.documentElement);  // the window: the display
 // Turned: a half turn (landscape one way to the other) changes no size.
 screen.orientation?.addEventListener?.("change", () => viewSoon());
 window.addEventListener("orientationchange", () => viewSoon());
+// Light or dark flipped: the engine's page follows, as orientation does.
+colorScheme.addEventListener("change", () => viewSoon());
 // A device's keyboard, up for typing here or in the page: the frame's
 // shorter for it (below), but the page in the engine keeps its size (as a
 // phone's browser keeps a page's layout as its keyboard comes and goes),
@@ -1094,8 +1109,38 @@ function open() {
     });
 }
 
-const manifests = new Set();
+// The page's streams, as the player's Save stream offers them
+// (gostreams.go; go-media.js): by address, what each is ({height, duration, live}, as far as its manifests
+// say), in the order they came.
+const manifests = new Map();
 let manifestGeneration;
+const AD_AT_MOST = 60;     // seconds: a stream this short beside a long one is an ad's
+const MAIN_AT_LEAST = 120; // seconds: the long one
+// savedStreams is the page's streams to save, the likeliest first: the
+// longest (the video, not an ad before it or a preview), then those not
+// known to be long, newest first. Passed over: a live one (it can't be
+// saved), and an ad's (a minute or less, beside one of two minutes or more).
+function savedStreams() {
+    const all = [...manifests].map(([url, about], i) => ({ url, about, i }));
+    const longest = Math.max(0, ...all.map(s => s.about.duration || 0));
+    return all
+        .filter(s => !s.about.live && !(longest >= MAIN_AT_LEAST && s.about.duration > 0 && s.about.duration <= AD_AT_MOST))
+        .sort((a, b) => (b.about.duration || 0) - (a.about.duration || 0) || b.i - a.i);
+}
+// streamName names a stream by what it is: its picture's height, how long
+// it lasts, and the site it's from ("1080p · 12:34 · xhcdn.com"); by its
+// file's name too, where neither's known.
+function streamName(url, about) {
+    const u = new URL(url);
+    // (Its site: the host's last two names, three for a country's
+    // "co.uk"; an address, as it is.)
+    const host = u.hostname.replace(/^www\./, ""), labels = host.split(".");
+    const site = /^[\d.]+$|^\[/.test(host) ? host : labels.slice(labels.length > 2 && labels.at(-2).length <= 3 ? -3 : -2).join(".");
+    const d = Math.round(about.duration || 0);
+    const length = d > 0 ? (d >= 3600 ? `${Math.floor(d / 3600)}:${String(Math.floor(d / 60) % 60).padStart(2, "0")}` : `${Math.floor(d / 60)}`) + `:${String(d % 60).padStart(2, "0")}` : "";
+    const known = [about.height > 0 ? `${about.height}p` : "", length].filter(Boolean);
+    return [...(known.length ? known : [u.pathname.split("/").pop() || u.host]), site].join(" · ");
+}
 function message(m) {
     switch (m.type) {
         case "go-manifest": {
@@ -1105,26 +1150,15 @@ function message(m) {
             if (m.gen !== manifestGeneration) {
                 manifestGeneration = m.gen;
                 manifests.clear();
-                $("go_streams").replaceChildren();
-                $("go_streams").hidden = true;
             }
-            if (typeof m.url !== "string" || !pages.some(p => p.id === "files") || manifests.has(m.url)) break;
+            if (typeof m.url !== "string" || !pages.some(p => p.id === "files")) break;
+            const num = (v, most) => (Number.isFinite(v) && v > 0 && v <= most ? v : 0);
+            const about = { height: num(m.height, 100000), duration: num(m.duration, 1e7), live: m.live === true };
+            // Offered again, with more said of it (how long, once known):
+            // as it was, in its place.
             // The newest kept: past 24, the oldest goes (as the server's).
-            if (manifests.size >= 24) {
-                const oldest = manifests.values().next().value;
-                manifests.delete(oldest);
-                [...$("go_streams").children].find((b) => b.dataset.url === oldest)?.remove();
-            }
-            manifests.add(m.url);
-            const button = document.createElement("button");
-            button.className = "item";
-            const url = new URL(m.url);
-            button.textContent = "Save stream · " + (url.pathname.split("/").pop() || url.host);
-            button.title = url.host + url.pathname;
-            button.dataset.url = m.url;
-            button.addEventListener("click", () => { openMenu(false); saveFile(m.url, null, true); });
-            $("go_streams").append(button);
-            $("go_streams").hidden = false;
+            if (!manifests.has(m.url) && manifests.size >= 24) manifests.delete(manifests.keys().next().value);
+            manifests.set(m.url, about);
             break;
         }
         case "go-manifests-clear":
@@ -1132,15 +1166,11 @@ function message(m) {
             // next video): its streams afresh.
             if (m.gen === manifestGeneration) {
                 manifests.clear();
-                $("go_streams").replaceChildren();
-                $("go_streams").hidden = true;
             }
             break;
         case "go-loading":
             manifestGeneration = m.gen;
             manifests.clear();
-            $("go_streams").replaceChildren();
-            $("go_streams").hidden = true;
             showAds(0);
             if (m.by === "page" && typeof m.url === "string") {
                 // The page went somewhere itself: a link, a form, a script.
@@ -1194,6 +1224,7 @@ function message(m) {
         case "go-changes":
             if (m.gen === shown) media.streams(m.streams);
             if (m.gen === shown) {
+                media.eme(m.eme);
                 toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls, hide: m.hide });
                 // Kept with the page, for a frame given it again.
                 if (Array.isArray(m.hide) && lastRender?.gen === m.gen) lastRender.hide = [...(lastRender.hide ?? []), ...m.hide];
@@ -1752,6 +1783,228 @@ async function saveFile(url, say = null, stream = false, job = { id: "", label: 
         rememberDownloads();
     }
 }
+
+// MSE spill staging: completed clear-MP4 pieces go to the server while the
+// stream plays (gostreammse.go); Save finalizes the remux into Downloads.
+const MSE_UPLOAD_CHUNK = 256 * 1024;
+const MSE_KIND = { init: 1, part: 2, progressive: 3 };
+const mseStages = new WeakMap(); // stream -> stage session
+
+async function openMSEStageSession() {
+    const t = await call({ type: "fetch", path: "", from_go: true, save_mse: true, mse_stage: true, go_tab: resumeToken.get() });
+    const id = t.reply?.stage;
+    if (!id) {
+        t.close();
+        throw new Error("the server didn't open a stream stage");
+    }
+    let closed = false;
+    const sendAndAck = async (bytes) => {
+        t.sendData(bytes);
+        const m = await t.next();
+        if (!m) throw Object.assign(new Error("lost touch with the server"), { lostTouch: true });
+        if (m.text !== undefined) {
+            const res = JSON.parse(m.text);
+            if (res.error) throw new Error(res.error);
+            throw new Error("the server's reply is malformed");
+        }
+    };
+    return {
+        id,
+        tunnel: t,
+        async write({ track, kind, bytes }) {
+            if (closed) throw new Error("buffered stream was cancelled");
+            const kindByte = MSE_KIND[kind];
+            if (!kindByte || !(bytes instanceof Uint8Array) || !bytes.length) {
+                throw new Error("invalid stream frame");
+            }
+            const header = new Uint8Array(6);
+            header[0] = track & 0xff;
+            header[1] = kindByte;
+            new DataView(header.buffer).setUint32(2, bytes.length);
+            let offset = 0;
+            const firstLen = Math.min(bytes.length, MSE_UPLOAD_CHUNK - 6);
+            const first = new Uint8Array(6 + firstLen);
+            first.set(header);
+            first.set(bytes.subarray(0, firstLen), 6);
+            await sendAndAck(first);
+            offset = firstLen;
+            while (offset < bytes.length) {
+                const end = Math.min(offset + MSE_UPLOAD_CHUNK, bytes.length);
+                await sendAndAck(bytes.subarray(offset, end));
+                offset = end;
+            }
+        },
+        abort() {
+            if (closed) return;
+            closed = true;
+            try { t.sendText(JSON.stringify({ cancel: true })); } catch { /* closed */ }
+            try { t.close(); } catch { /* closed */ }
+        },
+        get closed() { return closed; },
+        markClosed() { closed = true; },
+    };
+}
+
+async function ensureMSEStage(stream) {
+    let stage = mseStages.get(stream);
+    if (stage && !stage.closed) return stage;
+    stage = await openMSEStageSession();
+    mseStages.set(stream, stage);
+    return stage;
+}
+
+async function spillMSECapture(stream, ev) {
+    const stage = await ensureMSEStage(stream);
+    await stage.write(ev);
+}
+
+function abortMSECapture(stream) {
+    const stage = mseStages.get(stream);
+    if (!stage) return;
+    mseStages.delete(stream);
+    stage.abort();
+}
+
+async function saveMSECapture(stream, say = null, { attach = false, detach = false } = {}) {
+    const url = "mse:buffered";
+    if (detach) {
+        for (const running of downloads) {
+            if (running.say !== say) continue;
+            running.say = null;
+            running.tell?.();
+        }
+        return;
+    }
+    const running = runningDownload(url, true);
+    if (running || attach) {
+        if (running && say) {
+            running.say = say;
+            running.tell?.();
+        }
+        return;
+    }
+    if (stream?.element?.mediaKeys) {
+        stream.capture?.markEncrypted();
+        abortMSECapture(stream);
+    }
+    if (stream?.capture?.encrypted) {
+        if (say) say("Not saved: encrypted streams can't be saved");
+        else warn("Not saved: encrypted streams can't be saved");
+        return;
+    }
+    try {
+        if (stream?.capture?.seal) await stream.capture.seal();
+        else await stream?.capture?.flush?.();
+    } catch (err) {
+        if (say) say(`Not saved: ${err.message}`);
+        else warn(`Not saved: ${err.message}`);
+        return;
+    }
+    if (!stream?.capture?.saveable()) {
+        if (say) say("Not saved: buffered stream has no media segments yet");
+        else warn("Not saved: buffered stream has no media segments yet");
+        return;
+    }
+    const job = { id: "", label: "stream.mp4", url, stream: true, cancelling: false, say };
+    let stage;
+    const button = document.createElement("button");
+    button.className = "item";
+    const labelButton = () => {
+        button.textContent = (job.cancelling ? "Cancelling " : "Cancel download · ") + job.label;
+        button.disabled = job.cancelling;
+    };
+    const sendCancel = () => {
+        try { stage?.tunnel?.sendText(JSON.stringify({ cancel: true })); } catch { /* sent when reconnected */ }
+    };
+    const cancel = () => {
+        job.cancelling = true;
+        labelButton();
+        rememberDownloads();
+        sendCancel();
+        if (job.say) job.say("Cancelling download…", null);
+    };
+    let saying = [`Saving buffered stream into Downloads…`, null];
+    job.tell = () => {
+        if (job.say) job.say(saying[0], saying[1], job.cancelling ? null : cancel);
+        else show(saying[0] + (typeof saying[1] === "number" ? ` · ${Math.floor(saying[1] * 100)}%` : ""));
+    };
+    downloads.add(job);
+    button.onclick = cancel;
+    labelButton();
+    $("go_downloads").append(button);
+    if (job.say) job.say(saying[0], null, cancel);
+    else show(saying[0]);
+    try {
+        stage = await ensureMSEStage(stream);
+        if (job.cancelling) {
+            sendCancel();
+            throw new Error("cancelled");
+        }
+        stage.tunnel.sendText(JSON.stringify({ finalize: true }));
+        mseStages.delete(stream);
+        stage.markClosed();
+        for (;;) {
+            const m = await stage.tunnel.next();
+            if (!m) {
+                if (!job.id) throw Object.assign(new Error("lost touch with the server"), { lostTouch: true });
+                stage.tunnel.close();
+                stage.tunnel = await followDownload(job.id);
+                if (job.cancelling) sendCancel();
+                continue;
+            }
+            if (m.text === undefined) continue;
+            const res = JSON.parse(m.text);
+            if (res.error) throw new Error(res.error);
+            if (res.fetch && !job.id) {
+                job.id = res.fetch.id || "";
+                rememberDownloads();
+            }
+            if (res.fetch && !res.fetch.done) {
+                const { got, total, name } = res.fetch;
+                if (name && name !== job.label) {
+                    job.label = name;
+                    labelButton();
+                    rememberDownloads();
+                }
+                const fraction = res.fetch.parts > 0 ? (res.fetch.partsDone || 0) / res.fetch.parts
+                    : Number.isFinite(total) && total > 0 && Number.isFinite(got) && got >= 0 ? Math.min(1, got / total) : null;
+                saying = [`Saving ${name || "stream"} into Downloads…`, fraction];
+                job.tell();
+                continue;
+            }
+            if (res.fetch?.done) {
+                stream?.capture?.markSaved?.();
+                if (job.say) return job.say(`Saved ${res.fetch.name} into Downloads.`);
+                show("");
+                warn(`Saved ${res.fetch.name} into Downloads.`, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
+                return;
+            }
+        }
+    } catch (err) {
+        if (err.message === "cancelled") {
+            if (job.say) return job.say("Download cancelled.");
+            show("");
+            warn("Download cancelled.", { error: false });
+            return;
+        }
+        if (err.lostTouch) {
+            const said = `Lost touch with the download of ${job.label}; it may still be saving: see Downloads.`;
+            if (job.say) return job.say(said);
+            show("");
+            warn(said, { error: false, retry: () => openPage("files"), label: "Open Downloads" });
+            return;
+        }
+        if (job.say) return job.say(`Not saved: ${err.message}`);
+        show("");
+        warn(`Not saved: ${err.message}`, { retry: () => openPage("files"), label: "Open Downloads" });
+    } finally {
+        try { stage?.tunnel?.close(); } catch { /* closed */ }
+        downloads.delete(job);
+        button.remove();
+        rememberDownloads();
+    }
+}
+
 if (pages.some(p => p.id === "files")) {
     try {
         for (const job of JSON.parse(sessionStorage.getItem(downloadKey) || "[]")) {

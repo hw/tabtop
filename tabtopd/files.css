@@ -197,14 +197,9 @@ dialog.preview .body > * { max-width: 100%; max-height: 100%; }
 dialog.preview .body > p { padding: 1rem; }
 dialog.preview .body img, dialog.preview .body video { width: 100%; height: 100%; object-fit: scale-down; }
 dialog.preview .body audio { width: min(30rem, 90%); }
-/* A video, and Watch: TabTop's player (video-player.js), over the screen. */
+/* A video: Watch is in the preview toolbar (see preview.js). */
 dialog.preview .body > .video-view { position: relative; width: 100%; height: 100%; }
 dialog.preview .video-view video { display: block; }  /* (inline, the line's gap below it would overflow) */
-dialog.preview .video-view .watch { position: absolute; top: .5rem; right: .5rem; display: inline-flex; align-items: center; gap: .35rem;
-    padding: .3rem .7rem; border: 0; border-radius: 1rem; color: #fff; background: rgba(0, 0, 0, .6); font: 600 13px system-ui, sans-serif; cursor: pointer; }
-dialog.preview .video-view .watch:hover { background: rgba(0, 0, 0, .8); }
-dialog.preview .video-view .watch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-dialog.preview .video-view .watch[hidden] { display: none; }
 dialog.preview .body > div.fallback { align-self: stretch; flex: 1; display: flex; flex-direction: column; min-height: 0; }
 dialog.preview .body > div.fallback > p { margin: .5rem 1rem 0; }
 dialog.preview .body > div.fallback > pre { flex: 1; overflow: auto; }
@@ -539,7 +534,7 @@ dialog.preview .head button.glyph { min-width: 2.2rem; font-size: 1.1rem; line-h
 dialog.preview .head button.edit.glyph { transform: scaleX(-1); }
 /* Those whose glyph is a drawing, not a character: it in the middle, not
    on the text's baseline, where it sits higher than the others. */
-dialog.preview .head button:is(.back, .versions, .image-exif-info, .preview-mode-toggle):not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
+dialog.preview .head button:is(.back, .versions, .image-exif-info, .preview-mode-toggle, .watch):not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
 dialog.preview .head :is(.download-group, .external-group) { position: relative; display: inline-flex; }
 dialog.preview .head :is(.download-group, .external-group)[hidden] { display: none; }
 dialog.preview .head :is(.download-group, .external-group) button.glyph { display: inline-flex; align-items: center; justify-content: center; }

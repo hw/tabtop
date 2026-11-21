@@ -296,6 +296,12 @@ export function preview(dir, files, index, download, opts = {}) {
         if (typeOf(current.name)) return;
         setMode(current.kind === "hex" ? "text" : "hex");
     });
+    // Watch: a video into TabTop's player (video-player.js); shown only while
+    // a video preview offers it (see mediaView).
+    const watch = button("", "Watch in the player: full screen, its speed, back and on (Enter)", "watch glyph");
+    watch.innerHTML = iconSVG("watch");
+    watch.hidden = true;
+    watch.addEventListener("click", () => frame?.element?.watch?.());
     // modelAlternative is how a 3D model, by its name, is shown other than
     // drawn: as text (G-code, OBJ) or its bytes; null if it isn't one.
     const modelAlternative = () => (current && typeOf(current.name)?.kind === "model" ? (textModel(current.name) || current.textFBX ? "text" : "hex") : null);
@@ -309,7 +315,7 @@ export function preview(dir, files, index, download, opts = {}) {
         el("div", { className: "head", role: "toolbar", ariaLabel: "Preview actions" }, name, back, where,
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
             el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, exif, versions, saveStatus, store, done),
-            el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle),
+            el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle, watch),
             externalGroup, saveGroup, widen, close), previewNotice, body);
     showWide();
 
@@ -421,7 +427,7 @@ export function preview(dir, files, index, download, opts = {}) {
         prev.hidden = next.hidden = following || files.length < 2;
         prev.disabled = index === 0;
         next.disabled = index === files.length - 1;
-        exif.hidden = edit.hidden = versions.hidden = view.hidden = theme.hidden = modeToggle.hidden = previewNotice.hidden = true;
+        exif.hidden = edit.hidden = versions.hidden = view.hidden = theme.hidden = modeToggle.hidden = watch.hidden = previewNotice.hidden = true;
         versionsAsked++; // one asked for the file before isn't this one's
         const status = el("p", { className: "hint", textContent: "Loading…", role: "status" });
         body.replaceChildren(status);
@@ -538,6 +544,15 @@ export function preview(dir, files, index, download, opts = {}) {
             edit.hidden = !rendered.element.editable || readOnlyRoot();
             edit.title = "Edit the picture: rotate, flip, crop, resize; save it smaller, without its metadata, or as another format";
             edit.setAttribute("aria-label", edit.title);
+        }
+        // A video: Watch in the toolbar while the player isn't open.
+        if (typeof rendered.element.watch === "function") {
+            watch.hidden = false;
+            rendered.element.onWatching = (watching) => {
+                if (frame?.element !== rendered.element) return;
+                watch.hidden = watching;
+                if (!watching) watch.focus();
+            };
         }
     };
 

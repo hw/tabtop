@@ -91,7 +91,10 @@ downloaded at `http://<host>:6080/fs/`:
   are unavailable, audio and video up to 200 MB use the buffered fallback instead.
   Playback depends on the browser supporting the container and codecs; MKV
   files are streamed as Matroska without server-side transcoding. Unsupported
-  media files show a message offering download. In the preview, **⤢** (right of **✕**) makes it fill the browser's
+  media files show a message offering download. A video preview's toolbar has
+  **Watch**, which opens it in TabTop's full-screen player (speed, skip back and
+  on); closing the player returns the video to the preview where it left off.
+  In the preview, **⤢** (right of **✕**) makes it fill the browser's
   window, and **⤡** puts it back in a box; it's remembered in your browser.
   **✎**
   edits a text file (or a book's details), and **⤓** downloads the file

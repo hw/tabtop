@@ -57,6 +57,16 @@ function systemFont() {
 }
 
 function writeSite(dir) {
+    // A video streamed by the page's own player (MediaSource), playing.
+    const streamedVideo = `<video id="streamed" muted width="320" height="180"></video><script>
+const streamed = document.getElementById("streamed"), source = new MediaSource();
+source.onsourceopen = async () => {
+    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+    buffer.onupdateend = () => { buffer.onupdateend = null; source.endOfStream(); streamed.play().catch(() => {}); };
+    buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
+};
+streamed.src = URL.createObjectURL(source);
+</script>`;
     const files = {
         "index.html": `<!doctype html><html><head><title>Fixture</title><link rel="stylesheet" href="style.css"></head>
 <body><h1 id="h">Fixture</h1>
@@ -176,13 +186,13 @@ $("under").addEventListener("click", () => log("under clicked"));
 const clip = document.getElementById("clip");
 clip.addEventListener("loadedmetadata", () => { document.getElementById("meta").textContent = clip.videoWidth + "x" + clip.videoHeight + " " + Math.round(clip.duration) + " s"; });</script>`,
         "relay.html": `<!doctype html><title>Relay</title>
-<video id="player" src="clip.mp4" muted width="320" height="180"></video>
+<video id="player" muted width="320" height="180"><source src="clip.mp4"></video>
 <p id="status">playing clip</p>
 <script>
 const video = document.getElementById("player");
 const status = document.getElementById("status");
 video.addEventListener("ended", () => {
-    if (video.src.startsWith("blob:tabtop-media/")) return;
+    const child = video.querySelector("source");
     const source = new MediaSource();
     source.onsourceopen = async () => {
         try {
@@ -201,7 +211,8 @@ video.addEventListener("ended", () => {
             await video.play();
         } catch (error) { status.textContent = String(error); }
     };
-    video.src = URL.createObjectURL(source);
+    child.src = URL.createObjectURL(source);
+    video.load();
     if (video.ended) {
         source.onsourceopen = null;
         status.textContent = "the replacement stream inherited the preroll end state";
@@ -348,10 +359,14 @@ $("h").addEventListener("mouseenter", () => { $("hs").textContent = "hovered"; }
 ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page large enough to be sent compressed</p>`).join("")}
 <script>let n = 0; const add = () => { const li = document.createElement("li"); li.textContent = "item " + ++n; document.getElementById("items").append(li); if (n < 20) setTimeout(add, 50); }; add();</script>`,
         "churn.html": `<!doctype html><title>Churn</title><p id="n">0</p><script>let n = 0; setInterval(() => { document.getElementById("n").textContent = ++n; }, 5);</script>`,
-        "stream-save.html": `<!doctype html><title>Save stream</title><script>fetch(location.search ? "cancel.m3u8" : "movie.m3u8").then(r => r.text())</script>`,
+        // A video the page streams itself (MediaSource), as a site's player does, and the
+        // manifest(s) such a player would load: Save stream is the /go player's.
+        "stream-save.html": `<!doctype html><title>Save stream</title>${streamedVideo}<script>fetch(location.search ? "cancel.m3u8" : "movie.m3u8").then(r => r.text())</script>`,
+        // Media Source only (no HLS/DASH manifest): Save uses the buffered MSE capture.
+        "mse-save.html": `<!doctype html><title>MSE save</title>${streamedVideo}`,
         "cancel.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npending.m4s\n#EXT-X-ENDLIST\n",
         // A master playlist, and its variant, fetched after it, as a player does.
-        "stream-master.html": `<!doctype html><title>Master stream</title><script>fetch("master.m3u8").then(r => r.text()).then(() => fetch("movie.m3u8")).then(r => r.text())</script>`,
+        "stream-master.html": `<!doctype html><title>Master stream</title>${streamedVideo}<script>fetch("master.m3u8").then(r => r.text()).then(() => fetch("movie.m3u8")).then(r => r.text())</script>`,
         "master.m3u8": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nmovie.m3u8\n",
         "movie.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npart.m4s\n#EXT-X-ENDLIST\n",
         "doc.pdf": "%PDF-1.4 not really",
@@ -1019,6 +1034,52 @@ async function check(base, port, site, adSite) {
         }
     });
 
+    await step("a site's cookies and localStorage are listed in its Inspect, each deleted on its own, in the tabs too", async () => {
+        const host = new URL(site).hostname;
+        const browserPage = async (path) => {
+            await ev(`(() => { window.__leaving = true; sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); sessionStorage.removeItem("tabtop-go-resume"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete"`, "the page loaded anew", 30000);
+        };
+        await goTo(site + "cookie?set", "Cookie");
+        await goTo(site + "storage?set", "Site storage");
+        await sleep(500);
+        // What it says: the cookie as set (HttpOnly too), and the item.
+        const d = await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-site-data", name: ${JSON.stringify(host)} }); t.close(); return t.reply; })`);
+        if (!d.cookies.some((c) => c.name === "kept" && c.value === "yes" && c.httpOnly && c.path === "/")) throw new Error(`the cookies: ${JSON.stringify(d.cookies)}`);
+        const storage = !!d.storage;  // (kept only with an engine whose storage is: Moli's)
+        if (storage && !d.storage.some((o) => o.items.some((i) => i.key === "check" && i.value === "saved"))) throw new Error(`the storage: ${JSON.stringify(d.storage)}`);
+        // Its page: Site controls, the site, Inspect.
+        await browserPage(`go/sites?site=${encodeURIComponent(host)}`);
+        await waitFor(`!document.getElementById("site_settings").hidden && !document.getElementById("inspect_site").disabled`, "the site, Inspect offered", 20000);
+        await ev(`document.getElementById("inspect_site").click()`);
+        const named = (name) => `[...document.querySelectorAll("#inspect_list .entry")].find((e) => e.querySelector(".name").textContent === ${JSON.stringify(name)})`;
+        await waitFor(`!!${named("kept")}`, "the cookie listed", 20000);
+        await ev(`${named("kept")}.querySelector("summary").click()`);
+        if (!(await ev(`/HttpOnly/.test(${named("kept")}.querySelector("dl").textContent) && ${named("kept")}.querySelector(".value").textContent === "yes"`))) throw new Error("the cookie's details not shown");
+        await ev(`document.getElementById("inspect_filter").value = "nothing like it"; document.getElementById("inspect_filter").dispatchEvent(new Event("input"))`);
+        if (await ev(`!!${named("kept")} || document.getElementById("inspect_empty").hidden`)) throw new Error("the filter kept what it doesn't find");
+        await ev(`document.getElementById("inspect_filter").value = ""; document.getElementById("inspect_filter").dispatchEvent(new Event("input"))`);
+        if (storage) {
+            await ev(`document.getElementById("show_storage").click()`);
+            await waitFor(`!!${named("check")}`, "the item listed");
+            await ev(`window.confirm = () => true; ${named("check")}.querySelector("summary").click(); ${named("check")}.querySelector(".danger").click()`);
+            await waitFor(`/Deleted the item check/.test(document.getElementById("done").textContent) && !${named("check")}`, "the item deleted");
+            await ev(`document.getElementById("show_cookies").click()`);
+        }
+        await ev(`window.confirm = () => true; ${named("kept")}.querySelector(".danger").click()`);
+        await waitFor(`/Deleted the cookie kept/.test(document.getElementById("done").textContent) && !${named("kept")}`, "the cookie deleted");
+        // A tab anew: neither given back.
+        await browserPage("go/tab");
+        await waitFor(`!!document.getElementById("go_url") && !!document.getElementById("go_menu") && document.getElementById("go_progress").hidden`, "the browser page again, connected");
+        await sleep(1000);
+        await goTo(site + "cookie", "Cookie");
+        if ((await frame(`document.getElementById("c")?.textContent`)) !== "sent nothing") throw new Error("the deleted cookie was sent");
+        if (storage) {
+            await goTo(site + "storage", "Site storage");
+            if ((await frame(`document.getElementById("storage")?.textContent`)) !== "empty") throw new Error("the deleted item was restored");
+        }
+    });
+
     await step("a phone switches between mobile and Desktop headers, and a video's site is sent its cookies", async () => {
         await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
         await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
@@ -1372,33 +1433,71 @@ async function check(base, port, site, adSite) {
         }
     });
 
-    await step("an on-demand stream can be saved from the browser menu", async () => {
+    await step("an on-demand stream can be saved from the video player", async () => {
+        // The page's video taken into the /go player (Watch, in the menu);
+        // closed again.
+        const watch = async () => {
+            await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+            await waitFor(`!!document.querySelector("#go_menu_media li .acts button:nth-child(1):not(:disabled)")`, "Watch offered", 30000);
+            await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(1)").click()`);
+            await waitFor(`!!document.querySelector("#video_player")`, "the player");
+        };
+        const unwatch = () => ev(`document.querySelector("#video_player button[aria-label^='Close the player']")?.click()`);
+        const save = `#video_player button[aria-label^="Save stream"]`;
+        // What's offered: the page's streams' names, the picker's (with what
+        // the player's buffered, after them) or, one alone, Save's.
+        const offered = () => ev(`(() => {
+            const picker = document.querySelector("#video_player .stream-picker");
+            const names = picker ? [...picker.options].map((o) => o.text) : [document.querySelector(${JSON.stringify(save)}).getAttribute("aria-label").replace(/^Save stream into Downloads · /, "")];
+            return names.filter((n) => n !== "Buffered stream");
+        })()`);
         await goTo(site + "stream-save.html", "Save stream");
         if (process.env.GO_NO_FS === "1") {
-            if (await ev(`!!document.querySelector("#go_streams button")`)) throw new Error("Save stream offered with Files off");
-            return;
+            await sleep(1500);
+            await watch();
+            if (await ev(`!!document.querySelector(${JSON.stringify(save)})`)) throw new Error("Save stream offered with Files off");
+            return await unwatch();
         }
-        await waitFor(`!!document.querySelector("#go_streams button")`, "the stream detected");
-        await ev(`document.querySelector("#go_menu").click(); document.querySelector("#go_streams button").click()`);
-        await waitFor(`document.querySelector("#go_notice p").textContent.startsWith("Saved movie.mp4")`, "the assembled stream in Downloads");
+        await sleep(1500);  // (the manifest read by now)
+        if (await ev(`!!document.getElementById("go_streams")`)) throw new Error("Save stream in the menu, not only the player");
+        await watch();
+        await waitFor(`!!document.querySelector(${JSON.stringify(save)})`, "Save stream in the player");
+        // The page's stream, first (the picker's choice), named: how long it
+        // lasts, and its site.
+        const named = await offered();
+        if (named.length !== 1 || !named[0].startsWith("0:03 · ")) throw new Error(`the streams offered: ${JSON.stringify(named)}`);
+        if (await ev(`document.querySelector("#video_player .stream-picker")?.selectedIndex ?? 0`) !== 0) throw new Error("the page's stream not first");
+        await ev(`document.querySelector(${JSON.stringify(save)}).click()`);
+        await waitFor(`document.querySelector("#video_player .note")?.textContent.startsWith("Saved movie.mp4")`, "the assembled stream in Downloads", 30000);
+        await unwatch();
         // A master playlist and the variant it names: one stream, the master's (the variant,
-        // saved alone, would be the video without its sound).
+        // saved alone, would be the video without its sound), named by how long the variant says.
         await goTo(site + "stream-master.html", "Master stream");
-        await waitFor(`[...document.querySelectorAll("#go_streams button")].some((b) => b.textContent.includes("master.m3u8"))`, "the master's stream");
         await sleep(1500);  // (the variant's fetched, and read, by now)
-        const offered = await ev(`[...document.querySelectorAll("#go_streams button")].map((b) => b.textContent)`);
-        if (offered.length !== 1) throw new Error(`a master and its variant offered as ${JSON.stringify(offered)}`);
+        await watch();
+        await waitFor(`!!document.querySelector(${JSON.stringify(save)})`, "the master's stream");
+        const master = await offered();
+        if (master.length !== 1 || !master[0].startsWith("0:03 · ")) throw new Error(`a master and its variant offered as ${JSON.stringify(master)}`);
+        await unwatch();
+        // One that's slow, followed through the page's reload, and cancelled.
         await goTo(site + "stream-save.html?cancel", "Save stream");
-        await waitFor(`document.querySelector("#go_streams button")?.textContent.includes("cancel.m3u8")`, "the slow stream");
-        await ev(`document.querySelector("#go_streams button").click()`);
+        await sleep(1500);
+        await watch();
+        await waitFor(`!!document.querySelector(${JSON.stringify(save)})`, "the slow stream");
+        await ev(`document.querySelector(${JSON.stringify(save)}).click()`);
         await waitFor(`Object.keys(sessionStorage).some(k => k.startsWith("tabtop-go-downloads:") && JSON.parse(sessionStorage[k]).length)`, "the download ID kept");
         await ev(`location.reload()`);
         await waitFor(`!!document.querySelector("#go_downloads button")`, "Cancel available after reconnecting");
-        // The page's stream offered again, though this page didn't see it load.
-        await waitFor(`document.querySelector("#go_streams button")?.textContent.includes("cancel.m3u8")`, "the stream offered again after reconnecting");
         await ev(`document.querySelector("#go_downloads button").click()`);
         await waitFor(`document.querySelector("#go_notice p")?.textContent === "Download cancelled." && !document.querySelector("#go_downloads button")`, "the download cancelled");
-
+        // A page that only streams through Media Source (no .m3u8): Save from the buffered capture.
+        await goTo(site + "mse-save.html", "MSE save");
+        await sleep(1500);
+        await watch();
+        await waitFor(`!!document.querySelector(${JSON.stringify(save)})`, "Save buffered MSE stream");
+        await ev(`document.querySelector(${JSON.stringify(save)}).click()`);
+        await waitFor(`/^Saved .* into Downloads\\.$/.test(document.querySelector("#video_player .note")?.textContent ?? "")`, "the buffered MSE stream in Downloads", 30000);
+        await unwatch();
     });
 
     await step("a link to a file offers to save it", async () => {

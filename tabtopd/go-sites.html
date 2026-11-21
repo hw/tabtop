@@ -25,6 +25,11 @@
             <span class="hint" id="storage_usage" hidden></span>
             <label>Sort <span class="select"><select id="sort_sites"><option value="recent">Most recent</option><option value="name">A–Z</option><option value="size">Largest first</option></select></span></label>
         </div>
+        <div class="tools selection-bar" id="selection_bar" hidden>
+            <label class="select-all"><input type="checkbox" id="select_all"> Select all</label>
+            <span class="hint" id="selection_count"></span>
+            <button type="button" id="clear_selected" class="danger" disabled>Clear selected…</button>
+        </div>
         <ul id="sites" aria-label="Sites"></ul>
         <p id="empty" class="hint" hidden></p>
     </section>
@@ -46,8 +51,28 @@
         <div class="card" id="cookies">
             <h3>Cookies and site data</h3>
             <p id="site_data" class="detail"></p>
-            <button type="button" id="clear_site" class="danger">Clear site data…</button>
+            <div class="tools"><button type="button" id="inspect_site">Inspect</button><button type="button" id="clear_site" class="danger">Clear site data…</button></div>
         </div>
+    </section>
+
+    <section id="site_inspect" aria-labelledby="inspect_heading" hidden>
+        <div class="site-title">
+            <h2 id="inspect_heading" tabindex="-1"></h2>
+            <button type="button" id="back_to_site" aria-label="Back to the site" title="Back to the site">
+                <span id="back_to_site_glyph" aria-hidden="true"></span><span class="back-label">Back to the site</span>
+            </button>
+        </div>
+        <nav aria-label="Site data">
+            <button type="button" id="show_cookies">Cookies</button>
+            <button type="button" id="show_storage">Local storage</button>
+        </nav>
+        <form id="inspect_tools" class="tools">
+            <input id="inspect_filter" type="search" placeholder="Filter by name or value" aria-label="Filter by name or value" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button type="button" id="inspect_refresh">Refresh</button>
+        </form>
+        <p class="hint" id="inspect_note"></p>
+        <ul id="inspect_list" aria-label="Site data"></ul>
+        <p id="inspect_empty" class="hint" hidden></p>
     </section>
 
     <section id="browser_settings" aria-labelledby="browser_heading" hidden>

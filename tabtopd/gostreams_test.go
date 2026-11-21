@@ -45,7 +45,9 @@ func TestGoStreamsOffered(t *testing.T) {
 	see("5", "https://dash.example/movie/manifest.mpd", nil)    // (its body not read: offered as it is)
 	see("6", "https://videos.example/show/master.m3u8", master) // asked for again
 	want := []string{"https://videos.example/show/master.m3u8", "https://other.example/clip/index.m3u8", "https://dash.example/movie/manifest.mpd"}
-	if got := offered(); !slices.Equal(got, want) {
+	// (The master offered again with its length, once its variant's read:
+	// TestGoStreamsAbout.)
+	if got := offered(); !slices.Equal(got, slices.Insert(slices.Clone(want), 1, want[0])) {
 		t.Errorf("offered %q, want %q", got, want)
 	}
 	// Taken back: the same, again.
@@ -106,5 +108,74 @@ func TestGoStreamsKept(t *testing.T) {
 	b.streamsLeft()
 	if len(b.streams.found) != 0 || len(w.msg) != 1 || !strings.Contains(string(w.msg[0]), `"go-manifests-clear"`) {
 		t.Errorf("after leaving: %d kept, said %q", len(b.streams.found), w.msg)
+	}
+}
+
+// TestGoStreamsMalformed: a playlist that makes the m3u8 package panic
+// (found by fuzzing it) is an error, not the end of tabtopd: as a page's
+// manifest read, and as a stream saved.
+func TestGoStreamsMalformed(t *testing.T) {
+	for _, in := range []string{"#EXT-X-MAP:\n0", "#EXTM3U\n#EXT-X-MAP:\n0"} {
+		if _, _, err := decodeM3U8([]byte(in)); err == nil {
+			t.Errorf("%q: no error", in)
+		}
+	}
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	b.streamSeen("1", "https://bad.example/x.m3u8")
+	b.offerStream(goStreamSeen{id: "1", url: "https://bad.example/x.m3u8", gen: 1}, []byte("#EXTM3U\n#EXT-X-MAP:\n0"))
+}
+
+// TestGoStreamsAbout offers each stream with what it is: a master with its
+// best picture's height, then, once one of its playlists is read, again
+// with how long it lasts (only once); a media playlist played alone with
+// its length, or as live; a DASH manifest with both; and sends them again
+// as they are to a page taking the tab back.
+func TestGoStreamsAbout(t *testing.T) {
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	said := func() []string {
+		var out []string
+		for _, m := range w.msg {
+			var v map[string]any
+			if json.Unmarshal(m, &v) == nil && v["type"] == "go-manifest" {
+				out = append(out, fmt.Sprintf("%v h%v d%v live%v", v["url"], v["height"], v["duration"], v["live"]))
+			}
+		}
+		w.msg = nil
+		return out
+	}
+	see := func(id, u string, body string) {
+		b.streamSeen(id, u)
+		b.offerStream(goStreamSeen{id: id, url: u, gen: b.gen}, []byte(body))
+	}
+	master := "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nhigh.m3u8\n"
+	vod := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n1.m4s\n#EXTINF:6,\n2.m4s\n#EXTINF:3.4,\n3.m4s\n#EXT-X-ENDLIST\n"
+	live := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n1.m4s\n"
+	mpd := `<?xml version="1.0"?><MPD type="static" mediaPresentationDuration="PT1H2M3S"><Period><AdaptationSet height="720"><Representation height="480"/></AdaptationSet><AdaptationSet><Representation height="1440"/></AdaptationSet></Period></MPD>`
+	see("1", "https://v.example/m/master.m3u8", master)
+	see("2", "https://v.example/m/high.m3u8", vod)
+	see("3", "https://v.example/m/low.m3u8", vod) // its length known already: not said again
+	see("4", "https://ad.example/ad.m3u8", vod)
+	see("5", "https://tv.example/live.m3u8", live)
+	see("6", "https://d.example/movie.mpd", mpd)
+	want := []string{
+		"https://v.example/m/master.m3u8 h1080 d<nil> live<nil>",
+		"https://v.example/m/master.m3u8 h1080 d15 live<nil>",
+		"https://ad.example/ad.m3u8 h<nil> d15 live<nil>",
+		"https://tv.example/live.m3u8 h<nil> d<nil> livetrue",
+		"https://d.example/movie.mpd h1440 d3723 live<nil>",
+	}
+	if got := said(); !slices.Equal(got, want) {
+		t.Errorf("said\n%q\nwant\n%q", got, want)
+	}
+	b.resendStreams()
+	if got := said(); !slices.Equal(got, slices.Delete(slices.Clone(want), 0, 1)) {
+		t.Errorf("sent again %q", got)
+	}
+	if h := goStreamHeight("1280X720"); h != 720 {
+		t.Errorf("height %d", h)
 	}
 }

@@ -47,16 +47,20 @@ type tunnelRequest struct {
 
 	// --- Files ---
 	Path string `json:"path,omitempty"`
-	Name string `json:"name,omitempty"` // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle; go-cookies-forget, go-settings: the site
-	// go-cookies-forget: what was set in the last Within seconds (0: all), when Name is "".
+	Name string `json:"name,omitempty"` // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle; go-cookies-forget, go-settings, go-site-data(-delete): the site
+	// go-cookies-forget: what was set in the last Within seconds (0: all), when Name and Names are empty.
 	Within int64 `json:"within,omitempty"`
+	// go-site-data-delete: one of the site's (Name) cookies, or one of its
+	// origins' localStorage items, to delete.
+	Cookie  *goCookieRef  `json:"cookie,omitempty"`
+	Storage *goStorageRef `json:"storage,omitempty"`
 	// go-settings-set: the change to the site (Name): block, unblock, popups-allow, popups-block, popups-ask.
 	Setting string `json:"setting,omitempty"`
 	// go-adblock-set, with Setting "filters": My filters, the person's own
 	// ad blocking rules.
 	Filters string   `json:"filters,omitempty"`
 	Size    int64    `json:"size,omitempty"`  // upload: its size
-	Names   []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path
+	Names   []string `json:"names,omitempty"` // zip: what to put in it, in the folder at Path; go-cookies-forget: sites to clear
 	To      string   `json:"to,omitempty"`    // move: the folder to move what's at Path into
 	// upload: replace a file that has the name, rather than save under a
 	// free one
@@ -141,7 +145,13 @@ type tunnelRequest struct {
 	// fetch: a file the remote browser (/go) led to, fetched only where
 	// both fetches and the remote browser may go (see fetchManager).
 	SaveStream bool `json:"save_stream,omitempty"`
-	FromGo     bool `json:"from_go,omitempty"`
+	// SaveMSE: remux a clear Media Source buffer the /go page captured.
+	// With MseStage, the tunnel is a long-lived spill session (frames, then
+	// finalize); Size is unused. Without it, a one-shot payload of Size bytes
+	// follows (legacy tests).
+	SaveMSE  bool `json:"save_mse,omitempty"`
+	MseStage bool `json:"mse_stage,omitempty"`
+	FromGo   bool `json:"from_go,omitempty"`
 	// go: the page can take its large messages compressed (raw deflate,
 	// see goBrowser.sendLarge).
 	Deflate bool `json:"deflate,omitempty"`

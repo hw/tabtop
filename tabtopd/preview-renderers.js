@@ -29,19 +29,16 @@ async function mediaView({ path, file, signal, download }) {
     signal?.throwIfAborted();
     const media = await mediaStream(path, file, signal);
     if (!(media instanceof HTMLVideoElement)) return media;
-    // A video: shown here, with Watch, which takes it into TabTop's own
-    // player (the remote browser's: video-player.js), over the whole screen,
-    // and gives it back here as that's closed, where it got to.
+    // A video: shown here; Watch (on the preview toolbar, and Enter on the
+    // video) takes it into TabTop's own player (video-player.js), over the
+    // whole screen, and gives it back here as that's closed, where it got to.
     const box = el("div", { className: "video-view" }, media);
-    const watch = el("button", { type: "button", className: "watch", title: "Watch in the player: full screen, its speed, back and on (Enter)" });
-    watch.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/></svg><span>Watch</span>';
     let closePlayer = null;
     const open = async () => {
         if (closePlayer) return;
         const { openPlayer } = await import("./video-player.js");
         if (closePlayer || !box.isConnected) return;
-        watch.hidden = true;
+        box.onWatching?.(true);
         closePlayer = openPlayer(media, {
             title: file.name,
             // The preview's own download: through the tunnel, to this device.
@@ -52,13 +49,12 @@ async function mediaView({ path, file, signal, download }) {
             into: box.closest("dialog") ?? document.body,
             closed: () => {
                 closePlayer = null;
-                watch.hidden = false;
-                if (box.isConnected) watch.focus();
+                box.onWatching?.(false);
             },
         });
         if (media.paused) media.play().catch(() => {});
     };
-    watch.addEventListener("click", open);
+    box.watch = open;
     media.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey) {
             e.preventDefault();
@@ -67,7 +63,6 @@ async function mediaView({ path, file, signal, download }) {
     });
     // Left with the preview (another file shown, or it's closed): closed too.
     signal?.addEventListener("abort", () => closePlayer?.(), { once: true });
-    box.append(watch);
     return box;
 }
 const renderers = {

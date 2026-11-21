@@ -9,7 +9,7 @@ package main
 // The page sends JSON text:
 //
 //	{"op":"navigate","url":...,"view":{"w":...,"h":...,"dpr":...}}  {"op":"stop"}
-//	{"op":"viewport","view":{...}}  the frame's size changed: the engine's window follows
+//	{"op":"viewport","view":{...}}  the frame's size, orientation or colour scheme changed: the engine follows
 //	{"op":"event","gen":N,"kind":"click"|"input"|"change"|"key"|"submit"|"focus","id":...}
 //	{"op":"event","gen":N,"kind":"mouse","type":"down"|"up"|"move"|"wheel"|"cancel","id":...,"fx":...,"fy":...,...}
 //	{"op":"event","gen":N,"kind":"key","type":"down"|"up","id":...,"key":...,"code":...,"keyCode":...}  (goinput.go)
@@ -181,6 +181,7 @@ func (g *server) runGoTab(t *goTab, tabs *goTabs, ip string) {
 	defer g.closeGo(t.session)
 	defer e.kill("its tab was closed")
 	defer b.cdp.close()
+	defer g.abortMSEStages(t.token)
 	defer goPruneCacheSoon(g.goConfig.cache) // what it added, kept to size
 	if dir := g.goConfig.cache; dir != "" {
 		// And while it runs: a tab kept open for hours adds to it too.

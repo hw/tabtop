@@ -19,9 +19,27 @@ func TestGoViewClamped(t *testing.T) {
 		{goView{W: 400, H: 800, DPR: 2, Touch: true}, goView{W: 400, H: 800, DPR: 2, SW: 400, SH: 800, Touch: true}},
 	} {
 		got := c.in.clamped()
-		got.Orientation, got.Angle = "", 0 // below
+		got.Orientation, got.Angle, got.Scheme = "", 0, "" // below
 		if got != c.want {
 			t.Errorf("%+v: %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+// Light or dark as the person prefers, or light if not said.
+func TestGoViewScheme(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+	}{
+		{"light", "light"},
+		{"dark", "dark"},
+		{"", "light"},
+		{"auto", "light"},
+		{"DARK", "light"},
+	} {
+		got := goView{W: 400, H: 800, DPR: 1, SW: 400, SH: 800, Scheme: c.in}.clamped()
+		if got.Scheme != c.want {
+			t.Errorf("%q: %q, want %q", c.in, got.Scheme, c.want)
 		}
 	}
 }

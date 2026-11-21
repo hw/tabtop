@@ -9,8 +9,9 @@
 // requests. Third-party frames keep their engine-local partition. sessionStorage isn't kept: a browser's ends with its tab.
 //
 // Site controls (go/sites) has each site's use, and clears a site's, or
-// what was changed in a time, as it does its cookies; only sizes and
-// counts go there, never what's kept, nor to the log.
+// what was changed in a time, as it does its cookies: sizes and counts. A
+// site's Inspect has what's kept, each item, the person's to read and
+// delete one by one (gosite_data.go); never the log.
 
 package main
 

@@ -752,7 +752,7 @@
         const w = Number(attrOf(n, "width")), h = Number(attrOf(n, "height"));
         own(d, n.i, box);
         const info = {
-            tag, key: 0, src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
+            tag, node: d.top ? 0 : n.i, key: 0, src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
             muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), play: hasAttr(n, "autoplay"),
             size: { width: dimension("width"), height: dimension("height"), aspectRatio: tag === "video" ? (w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9") : "" },
             style: "",
@@ -797,7 +797,7 @@
         const poster = info.tag === "video" ? web(info.poster, d.base) : null;
         // Of the document it's in once shown (an embedded page's box, of its
         // page's): not asked for, nor dropped, before that.
-        media.set(key, { top: d.top ?? d, box, kind: info.tag, src: url, poster, muted: info.muted, loop: info.loop, play: info.play, asked: false });
+        media.set(key, { top: d.top ?? d, box, node: info.node, kind: info.tag, src: url, poster, muted: info.muted, loop: info.loop, play: info.play, asked: false });
         mediaVisibility.observe(box);
         mediaSizes.observe(box);
         mediaLater();
@@ -922,7 +922,7 @@
                 const at = { key, rect, clip, shown, fit, position };
                 if (!m.asked && (inView || m.play || relayed)) {
                     m.asked = true;
-                    opening.push({ ...at, type: "media", gen: doc.gen, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
+                    opening.push({ ...at, type: "media", gen: doc.gen, node: m.node, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
                 }
                 if (m.asked) positions.push(at);
                 Object.assign(m, { shown: m.asked && shown, fit, position });
