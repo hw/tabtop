@@ -164,6 +164,13 @@ let n = 0;
 gl.clearColor(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
 setTimeout(() => { const t = setInterval(() => { n++; gl.clearColor(n / 20, 0, 1 - n / 20, 1); gl.clear(gl.COLOR_BUFFER_BIT); if (n === 20) clearInterval(t); }, 250); }, 1500);
 </script>`,
+        // A page replacing its WebGL canvas, 20 times: the last blue.
+        "glswap.html": `<!doctype html><title>GL swap</title><body><script>
+let n = 0;
+const swap = () => { document.querySelector("canvas")?.remove(); const c = document.createElement("canvas"); c.id = "c"; c.width = c.height = 32; document.body.append(c);
+    const gl = c.getContext("webgl"); gl.clearColor(n === 19 ? 0 : 1, 0, n === 19 ? 1 : 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); if (++n < 20) setTimeout(swap, 250); };
+swap();
+</script>`,
         // WebGL in an embedded page: webgl.html, or the page ?src names.
         "glframe.html": `<!doctype html><title>GL frame</title><iframe id="f" width="700" height="260"></iframe>
 <script>document.getElementById("f").src = new URLSearchParams(location.search).get("src") || "webgl.html";</script>`,
@@ -1979,6 +1986,10 @@ async function check(base, port, site, adSite) {
         // A page with more WebGL canvases than are mirrored: the rest so labelled.
         await goTo(site + "glmany.html", "GL many");
         await frameWait(`(() => { const t = [...document.querySelectorAll("canvas")].map((c) => c.title); return t.length === 20 && t.filter((x) => /mirrored/.test(x)).length === 16 && t.filter((x) => /unsupported|unavailable/.test(x)).length === 4; })()`, "16 of 20 canvases mirrored, 4 labelled");
+        // A page replacing its WebGL canvas more times than may be mirrored at
+        // once: those gone aren't counted, so its last is still shown.
+        await goTo(site + "glswap.html", "GL swap");
+        await frameWait(`document.querySelectorAll("canvas").length === 1 && /mirrored/.test(document.getElementById("c")?.title) && ${glAt("c", 16, 16, [0, 0, 255, 255])}`, "the 20th WebGL canvas, mirrored, blue", 20000);
         // three.js: a red box on blue; a lit, textured green ball on black.
         await goTo(site + "three.html", "Three");
         await frameWait(`document.getElementById("s").textContent === "drawn"`, "three.js drawing in the engine");

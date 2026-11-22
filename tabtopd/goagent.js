@@ -368,7 +368,10 @@
 
         const canvasReplies = new WeakMap();
         const dirtyCanvases = new Set();
-        const canvasLater = new Set();  // WebGL canvases left out of a batch, for the next
+        const canvasLater = new Set();
+        // WebGL canvases sent (their logs), to say which have left the
+        // document: the server counts a page's WebGL canvases (goGLStreamsMax).
+        const glSent = new Map();  // canvas -> its number  // WebGL canvases left out of a batch, for the next
         let canvasReads = 0, canvasReadBytes = 0;
         let canvasGLReadBytes = 0, canvasGLSnapshotBytes = 0;
         // A canvas here or in a same-origin frame read here (frameKids): a
@@ -455,6 +458,7 @@
                     }
                     canvasGLReadBytes += gl.g.length;
                     if (actualFull) canvasGLSnapshotBytes += gl.g.length;
+                    if (known(el)) glSent.set(el, ids.get(el));
                     return gl;
                 }
                 if (gl?.e) return gl;
@@ -644,6 +648,7 @@
             canvasGLSnapshotBytes = 0;
             dirtyCanvases.clear();
             canvasLater.clear();
+            glSent.clear();
             for (const frame of frames.values()) frame.observer?.disconnect();
             frames.clear();
             observer.disconnect();
@@ -853,7 +858,9 @@
             const eme = emeBatch;
             if (!eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
             seq++;
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme });
+            const glGone = [];
+            for (const [el, i] of glSent) if (!el.isConnected) { glSent.delete(el); glGone.push(i); }
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}) });
         }
 
         function watch(el) {

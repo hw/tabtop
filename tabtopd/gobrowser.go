@@ -1531,6 +1531,9 @@ type goChanges struct {
 	Title   string            `json:"title"`
 	Ops     []json.RawMessage `json:"ops"`
 	IO      []goIO            `json:"io"`
+	// GLGone: WebGL canvases sent before that have left the document, no
+	// longer counted among its WebGL canvases (goGLStreamsMax).
+	GLGone []int `json:"glGone"`
 	// Again: what changed can't be said as changes (the engine named nodes
 	// of the page's world): the document's to be read again whole.
 	Again bool `json:"again"`
@@ -1606,6 +1609,12 @@ func (b *goBrowser) readChanges() {
 			}
 			b.seq = c.Seq
 			b.lastChange = time.Now()
+			for i, id := range c.GLGone {
+				if i == goGLStreamsMax*4 {
+					break
+				}
+				delete(b.glStreams, id)
+			}
 			if c.Again {
 				goDebugf("changes gen %d seq %d: read again (nodes of another world)", gen, c.Seq)
 				b.readAgain(gen)
