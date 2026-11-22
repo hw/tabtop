@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -465,5 +466,58 @@ func TestGoProxyBudget(t *testing.T) {
 	}
 	if code, _ := get(); code != http.StatusTooManyRequests {
 		t.Fatalf("once spent: %d, want 429", code)
+	}
+}
+
+// TestGoProxyCertException: while the engine ignores certificate errors
+// (its page an exception's), it reaches no other host by a tunnel, whatever
+// the port: only the exception's; plain HTTP, any.
+func TestGoProxyCertException(t *testing.T) {
+	tlsSite := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "secure hello") }))
+	defer tlsSite.Close()
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "plain hello") }))
+	defer site.Close()
+	p := newGoProxy(allowAll, "", "")
+	p.ports = map[string]bool{portOf(t, tlsSite.URL): true, portOf(t, site.URL): true}
+	certs := &goCertExceptions{}
+	certs.add("excepted.test", false)
+	certs.ignoring.Store(true)
+	p.certs.Store(certs)
+	client, addr := startGoProxy(t, p, "", "")
+	// The engine, ignoring certificate errors.
+	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
+	if res, err := client.Get(tlsSite.URL); err == nil {
+		res.Body.Close()
+		t.Fatal("another host's HTTPS, its certificate unchecked, let through")
+	}
+	if code := connect(t, addr, strings.TrimPrefix(site.URL, "http://"), ""); code != http.StatusBadGateway {
+		t.Errorf("a tunnel to another host: %d", code)
+	}
+	if !certs.tookRefused("127.0.0.1") {
+		t.Error("the refusal not told")
+	}
+	res, err := client.Get(site.URL)
+	if err != nil {
+		t.Fatalf("plain HTTP: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if string(body) != "plain hello" {
+		t.Errorf("plain HTTP: %q", body)
+	}
+	// An exception's host: its TLS goes, unchecked as the person chose.
+	certs.add("127.0.0.1", false)
+	if res, err := client.Get(tlsSite.URL); err != nil {
+		t.Errorf("an exception's TLS: %v", err)
+	} else {
+		res.Body.Close()
+	}
+	// Not ignoring: any, checked by the engine.
+	p.certs.Store(&goCertExceptions{})
+	if res, err := client.Get(tlsSite.URL); err != nil {
+		t.Errorf("TLS, the engine checking: %v", err)
+	} else {
+		res.Body.Close()
 	}
 }

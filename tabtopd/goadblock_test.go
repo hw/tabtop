@@ -418,6 +418,12 @@ func TestGoAdHideRules(t *testing.T) {
 		"~quiet.example##.loud",
 		"news.example#@#.ad",
 		"#@#.sponsor",
+		// Sites that put ads in blob: URLs: must not hide the remoted copy's
+		// pictures, which are only ever blob: URLs (goAdHideRemoteOK).
+		`tube.example##img[src*="blob:" i]:not(video)`,
+		`tube.example##[style*="blob:"]:not(video)`,
+		`tube.example##[srcset*="bloB:"]`,
+		"tube.example##.sideAds",
 		"##.x { color: red }",
 		"##.x;background:url(http://evil.example/)",
 		"##@import url(x)",
@@ -429,8 +435,8 @@ func TestGoAdHideRules(t *testing.T) {
 		"@@||nogeneric.example^$generichide",
 		"@@||allowed.example^$document",
 	)
-	if r.hide.count != 7 {
-		t.Errorf("%d selectors kept, want 7", r.hide.count)
+	if r.hide.count != 11 {
+		t.Errorf("%d selectors kept, want 11", r.hide.count)
 	}
 	shown := func(page string, classes ...string) []string {
 		h := r.hider(page)
@@ -455,6 +461,9 @@ func TestGoAdHideRules(t *testing.T) {
 		{"www.news.example", nil, []string{".native", ".partner", "div[id^=\"div-gpt-ad\"]"}},
 		{"sports.news.example", nil, []string{".native", "div[id^=\"div-gpt-ad\"]"}},
 		{"quiet.example", []string{".loud"}, []string{"div[id^=\"div-gpt-ad\"]"}},
+		// blob: attribute matches are kept in the list but not sent: they'd
+		// hide every remoted picture (those are only blob: URLs).
+		{"tube.example", nil, []string{".sideAds", "div[id^=\"div-gpt-ad\"]"}},
 		{"nogeneric.example", []string{".ad"}, []string{}},
 		{"nohide.example", []string{".ad"}, nil},
 		{"allowed.example", []string{".ad"}, nil},
@@ -578,5 +587,17 @@ func TestGoAdURLRules(t *testing.T) {
 	// Kept by a word, mostly.
 	if n := len(r.urlBlock.rest); n > 2 {
 		t.Errorf("%d rules tried for every request", n)
+	}
+}
+
+// TestGoAdHideRemoteEscaped: a blob: selector escaped in CSS is refused too.
+func TestGoAdHideRemoteEscaped(t *testing.T) {
+	for _, sel := range []string{`img[src*="blob:"]`, `img[src*="blob\:"]`, `[src*="bl\6f b:"]`, `[src^="BLOB\3a "]`, `img[src^="blob"]`, `[src*="lob:"]`, `div[style*="blob"]`} {
+		if goAdHideRemoteOK(sel) {
+			t.Errorf("sent %s", sel)
+		}
+	}
+	if !goAdHideRemoteOK(`.ad-banner`) || !goAdHideRemoteOK(`a[href*="\2f ads"]`) {
+		t.Error("an ordinary selector refused")
 	}
 }

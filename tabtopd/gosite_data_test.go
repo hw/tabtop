@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -54,5 +55,26 @@ func TestGoSiteDataInspected(t *testing.T) {
 	s.set("https://example.com", "theme", nil)
 	if left := s.siteItems("example.com"); len(left[0].Items) != 1 || left[0].Items[0].Key != "big" {
 		t.Errorf("after deleting one: %+v", left)
+	}
+}
+
+// TestGoStorageForgetItemScriptKept: a localStorage item deleted while the
+// old restore script can't be removed: no new one's added over it (the old
+// one's id lost, and it putting the item back on every load for good).
+func TestGoStorageForgetItemScriptKept(t *testing.T) {
+	cdp, calls := fakeCDP(t, func(method string, n int) bool { return method == "Page.removeScriptToEvaluateOnNewDocument" })
+	b := &goBrowser{ctx: context.Background(), cdp: cdp}
+	doc := &goStorageDocument{script: "old", seed: map[string]string{"k": "1", "j": "2"}, base: map[string]string{}}
+	b.storageTab.root = t.TempDir()
+	b.storageTab.documents = map[string]*goStorageDocument{"https://site.example": doc}
+	b.forgetStorageItem("https://site.example", "k")
+	close(calls)
+	for m := range calls {
+		if m == "Page.addScriptToEvaluateOnNewDocument" {
+			t.Fatal("a new restore script added, the old one not removed")
+		}
+	}
+	if doc.script != "old" {
+		t.Errorf("the old script's id lost: %q", doc.script)
 	}
 }

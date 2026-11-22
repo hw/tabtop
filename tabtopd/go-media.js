@@ -100,6 +100,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         if (stream.url) URL.revokeObjectURL(stream.url);
     }
 
+    const pageOffsets = new WeakMap();  // a SourceBuffer -> the page's timestampOffset, as last relayed
     function makeCapture(stream) {
         return createCapture({
             spill: spillMSE ? (ev) => spillMSE(stream, ev) : undefined,
@@ -130,7 +131,14 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                     }
                     case "config":
                         if (buffer.mode !== command.mode) buffer.mode = command.mode;
-                        if (buffer.timestampOffset !== command.offset) buffer.timestampOffset = command.offset;
+                        // The page's offset, only as the page changes it: in
+                        // sequence mode each append moves the native one on (the
+                        // page's shim doesn't know), and setting it back would
+                        // lay each segment over the last.
+                        if (pageOffsets.get(buffer) !== command.offset) {
+                            pageOffsets.set(buffer, command.offset);
+                            if (buffer.timestampOffset !== command.offset) buffer.timestampOffset = command.offset;
+                        }
                         if (buffer.appendWindowStart !== command.start || buffer.appendWindowEnd !== (command.end ?? Infinity)) {
                             buffer.appendWindowStart = 0;
                             buffer.appendWindowEnd = command.end ?? Infinity;
@@ -139,11 +147,20 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                         break;
                     case "append": {
                         const bytes = Uint8Array.from(atob(command.data), (c) => c.charCodeAt(0));
-                        stream.capture?.append(command.buffer, bytes);
                         buffer.appendBuffer(bytes);
+                        const capture = stream.capture;
+                        // In sequence mode the native append computes timestampOffset.
+                        // The update event precedes updateend, which drains the next command.
+                        if (capture) buffer.addEventListener("update", () => {
+                            capture.append(command.buffer, bytes, buffer.timestampOffset, buffer.appendWindowStart, buffer.appendWindowEnd);
+                        }, { once: true });
                         break;
                     }
-                    case "drop": source.removeSourceBuffer(buffer); stream.buffers[command.buffer] = null; break;
+                    case "drop":
+                        source.removeSourceBuffer(buffer);
+                        stream.buffers[command.buffer] = null;
+                        stream.capture?.drop(command.buffer);
+                        break;
                     case "remove": buffer.remove(command.start, command.end); break;
                     // All chunks in this operation have reached native
                     // updateend before execution reaches the acknowledgment.
@@ -213,7 +230,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     }
 
     function newStream() {
-        const stream = { queue: [], buffers: [], bytes: 0 };
+        const stream = { queue: [], buffers: [], bytes: 0, began: performance.now() };
         stream.capture = makeCapture(stream);
         return stream;
     }
@@ -276,21 +293,25 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // the player: what it's given goes to the frame (passOn). Taps, and
     // the player's own controls, are the player's still.
     function passScrolling(media, signal) {
+        // In Watch's player, or laid over the frame (a sound's strip): what
+        // would be the page's isn't the frame's to have, so it's passed on. (A
+        // video under the frame has the frame's own.)
+        const passes = () => "player" in media.dataset || (!!overlay && media.parentElement === overlay);
         media.addEventListener("wheel", (e) => {
-            if (!("player" in media.dataset)) return;
+            if (!passes()) return;
             const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
             e.preventDefault();
             passOn?.(e.clientX, e.clientY, e.deltaX * unit, e.deltaY * unit, "wheel");
         }, { passive: false, signal });
         let last = null;
         media.addEventListener("touchstart", (e) => {
-            if (!("player" in media.dataset)) return;
+            if (!passes()) return;
             const t = e.touches[0];
             last = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : null;
             if (last) passOn?.(t.clientX, t.clientY, 0, 0, "drag-start");
         }, { passive: true, signal });
         media.addEventListener("touchmove", (e) => {
-            if (!("player" in media.dataset)) return;
+            if (!passes()) return;
             const t = e.touches[0];
             if (!last || !t || e.touches.length !== 1) return;
             e.preventDefault();
@@ -298,7 +319,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             last = { x: t.clientX, y: t.clientY };
         }, { passive: false, signal });
         const end = (e) => {
-            if (!("player" in media.dataset)) { last = null; return; }
+            if (!passes()) { last = null; return; }
             const t = e.changedTouches?.[0];
             if (last && t) passOn?.(t.clientX, t.clientY, 0, 0, "drag-end");
             last = null;
@@ -395,7 +416,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     const HOST_BLOCKED = "Videos from this host are blocked (Site controls: the button at the address’s start).";
     let blockedHosts = new Set();
     const videoHost = (src) => {
-        try { return /^https?:/i.test(src) ? new URL(src).hostname.toLowerCase().replace(/^www\./, "") : ""; } catch { return ""; }
+        // (As the server keeps it, goSettingHost: an IPv6 address without its brackets.)
+        try { return /^https?:/i.test(src) ? new URL(src).hostname.toLowerCase().replace(/^www\./, "").replace(/^\[(.*)\]$/, "$1") : ""; } catch { return ""; }
     };
 
     // pageStarts plays a player the page started, unless autoplay's paused
@@ -444,6 +466,25 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         told();
     }
 
+    // saveChoices: what saves a player's stream: the page's manifests
+    // (go.js's streamsToSave), and its buffered capture, if it's saveable.
+    function saveChoices(player) {
+        const mse = player.stream?.capture;
+        if (player.element?.mediaKeys) {
+            mse?.markEncrypted();
+            abortMSE?.(player.stream);
+        }
+        const mseSave = saveMSE && mse?.saveable() ? [{
+            label: "Buffered stream",
+            save: (say, opts) => saveMSE(player.stream, say, opts),
+        }] : [];
+        // (Not the page's last place's streams to a stream begun since it
+        // moved in itself: a single-page site's next video, perhaps fed
+        // through Media Source alone.)
+        const manifests = player.stream ? (streamsToSave?.() ?? []).filter((m) => !(m.staleSince <= player.stream.began)) : [];
+        return { mseSave, manifests };
+    }
+
     function syncBackdrop() {
         if (!backdrop || !frame.parentElement) return;
         const area = frame.getBoundingClientRect(), host = frame.parentElement.getBoundingClientRect();
@@ -457,7 +498,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             underlay = document.createElement("div");
             Object.assign(underlay.style, { position: "absolute", inset: "0", zIndex: "0", pointerEvents: "none", overflow: "hidden" });
             backdrop = document.createElement("div");
-            Object.assign(backdrop.style, { position: "absolute", background: backdropColor, zIndex: "0" });
+            Object.assign(backdrop.style, { position: "absolute", backgroundColor: backdropColor, zIndex: "0" });
             underlay.append(backdrop);
             frame.parentElement.insertBefore(underlay, frame);
             frame.classList.add("go-underlaid");
@@ -642,6 +683,14 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                     eme.opened(node, element);
                     entry.element = element;
                     media = await mediaStream(info.url, file, signal, element);
+                    // Under the frame (the copy's hole shows it): no native
+                    // controls, which would show over the page's own and can't
+                    // be pressed (clicks are the frame's). The player
+                    // (Watch, video-player.js) has controls of its own. Still
+                    // focusable (a video without controls isn't), for its keys
+                    // (Shift+N skips it).
+                    media.controls = false;
+                    media.tabIndex = 0;
                 }
                 entry.element = media;
                 signal.throwIfAborted();
@@ -701,7 +750,16 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                         skip(key);
                     }
                 }, { signal });
-                underlayHere().append(media);
+                if (kind === "audio") {
+                    // A sound's player is its control strip, nothing under the
+                    // page's own chrome to keep: laid over its box, its native
+                    // controls pressed there (there's no Watch for sound).
+                    media.controls = true;
+                    media.style.pointerEvents = "auto";
+                    overlayHere().append(media);
+                } else {
+                    underlayHere().append(media);
+                }
                 place(entry.placement);
                 // Played by the person (its own controls, the player's): its
                 // page may play it from then on, autoplay paused or not.
@@ -758,7 +816,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 const state = p.skipped ? "Skipped" : loading ? loading : !media ? "Loading…" : media.ended ? "Ended" : (media.paused ? "Paused" : "Playing") + (p.watching ? " in the player" : "");
                 out.push({ key, kind: p.kind, src: p.stream ? "" : p.src, short: p.stream ? "Streamed by the site's own player" : shortAddress(p.src), state,
                     skippable: !p.skipped && !media?.ended, top: p.placement?.rect?.y ?? 0, shown: !!p.placement?.shown,
-                    playing: !!media && !media.paused && !media.ended, ready: !!media, watching: !!p.watching });
+                    playing: !!media && !media.paused && !media.ended, ready: !!media, watching: !!p.watching,
+                    // (Something to save it with: the menu's Save.)
+                    saveable: p.stream ? !!(saveMSE && p.stream.capture?.saveable() || streamsToSave?.().length) : !!(download && p.src) });
             }
             return out.sort((a, b) => a.top - b.top);
         },
@@ -847,16 +907,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (player.placement) place(player.placement);
             player.chosen = true;
             player.loading?.done();
-            const mse = player.stream?.capture;
-            if (media.mediaKeys) {
-                mse?.markEncrypted();
-                abortMSE?.(player.stream);
-            }
-            const mseSave = saveMSE && mse?.saveable() ? [{
-                label: "Buffered stream",
-                save: (say, opts) => saveMSE(player.stream, say, opts),
-            }] : [];
-            const manifests = player.stream ? (streamsToSave?.() ?? []) : [];
+            const { mseSave, manifests } = saveChoices(player);
             media.style.pointerEvents = "auto";
             player.closeWatch = openPlayer(media, {
                 title: player.stream ? "Streamed by the site's own player" : shortAddress(player.src),
@@ -880,9 +931,32 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         // backdrop takes the page's background colour (an rgb() or rgba() of
         // the copy's: anything else is ignored), drawn behind the frame.
         backdrop(color) {
-            if (typeof color !== "string" || !/^rgba?\(\d{1,3}, \d{1,3}, \d{1,3}(, (0|1|0?\.\d+))?\)$/.test(color)) return;
-            backdropColor = /, 0\)$/.test(color) ? "#fff" : color;  // (none: a browser's white)
-            if (backdrop) backdrop.style.background = backdropColor;
+            // Any colour (a page's computed one may be oklch(), lab()…), and
+            // only a colour: set as one alone.
+            if (typeof color !== "string" || color.length > 200 || !CSS.supports("color", color)) return;
+            // (None, its alpha 0, a browser's white: rgba(…, 0), or a / 0.)
+            backdropColor = /^transparent$|^rgba\([^)]*,\s*0\)$|\/\s*0\)$/.test(color) ? "#fff" : color;
+            if (backdrop) backdrop.style.backgroundColor = backdropColor;
+        },
+        // saver is what saves a player's video or sound into Downloads (the
+        // menu's Save, go.js), as Watch's player offers it: a stream's
+        // manifest, else its buffered capture; or its file: {stream, label,
+        // save(say, opts)}. Null if none.
+        saver(key) {
+            const player = players.get(key);
+            if (!player) return null;
+            if (!player.stream) {
+                // Its source a stream's manifest (an HLS <video src>): the
+                // stream saved, not the playlist's text.
+                const manifest = player.src && streamsToSave?.().find((s) => s.url === player.src);
+                if (manifest) return { stream: true, label: manifest.label ?? "", save: manifest.save };
+                return download && player.src ? { stream: false, label: "", save: (say, opts) => download(player.src, say, opts) } : null;
+            }
+            const { mseSave, manifests } = saveChoices(player);
+            // (The page's streams perhaps the last place's, the page moved in
+            // itself: what this player buffered, if it can be saved, first.)
+            const choice = manifests[0]?.staleSince !== undefined && mseSave[0] ? mseSave[0] : manifests[0] ?? mseSave[0];
+            return choice ? { stream: true, label: choice.label ?? "", save: choice.save } : null;
         },
         // pauseAll pauses every player: the page they're on is being left.
         pauseAll() {

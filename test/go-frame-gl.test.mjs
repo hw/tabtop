@@ -62,3 +62,36 @@ test("ordinary scenes pass", () => {
         ["bindBuffer", 0x8892, { ref: 2 }], ["bufferData", 0x8892, { typed: "Float32Array", data: "AAAAAA==" }, 0x88E4],
         ["drawElementsInstanced", 4, 36, 0x1403, 0, 1000], ["getExtension", "OES_texture_float"], ["drawArrays", 4, 0, 3]]);
 });
+
+test("storage deleted while still attached elsewhere stays counted till let go", () => {
+    const FB = 0x8D40, RB = 0x8D41, T2D = 0x0DE1, COLOR0 = 0x8CE0, AB = 0x8892;
+    const big = ["texImage2D", T2D, 0, 0x1908, 4096, 4096, 0, 0x1908, 0x1401, null];
+    // A texture attached to a framebuffer not bound, deleted: GL keeps it.
+    const textures = [];
+    for (let i = 1; i <= 5; i++) textures.push(["bindFramebuffer", FB, { ref: 100 + i }], ["bindTexture", T2D, { ref: i }], big,
+        ["framebufferTexture2D", FB, COLOR0, T2D, { ref: i }, 0], ["bindFramebuffer", FB, null], ["deleteTexture", { ref: i }]);
+    assert.throws(() => replay(textures), /budget/, "attached textures' storage given back on delete");
+    // A renderbuffer, the same.
+    const renderbuffers = [];
+    for (let i = 1; i <= 5; i++) renderbuffers.push(["bindFramebuffer", FB, { ref: 100 + i }], ["bindRenderbuffer", RB, { ref: i }], ["renderbufferStorage", RB, 0x8058, 4096, 4096],
+        ["framebufferRenderbuffer", FB, COLOR0, RB, { ref: i }], ["bindFramebuffer", FB, null], ["deleteRenderbuffer", { ref: i }]);
+    assert.throws(() => replay(renderbuffers), /budget/, "attached renderbuffers' storage given back on delete");
+    // A buffer a vertex array not bound reads from.
+    const buffers = [];
+    for (let i = 1; i <= 5; i++) buffers.push(["bindVertexArray", { ref: 100 + i }], ["bindBuffer", AB, { ref: i }], ["bufferData", AB, 60 << 20, 0x88E4],
+        ["vertexAttribPointer", 0, 4, 0x1406, false, 0, 0], ["bindVertexArray", null], ["deleteBuffer", { ref: i }]);
+    assert.throws(() => replay(buffers), /budget/, "a vertex array's buffers' storage given back on delete");
+    // Let go: its framebuffer deleted (or it detached), or deleted while its framebuffer's bound.
+    const freed = [];
+    for (let i = 1; i <= 5; i++) freed.push(["bindFramebuffer", FB, { ref: 100 + i }], ["bindTexture", T2D, { ref: i }], big,
+        ["framebufferTexture2D", FB, COLOR0, T2D, { ref: i }, 0], ["bindFramebuffer", FB, null], ["deleteTexture", { ref: i }], ["deleteFramebuffer", { ref: 100 + i }]);
+    assert.equal(replay(freed).budget.total, 0);
+    const detached = [];
+    for (let i = 1; i <= 5; i++) detached.push(["bindFramebuffer", FB, { ref: 100 + i }], ["bindTexture", T2D, { ref: i }], big,
+        ["framebufferTexture2D", FB, COLOR0, T2D, { ref: i }, 0], ["deleteTexture", { ref: i }]);
+    assert.equal(replay(detached).budget.total, 0);
+    const vertexArrays = [];
+    for (let i = 1; i <= 5; i++) vertexArrays.push(["bindVertexArray", { ref: 100 + i }], ["bindBuffer", AB, { ref: i }], ["bufferData", AB, 60 << 20, 0x88E4],
+        ["vertexAttribPointer", 0, 4, 0x1406, false, 0, 0], ["bindVertexArray", null], ["deleteBuffer", { ref: i }], ["deleteVertexArray", { ref: 100 + i }]);
+    assert.equal(replay(vertexArrays).budget.total, 0);
+});

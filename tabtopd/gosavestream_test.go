@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -44,12 +47,23 @@ func TestSaveStream(t *testing.T) {
 		}
 		files["/"+kind+"/init.mp4"] = init.Bytes()
 		files["/"+kind+"/1.m4s"] = part.Bytes()
+		var late bytes.Buffer
+		frag.Moof.Traf.Tfdt.SetBaseMediaDecodeTime(95000000)
+		if kind == "video" {
+			frag.Moof.Traf.Tfdt.SetBaseMediaDecodeTime(94999960)
+			frag.Moof.Traf.Trun.Samples[0].CompositionTimeOffset = 40
+		}
+		if err := frag.Encode(&late); err != nil {
+			t.Fatal(err)
+		}
+		files["/"+kind+"/95000.m4s"] = late.Bytes()
+		files["/"+kind+"/95000000.m4s"] = late.Bytes() // (named in ticks: movie-ticks.mpd)
 		files["/"+kind+"/index.m3u8"] = []byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\n1.m4s\n#EXT-X-ENDLIST\n")
 	}
 	files["/master.m3u8"] = []byte("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",DEFAULT=YES,URI=\"audio/index.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=5000,AUDIO=\"a\"\nvideo/index.m3u8\n")
 	dash := ""
 	for _, kind := range []string{"video", "audio"} {
-		dash += fmt.Sprintf(`<AdaptationSet mimeType="%s/mp4"><SegmentTemplate initialization="$RepresentationID$/init.mp4" media="$RepresentationID$/$Number$.m4s" duration="1"/><Representation id="%s"/></AdaptationSet>`, kind, kind)
+		dash += fmt.Sprintf(`<AdaptationSet mimeType="%s/mp4"><SegmentTemplate initialization="$RepresentationID$/init.mp4" media="$RepresentationID$/$Time$.m4s" presentationTimeOffset="95000"><SegmentTimeline><S t="95000" d="1"/></SegmentTimeline></SegmentTemplate><Representation id="%s"/></AdaptationSet>`, kind, kind)
 	}
 	// The audio named, after an I-frame variant (which the m3u8 package gives
 	// the renditions to); a segment that fails once, then comes; and audio
@@ -60,6 +74,13 @@ func TestSaveStream(t *testing.T) {
 	files["/video/flaky-index.m3u8"] = bytes.Replace(files["/video/index.m3u8"], []byte("1.m4s"), []byte("1.m4s?flaky"), 1)
 	files["/video/missing-audio.m3u8"] = []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000,AUDIO=\"b\"\nindex.m3u8\n")
 	files["/movie.mpd"] = []byte(`<MPD type="static" mediaPresentationDuration="PT1S"><Period>` + dash + `</Period></MPD>`)
+	// The same, its offset in the media's own timescale (taken off in exact
+	// ticks): the video's B-frame preroll kept all the same.
+	dashTicks := ""
+	for _, kind := range []string{"video", "audio"} {
+		dashTicks += fmt.Sprintf(`<AdaptationSet mimeType="%s/mp4"><SegmentTemplate timescale="1000" initialization="$RepresentationID$/init.mp4" media="$RepresentationID$/$Time$.m4s" presentationTimeOffset="95000000"><SegmentTimeline><S t="95000000" d="1000"/></SegmentTimeline></SegmentTemplate><Representation id="%s"/></AdaptationSet>`, kind, kind)
+	}
+	files["/movie-ticks.mpd"] = []byte(`<MPD type="static" mediaPresentationDuration="PT1S"><Period>` + dashTicks + `</Period></MPD>`)
 	playlist := files["/video/index.m3u8"]
 	files["/video/broken.m3u8"] = bytes.Replace(playlist, []byte("#EXT-X-ENDLIST"), []byte("#EXTINF:1,\nmissing.m4s\n#EXT-X-ENDLIST"), 1)
 	files["/video/live.m3u8"] = bytes.Replace(playlist, []byte("#EXT-X-ENDLIST"), nil, 1)
@@ -80,6 +101,7 @@ func TestSaveStream(t *testing.T) {
 		w.Write(data)
 	}))
 	defer remote.Close()
+	goTestPorts(t, portOf(t, remote.URL)) // (a stream's addresses are checked as the engine's are)
 	g.defaultRoot().fetches.goClient = newFetchClient(func(netip.Addr) bool { return true })
 	// A stream's saved from the tab that plays it, as it played it: a tab
 	// of the session's, its engine gone (its cookies, then, the account's:
@@ -101,7 +123,7 @@ func TestSaveStream(t *testing.T) {
 			t.Fatalf("saved from another session's tab: %v", first)
 		}
 	}
-	for _, manifest := range []string{"master.m3u8", "movie.mpd", "iframe-first.m3u8", "flaky.m3u8"} {
+	for _, manifest := range []string{"master.m3u8", "movie.mpd", "movie-ticks.mpd", "iframe-first.m3u8", "flaky.m3u8"} {
 		tc := openSession(t, testCtx(t), srv, s)
 		first := tc.request(t, testCtx(t), tunnelRequest{Type: "fetch", FromGo: true, SaveStream: true, GoTab: "tab-token", URL: remote.URL + "/" + manifest})
 		if first["ok"] != true {
@@ -122,16 +144,31 @@ func TestSaveStream(t *testing.T) {
 		if len(out.Moov.Traks) != 2 {
 			t.Fatal("missing track")
 		}
+		if strings.HasPrefix(manifest, "movie") {
+			edits := out.Moov.Traks[0].Edts
+			if edits == nil || edits.Elst[0].Entries[0].MediaTime != 40 || out.Sidxs[0].EarliestPresentationTime != 0 {
+				t.Fatal("DASH video preroll is outside the period timeline")
+			}
+		}
 		seen := map[uint32]string{}
 		for _, seg := range out.Segments {
 			for _, f := range seg.Fragments {
+				if d := f.Moof.Traf.Tfdt.BaseMediaDecodeTime(); d != 0 {
+					t.Fatalf("%s: first decode time %d", manifest, d)
+				}
 				seen[f.Moof.Traf.Tfhd.TrackID] = string(f.Mdat.Data)
 			}
 		}
 		if seen[1] != "video" || seen[2] != "audio" {
 			t.Fatalf("unexpected payloads: %v", seen)
 		}
-		for _, path := range []string{"/" + manifest, "/video/init.mp4", "/audio/1.m4s"} {
+		audioPart := "/audio/1.m4s"
+		if manifest == "movie.mpd" {
+			audioPart = "/audio/95000.m4s"
+		} else if manifest == "movie-ticks.mpd" {
+			audioPart = "/audio/95000000.m4s"
+		}
+		for _, path := range []string{"/" + manifest, "/video/init.mp4", audioPart} {
 			if ua, _ := agents.Load(path); ua != "Mozilla/5.0 (the tab's)" {
 				t.Errorf("%s fetched as %q, not as its tab", path, ua)
 			}
@@ -233,5 +270,64 @@ func TestStreamOrder(t *testing.T) {
 	audio.starts = nil
 	if got := names([]streamTrack{video, audio}); !slices.Equal(got, []string{"v0", "a0", "v1", "a1", "a2", "a3", "a4", "a5"}) {
 		t.Errorf("in turn: %v", got)
+	}
+}
+
+// TestDashTemplateStarts: each part's start, on the presentation's clock,
+// with presentationTimeOffset: a timeline's from its times (counted from the
+// offset), a template by duration's from 0 (its numbers aren't).
+func TestDashTemplateStarts(t *testing.T) {
+	u, _ := url.Parse("https://videos.example/a/manifest.mpd")
+	for _, c := range []struct{ name, template string }{
+		{"by timeline", `<SegmentTemplate timescale="90000" presentationTimeOffset="900000" initialization="init.mp4" media="seg-$Time$.m4s"><SegmentTimeline><S t="900000" d="360000" r="2"/></SegmentTimeline></SegmentTemplate>`},
+		{"by duration", `<SegmentTemplate timescale="90000" presentationTimeOffset="900000" duration="360000" initialization="init.mp4" media="seg-$Number$.m4s"/>`},
+	} {
+		mpd := []byte(`<MPD type="static" mediaPresentationDuration="PT12S"><Period><AdaptationSet mimeType="video/mp4"><Representation id="v" bandwidth="1">` + c.template + `</Representation></AdaptationSet></Period></MPD>`)
+		tracks, err := dashTracks(mpd, u)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := tracks[0].starts; len(got) != 3 || got[0] != 0 || got[1] != 4 || got[2] != 8 {
+			t.Errorf("%s: starts %v, want [0 4 8]", c.name, got)
+		}
+	}
+}
+
+// TestStreamAllowed: a stream's manifest, segments and redirects only where
+// the engine itself may go: its ports, no site blocked in Site controls.
+func TestStreamAllowed(t *testing.T) {
+	goTestPorts(t)
+	was := goBlockedHost
+	goBlockedHost = func(h string) bool { return h == "blocked.example" }
+	t.Cleanup(func() { goBlockedHost = was })
+	for raw, ok := range map[string]bool{
+		"https://cdn.example/a.ts": true, "http://cdn.example:80/a.ts": true, "https://cdn.example:8443/a.ts": false,
+		"http://203.0.113.5:8080/x.ts": false, "https://blocked.example/a.ts": false,
+	} {
+		u, _ := url.Parse(raw)
+		if err := streamAllowed(u, nil); (err == nil) != ok {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+}
+
+// TestStreamFinal: what's the same asked again isn't tried again (a
+// refusal, a redirect's too; a name not found; a certificate not trusted);
+// a connection that failed is.
+func TestStreamFinal(t *testing.T) {
+	for _, c := range []struct {
+		err   error
+		final bool
+	}{
+		{&url.Error{Op: "Get", URL: "https://a.example/x.ts", Err: streamRefusal(goRefusals["blocked"])}, true},
+		{&url.Error{Op: "Get", URL: "https://a.example/x.ts", Err: fmt.Errorf("dial: %w", errGoDNS)}, true},
+		{&url.Error{Op: "Get", URL: "https://a.example/x.ts", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, true},
+		{&url.Error{Op: "Get", URL: "https://a.example/x.ts", Err: errFetchAddress}, true},
+		{&url.Error{Op: "Get", URL: "https://a.example/x.ts", Err: errGoCertRevoked}, true},
+		{&url.Error{Op: "Get", URL: "https://a.example/x.ts", Err: errors.New("connection reset by peer")}, false},
+	} {
+		if got := streamFinal(c.err); got != c.final {
+			t.Errorf("%v: final %v, want %v", c.err, got, c.final)
+		}
 	}
 }

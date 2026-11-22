@@ -88,7 +88,7 @@ func TestGoPage(t *testing.T) {
 	if res, settings := get("/go/settings"); res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != goCookiesCSP || !strings.Contains(settings, `src="go-settings.js"`) {
 		t.Errorf("Settings: %d", res.StatusCode)
 	}
-	for _, f := range []string{"go-sites.js", "go-settings.js", "go-pages.js"} {
+	for _, f := range []string{"go-sites.js", "go-settings.js", "go-settings-parse.js", "go-pages.js"} {
 		if res, _ := get("/go/" + f); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
 			t.Errorf("%s: %d", f, res.StatusCode)
 		}

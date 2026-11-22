@@ -22,7 +22,17 @@ function page() {
         }
         class Event { constructor(type, init = {}) { this.type = type; this.bubbles = !!init.bubbles; } preventDefault() {} }
         class CustomEvent extends Event { constructor(type, init = {}) { super(type, init); this.detail = init.detail; } }
-        class WebGLRenderingContext {}
+        class WebGLRenderingContext {
+            constructor(canvas) { this.canvas = canvas; }
+            getContextAttributes() { return { alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: false }; }
+            createShader() { return {}; }
+            createProgram() { return {}; }
+            createBuffer() { return {}; }
+            getUniformLocation() { return {}; }
+            getProgramParameter() { return null; }
+            // Engines may return empty identity strings; /go overrides these.
+            getParameter() { return ""; }
+        }
         class WebGL2RenderingContext {
             constructor(canvas) { this.canvas = canvas; }
             getContextAttributes() { return { alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: false }; }
@@ -31,10 +41,15 @@ function page() {
             createBuffer() { return {}; }
             getUniformLocation() { return {}; }
             getProgramParameter() { return null; }
+            getParameter() { return ""; }
         }
         class HTMLCanvasElement extends EventTarget {
             constructor() { super(); this.width = 300; this.height = 150; }
-            getContext(kind) { return kind === "webgl2" ? (this.gl ||= new WebGL2RenderingContext(this)) : null; }
+            getContext(kind) {
+                if (kind === "webgl2") return this.gl2 ||= new WebGL2RenderingContext(this);
+                if (kind === "webgl" || kind === "experimental-webgl") return this.gl1 ||= new WebGLRenderingContext(this);
+                return null;
+            }
         }
         const document = new EventTarget();
         document.createElement = () => new HTMLCanvasElement();
@@ -84,6 +99,16 @@ uniform vec4 tint;
 uniform sampler2D shadows[3];
 out vec4 color;
 void main() { color = tint; }`;
+
+test("VENDOR and RENDERER are fixed WebKit-like strings for WebGL1 and WebGL2", () => {
+    const { context } = page();
+    for (const kind of ["webgl", "webgl2"]) {
+        const gl = new context.HTMLCanvasElement().getContext(kind);
+        assert.ok(gl, kind);
+        assert.equal(gl.getParameter(gl.VENDOR), "WebKit", kind);
+        assert.equal(gl.getParameter(gl.RENDERER), "WebKit WebGL", kind);
+    }
+});
 
 test("a program is reflected from its shaders' source, as a browser would report it", () => {
     const { context } = page();
@@ -158,4 +183,90 @@ test("an extension the mirror can't replay is refused to the page, not fatal", (
     assert.ok(read(canvas, "full").g, "the canvas is still mirrored");
     gl.finish();
     gl.flush();
+});
+
+test("a render loop binding its texture and buffer each frame is compacted, not given up", () => {
+    const { context, read } = page();
+    const canvas = new context.HTMLCanvasElement();
+    const gl = canvas.getContext("webgl2");
+    const texture = gl.createTexture(), buffer = gl.createBuffer();
+    read(canvas, "full");
+    for (let frame = 0; frame < 3000; frame++) {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const got = read(canvas);
+        assert.ok(!got?.e, `given up at frame ${frame}: ${got?.e}`);
+    }
+});
+
+test("compaction keeps the binds what's kept after them needs", () => {
+    const { context, read } = page();
+    const canvas = new context.HTMLCanvasElement();
+    const gl = canvas.getContext("webgl2");
+    const a = gl.createTexture(), b = gl.createTexture();
+    read(canvas, "full");
+    gl.bindTexture(gl.TEXTURE_2D, a);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));  // into a
+    for (let frame = 0; frame < 2000; frame++) {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.bindTexture(gl.TEXTURE_2D, frame % 2 ? a : b);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        read(canvas);
+    }
+    const log = JSON.parse(read(canvas, "full").g);
+    const upload = log.findIndex((c) => c.m === "texImage2D");
+    assert.ok(upload > 0, "the upload lost");
+    const before = log.slice(0, upload).filter((c) => c.m === "bindTexture").at(-1);
+    assert.equal(before?.a[1]?.ref, log.find((c) => c.m === "createTexture").r, "the upload's texture bind lost");
+    const binds = log.filter((c) => c.m === "bindTexture").length;
+    assert.ok(binds < 1000, `binds not compacted: ${binds} of 2001 kept`);
+});
+
+test("compaction doesn't keep a copy of the canvas without the draws it copied (a feedback effect)", () => {
+    const { context, read } = page();
+    const canvas = new context.HTMLCanvasElement();
+    const gl = canvas.getContext("webgl2");
+    const trail = gl.createTexture();
+    read(canvas, "full");
+    gl.bindTexture(gl.TEXTURE_2D, trail);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 300, 150, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    for (let frame = 0; frame < 3000; frame++) {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);                         // (sampling the trail)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, 300, 150);  // the frame into the trail
+        const got = read(canvas);
+        if (got?.e) return;                                         // given up: shown as unsupported, not wrong
+        if (frame % 100 !== 99) continue;
+        const log = JSON.parse(read(canvas, "full").g);
+        read(canvas);
+        let drawn = false;
+        for (const c of log) {
+            if (c.m === "clear") drawn = false;
+            else if (c.m === "drawArrays") drawn = true;
+            else if (c.m === "copyTexSubImage2D") assert.ok(drawn, `frame ${frame}: a copy kept without the draws it read`);
+        }
+    }
+});
+
+test("a copy from another framebuffer (once, at start) doesn't stop the canvas's compaction", () => {
+    const { context, read } = page();
+    const canvas = new context.HTMLCanvasElement();
+    const gl = canvas.getContext("webgl2");
+    const texture = gl.createTexture(), fbo = gl.createFramebuffer();
+    read(canvas, "full");
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, 16, 16, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    for (let frame = 0; frame < 3000; frame++) {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const got = read(canvas);
+        assert.ok(!got?.e, `given up at frame ${frame}: ${got?.e}`);
+    }
 });

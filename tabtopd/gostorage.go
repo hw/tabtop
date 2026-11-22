@@ -411,9 +411,11 @@ func (b *goBrowser) startStorage(ctx context.Context) {
 	if !storage {
 		return
 	}
+	b.storageTab.mu.Lock() // (forgetStorageItem reads them, from a request's goroutine)
 	b.storageTab.root = tree.FrameTree.Frame.ID
 	b.storageTab.documents = map[string]*goStorageDocument{}
 	b.storageTab.embedded = map[string]string{}
+	b.storageTab.mu.Unlock()
 }
 
 func goStorageRestore(origin string, items map[string]string) string {
@@ -450,6 +452,12 @@ func (b *goBrowser) storagePaused(ev cdpEvent) {
 	if p.Frame == b.topFrame {
 		b.pageAt(p.Request.URL)
 		b.schemeAt(p.Request.URL) // (before its styles are read: gotheme.go)
+		// Certificate errors ignored, or heeded, as the document's an
+		// exception's or not, before it loads: its own requests (and its
+		// subresources) the proxy's to let through or not (gocert.go).
+		cctx, ccancel := context.WithTimeout(context.Background(), goCallTimeout)
+		b.certIgnore(cctx, p.Request.URL)
+		ccancel()
 		b.newAdPage()
 	} else if b.adRefused(p.ID, p.Request.URL, goAdTSubdocument) {
 		return // an embedded page that's an ad's

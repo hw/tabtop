@@ -192,8 +192,13 @@ func (b *goBrowser) forgetCookie(k goCookieKey) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	b.cdp.call(ctx, b.page, "Network.deleteCookies", map[string]any{"name": k.name, "domain": k.domain, "path": k.path}, nil)
-	delete(b.cookies.base, k)
+	// Out of what the tab last had only once it's gone from the engine: a
+	// delete that failed leaves it there and in base, so it isn't taken as
+	// set anew and kept again. (Only k: base taken whole from the engine
+	// would lose what the tab's set since it last synced, never kept.)
+	if b.cdp.call(ctx, b.page, "Network.deleteCookies", map[string]any{"name": k.name, "domain": k.domain, "path": k.path}, nil) == nil {
+		delete(b.cookies.base, k)
+	}
 }
 
 // siteItems is the site's origins' localStorage kept: by origin, then key.
@@ -225,11 +230,11 @@ func (s *goStorage) siteItems(site string) []goInspectedOrigin {
 // as removed by the page).
 func (b *goBrowser) forgetStorageItem(origin, key string) {
 	t := &b.storageTab
+	t.mu.Lock() // (root's set by the tab's start, on another goroutine: startStorage)
+	defer t.mu.Unlock()
 	if t.root == "" {
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	doc := t.documents[origin]
 	if doc == nil {
 		return
@@ -238,18 +243,23 @@ func (b *goBrowser) forgetStorageItem(origin, key string) {
 	defer cancel()
 	if _, seeded := doc.seed[key]; seeded && doc.script != "" {
 		// What's put back as the page loads, again without it.
+		// (The old one not removed: kept, its id with it, not lost under a
+		// new one's.)
 		b.removeStorageScript(ctx, doc)
 		delete(doc.seed, key)
 		var r struct {
 			Identifier string `json:"identifier"`
 		}
-		if len(doc.seed) > 0 && b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]string{
+		if doc.script == "" && len(doc.seed) > 0 && b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]string{
 			"source": goStorageRestore(origin, doc.seed), "worldName": "tabtop-site-storage",
 		}, &r) == nil {
 			doc.script = r.Identifier
 		}
 	}
 	delete(doc.seed, key)
-	delete(doc.base, key)
-	b.cdp.call(ctx, b.page, "DOMStorage.removeDOMStorageItem", map[string]any{"storageId": goStorageID(origin), "key": key}, nil)
+	// Out of what the document was given only once it's gone from the
+	// engine: still there, it's not taken as set anew and kept again.
+	if b.cdp.call(ctx, b.page, "DOMStorage.removeDOMStorageItem", map[string]any{"storageId": goStorageID(origin), "key": key}, nil) == nil {
+		delete(doc.base, key)
+	}
 }

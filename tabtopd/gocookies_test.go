@@ -111,9 +111,8 @@ func TestGoCookieJarForget(t *testing.T) {
 // Several sites cleared in one request (All sites' multi-select).
 func TestGoCookiesForgetNames(t *testing.T) {
 	g, srv := newE2EServer(t)
-	if g.goCookies == nil {
-		t.Skip("remote browser cookies unavailable")
-	}
+	g.goOn = true
+	g.goCookies = newGoCookieJar("", "")
 	j := g.goCookies
 	j.apply(nil, goCookieMap(
 		goTestCookie("a", "1", ".alpha.com"),
@@ -134,6 +133,25 @@ func TestGoCookiesForgetNames(t *testing.T) {
 	}
 	if _, ok := j.cookies[goCookieKey{"c", ".keep.com", "/"}]; !ok {
 		t.Error("keep.com was cleared")
+	}
+}
+
+// Sites named, none of them a site (blank): refused, not every site's
+// cookies cleared.
+func TestGoCookiesForgetBlankNames(t *testing.T) {
+	g, srv := newE2EServer(t)
+	g.goOn = true
+	g.goCookies = newGoCookieJar("", "")
+	j := g.goCookies
+	j.apply(nil, goCookieMap(goTestCookie("c", "1", ".keep.com")))
+	s := login(t, testCtx(t), srv.URL, code(0))
+	tc := openSession(t, testCtx(t), srv.URL, s)
+	reply := tc.request(t, testCtx(t), tunnelRequest{Type: "go-cookies-forget", Names: []string{" ", ""}})
+	if reply["ok"] == true {
+		t.Errorf("blank names taken: %v", reply)
+	}
+	if _, ok := j.cookies[goCookieKey{"c", ".keep.com", "/"}]; !ok {
+		t.Fatal("blank names cleared every site's cookies")
 	}
 }
 

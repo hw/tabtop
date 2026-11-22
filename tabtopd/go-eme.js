@@ -26,7 +26,7 @@ export function encryptedMedia(reply, allowed) {
         if (map.size >= 32 || !Number.isSafeInteger(id) || id <= 0 || map.has(id)) throw invalid();
     }
     // admit makes room in a map of handles for id: its oldest that may go
-    // (keep says which mustn't) goes, if it's full. A page probing formats
+    // (keep says which mustn't) goes, if it's full (returned). A page probing formats
     // (decodingInfo, each answer an access) and making keys episode after
     // episode would otherwise run out, its later requests all refused.
     function admit(map, id, keep = () => false) {
@@ -35,7 +35,7 @@ export function encryptedMedia(reply, allowed) {
         for (const old of map.keys()) {
             if (!keep(old)) {
                 map.delete(old);
-                return;
+                return old;
             }
         }
         throw invalid();
@@ -106,7 +106,13 @@ export function encryptedMedia(reply, allowed) {
             case "attach": {
                 if (!Number.isSafeInteger(c.node) || c.node <= 0 || !["audio", "video"].includes(c.kind)) throw invalid();
                 const el = active.get(c.node) || player(c.node, c.kind);
-                if (!elements.has(c.node)) reserve(elements, c.node);
+                if (!elements.has(c.node)) {
+                    // A page making a player per item (a feed), never
+                    // detaching keys: the oldest not playing goes, and its
+                    // keys are no longer held by it.
+                    const gone = admit(elements, c.node, (old) => active.has(old));
+                    if (gone !== undefined) keysAttached.delete(gone);
+                }
                 const nativeKeys = c.keys === null ? null : lookup(keys, c.keys);
                 const previous = elements.get(c.node);
                 elements.set(c.node, el); // an arriving stream must use this same element during the await

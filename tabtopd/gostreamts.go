@@ -375,25 +375,69 @@ func (r *tsRemux) pmtTable(payload []byte) error {
 	}
 	i := 12 + (int(s[10]&0x0f)<<8 | int(s[11]))
 	var otherSound string
+	videoSeen, audioSeen := false, false
+	// moved is a stream (the video's, or the sound's) its program now
+	// carries on another PID: past a discontinuity, another encoder's or an
+	// ad's segments commonly do. Followed there (its track the same), or
+	// it'd be read no more, what's after left out unsaid. Another codec
+	// can't be the same track: an error.
+	moved := func(st *tsStream, pid uint16, hevc, mp3 bool) error {
+		if st.pid == pid {
+			return nil
+		}
+		if st.hevc != hevc || st.mp3 != mp3 {
+			return errors.New("Save stream can't keep a stream whose video or sound changes codec partway")
+		}
+		if len(st.pes) > 0 {
+			if err := r.pesDone(st); err != nil { // (its last packet on the old PID, whole)
+				return err
+			}
+		}
+		delete(r.streams, st.pid)
+		st.pid, st.pes, st.lastRead = pid, nil, false
+		r.streams[pid] = st
+		return nil
+	}
 	for i+5 <= len(s) {
 		kind, pid := s[i], uint16(s[i+1]&0x1f)<<8|uint16(s[i+2])
 		i += 5 + (int(s[i+3]&0x0f)<<8 | int(s[i+4]))
 		switch kind {
 		case 0x1b, 0x24: // H.264, H.265
-			if r.video == nil {
+			if r.video == nil && !r.probing {
+				break // first listed past the header's segment: no track for it, left out
+			} else if r.video == nil {
 				r.video = &tsStream{pid: pid, video: true, hevc: kind == 0x24}
 				r.streams[pid] = r.video
+			} else if !videoSeen {
+				if err := moved(r.video, pid, kind == 0x24, false); err != nil {
+					return err
+				}
 			}
+			videoSeen = true
 		case 0x0f: // AAC, in ADTS
-			if r.audio == nil {
+			if r.audio == nil && !r.probing {
+				break // (as the video's)
+			} else if r.audio == nil {
 				r.audio = &tsStream{pid: pid}
 				r.streams[pid] = r.audio
+			} else if !audioSeen {
+				if err := moved(r.audio, pid, false, false); err != nil {
+					return err
+				}
 			}
+			audioSeen = true
 		case 0x03, 0x04: // MPEG audio (MP3)
-			if r.audio == nil {
+			if r.audio == nil && !r.probing {
+				break // (as the video's)
+			} else if r.audio == nil {
 				r.audio = &tsStream{pid: pid, mp3: true}
 				r.streams[pid] = r.audio
+			} else if !audioSeen {
+				if err := moved(r.audio, pid, false, true); err != nil {
+					return err
+				}
 			}
+			audioSeen = true
 		case 0x81, 0x87:
 			otherSound = "AC-3"
 		case 0x11:
@@ -435,8 +479,17 @@ func (r *tsRemux) pesDone(s *tsStream) error {
 		return nil
 	}
 	flags, size := p[7], int(p[8])
-	if 9+size > len(p) || flags&0x80 == 0 || size < 5 {
-		return nil // (no time: not one to place)
+	if 9+size > len(p) {
+		return nil
+	}
+	if flags&0x80 == 0 || size < 5 {
+		// No time: sound goes on from the packet before (a stream needs
+		// one only every 0.7 s), the frame it left half had included; else
+		// not one to place.
+		if !s.video && (s.started || r.probing) {
+			return r.audioFrames(s, p[9+size:], -1)
+		}
+		return nil
 	}
 	pts := tsTime(p[9:])
 	dts := pts
@@ -581,6 +634,11 @@ func (r *tsRemux) audioFrames(s *tsStream, data []byte, at int64) error {
 			return nil
 		}
 		data = data[f.length:]
+		if f.blocks > 1 {
+			// An MP4 sample's one block; their bounds in the frame aren't
+			// said (without a CRC): not kept, decoded as its first alone.
+			return errors.New("Save stream can't keep the stream's sound (AAC frames of several blocks)")
+		}
 		if s.rate == 0 {
 			if f.layer != 0 && f.layer != 3 {
 				return fmt.Errorf("Save stream can't keep the stream's sound (MPEG audio layer %d)", f.layer)
@@ -621,6 +679,7 @@ type soundFrame struct {
 	payload               []byte
 	objType, channels     byte
 	layer                 int // (MPEG audio's)
+	blocks                int // AAC raw data blocks in the frame (ADTS's)
 }
 
 // aacFrameAt reads an ADTS frame: kept without its header (the MP4's
@@ -639,6 +698,7 @@ func aacFrameAt(data []byte) soundFrame {
 		channels: data[2]&1<<2 | data[3]>>6,
 		length:   int(data[3]&3)<<11 | int(data[4])<<3 | int(data[5]>>5),
 		samples:  aacFrame * (int(data[6]&3) + 1),
+		blocks:   int(data[6]&3) + 1,
 	}
 	if f.rate == 0 || f.length < headerLen {
 		return soundFrame{}

@@ -103,14 +103,74 @@ test("createCapture hard cap stops accepting when spill lags", async () => {
     assert.equal(cap.full, true);
     release();
     await cap.flush();
+    // A progressive stream with a gap can't be saved.
+    assert.equal(cap.saveable(), false);
 });
 
-test("markSaved clears saveable until more spills", async () => {
+test("a save taking the session clears saveable until more spills", async () => {
     const cap = createCapture({ spill: async () => {} });
     const data = concat(box("ftyp"), box("moov"), box("moof"), box("mdat", Uint8Array.of(1)));
     cap.append(0, data);
     await cap.flush();
     assert.equal(cap.saveable(), true);
+    cap.sessionTaken();  // (the save started with its session)
     cap.markSaved();
     assert.equal(cap.saveable(), false);
+});
+
+test("styp stays with its media and each fragment keeps its append offset", async () => {
+    const events = [];
+    const cap = createCapture({ spill: ev => events.push(ev) });
+    const init = concat(box("ftyp"), box("moov"));
+    const part = concat(box("styp"), box("moof"), box("mdat", Uint8Array.of(1)));
+    const split = splitMp4(concat(init, part, part));
+    assert.deepEqual(split.parts, [part, part]);
+    cap.append(0, init);
+    cap.append(0, part.subarray(0, 12), -95443);
+    cap.append(0, part.subarray(12), -95443);
+    cap.append(0, part, -1, 10, 20);
+    await cap.seal();
+    const parts = events.filter(ev => ev.kind === "part");
+    assert.deepEqual(parts.map(ev => [ev.offset, ev.windowStart, ev.windowEnd]), [[-95443, 0, Infinity], [-1, 10, 20]]);
+    assert.deepEqual(parts.map(ev => ev.bytes), [part, part]);
+});
+
+test("a WebM audio buffer blocks a video-only save even after MP4 data was staged", async () => {
+    const cap = createCapture();
+    cap.add(0, "video/mp4");
+    cap.append(0, concat(box("ftyp"), box("moov"), box("moof"), box("mdat")));
+    await cap.flush();
+    cap.add(1, 'audio/webm; codecs="opus"');
+    assert.equal(cap.saveable(), false);
+    await assert.rejects(cap.seal(), /unsupported track format/);
+});
+
+test("seal propagates the staging error when a final part fails", async () => {
+    const cap = createCapture({ spill({kind}) {
+        if (kind === "part") throw new Error("disk unavailable");
+    } });
+    cap.append(0, concat(box("ftyp"), box("moov"), box("moof"), box("mdat")));
+    await assert.rejects(cap.seal(), /disk unavailable/);
+});
+
+test("an append too big to hold is dropped, and what follows is taken again", async () => {
+    const spilled = [];
+    const cap = createCapture({ spill: async (ev) => { spilled.push(ev.kind); } });
+    const frag = (n) => concat(box("moof"), box("mdat", new Uint8Array(n)));
+    cap.append(0, concat(box("ftyp"), box("moov"), frag(1 << 20)));  // (under the soft limit: no spill)
+    cap.append(0, frag(MSE_CAPTURE_LIMIT));  // over the cap: dropped
+    await new Promise((r) => setTimeout(r, 10));
+    const before = cap.bytes;
+    cap.append(0, frag(1000));
+    assert.equal(cap.full, false, "still full, nothing spilling");
+    assert.ok(cap.bytes > before, "the next fragment dropped too");
+});
+
+test("mp4Encrypted finds an encrypted sample entry in stsd (no pssh, no senc)", () => {
+    // stsd: version and flags, an entry count, then its entries.
+    const stsd = box("stsd", concat(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]), box("encv", new Uint8Array(78))));
+    const moov = box("moov", box("trak", box("mdia", box("minf", box("stbl", stsd)))));
+    assert.equal(mp4Encrypted(concat(box("ftyp"), moov)), true);
+    const clear = box("moov", box("trak", box("mdia", box("minf", box("stbl", box("stsd", concat(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]), box("avc1", new Uint8Array(78)))))))));
+    assert.equal(mp4Encrypted(concat(box("ftyp"), clear)), false);
 });

@@ -27,12 +27,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -200,6 +202,24 @@ type goBrowser struct {
 	// The generation whose document is the proxy's refusal, and why.
 	refused    int
 	refusedWhy string
+	// certs are the tab's certificate exceptions (gocert.go); certWarned,
+	// the host and address last warned of, the only ones Continue takes.
+	certs                    *goCertExceptions
+	certWarned, certWarnedAt string
+	certWarnedRevoked        bool      // (the warning's for a revocation: gorevoke.go)
+	docRequest               [2]string // the page's own document's request, and its address
+	certErrText              string    // its certificate error, the engine's words
+	certRetried              string    // a document the proxy refused (the engine ignoring errors), loaded again
+	docPosted                bool      // its request isn't a GET (a form posted)
+	// What the engine's been told of certificate errors (certIgnore's
+	// alone, under certMu: the jobs and a paused document's request): 0 to
+	// heed them, 1 to ignore them, -1 not known (a call that failed may
+	// have been heeded).
+	certMu   sync.Mutex
+	certTold int8
+	// certUnsupported: the engine can't ignore certificate errors (it
+	// hasn't the method): no exception's continued to (cert-continue).
+	certUnsupported atomic.Bool
 	// The page's last events, by method and parameters (see ours).
 	seenEvents [32]string
 	seenAt     int
@@ -538,7 +558,7 @@ func newGoBrowser(e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
 	resCtx, resCancel := context.WithCancel(ctx)
 	return &goBrowser{resCtx: resCtx, resCancel: resCancel, t: conn, conn: conn, attach: make(chan *goLink), e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
 		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
-		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{})}
+		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{}), certs: &goCertExceptions{}}
 }
 
 // goNetBusy is how many of a page's requests may be going and it still be
@@ -775,13 +795,36 @@ func (b *goBrowser) run() {
 					continue
 				}
 				loadTimeout = b.navigate(u, "you")
+			case "cert-continue":
+				// Continue on a certificate warning (gocert.go): the host
+				// warned of, at the address warned of, an exception for the
+				// tab from now, and loaded again.
+				// (Refused, said: the page shows it's loading.)
+				u, err := goURL(m.URL)
+				if err != nil || b.certWarned == "" || u != b.certWarnedAt {
+					b.fail(b.gen, "That warning is out of date: load the page again.")
+					continue
+				}
+				if b.certUnsupported.Load() && !b.certWarnedRevoked {
+					b.fail(b.gen, "This browser's engine can't continue past a certificate warning.")
+					continue
+				}
+				if !b.certs.add(b.certWarned, b.certWarnedRevoked) {
+					b.fail(b.gen, "This tab has too many certificate exceptions: open the site in a new tab.")
+					continue
+				}
+				b.certWarned, b.certWarnedAt, b.certWarnedRevoked = "", "", false
+				loadTimeout = b.navigate(u, "you")
 			case "stop":
 				b.gen++
 				b.loading, loadTimeout = 0, nil
+				shown := b.docURL
 				b.job(func() any {
 					ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 					defer cancel()
-					return b.cdp.call(ctx, b.page, "Page.stopLoading", nil, nil)
+					err := b.cdp.call(ctx, b.page, "Page.stopLoading", nil, nil)
+					b.certIgnore(ctx, shown) // (as the page shown is: the load stopped may not have come)
+					return err
 				}, func(any) {})
 			case "event":
 				if m.Gen != b.shown || m.Gen != b.gen {
@@ -957,6 +1000,7 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), goLoadTimeout)
 	b.navCancel = cancel
+	shown := b.docURL // (the page left, still shown if this load fails)
 	b.job(func() any {
 		defer cancel()
 		var r struct {
@@ -964,9 +1008,16 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 			LoaderID  string `json:"loaderId"`
 			ErrorText string `json:"errorText"`
 		}
+		b.certIgnore(ctx, u) // an exception's host: its certificate's errors ignored
 		err := b.cdp.call(ctx, b.page, "Page.navigate", map[string]any{"url": u}, &r)
 		if err == nil && r.ErrorText != "" {
 			err = errors.New(r.ErrorText)
+		}
+		if err != nil {
+			// Not loaded: certificate errors as the page still shown is.
+			cctx, ccancel := context.WithTimeout(context.Background(), goCallTimeout)
+			b.certIgnore(cctx, shown)
+			ccancel()
 		}
 		return func() {
 			if r.FrameID != "" {
@@ -976,10 +1027,29 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 				return // an older generation's
 			}
 			switch {
+			case err != nil && goCertError(err.Error()):
+				b.loading = 0
+				b.failed, b.failedURL = gen, u
+				b.certWarning(gen, u, err.Error())
 			case err != nil:
 				b.loading = 0
 				b.failed, b.failedURL = gen, u
-				b.fail(gen, goNavError(err))
+				// The tunnel refused for its certificate's revocation
+				// (gorevoke.go), the address's host or where it redirected
+				// (the document's last request): TabTop's warning, to go
+				// back or on (to there).
+				at := ""
+				if strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goCertHostOf(u)) {
+					at = u
+				} else if d := b.docRequest[1]; d != "" && d != u && strings.HasPrefix(d, "https:") && b.certs.tookRevoked(goCertHostOf(d)) {
+					at = d
+				}
+				if at != "" {
+					b.failedURL = at
+					b.certWarning(gen, at, "net::ERR_CERT_REVOKED")
+				} else {
+					b.fail(gen, goNavError(err))
+				}
 			case r.LoaderID == "":
 				// Within the same document (a fragment): no load follows.
 				b.loading = 0
@@ -1203,9 +1273,18 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		b.children = nil            // and its own frames
 		b.inflight, b.netBusy = nil, false
 		b.docURL = ""
+		b.certRetried = "" // (a new page: a refused document of its, loaded again once)
 		if u, err := goURL(p.Frame.URL); err == nil {
 			b.docURL = u
 			b.schemeAt(u) // (told already, where its request was paused)
+			// Certificate errors ignored while it's an exception's host,
+			// only (gocert.go).
+			b.job(func() any {
+				ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+				defer cancel()
+				b.certIgnore(ctx, u)
+				return nil
+			}, func(any) {})
 			if b.cdp != nil && b.cdp.interceptionDisabled.Load() {
 				b.pageAt(u)
 				b.newAdPage()
@@ -1265,6 +1344,28 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			b.streamLoaded(ev)
 		case "Network.loadingFailed":
 			b.streamFailed(ev)
+			if u := b.docFailedCert(ev); u != "" {
+				loadTimeout = b.certFailed(u, loadTimeout)
+			} else if u := b.docRequest[1]; b.docFailed(ev) && b.loading == 0 && strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goCertHostOf(u)) {
+				// A page it went to whose certificate's revoked (the tunnel
+				// refused it: gorevoke.go): warned of, as a load of its own.
+				b.certErrText = "net::ERR_CERT_REVOKED"
+				loadTimeout = b.certFailed(u, loadTimeout)
+			} else if b.docFailed(ev) && b.loading == 0 {
+				// The page's own load failed, not come: certificate errors as
+				// the page still shown is (they were set for the one going).
+				// (Not a load of TabTop's going: it sets its own, after.)
+				shown := b.docURL
+				b.job(func() any {
+					ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
+					defer cancel()
+					b.certIgnore(ctx, shown)
+					b.schemeAt(shown) // (its light or dark, too: gotheme.go)
+					return nil
+				}, func(any) {})
+			}
+		case "Network.requestWillBeSent":
+			b.docRequested(ev)
 		}
 		b.network(ev)
 	case "Page.domContentEventFired", "Page.loadEventFired":
@@ -1507,7 +1608,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
 				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc),
-				"scheme": b.goSchemeOf(s.URL)})
+				"scheme": b.goSchemeOf(s.URL), "certException": strings.HasPrefix(s.URL, "https://") && b.certs.allows(goCertHostOf(s.URL))})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return
@@ -1530,6 +1631,27 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			}
 		}
 	}, func(r any) { r.(func())() })
+}
+
+// goEMEOf is the EME requests in a batch of changes (raw), whatever else
+// it has.
+func goEMEOf(raw string) []json.RawMessage {
+	var c struct {
+		EME []json.RawMessage `json:"eme"`
+	}
+	json.Unmarshal([]byte(raw), &c)
+	return c.EME
+}
+
+// emeAgain sends a batch's EME requests (the page's, taken from its queue
+// as the batch was made: asked once only) when the rest of it is let go,
+// to be read again: they'd be lost, the page's DRM left waiting.
+func (b *goBrowser) emeAgain(gen int, eme []json.RawMessage) {
+	if len(eme) == 0 || len(eme) > 4 || !strings.HasPrefix(b.docURL, "https://") {
+		return
+	}
+	p, _ := json.Marshal(map[string]any{"type": "go-eme", "gen": gen, "eme": eme})
+	b.sendLarge(p)
 }
 
 type goChanges struct {
@@ -1605,6 +1727,9 @@ func (b *goBrowser) readChanges() {
 				return
 			}
 			if err != nil || len(raw) > goChangesLimit {
+				if err == nil {
+					b.emeAgain(gen, goEMEOf(raw))
+				}
 				b.readAgain(gen) // read it all again
 				return
 			}
@@ -1612,7 +1737,10 @@ func (b *goBrowser) readChanges() {
 				return
 			}
 			var c goChanges
-			if json.Unmarshal([]byte(raw), &c) != nil || c.Seq != b.seq+1 {
+			if err := json.Unmarshal([]byte(raw), &c); err != nil || c.Seq != b.seq+1 {
+				if err == nil {
+					b.emeAgain(gen, c.EME) // (a batch missed before it: this one's let go too)
+				}
 				b.readAgain(gen)
 				return
 			}
@@ -1626,6 +1754,7 @@ func (b *goBrowser) readChanges() {
 			}
 			if c.Again {
 				goDebugf("changes gen %d seq %d: read again (nodes of another world)", gen, c.Seq)
+				b.emeAgain(gen, c.EME)
 				b.readAgain(gen)
 				return
 			}
@@ -1930,4 +2059,188 @@ func (b *goBrowser) act(m goClientMsg) {
 			}()
 		})
 	})
+}
+
+// --- Certificate errors (gocert.go) ------------------------------------
+
+// certIgnore has the engine ignore certificate errors while raw (the
+// page's address, or the one it's going to) is an exception's host, and
+// only then; on the tab's own session. (A job's: a CDP call.)
+func (b *goBrowser) certIgnore(ctx context.Context, raw string) {
+	u, err := url.Parse(raw)
+	want := err == nil && u.Scheme == "https" && b.certs.ignores(u.Hostname())
+	told := int8(0)
+	if want {
+		told = 1
+	}
+	b.certMu.Lock()
+	defer b.certMu.Unlock()
+	if b.certTold == told || b.cdp == nil {
+		return
+	}
+	// Ignoring, as the proxy goes: so from before the engine's told to till
+	// it's certainly been told not to. A call that fails, or times out, may
+	// have been heeded: what it's been told isn't known, and it's told again
+	// next time, whichever.
+	if want {
+		b.certs.ignoring.Store(true)
+	}
+	err = b.cdp.call(ctx, b.page, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": want}, nil)
+	var cdpErr *cdpError
+	if errors.As(err, &cdpErr) && cdpErr.Code == -32601 {
+		// An engine without it: it heeds them, certainly; nothing's
+		// continued to on it (cert-continue).
+		b.certUnsupported.Store(true)
+		b.certTold = 0
+		b.certs.ignoring.Store(false)
+		b.certs.heeding()
+		return
+	}
+	if err != nil && ctx.Err() == nil {
+		// Once more at once (not left for the next load to put right).
+		err = b.cdp.call(ctx, b.page, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": want}, nil)
+	}
+	if err != nil {
+		goDebugf("certificate errors ignored %v: %v", want, err)
+		b.certTold = -1
+		return
+	}
+	b.certTold = told
+	b.certs.ignoring.Store(want)
+	if !want {
+		b.certs.heeding()
+	}
+}
+
+// certWarning tells the page that u's certificate isn't trusted (errText,
+// the engine's), with what it says (read on a connection of tabtopd's
+// own): TabTop's warning, with Back and Continue (go.js).
+func (b *goBrowser) certWarning(gen int, u, errText string) {
+	host := goURLHost(u)
+	parsed, err := url.Parse(u)
+	if err != nil || host == "" {
+		b.fail(gen, goNavError(errors.New(errText)))
+		return
+	}
+	name := parsed.Hostname()
+	revoked := strings.Contains(errText, "ERR_CERT_REVOKED")
+	b.certWarned, b.certWarnedAt, b.certWarnedRevoked = name, u, revoked
+	var dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	if b.e != nil && b.e.proxy != nil {
+		dial = b.e.proxy.dialer.DialContext // (the address policy's)
+	}
+	// (Read on a goroutine of its own, not the tab's jobs: a host can take
+	// its time, and the tab's next load mustn't wait for it.)
+	go func() {
+		var d *goCertDetails
+		if parsed.Port() == "" || parsed.Port() == "443" {
+			d = goCertProbe(b.ctx, dial, name)
+		}
+		if d != nil && revoked && d.Problem == "" {
+			d.Problem = "revoked by its issuer"
+		}
+		b.post(func() {
+			if gen != b.gen {
+				return
+			}
+			msg := map[string]any{"type": "go-cert-warning", "gen": gen, "url": u, "host": name, "reason": goCertReason(errText)}
+			if d != nil {
+				msg["cert"] = d
+			}
+			b.send(msg)
+		})
+	}()
+}
+
+// docRequested notes the request for the page's own document (a link the
+// page followed, a form, a redirect by script), to know it if it fails.
+func (b *goBrowser) docRequested(ev cdpEvent) {
+	var p struct {
+		RequestID string `json:"requestId"`
+		Type      string `json:"type"`
+		FrameID   string `json:"frameId"`
+		Request   struct {
+			URL    string `json:"url"`
+			Method string `json:"method"`
+		} `json:"request"`
+	}
+	if json.Unmarshal(ev.Params, &p) == nil && p.Type == "Document" && (p.FrameID == b.frame || b.frame == "") {
+		b.docRequest = [2]string{p.RequestID, p.Request.URL}
+		b.docPosted = p.Request.Method != "" && p.Request.Method != "GET"
+	}
+}
+
+// docFailed is whether ev is the failure of the page's own document's
+// request.
+func (b *goBrowser) docFailed(ev cdpEvent) bool {
+	var p struct {
+		RequestID string `json:"requestId"`
+		Type      string `json:"type"`
+	}
+	return json.Unmarshal(ev.Params, &p) == nil && p.Type == "Document" && p.RequestID != "" && p.RequestID == b.docRequest[0]
+}
+
+// docFailedCert is the address of the page's own document whose request
+// failed for its certificate, or was refused by the proxy as the engine
+// ignored certificate errors (certErrText "", then), if ev is that.
+func (b *goBrowser) docFailedCert(ev cdpEvent) string {
+	var p struct {
+		RequestID string `json:"requestId"`
+		Type      string `json:"type"`
+		ErrorText string `json:"errorText"`
+	}
+	if json.Unmarshal(ev.Params, &p) != nil || p.Type != "Document" || p.RequestID == "" || p.RequestID != b.docRequest[0] {
+		return ""
+	}
+	u, err := goURL(b.docRequest[1])
+	if err != nil {
+		return ""
+	}
+	// Refused by the proxy as the engine ignored certificate errors (its
+	// page an exception's), another host's: loaded again, heeding them, once.
+	// (Not a form posted: loaded again, it'd be got, its data lost.)
+	if b.certs.tookRefused(goCertHostOf(u)) && b.certRetried != u && !b.docPosted {
+		b.certRetried = u
+		b.certErrText = ""
+		return u
+	}
+	if !goCertError(p.ErrorText) {
+		return ""
+	}
+	b.certErrText = p.ErrorText
+	return u
+}
+
+// certFailed is a document the page went to (by itself) refused for its
+// certificate: an exception's host (the person's continued to it, in this
+// tab) loaded again, its errors ignored; else, as a load of its own, warned
+// of. One the proxy refused as the engine ignored errors is loaded again,
+// heeding them (navigate: certIgnore). (One the person asked for is warned
+// of by navigate.)
+func (b *goBrowser) certFailed(u string, loadTimeout <-chan time.Time) <-chan time.Time {
+	if b.failed == b.gen && b.failedURL == u || b.loading == b.gen && b.loadingURL == u && !b.navigated {
+		// A load asked for (navigate's): warned of there, as its
+		// Page.navigate answers (this event can come first).
+		return loadTimeout
+	}
+	if b.certErrText == "" || b.certs.allows(goCertHostOf(u)) && !b.certs.ignoring.Load() {
+		// (Refused as the engine ignored errors: then heeding them.)
+		return b.navigate(u, "page")
+	}
+	b.leftPage()
+	b.gen++
+	b.loading, b.navigated = 0, false
+	b.failed, b.failedURL = b.gen, u
+	b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": "page"})
+	b.certWarning(b.gen, u, b.certErrText)
+	return nil
+}
+
+// goCertHostOf is raw's host name (no port).
+func goCertHostOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }

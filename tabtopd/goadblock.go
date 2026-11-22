@@ -49,6 +49,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -704,10 +705,10 @@ type goAdBlock struct {
 // newGoAdBlock reads what's kept in file ("" for none), fetching lists
 // where allow says, as the remote browser's own fetches do.
 func newGoAdBlock(file string, allow func(netip.Addr) bool) *goAdBlock {
-	client := newFetchClient(allow)
+	client := newGoFetchClient(allow) // (DNS over HTTPS too, while it's on)
 	transport := client.Transport.(*http.Transport).Clone()
 	transport.DisableCompression = false // gzip, decoded (and limited decoded)
-	client.Transport = transport
+	client.Transport = goDNSTransport(transport)
 	client.Timeout = goAdListTimeout
 	a := &goAdBlock{file: file, client: client, interval: "daily", stop: make(chan struct{})}
 	if file != "" {
@@ -1711,12 +1712,68 @@ func (r *goAdRules) hider(page string) *goAdHider {
 	return h
 }
 
+// goAdHideRemoteOK is whether sel may hide something in the remoted copy.
+// Selectors that match blob: URLs would hide every picture (and styled
+// background) the frame loads: those come only as blob: URLs (the frame's
+// CSP allows no other origin). Filter lists use them against sites that put
+// ads in blob: URLs (e.g. img[src*="blob:"]); here they'd hide the
+// page's own pictures once the broker has fetched them.
+func goAdHideRemoteOK(sel string) bool {
+	sel = strings.ToLower(goCSSUnescape(sel))
+	if strings.Contains(sel, "blob:") {
+		return false
+	}
+	// Nor one matching them by a part of it ([src^="blob"], [src*="lob:"]).
+	for _, m := range goAdBlobAttr.FindAllStringSubmatch(sel, -1) {
+		if v := m[1]; strings.Contains(v, "blob") || len(v) >= 3 && strings.Contains("blob:", v) {
+			return false
+		}
+	}
+	return true
+}
+
+// goAdBlobAttr is an attribute selector on what holds a picture's address
+// in the copy (always a blob: URL), and the value it matches.
+var goAdBlobAttr = regexp.MustCompile(`\[\s*(?:src|srcset|style|poster|href|data)\s*[\^*$|~]?=\s*["']?([^"'\]]*)`)
+
+// goCSSUnescape takes CSS escapes out of s (\3a or \: for ':'), so a
+// selector can't hide what it matches from goAdHideRemoteOK by escaping it.
+func goCSSUnescape(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 == len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		j := i + 1
+		for j < len(s) && j < i+7 && strings.IndexByte("0123456789abcdefABCDEF", s[j]) >= 0 {
+			j++
+		}
+		if j == i+1 {
+			b.WriteByte(s[j]) // \: and the like: the character itself
+			i = j
+			continue
+		}
+		if n, err := strconv.ParseUint(s[i+1:j], 16, 32); err == nil && n > 0 && n <= 0x10ffff {
+			b.WriteRune(rune(n))
+		}
+		if j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n') {
+			j++ // (the space ending a hex escape)
+		}
+		i = j - 1
+	}
+	return b.String()
+}
+
 // take adds what rules (generic ones, or the site's) hold for the page,
 // and haven't been given.
 func (h *goAdHider) take(out []string, rules []goAdHideRule, generic bool) []string {
 	for _, rule := range rules {
 		if h.sent[rule.sel] || h.except[rule.sel] || generic && h.r.hide.genericExcept[rule.sel] ||
-			rule.not != nil && goAdIn(h.page, rule.not, nil) {
+			rule.not != nil && goAdIn(h.page, rule.not, nil) || !goAdHideRemoteOK(rule.sel) {
 			continue
 		}
 		h.sent[rule.sel] = true

@@ -24,10 +24,36 @@
         return result;
     };
 
+    // Told at once, then not again till a timer's turn, when it's told once
+    // more if it was drawn on meanwhile: the agent only notes the canvas and
+    // reads it after (a game's thousands of draws a frame, two events, not
+    // thousands; its last draw always told).
+    const drawing = new WeakMap(); // canvas -> drawn on since it was told
+    const later = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null; // (none: each told)
     function dirty(canvas) {
         if (!(canvas instanceof Canvas) || !contexts.has(canvas)) return;
+        if (later && drawing.has(canvas)) {
+            drawing.set(canvas, true);
+            return;
+        }
+        if (later) drawing.set(canvas, false);
+        later?.(() => {
+            const again = drawing.get(canvas);
+            drawing.delete(canvas);
+            if (again) dirty(canvas);
+        }, 0);
         try { apply(dispatchEvent, canvas, [new EventCtor(dirtyEvent, { bubbles: true })]); }
         catch { /* a replaced or detached canvas */ }
+        // In a same-origin frame, told on its iframe too, where the page's
+        // agent hears it (it doesn't hear the frame's own events in Moli),
+        // as gogl.js does.
+        try {
+            const owner = globalThis.frameElement;
+            if (owner && canvas.ownerDocument === document) {
+                const index = Array.prototype.indexOf.call(document.querySelectorAll("canvas"), canvas);
+                if (index >= 0) apply(dispatchEvent, owner, [new CustomEventCtor("__tabtop_frame_canvas_dirty", { bubbles: true, detail: JSON.stringify({ index }) })]);
+            }
+        } catch { /* another origin's frame, or gone */ }
     }
 
     // Only operations that can change pixels. Path and state setup alone do

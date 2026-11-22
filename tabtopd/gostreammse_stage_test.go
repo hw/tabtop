@@ -265,8 +265,8 @@ func TestMSESaveWhenBusyKeepsStage(t *testing.T) {
 	if err := cli.Write(ctx, websocket.MessageText, []byte(`{"finalize":true}`)); err != nil {
 		t.Fatal(err)
 	}
-	if r := mseReply(t, cli); r["error"] == nil {
-		t.Fatalf("saved with every fetch going: %v", r)
+	if r := mseReply(t, cli); r["refused"] == nil {
+		t.Fatalf("not refused, every fetch going: %v", r)
 	}
 	if m.mseStage(stage.id) == nil {
 		t.Error("the stage was given up, its save refused as busy")
@@ -278,5 +278,65 @@ func TestMSESaveWhenBusyKeepsStage(t *testing.T) {
 	defer store.Close()
 	if _, err := store.root.Stat(stage.dir); err != nil {
 		t.Errorf("the stage's files are gone, its save refused as busy: %v", err)
+	}
+	// The same session goes on: spilled to, and saved once there's room.
+	mseSend(t, cli, 0, mseKindPart, []byte("part 2"))
+	m.mu.Lock()
+	for _, id := range fake {
+		delete(m.jobs, id)
+	}
+	m.mu.Unlock()
+	if err := cli.Write(ctx, websocket.MessageText, []byte(`{"finalize":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if r := mseReply(t, cli); r["fetch"] == nil && r["error"] == nil {
+		t.Fatalf("the second Save: %v", r)
+	}
+	if m.mseStage(stage.id) != nil {
+		t.Error("the stage still listed once its save started")
+	}
+}
+
+// TestMSESaveTooSoonKeepsStage: Save before any track has a part (a
+// track's init spilled, not yet a part) is refused, the stage kept: it was
+// forgotten, everything staged lost. A track with its init alone is left
+// out of a save the others make.
+func TestMSESaveTooSoonKeepsStage(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	stage, err := m.openMSEStage("tab-1", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.forgetMSEStage(stage.id)
+	srv, cli := mseTunnelPair(t)
+	go m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, "by", "127.0.0.1", "who", nil, "")
+	mseSend(t, cli, 1, mseKindInit, []byte("audio init"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cli.Write(ctx, websocket.MessageText, []byte(`{"finalize":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if r := mseReply(t, cli); r["refused"] == nil {
+		t.Fatalf("not refused, nothing to save: %v", r)
+	}
+	if m.mseStage(stage.id) == nil {
+		t.Fatal("the stage given up, its save refused as too soon")
+	}
+	// Video's parts come; audio still its init alone: saved, without it.
+	mseSend(t, cli, 0, mseKindInit, []byte("video init"))
+	mseSend(t, cli, 0, mseKindPart, []byte("video part"))
+	// (Staged by serveMSEStage as it reads them: waited for, a while.)
+	var in mseSaveInput
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		stage.mu.Lock()
+		in, err = stage.inputLocked()
+		stage.mu.Unlock()
+		if err == nil && len(in.tracks) == 1 && len(in.tracks[0].parts) == 1 || time.Now().After(deadline) {
+			break
+		}
+	}
+	if err != nil || len(in.tracks) != 1 || len(in.tracks[0].parts) != 1 {
+		t.Fatalf("what's saved: %+v, %v", in, err)
 	}
 }

@@ -383,6 +383,10 @@
                 }
             } else if (method.startsWith("uniform") && state.locationPrograms.has(args[0])) {
                 command.up = state.locationPrograms.get(args[0]);
+            } else if (method.startsWith("copyTex")) {
+                // The framebuffer it reads (compactFramebufferFrames); not
+                // in the log (its fields are checked: goCanvasGLKeys).
+                copyReads.set(command, state.objects.get(readFramebuffer(state)) || 0);
             }
             if (result && typeof result === "object") {
                 const id = ++state.nextObject;
@@ -441,6 +445,10 @@
     }
     function compactFramebufferFrames(state, framebuffer) {
         if (state.commands.some((command) => command.m === "blitFramebuffer" || command.m === "drawBuffers" || command.m.endsWith("iOES"))) return;
+        // A copy of this framebuffer into a texture (a feedback effect, a
+        // trail) is of the draws that would go: not compacted (given up at
+        // the log's limit, shown as unsupported, rather than wrong).
+        if (state.commands.some((command) => command.m.startsWith("copyTex") && copyReads.get(command) === framebuffer)) return;
         const compactIndependentState = !state.commands.some((command) => frameWrites.has(command.m) && (command.fb || 0) !== framebuffer);
         const latest = new Map();
         const skip = new Set();
@@ -475,11 +483,15 @@
                 if (key && latestSubData.get(key) !== i) skip.add(i);
             }
         }
+        // A uniform's location by its name (a page may ask for it again each
+        // frame, a new object each time: the same uniform).
+        const locationNames = new Map();
+        for (const command of state.commands) if (command.m === "getUniformLocation" && command.r && typeof command.a?.[1] === "string") locationNames.set(command.r, command.a[1]);
         const keyOf = (command, vertexArray) => {
             const method = command.m, first = command.a?.[0];
             if (method === "enable" || method === "disable") return `cap:${JSON.stringify(first)}`;
             if (method === "stencilFuncSeparate" || method === "stencilMaskSeparate" || method === "stencilOpSeparate") return `state:${method}:${JSON.stringify(first)}`;
-            if (method.startsWith("uniform") && command.up > 0) return `uniform:${command.up}:${JSON.stringify(first)}`;
+            if (method.startsWith("uniform") && command.up > 0) return `uniform:${command.up}:${locationNames.has(first?.ref) ? "name:" + locationNames.get(first.ref) : JSON.stringify(first)}`;
             if (locationMethods.has(method)) return `attrib:${vertexArray}:${method}:${JSON.stringify(first)}`;
             return compactStateMethods.has(method) ? `state:${method}` : "";
         };
@@ -499,9 +511,60 @@
             kept.push(command);
         }
         state.commands = kept.filter(Boolean);
+        if (compactIndependentState) state.commands = compactBinds(state.commands);
         state.bytes = state.commands.reduce((sum, command) => sum + JSON.stringify(command).length, 0);
         state.cursor = 0;
         state.forceFull = true;
+    }
+    // compactBinds drops the binds nothing kept after them may use: each
+    // kind's last is kept (the state the log leaves), and one before
+    // anything that may use what's bound (an upload, a create, a draw of
+    // another target's: any call but another bind). A location asked for
+    // again, nothing kept naming the one before, goes too.
+    function compactBinds(commands) {
+        const keys = new Array(commands.length).fill("");
+        let unit = 0x84C0, vertexArray = 0;
+        for (let i = 0; i < commands.length; i++) {
+            const c = commands[i], target = c.a?.[0];
+            switch (c.m) {
+                case "activeTexture": keys[i] = "active"; unit = target; break;
+                case "bindTexture": keys[i] = `texture:${unit}:${target}`; break;
+                case "bindBuffer": keys[i] = target === 0x8893 ? `buffer:${vertexArray}:${target}` : `buffer:${target}`; break;
+                case "bindVertexArray": case "bindVertexArrayOES": keys[i] = "vertexArray"; vertexArray = target?.ref || 0; break;
+                case "bindRenderbuffer": keys[i] = `renderbuffer:${target}`; break;
+                case "bindSampler": keys[i] = `sampler:${target}`; break;
+                case "pixelStorei": keys[i] = `pixel:${target}`; break;
+            }
+        }
+        const all = new Set(keys.filter(Boolean));
+        const needed = new Set(all);
+        const keep = new Array(commands.length).fill(true);
+        for (let i = commands.length - 1; i >= 0; i--) {
+            const key = keys[i];
+            if (!key) {
+                for (const k of all) needed.add(k);
+                continue;
+            }
+            if (!needed.has(key)) { keep[i] = false; continue; }
+            needed.delete(key);
+            if (key.startsWith("texture:")) needed.add("active");
+            if (key.startsWith("buffer:") && key.split(":").length === 3) needed.add("vertexArray");
+        }
+        let out = commands.filter((_, i) => keep[i]);
+        // Locations asked for again: the earlier, named by nothing kept, go.
+        const named = new Set();
+        const refs = (v) => {
+            if (Array.isArray(v)) v.forEach(refs);
+            else if (v && typeof v === "object") {
+                if (Number.isInteger(v.ref)) named.add(v.ref);
+                else for (const x of Object.values(v)) refs(x);
+            }
+        };
+        for (const c of out) if (c.m !== "getUniformLocation") refs(c.a);
+        const lastAsked = new Map();
+        out.forEach((c, i) => { if (c.m === "getUniformLocation") lastAsked.set(JSON.stringify(c.a), i); });
+        out = out.filter((c, i) => c.m !== "getUniformLocation" || named.has(c.r) || lastAsked.get(JSON.stringify(c.a)) === i);
+        return out;
     }
     function contextAttributeMask(gl) {
         let attributes = null;
@@ -746,6 +809,10 @@
     function drawFramebuffer(state) {
         return state.version === 2 ? state.shadow.drawFramebuffer ?? null : state.shadow.framebuffer;
     }
+    const copyReads = new WeakMap();  // a copyTex* command -> the framebuffer it read
+    function readFramebuffer(state) {
+        return state.version === 2 ? state.shadow.readFramebuffer ?? null : state.shadow.framebuffer;
+    }
 
     function shadowParameter(state, gl, parameter) {
         const s = state?.shadow;
@@ -861,6 +928,12 @@
             const kind = name.slice(2).toLowerCase();
             if (name.startsWith("is") && state?.objectKinds.get(args[0]) === kind) return true;
             if (name === "isEnabled" && state) return state.shadow.enabled.has(args[0]);
+            if (name === "getParameter") {
+                // Fixed strings so detectors see a stable WebKit-like GPU identity
+                // (Moli often returns nothing → "Unknown").
+                if (args[0] === this.VENDOR) return "WebKit";
+                if (args[0] === this.RENDERER) return "WebKit WebGL";
+            }
             let result = original ? apply(original, this, args) : null;
             if (name === "getSupportedExtensions") return [...supportedExtensions].filter((extension) => extensionSupported(extension, state));
             if (name === "getParameter" && result == null) result = shadowParameter(state, this, args[0]);
@@ -951,6 +1024,10 @@
                 const kind = name.slice(2).toLowerCase();
                 if (name.startsWith("is") && state?.objectKinds.get(args[0]) === kind) return true;
                 if (name === "isEnabled" && state) return state.shadow.enabled.has(args[0]);
+                if (name === "getParameter") {
+                    if (args[0] === this.VENDOR) return "WebKit";
+                    if (args[0] === this.RENDERER) return "WebKit WebGL";
+                }
                 let result = original ? apply(original, this, args) : null;
                 if (name === "getSupportedExtensions") return [...supportedExtensions].filter((extension) => extensionSupported(extension, state));
                 if (name === "getParameter" && result == null) result = shadowParameter(state, this, args[0]);

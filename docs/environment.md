@@ -811,7 +811,9 @@ own, so `WEB_GO_CACHE` doesn't apply to it.
 Videos and sounds with a file to play are played by a player of this page's,
 laid under the page so the site's own overlays stay visible, the file read from the site by the server as it plays;
 those a site's own player streams (YouTube's, and most streaming sites')
-aren't. What scripts draw is shown too: a 2D canvas as a picture, and WebGL
+aren't. A site whose HTTPS certificate isn't trusted is shown as a warning
+first (Go back, or Continue: an exception for that site in that tab only,
+till it's closed; nothing's intercepted). What scripts draw is shown too: a 2D canvas as a picture, and WebGL
 (three.js's included) drawn again by your browser from the page's calls, at
 a few frames a second; a canvas that can't be shown so says it.
 The page is laid out at your window's size (sites see that size, not your
@@ -831,7 +833,8 @@ file the site sends (a PDF, an archive) is offered to save into Downloads
 both `WEB_GO_FETCH_PRIVATE` and `WEB_GO_PRIVATE` are `1`.
 
 With Files enabled, **Save stream** is in the browser's video player (open a
-page's video with Watch, in the menu): it saves the HLS or DASH stream the
+page's video with Watch, in the menu), and on each video's row in the menu
+(a stream no player here plays has a row of its own): it saves the HLS or DASH stream the
 page loaded, the full on-demand video, into Downloads as an MP4. Where the
 page loaded several, a picker lists them by quality, length and site, the
 longest first; a short one beside a long one (an ad's) and live ones aren't
@@ -879,7 +882,19 @@ each engine's cache to its own tab, in memory.
 Each engine runs in a [bubblewrap](https://github.com/containers/bubblewrap)
 sandbox, with no network of its own: it reaches only the server's proxy,
 which connects to public addresses only, on ports 80 and 443 (as fetches
-do; `WEB_GO_PRIVATE=1` adds private networks). Docker's default security
+do; `WEB_GO_PRIVATE=1` adds private networks). Sites' names are looked up
+by the system's DNS, unless DNS over HTTPS is turned on in the browser's
+☰ → Settings (Cloudflare, Quad9, or a DoH server of your own, at a public
+address): then by that service alone, with no falling back to the
+system's DNS, so a local or private name won't resolve unless it's in
+`/etc/hosts` or a local record (below; else use its address, whatever
+`WEB_GO_PRIVATE` says). Names can also be given addresses in
+☰ → Settings → Local DNS records (A and AAAA). A name is looked up there
+first, then in the server's `/etc/hosts` (so `--add-host` names, such as
+`host.docker.internal:host-gateway`, work with DNS over HTTPS on too),
+then by DNS over HTTPS or the system's DNS; a private network's address
+is still reached only with `WEB_GO_PRIVATE`.
+Other fetches keep the system's DNS. Docker's default security
 settings don't let bubblewrap make its sandbox in a container; without the
 options below the server logs that the remote browser is unavailable, and
 why, and `/go` says so. Run the container with:

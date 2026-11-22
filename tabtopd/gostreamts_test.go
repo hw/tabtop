@@ -46,6 +46,8 @@ func TestSaveStreamTS(t *testing.T) {
 	hls("muxed", 6, append(h264, "-c:a", "aac")...)
 	hls("hevc", 4, "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-g", "50", "-c:a", "aac")
 	hls("later", 4, append(h264, "-c:a", "aac", "-output_ts_offset", "1000")...)
+	// Another encoder's, past the discontinuity: its streams on other PIDs.
+	hls("repid", 4, append(h264, "-c:a", "aac", "-output_ts_offset", "2000", "-streamid", "0:0x1e1", "-streamid", "1:0x1e2")...)
 	hls("wraps", 6, append(h264, "-c:a", "aac", "-output_ts_offset", fmt.Sprint(float64(tsWrap)/tsClockRate-3))...)
 	hls("video", 6, append(h264, "-an")...)
 	hls("sound", 6, "-vn", "-c:a", "aac")
@@ -64,6 +66,14 @@ func TestSaveStreamTS(t *testing.T) {
 	later = later[strings.Index(later, "#EXTINF"):]
 	joined := strings.Replace(read("muxed.m3u8"), "#EXT-X-ENDLIST\n", "#EXT-X-DISCONTINUITY\n"+later, 1)
 	os.WriteFile(filepath.Join(dir, "joined.m3u8"), []byte(joined), 0o644)
+	// Video alone, then (an ad's, say) with sound: the sound, not in the
+	// header, left out.
+	muxedParts := read("muxed.m3u8")
+	muxedParts = muxedParts[strings.Index(muxedParts, "#EXTINF"):]
+	os.WriteFile(filepath.Join(dir, "sound-later.m3u8"), []byte(strings.Replace(read("video.m3u8"), "#EXT-X-ENDLIST\n", "#EXT-X-DISCONTINUITY\n"+muxedParts, 1)), 0o644)
+	repid := read("repid.m3u8")
+	repid = repid[strings.Index(repid, "#EXTINF"):]
+	os.WriteFile(filepath.Join(dir, "repid-joined.m3u8"), []byte(strings.Replace(read("muxed.m3u8"), "#EXT-X-ENDLIST\n", "#EXT-X-DISCONTINUITY\n"+repid, 1)), 0o644)
 	os.WriteFile(filepath.Join(dir, "master.m3u8"), []byte("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",DEFAULT=YES,URI=\"sound.m3u8\"\n"+
 		"#EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=320x180,AUDIO=\"a\"\nvideo.m3u8\n"), 0o644)
 
@@ -94,6 +104,8 @@ func TestSaveStreamTS(t *testing.T) {
 		{"muxed.m3u8", 6, "h264", "aac"},
 		{"hevc.m3u8", 4, "hevc", "aac"},
 		{"joined.m3u8", 10, "h264", "aac"},
+		{"repid-joined.m3u8", 10, "h264", "aac"},
+		{"sound-later.m3u8", 12, "h264", ""},
 		{"wraps.m3u8", 6, "h264", "aac"},
 		{"master.m3u8", 6, "h264", "aac"},
 		{"mp3.m3u8", 4, "h264", "mp3"},
@@ -137,7 +149,11 @@ func TestSaveStreamTS(t *testing.T) {
 		data, _ := os.ReadFile(file)
 		var top []string
 		streamBoxes(data, func(kind, _ []byte) error { top = append(top, string(kind)); return nil })
-		if len(top) < 4 || top[2] != "sidx" || top[3] != "sidx" {
+		tracks := 1
+		if c.audio != "" {
+			tracks = 2
+		}
+		if len(top) < 2+tracks || top[2] != "sidx" || tracks == 2 && top[3] != "sidx" {
 			t.Errorf("%s: its boxes %v, not indexed", c.manifest, top)
 		}
 		if c.manifest == "muxed.m3u8" {
@@ -176,6 +192,7 @@ func TestSaveStreamTS(t *testing.T) {
 func newTestFileServer(t *testing.T, dir string) string {
 	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	t.Cleanup(srv.Close)
+	goTestPorts(t, portOf(t, srv.URL)) // (a stream's addresses are checked as the engine's are)
 	return srv.URL
 }
 
@@ -230,5 +247,55 @@ func TestTSAudioHeaderSplit(t *testing.T) {
 		if len(s.samples[i].Data) != want {
 			t.Errorf("frame %d: %d bytes, want %d", i, len(s.samples[i].Data), want)
 		}
+	}
+}
+
+// TestTSAudioWithoutTime: an audio PES packet without a PTS (a stream needs
+// one only every 0.7 s) goes on from the one before: its frames were
+// dropped, and the frame the packet before left half had run into the next.
+func TestTSAudioWithoutTime(t *testing.T) {
+	frame := func(n int) []byte {
+		l := 7 + n
+		f := []byte{0xff, 0xf1, 1<<6 | 4<<2, 2<<6 | byte(l>>11), byte(l >> 3), byte(l&7)<<5 | 0x1f, 0xfc}
+		return append(f, make([]byte, n)...)
+	}
+	pes := func(pts int64, timed bool, data []byte) []byte {
+		p := []byte{0, 0, 1, 0xc0, 0, 0, 0x80, 0, 0}
+		if timed {
+			p[7], p[8] = 0x80, 5
+			p = append(p, 0x21|byte(pts>>29&0x0e), byte(pts>>22), byte(pts>>14&0xfe)|1, byte(pts>>7), byte(pts<<1&0xfe)|1)
+		}
+		return append(p, data...)
+	}
+	data := append(append(append(frame(100), frame(120)...), frame(140)...), frame(160)...)
+	cut1, cut2 := 107+3, 107+127+147 // into the second frame's header; the fourth's start
+	r := newTSRemux(&tsClock{})
+	s := &tsStream{}
+	for _, p := range [][]byte{pes(9000, true, data[:cut1]), pes(0, false, data[cut1:cut2]), pes(9000+3*1024*90000/44100, true, data[cut2:])} {
+		s.pes = p
+		if err := r.pesDone(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.samples) != 4 {
+		t.Fatalf("%d frames read of 4", len(s.samples))
+	}
+	for i, want := range []int{100, 120, 140, 160} {
+		if len(s.samples[i].Data) != want || s.samples[i].DecodeTime != s.samples[0].DecodeTime+uint64(i*1024) {
+			t.Errorf("frame %d: %d bytes at %d, want %d", i, len(s.samples[i].Data), s.samples[i].DecodeTime, want)
+		}
+	}
+}
+
+// TestTSAudioSeveralBlocks: an ADTS frame of several AAC blocks (an MP4
+// sample is one) isn't kept as one sample, decoded as its first block
+// alone: the stream's sound is refused, said.
+func TestTSAudioSeveralBlocks(t *testing.T) {
+	l := 7 + 200
+	frame := append([]byte{0xff, 0xf1, 1<<6 | 4<<2, 2<<6 | byte(l>>11), byte(l >> 3), byte(l&7)<<5 | 0x1f, 0xfc | 1}, make([]byte, 200)...)
+	r, s := &tsRemux{}, &tsStream{}
+	err := r.audioFrames(s, frame, 0)
+	if err == nil {
+		t.Fatalf("taken: %d samples, the first %d long", len(s.samples), s.samples[0].Dur)
 	}
 }

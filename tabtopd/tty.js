@@ -22,7 +22,7 @@ import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
 import { handOffSession } from "../tabtop/session-state.js";
 import { nameTab, navBar, pages } from "../tabtop/nav.js";
-import { reconnect } from "../tabtop/reconnect.js";
+import { reconnect, reconnected } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { dropUploads } from "../tabtop/drop.js";
 import { folderInfo, loadRoots, makeFolder, setLoginTitle, uploadShellPath, uploadFile, uploadNote } from "../tabtop/requests.js";
@@ -271,6 +271,7 @@ function connect() {
         s.onopen = () => {
             connecting = false;
             ws = s;
+            reconnected();  // (however it came back: the banner's gone)
             search.offer(s.reply?.search !== false);
             sendSize();
             resolve(true);

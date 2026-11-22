@@ -67,6 +67,29 @@ source.onsourceopen = async () => {
 };
 streamed.src = URL.createObjectURL(source);
 </script>`;
+    // As HLS.js with preferManagedMediaSource: empty <source>, then attach via
+    // ManagedMediaSource (our relay) on a <source>, with startstreaming.
+    const hlsLikeVideo = `<video id="streamed" muted width="320" height="180"><source src="" type="video/mp4"></video><script>
+const streamed = document.getElementById("streamed");
+const Ctor = window.ManagedMediaSource || window.MediaSource;
+const source = new Ctor();
+const url = URL.createObjectURL(source);
+let streaming = 0;
+source.addEventListener("startstreaming", () => { streaming++; document.documentElement.setAttribute("data-stream", "start:" + streaming); });
+source.addEventListener("sourceopen", async () => {
+    document.documentElement.setAttribute("data-mms", Ctor === ManagedMediaSource ? "managed" : "plain");
+    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+    buffer.onupdateend = () => { buffer.onupdateend = null; source.endOfStream(); streamed.play().catch(() => {}); };
+    buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
+});
+streamed.removeAttribute("src");
+for (const s of [...streamed.querySelectorAll("source")]) s.remove();
+const el = document.createElement("source");
+el.type = "video/mp4";
+el.src = url;
+streamed.appendChild(el);
+streamed.load();
+</script>`;
     const files = {
         "index.html": `<!doctype html><html><head><title>Fixture</title><link rel="stylesheet" href="style.css"></head>
 <body><h1 id="h">Fixture</h1>
@@ -87,6 +110,7 @@ streamed.src = URL.createObjectURL(source);
         "embedded/frame.html": `<!doctype html><style>p { color: teal }</style>
 <p id="embedded-text" onclick="throw Error()">initial content</p><img src="../pic.png">
 <script>setTimeout(() => { document.getElementById("embedded-text").textContent = "updated content"; }, 1500);</script>`,
+        "certlink.html": `<!doctype html><title>Cert link</title><a id="to">to the site</a><script>document.getElementById("to").href = new URLSearchParams(location.search).get("to");</script>`,
         "second.html": `<!doctype html><title>Second</title><p id="p">second page</p><a id="back" href="index.html">back</a>`,
         // WebGL drawn in the engine, replayed in the copy (gogl.js): a still
         // WebGL1 and WebGL2 square on red; one that, clicked, changes colour,
@@ -95,7 +119,7 @@ streamed.src = URL.createObjectURL(source);
         // turns blue; and one that, clicked, draws past the cap with no clear
         // between (which can't be compacted), so can't be shown any more.
         "webgl.html": `<!doctype html><title>WebGL</title>
-<canvas id="still" width="64" height="64"></canvas> <canvas id="two" width="64" height="64"></canvas> <canvas id="moving" width="64" height="64"></canvas> <canvas id="broken" width="64" height="64"></canvas> <canvas id="overrun" width="64" height="64"></canvas> <canvas id="sized" width="64" height="64"></canvas>
+<canvas id="still" width="64" height="64"></canvas> <canvas id="two" width="64" height="64"></canvas> <canvas id="moving" width="64" height="64"></canvas> <canvas id="broken" width="64" height="64"></canvas> <canvas id="overrun" width="64" height="64"></canvas> <canvas id="sized" width="64" height="64"></canvas> <canvas id="upload" width="64" height="64"></canvas>
 <p id="n">0</p><p id="io"></p><div style="position:absolute;top:4000px;width:1px;height:1px"></div>
 <script>
 new IntersectionObserver((seen) => { document.getElementById("io").textContent = seen.at(-1).isIntersecting ? "in" : "out"; }).observe(document.getElementById("moving"));
@@ -142,6 +166,19 @@ document.getElementById("moving").addEventListener("click", () => {
 const overrun = scene(document.getElementById("overrun"), "webgl");
 overrun([0, 1, 0, 1]);
 document.getElementById("overrun").addEventListener("click", () => { for (let i = 0; i < 2500; i++) overrun.over([0, 1, 0, 1]); });
+// Clicked: two big textures uploaded (an update past a batch's 3 MB), then blue.
+const upload = document.getElementById("upload"), up = upload.getContext("webgl");
+up.clearColor(0, 1, 0, 1); up.clear(up.COLOR_BUFFER_BIT);
+upload.addEventListener("click", () => {
+    for (let i = 0; i < 2; i++) {
+        up.bindTexture(up.TEXTURE_2D, up.createTexture());
+        up.texImage2D(up.TEXTURE_2D, 0, up.RGBA, 512, 600, 0, up.RGBA, up.UNSIGNED_BYTE, new Uint8Array(512 * 600 * 4).fill(i + 1));
+    }
+    // (A clear in a scissor box: not one the hook compacts at, so these go
+    // as an update, not a log sent whole.)
+    up.enable(up.SCISSOR_TEST); up.scissor(0, 0, 64, 64);
+    up.clearColor(0, 0, 1, 1); up.clear(up.COLOR_BUFFER_BIT);
+});
 // Resized by the page, then drawn again at its new size.
 const sizedCanvas = document.getElementById("sized"), sized = scene(sizedCanvas, "webgl");
 sized([0, 1, 0, 1]);
@@ -246,6 +283,7 @@ $("svgbtn").onclick = () => status("icon pressed");
 $("openask").onclick = () => { window.open(location.protocol + "//" + location.hostname + ":8081/second.html"); alert("who asks"); };
 setTimeout(() => { const p = document.createElement("p"); p.id = "late"; p.textContent = "late"; document.body.append(p); }, 1500);
 </script>`,
+        "bgcolor.html": `<!doctype html><title>Bgcolor</title><body bgcolor="#000000" text="#ffffff"><p id="t">Light text on a dark page, by attributes</p></body>`,
         "result.html": `<!doctype html><title>Result</title><p id="p"></p><script>document.getElementById("p").textContent = "query " + new URLSearchParams(location.search).get("q");</script>`,
         "view.html": `<!doctype html><title>View</title><style>body { margin: 0 } #hd { height: 123px; background: #eee } .wide-only { display: none } @media (min-width: 900px) { .wide-only { display: block } }</style>
 <header id="hd"><button id="menu">Menu</button></header><p id="w"></p><p id="mq"></p><p id="or"></p><p class="wide-only" id="wide">wide</p>
@@ -311,6 +349,10 @@ $("under").addEventListener("click", () => log("under clicked"));
         // A video on a dark page: the page stays dark around it.
         "darkvideo.html": `<!doctype html><title>Dark video</title><style>html { background: #102030; color: #eee; }</style><p>a clip:</p>
 <video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
+        "blackvideo.html": `<!doctype html><title>Black video</title><style>html { background: #000; color: #eee; }</style><p>a clip:</p>
+<video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
+        "darkvideo-oklch.html": `<!doctype html><title>Oklch video</title><style>html { background: oklch(0.25 0.04 250); color: #eee; }</style><p>a clip:</p>
+<video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
         "video.html": `<!doctype html><title>Video</title><link rel="stylesheet" href="style.css"><p>a clip:</p>
 <div style="position:relative;width:320px;height:180px"><div style="overflow:hidden;width:1px;height:1px">
 <video id="clip" src="clip.mp4" width="320" height="180" poster="pic.png" style="position:absolute;top:0;left:0;object-fit:cover;object-position:75% 25%" muted></video>
@@ -355,7 +397,7 @@ video.addEventListener("ended", () => {
 }, { once: true });
 </script>`,
         "feed.html": `<!doctype html><title>Feed</title><p id="status">ready</p>
-<button id="nextclip">next</button><video id="a" src="clip.mp4" width="320" height="180" muted></video><video id="b" width="320" height="180" muted></video>
+<button id="nextclip">next</button><video id="a" src="clip.mp4" width="320" height="180" muted></video><video id="b" width="320" height="180" muted><source src="" type="video/mp4"></video>
 <div id="scroller" style="height:150px;width:300px;overflow:auto"><div style="height:3000px">scroll me</div></div>
 <script>
 document.getElementById("nextclip").onclick = () => { const b = document.getElementById("b"); b.src = "clip.mp4"; b.play().catch(() => {}); };
@@ -473,6 +515,40 @@ const sheet = document.getElementById("css").sheet;
 sheet.insertRule("#early { color: rgb(1, 2, 3) }");
 setTimeout(() => sheet.insertRule("#late { color: rgb(4, 5, 6) }", sheet.cssRules.length), 800);
 </script>`,
+        // A script the engines' shared cache keeps (cached.js), on the
+        // untrusted HTTPS site (an exception's) and from a trusted page.
+        "certpage.html": `<!doctype html><title>Cert page</title><p>excepted</p><script src="cached.js"></script>`,
+        "cachehost.html": `<!doctype html><title>Cache host</title><p>trusted page</p><script>const s = document.createElement("script"); s.src = "https://" + location.host + "/cached.js"; document.head.append(s);</script>`,
+        "audiopage.html": `<!doctype html><title>Audio page</title><p>a podcast:</p><audio id="pod" src="tone.wav" controls style="width:400px"></audio><div style="height:3000px">more</div>`,
+        // A video whose box's style the page sets again as it plays.
+        "restyle.html": `<!doctype html><title>Restyle</title><style>#box { background: #000; width: 340px; height: 200px }</style><div id="box"><video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video></div>
+<script>setTimeout(() => { document.getElementById("box").setAttribute("style", "cursor: pointer"); document.title = "Restyle done"; }, 3000);</script>`,
+        // A 2D canvas in a same-origin frame, drawn red, then blue.
+        "c2dframe.html": `<!doctype html><title>Canvas frame</title><iframe id="f" src="c2dinner.html" width="100" height="100"></iframe>`,
+        "c2dinner.html": `<!doctype html><canvas id="c" width="20" height="20"></canvas><script>
+const g = document.getElementById("c").getContext("2d"); g.fillStyle = "#f00"; g.fillRect(0, 0, 20, 20);
+setTimeout(() => { g.fillStyle = "#00f"; g.fillRect(0, 0, 20, 20); }, 3000);</script>`,
+        // A WebGL canvas taken out of the page, then put back and drawn on.
+        "glback.html": `<!doctype html><title>GL back</title><div id="box"><canvas id="c" width="64" height="64"></canvas></div><p id="s">drawn</p><script>
+const c = document.getElementById("c"), gl = c.getContext("webgl");
+const paint = (r, g, b) => { gl.clearColor(r, g, b, 1); gl.clear(gl.COLOR_BUFFER_BIT); };
+paint(0, 0, 1);
+setTimeout(() => { c.remove(); document.getElementById("s").textContent = "removed"; }, 3000);
+setTimeout(() => { document.getElementById("box").append(c); paint(1, 0, 0); document.getElementById("s").textContent = "back"; }, 6000);
+</script>`,
+        // A same-origin frame in a same-origin frame, its page changing.
+        "nestframe.html": `<!doctype html><title>Nest frame</title><p>outer</p><iframe id="mid" src="nestmid.html" width="400" height="200"></iframe>`,
+        "nestmid.html": `<!doctype html><p>middle</p><iframe id="inner" src="nestinner.html" width="300" height="100"></iframe>`,
+        "nestinner.html": `<!doctype html><p id="n">first</p><script>setTimeout(() => { document.getElementById("n").textContent = "later"; }, 4000);</script>`,
+        // Another origin's frame (changing) holding a third's, with a field
+        // (?c: its address, the other server's).
+        "nestfocus.html": `<!doctype html><title>Nest focus</title><p>outer</p><iframe id="p" width="420" height="220"></iframe><script>document.getElementById("p").src = "http://[::ffff:" + location.hostname + "]/nestfocusmid.html" + location.search;</script>`,
+        "nestfocusmid.html": `<!doctype html><p id="tick">0</p><iframe id="c" width="300" height="100"></iframe><script>document.getElementById("c").src = new URLSearchParams(location.search).get("c"); let n = 0; setInterval(() => { document.getElementById("tick").textContent = ++n; }, 700);</script>`,
+        "nestfocusin.html": `<!doctype html><input id="t" value="hello">`,
+        // A video in another site's embedded page, on a white page.
+        "clipframe.html": `<!doctype html><title>Clip frame</title><style>body { background: #fff; margin: 0 }</style><video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
+        "framevideo.html": `<!doctype html><title>Frame video</title><style>html, body { background: #fff }</style><p>an embed:</p><div style="background:#fff"><iframe id="f" width="340" height="200"></iframe></div>
+<script>document.getElementById("f").src = "http://[::ffff:" + location.hostname + "]/clipframe.html";</script>`,
         "xframe.html": `<!doctype html><title>Other origin</title><p>a page of another origin:</p><iframe id="x" width="300" height="120"></iframe>
 <script>
 // The same server by another name (its address as IPv6): another origin.
@@ -499,9 +575,68 @@ ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page larg
         "stream-save.html": `<!doctype html><title>Save stream</title>${streamedVideo}<script>fetch(location.search ? "cancel.m3u8" : "movie.m3u8").then(r => r.text())</script>`,
         // Media Source only (no HLS/DASH manifest): Save uses the buffered MSE capture.
         "mse-save.html": `<!doctype html><title>MSE save</title>${streamedVideo}`,
+        // HLS.js-style attach (empty source, then MediaSource on a <source>): must
+        // play under the copy, not stay on "nothing to play".
+        "mse-hls-like.html": `<!doctype html><title>MSE HLS-like</title>${hlsLikeVideo}`,
+        // As YouTube's Shorts: MediaSource play is stubbed; the page's pause must
+        // stop the underlaid player and read as paused on the element.
+        // Its file as a browser picks it: an empty <source> passed over for
+        // the next; an element's own src="" (none) used, its <source> not.
+        "sources.html": `<!doctype html><title>Sources</title>
+<video id="a" width="320" height="180" muted><source src="" type="video/mp4"><source src="clip.mp4" type="video/mp4"></video>
+<video id="b" width="320" height="180" muted src=""><source src="clip.mp4" type="video/mp4"></video>`,
+        // A player choosing as dash.js does (createMediaSource): the managed
+        // kind if the window has the name at all, else MediaSource. Must not
+        // throw (name present but undefined).
+        "dash-like.html": `<!doctype html><title>DASH-like</title><pre id="out"></pre><script>
+let made;
+try {
+    made = ("ManagedMediaSource" in window) ? ["managed", new ManagedMediaSource()] : ("MediaSource" in window) ? ["plain", new MediaSource()] : ["none", null];
+    const ok = made[1] && typeof made[1].addSourceBuffer === "function" && typeof (made[0] === "managed" ? ManagedMediaSource : MediaSource).isTypeSupported === "function";
+    document.getElementById("out").textContent = "made " + made[0] + " " + !!ok;
+} catch (err) { document.getElementById("out").textContent = "failed " + err.name; }
+</script>`,
+        "mse-pause.html": `<!doctype html><title>MSE pause</title>
+<video id="streamed" muted width="320" height="180"></video>
+<button type="button" id="pause">Pause</button>
+<button type="button" id="quick">Play and pause</button>
+<button type="button" id="idle">Pause again</button>
+<pre id="out"></pre><p id="count">0</p>
+<script>
+const streamed = document.getElementById("streamed"), source = new MediaSource(), out = document.getElementById("out");
+for (const t of ["play", "pause"]) streamed.addEventListener(t, () => { out.textContent = t + " " + (streamed.paused ? "paused" : "playing"); });
+// (A "make sure it's paused" handler: pause() on what's paused is nothing.)
+let pauses = 0;
+streamed.addEventListener("pause", () => { document.getElementById("count").textContent = String(++pauses); streamed.pause(); });
+document.getElementById("idle").onclick = () => { streamed.pause(); streamed.pause(); };
+source.onsourceopen = async () => {
+    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+    buffer.onupdateend = () => { buffer.onupdateend = null; source.endOfStream(); streamed.play().catch(() => {}); };
+    buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
+};
+document.getElementById("quick").onclick = () => { streamed.play().catch(() => {}); streamed.pause(); };
+streamed.src = URL.createObjectURL(source);
+document.getElementById("pause").onclick = () => streamed.pause();
+</script>`,
+        // A single-page site: a video's manifest loaded, then the page moved
+        // to its next video (pushState), played through Media Source alone.
+        "mse-moved.html": `<!doctype html><title>MSE moved</title><video id="streamed" muted width="320" height="180"></video><script>
+fetch("movie.m3u8").then((r) => r.text()).then(() => setTimeout(() => {
+    history.pushState({}, "", "?next");
+    const streamed = document.getElementById("streamed"), source = new MediaSource();
+    source.onsourceopen = async () => {
+        const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+        buffer.onupdateend = () => { buffer.onupdateend = null; source.endOfStream(); streamed.play().catch(() => {}); };
+        buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
+    };
+    streamed.src = URL.createObjectURL(source);
+}, 1500));
+</script>`,
         "cancel.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npending.m4s\n#EXT-X-ENDLIST\n",
         // A master playlist, and its variant, fetched after it, as a player does.
         "stream-master.html": `<!doctype html><title>Master stream</title>${streamedVideo}<script>fetch("master.m3u8").then(r => r.text()).then(() => fetch("movie.m3u8")).then(r => r.text())</script>`,
+        // A stream the site's own player plays, none relayed here.
+        "onlystream.html": `<!doctype html><title>Only stream</title><p>a stream the site's player plays</p><script>fetch("movie.m3u8").then(r => r.text())</script>`,
         "master.m3u8": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nmovie.m3u8\n",
         "movie.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npart.m4s\n#EXT-X-ENDLIST\n",
         "doc.pdf": "%PDF-1.4 not really",
@@ -520,9 +655,9 @@ h1 { font-family: "Fixture Font", sans-serif; }`,
 @font-face { font-family: "Unused Font"; src: url(unused.woff2) format("woff2"); }
 #used { font-family: "Used Font", monospace; }`,
         "serve.js": `const http = require("http"), fs = require("fs"), path = require("path"), zlib = require("zlib");
-const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4", ".js": "text/javascript" };
+const types = { ".html": "text/html", ".css": "text/css", ".png": "image/png", ".ttf": "font/ttf", ".pdf": "application/pdf", ".mp4": "video/mp4", ".js": "text/javascript", ".ico": "image/x-icon" };
 const seen = {};  // what fetched the picture and the clip said: its user agent, its cookies
-http.createServer(function handle(req, res) {
+const handle = function handle(req, res) {
   // ?slow: each answer a second and a half late (a player loading, seen).
   if (/[?&]slow$/.test(req.url)) {
     req.url = req.url.replace(/[?&]slow$/, "");
@@ -535,6 +670,13 @@ http.createServer(function handle(req, res) {
   if (name === "/ads/ok.js" || name === "/ads/track.js") {
     res.writeHead(200, { "Content-Type": "text/javascript" });
     return res.end(name === "/ads/ok.js" ? 'document.getElementById("ok").textContent = "ran";' : 'document.getElementById("tracked").textContent = "ran";');
+  }
+  if (name === "/nocontent") { res.writeHead(204); return res.end(); }  // (a link that loads no page)
+  if (name === "/cached.js") {
+    // A script kept a while (the engines' shared cache), its fetches counted.
+    seen.cachedjs = (seen.cachedjs || 0) + 1;
+    res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "public, max-age=3600" });
+    return res.end('document.title = "Cached ran";');
   }
   if (name.startsWith("/banner/")) {
     res.writeHead(200, { "Content-Type": "image/png" });
@@ -633,11 +775,21 @@ http.createServer(function handle(req, res) {
     res.writeHead(200, { "Content-Type": type, "Accept-Ranges": "bytes" });
     res.end(data);
   });
-}).listen(80);`,
+};
+http.createServer(handle).listen(80);
+// The same over HTTPS, its certificate self-signed (go-check.sh makes it):
+// a site whose certificate isn't trusted.
+if (fs.existsSync("/srv/cert.pem")) require("https").createServer({ key: fs.readFileSync("/srv/key.pem"), cert: fs.readFileSync("/srv/cert.pem") }, handle).listen(443);`,
     };
     mkdirSync(join(dir, "embedded"), { recursive: true });
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
     writeFileSync(join(dir, "pic.png"), png(4, 4, [200, 30, 30]));
+    // A tone, 3 s, for a sound's player (audiopage.html).
+    const rate = 8000, n = rate * 3, wav = Buffer.alloc(44 + n * 2);
+    wav.write("RIFF", 0); wav.writeUInt32LE(36 + n * 2, 4); wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(n * 2, 40);
+    for (let i = 0; i < n; i++) wav.writeInt16LE(Math.round(3000 * Math.sin(i / 10)), 44 + i * 2);
+    writeFileSync(join(dir, "tone.wav"), wav);
     // A short clip, for the players the page lays over the copy.
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "5",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", join(dir, "clip.mp4")]);
@@ -650,6 +802,7 @@ http.createServer(function handle(req, res) {
     writeFileSync(join(dir, "init.mp4"), fragmented.subarray(0, split));
     writeFileSync(join(dir, "part.m4s"), fragmented.subarray(split));
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
+    writeFileSync(join(dir, "favicon.ico"), png(16, 16, [30, 160, 60]));  // (a PNG, as many sites' are)
     writeFileSync(join(dir, "font.ttf"), systemFont());
 }
 
@@ -1036,6 +1189,25 @@ async function check(base, port, site, adSite) {
             throw new Error(`${err.message} (it shows ${shows})`);
         });
         if ((await ev(`document.getElementById("go_settings_h").textContent`)) !== "Settings") throw new Error("the lightbox isn't titled Settings");
+        // DNS over HTTPS: off at first; a custom server's address that isn't
+        // https refused, said; off again.
+        {
+            const d = `document.querySelector("#go_settings iframe").contentDocument`;
+            if ((await ev(`${d}.getElementById("doh").value`)) !== "off") throw new Error("DNS over HTTPS isn't off at first");
+            await ev(`(() => { const s = ${d}.getElementById("doh"); s.value = "custom"; s.dispatchEvent(new Event("change")); })()`);
+            await waitFor(`!${d}.getElementById("doh_custom").hidden`, "the custom server's address asked for");
+            await ev(`(() => { const i = ${d}.getElementById("doh_url"); i.value = "http://dns.example/dns-query"; i.dispatchEvent(new Event("input")); ${d}.getElementById("doh_save").click(); })()`);
+            await waitFor(`/https address/.test(${d}.getElementById("done").textContent)`, "a non-https DoH server refused, said", 15000);
+            await ev(`(() => { const s = ${d}.getElementById("doh"); s.value = "off"; s.dispatchEvent(new Event("change")); })()`);
+            await waitFor(`${d}.getElementById("done").textContent === "DNS over HTTPS is off." && ${d}.getElementById("doh_custom").hidden`, "DNS over HTTPS off again", 15000);
+            // Local DNS records: a name that isn't one refused, said; one
+            // for the fixture's site added, listed (an A record).
+            const add = (name, addr) => ev(`(() => { const d = ${d}; d.getElementById("host_name").value = ${JSON.stringify(name)}; d.getElementById("host_addr").value = ${JSON.stringify(addr)}; d.getElementById("host_addr").dispatchEvent(new Event("input")); d.getElementById("host_add_button").click(); })()`);
+            await add("not a name", "192.0.2.1");
+            await waitFor(`(() => { const e = ${d}.getElementById("host_name_error"); return !e.hidden && /Letters, digits/.test(e.textContent) && ${d}.getElementById("host_name").getAttribute("aria-invalid") === "true" && !${d}.querySelector("#host_list li"); })()`, "a record's bad name refused, said by the field", 15000);
+            await add("fixture.home.arpa", new URL(site).hostname);
+            await waitFor(`(() => { const li = ${d}.querySelector("#host_list li"); return ${d}.getElementById("done").textContent === "Record added." && li?.querySelector(".name").textContent === "fixture.home.arpa" && li.querySelector(".kind").textContent === "A" && !${d}.getElementById("host_name").value; })()`, "the record listed", 15000);
+        }
         await ev(`document.querySelector("#go_settings .close").click()`);
         await waitFor(`!document.getElementById("go_settings").open`, "Settings closed by ✕");
         await ev(`document.getElementById("go_site").click()`);
@@ -1052,6 +1224,60 @@ async function check(base, port, site, adSite) {
         // of the tab's (the lightbox's frames weren't entries of it).
         // (Removed as the dialog's close event comes, just after it's shut.)
         await waitFor(`!document.querySelector("#go_settings iframe")`, "its frame gone", 2000);
+    });
+
+    await step("Settings: records by name, edited in place, hosts lines pasted; unsaved filters asked of; settings exported and imported", async () => {
+        const d = `document.querySelector("#go_settings iframe")?.contentDocument`;
+        const w = `document.querySelector("#go_settings iframe").contentWindow`;
+        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+        await waitFor(`${d}?.getElementById("host_name")?.disabled === false && ${d}.getElementById("settings_export").disabled === false`, "Settings", 15000);
+        const done = (text, what) => waitFor(`${d}.getElementById("done").textContent === ${JSON.stringify(text)}`, what, 15000);
+        const add = async (name, addr) => {
+            await ev(`(() => { const d = ${d}; d.getElementById("host_name").value = ${JSON.stringify(name)}; d.getElementById("host_addr").value = ${JSON.stringify(addr)}; d.getElementById("host_addr").dispatchEvent(new Event("input")); d.getElementById("host_add").requestSubmit(); })()`);
+            await waitFor(`${d}.getElementById("done").textContent === "Record added." && !${d}.getElementById("host_name").value && ${d}.getElementById("host_list").textContent.includes(${JSON.stringify(addr)})`, "added " + addr, 15000);
+        };
+        // Exported first, to put back at the end.
+        await ev(`(() => { const w = ${w}; w.__blob = null; w.URL.createObjectURL = (b) => (w.__blob = b, "blob:none"); w.HTMLAnchorElement.prototype.click = function () { w.__saved = this.download; }; w.document.getElementById("settings_export").click(); })()`);
+        await waitFor(`!!${w}.__blob && ${w}.__saved === "tabtop-browser-settings.json"`, "the settings exported");
+        const before = await ev(`${w}.__blob.text()`);
+        const was = JSON.parse(before);
+        if (was.tabtop !== "go-settings" || !Array.isArray(was.hosts) || !was.hosts.some((h) => h.name === "fixture.home.arpa") || !was.adblock?.lists?.length) throw new Error(`the export: ${before}`);
+        // One name's two addresses, one entry; the A record edited in place.
+        await add("nas.home.arpa", "192.168.1.10");
+        await add("nas.home.arpa", "fd00::10");
+        const nas = `[...${d}.querySelectorAll("#host_list li")].find((li) => li.querySelector(".name").textContent === "nas.home.arpa")`;
+        if ((await ev(`${nas}.querySelectorAll(".addr-row").length`)) !== 2) throw new Error("the name's addresses aren't together");
+        await ev(`${d}.querySelector('#host_list button[aria-label="Edit nas.home.arpa 192.168.1.10"]').click()`);
+        await waitFor(`${d}.getElementById("host_add_button").textContent === "Save record" && ${d}.getElementById("host_addr").value === "192.168.1.10"`, "the record in the form to edit");
+        await ev(`(() => { const a = ${d}.getElementById("host_addr"); a.value = "192.168.1.11"; a.dispatchEvent(new Event("input")); ${d}.getElementById("host_add").requestSubmit(); })()`);
+        await done("Record saved.", "the record saved");
+        if ((await ev(`[...${nas}.querySelectorAll(".addr")].map((a) => a.textContent).join()`)) !== "192.168.1.11,fd00::10") throw new Error("not edited in place");
+        // Hosts lines pasted: each name a record; what can't be, said.
+        await ev(`${d}.getElementById("hosts_paste").click()`);
+        await ev(`(() => { const t = ${d}.getElementById("hosts_text"); t.value = "10.0.0.5 tv.home.arpa tv\\nbad line here\\n10.0.0.6"; t.dispatchEvent(new Event("input")); })()`);
+        await waitFor(`${d}.getElementById("hosts_dialog_add").textContent === "Add 2 records" && ${d}.querySelectorAll("#hosts_text_problems li").length === 2`, "the lines read");
+        await ev(`${d}.getElementById("hosts_paste_form").requestSubmit()`);
+        await done("2 records added.", "the pasted records added");
+        // My filters edited, not saved: marked, and asked of before closing.
+        await ev(`(() => { const t = ${d}.getElementById("my_filters"); t.value += "\\n||unsaved.example^"; t.dispatchEvent(new Event("input")); })()`);
+        await waitFor(`!${d}.getElementById("filters_unsaved").hidden && !${d}.getElementById("discard_filters").hidden`, "marked unsaved");
+        await ev(`window.__asked = 0; window.__confirm = window.confirm; window.confirm = () => (window.__asked++, false)`);
+        await ev(`document.querySelector("#go_settings .close").click()`);
+        await sleep(300);
+        if (!(await ev(`document.getElementById("go_settings").open && window.__asked === 1`))) throw new Error("closed on unsaved filters without asking");
+        await ev(`window.confirm = window.__confirm`);
+        await ev(`${d}.getElementById("discard_filters").click()`);
+        await waitFor(`${d}.getElementById("filters_unsaved").hidden && !${d}.getElementById("my_filters").value.includes("unsaved.example")`, "the changes discarded");
+        // Imported: what it can be, what it can't said; then the export put back.
+        const load = (text) => ev(`(() => { const w = ${w}; w.confirm = () => true; const dt = new w.DataTransfer(); dt.items.add(new w.File([${JSON.stringify(text)}], "settings.json", { type: "application/json" })); const i = w.document.getElementById("settings_file"); i.files = dt.files; i.dispatchEvent(new w.Event("change")); })()`);
+        await load(JSON.stringify({ ...was, searchEngine: "bing", doh: "nosuch", hosts: [{ name: "imported.home.arpa", addr: "192.0.2.9" }] }));
+        await waitFor(`/Not imported: DNS over HTTPS/.test(${d}.getElementById("done").textContent) && /search engine/.test(${d}.getElementById("done").textContent)`, "the import, said in part", 20000);
+        if ((await ev(`${d}.getElementById("search_engine").value + " " + [...${d}.querySelectorAll("#host_list .name")].map((n) => n.textContent).join()`)) !== "bing imported.home.arpa") throw new Error("not imported");
+        await load(before);
+        await done("Settings imported.", "the export put back");
+        if ((await ev(`${d}.getElementById("search_engine").value + " " + [...${d}.querySelectorAll("#host_list .name")].map((n) => n.textContent).join()`)) !== `${was.searchEngine} fixture.home.arpa`) throw new Error("the export not put back");
+        await ev(`document.querySelector("#go_settings .close").click()`);
+        await waitFor(`!document.getElementById("go_settings").open`, "Settings closed");
     });
 
     await step("back held lists the pages before, to go to one; forward's the pages after", async () => {
@@ -1330,6 +1556,8 @@ async function check(base, port, site, adSite) {
             await waitFor(`(${d})?.getElementById("site_heading")?.textContent === ${JSON.stringify(host)} && !(${d}).getElementById("popups").disabled`, "the site's controls", 15000);
             const head = await ev(`(${d}).getElementById("site_scope").textContent + "|" + (${d}).getElementById("site_icon").textContent`);
             if (!/Not secure/.test(head) || !/subdomains/.test(head)) throw new Error(`its header says ${head}`);
+            // Its icon (its /favicon.ico) by its name, not its initial.
+            await waitFor(`(${d}).querySelector("#site_icon img")?.naturalWidth > 0`, "the site's icon shown", 15000);
             if ((await ev(`(${d}).getElementById("popups").selectedOptions[0].textContent`)) !== "Default (Ask)") throw new Error("the default not shown as what applies");
             // Changed: marked, its default said, ↺; and, holding for what loads
             // next, Reload page by what's said.
@@ -1532,6 +1760,43 @@ async function check(base, port, site, adSite) {
         await waitFor(`document.title.startsWith("Result")`, "the result page", 30000);
         await frameWait(`document.getElementById("p")?.textContent === "query cats"`, "the query");
         if (!(await ev(`(document.getElementById("go_url").dataset.url || document.getElementById("go_url").value)`)).includes("result.html?q=cats")) throw new Error("the address bar didn't follow");
+    });
+
+    await step("a custom search engine: words typed are searched there, and shown as words", async () => {
+        const d = `document.querySelector("#go_settings iframe")?.contentDocument`;
+        const openSettings = async () => {
+            await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+            await waitFor(`${d}?.getElementById("search_engine")?.disabled === false`, "Settings", 15000);
+        };
+        const closeSettings = async () => {
+            await ev(`document.querySelector("#go_settings .close").click()`);
+            await waitFor(`!document.getElementById("go_settings").open`, "Settings closed");
+        };
+        await openSettings();
+        await ev(`(() => { const s = ${d}.getElementById("search_engine"); s.value = "custom"; s.dispatchEvent(new Event("change")); })()`);
+        await waitFor(`!${d}.getElementById("search_custom").hidden`, "its address asked for");
+        const setURL = (u) => ev(`(() => { const d = ${d}; const i = d.getElementById("search_url"); i.value = ${JSON.stringify(u)}; i.dispatchEvent(new Event("input")); d.getElementById("search_custom").requestSubmit(); })()`);
+        await setURL(site + "result.html?q=x%s");
+        await waitFor(`!${d}.getElementById("search_error").hidden && /whole value/.test(${d}.getElementById("search_error").textContent)`, "%s not a whole value, said by the field");
+        await setURL(site + "result.html?q=%s");
+        await waitFor(`${d}.getElementById("done").textContent === "Search engine saved."`, "the custom engine saved", 15000);
+        await closeSettings();
+        await sleep(1000); // (the browser asks for the engine again as it's told)
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = "cats and dogs"; i.form.requestSubmit(); })()`);
+        await waitFor(`document.title.startsWith("Result")`, "the custom engine's result page", 30000);
+        await frameWait(`document.getElementById("p")?.textContent === "query cats and dogs"`, "the words searched for");
+        await waitFor(`document.getElementById("go_url").value === "cats and dogs"`, "the address bar showing the words");
+        // What isn't an address at all (a space in its host) is searched for.
+        await goTo(site + "index.html", "Fixture");
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = "https://exa mple.com/x"; i.form.requestSubmit(); })()`);
+        await waitFor(`document.title.startsWith("Result")`, "an address that isn't one, searched for", 30000);
+        await frameWait(`document.getElementById("p")?.textContent === "query https://exa mple.com/x"`, "searched for as typed");
+        // Back to the default.
+        await openSettings();
+        if ((await ev(`${d}.getElementById("search_engine").value`)) !== "custom") throw new Error("Settings doesn't show the custom engine");
+        await ev(`(() => { const s = ${d}.getElementById("search_engine"); s.value = "duckduckgo"; s.dispatchEvent(new Event("change")); })()`);
+        await waitFor(`${d}.getElementById("done").textContent === "Search engine saved." && ${d}.getElementById("search_custom").hidden`, "DuckDuckGo again", 15000);
+        await closeSettings();
     });
 
     await step("a POST form", async () => {
@@ -1766,6 +2031,29 @@ async function check(base, port, site, adSite) {
         await unwatch();
     });
 
+    if (process.env.GO_NO_FS !== "1") await step("after the page moves to its next video (pushState), the menu doesn't offer to save the last one's stream", async () => {
+        await goTo(site + "mse-moved.html", "MSE moved");
+        await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        try {
+            await waitFor(`document.querySelectorAll("#go_menu_media li").length >= 1`, "the video in the menu", 20000);
+            await sleep(3000);  // (the page moved, its video playing)
+            const said = await ev(`JSON.stringify([...document.querySelectorAll("#go_menu_media li .acts button")].map((b) => b.getAttribute("aria-label")))`);
+            if (/0:03/.test(said)) throw new Error(`the menu offers the last video's stream: ${said}`);
+        } finally {
+            await ev(`document.getElementById("go_menu_panel").hidden || document.getElementById("go_menu").click()`);
+        }
+    });
+
+    if (process.env.GO_NO_FS !== "1") await step("a stream no player here plays (the site's own): Save offered in the menu", async () => {
+        await goTo(site + "onlystream.html", "Only stream");
+        await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        try {
+            await waitFor(`[...document.querySelectorAll("#go_menu_media li")].some((li) => li.querySelector(".state")?.textContent === "Stream" && /^Save the stream of 0:03/.test(li.querySelector(".acts button")?.getAttribute("aria-label") || ""))`, "the stream's row, with Save", 15000);
+        } finally {
+            await ev(`document.getElementById("go_menu_panel").hidden || document.getElementById("go_menu").click()`);
+        }
+    });
+
     await step("a link to a file offers to save it", async () => {
         await goTo(site + "interact.html", "Interact");
         await frameWait(`!!document.getElementById("pdf")`, "the page");
@@ -1969,6 +2257,10 @@ async function check(base, port, site, adSite) {
         await frameWait(glAt("sized", 32, 32, [0, 255, 0, 255]), "the canvas to resize, green");
         await frameClick("#sized");
         await frameWait(`document.getElementById("sized").width === 96 && document.getElementById("sized").height === 48 && ${glAt("sized", 48, 24, [0, 0, 255, 255])} && ${glAt("sized", 2, 2, [255, 0, 0, 255])}`, "the resized canvas, 96 by 48, blue on red");
+        // An update past a batch's WebGL budget still comes (first in its batch).
+        await frameWait(glAt("upload", 32, 32, [0, 255, 0, 255]), "the canvas to upload to, green");
+        await frameClick("#upload");
+        await frameWait(`/mirrored/.test(document.getElementById("upload").title) && ${glAt("upload", 32, 32, [0, 0, 255, 255])}`, "the big upload's canvas, blue, still mirrored", 30000);
         // The viewer's context lost and given back: replayed from what it kept.
         await frame(`(() => { const c = document.getElementById("still"); window.__lose = c.getContext("webgl").getExtension("WEBGL_lose_context"); window.__lose.loseContext(); })()`);
         await frameWait(`/unavailable/.test(document.getElementById("still").title)`, "the lost context labelled");
@@ -1998,7 +2290,10 @@ async function check(base, port, site, adSite) {
         // A page replacing its WebGL canvas more times than may be mirrored at
         // once: those gone aren't counted, so its last is still shown.
         await goTo(site + "glswap.html", "GL swap");
-        await frameWait(`document.querySelectorAll("canvas").length === 1 && /mirrored/.test(document.getElementById("c")?.title) && ${glAt("c", 16, 16, [0, 0, 255, 255])}`, "the 20th WebGL canvas, mirrored, blue", 20000);
+        await frameWait(`document.querySelectorAll("canvas").length === 1 && /mirrored/.test(document.getElementById("c")?.title) && ${glAt("c", 16, 16, [0, 0, 255, 255])}`, "the 20th WebGL canvas, mirrored, blue", 20000).catch(async (err) => {
+            const shows = await frame(`JSON.stringify({ canvases: document.querySelectorAll("canvas").length, title: document.getElementById("c")?.title, n: document.getElementById("n")?.textContent })`).catch((e) => e.message);
+            throw new Error(`${err.message} (it shows ${shows})`);
+        });
         // three.js: a red box on blue; a lit, textured green ball on black.
         await goTo(site + "three.html", "Three");
         await frameWait(`document.getElementById("s").textContent === "drawn"`, "three.js drawing in the engine");
@@ -2023,6 +2318,45 @@ async function check(base, port, site, adSite) {
         await waitFor(`document.getElementById("go_view").classList.contains("go-underlaid")`, "the video's player under the copy", 30000);
         await sleep(1000);
         if (await viewPixel() !== "16,32,48") throw new Error(`the dark page shows ${await viewPixel()} around its video, not its own #102030`);
+        // Black (its blue 0: not taken for no colour), kept too.
+        await goTo(site + "blackvideo.html", "Black video");
+        await waitFor(`document.getElementById("go_view").classList.contains("go-underlaid")`, "the black page's video under the copy", 30000);
+        await sleep(1000);
+        if (await viewPixel() !== "0,0,0") throw new Error(`the black page shows ${await viewPixel()} around its video, not its own black`);
+        // Its colour written as oklch() (Tailwind 4's), kept too.
+        await goTo(site + "darkvideo-oklch.html", "Oklch video");
+        await waitFor(`document.getElementById("go_view").classList.contains("go-underlaid")`, "the oklch page's video under the copy", 30000);
+        await sleep(1000);
+        const oklch = (await viewPixel()).split(",").map(Number);
+        if (!oklch.every((v) => v < 90)) throw new Error(`the oklch() dark page shows ${oklch} around its video, not its own colour`);
+    });
+
+    await step("a video in another site's embedded page is seen: the page's backgrounds cleared over it", async () => {
+        await goTo(site + "framevideo.html", "Frame video");
+        await frameWait(`!!document.getElementById("f")?.shadowRoot?.querySelector("[data-go-video].go-media-live")`, "the embedded page's video, its player made", 30000);
+        await frameWait(`(() => { const f = document.getElementById("f"), clear = (el) => /^rgba\\(\\d+, \\d+, \\d+, 0\\)$/.test(getComputedStyle(el).backgroundColor);
+            return clear(document.body) && clear(document.documentElement) && clear(f.parentElement); })()`, "the page's backgrounds cleared over it", 15000);
+    });
+
+    await step("the wheel turned over a sound's player (laid over the page) scrolls the page", async () => {
+        await goTo(site + "audiopage.html", "Audio page");
+        await waitFor(`!!document.querySelector("audio")`, "the sound's player, over its box", 30000);
+        await sleep(500);
+        const p = await ev(`(() => { const r = document.querySelector("audio").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+        for (let i = 0; i < 3; i++) {
+            await cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: 0, deltaY: 200 });
+            await sleep(200);
+        }
+        await frameWait(`scrollY > 100`, "the page scrolled by the wheel over the sound's player");
+    });
+
+    await step("a video's box, its style set again by the page as it plays, stays clear over it", async () => {
+        await goTo(site + "restyle.html", "Restyle");
+        await frameWait(`!!document.querySelector("#clip.go-media-live")`, "the video, its player made", 30000);
+        await waitFor(`document.title.startsWith("Restyle done")`, "the page's restyle", 15000);
+        await sleep(1000);
+        const after = await frame(`getComputedStyle(document.getElementById("box")).backgroundColor`);
+        if (after !== "rgba(0, 0, 0, 0)") throw new Error(`the box's background covers the video again: ${after}`);
     });
 
     await step("a video plays in a player under the copy, its file read through the server", async () => {
@@ -2094,6 +2428,26 @@ async function check(base, port, site, adSite) {
         }
         await goTo(site + "second.html", "Second");
         await waitFor(`!document.querySelector("video")`, "the player gone with its page");
+    });
+
+    await step("the menu's videos each have Save: pressed, a ring as it saves, then said saved", async () => {
+        await goTo(site + "video.html", "Video");
+        await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1)`, "the player", 30000);
+        await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        const save = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Download video/.test(b.getAttribute("aria-label")) || /^Cancel/.test(b.getAttribute("aria-label")) || b.classList.contains("saving"))`;
+        await waitFor(`!!${save}`, "the clip's Save in the menu");
+        await ev(`${save}.click()`);
+        let ring = false;
+        for (const end = Date.now() + 30000; Date.now() < end; await sleep(50)) {
+            const at = await ev(`(() => { const b = ${save}; const n = b?.closest("li").querySelector(".note"); return { saving: !!b?.classList.contains("saving"), note: n?.hidden ? "" : n?.textContent }; })()`);
+            ring = ring || at.saving;
+            if (/^Saved /.test(at.note || "")) break;
+        }
+        const said = await ev(`${save}?.closest("li").querySelector(".note").textContent`);
+        if (!/^Saved /.test(said)) throw new Error(`the save said ${JSON.stringify(said)}`);
+        if (await ev(`${save}.classList.contains("saving")`)) throw new Error("still a ring, saved");
+        await ev(`document.getElementById("go_menu").click()`);
+        return ring ? "its ring seen" : "saved before its ring was seen";
     });
 
     await step("a video loading shows so over its box till it can play; the menu has its address", async () => {
@@ -2272,7 +2626,7 @@ async function check(base, port, site, adSite) {
         }
         await waitFor(`document.querySelector("#video_player video").currentTime > 4 && /\\bright\\b/.test(window.__flashed)`, "on 10 s by a double tap at the right, marked there");
         await press('#video_player button[aria-label^="Close the player"]');
-        await waitFor(`!document.getElementById("video_player") && !document.fullscreenElement && !!document.querySelector("video") && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box", 10000);
+        await waitFor(`!document.getElementById("video_player") && !document.fullscreenElement && !!document.querySelector("video") && !document.querySelector("video").controls && getComputedStyle(document.querySelector("video")).display !== "none"`, "given back to its box, under the copy (no native controls)", 10000);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
@@ -2531,7 +2885,9 @@ async function check(base, port, site, adSite) {
 
     await step("a feed: a video the page gives a file and plays plays here, and a swipe scrolls the page", async () => {
         await goTo(site + "feed.html", "Feed");
-        await frameWait(`/nothing to play/.test(document.getElementById("b").textContent)`, "the second box, empty");
+        // Empty <source src=""> (a placeholder) is nothing to play, not a
+        // stuck empty URL that hides a later real src.
+        await frameWait(`/nothing to play/.test(document.getElementById("b").textContent)`, "the second box, empty source");
         await frameClick("#nextclip");
         await frameWait(`document.querySelector("#b[data-go-video]")?.textContent === ""`, "its player made for the file it was given");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5)`, "it playing, as the page played it", 30000);
@@ -2581,6 +2937,67 @@ async function check(base, port, site, adSite) {
         await frameWait(`getComputedStyle(document.getElementById("wrap")).visibility === "visible"`, "the player shown by the page");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5 && v.style.display !== "none" && v.getBoundingClientRect().width > 300)`, "it under its box, playing", 30000);
         await frameWait(`/^time [1-9][0-9.]*$/.test(document.getElementById("time")?.textContent)`, "the page reading where it is, going on");
+    });
+
+    await step("a video's file picked as a browser picks it: an empty <source> passed over; an element's own empty src, nothing", async () => {
+        await goTo(site + "sources.html", "Sources");
+        await frameWait(`document.querySelector("#a[data-go-video]")?.textContent === ""`, "the first video's player, for its second <source>");
+        await frameWait(`/nothing to play/.test(document.getElementById("b")?.textContent || "")`, "the second, its own src empty, nothing to play");
+    });
+
+    await step("a player choosing its MediaSource as dash.js does gets one that works", async () => {
+        await goTo(site + "dash-like.html", "DASH-like");
+        await frameWait(`/^(made|failed)/.test(document.getElementById("out")?.textContent || "")`, "the player's choice");
+        const out = await frame(`document.getElementById("out").textContent`);
+        // Our ManagedMediaSource relay is always present and constructible.
+        if (out !== "made managed true") throw new Error(`dash.js's choice of MediaSource: ${out}`);
+    });
+
+    await step("a MediaSource video the page pauses stops here too (as YouTube Shorts' pause)", async () => {
+        await goTo(site + "mse-pause.html", "MSE pause");
+        // Its player's made but stays paused till it's played (the page's
+        // play() of a stream its own player feeds doesn't start it): played
+        // from the menu, as the person would.
+        await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
+        await waitFor(`!!${play}`, "Play offered in the menu", 30000);
+        await ev(`${play}.click()`);
+        await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3; })()`, "the stream playing", 30000);
+        await frameWait(`document.getElementById("out").textContent === "play playing"`, "the page told it plays");
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+        await waitFor(`document.getElementById("go_menu_panel").hidden`, "the menu closed");
+        await frameClick("#pause");
+        await frameWait(`document.getElementById("out").textContent === "pause paused"`, "the page told it's paused");
+        await waitFor(`document.querySelector("video").paused`, "its player paused");
+        // Played and paused at once (Shorts' pause, before the player's said
+        // it plays): the page told it's paused, and the player stays so.
+        await frameClick("#quick");
+        await frameWait(`document.getElementById("out").textContent === "pause paused"`, "the page told it's paused, played and paused at once");
+        await sleep(1500);
+        if (!(await ev(`document.querySelector("video").paused`))) throw new Error("the player plays, the page having paused it at once");
+        // A pause each time it was paused, the handler's own pause() nothing;
+        // pause() on what's paused (not played since) fires nothing.
+        if ((await frame(`document.getElementById("count").textContent`)) !== "2") throw new Error(`pause fired ${await frame(`document.getElementById("count").textContent`)} times, not 2`);
+        await frameClick("#idle");
+        await sleep(500);
+        if ((await frame(`document.getElementById("count").textContent`)) !== "2") throw new Error("pause() on a paused video fired pause");
+    });
+
+    await step("a video attached as HLS.js does (empty source, then ManagedMediaSource) plays under its box, not as nothing to play", async () => {
+        await goTo(site + "mse-hls-like.html", "MSE HLS-like");
+        await frameWait(`document.documentElement.getAttribute("data-mms") === "managed"`, "ManagedMediaSource is our relay");
+        await frameWait(`/^start:/.test(document.documentElement.getAttribute("data-stream") || "")`, "startstreaming from the underlaid player");
+        // Relayed blob on a <source> (HLS.js ManagedMediaSource attach shape):
+        // the box must leave the empty-source placeholder once the stream is known.
+        await frameWait(`(() => { const b = document.querySelector("[data-go-video]"); const t = b?.textContent || ""; return !!b && !/nothing to play|own player/.test(t); })()`, "its box no longer a placeholder");
+        // Stream play() doesn't start the underlaid player until the person
+        // plays it (as mse-pause): from the menu.
+        await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
+        await waitFor(`!!${play}`, "Play offered in the menu", 30000);
+        await ev(`${play}.click()`);
+        await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3 && getComputedStyle(v).display !== "none"; })()`, "the stream playing under its box", 30000);
+        await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
     await step("a scrolling video feed releases old players and honors the page's dimensions", async () => {
@@ -2673,7 +3090,9 @@ async function check(base, port, site, adSite) {
         const inTab = (n, expr) => ev(`(() => { const f = document.querySelectorAll("#frames iframe")[${n}]; const document_ = f?.contentDocument; return document_ ? ((document) => (${expr}))(document_) : null; })()`);
         const count = () => ev(`document.querySelectorAll("#frames iframe").length`);
         const shownTab = () => ev(`[...document.querySelectorAll("#frames iframe")].findIndex((f) => !f.hidden)`);
-        await waitFor(`document.querySelectorAll("#frames iframe").length === 1 && !!document.querySelector("#frames iframe").contentDocument?.getElementById("go_url")`, "the tabs' page, one tab", 30000);
+        // (The tab's script run, connected: the address given it is taken by
+        // it, not by the bare form.)
+        await waitFor(`document.querySelectorAll("#frames iframe").length === 1 && ((d) => d?.readyState === "complete" && !!d.getElementById("go_url") && d.getElementById("go_progress")?.hidden)(document.querySelector("#frames iframe").contentDocument)`, "the tabs' page, one tab, connected", 30000);
         // The tab loads a page, which opens a window: a tab of its own.
         await inTab(0, `(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "interact.html")}; i.form.requestSubmit(); return true; })()`);
         await waitFor(`/^Interact/.test(document.querySelector(".tab .title")?.textContent || "")`, "the first tab's page", 30000);
@@ -2708,7 +3127,8 @@ async function check(base, port, site, adSite) {
         await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
         try {
             const tabDoc = `[...document.querySelectorAll("#frames iframe")].find((f) => !f.hidden).contentDocument`;
-            await waitFor(`!${tabDoc}.getElementById("go_tabs").hidden && getComputedStyle(document.getElementById("strip")).display === "none"`, "the tabs' button, no strip");
+            // (A moment with no tab shown, as the window's resized: waited out.)
+            await waitFor(`${tabDoc.replace(").contentDocument", ")?.contentDocument")}?.getElementById("go_tabs")?.hidden === false && getComputedStyle(document.getElementById("strip")).display === "none"`, "the tabs' button, no strip");
             const fits = await ev(`(() => { const d = ${tabDoc}; return d.getElementById("go_menu").getBoundingClientRect().right <= d.defaultView.innerWidth && d.querySelector("#go_tabs .count").textContent === "2"; })()`);
             if (!fits) throw new Error("the phone's bar doesn't fit, or doesn't count the tabs");
             await ev(`${tabDoc}.getElementById("go_tabs").click()`);
@@ -2762,8 +3182,10 @@ async function check(base, port, site, adSite) {
         // No address in any frame's own (go/tab?id=N only).
         const srcs = await ev(`[...document.querySelectorAll("#frames iframe")].map((f) => f.getAttribute("src")).join()`);
         if (!/^tab\?id=\d+,tab\?id=\d+$/.test(srcs)) throw new Error(`the frames are at ${srcs}`);
-        await ev(`location.href = ${JSON.stringify(new URL("go/tab", base).href)}`);
-        await waitFor(`!!document.getElementById("go_url")`, "a tab on its own again");
+        // (The page left marked, and the new one's script run, connected:
+        // the address it's given next taken by it, not by the bare form.)
+        await ev(`(() => { window.__leaving = true; location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
+        await waitFor(`!window.__leaving && document.readyState === "complete" && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "a tab on its own again, connected", 30000);
     });
 
     // With GO_SITES (space-separated addresses), real sites too, each with
@@ -2809,6 +3231,163 @@ async function check(base, port, site, adSite) {
             return `all shown${slow.length ? `; slow: ${slow.slice(0, 5).join(", ")}` : ""}`;
         });
     }
+
+    await step("a 2D canvas in a same-origin frame is shown as it's drawn again", async () => {
+        await goTo(site + "c2dframe.html", "Canvas frame");
+        const pixel = `(() => { const c = document.getElementById("f")?.shadowRoot?.getElementById("c"); try { return c ? [...c.getContext("2d").getImageData(10, 10, 1, 1).data].slice(0, 3).join() : ""; } catch { return ""; } })()`;
+        await frameWait(`${pixel} === "255,0,0"`, "the frame's canvas, red", 20000);
+        await frameWait(`${pixel} === "0,0,255"`, "the frame's canvas, drawn blue", 15000);
+    });
+
+    await step("a WebGL canvas taken out of the page and put back is mirrored again", async () => {
+        await goTo(site + "glback.html", "GL back");
+        await frameWait(`document.getElementById("s")?.textContent === "back"`, "the canvas put back", 20000);
+        // (Mirrored: its title says so, no aria-label; unavailable: both say that.)
+        await frameWait(`document.getElementById("c")?.title === "WebGL rendering mirrored from the remote page"`, "the canvas mirrored again", 15000).catch(async (err) => {
+            throw new Error(`${err.message} (it says ${await frame(`document.getElementById("c")?.title`)})`);
+        });
+    });
+
+    await step("a same-origin frame's own frame is shown, and its changes", async () => {
+        await goTo(site + "nestframe.html", "Nest frame");
+        const deep = (want) => `(() => { const seen = (root) => { if (root.textContent?.includes(${JSON.stringify(want)})) return true; for (const el of root.querySelectorAll("*")) if (el.shadowRoot && seen(el.shadowRoot)) return true; return false; }; return seen(document); })()`;
+        await frameWait(deep("first"), "the inner page", 20000);
+        await frameWait(deep("later"), "the inner page's change", 15000);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    if (adSite) await step("a field in another origin's frame, in a third's that keeps changing, keeps the focus as it's redrawn", async () => {
+        await goTo(site + "nestfocus.html?c=" + encodeURIComponent(adSite + "nestfocusin.html"), "Nest focus");
+        const deep = `const deep = (root, sel) => { const hit = root.querySelector(sel); if (hit) return hit; for (const el of root.querySelectorAll("*")) if (el.shadowRoot) { const f = deep(el.shadowRoot, sel); if (f) return f; } return null; };`;
+        const active = `(() => { let a = document.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a?.tagName; })()`;
+        await frameWait(`(() => { ${deep} return !!deep(document, "input"); })()`, "the innermost frame's field", 30000);
+        await frame(`(() => { ${deep} deep(document, "input").focus(); })()`);
+        if ((await frame(active)) !== "INPUT") throw new Error("the field couldn't be focused");
+        const tick = () => frame(`(() => { ${deep} return deep(document, "#tick")?.textContent; })()`);
+        const was = await tick();
+        await frameWait(`(() => { ${deep} return Number(deep(document, "#tick")?.textContent) >= ${Number(was) + 3}; })()`, "the middle frame redrawn", 15000);
+        if ((await frame(active)) !== "INPUT") throw new Error(`the field lost the focus as the frame holding it was redrawn (now on ${await frame(active)})`);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("a site whose certificate isn't trusted: TabTop's warning, Back, then Continue (an exception, this tab), its pictures too", async () => {
+        // The page's own link to href (certlink.html), clicked: followed by
+        // the engine.
+        const frameClickLink = async (href) => {
+            await goTo(site + "certlink.html?to=" + encodeURIComponent(href), "Cert link");
+            await frameWait(`!!document.getElementById("to")`, "the link");
+            await sleep(300);  // (its address set by its script, in the engine)
+            await frameClick("#to");
+        };
+        const secure = site.replace(/^http:/, "https:");
+        const ask = (u) => ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(u)}; i.form.requestSubmit(); })()`);
+        await goTo(site + "second.html", "Second");
+        await ask(secure + "index.html");
+        await waitFor(`!document.getElementById("go_cert").hidden`, "the certificate warning", 30000);
+        const said = await ev(`[document.getElementById("go_cert_reason").textContent, document.querySelector("#go_cert .details").textContent]`);
+        if (!/authority|another site/.test(said[0]) || !/tabtop-untrusted\.test/.test(said[1])) throw new Error(`the warning says ${JSON.stringify(said)}`);
+        if ((await frame(`document.title`).catch(() => "")) === "Fixture") throw new Error("the untrusted site's page shown");
+        // Back: where it was.
+        await ev(`document.querySelector("#go_cert .back").click()`);
+        await waitFor(`document.getElementById("go_cert").hidden && document.title.startsWith("Second")`, "back from the warning");
+        // Continue: shown, marked, its pictures (TabTop's own fetches) too.
+        await ask(secure + "index.html");
+        await waitFor(`!document.getElementById("go_cert").hidden`, "the warning again (nothing's kept without Continue)", 30000);
+        await ev(`document.querySelector("#go_cert .go").click()`);
+        await waitFor(`document.title.startsWith("Fixture")`, "the page, continued to", 30000);
+        if (!/certificate isn’t trusted/.test(await ev(`document.getElementById("go_site").title`))) throw new Error(`the site's button says ${await ev(`document.getElementById("go_site").title`)}`);
+        // Site controls says so too, not "Secure".
+        await ev(`document.getElementById("go_site").click()`);
+        await waitFor(`!!document.querySelector("#go_settings iframe")?.contentDocument?.querySelector("#site_scope .badge")`, "Site controls, its badge", 15000);
+        const badge = await ev(`document.querySelector("#go_settings iframe").contentDocument.querySelector("#site_scope .badge").textContent`);
+        await ev(`document.querySelector("#go_settings .close").click()`);
+        await waitFor(`!document.getElementById("go_settings").open`, "Site controls closed");
+        if (badge !== "Certificate not trusted") throw new Error(`Site controls says the excepted page is ${JSON.stringify(badge)}`);
+        await frameWait(`document.getElementById("img")?.naturalWidth > 0`, "its picture, through the tab's exception");
+        // Its link to another page of it: no warning (the tab's exception).
+        await ask(secure + "second.html");
+        await waitFor(`document.title.startsWith("Second")`, "another page of it, no warning", 30000);
+        if (!(await ev(`document.getElementById("go_cert").hidden`))) throw new Error("warned again, the host an exception");
+        // A link the page follows to another site whose certificate isn't
+        // trusted (not an exception): warned of too.
+        const other = adSite.replace(/^http:/, "https:");
+        await frameClickLink(other + "index.html");
+        await waitFor(`!document.getElementById("go_cert").hidden && document.querySelector("#go_cert .host").textContent === ${JSON.stringify(new URL(other).hostname)}`, "the warning for the link's site", 30000);
+        await ev(`document.querySelector("#go_cert .back").click()`);
+        await waitFor(`document.getElementById("go_cert").hidden`, "back from it");
+        await goTo(site + "index.html", "Fixture");  // (where the steps after begin)
+    });
+
+    await step("a local DNS record's name is reached at its address (before the system's DNS, which doesn't know it); removed, it isn't", async () => {
+        // (In a tab of its own, its history left to it; each load its own
+        // address, not one the engines' shared cache could have from before.)
+        await ev(`(() => { window.__leaving = true; sessionStorage.clear(); location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
+        await waitFor(`!window.__leaving && document.readyState === "complete" && document.getElementById("go_progress")?.hidden`, "a tab of its own, connected", 30000);
+        await goTo(`http://fixture.home.arpa/index.html?local=${Date.now()}`, "Fixture");
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", setting: "hosts", hosts: [] }); t.close(); })`);
+        const ask = (u) => ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(u)}; i.form.requestSubmit(); })()`);
+        await ask(`http://fixture.home.arpa/second.html?local=${Date.now()}`);
+        await waitFor(`!document.getElementById("go_notice").hidden`, "the name not found, its record removed", 30000);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("a script fetched under a tab's certificate exception isn't run in another tab from the engines' shared cache", async () => {
+        const secure = site.replace(/^http:/, "https:");
+        const ask = (u) => ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(u)}; i.form.requestSubmit(); })()`);
+        // (Each in a tab of its own: the step before excepted this host in its.)
+        const freshTab = async () => {
+            await ev(`(() => { window.__leaving = true; sessionStorage.clear(); location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && document.getElementById("go_progress")?.hidden`, "a tab of its own, connected", 30000);
+        };
+        await freshTab();
+        await ask(secure + "certpage.html");
+        await waitFor(`!document.getElementById("go_cert").hidden`, "the warning", 30000);
+        await ev(`document.querySelector("#go_cert .go").click()`);
+        await waitFor(`document.title.startsWith("Cached ran")`, "the excepted page, its script run", 30000);
+        // Another tab (no exception): a trusted page using that script.
+        await freshTab();
+        await goTo(site + "cachehost.html", "Cache host");
+        await sleep(4000);
+        if (/Cached ran/.test(await ev(`document.title`))) throw new Error("another tab ran the script fetched under the first's certificate exception");
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("a connection lost, then back another way (a page loaded): its banner goes at once, not at its next try", async () => {
+        // The page's sockets known, and while __down, new ones refused (a
+        // path of TabTop's own that isn't a tunnel's): as a network gone.
+        const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+            if (window !== top) return;
+            const W = WebSocket;
+            window.__sockets = [];
+            window.__down = false;
+            window.WebSocket = class extends W {
+                constructor(url, protocols) {
+                    super(window.__down ? String(url).replace(/^(wss?:\\/\\/[^/]+).*$/, "$1/go-check-down") : url, protocols);
+                    window.__sockets.push(this);
+                }
+            };
+        })()` });
+        try {
+            await ev(`(() => { window.__leaving = true; location.reload(); })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && window.__sockets?.some((s) => s.readyState === 1) && document.getElementById("go_progress")?.hidden`, "the page again, its sockets known", 30000);
+            await ev(`window.__down = true; for (const s of window.__sockets) s.close()`);
+            await waitFor(`/Connection lost/.test(document.getElementById("tabtop_reconnect")?.textContent ?? "")`, "the connection said lost", 15000);
+            // Its own tries failing, the next one a while off.
+            await waitFor(`/Trying again in [5-8] s/.test(document.getElementById("tabtop_reconnect")?.textContent ?? "")`, "its tries failing", 30000);
+            await ev(`window.__down = false; (() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "second.html")}; i.form.requestSubmit(); })()`);
+            await waitFor(`!document.getElementById("tabtop_reconnect")`, "the banner gone as it's connected", 3000);
+            await waitFor(`document.title.startsWith("Second")`, "the page loaded", 30000);
+        } finally {
+            await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+        }
+    });
+
+    await step("a page coloured by its body's attributes (bgcolor, text) is shown in its colours", async () => {
+        await goTo(site + "bgcolor.html", "Bgcolor");
+        await frameWait(`!!document.getElementById("t")`, "the page");
+        const colours = await frame(`JSON.stringify({ bg: getComputedStyle(document.body).backgroundColor, text: getComputedStyle(document.getElementById("t")).color })`);
+        if (colours !== JSON.stringify({ bg: "rgb(0, 0, 0)", text: "rgb(255, 255, 255)" })) throw new Error(`the copy's colours: ${colours}`);
+    });
 
     await step("no request left this browser except to TabTop", async () => {
         const elsewhere = requests.filter((u) => !u.startsWith(origin + "/") && !/^(data|blob|about|chrome|devtools):/.test(u));

@@ -23,10 +23,11 @@
 import { navBar, nameTab, pages, openPage } from "../tabtop/nav.js";
 import { iconSVG } from "../tabtop/glyphs.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
-import { reconnect } from "../tabtop/reconnect.js";
+import { reconnect, reconnected } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { call, collect, setLoginTitle } from "../tabtop/requests.js";
 import { goMedia } from "./go-media.js";
+import { mseStageKeeper } from "./mse-stages.js";
 
 // Address-bar search engines (Settings; gosites.go's goSearchEngines).
 // prefix is the URL up to and including the query parameter's "="; param
@@ -38,21 +39,50 @@ const SEARCH_ENGINES = {
     brave: { prefix: "https://search.brave.com/search?q=", param: "q" },
 };
 let searchEngine = "duckduckgo";
-function searchOf(id = searchEngine) { return SEARCH_ENGINES[id] ?? SEARCH_ENGINES.duckduckgo; }
-function isSearch(url) { return Object.values(SEARCH_ENGINES).some((e) => url.startsWith(e.prefix)); }
+// A custom engine (Settings: searchURL, checked by gosites.go's
+// goSearchTemplate): its address with %s for the words, a query
+// parameter's whole value; where it is (origin and path) and that
+// parameter's name, to know its searches again. null if none.
+let customSearch = null;
+function searchTemplate(template) {
+    try {
+        const u = new URL(template.replace("%s", "TABTOPWORDS"));
+        const param = [...u.searchParams].find(([, v]) => v === "TABTOPWORDS")?.[0];
+        if (!param || !/^https?:$/.test(u.protocol)) return null;
+        return { template, at: u.origin + u.pathname, param };
+    } catch { return null; }
+}
+// searchFor is the address searching for words, with the engine chosen.
+function searchFor(words) {
+    if (searchEngine === "custom" && customSearch) return customSearch.template.replace("%s", encodeURIComponent(words));
+    return (SEARCH_ENGINES[searchEngine] ?? SEARCH_ENGINES.duckduckgo).prefix + encodeURIComponent(words);
+}
+// searchWords is the words url searches for, if it's a search (an engine's
+// offered, or the custom one's); else null.
 function searchWords(url) {
     for (const e of Object.values(SEARCH_ENGINES)) {
         if (!url.startsWith(e.prefix)) continue;
         try { return new URL(url).searchParams.get(e.param) || ""; } catch { return ""; }
     }
+    if (customSearch) {
+        try {
+            const u = new URL(url);
+            if (u.origin + u.pathname === customSearch.at && u.searchParams.has(customSearch.param)) return u.searchParams.get(customSearch.param) || "";
+        } catch { /* not an address */ }
+    }
     return null;
 }
+function isSearch(url) { return searchWords(url) !== null; }
+let searchAsked = 0;  // (only the latest reply applies: an older one, slower, would undo a change)
 async function loadSearchEngine() {
+    const mine = ++searchAsked;
     try {
         const t = await call({ type: "go-settings" });
-        const id = t.reply?.searchEngine;
+        const id = t.reply?.searchEngine, url = t.reply?.searchURL;
         t.close();
-        if (typeof id === "string" && SEARCH_ENGINES[id]) searchEngine = id;
+        if (mine !== searchAsked) return;
+        customSearch = typeof url === "string" && url ? searchTemplate(url) : null;
+        if (typeof id === "string" && (SEARCH_ENGINES[id] || id === "custom" && customSearch)) searchEngine = id;
     } catch { /* keep the default */ }
 }
 loadSearchEngine();
@@ -116,6 +146,7 @@ setLoginTitle("Browser");
 const $ = (id) => document.getElementById(id);
 const back = $("go_back"), forward = $("go_forward"), reload = $("go_reload");
 const address = $("go_url"), status = $("go_status"), notice = $("go_notice"), start = $("go_start");
+const certBox = $("go_cert");  // a certificate warning (certWarning)
 
 // The bar's icons (drawn, not characters: the same on every device).
 const ICONS = {
@@ -243,16 +274,27 @@ $("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Settin
 // lightbox frame so it leaves the browser's back and forward history alone.
 const settingsBox = $("go_settings");
 let settingsFrame = null;
+// settingsUnsaved: the page in it has changes not saved (Settings' My
+// filters: told "unsaved", then "saved"), asked of before it's closed.
+let settingsUnsaved = false;
+function closeSettings() {
+    if (settingsUnsaved && !confirm("Your filters aren’t saved. Close Settings and lose the changes?")) return false;
+    settingsUnsaved = false;
+    settingsBox.close();
+    return true;
+}
 function openSettings(page) {
     openMenu(false);
     settingsFrame?.remove();
+    settingsUnsaved = false;
     const there = new URL(page, location.href);
     // Site controls open at the page's site when there's a page.
     const host = at >= 0 && !isSearch(entries[at].url) ? hostOf(entries[at].url).replace(/:\d+$/, "") : "";
     if (page === "sites" && host) {
         there.searchParams.set("site", host);
-        // Whether the page is secure (https), for Site controls to say.
-        there.searchParams.set("secure", entries[at].url.startsWith("https:") ? "1" : "0");
+        // Whether the page is secure (https), for Site controls to say: not,
+        // its certificate untrusted, continued past (an exception).
+        there.searchParams.set("secure", !entries[at].url.startsWith("https:") ? "0" : certException ? "cert" : "1");
     }
     const title = page === "sites" ? "Site controls" : "Settings";
     $("go_settings_h").textContent = title;
@@ -277,6 +319,9 @@ function openSettings(page) {
 // whole, and addresses; goadblock.go). Shown with a page's site, not while
 // the address is edited.
 const siteButton = $("go_site"), addressForm = $("go_address");
+// certException: the page shown is https whose certificate wasn't trusted,
+// continued to anyway (gocert.go).
+let certException = false;
 let adsBlocked = 0;
 function showSiteButton() {
     const entry = at >= 0 ? entries[at] : null;
@@ -284,7 +329,9 @@ function showSiteButton() {
     siteButton.hidden = !site;
     addressForm.classList.toggle("with-site", !!site);
     if (!site) return;
-    const insecure = address.classList.contains("insecure");
+    // Not https, or https whose certificate wasn't trusted, continued to
+    // anyway (an exception, this tab: go-cert-warning).
+    const insecure = address.classList.contains("insecure") || certException;
     // What's to know, each its glyph: not https; ads blocked (its count
     // after it); neither, its controls.
     const glyphs = [...(insecure ? ["insecure"] : []), ...(adsBlocked > 0 ? ["shield"] : []), ...(!insecure && !adsBlocked ? ["controls"] : [])].join();
@@ -297,7 +344,8 @@ function showSiteButton() {
     siteButton.classList.toggle("ads", adsBlocked > 0);
     siteButton.querySelector(".count").textContent = adsBlocked > 0 ? String(adsBlocked) : "";
     const said = [`Site controls for ${site}`];
-    if (insecure) said.push("not secure (http)");
+    if (certException) said.push("not secure: its certificate isn’t trusted (an exception, this tab)");
+    else if (insecure) said.push("not secure (http)");
     if (adsBlocked > 0) said.push(`${adsBlocked} ${adsBlocked === 1 ? "ad or tracker" : "ads and trackers"} blocked on this page`);
     siteButton.title = siteButton.ariaLabel = said.join("; ");
     addressForm.style.setProperty("--site-width", `${siteButton.offsetWidth + 4}px`);
@@ -308,8 +356,15 @@ function showAds(count) {
 }
 siteButton.addEventListener("click", () => openSettings("sites"));
 $("go_menu_settings").addEventListener("click", () => openSettings("settings"));
-settingsBox.querySelector(".close").addEventListener("click", () => settingsBox.close());
-settingsBox.addEventListener("click", (e) => { if (e.target === settingsBox) settingsBox.close(); });  // beside it (its backdrop)
+settingsBox.querySelector(".close").addEventListener("click", closeSettings);
+settingsBox.addEventListener("click", (e) => { if (e.target === settingsBox) closeSettings(); });  // beside it (its backdrop)
+settingsBox.addEventListener("cancel", (e) => {  // Esc
+    // (Pressed again with nothing done between, it can't be stopped: the
+    // browser closes it, unsaved or not.)
+    if (!e.cancelable) return void (settingsUnsaved = false);
+    e.preventDefault();
+    closeSettings();
+});
 settingsBox.addEventListener("close", () => {
     // The close event comes a moment after it's shut: opened again
     // meanwhile, the frame is the new one's, kept.
@@ -319,13 +374,14 @@ settingsBox.addEventListener("close", () => {
 });
 window.addEventListener("message", (e) => {
     if (!settingsFrame || e.source !== settingsFrame.contentWindow || e.origin !== location.origin) return;
-    if (e.data?.goSettings === "close") settingsBox.close();
+    if (e.data?.goSettings === "close") closeSettings();
+    else if (e.data?.goSettings === "unsaved" || e.data?.goSettings === "saved") settingsUnsaved = e.data.goSettings === "unsaved";
     else if (e.data?.goSettings === "media-changed") refreshMediaPolicy();
     else if (e.data?.goSettings === "theme-changed") refreshTheme();
     else if (e.data?.goSettings === "search-changed") loadSearchEngine();
     // Site controls' Reload page (a change that holds for what loads next),
     // and its link to Settings.
-    else if (e.data?.goSettings === "reload" && at >= 0) { settingsBox.close(); load(entries[at].url, { push: false }); }
+    else if (e.data?.goSettings === "reload" && at >= 0) { if (closeSettings()) load(entries[at].url, { push: false }); }
     else if (e.data?.goSettings === "open-settings") openSettings("settings");
 });
 const nav = navBar("go", { logOutIcon: true });
@@ -407,6 +463,8 @@ const mediaHelp = {
     // (The likeliest first, the player's picker taking it: the longest,
     // not an ad's, which isn't offered; see savedStreams.)
     streamsToSave: () => savedStreams().map(({ url, about }) => ({
+        url,
+        staleSince: manifestsStale,
         label: streamName(url, about),
         save: (say, opts) => saveFile(url, say, true, undefined, opts),
     })),
@@ -428,6 +486,10 @@ const MEDIA_ICONS = {
     watch: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/>',
     skip: '<path d="M5 5l9 7-9 7z M16 5h3v14h-3z" fill="currentColor" stroke="none"/>',
     hide: '<path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A10.8 10.8 0 0 1 12 5c5 0 8.5 5 8.5 7a8.5 8.5 0 0 1-2.2 3.5M6.2 6.2C3.9 7.7 1.5 10.5 1.5 12c0 2 3.5 7 8.5 7 1.2 0 2.3-.3 3.3-.8"/>',
+    // Save, and saving: a stop square in a ring that fills as it goes (as
+    // Watch's player has them, video-player.js).
+    download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    saving: '<circle class="ring-track" cx="12" cy="12" r="10"/><circle class="ring" cx="12" cy="12" r="10" pathLength="100"/><rect x="8.5" y="8.5" width="7" height="7" rx="1" fill="currentColor" stroke="none"/>',
 };
 const mediaIcon = (name) => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MEDIA_ICONS[name]}</svg>`;
 // A device-wide user choice, when made; otherwise the site's media policy
@@ -479,7 +541,10 @@ async function refreshMediaPolicy() {
     } catch { /* the next snapshot includes the server setting */ }
 }
 
+// (saveGlyph's: a player's menu Save, by its key.)
+const menuSaves = new Map();  // a player's key -> { text, fraction, cancel, view }
 function newMedia() {
+    menuSaves.clear();  // (another page's players)
     const m = goMedia(frame, { ...mediaHelp, emeReply(message, id) {
         if (m !== media || ws?.readyState !== TunnelSocket.OPEN) return;
         const value = JSON.stringify(message);
@@ -487,6 +552,58 @@ function newMedia() {
     } });
     m.autoplay(shouldAutoplay());
     return m;
+}
+// saveGlyph is a player's Save in the menu (its stream's, or its file's;
+// go-media.js saver), as Watch's player has its Download: pressed, a ring
+// that fills as it saves, a press then cancelling; how it goes said in note,
+// under its address. Its state is kept by the player's key (menuSaves), so
+// the menu drawn again shows it; it doesn't take over the telling of a save
+// started elsewhere (the player's, the page's notice). Null if there's
+// nothing to save.
+function saveGlyph(p, which, note, saver = media?.saver(p.key)) {
+    if (!saver) return null;
+    const title = saver.stream ? `Save the stream of ${which} into Downloads${saver.label ? ` (${saver.label})` : ""}` : `Download ${which} into Downloads`;
+    const b = glyph("download", title, () => {
+        const going = menuSaves.get(p.key);
+        if (going?.cancel) return going.cancel();
+        if (going && going.fraction !== undefined) return;  // (cancelling)
+        const state = { text: "", fraction: undefined, cancel: null, view: { b, note, title } };
+        menuSaves.set(p.key, state);
+        saver.save((text, fraction, cancel) => {
+            Object.assign(state, { text: String(text || ""), fraction, cancel: fraction !== undefined && cancel ? cancel : null });
+            paintSave(state);
+        });
+    });
+    b.dataset.icon = "download";
+    const going = menuSaves.get(p.key);
+    if (going) {
+        going.view = { b, note, title };
+        paintSave(going);
+    }
+    return b;
+}
+function paintSave({ text, fraction, cancel, view: { b, note, title } }) {
+    const active = fraction !== undefined;
+    const percent = typeof fraction === "number" ? Math.floor(fraction * 100) : null;
+    b.disabled = active && !cancel;
+    b.classList.toggle("saving", active);
+    const label = !active ? title : cancel ? `Cancel the download${percent !== null ? ` (${percent}%)` : ""}` : "Cancelling the download";
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    const icon = active ? "saving" : "download";
+    if (b.dataset.icon !== icon) {
+        b.dataset.icon = icon;
+        b.innerHTML = mediaIcon(icon);
+    }
+    if (percent !== null) {
+        b.dataset.done = "";
+        b.style.setProperty("--done", String(Math.max(percent, 1)));
+    } else {
+        delete b.dataset.done;
+        b.style.removeProperty("--done");
+    }
+    note.textContent = active && percent !== null ? `${text.replace(/…$/, "")} · ${percent}%` : text;
+    note.hidden = !note.textContent;
 }
 function glyph(name, label, act, { disabled = false, pressed } = {}) {
     const b = Object.assign(document.createElement("button"), { type: "button", className: "glyph", disabled, title: label });
@@ -538,7 +655,7 @@ async function blockVideos(p) {
     const url = entries[at]?.url;
     if (!url) return;
     let host = "";
-    try { host = /^https?:/i.test(p?.src ?? "") ? new URL(p.src).hostname.replace(/^www\./, "") : ""; } catch { /* none */ }
+    try { host = /^https?:/i.test(p?.src ?? "") ? new URL(p.src).hostname.replace(/^www\./, "").replace(/^\[(.*)\]$/, "$1") : ""; } catch { /* none */ }
     if (host) {
         // Its own host's: blocked, those playing from it stopped; Undo
         // lets it be again, and loads the page again.
@@ -596,14 +713,21 @@ let mediaDrawn = "", mediaDrawnOpen = false;
 function mediaMenu() {
     const section = $("go_menu_media"), list = section.querySelector("ul");
     const players = media?.list() ?? [];
+    // The page's streams, where none of its players offers them (one the
+    // site's own player plays, not relayed here): rows of their own, each
+    // with its Save.
+    const offered = players.some((p) => p.saveable && media?.saver(p.key)?.stream);
+    // (Not the page's last place's: it's moved in itself since.)
+    const streams = offered || manifestsStale !== undefined || !pages.some((p) => p.id === "files") ? [] : savedStreams().slice(0, 4);
     menu.classList.toggle("has-media", players.length > 0);
     menu.setAttribute("aria-label", players.length ? `Menu (${players.length} playing or loading on this page)` : "Menu");
-    section.hidden = !players.length;
+    section.hidden = !players.length && !streams.length;
     const videos = players.every((p) => p.kind === "video");
     section.querySelector("h2").textContent = videos ? "Videos on this page" : "Videos and sounds on this page";
     // Drawn again only as what's shown changes: a row replaced as it's
     // pressed takes no click, and a focus moves.
-    const drawn = JSON.stringify([autoplayOverride, siteMedia, players.map(({ key, state, short, src, skippable, playing, ready, watching }) => [key, state, short, src, skippable, playing, ready, watching])]);
+    const drawn = JSON.stringify([autoplayOverride, siteMedia, players.map(({ key, state, short, src, skippable, playing, ready, watching, saveable }) => [key, state, short, src, skippable, playing, ready, watching, saveable]),
+        streams.map(({ url, about }) => [url, about]), players.map((p) => p.saveable && media?.saver(p.key)?.label)]);
     if (drawn === mediaDrawn && !menuPanel.hidden === mediaDrawnOpen) return;
     mediaDrawn = drawn;
     mediaDrawnOpen = !menuPanel.hidden;
@@ -631,7 +755,10 @@ function mediaMenu() {
         const state = Object.assign(document.createElement("div"), { className: "state", textContent: ordinal + p.state });
         const where = Object.assign(document.createElement("div"), { className: "where", textContent: p.short });
         if (p.src) where.title = p.src;
-        about.append(state, where);
+        // How its save goes (saveGlyph).
+        const note = Object.assign(document.createElement("div"), { className: "note", hidden: true });
+        note.setAttribute("aria-live", "polite");
+        about.append(state, where, note);
         const which = `${noun} ${i + 1}${p.src ? `, ${p.src}` : ""}`;
         // Ended videos can be hidden; live players can be skipped as before.
         const endedVideo = p.kind === "video" && (p.state === "Ended" || p.state === "Skipped");
@@ -642,6 +769,7 @@ function mediaMenu() {
         const acts = [
             ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
             glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
+            ...(p.saveable ? [saveGlyph(p, which, note)].filter(Boolean) : []),
             skip,
         ];
         for (const [j, b] of acts.entries()) b.dataset.act = String(j);
@@ -653,6 +781,21 @@ function mediaMenu() {
         li.addEventListener("pointerleave", () => media?.mark(null));
         li.addEventListener("focusin", () => media?.mark(p.key));
         li.addEventListener("focusout", () => media?.mark(null));
+        return li;
+    }), ...streams.map(({ url, about: what }) => {
+        const li = document.createElement("li");
+        li.dataset.key = "stream:" + url;
+        const label = streamName(url, what);
+        const about = Object.assign(document.createElement("div"), { className: "about" });
+        const where = Object.assign(document.createElement("div"), { className: "where", textContent: label, title: url });
+        const note = Object.assign(document.createElement("div"), { className: "note", hidden: true });
+        note.setAttribute("aria-live", "polite");
+        about.append(Object.assign(document.createElement("div"), { className: "state", textContent: "Stream" }), where, note);
+        const save = saveGlyph({ key: li.dataset.key }, label, note, { stream: true, label: "", save: (say, opts) => saveFile(url, say, true, undefined, opts) });
+        save.dataset.act = "0";
+        const buttons = Object.assign(document.createElement("div"), { className: "acts" });
+        buttons.append(save);
+        li.append(about, buttons);
         return li;
     }));
     if (focusedKey) {
@@ -710,17 +853,64 @@ let spent = 0;  // bytes fetched for the frame for the page shown
 function target(text) {
     const s = text.trim();
     if (!s) return null;
-    if (/^https?:\/\//i.test(s)) return s;
-    if (!/\s/.test(s) && /^[^/]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(s) || /^localhost(:\d+)?(\/|$)/i.test(s)) return "https://" + s;
-    return searchOf().prefix + encodeURIComponent(s);
+    // What isn't an address at all (no http or https address with a host
+    // can be made of it: "https://exa mple.com") is searched for, as words.
+    // (One with a name and password is one: the server says it's refused.)
+    const address = (raw) => {
+        try {
+            const u = new URL(raw);
+            // (A host as one is written: Chrome's URL takes "exa mple.com"
+            // as exa%20mple.com; international names come as xn--.)
+            return /^https?:$/.test(u.protocol) && /^(\[[0-9a-f:.]+\]|[a-z0-9_.-]+)$/i.test(u.hostname) ? raw : null;
+        } catch { return null; }
+    };
+    if (/^https?:\/\//i.test(s)) return address(s) ?? searchFor(s);
+    if (!/\s/.test(s) && /^[^/]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(s) || /^localhost(:\d+)?(\/|$)/i.test(s)) return address("https://" + s) ?? searchFor(s);
+    return searchFor(s);
 }
 
 function show(text) {
     status.textContent = text;
 }
 
-function warn(message, { retry = null, error = true, label = "Try again", edit = false } = {}) {
+// certWarning shows TabTop's warning of a page whose certificate isn't
+// trusted (go-cert-warning): never the site's page. Go back, or Continue
+// (an exception for its host, this tab: gocert.go).
+function certWarning(m) {
+    const host = typeof m.host === "string" ? m.host : hostOf(m.url);
+    for (const el of certBox.querySelectorAll(".host")) el.textContent = host;
+    $("go_cert_reason").textContent = typeof m.reason === "string" ? m.reason : "Its certificate isn’t trusted.";
+    const details = certBox.querySelector(".details");
+    details.replaceChildren();
+    const c = m.cert && typeof m.cert === "object" ? m.cert : {};
+    for (const [label, value] of [["Problem", c.problem], ["Issued to", c.subject], ["Issued by", c.issuer], ["Valid till", c.notAfter],
+        ["For", Array.isArray(c.names) ? c.names.filter((n) => typeof n === "string").join(", ") : ""]]) {
+        if (typeof value !== "string" || !value) continue;
+        details.append(Object.assign(document.createElement("dt"), { textContent: label }), Object.assign(document.createElement("dd"), { textContent: value }));
+    }
+    details.hidden = !details.children.length;
+    certBox.querySelector(".back").onclick = () => {
+        certBox.hidden = true;
+        if (at > 0) goBy(-1);
+        else {
+            start.hidden = false;
+            address.value = "";
+        }
+    };
+    certBox.querySelector(".go").onclick = () => {
+        certBox.hidden = true;
+        loading = true;
+        show(`Loading ${host}…`);
+        update();
+        ws?.send(JSON.stringify({ op: "cert-continue", url: m.url }));
+    };
+    certBox.hidden = false;
+    certBox.querySelector(".back").focus();
+}
+// (connection: it's of the connection lost, so gone once it's back.)
+function warn(message, { retry = null, error = true, label = "Try again", edit = false, connection = false } = {}) {
     notice.querySelector("p").textContent = message;
+    notice.dataset.connection = connection ? "1" : "";
     notice.classList.toggle("error", error);
     const button = notice.querySelector(".primary");
     button.textContent = label;
@@ -944,17 +1134,23 @@ function load(url, { push = true } = {}) {
     }
     start.hidden = true;
     notice.hidden = true;
+    certBox.hidden = true;
     loading = true;
     rendering = false;
     show(`Loading ${hostOf(url)}…`);
     update();
     if (!ws) {
+        askedOffline = url;
         connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
         return;
     }
+    askedOffline = null;
     sentView = view();
     ws.send(JSON.stringify({ op: "navigate", url, view: sentView }));
 }
+// askedOffline: an address asked for while not connected, gone to once
+// connected (a tab taken back as it was would show its page instead).
+let askedOffline = null;
 
 // The page's window in the engine is the size of the frame here (and its
 // pixel ratio), so a page laying itself out for a phone or a wide screen,
@@ -1077,6 +1273,11 @@ function open() {
             gen = shown = 0;
             show("");
             $("go_progress").hidden = true;
+            // Connected again, however (a page loaded, the tab shown again,
+            // back from the cache): what said it was lost goes now, not at
+            // the banner's next try.
+            reconnected();
+            if (notice.dataset.connection) notice.hidden = true;
             const reply = s.reply ?? {};
             resumeToken.set(typeof reply.resume === "string" && reply.resume.length <= 64 ? reply.resume : "");
             if (reply.resumed) {
@@ -1085,7 +1286,10 @@ function open() {
                 sentView = view();
                 ws.send(JSON.stringify({ op: "viewport", view: sentView }));
                 notice.hidden = true;
-                show("Carrying on…");
+                if (askedOffline) {
+                    ws.send(JSON.stringify({ op: "navigate", url: askedOffline, view: sentView }));
+                    askedOffline = null;
+                } else show("Carrying on…");
                 // Nothing from it soon (held up on the server): a tab of
                 // its own, the page loaded again, as without one to take back.
                 heard = false;
@@ -1165,7 +1369,7 @@ function open() {
                     : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
             } else {
                 show("");
-                warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0 });
+                warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0, connection: true });
             }
             resolve(!e.lost);
         };
@@ -1177,6 +1381,9 @@ function open() {
 // say), in the order they came.
 const manifests = new Map();
 let manifestGeneration;
+// manifestsStale: the page's moved in itself (pushState) since they came:
+// perhaps the last place's (a player's own buffer the likelier, there).
+let manifestsStale;  // (when: performance.now())
 const AD_AT_MOST = 60;     // seconds: a stream this short beside a long one is an ad's
 const MAIN_AT_LEAST = 120; // seconds: the long one
 // savedStreams is the page's streams to save, the likeliest first: the
@@ -1198,7 +1405,9 @@ function streamName(url, about) {
     // (Its site: the host's last two names, three for a country's
     // "co.uk"; an address, as it is.)
     const host = u.hostname.replace(/^www\./, ""), labels = host.split(".");
-    const site = /^[\d.]+$|^\[/.test(host) ? host : labels.slice(labels.length > 2 && labels.at(-2).length <= 3 ? -3 : -2).join(".");
+    // (Three for a country's second level: co.uk, com.au; not cnn.com's.)
+    const secondLevel = labels.length > 2 && labels.at(-1).length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(labels.at(-2));
+    const site = /^[\d.]+$|^\[/.test(host) ? host : labels.slice(secondLevel ? -3 : -2).join(".");
     const d = Math.round(about.duration || 0);
     const length = d > 0 ? (d >= 3600 ? `${Math.floor(d / 3600)}:${String(Math.floor(d / 60) % 60).padStart(2, "0")}` : `${Math.floor(d / 60)}`) + `:${String(d % 60).padStart(2, "0")}` : "";
     const known = [about.height > 0 ? `${about.height}p` : "", length].filter(Boolean);
@@ -1213,6 +1422,7 @@ function message(m) {
             if (m.gen !== manifestGeneration) {
                 manifestGeneration = m.gen;
                 manifests.clear();
+                manifestsStale = undefined;
             }
             if (typeof m.url !== "string" || !pages.some(p => p.id === "files")) break;
             const num = (v, most) => (Number.isFinite(v) && v > 0 && v <= most ? v : 0);
@@ -1222,6 +1432,7 @@ function message(m) {
             // The newest kept: past 24, the oldest goes (as the server's).
             if (!manifests.has(m.url) && manifests.size >= 24) manifests.delete(manifests.keys().next().value);
             manifests.set(m.url, about);
+            mediaMenu();
             break;
         }
         case "go-manifests-clear":
@@ -1229,11 +1440,23 @@ function message(m) {
             // next video): its streams afresh.
             if (m.gen === manifestGeneration) {
                 manifests.clear();
+                manifestsStale = undefined;
+                mediaMenu();
+            }
+            break;
+        case "go-manifests-stale":
+            if (m.gen === manifestGeneration && manifests.size) {
+                manifestsStale ??= performance.now();
+                mediaMenu();
             }
             break;
         case "go-loading":
             manifestGeneration = m.gen;
             manifests.clear();
+            manifestsStale = undefined;
+            mediaMenu();
+            certException = false;  // (the next page's says, with its snapshot)
+            showSiteButton();
             showAds(0);
             if (m.by === "page" && typeof m.url === "string") {
                 // The page went somewhere itself: a link, a form, a script.
@@ -1245,6 +1468,7 @@ function message(m) {
             loading = true;
             rendering = false;
             notice.hidden = true;
+            certBox.hidden = true;
             // Pop-ups the page left asked about are gone with it, as a
             // browser's notice of them is.
             popupAsks = [];
@@ -1277,6 +1501,9 @@ function message(m) {
                 media = newMedia();
             }
             shown = m.gen;
+            certBox.hidden = true;
+            certException = m.certException === true;
+            showSiteButton();
             applyMediaPolicy(m.mediaPolicy ?? "allow");
             media.blockHosts(m.videoHosts);
             lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide,
@@ -1293,6 +1520,10 @@ function message(m) {
                 // Kept with the page, for a frame given it again.
                 if (Array.isArray(m.hide) && lastRender?.gen === m.gen) lastRender.hide = [...(lastRender.hide ?? []), ...m.hide];
             }
+            break;
+        case "go-eme":
+            // EME requests of a batch of changes let go (read again whole).
+            if (m.gen === shown) media.eme(m.eme);
             break;
         case "go-net":
             // Whether the page being read is still loading: the frame holds
@@ -1345,6 +1576,13 @@ function message(m) {
             loading = rendering = false;
             show("");
             offerFile(m.url, m.mime);
+            update();
+            break;
+        case "go-cert-warning":
+            if (typeof m.url !== "string") break;  // (an older page's never comes: the socket's handler)
+            loading = rendering = false;
+            show("");
+            certWarning(m);
             update();
             break;
         case "go-error":
@@ -1855,8 +2093,7 @@ async function saveFile(url, say = null, stream = false, job = { id: "", label: 
 // MSE spill staging: completed clear-MP4 pieces go to the server while the
 // stream plays (gostreammse.go); Save finalizes the remux into Downloads.
 const MSE_UPLOAD_CHUNK = 256 * 1024;
-const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4 };
-const mseStages = new WeakMap(); // stream -> stage session
+const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4, windowPart: 5 };
 
 async function openMSEStageSession() {
     const t = await call({ type: "fetch", path: "", from_go: true, save_mse: true, mse_stage: true, go_tab: resumeToken.get() });
@@ -1879,19 +2116,24 @@ async function openMSEStageSession() {
     return {
         id,
         tunnel: t,
-        async write({ track, kind, bytes, offset: timestampOffset = 0 }) {
+        async write({ track, kind, bytes, offset: timestampOffset = 0, windowStart = 0, windowEnd = Infinity }) {
             if (closed) throw new Error("buffered stream was cancelled");
-            const timed = kind === "part" && timestampOffset !== 0;
-            const kindByte = timed ? MSE_KIND.timedPart : MSE_KIND[kind];
+            const windowed = kind === "part" && (windowStart !== 0 || windowEnd !== Infinity);
+            const timed = kind === "part" && (timestampOffset !== 0 || windowed);
+            const kindByte = windowed ? MSE_KIND.windowPart : timed ? MSE_KIND.timedPart : MSE_KIND[kind];
             if (!kindByte || !(bytes instanceof Uint8Array) || !bytes.length) {
                 throw new Error("invalid stream frame");
             }
-            const header = new Uint8Array(timed ? 14 : 6);
+            const header = new Uint8Array(windowed ? 30 : timed ? 14 : 6);
             header[0] = track & 0xff;
             header[1] = kindByte;
             const view = new DataView(header.buffer);
             view.setUint32(2, bytes.length + header.length - 6);
             if (timed) view.setFloat64(6, timestampOffset);
+            if (windowed) {
+                view.setFloat64(14, windowStart);
+                view.setFloat64(22, windowEnd);
+            }
             let offset = 0;
             const firstLen = Math.min(bytes.length, MSE_UPLOAD_CHUNK - header.length);
             const first = new Uint8Array(header.length + firstLen);
@@ -1916,13 +2158,10 @@ async function openMSEStageSession() {
     };
 }
 
-async function ensureMSEStage(stream) {
-    let stage = mseStages.get(stream);
-    if (stage && !stage.closed) return stage;
-    stage = await openMSEStageSession();
-    mseStages.set(stream, stage);
-    return stage;
-}
+// Each stream's staging session (mse-stages.js): opened as its first
+// piece is spilled, let go as its capture begins again.
+const mseStages = mseStageKeeper(openMSEStageSession);
+const ensureMSEStage = (stream) => mseStages.ensure(stream);
 
 async function spillMSECapture(stream, ev) {
     const stage = await ensureMSEStage(stream);
@@ -1931,21 +2170,24 @@ async function spillMSECapture(stream, ev) {
     } catch (err) {
         // The server's let it go (its time up, a refused piece): the next
         // spill opens another (the capture begins again: mse-capture.js).
-        if (mseStages.get(stream) === stage) mseStages.delete(stream);
+        if (mseStages.get(stream) === stage) mseStages.forget(stream);
         stage.markClosed();
         throw err;
     }
 }
 
 function abortMSECapture(stream) {
-    const stage = mseStages.get(stream);
-    if (!stage) return;
-    mseStages.delete(stream);
-    stage.abort();
+    mseStages.abort(stream);
 }
 
+const mseSaveKeys = new WeakMap();  // a buffered stream -> its downloads' key
+let mseSaveCount = 0;
 async function saveMSECapture(stream, say = null, { attach = false, detach = false } = {}) {
-    const url = "mse:buffered";
+    // Its own download, by the stream (two players' buffered streams are
+    // two saves, not one attached to the other's).
+    let id = mseSaveKeys.get(stream);
+    if (!id) mseSaveKeys.set(stream, id = String(++mseSaveCount));
+    const url = `mse:${id}`;
     if (detach) {
         for (const running of downloads) {
             if (running.say !== say) continue;
@@ -2006,7 +2248,7 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
     };
     let saying = [`Saving buffered stream into Downloads…`, null];
     // Once finalize's sent, the server's session is gone, saved or not.
-    let finalized = false, saved = false;
+    let finalized = false, saved = false, started = false;
     job.tell = () => {
         if (job.say) job.say(saying[0], saying[1], job.cancelling ? null : cancel);
         else show(saying[0] + (typeof saying[1] === "number" ? ` · ${Math.floor(saying[1] * 100)}%` : ""));
@@ -2025,11 +2267,19 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         }
         stage.tunnel.sendText(JSON.stringify({ finalize: true }));
         finalized = true;
-        mseStages.delete(stream);
-        stage.markClosed();
+        // The session's the save's once it starts; refused (every fetch
+        // going), it goes on, spilled to, to be saved again.
+        const start = () => {
+            if (started) return;
+            started = true;
+            mseStages.forget(stream);
+            stage.markClosed();
+            stream?.capture?.sessionTaken?.();  // spills go on, to a new session
+        };
         for (;;) {
             const m = await stage.tunnel.next();
             if (!m) {
+                start();
                 if (!job.id) throw Object.assign(new Error("lost touch with the server"), { lostTouch: true });
                 stage.tunnel.close();
                 stage.tunnel = await followDownload(job.id);
@@ -2038,6 +2288,8 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
             }
             if (m.text === undefined) continue;
             const res = JSON.parse(m.text);
+            if (typeof res.refused === "string" && !started) throw Object.assign(new Error(res.refused), { refused: true });
+            start();
             if (res.error) throw new Error(res.error);
             if (res.fetch && !job.id) {
                 job.id = res.fetch.id || "";
@@ -2066,6 +2318,14 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
             }
         }
     } catch (err) {
+        if (err.refused) {
+            // Nothing lost: Save again once a fetch is done.
+            finalized = false;
+            if (job.say) return job.say(`Not saved yet: ${err.message}`);
+            show("");
+            warn(`Not saved yet: ${err.message}`, { retry: () => saveMSECapture(stream, say), label: "Try again" });
+            return;
+        }
         if (err.message === "cancelled") {
             if (job.say) return job.say("Download cancelled.");
             show("");
@@ -2084,10 +2344,11 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         warn(`Not saved: ${err.message}`, { retry: () => openPage("files"), label: "Open Downloads" });
     } finally {
         if (!saved) {
-            if (finalized) stream?.capture?.saveFailed?.();
-            else stream?.capture?.unseal?.();
+            if (finalized && !started) stream?.capture?.saveFailed?.();
+            else if (!finalized) stream?.capture?.unseal?.();
         }
-        try { stage?.tunnel?.close(); } catch { /* closed */ }
+        // (A session refused its save goes on: still the stream's.)
+        if (mseStages.get(stream) !== stage) try { stage?.tunnel?.close(); } catch { /* closed */ }
         downloads.delete(job);
         button.remove();
         rememberDownloads();

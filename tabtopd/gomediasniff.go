@@ -67,6 +67,7 @@ var mediaSniffed = struct {
 // and Referer, never another address's); "" if it's none a player here
 // plays.
 func sniffRemoteMedia(ctx context.Context, client *http.Client, u, validator, userAgent string, from *goFrom) string {
+	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
 	key := u + "\x00" + validator
 	mediaSniffed.Lock()
 	media, ok := mediaSniffed.by[key]

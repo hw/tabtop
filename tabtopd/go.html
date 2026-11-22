@@ -76,6 +76,15 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_menu_media .about { flex: 1; min-width: 0; }
 #go_menu_media .state { color: #e8e8ea; font: 14px system-ui, sans-serif; }
 #go_menu_media .where { color: #a8a8ad; font: 12px system-ui, sans-serif; overflow-wrap: anywhere; }
+#go_menu_media .note { color: #8ab4f8; font: 12px system-ui, sans-serif; overflow-wrap: anywhere; }
+#go_menu_media .note[hidden] { display: none; }
+/* Save, saving (go.js saveGlyph): its ring filled as it goes; Cancel by a
+   press, as in the player (video-player.js). */
+#go_menu_media .glyph.saving .ring-track { stroke: rgba(255, 255, 255, .3); }
+#go_menu_media .glyph.saving .ring { stroke: #8ab4f8; stroke-dasharray: var(--done, 25) 100; transform: rotate(-90deg); transform-origin: 12px 12px; }
+#go_menu_media .glyph.saving:not([data-done]) .ring { animation: go-saving 1.2s linear infinite; }
+@keyframes go-saving { to { transform: rotate(270deg); } }
+@media (prefers-reduced-motion: reduce) { #go_menu_media .glyph.saving .ring { animation: none; } }
 #go_menu_media .head { display: flex; align-items: center; gap: 8px; }
 #go_menu_media .head h2 { flex: 1; }
 #go_menu_media .acts { flex: 0 0 auto; display: flex; gap: 2px; }
@@ -170,6 +179,23 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 8px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 5; max-height: calc(100% - var(--bar-total) - var(--safe-bottom) - 24px); overflow: auto; }
 #go_notice[hidden] { display: none; }
+/* A certificate warning (go.js certWarning): TabTop's own, over the page's
+   place, never the site's page. */
+#go_cert { grid-row: 2; grid-column: 1; z-index: 4; display: grid; place-items: start center; overflow: auto; padding: 32px 16px;
+    background: #1c1c1e; color: #e8e8ea; font: 15px/1.45 system-ui, sans-serif; }
+#go_cert[hidden] { display: none; }
+#go_cert .box { max-width: 36rem; border-left: 4px solid #d96b6b; padding: 4px 0 4px 18px; }
+#go_cert h2 { margin: 0 0 10px; font-size: 21px; color: #ff9f9f; }
+#go_cert .host { overflow-wrap: anywhere; }
+#go_cert .details { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 14px 0; padding: 10px 12px; background: #2c2c2e; border-radius: 6px; font-size: 13px; }
+#go_cert .details[hidden] { display: none; }
+#go_cert .details dt { color: #a8a8ad; }
+#go_cert .details dd { margin: 0; overflow-wrap: anywhere; }
+#go_cert .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+#go_cert button { font: inherit; padding: 8px 16px; border-radius: 6px; cursor: pointer; border: 1px solid #636366; background: transparent; color: #e8e8ea; }
+#go_cert button.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+#go_cert button.go { color: #ff9f9f; border-color: #8e3b3b; }
+#go_cert .note { color: #a8a8ad; font-size: 13px; margin-top: 12px; }
 /* A pop-up the page wants to open: asked (gosites.go). */
 #go_popup { position: absolute; top: calc(var(--bar-total) + 10px); right: calc(12px + var(--safe-right)); width: min(24rem, calc(100% - 24px)); box-sizing: border-box;
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 6; }
@@ -302,6 +328,17 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <label class="remember"><input type="checkbox" checked> <span>Remember for this site</span></label>
     <div class="actions"><button type="button" class="open">Open</button><button type="button" class="refuse">Don’t open</button></div></div>
 <div id="go_status" role="status" aria-live="polite"></div>
+<section id="go_cert" role="alertdialog" aria-labelledby="go_cert_title" aria-describedby="go_cert_reason" hidden>
+    <div class="box">
+        <h2 id="go_cert_title">This site’s certificate isn’t trusted</h2>
+        <p id="go_cert_reason"></p>
+        <p class="why">Someone may be pretending to be <b class="host"></b> to see or change what you send it, and what it sends you: passwords, messages, card numbers.</p>
+        <dl class="details" hidden></dl>
+        <div class="actions"><button type="button" class="back primary">Go back</button>
+            <button type="button" class="go">Continue to <span class="host"></span> (unsafe)</button></div>
+        <p class="note">Continuing makes an exception for this site in this tab only, till it’s closed.</p>
+    </div>
+</section>
 <div id="go_notice" role="alert" hidden><p></p><div class="actions"><button type="button" class="primary">Try again</button>
     <button type="button" class="edit" hidden>Edit address</button><button type="button" class="dismiss">Dismiss</button></div></div>
 <dialog id="go_dialog"><form method="dialog"><p></p><input type="text" aria-label="Answer" hidden>

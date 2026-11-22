@@ -127,3 +127,41 @@ test("EME: a page probing many formats can still get keys (old accesses and keys
     }
     assert.equal((await call("session", { keys: lastKeys, session: 1 })).error, undefined, "keys attached to a player were let go");
 });
+
+test("EME: a page making a player per item (never detaching keys) can still attach them; open players keep theirs", async (t) => {
+    const made = [];
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => {
+        const el = new EventTarget();
+        el.setMediaKeys = async (value) => { el.mediaKeys = value; };
+        made.push(el);
+        return el;
+    } } });
+    t.after(() => {
+        if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+        else delete globalThis.document;
+        delete navigator.requestMediaKeySystemAccess;
+    });
+    const system = "com.example.test";
+    navigator.requestMediaKeySystemAccess = async () => ({ keySystem: system, getConfiguration: () => ({}), createMediaKeys: async () => ({}) });
+    let resolve, request = 0;
+    const relay = encryptedMedia((message) => { if (message.request) resolve(message); }, () => true);
+    t.after(() => relay.stop());
+    const call = (op, fields) => new Promise((r) => { resolve = r; relay.receive([{ op, request: ++request, ...fields }]); });
+    const access = (await call("access", { system, configs: [{}] })).value.handle;
+    const keys = (await call("keys", { access })).value;
+    // One player stays open throughout.
+    const kept = relay.player(1, "video");
+    relay.opened(1, kept);
+    assert.equal((await call("attach", { node: 1, keys, kind: "video" })).error, undefined);
+    // A feed: each item's own <video>, keys set, played, scrolled past.
+    for (let node = 2; node <= 60; node++) {
+        const el = relay.player(node, "video");
+        relay.opened(node, el);
+        const r = await call("attach", { node, keys, kind: "video" });
+        assert.equal(r.error, undefined, `player ${node}: ${r.error}`);
+        relay.closed(node, el);
+    }
+    assert.equal(relay.player(1, "video"), kept, "the open player's element (with its keys) let go");
+    assert.equal(kept.mediaKeys !== undefined, true);
+});

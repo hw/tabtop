@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -43,6 +44,7 @@ const (
 var errMediaNoRanges = errors.New("Media streaming requires a server with byte-range support.")
 
 type goMediaDownload struct {
+	key          string // in goMediaDownloads (goMediaKey)
 	session, url string
 	mu           sync.Mutex
 	changed      chan struct{} // closed, and replaced, as more comes
@@ -66,10 +68,11 @@ var goMediaDownloads = struct {
 // goFetchMedia answers a part of a page's media: by a range, as before; or,
 // from a server that has none, from its download.
 func goFetchMedia(ctx context.Context, session string, req tunnelRequest, client *http.Client, slots *previewWork, userAgent string, from *goFrom) ([]byte, map[string]any, error) {
+	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
 	if u, err := url.Parse(req.URL); err == nil && from.adBlocked(u, "media") {
 		return nil, nil, errors.New(goRefusals["ads"])
 	}
-	key := session + "\x00" + req.URL
+	key := goMediaKey(session, req.URL, from)
 	goMediaDownloads.Lock()
 	d := goMediaDownloads.by[key]
 	goMediaDownloads.Unlock()
@@ -85,10 +88,22 @@ func goFetchMedia(ctx context.Context, session string, req tunnelRequest, client
 	return d.part(ctx, req)
 }
 
+// goMediaKey is what a download of u is kept by: its login's session, and
+// a tab's own, if the tab has certificate exceptions (its downloads are
+// made with them: gocert.go, not another tab's to have).
+func goMediaKey(session, u string, from *goFrom) string {
+	key := session + "\x00" + u
+	if from != nil && from.certs.any() {
+		key += fmt.Sprintf("\x00%p", from.certs)
+	}
+	return key
+}
+
 // goStartMediaDownload starts downloading u for session (or finds it
 // started meanwhile).
 func goStartMediaDownload(session, u string, client *http.Client, userAgent string, from *goFrom) (*goMediaDownload, error) {
-	key := session + "\x00" + u
+	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
+	key := goMediaKey(session, u, from)
 	goMediaDownloads.Lock()
 	if d := goMediaDownloads.by[key]; d != nil {
 		goMediaDownloads.Unlock()
@@ -111,7 +126,7 @@ func goStartMediaDownload(session, u string, client *http.Client, userAgent stri
 	}
 	os.Remove(file.Name()) // gone once it's closed, whatever happens
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &goMediaDownload{session: session, url: u, changed: make(chan struct{}), file: file, total: -1, cancel: cancel}
+	d := &goMediaDownload{key: key, session: session, url: u, changed: make(chan struct{}), file: file, total: -1, cancel: cancel}
 	d.idle = time.AfterFunc(goMediaDownloadIdle, d.forget)
 	goMediaDownloads.by[key] = d
 	goMediaDownloads.Unlock()
@@ -298,8 +313,8 @@ func (d *goMediaDownload) part(ctx context.Context, req tunnelRequest) ([]byte, 
 // forget stops the download, if it's still going, and drops its file.
 func (d *goMediaDownload) forget() {
 	goMediaDownloads.Lock()
-	if goMediaDownloads.by[d.session+"\x00"+d.url] == d {
-		delete(goMediaDownloads.by, d.session+"\x00"+d.url)
+	if goMediaDownloads.by[d.key] == d {
+		delete(goMediaDownloads.by, d.key)
 	}
 	goMediaDownloads.Unlock()
 	d.cancel()
@@ -311,6 +326,7 @@ func (d *goMediaDownload) forget() {
 // serveGoMedia answers a go-resource request for media on a tunnel of its
 // own, as serveRemoteResource does, by goFetchMedia.
 func serveGoMedia(t *tunnel, session string, req tunnelRequest, r *tunnelResponder, client *http.Client, slots *previewWork, userAgent string, from *goFrom) {
+	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
 	w := newChunkWriter(t)
 	defer w.stop()
 	data, reply, err := goFetchMedia(w.ctx, session, req, client, slots, userAgent, from)

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -231,5 +232,44 @@ func TestGoSiteTheme(t *testing.T) {
 	}
 	if got := fromLegacy.themeFor("old.example"); got != "dark" {
 		t.Fatalf("legacy site force: %q", got)
+	}
+}
+
+// TestGoSearchCustom: a custom search address, checked (http or https, %s
+// once, a query parameter's whole value), kept and reported; kept too
+// while an offered engine's chosen, for choosing again.
+func TestGoSearchCustom(t *testing.T) {
+	for _, ok := range []string{"https://search.example/?q=%s", " http://s.example/find?lang=en&q=%s ", "https://s.example/s?q=%s&x=1"} {
+		if got, err := goSearchTemplate(ok); err != nil || got != strings.TrimSpace(ok) {
+			t.Errorf("%q: %q %v", ok, got, err)
+		}
+	}
+	for _, bad := range []string{"", "https://s.example/?q=", "https://s.example/?q=%s&r=%s", "https://s.example/%s", "https://s.example/?q=x%s",
+		"ftp://s.example/?q=%s", "https://user:pw@s.example/?q=%s", "s.example/?q=%s", "https://s.example/#q=%s", "https:///?q=%s", "https://s.example:70000/?q=%s"} {
+		if _, err := goSearchTemplate(bad); err == nil {
+			t.Errorf("%q taken", bad)
+		}
+	}
+	file := filepath.Join(t.TempDir(), "sites.json")
+	s := newGoSiteSettings(file)
+	s.setSearchCustom("https://search.example/?q=%s")
+	if r := s.report(); r["searchEngine"] != "custom" || r["searchURL"] != "https://search.example/?q=%s" {
+		t.Fatalf("after set: %v %v", r["searchEngine"], r["searchURL"])
+	}
+	if r := newGoSiteSettings(file).report(); r["searchEngine"] != "custom" || r["searchURL"] != "https://search.example/?q=%s" {
+		t.Fatalf("not kept: %v %v", r["searchEngine"], r["searchURL"])
+	}
+	if err := s.set("", "search-google"); err != nil {
+		t.Fatal(err)
+	}
+	if r := newGoSiteSettings(file).report(); r["searchEngine"] != "google" || r["searchURL"] != "https://search.example/?q=%s" {
+		t.Fatalf("an offered one chosen: %v %v", r["searchEngine"], r["searchURL"])
+	}
+	// A file whose custom address isn't one: the default.
+	if err := os.WriteFile(file, []byte(`{"searchEngine":"custom","searchURL":"https://s.example/%s"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := newGoSiteSettings(file).report(); r["searchEngine"] != "duckduckgo" || r["searchURL"] != "" {
+		t.Fatalf("a bad custom address taken: %v %v", r["searchEngine"], r["searchURL"])
 	}
 }

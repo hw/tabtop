@@ -375,6 +375,10 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		return
 	}
 	within := c.req.Within
+	if len(c.req.Names) > 500 {
+		c.r.fail("Too many sites to clear at once.")
+		return
+	}
 	sites := make([]string, 0, 1+len(c.req.Names))
 	if name := strings.ToLower(strings.TrimSpace(c.req.Name)); name != "" {
 		sites = append(sites, name)
@@ -386,7 +390,8 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		}
 		sites = append(sites, name)
 	}
-	if len(sites) == 0 && !slices.Contains(goForgetWithin, within) {
+	// Sites named, none of them one (blank): not taken as none named (all).
+	if len(sites) == 0 && (c.req.Name != "" || len(c.req.Names) > 0) || len(sites) == 0 && !slices.Contains(goForgetWithin, within) {
 		c.r.fail("That isn't a site or a time to clear.")
 		return
 	}
@@ -699,6 +704,16 @@ type goFrom struct {
 	referer      func(*url.URL) string
 	page         func() string     // the page's address, for ad blocking; nil: none known
 	onAd         func(what string) // told what was refused as an ad's: a host, or an address
+	certs        *goCertExceptions // the tab's certificate exceptions (gocert.go); nil: none
+}
+
+// client is base for what f fetches: with the tab's certificate
+// exceptions, if it has any (gocert.go).
+func (f *goFrom) client(base *http.Client) *http.Client {
+	if f == nil {
+		return base
+	}
+	return f.certs.client(base)
 }
 
 // adBlocked is whether a fetch of u for the page, of kind (image, css,
@@ -771,7 +786,7 @@ func goReferrer(page string, u *url.URL) string {
 // from is what the tab's fetches send: its sites' cookies (siteCookies), and
 // the page shown as their Referer, if the settings say (on, at first).
 func (b *goBrowser) from() *goFrom {
-	f := &goFrom{cookies: b.siteCookies, onAd: b.adCounted, page: func() string {
+	f := &goFrom{cookies: b.siteCookies, onAd: b.adCounted, certs: b.certs, page: func() string {
 		b.cookies.mu.Lock()
 		defer b.cookies.mu.Unlock()
 		return b.cookies.page
@@ -797,7 +812,7 @@ func (b *goBrowser) fromNow() *goFrom {
 	b.cookies.mu.Lock()
 	page, top := b.cookies.page, b.cookies.top
 	b.cookies.mu.Unlock()
-	f := &goFrom{cookies: func(u *url.URL) string { return b.siteCookiesAt(u, top) }, page: func() string { return page }}
+	f := &goFrom{cookies: func(u *url.URL) string { return b.siteCookiesAt(u, top) }, page: func() string { return page }, certs: b.certs}
 	if b.sites == nil || b.sites.sendReferer() {
 		f.referer = func(u *url.URL) string { return goReferrer(page, u) }
 	}

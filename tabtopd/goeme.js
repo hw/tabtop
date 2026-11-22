@@ -20,13 +20,17 @@
             // the viewer can say what plays, the engine having no media) are
             // asked many at once by players (Promise.all over their variants):
             // queued, not refused, up to 256; the rest 32.
-            const most = op === "decoding" ? 256 : 32;
-            if (pending.size >= most || queue.length >= most || JSON.stringify(command).length > 49152) throw new RangeError("EME request limit");
+            // (Each kind counted on its own: probes in flight don't use up
+            // the room for the player's other calls.)
+            const probe = op === "decoding", most = probe ? 256 : 32;
+            const outstanding = [...pending.values()].filter((p) => p.probe === probe).length;
+            const queued = queue.filter((q) => (q.command.op === "decoding") === probe).length;
+            if (outstanding >= most || queued >= most || JSON.stringify(command).length > 49152) throw new RangeError("EME request limit");
             const timer = setTimeout(() => {
                 pending.delete(request);
                 reject(new DOMException("The viewer did not answer", "TimeoutError"));
             }, 30000);
-            pending.set(request, { resolve, reject, timer });
+            pending.set(request, { resolve, reject, timer, probe });
             queue.push({ command, element });
         });
     }

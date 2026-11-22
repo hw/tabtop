@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -264,11 +265,27 @@ func fetchDialer(allow func(netip.Addr) bool) *net.Dialer {
 // newFetchClient is the client fetches use, connecting only where allow
 // says.
 func newFetchClient(allow func(netip.Addr) bool) *http.Client {
-	dialer := fetchDialer(allow)
+	return newFetchClientDialing(fetchDialer(allow).DialContext)
+}
+
+// newGoFetchClient is newFetchClient for the remote browser's own fetches
+// (its pages' resources and media, its downloads, its filter lists): names
+// looked up by DNS over HTTPS while it's on (godoh.go).
+func newGoFetchClient(allow func(netip.Addr) bool) *http.Client {
+	dial := newGoDialer(allow).DialContext
+	c := newFetchClientDialing(dial)
+	t := c.Transport.(*http.Transport)
+	// A certificate its issuer's revoked refused (gorevoke.go).
+	t.TLSClientConfig = &tls.Config{VerifyConnection: goRevoked.verifyConnection(dial)}
+	goDNSTransport(t)
+	return c
+}
+
+func newFetchClientDialing(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 nil,
-			DialContext:           dialer.DialContext,
+			DialContext:           dial,
 			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   20 * time.Second,
 			ResponseHeaderTimeout: time.Minute,
@@ -314,6 +331,7 @@ func (m *fetchManager) startWith(client *http.Client, u *url.URL, dir, by, ip, w
 }
 
 func (m *fetchManager) startWithContext(client *http.Client, u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string, stream bool) (job *fetchJob, err error) {
+	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
 	var releaseTab func()
 	if from != nil && from.holdDownload != nil {
 		releaseTab, err = from.holdDownload()

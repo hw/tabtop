@@ -170,7 +170,7 @@ func newServer(c serverConfig) (*server, error) {
 		client := newFetchClient(fetchPolicy(c.fetchPrivate))
 		var goClient *http.Client
 		if c.goOn {
-			goClient = newFetchClient(fetchPolicy(c.fetchPrivate && c.goPrivate))
+			goClient = newGoFetchClient(fetchPolicy(c.fetchPrivate && c.goPrivate))
 		}
 		slots := make(chan struct{}, maxFetches) // across the roots
 		for _, root := range g.roots {
@@ -208,6 +208,10 @@ func newServer(c serverConfig) (*server, error) {
 					g.goStorage = newGoStorage(c.goStorageFile, key)
 				}
 				g.goSites = newGoSiteSettings(c.goSitesFile)
+				if endpoint, pinned := g.goSites.dohServer(); endpoint != "" {
+					goDoHNow.Store(newGoDoH(endpoint, pinned)) // (DNS over HTTPS, as chosen: godoh.go)
+				}
+				goHostsNow.Store(goHostsTable(g.goSites.localHosts())) // (local DNS records: gohosts.go)
 				goBlockedHost = g.goSites.isBlocked
 				g.goAds = newGoAdBlock(c.goAdBlockFile, fetchPolicy(c.goPrivate))
 				g.goAds.siteBlocks = g.goSites.adsBlocked

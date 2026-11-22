@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"path"
 	"testing"
+
+	"github.com/Eyevinn/mp4ff/mp4"
 )
 
 func TestMSEStageAppendAndInput(t *testing.T) {
@@ -187,5 +193,250 @@ func TestMSEStageLimits(t *testing.T) {
 	}
 	if _, err := m.openMSEStage("tab-a", "."); err != nil {
 		t.Errorf("a stage refused, every other forgotten: %v", err)
+	}
+}
+
+// Independent SourceBuffers can have different time origins and can change
+// timestampOffset between appends. The saved file uses their common clock.
+func TestMSESavedTimeline(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	stage, err := m.openMSEStage("timeline", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.forgetMSEStage(stage.id)
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for i, kind := range []string{"audio", "video"} {
+		scale := []uint32{48000, 90000}[i]
+		header := mp4.CreateEmptyInit()
+		header.AddEmptyTrack(scale, kind, "und")
+		var buf bytes.Buffer
+		if err := header.Encode(&buf); err != nil {
+			t.Fatal(err)
+		}
+		if err := stage.appendFrame(store, i, mseKindInit, buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		for _, j := range []int{1, 0} { // A backward seek appended the earlier segment last.
+			frag, err := mp4.CreateFragment(1, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clock := 100000 + i*100 + j*10
+			ptsOffset := int32(0)
+			if i == 1 {
+				ptsOffset = int32(scale) * 8 / 100
+			}
+			flags := uint32(mp4.SyncSampleFlags)
+			if j == 1 {
+				flags = mp4.NonSyncSampleFlags
+			}
+			frag.AddFullSample(mp4.FullSample{Sample: mp4.NewSample(flags, scale, 1, ptsOffset), DecodeTime: uint64(clock) * uint64(scale), Data: []byte{1}})
+			buf.Reset()
+			// Keep a large common origin after the per-track clock adjustments.
+			binary.Write(&buf, binary.BigEndian, float64(95000+j-clock))
+			if err := frag.Encode(&buf); err != nil {
+				t.Fatal(err)
+			}
+			if err := stage.appendFrame(store, i, mseKindTimedPart, buf.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	in, release, err := m.takeMSEStage(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := m.runMSE(context.Background(), &fetchJob{real: "."}, in); err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.root.ReadFile("stream.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Sidxs) != 2 {
+		t.Fatalf("indexes: %d", len(out.Sidxs))
+	}
+	for i, idx := range out.Sidxs {
+		wantStart := uint64(0)
+		if i == 1 {
+			wantStart = 7200
+		}
+		if idx.EarliestPresentationTime != wantStart || len(idx.SidxRefs) != 2 {
+			t.Fatalf("index: %+v", idx)
+		}
+		pos := idx.AnchorPoint
+		for j, ref := range idx.SidxRefs {
+			if ref.SubSegmentDuration != idx.Timescale || (ref.StartsWithSAP == 1) != (j == 0) {
+				t.Fatalf("index reference: %+v", ref)
+			}
+			if pos+8 > uint64(len(data)) {
+				t.Fatalf("index outside media: %d", pos)
+			}
+			box, err := mp4.DecodeBox(pos, bytes.NewReader(data[pos:]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			moof, ok := box.(*mp4.MoofBox)
+			if !ok || moof.Traf.Tfhd.TrackID != idx.ReferenceID || moof.Traf.Tfdt.BaseMediaDecodeTime() != uint64(j)*uint64(idx.Timescale) {
+				t.Fatalf("index points to wrong fragment: %v", box)
+			}
+			pos += uint64(ref.ReferencedSize)
+		}
+	}
+	if d := float64(out.Moov.Mvhd.Duration) / float64(out.Moov.Mvhd.Timescale); math.Abs(d-2.08) > 0.001 {
+		t.Fatalf("movie duration %f", d)
+	}
+}
+
+// The append window is on the viewer clock. A dependent video sample after
+// a discarded picture stays out until a keyframe, even in the next append.
+func TestMSEAppendWindow(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	stage, err := m.openMSEStage("window", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.forgetMSEStage(stage.id)
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	init := mp4.CreateEmptyInit()
+	init.AddEmptyTrack(1000, "video", "und")
+	var buf bytes.Buffer
+	if err := init.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindInit, buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	// The window includes times 2..4. Drop frame 0, the dependent frame 1,
+	// and frame 4 which straddles the window end. Frame 5 in the next part
+	// also depends on the dropped frame. Frame 6 can restart decoding.
+	for j, flags := range [][]uint32{
+		{mp4.SyncSampleFlags, mp4.NonSyncSampleFlags, mp4.SyncSampleFlags, mp4.NonSyncSampleFlags, mp4.SyncSampleFlags},
+		{mp4.NonSyncSampleFlags, mp4.SyncSampleFlags},
+	} {
+		buf.Reset()
+		frag, err := mp4.CreateFragment(1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, flag := range flags {
+			n := 5*j + i
+			frag.AddFullSample(mp4.FullSample{Sample: mp4.NewSample(flag, 1000, 1, 0), DecodeTime: uint64(n) * 1000, Data: []byte{byte(n)}})
+		}
+		kind := byte(mseKindTimedPart)
+		binary.Write(&buf, binary.BigEndian, float64(1))
+		if j == 0 {
+			kind = mseKindWindowPart
+			binary.Write(&buf, binary.BigEndian, float64(2))
+			binary.Write(&buf, binary.BigEndian, float64(5.5))
+		}
+		if err := frag.Encode(&buf); err != nil {
+			t.Fatal(err)
+		}
+		if err := stage.appendFrame(store, 0, kind, buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in, release, err := m.takeMSEStage(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := m.runMSE(context.Background(), &fetchJob{real: "."}, in); err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.root.ReadFile("stream.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := mp4.DecodeFile(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames []byte
+	for _, seg := range f.Segments {
+		for _, frag := range seg.Fragments {
+			frames = append(frames, frag.Mdat.Data...)
+		}
+	}
+	if !bytes.Equal(frames, []byte{2, 3, 6}) {
+		t.Fatalf("saved frame numbers %v", frames)
+	}
+}
+
+// TestMSESavedAgain: a segment appended again (the player seeking back past
+// what it had let go, or retrying one) is saved once, not refused.
+func TestMSESavedAgain(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	stage, err := m.openMSEStage("again", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.forgetMSEStage(stage.id)
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const scale = 90000
+	header := mp4.CreateEmptyInit()
+	header.AddEmptyTrack(scale, "video", "und")
+	var buf bytes.Buffer
+	if err := header.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindInit, buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range []int{0, 1, 2, 1} {
+		frag, err := mp4.CreateFragment(uint32(j+1), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frag.AddFullSample(mp4.FullSample{Sample: mp4.NewSample(mp4.SyncSampleFlags, scale, 1, 0), DecodeTime: uint64(j) * scale, Data: []byte{byte(j)}})
+		buf.Reset()
+		binary.Write(&buf, binary.BigEndian, float64(0))
+		if err := frag.Encode(&buf); err != nil {
+			t.Fatal(err)
+		}
+		if err := stage.appendFrame(store, 0, mseKindTimedPart, buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in, release, err := m.takeMSEStage(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := m.runMSE(context.Background(), &fetchJob{real: "."}, in); err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.root.ReadFile("stream.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Sidxs) != 1 || len(out.Sidxs[0].SidxRefs) != 3 {
+		t.Fatalf("indexes: %d, %+v", len(out.Sidxs), out.Sidxs)
 	}
 }

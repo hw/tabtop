@@ -301,6 +301,9 @@ function resetSite(site, host = site) {
 // Site controls (?secure); and its icon, when the browser sends it.
 const pageSecure = new URLSearchParams(location.search).get("secure");
 let siteIcon = null;  // {host, url}
+// A host as the server keeps its settings (goSettingHost): www. and an
+// IPv6 address's brackets taken off, lowercase.
+const settingHost = (h) => String(h ?? "").toLowerCase().replace(/^www\./, "").replace(/\.$/, "").replace(/^\[|\]$/g, "");
 
 // What a site's settings are, each: its value here, its default, and how
 // each's said. (Kinds: what go-settings-set takes, popups-…, …)
@@ -326,7 +329,7 @@ function renderSite() {
     $("site_heading").textContent = host;
     // Its icon, or its initial.
     const icon = $("site_icon");
-    if (siteIcon?.host === host) {
+    if (siteIcon && settingHost(siteIcon.host) === settingHost(host)) {
         if (icon.querySelector("img")?.src !== siteIcon.url) {
             const img = Object.assign(document.createElement("img"), { src: siteIcon.url, alt: "" });
             img.addEventListener("error", () => { siteIcon = null; renderSite(); }, { once: true });  // (not a picture: its initial)
@@ -336,10 +339,12 @@ function renderSite() {
     // What its settings cover, once; and, the page shown's, if it's secure.
     const scope = $("site_scope");
     scope.replaceChildren(site === host ? "Settings include its subdomains" : `Settings apply to ${site} and its subdomains`);
-    if (current && host === current.host && (pageSecure === "1" || pageSecure === "0")) {
+    if (current && host === current.host && ["1", "0", "cert"].includes(pageSecure)) {
         scope.append(Object.assign(document.createElement("span"), pageSecure === "1"
             ? { className: "badge secure", textContent: "Secure" }
-            : { className: "badge insecure", textContent: "Not secure", title: "The page isn't loaded over HTTPS: what's sent to it, or shown, can be read or changed on the way." }));
+            : pageSecure === "cert"
+                ? { className: "badge insecure", textContent: "Certificate not trusted", title: "You continued past a warning: its HTTPS certificate isn't trusted, so the connection may not be the site's (an exception, this tab only)." }
+                : { className: "badge insecure", textContent: "Not secure", title: "The page isn't loaded over HTTPS: what's sent to it, or shown, can be read or changed on the way." }));
     }
     // Access: blocked, by its rule or a domain's over it.
     $("access").textContent = blocked ? "Unblock site" : "Block site";
@@ -738,8 +743,12 @@ $("confirm_clear").addEventListener("close", () => {
     const within = Number($("within").value);
     run(async () => {
         if (Array.isArray(target)) {
-            data = await ask({ type: "go-cookies-forget", names: target });
-            for (const name of target) checked.delete(name);
+            // (In batches: the server takes 500 sites a request.)
+            for (let at = 0; at < target.length; at += 500) {
+                const batch = target.slice(at, at + 500);
+                data = await ask({ type: "go-cookies-forget", names: batch });
+                for (const name of batch) checked.delete(name);
+            }
         } else {
             data = await ask({ type: "go-cookies-forget", name: target, within: target ? 0 : within });
             if (target) checked.delete(target);

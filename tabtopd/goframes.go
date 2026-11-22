@@ -141,7 +141,11 @@ func (b *goBrowser) readFrames(world int, main string, known map[string]goChild)
 			if !r.same {
 				childWorld = r.world
 			}
-			if depth < 2 {
+			// Its frames' owners are found in its world: none yet (its own
+			// owner not found, its read failed), none looked for, as a
+			// context of 0 could be the page's own, where the page could
+			// answer for the agent (goAgentJS's frameOwner).
+			if depth < 2 && childWorld != 0 {
 				walk(f.ChildFrames, f.Frame.ID, childWorld, depth+1)
 			}
 		}
@@ -205,10 +209,25 @@ func (b *goBrowser) readFrame(ctx context.Context, frame string, world int, whol
 			world = 0 // its document went: a new world for the new one
 		}
 	}
+	// A frame's document over the limit with its canvases: read again
+	// without them (shown as too large), not dropped whole.
+	fit := func(raw string) string {
+		if len(raw) <= goFrameLimit {
+			return raw
+		}
+		goDebugf("frame snapshot %d bytes: read again without its canvases", len(raw))
+		run("globalThis.__tabtopFrameCanvasCap = 0")
+		again, err := run("__tabtop.snapshot()")
+		run("delete globalThis.__tabtopFrameCanvasCap")
+		if err != nil {
+			return raw
+		}
+		return again
+	}
 	if world != 0 {
 		raw, err := run("__tabtop.snapshot()")
 		if err == nil {
-			return goFrameDoc(raw), world, true
+			return goFrameDoc(fit(raw)), world, true
 		}
 	}
 	var made struct {
@@ -219,12 +238,15 @@ func (b *goBrowser) readFrame(ctx context.Context, frame string, world int, whol
 		return nil, 0, false
 	}
 	world = made.ExecutionContextID
+	// (Told it's a frame's world first: its canvases kept within what a
+	// frame's document may come to, goFrameLimit.)
+	run("globalThis.__tabtopFrameWorld = true")
 	raw, err := run(goAgentJS)
 	if err != nil {
 		goDebugf("frame %s world %d: cannot install agent: %v", frame, world, err)
 		return nil, 0, false
 	}
-	doc := goFrameDoc(raw)
+	doc := goFrameDoc(fit(raw))
 	goDebugf("frame %s world %d: snapshot %d bytes", frame, world, len(doc))
 	return doc, world, true
 }
@@ -232,6 +254,9 @@ func (b *goBrowser) readFrame(ctx context.Context, frame string, world int, whol
 // goFrameDoc is a frame's snapshot, if it's within the limit.
 func goFrameDoc(raw string) []byte {
 	if raw == "" || len(raw) > goFrameLimit {
+		if raw != "" {
+			goDebugf("frame snapshot %d bytes: over the limit, not shown", len(raw))
+		}
 		return nil
 	}
 	return []byte(raw)
@@ -267,8 +292,10 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		if json.Unmarshal(r.doc, &s) != nil || goClean(s.Doc) == nil {
 			continue
 		}
-		doc := &goNode{ID: s.Doc.ID, Type: 9, Base: s.Base, Kids: s.Doc.Kids}
-		c.doc = goClean(doc)
+		// (Its kids cleaned already, just now: wrapped, not cleaned again,
+		// their WebGL logs not checked again.)
+		base, _ := goURL(s.Base)
+		c.doc = &goNode{ID: s.Doc.ID, Type: 9, Base: base, Kids: s.Doc.Kids}
 		goGLStreamsOf(c.doc, make(map[int]*goGLStream)) // its WebGL canvases bounded as a page's are
 		c.due = false
 		// One that changes every time is read less often, up to every

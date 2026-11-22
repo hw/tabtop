@@ -73,6 +73,10 @@ printf 'HOTP/T30/6\tuser\t-\t%s\n' "$(printf 12345678901234567890 | od -An -tx1 
 mkdir -p "$work/downloads" "$work/site"
 
 node "$here/go-check.mjs" site "$work/site"
+# A self-signed certificate for the site's HTTPS (a certificate not trusted).
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work/site/key.pem" -out "$work/site/cert.pem" -days 2 \
+    -subj "/CN=tabtop-untrusted.test" -addext "subjectAltName=DNS:tabtop-untrusted.test" 2>/dev/null
+chmod 644 "$work/site/key.pem"
 docker run -d --name "$site" -v "$work/site:/srv:ro" node:24-slim node /srv/serve.js >/dev/null
 site_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$site")
 for _ in $(seq 50); do curl -fs "http://$site_ip/index.html" >/dev/null && break; sleep 0.1; done

@@ -483,14 +483,16 @@
                 // Left out, as a browser leaves a sheet it can't load.
             }
         }
-        return schemed(imported + css.generate(ast));
+        return imported + css.generate(ast);
     }
 
     // The site's Dark mode, when it's Light or Dark (the render's scheme):
     // the copy's styles go by it, not by this browser's own preference.
-    // Their prefers-color-scheme conditions are made always true or always
-    // false. (Setting color-scheme on the frame would, but a frame whose
-    // scheme isn't its page's is painted opaque, over the players' holes.)
+    // Their prefers-color-scheme conditions (in a sheet, or a style's or a
+    // link's media) are made always true or always false, as they're put in
+    // the copy: a sheet's cached as read, for any scheme. (Setting
+    // color-scheme on the frame would, but a frame whose scheme isn't its
+    // page's is painted opaque, over the players' holes.)
     let colorScheme = "";
     function schemed(text) {
         if (!colorScheme || !/prefers-color-scheme/i.test(text)) return text;
@@ -555,6 +557,7 @@
                     mediaStyle(el);
                 } else {
                     el.setAttribute("style", css);
+                    restyledHole(el);
                 }
             });
             d.waits.push(p);
@@ -654,7 +657,12 @@
         child.budget = d.budget;
         child.report = d.report;
         children(child, content, frame.c, HTML);
-        for (const [i, saved] of nested) {
+        // Only into the same document: another (the frame navigated) numbers
+        // its nodes anew, so a number that matches is another iframe.
+        // (Its focus, value and caret put back once content's in the page:
+        // a field not in it can't take the focus.)
+        const refocus = [];
+        for (const [i, saved] of same ? nested : []) {
             const host = child.nodes.get(i), childFrame = frameRoots.get(host);
             if (!childFrame) continue;
             // The containing snapshot may already carry a newer nested
@@ -673,14 +681,18 @@
                     restored.value = saved.value;
                     pending.set(restored, setTimeout(() => flush(restored), 150));
                 }
-                restored.focus({ preventScroll: true });
-                if (saved.caret) try { restored.setSelectionRange(...saved.caret); } catch { /* no caret */ }
+                refocus.push(() => {
+                    restored.focus({ preventScroll: true });
+                    if (saved.caret) try { restored.setSelectionRange(...saved.caret); } catch { /* no caret */ }
+                });
             }
         }
         d.waits.push(...child.waits);
         viewport.replaceChildren(content);
+        for (const f of refocus) f();
         const now = keep && child.nodes.get(keep.i);
-        if (now?.nodeType === 1) {
+        // (A nested frame's host, its field focused just now: not again.)
+        if (now?.nodeType === 1 && !(refocus.length && frameRoots.has(now))) {
             if (keep.value !== undefined && textLike(now)) {
                 now.value = keep.value;
                 clearTimeout(pending.get(keep.old));
@@ -738,8 +750,10 @@
     // Live media boxes are transparent holes through the frame so underlaid
     // players show. Opaque ancestors and large poster layers are cleared;
     // small chrome images keep their z-order above the pixels.
-    const MEDIA_DEFAULTS = "html, body { background: transparent; } " +
-        ":where([data-go-video]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, auto); aspect-ratio: var(--tabtop-media-ratio, 16 / 9); object-fit: contain; } " +
+    // (No rule clearing html's and body's backgrounds: it beat a page's
+    // own bgcolor, its light text left on white. A player's hole clears
+    // them while it plays: punchMediaHole.)
+    const MEDIA_DEFAULTS = ":where([data-go-video]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, auto); aspect-ratio: var(--tabtop-media-ratio, 16 / 9); object-fit: contain; } " +
         ":where([data-go-audio]) { display: inline-block; width: var(--tabtop-media-width, 300px); height: var(--tabtop-media-height, 54px); } " +
         ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
         "[data-go-video].go-media-live, [data-go-audio].go-media-live { padding: 0 !important; background: transparent !important; background-image: none !important; color: transparent !important; border-color: transparent !important; box-shadow: none !important; } " +
@@ -775,6 +789,24 @@
         el.style.setProperty("background", "transparent", "important");
         el.style.setProperty("background-image", "none", "important");
         el.style.setProperty("background-color", "transparent", "important");
+    }
+    // restyledHole: an element a hole's made through, its style the page's
+    // anew (all of it replaced): what it's given back is that, and it's
+    // made clear again.
+    function restyledHole(el) {
+        const a = mediaHoleAncestors.get(el);
+        if (a) {
+            Object.assign(a, { background: el.style.background, backgroundImage: el.style.backgroundImage, backgroundColor: el.style.backgroundColor, computed: getComputedStyle(el).backgroundColor });
+            el.style.setProperty("background", "transparent", "important");
+            el.style.setProperty("background-image", "none", "important");
+            el.style.setProperty("background-color", "transparent", "important");
+        }
+        const c = mediaHoleCovers.get(el);
+        if (c) {
+            Object.assign(c, { opacity: el.style.opacity, visibility: el.style.visibility });
+            el.style.setProperty("opacity", "0", "important");
+            el.style.setProperty("visibility", "hidden", "important");
+        }
     }
     function sealMediaAncestor(el) {
         const state = mediaHoleAncestors.get(el);
@@ -821,8 +853,12 @@
         sealMediaHole(box);
         if (!box?.isConnected) return;
         if (doc) tell({ type: "media-backdrop", gen: doc.gen, color: pageBackground() });
-        const ancestors = [];
-        for (let el = box.parentElement; el; el = el.parentElement) {
+        // Up to the page's root, out of an embedded page's copy (a shadow
+        // root, its iframe the host) too: each root on the way looked in for
+        // what covers the hole.
+        const ancestors = [], roots = [];
+        const up = (el) => el.parentElement ?? (el.parentNode instanceof ShadowRoot ? (roots.push(el.parentNode), el.parentNode.host) : null);
+        for (let el = up(box); el; el = up(el)) {
             if (mediaBackgroundBlocks(el) || el === document.body || el === document.documentElement) {
                 punchMediaAncestor(el);
                 ancestors.push(el);
@@ -831,8 +867,9 @@
         }
         const covers = [];
         const hole = box.getBoundingClientRect();
+        const scanned = [...roots, document.body].filter(Boolean);
         if (hole.width >= 8 && hole.height >= 8 && document.body) {
-            for (const el of document.body.querySelectorAll("img, picture, canvas, svg, video")) {
+            for (const el of scanned.flatMap((root) => [...root.querySelectorAll("img, picture, canvas, svg, video")])) {
                 if (el === box || box.contains(el) || el.contains(box)) continue;
                 if (el.closest("[data-go-video], [data-go-audio]")) continue;
                 const rect = el.getBoundingClientRect();
@@ -846,7 +883,7 @@
                 covers.push(el);
                 if (covers.length >= 12) break;
             }
-            for (const el of document.body.querySelectorAll("div, span")) {
+            for (const el of scanned.flatMap((root) => [...root.querySelectorAll("div, span")])) {
                 if (covers.length >= 12) break;
                 if (el === box || box.contains(el) || el.contains(box)) continue;
                 if (el.querySelector("img, video, canvas, svg, button, a, input")) continue;
@@ -1228,7 +1265,7 @@
             if (Array.isArray(arg) && !glSequenceMethod(command.m)) throw new Error("WebGL array argument");
         }
         const ref = (v) => (v && typeof v === "object" && Number.isInteger(v.ref) ? v.ref : 0);
-        const b = mirror.budget ||= { bound: new Map(), bytes: new Map(), total: 0, unit: 0, vao: 0, vaoElements: new Map() };
+        const b = mirror.budget ||= { bound: new Map(), bytes: new Map(), total: 0, unit: 0, vao: 0, vaoElements: new Map(), draw: 0, read: 0, tf: 0, holders: new Map(), zombies: new Set() };
         const dims = (w, h, d = 1, samples = 1) => {
             if (w < 0 || h < 0 || d < 0 || w > glLimits.size || h > glLimits.size || d > glLimits.depth || w * h * d > glLimits.texels || samples > glLimits.samples) throw new Error("WebGL allocation too large");
             return w * h * d * 4 * Math.max(1, samples);
@@ -1244,36 +1281,122 @@
             if (b.total > glLimits.context) throw new Error("WebGL memory budget");
         };
         const texture = (target) => b.bound.get(`t${b.unit}:${target >= 0x8515 && target <= 0x851A ? 0x8513 : target}`);
+        // An object deleted while a framebuffer, vertex array or transform
+        // feedback not bound still holds it keeps its storage (GL): counted
+        // till the last lets go of it (a zombie till then).
+        const held = (id) => {
+            for (const v of b.vaoElements.values()) if (v === id) return true;
+            for (const m of b.holders.values()) for (const v of m.values()) if (v === id) return true;
+            return false;
+        };
+        const free = (id) => {
+            const per = b.bytes.get(id);
+            if (per) for (const v of per.values()) b.total -= v;
+            b.bytes.delete(id);
+        };
+        const letGo = (id) => {
+            if (id && b.zombies.has(id) && !held(id)) {
+                b.zombies.delete(id);
+                free(id);
+            }
+        };
+        const hold = (holder, slots, id) => {
+            const m = b.holders.get(holder) ?? new Map();
+            b.holders.set(holder, m);
+            for (const slot of slots) {
+                const old = m.get(slot);
+                if (id) m.set(slot, id); else m.delete(slot);
+                if (old && old !== id) letGo(old);
+            }
+        };
+        const dropHolder = (holder) => {
+            const m = b.holders.get(holder);
+            b.holders.delete(holder);
+            if (m) for (const id of new Set(m.values())) letGo(id);
+        };
+        // (DEPTH_STENCIL_ATTACHMENT is both.)
+        const attachment = (point) => (point === 0x821A ? [0x8D00, 0x8D20] : [point]);
+        const framebuffer = (target) => (target === 0x8CA8 ? b.read : b.draw);
+        // Deleted: detached from what's bound (WebGL does), else kept.
+        const deleted = (id, holders) => {
+            for (const holder of holders) {
+                const m = b.holders.get(holder);
+                if (m) for (const [slot, v] of m) if (v === id) m.delete(slot);
+            }
+            if (!id) return;
+            if (held(id)) b.zombies.add(id);
+            else free(id);
+        };
         switch (command.m) {
             case "activeTexture": b.unit = n(0); break;
             case "bindBuffer":
                 b.bound.set(`b${n(0)}`, ref(a[1]));
-                if (n(0) === 0x8893) b.vaoElements.set(b.vao, ref(a[1]));  // the vertex array's own
+                if (n(0) === 0x8893) {
+                    const old = b.vaoElements.get(b.vao);
+                    b.vaoElements.set(b.vao, ref(a[1]));  // the vertex array's own
+                    letGo(old);
+                }
                 break;
-            case "bindBufferBase": case "bindBufferRange": b.bound.set(`b${n(0)}`, ref(a[2])); break;
+            case "bindBufferBase": case "bindBufferRange":
+                b.bound.set(`b${n(0)}`, ref(a[2]));
+                if (n(0) === 0x8C8E) hold(`x${b.tf}`, [n(1)], ref(a[2]));  // the transform feedback's own
+                break;
+            case "vertexAttribPointer": case "vertexAttribIPointer": hold(`v${b.vao}`, [n(0)], b.bound.get("b34962") ?? 0); break;
+            case "bindFramebuffer":
+                if (n(0) !== 0x8CA8) b.draw = ref(a[1]);
+                if (n(0) !== 0x8CA9) b.read = ref(a[1]);
+                break;
+            case "framebufferTexture2D": case "framebufferRenderbuffer":
+                if (framebuffer(n(0))) hold(`f${framebuffer(n(0))}`, attachment(n(1)), ref(a[3]));
+                break;
+            case "framebufferTextureLayer":
+                if (framebuffer(n(0))) hold(`f${framebuffer(n(0))}`, attachment(n(1)), ref(a[2]));
+                break;
+            case "deleteFramebuffer": {
+                const gone = ref(a[0]);
+                if (gone && gone === b.draw) b.draw = 0;
+                if (gone && gone === b.read) b.read = 0;
+                dropHolder(`f${gone}`);
+                break;
+            }
+            case "deleteTransformFeedback": {
+                const gone = ref(a[0]);
+                if (gone && gone === b.tf) b.tf = 0;
+                dropHolder(`x${gone}`);
+                break;
+            }
             case "bindVertexArray":
                 b.vao = ref(a[0]);
                 b.bound.set("b34963", b.vaoElements.get(b.vao) ?? 0);
                 break;
             // A transform feedback object brings buffers of its own: what's
             // bound to its target is unknown till bound again.
-            case "bindTransformFeedback": b.bound.set("b35982", 0); break;
+            case "bindTransformFeedback":
+                b.bound.set("b35982", 0);
+                b.tf = ref(a[1]);
+                break;
             case "deleteVertexArray": {
                 // The bound one deleted: GL goes back to the default one.
                 const gone = ref(a[0]);
+                const elements = b.vaoElements.get(gone);
                 b.vaoElements.delete(gone);
                 if (gone && gone === b.vao) {
                     b.vao = 0;
                     b.bound.set("b34963", b.vaoElements.get(0) ?? 0);
                 }
+                if (gone) {
+                    dropHolder(`v${gone}`);
+                    letGo(elements);
+                }
                 break;
             }
             case "bindTexture": b.bound.set(`t${b.unit}:${n(0)}`, ref(a[1])); break;
             case "bindRenderbuffer": b.bound.set("r", ref(a[1])); break;
-            case "deleteBuffer": case "deleteTexture": case "deleteRenderbuffer": {
-                const per = b.bytes.get(ref(a[0]));
-                if (per) for (const v of per.values()) b.total -= v;
-                b.bytes.delete(ref(a[0]));
+            case "deleteTexture": case "deleteRenderbuffer": deleted(ref(a[0]), [`f${b.draw}`, `f${b.read}`]); break;
+            case "deleteBuffer": {
+                const gone = ref(a[0]);
+                if (gone && b.vaoElements.get(b.vao) === gone) b.vaoElements.set(b.vao, 0);
+                deleted(gone, [`v${b.vao}`, `x${b.tf}`]);
                 break;
             }
             case "bufferData": {
@@ -1283,7 +1406,9 @@
                 break;
             }
             case "texImage2D": case "copyTexImage2D": case "compressedTexImage2D": {
-                const [w, h] = command.m === "copyTexImage2D" ? [n(5), n(6)] : a.length >= 8 ? [n(3), n(4)] : [a[5]?.width ?? 0, a[5]?.height ?? 0];
+                // (compressedTexImage2D's width and height are always its 4th
+                // and 5th: WebGL1's 7 arguments too.)
+                const [w, h] = command.m === "copyTexImage2D" ? [n(5), n(6)] : a.length >= 8 || command.m === "compressedTexImage2D" ? [n(3), n(4)] : [a[5]?.width ?? 0, a[5]?.height ?? 0];
                 store(texture(n(0)), `${n(0)}:${n(1)}`, dims(w, h));
                 if (command.m === "compressedTexImage2D" && typeof a[6] === "number" && a[6] > glLimits.buffer) throw new Error("WebGL upload too large");
                 break;
@@ -1639,6 +1764,7 @@
             if (src) later(d, load("image", src, d.base).then((url) => alive(d)() && el.setAttribute("src", url)));
         }
         if (tag === "style") {
+            if (el.hasAttribute("media")) el.setAttribute("media", schemed(el.getAttribute("media")));
             styleKids(d, el, n.c);
             return el;
         }
@@ -1670,7 +1796,7 @@
         const p = stylesheet(text, d.base, d.budget, alive(d), definitions).then((css) => {
             if (!alive(d)()) return;
             useFonts(d.gen, definitions);
-            el.textContent = css;
+            el.textContent = schemed(css);
         });
         d.waits.push(p);
         later(d, p);
@@ -1685,7 +1811,7 @@
         }
         const style = document.createElement("style");
         const media = attrOf(n, "media");
-        if (media) style.media = media;
+        if (media) style.media = schemed(media);
         const p = (async () => {
             d.budget.sheet();
             let made = sheets.get(href);
@@ -1730,7 +1856,7 @@
             if (!fresh) d.budget.charge(css);  // read before: counted now
             if (alive(d)()) {
                 useFonts(d.gen, definitions);
-                style.textContent = css;
+                style.textContent = schemed(css);
             }
         })();
         d.waits.push(p);
@@ -2161,14 +2287,21 @@
                     if (frameRoots.has(target)) {
                         // An embedded page read in a world of its own: which
                         // document it is (its world, the server's word).
-                        let box = target;
+                        let box = target, lost = false;
                         if (Array.isArray(op.path)) {
                             for (const owner of op.path) {
                                 const fr = frameRoots.get(box);
                                 box = Number.isSafeInteger(owner) ? fr?.child?.nodes.get(owner) : null;
-                                if (!frameRoots.has(box)) return resync(d);
+                                if (!frameRoots.has(box)) {
+                                    lost = true;
+                                    break;
+                                }
                             }
                         }
+                        // A nested frame its containing copy hasn't (yet): left,
+                        // as a canvas's update there is, not the whole page read
+                        // again (the server sends it every round it changes).
+                        if (lost) break;
                         renderFrame(d, box, op.c, Number.isSafeInteger(op.f) ? op.f : 0);
                         break;
                     }
@@ -2181,6 +2314,7 @@
                         const lower = String(op.n).toLowerCase();
                         if (lower === "href" && d.links.has(target)) d.links.delete(target);
                         try { target.removeAttribute(op.n); } catch { /* not a name */ }
+                        if (lower === "style") restyledHole(target);
                     } else {
                         attribute(d, target, target.namespaceURI, tag, String(op.n), String(op.v));
                     }

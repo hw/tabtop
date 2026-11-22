@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-eme.js mse-capture.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-pages.js go-pages.css
+//go:embed go.html go.js go-media.js go-eme.js mse-capture.js mse-stages.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-settings-parse.js go-pages.js go-pages.css
 var goFiles embed.FS
 
 const (
@@ -31,8 +31,9 @@ const (
 	// goCookiesCSP is the browser's own pages', Site controls (with each
 	// site's cookies) and Settings: their scripts and stylesheet, the
 	// tunnel to the site, nothing else; shown in a frame of the site's own
-	// only (the browser's lightbox, go.js), never another site's.
-	goCookiesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+	// only (the browser's lightbox, go.js), never another site's. Its
+	// pictures: its own, and the site's icon (blob:, handed it by go.js).
+	goCookiesCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
 		"base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 
 	// goFrameCSP is the frame's: its own script and the CSS parser only,
@@ -107,7 +108,7 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		html, _ := goFiles.ReadFile("go-" + page + ".html")
 		w.Write(html)
-	case "go.js", "go-media.js", "go-eme.js", "mse-capture.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-pages.js":
+	case "go.js", "go-media.js", "go-eme.js", "mse-capture.js", "mse-stages.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-settings-parse.js", "go-pages.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)

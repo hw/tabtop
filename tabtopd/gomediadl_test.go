@@ -82,3 +82,36 @@ func TestGoMediaWithoutRanges(t *testing.T) {
 		t.Errorf("%d left after forgetting", left)
 	}
 }
+
+// TestGoMediaDownloadExceptionTab: a download made with a tab's
+// certificate exception isn't another tab's, of the same login.
+func TestGoMediaDownloadExceptionTab(t *testing.T) {
+	clip := bytes.Repeat([]byte("0123456789abcdef"), 4<<10)
+	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", strconv.Itoa(len(clip)))
+		w.Write(clip) // no ranges: downloaded whole
+	}))
+	defer site.Close()
+	client := newGoResourceClient(allowAll)
+	excepted := &goCertExceptions{}
+	excepted.add("127.0.0.1", false)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	u := site.URL + "/clip.mp4"
+	if _, _, err := goFetchMedia(ctx, "shared", tunnelRequest{Resource: "media", URL: u}, client, goResourceSlots, "UA", &goFrom{certs: excepted}); err != nil {
+		t.Fatalf("the tab with the exception: %v", err)
+	}
+	if _, _, err := goFetchMedia(ctx, "shared", tunnelRequest{Resource: "media", URL: u}, client, goResourceSlots, "UA", &goFrom{certs: &goCertExceptions{}}); err == nil {
+		t.Error("another tab took the excepted tab's download")
+	}
+	goMediaDownloads.Lock()
+	var ds []*goMediaDownload
+	for _, d := range goMediaDownloads.by {
+		ds = append(ds, d)
+	}
+	goMediaDownloads.Unlock()
+	for _, d := range ds {
+		d.forget()
+	}
+}

@@ -37,8 +37,10 @@ export function mp4Encrypted(data) {
     const walk = (bytes) => {
         mp4Boxes(bytes, (type, body) => {
             if (ENC_BOXES.has(type)) encrypted = true;
+            // (stsd's entries come after its version, flags and count.)
+            else if (type === "stsd") walk(body.subarray(8));
             else if (type === "moov" || type === "trak" || type === "mdia" || type === "minf" || type === "stbl" ||
-                type === "stsd" || type === "moof" || type === "traf" || type === "schi") walk(body);
+                type === "moof" || type === "traf" || type === "schi") walk(body);
             return !encrypted;
         });
     };
@@ -121,7 +123,14 @@ function listBoxes(data) {
 export function createCapture({ spill, onRestart } = {}) {
     const tracks = new Map();
     let encrypted = false, full = false, ended = false, sealed = false;
-    let incomplete = false;
+    let incomplete = false, spillError = null;
+    const checkSpill = () => {
+        if (!spillError) return;
+        const error = spillError;
+        spillError = null;
+        throw error;
+    };
+    const unsupported = () => [...tracks.values()].some(t => t.mime && !/^(audio|video)\/mp4(?:\s*;|$)/i.test(t.mime));
     let spilledProgressive = 0, spilledParts = 0, unsaved = false;
     let generation = 0;  // restarts: a spill of an earlier one doesn't count
     let spillChain = Promise.resolve();
@@ -130,9 +139,16 @@ export function createCapture({ spill, onRestart } = {}) {
     const trackOf = (index) => {
         let t = tracks.get(index);
         if (!t) {
+            // Its track on the server (0-7, gostreammse.go): the least the
+            // capture's others don't have, not the page's SourceBuffer
+            // number, which only grows as buffers are made again.
+            const used = new Set([...tracks.values()].map((other) => other.slot));
+            let slot = 0;
+            while (used.has(slot)) slot++;
             t = {
+                slot,
                 mime: "",
-                offset: 0,
+                offset: 0, windowStart: 0, windowEnd: Infinity,
                 buf: new Uint8Array(0),
                 init: null,
                 parts: [],
@@ -201,6 +217,7 @@ export function createCapture({ spill, onRestart } = {}) {
         if (t.mode === "progressive") {
             const end = boxes[boxes.length - 1].end;
             if (end <= 0) return;
+            if (t.windowStart !== 0 || t.windowEnd !== Infinity) incomplete = true;
             const taken = t.buf.subarray(0, end);
             setBuf(t, t.buf.subarray(end));
             t.progressiveReady.push(taken);
@@ -231,6 +248,28 @@ export function createCapture({ spill, onRestart } = {}) {
         // with the new one's: begin again from it.
         const moovAt = partBoxes.findIndex((b) => b.type === "moov");
         if (moovAt >= 0) {
+            // The same init again (Shaka, dash.js, after a seek past what's
+            // buffered, clearing it): nothing's changed; it's let go, the
+            // session kept.
+            const start = moovAt > 0 && partBoxes[moovAt - 1].type === "ftyp" ? partBoxes[moovAt - 1].start : partBoxes[moovAt].start;
+            const end = partBoxes.find((b, k) => k > moovAt && (b.type === "moof" || b.type === "styp"))?.start ?? (partsComplete ? t.buf.length : -1);
+            const again = end > start ? t.buf.subarray(start, end) : null;
+            if (again && t.initCopy && again.length === t.initCopy.length && again.every((v, i) => v === t.initCopy[i])) {
+                const rest = new Uint8Array(t.buf.length - again.length);
+                rest.set(t.buf.subarray(0, start));
+                rest.set(t.buf.subarray(end), start);
+                setBuf(t, rest);
+                return parseTrack(t, force);
+            }
+        }
+        if (moovAt >= 0 && sealed) {
+            // Mid-save: the session being saved isn't let go (restart would
+            // abort it). The save's refused (incomplete: seal throws), the
+            // new init left buffered, taken as it's unsealed.
+            incomplete = true;
+            return;
+        }
+        if (moovAt >= 0) {
             const start = moovAt > 0 && partBoxes[moovAt - 1].type === "ftyp" ? partBoxes[moovAt - 1].start : partBoxes[moovAt].start;
             const next = partBoxes.find((b, k) => k > moovAt && (b.type === "moof" || b.type === "styp"));
             if (!next) return;  // (its first part, to know where it ends)
@@ -247,21 +286,26 @@ export function createCapture({ spill, onRestart } = {}) {
         if (!ranges.length) return;
         for (const [start, end] of ranges) {
             const piece = t.buf.subarray(start, end);
-            t.parts.push({ bytes: piece, offset: t.offset });
+            t.parts.push({ bytes: piece, offset: t.offset, windowStart: t.windowStart, windowEnd: t.windowEnd });
             t.partsBytes += piece.length;
         }
         setBuf(t, t.buf.subarray(consumeTo));
     };
 
-    const emit = async (track, kind, bytes, offset = 0) => {
+    const emit = async (track, kind, bytes, timing = {}) => {
         if (!(bytes instanceof Uint8Array) || !bytes.length) return;
         const was = generation;
         if (typeof spill === "function") {
             try {
-                await spill({ track, kind, bytes, offset });
+                await spill({ track: tracks.get(track)?.slot ?? track, kind, ...timing, bytes });
             } catch (err) {
+                // A session let go already (restarted: a quality switch, a
+                // gap) failing its spill in flight: expected, not the next
+                // session's error.
+                if (was !== generation) return;
                 // Its session's gone, and what was spilled to it.
-                if (was === generation) restart();
+                restart();
+                spillError = err;
                 throw err;
             }
         }
@@ -276,6 +320,16 @@ export function createCapture({ spill, onRestart } = {}) {
     };
 
     const flushReady = async (force) => {
+        // Begun again while a spill was awaited (a quality switch, appended
+        // meanwhile): what was queued is the new session's, each track's
+        // init owed first. Scanned again from the start.
+        const gen = generation;
+        const stale = () => {
+            if (gen === generation) return false;
+            spillAgain = true;
+            spillForce ||= force;
+            return true;
+        };
         for (const [index, t] of tracks) {
             if (/webm/i.test(t.mime)) continue;
             parseTrack(t, force);
@@ -290,6 +344,7 @@ export function createCapture({ spill, onRestart } = {}) {
                     const chunk = t.progressiveReady.shift();
                     t.progressiveBytes -= chunk.length;
                     await emit(index, "progressive", chunk);
+                    if (stale()) return;
                     full = localHeld() > MSE_CAPTURE_LIMIT;
                 }
                 continue;
@@ -302,6 +357,7 @@ export function createCapture({ spill, onRestart } = {}) {
                 const init = t.init;
                 t.init = null;
                 await emit(index, "init", init);
+                if (stale()) return;
                 full = localHeld() > MSE_CAPTURE_LIMIT;
             }
 
@@ -310,7 +366,8 @@ export function createCapture({ spill, onRestart } = {}) {
             while (t.parts.length) {
                 const part = t.parts.shift();
                 t.partsBytes -= part.bytes.length;
-                await emit(index, "part", part.bytes, part.offset);
+                await emit(index, "part", part.bytes, part);
+                if (stale()) return;
                 full = localHeld() > MSE_CAPTURE_LIMIT;
                 if (!force && t.partsBytes < MSE_SPILL_SOFT && localHeld() < MSE_SPILL_SOFT) break;
             }
@@ -322,11 +379,13 @@ export function createCapture({ spill, onRestart } = {}) {
     // track whose init was just replaced (its parts already dropped).
     function restart(kept = null) {
         generation++;
+        spillError = null;
         incomplete = false;
         spilledParts = 0;
         spilledProgressive = 0;
         unsaved = false;
         sealed = false;
+        resume();
         for (const t of tracks.values()) {
             if (t.mode === "progressive" && t !== kept) {
                 t.mode = "lost";
@@ -342,7 +401,21 @@ export function createCapture({ spill, onRestart } = {}) {
         try { onRestart?.(); } catch { /* the session's let go regardless */ }
     }
 
+    // Sealed (a save finalizing its session), spills wait (an end() or a
+    // flush() then would send a part over the finalize), but the seal's own;
+    // they're done once unsealed or a new session's begun (unsealed).
+    let sealing = false, waiting = false;
+    function resume() {
+        if (!waiting || sealed) return;
+        waiting = false;
+        scheduleSpill(false);  // (spillForce kept, if it was asked)
+    }
     const scheduleSpill = (force = false) => {
+        if (sealed && !sealing) {
+            waiting = true;
+            spillForce ||= force;
+            return spillChain;
+        }
         if (force) spillForce = true;
         spillAgain = true;
         spillChain = spillChain.then(async () => {
@@ -355,7 +428,8 @@ export function createCapture({ spill, onRestart } = {}) {
                     spillForce = false;
                     await flushReady(forceNow);
                 }
-            } catch {
+            } catch (err) {
+                spillError = err;
                 full = localHeld() > MSE_CAPTURE_LIMIT;
             } finally {
                 spilling = false;
@@ -378,7 +452,15 @@ export function createCapture({ spill, onRestart } = {}) {
             const t = trackOf(index);
             if (mime) t.mime = String(mime);
         },
-        append(index, bytes, offset = 0) {
+        drop(index) {
+            if (!tracks.delete(index)) return;
+            // Mid-save (sealed), the session being saved isn't let go
+            // (restart would abort it): refused if it's still sealing (seal
+            // throws), begun again once unsealed, or taken (sessionTaken).
+            if (sealed) incomplete = true;
+            else restart();
+        },
+        append(index, bytes, offset = 0, windowStart = 0, windowEnd = Infinity) {
             if (encrypted || !(bytes instanceof Uint8Array) || !bytes.length) return;
             if (mp4Encrypted(bytes)) {
                 setEncrypted();
@@ -386,11 +468,13 @@ export function createCapture({ spill, onRestart } = {}) {
             }
             const t = trackOf(index);
             if (/webm/i.test(t.mime) || t.mode === "lost") return;
-            if (t.offset !== offset) {
+            if (t.offset !== offset || t.windowStart !== windowStart || t.windowEnd !== windowEnd) {
                 // Attribute all complete fragments already buffered to the old offset.
                 parseTrack(t, true);
                 if (t.mode === "fmp4" && t.buf.length) incomplete = true;
                 t.offset = offset;
+                t.windowStart = windowStart;
+                t.windowEnd = windowEnd;
             }
             if (full || localHeld() + bytes.length > MSE_CAPTURE_LIMIT) {
                 // Spills lag playback: this append's dropped. A fragment left
@@ -398,7 +482,6 @@ export function createCapture({ spill, onRestart } = {}) {
                 // mid-data): what's buffered of it goes too, and nothing's
                 // taken again till an append starts a fragment (resync). A
                 // progressive file can't have a gap: not saveable any more.
-                incomplete = true;
                 full = true;
                 if (t.mode === "progressive") {
                     t.mode = "lost";
@@ -407,6 +490,19 @@ export function createCapture({ spill, onRestart } = {}) {
                 }
                 t.buf = new Uint8Array(0);
                 t.resync = true;
+                // What's held of this track before the gap can't be saved
+                // with what comes after: let go. Mid-save (sealed), the
+                // session being saved has none of it; else it's begun again
+                // from after the gap (the session spilled so far, gapped,
+                // can't be saved), saveable again once more's spilled.
+                t.parts = [];
+                t.partsBytes = 0;
+                if (sealed) incomplete = true;
+                else restart();
+                // Full till a spill says it isn't (flushReady): one's asked
+                // for, as none may be going (or none would ever say).
+                full = true;
+                scheduleSpill(false);
                 return;
             }
             if (t.resync) {
@@ -424,12 +520,19 @@ export function createCapture({ spill, onRestart } = {}) {
         },
         // seal stops further spills (Save is finalizing the staging tunnel).
         async seal() {
+            checkSpill();
+            if (unsupported()) throw new Error("buffered stream contains an unsupported track format");
             if (incomplete) throw new Error("some buffered media was missed");
             sealed = true;
-            await scheduleSpill(true);
+            sealing = true;
+            const flushed = scheduleSpill(true);
+            sealing = false;
+            await flushed;
+            checkSpill();
+            if (unsupported() || incomplete) throw new Error("buffered tracks changed during save");
         },
         saveable() {
-            if (encrypted || incomplete) return false;
+            if (encrypted || incomplete || unsupported()) return false;
             if (unsaved && (spilledProgressive > 0 || spilledParts > 0)) return true;
             for (const t of tracks.values()) {
                 if (/webm/i.test(t.mime)) return false;
@@ -444,15 +547,24 @@ export function createCapture({ spill, onRestart } = {}) {
             }
             return false;
         },
-        // markSaved clears the offer after a successful finalize; further
-        // appends spill again, to a new staging session (restart).
-        markSaved() { restart(); },
-        // saveFailed: a finalize that didn't save. Its session's gone (the
-        // server gives a session up once it's finalized, saved or not).
+        // sessionTaken: the save's started with the session (go.js): spills
+        // go on at once, unsealed, to a new one, so playback while the save
+        // remuxes isn't dropped against the capture's limit.
+        sessionTaken() { restart(); },
+        // markSaved: the save done (its session taken already).
+        markSaved() { unsaved = spilledParts > 0 || spilledProgressive > 0; },
+        // saveFailed: a finalize that didn't start a save. Its session's gone
+        // (the server gives a session up once it's finalized).
         saveFailed() { restart(); },
         // unseal: a save that never finalized (nothing to save yet): spills go
         // on to the same session.
-        unseal() { sealed = false; },
+        unseal() {
+            sealed = false;
+            // What it holds has a gap, or a new init waiting (both met
+            // mid-save): begun again (spills go on to a new session).
+            if (incomplete) restart();
+            else resume();
+        },
         flush() {
             return scheduleSpill(true);
         },

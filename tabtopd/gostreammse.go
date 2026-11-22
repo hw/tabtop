@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/coder/websocket"
 )
 
@@ -36,12 +37,13 @@ const (
 )
 
 const (
-	mseStageLimit    = 512 << 20
-	mseChunk         = 256 << 10
-	mseKindInit      = 1
-	mseKindPart      = 2
-	mseKindProgress  = 3
-	mseKindTimedPart = 4
+	mseStageLimit     = 512 << 20
+	mseChunk          = 256 << 10
+	mseKindInit       = 1
+	mseKindPart       = 2
+	mseKindProgress   = 3
+	mseKindTimedPart  = 4
+	mseKindWindowPart = 5
 )
 
 // mseStageKept is how long a stage is kept with nothing spilled to it: a
@@ -66,9 +68,11 @@ type mseStage struct {
 }
 
 type mseStageTrack struct {
-	init    string   // relative path
-	parts   []string // relative paths
-	offsets []float64
+	header   *mp4.InitSegment
+	needSync map[uint32]bool
+	init     string   // relative path
+	parts    []string // relative paths
+	offsets  []float64
 }
 
 func (m *fetchManager) stagesLocked() map[string]*mseStage {
@@ -243,8 +247,19 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 	if track < 0 || track > 7 {
 		return errors.New("invalid stream track")
 	}
-	var offset float64
-	if kind == mseKindTimedPart {
+	var offset, windowStart float64
+	windowEnd := math.Inf(1)
+	if kind == mseKindWindowPart {
+		if len(data) <= 24 {
+			return errors.New("missing windowed fragment")
+		}
+		windowStart = math.Float64frombits(binary.BigEndian.Uint64(data[8:]))
+		windowEnd = math.Float64frombits(binary.BigEndian.Uint64(data[16:]))
+		if !(windowStart >= 0 && windowEnd > windowStart) {
+			return errors.New("invalid fragment append window")
+		}
+	}
+	if kind == mseKindTimedPart || kind == mseKindWindowPart {
 		if len(data) <= 8 {
 			return errors.New("missing timed fragment")
 		}
@@ -252,10 +267,36 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 		if math.IsNaN(offset) || math.IsInf(offset, 0) {
 			return errors.New("invalid fragment offset")
 		}
-		data, kind = data[8:], mseKindPart
+		if kind == mseKindWindowPart {
+			data = data[24:]
+		} else {
+			data = data[8:]
+		}
+		kind = mseKindPart
 	}
 	if len(data) == 0 || int64(len(data)) > segmentLimit {
 		return errors.New("invalid stream segment")
+	}
+	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.init != "" && (windowStart > 0 || !math.IsInf(windowEnd, 1) || offset < 0 || len(tr.needSync) > 0) {
+		if tr.header == nil {
+			init, err := store.root.ReadFile(tr.init)
+			if err != nil {
+				return err
+			}
+			tr.header, err = decodeStreamInit(init)
+			if err != nil {
+				return err
+			}
+			tr.needSync = make(map[uint32]bool)
+		}
+		var err error
+		data, err = clipMSEPart(data, tr.header, offset, windowStart, windowEnd, tr.needSync)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			return nil
+		}
 	}
 	if s.bytes+int64(len(data)) > mseStageLimit {
 		return errors.New("buffered stream is too large")
@@ -354,9 +395,12 @@ func (s *mseStage) inputLocked() (mseSaveInput, error) {
 	for _, i := range indexes {
 		tr := s.tracks[i]
 		if tr.init == "" || len(tr.parts) == 0 {
-			return mseSaveInput{}, errors.New("buffered stream has no media segments yet")
+			continue // (its init come, not yet a part: the others saved)
 		}
 		tracks = append(tracks, mseTrackFiles{init: tr.init, parts: append([]string(nil), tr.parts...), offsets: tr.offsets})
+	}
+	if len(tracks) == 0 {
+		return mseSaveInput{}, errors.New("buffered stream has no media segments yet")
 	}
 	return mseSaveInput{tracks: tracks}, nil
 }
@@ -661,8 +705,11 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 				r.fail("cancelled")
 				return
 			}
-			m.finishMSEStage(t, stage, r, by, ip, who, from, userAgent)
-			return
+			if m.finishMSEStage(t, stage, r, by, ip, who, from, userAgent) {
+				return
+			}
+			// Refused (every fetch going): the stage goes on, to be saved again.
+			continue
 		}
 		track, kind, data, err := readMSEFrameFrom(t, p)
 		if err != nil {
@@ -684,21 +731,33 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 
 // finishMSEStage saves a stage (Save): takes it, starts the save with its
 // files, which the save gives back once it's done with them, and reports
-// the save till it ends.
-func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) {
-	// The save started first: refused (every fetch going, say), the stage's
-	// kept, with all it holds, to be saved once there's room.
-	j, input, err := m.startMSE(stage.folder, by, ip, who, from, userAgent)
+// the save till it ends. False if the save couldn't start (every fetch
+// going, say): the page's told ({"refused"}), and the stage, with all it
+// holds, goes on being spilled to, to be saved again.
+func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) bool {
+	// Nothing to save yet (no track with a part): refused too, the stage
+	// kept (a Save pressed as a track's init's come but not its first part).
+	stage.mu.Lock()
+	_, err := stage.inputLocked()
+	stage.mu.Unlock()
+	var j *fetchJob
+	var input chan<- mseSaveInput
+	if err == nil {
+		j, input, err = m.startMSE(stage.folder, by, ip, who, from, userAgent)
+	}
 	if err != nil {
-		r.fail(err.Error())
-		return
+		if writeJSON(t, map[string]any{"refused": err.Error()}) != nil {
+			m.forgetMSEStage(stage.id)
+			return true
+		}
+		return false
 	}
 	in, release, err := m.takeMSEStage(stage)
 	if err != nil {
 		j.cancel()
 		r.fail(err.Error())
 		m.forgetMSEStage(stage.id)
-		return
+		return true
 	}
 	go func() {
 		<-j.done
@@ -710,7 +769,7 @@ func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelRespo
 	}
 	if err := writeJSON(t, map[string]any{"fetch": j.state()}); err != nil {
 		j.cancel()
-		return
+		return true
 	}
 	gone := cancelOnText(t, j.cancel)
 	tick := time.NewTicker(fetchTick)
@@ -721,7 +780,7 @@ func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelRespo
 			s := j.state()
 			if s.Error != "" {
 				r.fail(s.Error)
-				return
+				return true
 			}
 			res := map[string]any{"fetch": s}
 			j.mu.Lock()
@@ -730,12 +789,12 @@ func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelRespo
 			}
 			j.mu.Unlock()
 			r.finish(res)
-			return
+			return true
 		case <-gone:
-			return
+			return true
 		case <-tick.C:
 			if err := writeJSON(t, map[string]any{"fetch": j.state()}); err != nil {
-				return
+				return true
 			}
 		}
 	}
@@ -762,6 +821,8 @@ func readMSEFrameFrom(t *tunnel, first []byte) (track int, kind byte, data []byt
 				limit := segmentLimit
 				if kind == mseKindTimedPart {
 					limit += 8
+				} else if kind == mseKindWindowPart {
+					limit += 24
 				}
 				if need <= 0 || need > limit {
 					return 0, 0, nil, errors.New("invalid stream segment")

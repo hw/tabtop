@@ -13,6 +13,7 @@ import (
 )
 
 type dashTemplate struct {
+	Offset   *int64 `xml:"presentationTimeOffset,attr"`
 	Init     string `xml:"initialization,attr"`
 	Media    string `xml:"media,attr"`
 	Start    *int64 `xml:"startNumber,attr"`
@@ -33,7 +34,9 @@ type dashRendition struct {
 	Protected *struct{}    `xml:"ContentProtection"`
 	Template  dashTemplate `xml:"SegmentTemplate"`
 	List      *struct {
-		Init struct {
+		Offset *int64 `xml:"presentationTimeOffset,attr"`
+		Scale  int64  `xml:"timescale,attr"`
+		Init   struct {
 			Source string `xml:"sourceURL,attr"`
 			Range  string `xml:"range,attr"`
 		} `xml:"Initialization"`
@@ -141,6 +144,22 @@ func dashTracks(data []byte, u *url.URL) ([]streamTrack, error) {
 				if list.Init.Range != "" {
 					return nil, errors.New("DASH byte ranges are unsupported")
 				}
+				offset, scale := list.Offset, list.Scale
+				if set.List != nil {
+					if offset == nil {
+						offset = set.List.Offset
+					}
+					if scale == 0 {
+						scale = set.List.Scale
+					}
+				}
+				if scale < 0 {
+					return nil, errors.New("invalid DASH timescale")
+				}
+				if offset != nil {
+					t.dashShift = -float64(*offset) / float64(max(scale, 1))
+					t.dashTicks, t.dashScale = -int64(*offset), int64(max(scale, 1))
+				}
 				t.init = list.Init.Source
 				for _, s := range list.Segments {
 					if s.Range != "" || s.Media == "" {
@@ -241,6 +260,16 @@ func (t *streamTrack) expandTemplate(r dashRendition, parent dashTemplate, secon
 	if tpl.Scale == 0 {
 		tpl.Scale = 1
 	}
+	if tpl.Scale < 0 {
+		return errors.New("invalid DASH timescale")
+	}
+	if tpl.Offset == nil {
+		tpl.Offset = parent.Offset
+	}
+	if tpl.Offset != nil {
+		t.dashShift = -float64(*tpl.Offset) / float64(tpl.Scale)
+		t.dashTicks, t.dashScale = -int64(*tpl.Offset), int64(tpl.Scale)
+	}
 	if tpl.Duration == 0 {
 		tpl.Duration = parent.Duration
 	}
@@ -269,7 +298,7 @@ func (t *streamTrack) expandTemplate(r dashRendition, parent dashTemplate, secon
 				return errors.New("DASH segment list is too large")
 			}
 			t.parts = append(t.parts, part)
-			t.starts = append(t.starts, float64(at)/float64(tpl.Scale))
+			t.starts = append(t.starts, float64(at)/float64(tpl.Scale)+t.dashShift)
 			n++
 			at += d
 		}
@@ -280,7 +309,9 @@ func (t *streamTrack) expandTemplate(r dashRendition, parent dashTemplate, secon
 	// which counts from presentationTimeOffset where there's one), not 0.
 	length := int64(math.Ceil(seconds * float64(tpl.Scale)))
 	end := length
-	if len(tpl.Timeline) > 0 && tpl.Timeline[0].T != nil {
+	if tpl.Offset != nil {
+		end += *tpl.Offset
+	} else if len(tpl.Timeline) > 0 && tpl.Timeline[0].T != nil {
 		end += *tpl.Timeline[0].T
 	}
 	if len(tpl.Timeline) > 0 {
@@ -306,6 +337,11 @@ func (t *streamTrack) expandTemplate(r dashRendition, parent dashTemplate, secon
 	} else if tpl.Duration > 0 {
 		if durationErr != nil {
 			return durationErr
+		}
+		// Its segments' media times start where presentationTimeOffset
+		// says (as a timeline's own times do): the presentation's 0.
+		if tpl.Offset != nil {
+			at = *tpl.Offset
 		}
 		if err := add((length+tpl.Duration-1)/tpl.Duration, tpl.Duration); err != nil {
 			return err

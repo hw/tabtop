@@ -57,6 +57,9 @@ type tunnelRequest struct {
 	// go-settings-set: the change to the site (Name): block, unblock, popups-allow, popups-block, popups-ask;
 	// empty Name: a browser-wide default (popups-…, videos-…, theme-…, search-…, referer-on/off).
 	Setting string `json:"setting,omitempty"`
+	// go-settings-set, with Setting "hosts": the remote browser's local DNS
+	// records, all of them (gohosts.go).
+	Hosts []goHostRecord `json:"hosts,omitempty"`
 	// go-adblock-set, with Setting "filters": My filters, the person's own
 	// ad blocking rules.
 	Filters string   `json:"filters,omitempty"`

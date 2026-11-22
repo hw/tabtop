@@ -6,38 +6,112 @@
 <title>Settings</title>
 <link rel="stylesheet" href="go-pages.css">
 </head>
-<body>
+<body class="settings-page">
 <main>
     <header><a href="./" id="back">← Browser</a><h1>Settings</h1></header>
     <p id="done" role="status" aria-live="polite"></p>
+    <!-- (Buttons, not links: a fragment would be an entry in the frame's history.) -->
+    <nav id="jump" aria-label="Sections">
+        <button type="button" data-to="sec_search">Search</button>
+        <button type="button" data-to="sec_network">Network</button>
+        <button type="button" data-to="sec_ads">Ad blocking</button>
+        <button type="button" data-to="sec_backup">Backup</button>
+    </nav>
 
     <section id="browser_settings" aria-label="Settings">
+        <h2 id="sec_search" class="section-head" tabindex="-1">Search</h2>
         <div class="card" id="search_engine_card">
             <h3>Search engine</h3>
             <div class="question">
-                <label for="search_engine">Default search engine<span class="hint">Used when the address bar has words, not an address. DuckDuckGo’s HTML version is the default; others may need more of the page’s own scripts.</span></label>
+                <label for="search_engine">Default search engine<span class="hint">Used when the address bar has words, not an address.</span></label>
                 <span class="select"><select id="search_engine" disabled>
                     <option value="duckduckgo">DuckDuckGo</option>
                     <option value="google">Google</option>
                     <option value="bing">Bing</option>
                     <option value="brave">Brave Search</option>
+                    <option value="custom">Custom…</option>
                 </select></span>
             </div>
+            <form id="search_custom" class="field-row" hidden novalidate>
+                <label class="field" for="search_url">Search address<span class="hint">Where <code>%s</code> is, the words searched for go.</span>
+                    <input id="search_url" type="url" inputmode="url" placeholder="https://search.example/?q=%s" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="search_error" disabled>
+                </label>
+                <button type="submit" id="search_save" disabled>Use it</button>
+                <p class="field-error" id="search_error" hidden></p>
+            </form>
+            <details class="more"><summary>More</summary>
+                <p class="hint">DuckDuckGo’s HTML version is the default: it works with less of the page’s own scripts than the others, which may need more of them.</p>
+            </details>
         </div>
-        <div class="card" id="adblock">
-            <h3>Ad blocking</h3>
-            <label class="toggle"><input type="checkbox" id="adblock_on" disabled> Block ads and trackers</label>
-            <p class="hint" id="adblock_about"></p>
+
+        <h2 id="sec_network" class="section-head" tabindex="-1">Network</h2>
+        <div class="card" id="doh_card">
+            <h3>DNS over HTTPS</h3>
+            <div class="question">
+                <label for="doh">Look up sites’ names over HTTPS<span class="hint">Encrypted, by the service chosen, instead of this server’s own DNS.</span></label>
+                <span class="select"><select id="doh" disabled>
+                    <option value="off">Off (this server’s DNS)</option>
+                    <option value="cloudflare">Cloudflare (1.1.1.1)</option>
+                    <option value="quad9">Quad9</option>
+                    <option value="custom">Custom DoH server</option>
+                </select></span>
+            </div>
+            <form id="doh_custom" class="field-row" hidden>
+                <label class="field" for="doh_url">DoH server
+                    <input id="doh_url" type="url" inputmode="url" placeholder="https://dns.example/dns-query" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="doh_error" disabled>
+                </label>
+                <button type="submit" id="doh_save" disabled>Use it</button>
+                <p class="field-error" id="doh_error" hidden></p>
+            </form>
+            <div id="doh_status" class="status-row" hidden>
+                <span id="doh_state" class="hint"></span>
+                <button type="button" id="doh_test" class="quiet" disabled>Test</button>
+            </div>
+            <details class="more"><summary>More</summary>
+                <p class="hint">Used for everything the browser fetches: its pages, their pictures and videos, downloads and filter lists. While it’s on there’s no falling back to this server’s DNS: a local or private name resolves only from Local DNS records or this server’s /etc/hosts; otherwise use its address. Private network access (WEB_GO_PRIVATE) doesn’t change that.</p>
+            </details>
         </div>
+        <div class="card" id="hosts_card">
+            <h3>Local DNS records</h3>
+            <p class="hint card-note">Names reached at the addresses you give (A and AAAA records).</p>
+            <ul id="host_list" aria-label="Local DNS records"></ul>
+            <form id="host_add" class="record-form" novalidate>
+                <label class="field" for="host_name">Name
+                    <input id="host_name" type="text" placeholder="nas.home.arpa" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="host_name_error" disabled>
+                    <span class="field-error" id="host_name_error" hidden></span>
+                </label>
+                <label class="field" for="host_addr">Address
+                    <input id="host_addr" type="text" placeholder="192.168.1.10 or fd00::10" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="host_addr_error" disabled>
+                    <span class="field-error" id="host_addr_error" hidden></span>
+                </label>
+                <span class="record-buttons">
+                    <button type="submit" id="host_add_button" disabled>Add record</button>
+                    <button type="button" id="host_cancel" class="quiet" hidden>Cancel</button>
+                </span>
+            </form>
+            <div class="tools end">
+                <button type="button" id="hosts_paste" class="quiet" disabled>Paste hosts lines…</button>
+                <button type="button" id="hosts_copy" class="quiet" disabled>Copy as hosts file</button>
+            </div>
+            <details class="more"><summary>More</summary>
+                <p class="hint">A name is looked up here first; then in this server’s /etc/hosts; then by DNS over HTTPS, or this server’s own DNS. A name listed is only ever at its addresses. Private network addresses need private network access (WEB_GO_PRIVATE); this server’s own are never reached.</p>
+            </details>
+        </div>
+
+        <h2 id="sec_ads" class="section-head" tabindex="-1">Ad blocking</h2>
         <div class="card" id="filter_lists">
             <h3>Filter lists</h3>
+            <label class="toggle" id="adblock"><input type="checkbox" id="adblock_on" disabled> Block ads and trackers</label>
+            <p class="hint" id="adblock_about"></p>
             <ul id="ad_lists" aria-label="Filter lists"></ul>
-            <form id="ad_add" class="tools">
-                <input id="ad_url" type="url" inputmode="url" placeholder="Add a list by its address (https://…)" aria-label="A filter list's address" autocomplete="off" autocapitalize="off" spellcheck="false" disabled>
+            <form id="ad_add" class="field-row">
+                <label class="field" for="ad_url">Add a list
+                    <input id="ad_url" type="url" inputmode="url" placeholder="https://…" autocomplete="off" autocapitalize="off" spellcheck="false" disabled>
+                </label>
                 <button type="submit" id="ad_add_button" disabled>Add list</button>
             </form>
             <div class="question">
-                <label for="ad_interval">Update lists<span class="hint">Lists are downloaded from their sites by this server.</span></label>
+                <label for="ad_interval">Update lists<span class="hint" id="ad_update_note">Downloaded from their sites by this server.</span></label>
                 <span class="tools">
                     <span class="select"><select id="ad_interval" disabled><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="manual">Manually</option></select></span>
                     <button type="button" id="ad_update" disabled>Update now</button>
@@ -45,14 +119,43 @@
             </div>
         </div>
         <div class="card" id="my_filters_card">
-            <h3><label for="my_filters">My filters</label></h3>
-            <p class="hint">Your own rules, one a line, as filter lists write them: <code>||ads.example^</code>, or a site’s name alone, blocks it; <code>/banner/*$image</code> blocks pictures at such addresses; <code>##.ad</code> hides what has that class; <code>@@</code> before a rule makes it an exception; <code>! …</code> is a note. Sites they name are blocked wherever ad blocking is.</p>
+            <h3><label for="my_filters">My filters</label> <span class="unsaved" id="filters_unsaved" hidden>Unsaved</span></h3>
+            <p class="hint card-note">Your own rules, one a line, as filter lists write them.</p>
             <textarea id="my_filters" rows="6" spellcheck="false" autocapitalize="off" autocomplete="off" disabled></textarea>
             <ul id="filter_problems" class="problems" aria-label="Lines not used"></ul>
-            <div class="tools end"><button type="button" id="save_filters" disabled>Save filters</button></div>
+            <div class="tools end">
+                <button type="button" id="discard_filters" class="quiet" hidden>Discard changes</button>
+                <button type="button" id="save_filters" disabled>Save filters</button>
+            </div>
+            <details class="more"><summary>More</summary>
+                <p class="hint"><code>||ads.example^</code>, or a site’s name alone, blocks it; <code>/banner/*$image</code> blocks pictures at such addresses; <code>##.ad</code> hides what has that class; <code>@@</code> before a rule makes it an exception; <code>! …</code> is a note. Sites they name are blocked wherever ad blocking is.</p>
+            </details>
+        </div>
+
+        <h2 id="sec_backup" class="section-head" tabindex="-1">Backup</h2>
+        <div class="card" id="backup_card">
+            <h3>Export and import</h3>
+            <p class="hint card-note">The settings on this page in one file: search engine, DNS over HTTPS, local DNS records, ad blocking, its lists and your filters. Site controls’ settings aren’t in it.</p>
+            <div class="tools">
+                <button type="button" id="settings_export" disabled>Export…</button>
+                <button type="button" id="settings_import" disabled>Import…</button>
+                <input type="file" id="settings_file" accept="application/json,.json" hidden>
+            </div>
         </div>
     </section>
 </main>
+<dialog id="hosts_dialog" aria-labelledby="hosts_dialog_h">
+    <form method="dialog" id="hosts_paste_form">
+        <h3 id="hosts_dialog_h">Paste hosts lines</h3>
+        <p class="hint">One a line, as /etc/hosts writes them: an address, then its names (<code>192.168.1.10 nas.home.arpa nas</code>). <code>#</code> starts a note. They’re added to the records.</p>
+        <textarea id="hosts_text" rows="8" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Hosts lines"></textarea>
+        <ul id="hosts_text_problems" class="problems" aria-label="Lines not used"></ul>
+        <div class="tools">
+            <button type="button" id="hosts_dialog_cancel" class="quiet">Cancel</button>
+            <button type="submit" id="hosts_dialog_add" value="add" disabled>Add records</button>
+        </div>
+    </form>
+</dialog>
 <script type="module" src="go-settings.js"></script>
 </body>
 </html>

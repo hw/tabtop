@@ -139,9 +139,10 @@ dialog .tools { justify-content: flex-end; }
     #back_to_sites { width: 44px; justify-content: center; padding-inline: 0; }
     #back_to_sites .back-label { display: none; }
 }
-/* Settings' filter lists. */
-#ad_lists { border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; }
-#ad_lists:empty { display: none; }
+/* Settings' filter lists and local DNS records. */
+#ad_lists, #host_list { border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; }
+#ad_lists:empty, #host_list:empty { display: none; }
+#host_list { margin-bottom: 10px; }
 #ad_lists li { display: flex; align-items: center; gap: 12px; padding: 10px 0; }
 #ad_lists label { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; }
 #ad_lists label > span { display: grid; gap: 2px; min-width: 0; }
@@ -259,3 +260,59 @@ button.link { min-height: 0; padding: 0; border: 0; background: none; font: inhe
 main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
 /* A card's note on all its settings, under its heading. */
 .card-note { margin: 0 0 4px; }
+/* Settings (go/settings): its sections, labelled fields, records, and
+   what's more said folded away. (Scoped: Site controls shares the rest.) */
+.settings-page input[type="text"], .settings-page input[type="url"], .settings-page textarea:not(#my_filters) {
+    width: 100%; min-height: 38px; padding: 7px 13px; border: 1px solid var(--line); border-radius: 10px; background: #202024; color: inherit; font: inherit; }
+.settings-page input[type="text"]::placeholder, .settings-page input[type="url"]::placeholder, .settings-page textarea::placeholder { color: #8f8f9a; }
+.settings-page input[aria-invalid="true"] { border-color: #a46a65; }
+.settings-page #jump { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: nowrap; gap: 6px; margin: 4px -4px 0; padding: 6px 4px; background: #1c1c1e; }
+.settings-page #jump button { flex: 1 1 0; }
+.section-head { margin: 28px 0 0; font-size: 1.05rem; scroll-margin-top: 64px; }
+.section-head:focus { outline: none; }
+.section-head + .card { margin-top: 10px; }
+.field { display: grid; gap: 4px; flex: 1 1 14rem; min-width: 0; font-size: .875rem; font-weight: 550; }
+.field .hint { font-weight: 400; }
+.field-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin: 6px 0 4px; }
+.field-row > .field-error { flex-basis: 100%; }
+.field-error { color: #ffb4ab; font-size: .8rem; font-weight: 400; }
+.record-form { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) auto; align-items: start; gap: 10px; }
+.record-buttons { display: flex; gap: 6px; align-self: start; margin-top: calc(.875rem * 1.45 + 4px); }
+.status-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.status-row .hint.ok { color: #b2dab1; }
+.status-row .hint.error { color: #ffb4ab; }
+details.more { margin-top: 8px; }
+details.more summary { width: max-content; color: var(--accent); font-size: .875rem; font-weight: 550; cursor: pointer; }
+details.more summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+details.more .hint { margin: 6px 0 0; }
+.unsaved { margin-left: 8px; padding: 1px 8px; border-radius: 999px; border: 1px solid #7a6a3a; background: #3a3424; color: #ffe0a8;
+    font-size: .7rem; text-transform: none; letter-spacing: 0; vertical-align: 1px; }
+/* Ad blocking off: its lists still to tick, but shown as not in use. */
+#filter_lists.off #ad_lists { opacity: .6; }
+#filter_lists .toggle { margin: 6px 0 2px; font-weight: 550; }
+/* A record: its name, then each address with its type, ✎ and ✕. */
+#host_list li { display: grid; gap: 4px; padding: 8px 0; }
+#host_list .name { font-weight: 550; overflow-wrap: anywhere; }
+#host_list .addrs { display: grid; gap: 2px; }
+#host_list .addr-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#host_list .kind { flex: none; width: 3.2em; color: var(--muted); font-size: .8rem; }
+#host_list .addr { flex: 1; min-width: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+#host_list .addr-row button { min-height: 32px; padding: 2px 10px; font-size: .875rem; }
+#host_list .addr-row .glyph { display: none; }
+#host_list li.editing { background: #24304a; border-radius: 8px; margin: 0 -8px; padding-inline: 8px; }
+#hosts_dialog { width: min(560px, calc(100% - 32px)); }
+#hosts_text { min-height: 10rem; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+@media (pointer: coarse), (max-width: 600px) {
+    .settings-page input[type="text"], .settings-page input[type="url"] { min-height: 44px; }
+    #host_list .addr-row button { min-height: 40px; }
+}
+@media (max-width: 600px) {
+    .record-form { grid-template-columns: minmax(0, 1fr); }
+    .record-buttons { margin-top: 0; }
+    .record-buttons button { flex: 1; }
+    #host_list .addr-row .word { display: none; }
+    #host_list .addr-row .glyph { display: inline; }
+    #host_list .addr-row button { min-width: 40px; padding-inline: 8px; }
+    #host_list .addr { overflow-wrap: break-word; }
+    .settings-page #jump button { font-size: .8rem; padding-inline: 4px; }
+}

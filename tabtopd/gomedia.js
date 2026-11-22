@@ -22,7 +22,9 @@
     const num = (v, max) => (Number.isFinite(v) && v >= 0 && v <= max ? v : 0);
     const plays = new WeakMap();  // element -> {t, at, playing, ended}: as the person's player last said
     const proto = HTMLMediaElement.prototype;
-    const sourceOf = (el) => el.getAttribute("src") ?? el.querySelector("source[src]")?.getAttribute("src");
+    // Its file, as a browser picks it: its own src if it has one (empty:
+    // none), else its first <source> with one that isn't empty.
+    const sourceOf = (el) => el.hasAttribute("src") ? el.getAttribute("src") || null : el.querySelector(':scope > source[src]:not([src=""])')?.getAttribute("src") ?? null;
     const playback = (el) => {
         const state = plays.get(el);
         return state && state.source === sourceOf(el) ? state : null;
@@ -65,7 +67,24 @@
             ticking = 0;
         }
     };
+    // held: paused by the page, the person's player's "playing" not taken
+    // till it says it's paused (the agent's telling it to stop is on its
+    // way; a report of before would flip the page back to playing), for 2 s
+    // at most. The page's play() (stubbed, below) lets it go at once.
+    const held = new WeakMap(); // element -> since (ms)
+    const hold = (el) => held.set(el, performance.now());
+    document.addEventListener("__tabtop_media_hold", (e) => {
+        if (!(e.target instanceof HTMLMediaElement)) return;
+        e.stopImmediatePropagation();
+        if (e.detail === "release") held.delete(e.target);
+        else hold(e.target);
+    }, true);
     function played(el, d) {
+        const since = held.get(el);
+        if (since !== undefined) {
+            if (d.playing && performance.now() - since < 2000) return;
+            held.delete(el);
+        }
         const was = playback(el);
         const now = { source: sourceOf(el), t: num(d.t, 1e7), at: performance.now(), playing: !!d.playing, ended: !!d.ended };
         plays.set(el, now);
@@ -76,8 +95,23 @@
         if (now.playing) {
             playing.add(el);
             ticking ||= setInterval(tick, 250);
+        } else {
+            playing.delete(el);
         }
     }
+    // The page's pause(): say paused at once (Shorts' UI reads it), and fire
+    // pause so the agent stops the person's player. A remoted stream's element
+    // never played natively (MSE's play is stubbed below), so the engine's
+    // pause would be a no-op and never tell the agent.
+    const nativePause = proto.pause;
+    proto.pause = function pause() {
+        const p = playback(this);
+        if (p?.playing) {
+            played(this, { t: timeOf(this, p), playing: false, ended: false });
+            hold(this);
+        }
+        return nativePause.call(this);
+    };
     document.addEventListener(SEND, (e) => {
         const el = e.target;
         if (!(el instanceof HTMLMediaElement)) return;
@@ -106,6 +140,8 @@
 
 // Keep the site's streaming code in the engine. Its SourceBuffer commands
 // travel with document changes and run against the viewer's native MSE API.
+// ManagedMediaSource is the same relay, with startstreaming/endstreaming
+// driven by how far the person's player is buffered (HLS.js / dash.js).
 (() => {
     const prefix = "blob:tabtop-media/";
     const queue = [];
@@ -114,6 +150,8 @@
     const nativeURL = URL.createObjectURL;
     const nativeRevoke = URL.revokeObjectURL;
     const positions = new Map();
+    const STREAM_LOW = 2;   // seconds ahead: ask the page for more
+    const STREAM_HIGH = 5;  // seconds ahead: enough for now
 
     function enqueue(source, command) {
         const size = command.data?.length || 0;
@@ -196,6 +234,8 @@
         activeSourceBuffers = this.sourceBuffers;
         length = NaN;
         nextBuffer = 0;
+        managed = false;
+        streaming = false;
         static isTypeSupported(mime) { return /^(audio|video)\/(mp4|webm)(?:;|$)/i.test(mime); }
         get duration() { return this.length; }
         set duration(value) {
@@ -218,16 +258,29 @@
         }
         endOfStream() {
             this.readyState = "ended";
+            this.setStreaming(false);
             enqueue(this, { op: "end" });
             this.dispatchEvent(new Event("sourceended"));
         }
+        setStreaming(on) {
+            if (!this.managed || this.streaming === !!on) return;
+            this.streaming = !!on;
+            this.dispatchEvent(new Event(on ? "startstreaming" : "endstreaming"));
+        }
+    }
+
+    // Same remoting as MediaSource, with managed streaming signals for HLS.js.
+    class RelayManagedSource extends RelaySource {
+        managed = true;
+        static isTypeSupported(mime) { return RelaySource.isTypeSupported(mime); }
     }
 
     // EventTarget subclasses do not inherit the Web IDL on* properties
     // that a site's player can use in place of addEventListener.
     for (const [prototype, events] of [
         [RelaySource.prototype, ["sourceopen", "sourceended", "sourceclose"]],
-        [RelayBuffer.prototype, ["updatestart", "update", "updateend", "error", "abort"]],
+        [RelayManagedSource.prototype, ["sourceopen", "sourceended", "sourceclose", "startstreaming", "endstreaming"]],
+        [RelayBuffer.prototype, ["updatestart", "update", "updateend", "error", "abort", "bufferedchange"]],
     ]) {
         for (const type of events) {
             const handlers = new WeakMap();
@@ -249,6 +302,13 @@
     }
     globalThis.MediaSource = RelaySource;
     globalThis.SourceBuffer = RelayBuffer;
+    // Always our relay (never native, never undefined): dash.js constructs
+    // after only an `in` check; HLS.js prefers this over MediaSource.
+    try {
+        Object.defineProperty(globalThis, "ManagedMediaSource", { configurable: true, enumerable: false, writable: true, value: RelayManagedSource });
+    } catch {
+        try { globalThis.ManagedMediaSource = RelayManagedSource; } catch { /* read-only native */ }
+    }
     URL.createObjectURL = function (value) {
         if (!(value instanceof RelaySource)) return nativeURL.call(this, value);
         const url = prefix + value.id;
@@ -262,7 +322,9 @@
     };
 
     const attached = new WeakMap();
-    const sourceURL = el => el.getAttribute("src") ?? el.querySelector(":scope > source[src]")?.getAttribute("src");
+    // (As a browser picks it: its own src if it has one, empty or not;
+    // else its first <source> with one that isn't empty. As goagent.js's.)
+    const sourceURL = (el) => el.hasAttribute("src") ? el.getAttribute("src") || null : el.querySelector(':scope > source[src]:not([src=""])')?.getAttribute("src") ?? null;
     const nativeBuffered = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "buffered");
     if (nativeBuffered?.get && nativeBuffered.configurable) {
         Object.defineProperty(HTMLMediaElement.prototype, "buffered", { ...nativeBuffered, get() {
@@ -270,6 +332,14 @@
             return source && sourceURL(this) === prefix + source.id ? timeRanges(source.ranges) : nativeBuffered.get.call(this);
         } });
     }
+    const aheadOf = (ranges, t) => {
+        const list = Array.isArray(ranges) ? ranges : [];
+        for (const r of list) {
+            const a = Number(r?.[0]), b = Number(r?.[1]);
+            if (Number.isFinite(a) && Number.isFinite(b) && a <= t + 0.5 && b > t) return b - t;
+        }
+        return 0;
+    };
     document.addEventListener("__tabtop_media", (e) => {
         const source = attached.get(e.target);
         if (!source || sourceURL(e.target) !== prefix + source.id) return;
@@ -278,8 +348,21 @@
         if (play?.stream !== source.id) return;
         source.ranges = play.buffered;
         for (const buffer of source.sourceBuffers) {
+            const prev = buffer.ranges;
             buffer.ranges = play.buffers[buffer.index];
             if (play.ack === buffer.index) buffer.finish();
+            // HLS.js ManagedMediaSource path watches bufferedchange.
+            if (source.managed && prev !== buffer.ranges) {
+                const ev = new Event("bufferedchange");
+                ev.addedRanges = [];
+                ev.removedRanges = [];
+                buffer.dispatchEvent(ev);
+            }
+        }
+        if (source.managed && source.readyState === "open") {
+            const ahead = aheadOf(play.buffered, Number(play.t) || 0);
+            if (ahead < STREAM_LOW) source.setStreaming(true);
+            else if (ahead > STREAM_HIGH) source.setStreaming(false);
         }
     }, true);
     function attach(el) {
@@ -289,6 +372,7 @@
         if (old) {
             attached.delete(el);
             old.readyState = "closed";
+            old.setStreaming(false);
             old.dispatchEvent(new Event("sourceclose"));
         }
         const source = positions.get(url);
@@ -296,7 +380,10 @@
         attached.set(el, source);
         source.readyState = "open";
         setTimeout(() => {
-            if (attached.get(el) === source && source.readyState === "open") source.dispatchEvent(new Event("sourceopen"));
+            if (attached.get(el) !== source || source.readyState !== "open") return;
+            source.dispatchEvent(new Event("sourceopen"));
+            // Ask the page for media at once (ManagedMediaSource / HLS.js).
+            source.setStreaming(true);
         }, 0);
     }
     new MutationObserver((records) => {
@@ -318,11 +405,32 @@
         attach(this);
         if (!sourceURL(this)?.startsWith(prefix)) return load.call(this);
     };
+    // asked: played by the page (its play(), here) and not paused since.
+    const asked = new WeakSet();
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
         if (!sourceURL(this)?.startsWith(prefix)) return play.call(this);
         attach(this);
+        asked.add(this);
+        this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { detail: "release" }));
         this.dispatchEvent(new Event("play"));
         return Promise.resolve();
+    };
+    // play() above never starts the engine's element, so its pause() is a
+    // no-op and fires nothing. When remoted playback already says playing,
+    // the pause wrapper above handles it; otherwise still fire pause so the
+    // agent stops the person's player (Shorts' pause before media-meta lands).
+    // Played by the page, and paused before the person's player said it
+    // plays: pause fired (once; a task later, as a browser's), so the agent
+    // stops that player, and its reports till then aren't taken (hold).
+    // Already paused and not asked to play since: nothing, as a browser.
+    const pause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.pause = function () {
+        if (!sourceURL(this)?.startsWith(prefix)) return pause.call(this);
+        const wanted = asked.delete(this);
+        if (!this.paused) return pause.call(this);
+        if (!wanted) return;
+        this.dispatchEvent(new CustomEvent("__tabtop_media_hold"));
+        setTimeout(() => this.dispatchEvent(new Event("pause")), 0);
     };
 })();

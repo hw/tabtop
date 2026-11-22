@@ -102,10 +102,10 @@ func goResourceLimit(kind string) int64 {
 // decompressing gzip as it reads: the limits count what's decompressed, so
 // a small compressed response can't become a huge one.
 func newGoResourceClient(allow func(netip.Addr) bool) *http.Client {
-	client := newFetchClient(allow)
+	client := newGoFetchClient(allow)
 	transport := client.Transport.(*http.Transport).Clone()
 	transport.DisableCompression = false
-	client.Transport = transport
+	client.Transport = goDNSTransport(transport) // (a copy: its idle connections let go as names change too)
 	redirects := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if next.URL.User != nil || next.URL.Scheme != "http" && next.URL.Scheme != "https" || !goPortAllowed(next.URL) || goBlockedHost(next.URL.Hostname()) {
@@ -161,6 +161,7 @@ type goFetched struct {
 // kind's types (a picture labelled as just bytes looked at, as browsers
 // do), waiting for a slot of the session's share and of all.
 func goFetchResource(ctx context.Context, client *http.Client, session, kind, raw, userAgent string, from *goFrom) goFetched {
+	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
 	fail := func(m string) goFetched { return goFetched{err: errors.New(m)} }
 	limit := goResourceLimit(kind)
 	if limit == 0 {

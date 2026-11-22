@@ -114,7 +114,7 @@ func (c goCountedBody) Read(p []byte) (int, error) {
 }
 
 type goProxy struct {
-	dialer  *net.Dialer
+	dialer  *goDialer
 	forward *httputil.ReverseProxy
 	ports   map[string]bool
 	auth    string // the Proxy-Authorization it needs; "" for none (a private socket)
@@ -131,6 +131,10 @@ type goProxy struct {
 	page atomic.Pointer[string]
 	// onAd is told each host refused as an ad's (the tab counts them).
 	onAd atomic.Pointer[func(host string)]
+	// certs are the tab's certificate exceptions (gocert.go): while the
+	// engine ignores certificate errors, others' certificates are checked
+	// here, a tunnel to one not sound refused.
+	certs atomic.Pointer[goCertExceptions]
 }
 
 // setPage says the engine's page is at host, from now.
@@ -159,7 +163,7 @@ func (p *goProxy) adBlocked(host string) bool {
 // needed.
 func newGoProxy(allow func(netip.Addr) bool, user, password string) *goProxy {
 	p := &goProxy{
-		dialer: fetchDialer(allow),
+		dialer: newGoDialer(allow),
 		ports:  goProxyPorts,
 		slots:  make(chan struct{}, goProxyConns),
 		budget: newGoProxyBudget(),
@@ -188,7 +192,7 @@ func newGoProxy(allow func(netip.Addr) bool, user, password string) *goProxy {
 			res.Header.Del(goRefusedHeader) // only the proxy says it refused
 			return nil
 		},
-		Transport: &http.Transport{
+		Transport: goDNSTransport(&http.Transport{
 			Proxy:                 nil,
 			DialContext:           p.dialer.DialContext,
 			ForceAttemptHTTP2:     true,
@@ -199,8 +203,12 @@ func newGoProxy(allow func(netip.Addr) bool, user, password string) *goProxy {
 			DisableCompression:  true,
 			MaxIdleConnsPerHost: 4,
 			IdleConnTimeout:     30 * time.Second,
-		},
+		}),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, errGoDNS) {
+				goRefuse(w, "dns", http.StatusBadGateway) // (the name not logged)
+				return
+			}
 			if errors.Is(err, errFetchAddress) {
 				p.logf("go: refused %s", r.URL.Host)
 				goRefuse(w, "address", http.StatusForbidden)
@@ -277,8 +285,35 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 		goRefuse(w, "ads", http.StatusForbidden)
 		return
 	}
+	// While the engine ignores certificate errors (its page an exception's:
+	// gocert.go), it reaches no other host's HTTPS: that host's certificate
+	// can't be checked here (not without intercepting it).
+	if p.certs.Load().refuses(host) {
+		p.logf("go: refused %s (the engine ignoring certificate errors, for an exception's)", host)
+		goRefuse(w, "cert", http.StatusBadGateway)
+		return
+	}
+	// HTTPS: its certificate looked up meanwhile, revoked refused
+	// (gorevoke.go).
+	// (Not a host the tab's continued to past the warning: gocert.go.)
+	var revoked chan bool
+	if port == "443" && !p.certs.Load().allows(host) {
+		revoked = make(chan bool, 1)
+		go func() { revoked <- goRevoked.revokedHost(r.Context(), host, p.dialer.DialContext) }()
+	}
 	up, err := p.dialer.DialContext(r.Context(), "tcp", r.Host)
+	if err == nil && revoked != nil && <-revoked {
+		up.Close()
+		p.logf("go: refused %s (its certificate revoked by its issuer)", host)
+		p.certs.Load().refusedRevoked(host) // (the tab warns of it: gobrowser.go)
+		goRefuse(w, "revoked", http.StatusBadGateway)
+		return
+	}
 	if err != nil {
+		if errors.Is(err, errGoDNS) {
+			goRefuse(w, "dns", http.StatusBadGateway) // (the name not logged)
+			return
+		}
 		if errors.Is(err, errFetchAddress) {
 			p.logf("go: refused %s", host)
 			goRefuse(w, "address", http.StatusForbidden)
@@ -386,6 +421,9 @@ var goRefusals = map[string]string{
 	"blocked":     "This site is blocked in the browser's settings (Site controls: the button at the address’s start).",
 	"ads":         "Blocked as an ad or tracker (☰ → Settings → Ad blocking).",
 	"videos":      "Videos from this host are blocked (Site controls: the button at the address’s start).",
+	"cert":        "Not reached while this tab ignores certificate errors for a site you continued to.",
+	"dns":         "The site's name couldn't be found by the DNS over HTTPS server (Settings).",
+	"revoked":     "This site's certificate has been revoked by its issuer, so it can't be trusted: the browser won't open it.",
 }
 
 // goRefuse answers with the proxy's refusal, for why.

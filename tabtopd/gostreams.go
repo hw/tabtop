@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/grafov/m3u8"
 )
@@ -52,6 +53,12 @@ type goStreams struct {
 	// what's offered is kept (a player's ?t=, or tracking taken out of the
 	// address, is the same video) till another stream's offered.
 	stale bool
+	// gone: the last place's masters and their playlists, when another's
+	// took their place: read again (a live player still polling), not
+	// offered as streams of their own. True for those offered (a master):
+	// once the page goes elsewhere again, they may be (Back to it); its
+	// playlists stay gone till it is.
+	gone map[string]bool
 }
 
 // goStreamAbout is what a stream offered is: its best picture's height
@@ -69,7 +76,12 @@ func (a goStreamAbout) timed() bool { return a.Duration > 0 || a.Live }
 type goStreamSeen struct {
 	id, url string
 	gen     int
+	at      time.Time // when its response came
 }
+
+// goStreamPendingFor is how long a manifest's response waits to load: one
+// whose loading's end never came (its event dropped) is let go after it.
+const goStreamPendingFor = time.Minute
 
 // at has s be the page at gen's, from scratch if it was another's (s.mu
 // held).
@@ -77,7 +89,7 @@ func (s *goStreams) at(gen int) {
 	if s.gen == gen && s.pending != nil {
 		return
 	}
-	s.gen, s.pending, s.found, s.about, s.parts, s.stale = gen, map[string]goStreamSeen{}, nil, map[string]goStreamAbout{}, map[string]string{}, false
+	s.gen, s.pending, s.found, s.about, s.parts, s.stale, s.gone = gen, map[string]goStreamSeen{}, nil, map[string]goStreamAbout{}, map[string]string{}, false, nil
 }
 
 // goManifestResponse is whether a response is a stream's manifest, by its
@@ -96,12 +108,23 @@ func (b *goBrowser) streamSeen(id, u string) {
 	s.at(b.gen)
 	// Offered already, or part of one that is (a live playlist asked for
 	// again every few seconds): not read again; but a part is, until its
-	// master's length is known from one.
+	// master's length is known from one (and while its master's offered:
+	// one let go, past maxGoStreams, has nothing to learn).
 	master, part := s.parts[u]
-	if id == "" || part && s.about[master].timed() || slices.Contains(s.found, u) || len(s.pending) >= maxGoStreamsPending {
+	if _, gone := s.gone[u]; id == "" || gone || part && (s.about[master].timed() || !slices.Contains(s.found, master)) || slices.Contains(s.found, u) {
 		return
 	}
-	s.pending[id] = goStreamSeen{id: id, url: u, gen: b.gen}
+	if len(s.pending) >= maxGoStreamsPending {
+		for k, seen := range s.pending {
+			if time.Since(seen.at) > goStreamPendingFor {
+				delete(s.pending, k)
+			}
+		}
+		if len(s.pending) >= maxGoStreamsPending {
+			return
+		}
+	}
+	s.pending[id] = goStreamSeen{id: id, url: u, gen: b.gen, at: time.Now()}
 }
 
 // streamFailed is a request failed (the tab's event loop): a manifest
@@ -128,7 +151,21 @@ func (b *goBrowser) streamsLeft() {
 	s.mu.Lock()
 	s.at(b.gen)
 	s.stale = len(s.found) > 0
+	// (Gone elsewhere again: the streams let go before may be this place's,
+	// gone back to; their playlists, polled by a player still, aren't
+	// streams of their own: gone till their master's offered again.)
+	for u, offered := range s.gone {
+		if offered {
+			delete(s.gone, u)
+		}
+	}
+	stale := s.stale
 	s.mu.Unlock()
+	// The page told: the streams it has are the last place's, perhaps (a
+	// player's own buffer, there, the likelier).
+	if stale {
+		b.send(map[string]any{"type": "go-manifests-stale", "gen": b.gen})
+	}
 }
 
 // streamLoaded is a request finished (the tab's event loop): a manifest
@@ -213,9 +250,25 @@ func (b *goBrowser) offerStream(m goStreamSeen, body []byte) {
 	// video's, in place of those offered before.
 	// (The page told once s.mu's let go, before what's offered now.)
 	cleared := false
-	if _, part := s.parts[m.url]; s.stale && !part && !slices.Contains(s.found, m.url) {
+	_, wasGone := s.gone[m.url]
+	if _, part := s.parts[m.url]; s.stale && !part && !slices.Contains(s.found, m.url) && !wasGone {
+		if s.gone == nil || len(s.gone) > 512 {
+			s.gone = map[string]bool{}
+		}
+		for _, u := range s.found {
+			s.gone[u] = true
+		}
+		for u := range s.parts {
+			if _, offered := s.gone[u]; !offered {
+				s.gone[u] = false
+			}
+		}
 		s.found, s.about, s.parts, s.stale = nil, map[string]goStreamAbout{}, map[string]string{}, false
 		cleared = true
+	}
+	if _, gone := s.gone[m.url]; gone {
+		s.mu.Unlock()
+		return // (the last place's, read again)
 	}
 	unlock := func() {
 		s.mu.Unlock()
@@ -227,6 +280,9 @@ func (b *goBrowser) offerStream(m goStreamSeen, body []byte) {
 		if r, err := u.Parse(part); part != "" && err == nil {
 			if _, had := s.parts[r.String()]; !had {
 				s.parts[r.String()] = m.url
+			}
+			if !s.gone[r.String()] {
+				delete(s.gone, r.String()) // (its again, its master offered)
 			}
 		}
 	}
@@ -250,8 +306,14 @@ func (b *goBrowser) offerStream(m goStreamSeen, body []byte) {
 	// The newest kept: past maxGoStreams, the oldest goes (as the page's
 	// list does).
 	if len(s.found) >= maxGoStreams {
-		delete(s.about, s.found[0])
+		gone := s.found[0]
+		delete(s.about, gone)
 		s.found = slices.Delete(s.found, 0, 1)
+		for part, of := range s.parts {
+			if of == gone {
+				delete(s.parts, part)
+			}
+		}
 	}
 	s.found = append(s.found, m.url)
 	s.about[m.url] = about
@@ -374,7 +436,7 @@ func goStreamHeight(resolution string) int {
 func (b *goBrowser) resendStreams() {
 	s := &b.streams
 	s.mu.Lock()
-	found, gen := slices.Clone(s.found), s.gen
+	found, gen, stale := slices.Clone(s.found), s.gen, s.stale
 	about := make([]goStreamAbout, len(found))
 	for i, u := range found {
 		about[i] = s.about[u]
@@ -385,5 +447,8 @@ func (b *goBrowser) resendStreams() {
 	}
 	for i, u := range found {
 		b.send(goManifestMessage(gen, u, about[i]))
+	}
+	if stale && len(found) > 0 {
+		b.send(map[string]any{"type": "go-manifests-stale", "gen": gen}) // (the page's moved in itself since)
 	}
 }

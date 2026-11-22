@@ -154,7 +154,8 @@ func (g *server) routeGo(c *tunnelCall) {
 	}
 	b := newGoBrowser(e, cdp, page, target)
 	onAd := b.adCounted
-	e.proxy.onAd.Store(&onAd) // counted for the page (goadblock.go)
+	e.proxy.onAd.Store(&onAd)    // counted for the page (goadblock.go)
+	e.proxy.certs.Store(b.certs) // its certificate exceptions' guard (gocert.go)
 	b.resources, b.session = g.goResources, c.session
 	// The account's cookies, given before anything's loaded; what the
 	// tab's sites set taken back as it closes (gocookies.go).

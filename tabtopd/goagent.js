@@ -83,7 +83,10 @@
         let tellingPlay = false;
         for (const type of ["play", "pause", "ended", "emptied"]) {
             document.addEventListener(type, (e) => {
-                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.set(e.target, type === "play" || !e.target.paused && !e.target.ended);
+                // Trust the event: gomedia.js may still mirror the person's
+                // player as playing when the page has just paused (MSE stub),
+                // and reading paused then would keep the underlaid player on.
+                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.set(e.target, type === "play");
             }, true);
         }
         let lastURL = "";
@@ -369,8 +372,12 @@
         const canvasReplies = new WeakMap();
         const dirtyCanvases = new Set();
         const canvasLater = new Set();
+        const canvasWhole = new Set();  // of those, the ones to be read whole (left out of a whole read)
         // WebGL canvases sent (their logs), to say which have left the
         // document: the server counts a page's WebGL canvases (goGLStreamsMax).
+        // WebGL canvases taken out of the page (said gone: the server's let
+        // their stream go), to be read whole if they're put back.
+        const glAway = new Set();
         const glSent = new Map();  // canvas -> its number  // WebGL canvases left out of a batch, for the next
         let canvasReads = 0, canvasReadBytes = 0;
         let canvasGLReadBytes = 0, canvasGLSnapshotBytes = 0;
@@ -440,20 +447,40 @@
         // full; else what's new since the last read) or a 2D one's PNG. A
         // WebGL log that doesn't fit this batch is given back to the page's
         // hook (gogl.js) to be read again, and, with later, comes next batch.
+        // What a batch's canvases may come to: in another site's frame
+        // (goframes.go: its whole document read within 2 MB), less.
+        // (A frame's read again without them, its whole too much for the
+        // limit: goframes.go sets __tabtopFrameCanvasCap to 0 for that read.)
+        const canvasCapNow = () => globalThis.__tabtopFrameWorld !== true ? 4 << 20
+            : Number.isInteger(globalThis.__tabtopFrameCanvasCap) ? globalThis.__tabtopFrameCanvasCap : 1 << 20;
         function canvasPixels(el, full = false) {
             if (!isCanvas(el)) return { e: "unsupported" };
-            if (++canvasReads > 32) return full ? { e: "large" } : { later: true };
+            if (++canvasReads > 32) {
+                // Past what's read at once: read later (with the changes
+                // after), not left unavailable, as one drawn once never asks;
+                // whole, if it was to be (canvasWhole).
+                canvasLater.add(el);
+                if (full) canvasWhole.add(el);
+                return full ? { e: "large" } : { later: true };
+            }
             canvasReplies.delete(el);
             try {
                 tell(el, "__tabtop_webgl_capture", full ? "full" : "delta");
                 const gl = canvasReplies.get(el);
                 if (gl?.g) {
                     const actualFull = full || gl.r === true;
-                    if (actualFull ? canvasGLSnapshotBytes + gl.g.length > (4 << 20) : canvasGLReadBytes + gl.g.length > (3 << 20)) {
+                    // A batch's WebGL logs: 3 MB of updates, 4 MB of whole
+                    // ones; the first of either up to 4 MB (a log's most),
+                    // so one never waits for good. (A frame's: a quarter.)
+                    const spent = actualFull ? canvasGLSnapshotBytes : canvasGLReadBytes;
+                    const canvasCap = canvasCapNow();
+                    if (spent + gl.g.length > (actualFull ? canvasCap : canvasCap * 3 / 4) && !(spent === 0 && gl.g.length <= canvasCap)) {
+                        // Given back to gogl.js (whole, if it was), and read
+                        // with the next changes; a whole one shown unavailable
+                        // till then, so read whole then too (canvasWhole).
                         tell(el, "__tabtop_webgl_undo", actualFull ? "full" : "delta");
-                        // Whole, it's sent with the next changes if it would fit them.
-                        if (gl.g.length > (3 << 20)) return { e: "large" };
-                        if (full) canvasLater.add(el);
+                        canvasLater.add(el);
+                        if (full) canvasWhole.add(el);
                         return full ? { e: "large" } : { later: true };
                     }
                     canvasGLReadBytes += gl.g.length;
@@ -467,7 +494,11 @@
             const result = canvasReplies.get(el) ?? { e: "unsupported" };
             if (result.p) {
                 canvasReadBytes += result.p.length;
-                if (canvasReadBytes > 4 << 20) return { e: "large" };
+                const canvasCap = canvasCapNow();
+                if (canvasReadBytes > canvasCap) {
+                    if (full && result.p.length <= canvasCap * 3 / 4) canvasLater.add(el);  // (with the changes after)
+                    return { e: "large" };
+                }
             }
             return result;
         }
@@ -520,7 +551,10 @@
         // Media children are represented by one player in the viewer. Send
         // its selected URL even when only a child source's attribute changed.
         const mediaURLs = new WeakMap();
-        const mediaURL = el => el.getAttribute("src") ?? el.querySelector(":scope > source[src]")?.getAttribute("src") ?? null;
+        // As a browser picks its file: its own src if it has one (empty:
+        // nothing to play), else its first <source> with one that isn't
+        // empty (a placeholder <source src=""> passed over). As gomedia.js's.
+        const mediaURL = (el) => el.hasAttribute("src") ? el.getAttribute("src") || null : el.querySelector(':scope > source[src]:not([src=""])')?.getAttribute("src") ?? null;
 
         function ser(n, depth) {
             if (++count > 400000) throw new Error("too many nodes");
@@ -648,7 +682,9 @@
             canvasGLSnapshotBytes = 0;
             dirtyCanvases.clear();
             canvasLater.clear();
+            canvasWhole.clear();
             glSent.clear();
+            glAway.clear();
             for (const frame of frames.values()) frame.observer?.disconnect();
             frames.clear();
             observer.disconnect();
@@ -730,8 +766,13 @@
             // their parent's children.
             const before = next;
             const old = (n) => known(n) && ids.get(n) < before;
+            // (A frame's in the page's document, or in a frame's of it that's
+            // still there: a same-origin frame's own frames are read too.)
+            // (Asked as each is come to: a frame read again in this loop has
+            // its own frames' document anew.)
+            const live = (doc) => doc === document || [...frames.values()].some((f) => f.child === doc);
             for (const [el, state] of frames) {
-                if (!el.isConnected || el.ownerDocument !== document) {
+                if (!el.isConnected || !live(el.ownerDocument)) {
                     state.observer?.disconnect();
                     frames.delete(el);
                     continue;
@@ -740,6 +781,20 @@
                 try { child = el.contentDocument; } catch { /* inaccessible origin */ }
                 if (child !== state.child || state.dirty || state.observer?.takeRecords().length ||
                     !state.observer && child?.documentElement || framePrintChanged(state)) {
+                    // A frame in a frame: the page's own frame it's in read
+                    // again, whole (its copy holds this one's).
+                    let top = el;
+                    while (top.ownerDocument !== document) {
+                        const up = [...frames].find(([, f]) => f.child === top.ownerDocument)?.[0];
+                        if (!up) break;
+                        top = up;
+                    }
+                    if (top !== el) {
+                        if (top.ownerDocument === document && frames.has(top)) {
+                            ops.push({ o: "c", i: id(top), c: frameKids(top, frames.get(top).depth) });
+                        }
+                        continue;
+                    }
                     const c = frameKids(el, state.depth);
                     // A frame this world can't read (another origin's) is read
                     // in a world of its own (goframes.go), which sends it: an
@@ -823,6 +878,13 @@
                 }
             }
             let canvasFrames = 0;
+            // Put back: whole (its stream's gone), drawn again or not.
+            for (const el of glAway) {
+                if (!el.isConnected || !known(el)) continue;
+                glAway.delete(el);
+                canvasWhole.add(el);
+                if (dirtyCanvases.size < 64) dirtyCanvases.add(el);
+            }
             for (const el of canvasLater) if (dirtyCanvases.size < 64) dirtyCanvases.add(el);
             canvasLater.clear();
             for (const el of dirtyCanvases) {
@@ -831,7 +893,7 @@
                 if (!el.isConnected || !known(el)) continue;
                 const path = framePath(el);
                 if (!path) continue;
-                const pixels = canvasPixels(el);
+                const pixels = canvasPixels(el, canvasWhole.delete(el));
                 const where = path.length ? { path } : {};
                 if (pixels.later) canvasLater.add(el);
                 else if (pixels.g) ops.push({ o: "g", i: ids.get(el), v: pixels.g, w: pixels.w, h: pixels.h, r: pixels.r, version: pixels.version, attributes: pixels.attributes, ...where });
@@ -859,7 +921,13 @@
             if (!eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
             seq++;
             const glGone = [];
-            for (const [el, i] of glSent) if (!el.isConnected) { glSent.delete(el); glGone.push(i); }
+            for (const [el, i] of glSent) {
+                if (el.isConnected) continue;
+                glSent.delete(el);
+                glGone.push(i);
+                if (glAway.size >= 64) glAway.delete(glAway.values().next().value);
+                glAway.add(el);
+            }
             return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}) });
         }
 

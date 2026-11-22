@@ -188,9 +188,11 @@ func TestGoStreamsKeptOverAddressChange(t *testing.T) {
 	b.offerStream(goStreamSeen{id: "1", url: "https://vod.example/one/master.m3u8", gen: 1}, nil)
 	w.msg = nil
 	b.streamsLeft() // ?t=5
-	if !slices.Contains(b.streams.found, "https://vod.example/one/master.m3u8") || len(w.msg) != 0 {
+	// Kept, the page told only that they may be the last place's.
+	if !slices.Contains(b.streams.found, "https://vod.example/one/master.m3u8") || len(w.msg) != 1 || !strings.Contains(string(w.msg[0]), `"go-manifests-stale"`) {
 		t.Fatalf("after the address changed: kept %v, said %q", b.streams.found, w.msg)
 	}
+	w.msg = nil
 	// Asked for again (a live playlist's reload): still not read again.
 	b.streamSeen("again", "https://vod.example/one/master.m3u8")
 	if _, ok := b.streams.pending["again"]; ok {
@@ -204,5 +206,105 @@ func TestGoStreamsKeptOverAddressChange(t *testing.T) {
 	}
 	if len(w.msg) != 2 || !strings.Contains(string(w.msg[0]), `"go-manifests-clear"`) || !strings.Contains(string(w.msg[1]), "two/master") {
 		t.Errorf("said %q", w.msg)
+	}
+}
+
+// TestGoStreamsOrphanedPending: manifests whose loading's end never came
+// (its event dropped) don't hold every place for good: let go after
+// goStreamPendingFor, the next taken.
+func TestGoStreamsOrphanedPending(t *testing.T) {
+	b := &goBrowser{gen: 1}
+	for i := range maxGoStreamsPending {
+		b.streamSeen(fmt.Sprint("lost", i), fmt.Sprintf("https://v.example/%d.m3u8", i))
+	}
+	b.streamSeen("soon", "https://v.example/soon.m3u8")
+	if _, ok := b.streams.pending["soon"]; ok {
+		t.Fatal("taken past the limit, the others still waiting")
+	}
+	for k, seen := range b.streams.pending {
+		seen.at = seen.at.Add(-2 * goStreamPendingFor)
+		b.streams.pending[k] = seen
+	}
+	b.streamSeen("next", "https://v.example/next.m3u8")
+	if _, ok := b.streams.pending["next"]; !ok || len(b.streams.pending) != 1 {
+		t.Fatalf("the next manifest refused, the orphaned ones kept (%d)", len(b.streams.pending))
+	}
+}
+
+// TestGoStreamsOldPartsAfterNext: after a single-page site's next video is
+// offered, the last one's playlists read again (a live player polling)
+// aren't offered as streams of their own (video without its sound).
+func TestGoStreamsOldPartsAfterNext(t *testing.T) {
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	master := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nvideo720.m3u8\n")
+	b.streamSeen("1", "https://live.example/one/master.m3u8")
+	b.offerStream(goStreamSeen{id: "1", url: "https://live.example/one/master.m3u8", gen: 1}, master)
+	b.streamsLeft()
+	b.streamSeen("2", "https://live.example/two/master.m3u8")
+	b.offerStream(goStreamSeen{id: "2", url: "https://live.example/two/master.m3u8", gen: 1}, master)
+	b.streamSeen("3", "https://live.example/one/video720.m3u8")
+	if _, ok := b.streams.pending["3"]; ok {
+		t.Error("the last video's variant playlist, read again, taken for a stream of its own")
+	}
+}
+
+// TestGoStreamsBackToOld: back to a video whose stream was let go (Back,
+// after a single-page site's next): its master read again is offered.
+func TestGoStreamsBackToOld(t *testing.T) {
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	master := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nvideo720.m3u8\n")
+	b.streamSeen("1", "https://vod.example/one/master.m3u8")
+	b.offerStream(goStreamSeen{id: "1", url: "https://vod.example/one/master.m3u8", gen: 1}, master)
+	b.streamsLeft() // to the next video
+	b.streamSeen("2", "https://vod.example/two/master.m3u8")
+	b.offerStream(goStreamSeen{id: "2", url: "https://vod.example/two/master.m3u8", gen: 1}, master)
+	b.streamsLeft() // Back
+	b.streamSeen("3", "https://vod.example/one/master.m3u8")
+	if _, ok := b.streams.pending["3"]; !ok {
+		t.Fatal("the first video's stream, gone back to, never offered again")
+	}
+}
+
+// TestGoStreamsOldPartsAfterAddressChange: after a single-page site's next
+// video, an address rewritten again (replaceState: a ?t=, tracking taken
+// out) doesn't let the last video's playlists, still polled, take its place.
+func TestGoStreamsOldPartsAfterAddressChange(t *testing.T) {
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	master := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nvideo720.m3u8\n")
+	variant := []byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg1.ts\n")
+	b.streamSeen("1", "https://live.example/one/master.m3u8")
+	b.offerStream(goStreamSeen{id: "1", url: "https://live.example/one/master.m3u8", gen: 1}, master)
+	b.streamsLeft()
+	b.streamSeen("2", "https://live.example/two/master.m3u8")
+	b.offerStream(goStreamSeen{id: "2", url: "https://live.example/two/master.m3u8", gen: 1}, master)
+	b.streamsLeft() // replaceState: the same video
+	b.streamSeen("3", "https://live.example/one/video720.m3u8")
+	b.offerStream(goStreamSeen{id: "3", url: "https://live.example/one/video720.m3u8", gen: 1}, variant)
+	if got := b.streams.found; len(got) != 1 || got[0] != "https://live.example/two/master.m3u8" {
+		t.Fatalf("offered %v, want the current video's master alone", got)
+	}
+}
+
+// TestGoStreamsBackToOldParts: back to a video let go, its master offered
+// again, its playlists are its again (its length learned from one).
+func TestGoStreamsBackToOldParts(t *testing.T) {
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	master := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nvideo720.m3u8\n")
+	b.offerStream(goStreamSeen{id: "1", url: "https://vod.example/one/master.m3u8", gen: 1}, master)
+	b.streamsLeft()
+	b.offerStream(goStreamSeen{id: "2", url: "https://vod.example/two/master.m3u8", gen: 1}, master)
+	b.streamsLeft() // Back
+	b.offerStream(goStreamSeen{id: "3", url: "https://vod.example/one/master.m3u8", gen: 1}, master)
+	b.streamSeen("4", "https://vod.example/one/video720.m3u8")
+	if _, ok := b.streams.pending["4"]; !ok {
+		t.Fatal("the first video's playlist, its master offered again, not read for its length")
 	}
 }

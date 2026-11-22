@@ -9,6 +9,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,8 +17,11 @@ import (
 	"log"
 	"maps"
 	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -40,8 +44,14 @@ type goSiteSettings struct {
 	theme        map[string]string
 	themeDefault string
 	// Search engine for words typed in the address bar (go.js; chosen in
-	// Settings). An id from goSearchEngines; default duckduckgo.
-	searchEngine string
+	// Settings). An id from goSearchEngines, or "custom" (searchURL: an
+	// address with %s for the words, goSearchTemplate); default duckduckgo.
+	searchEngine, searchURL string
+	// DNS over HTTPS (godoh.go; Settings): "" (off), a goDoHPresets name,
+	// or "custom" (dohURL).
+	doh, dohURL string
+	// Local DNS records (gohosts.go; Settings): names at addresses given.
+	hosts []goHostRecord
 }
 
 type goSiteSettingsFile struct {
@@ -58,6 +68,10 @@ type goSiteSettingsFile struct {
 	Theme        map[string]string `json:"theme,omitempty"`
 	ThemeDefault string            `json:"themeDefault,omitempty"`
 	SearchEngine string            `json:"searchEngine,omitempty"`
+	SearchURL    string            `json:"searchURL,omitempty"`
+	DoH          string            `json:"doh,omitempty"`
+	DoHURL       string            `json:"dohURL,omitempty"`
+	Hosts        []goHostRecord    `json:"hosts,omitempty"`
 }
 
 // goSearchEngines are the address bar's search engines (Settings; go.js
@@ -145,7 +159,109 @@ func newGoSiteSettings(file string) *goSiteSettings {
 	if goSearchEngines[f.SearchEngine] {
 		s.searchEngine = f.SearchEngine
 	}
+	if t, err := goSearchTemplate(f.SearchURL); err == nil {
+		s.searchURL = t
+		if f.SearchEngine == "custom" {
+			s.searchEngine = "custom"
+		}
+	}
+	if _, preset := goDoHPresets[f.DoH]; preset {
+		s.doh = f.DoH
+	} else if u, err := goDoHEndpoint(f.DoHURL); f.DoH == "custom" && err == nil {
+		s.doh, s.dohURL = "custom", u
+	}
+	// Each record kept that can be (one that can't isn't the end of the
+	// others, nor are they of it), as many as may be.
+	for _, r := range f.Hosts {
+		kept, err := goHostRecords(append(slices.Clone(s.hosts), r))
+		if err != nil {
+			log.Printf("go: site settings: a local DNS record left out: %v", err)
+			continue
+		}
+		s.hosts = kept
+	}
 	return s
+}
+
+// setSearchCustom has the address bar search at template (checked by
+// goSearchTemplate).
+func (s *goSiteSettings) setSearchCustom(template string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searchEngine, s.searchURL = "custom", template
+	s.save()
+}
+
+// goSearchTemplate is raw if it's a search address: http or https, a host,
+// no name and password, and %s once, a query parameter's whole value
+// (where the words go; go.js finds them there again).
+func goSearchTemplate(raw string) (string, error) {
+	t := strings.TrimSpace(raw)
+	if t == "" || len(t) > 2048 {
+		return "", errors.New("Give the search address, with %s where the words go.")
+	}
+	if strings.Count(t, "%s") != 1 {
+		return "", errors.New("Put %s once in the search address, where the words go.")
+	}
+	const words = "TABTOPWORDS"
+	u, err := url.Parse(strings.Replace(t, "%s", words, 1))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", errors.New("The search address must be an http or https address.")
+	}
+	if u.User != nil {
+		return "", errors.New("The search address mayn't have a name or password in it.")
+	}
+	if p := u.Port(); p != "" {
+		// (As a browser's address takes it: go.js's URL.)
+		if n, err := strconv.Atoi(p); err != nil || n > 65535 {
+			return "", errors.New("The search address's port isn't one.")
+		}
+	}
+	for _, values := range u.Query() {
+		if slices.Contains(values, words) {
+			return t, nil
+		}
+	}
+	return "", errors.New("In the search address, %s must be a query parameter's whole value (…?q=%s).")
+}
+
+// localHosts is the local DNS records kept.
+func (s *goSiteSettings) localHosts() []goHostRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.hosts)
+}
+
+// setHosts keeps records (checked by goHostRecords).
+func (s *goSiteSettings) setHosts(records []goHostRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hosts = records
+	s.save()
+}
+
+// dohServer is the DoH server chosen ("" for none), and its addresses if
+// they're pinned (a preset's).
+func (s *goSiteSettings) dohServer() (string, []netip.Addr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doh == "custom" {
+		return s.dohURL, nil
+	}
+	p := goDoHPresets[s.doh]
+	return p.endpoint, p.addrs
+}
+
+// setDoH chooses DNS over HTTPS: mode "" (off), a preset's name, or
+// "custom" with endpoint (checked by goDoHEndpoint).
+func (s *goSiteSettings) setDoH(mode, endpoint string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.doh, s.dohURL = mode, ""
+	if mode == "custom" {
+		s.dohURL = endpoint
+	}
+	s.save()
 }
 
 // goSettingHost is what was typed or given for a site as a host: an
@@ -190,7 +306,7 @@ func (s *goSiteSettings) save() {
 		return
 	}
 	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts,
-		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine}
+		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -443,7 +559,8 @@ func (s *goSiteSettings) report() map[string]any {
 	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": maps.Clone(s.popups), "referer": !s.noReferer,
 		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
 		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
-		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine}
+		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL,
+		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...)}
 }
 
 // routeGoSettings answers the settings page: what's set.
@@ -466,6 +583,9 @@ func (g *server) routeGoSettings(c *tunnelCall) {
 	if g.goAds != nil {
 		report["adblock"] = g.goAds.on.Load() // ad blocking's default, on or off (Settings)
 	}
+	if d := goDoHNow.Load(); d != nil {
+		report["dohStatus"] = d.status()
+	}
 	c.r.finish(report)
 }
 
@@ -475,12 +595,55 @@ func (g *server) routeGoSettingsSet(c *tunnelCall) {
 		c.r.fail("The remote browser is off or unavailable.")
 		return
 	}
-	if err := g.goSites.set(c.req.Name, c.req.Setting); err != nil {
+	test := ""
+	if c.req.Setting == "doh-test" && c.req.Name == "" {
+		// Asked once now (Settings' Test): how it went, in the report.
+		d := goDoHNow.Load()
+		if d == nil {
+			c.r.fail("DNS over HTTPS is off.")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*goDoHTimeout)
+		if err := d.check(ctx); err != nil {
+			test = err.Error()
+		}
+		cancel()
+	} else if mode, ok := strings.CutPrefix(c.req.Setting, "doh-"); ok && c.req.Name == "" {
+		if err := g.setGoDoH(mode, c.req.URL); err != nil {
+			c.r.fail(err.Error())
+			return
+		}
+	} else if c.req.Setting == "search-custom" && c.req.Name == "" {
+		t, err := goSearchTemplate(c.req.URL)
+		if err != nil {
+			c.r.fail(err.Error())
+			return
+		}
+		g.goSites.setSearchCustom(t)
+	} else if c.req.Setting == "hosts" && c.req.Name == "" {
+		records, err := goHostRecords(c.req.Hosts)
+		if err != nil {
+			c.r.fail(err.Error())
+			return
+		}
+		// (One change of names at a time: what's kept is what's used.)
+		goDoHSetting.Lock()
+		g.goSites.setHosts(records)
+		goHostsNow.Store(goHostsTable(records))
+		goDNSChanged()
+		goDoHSetting.Unlock()
+	} else if err := g.goSites.set(c.req.Name, c.req.Setting); err != nil {
 		c.r.fail(err.Error())
 		return
 	}
 	log.Printf("go: site settings: %s from %s", c.req.Setting, c.ip)
 	report := g.goSites.report()
+	if d := goDoHNow.Load(); d != nil {
+		report["dohStatus"] = d.status()
+	}
+	if c.req.Setting == "doh-test" {
+		report["dohTest"] = test
+	}
 	if g.goAds != nil {
 		report["adblock"] = g.goAds.on.Load()
 		if c.req.Setting == "ads-block" {
@@ -493,6 +656,47 @@ func (g *server) routeGoSettingsSet(c *tunnelCall) {
 		}
 	}
 	c.r.finish(report)
+}
+
+// goDoHSetting is held while DNS over HTTPS is chosen (setGoDoH), or the
+// local DNS records are changed.
+var goDoHSetting sync.Mutex
+
+// setGoDoH chooses DNS over HTTPS (Settings): mode "off", a preset's name,
+// or "custom" with endpoint; a server's taken once it's answered a lookup.
+func (g *server) setGoDoH(mode, endpoint string) error {
+	// One change at a time: a slow server's check finishing after a later
+	// choice doesn't undo it.
+	goDoHSetting.Lock()
+	defer goDoHSetting.Unlock()
+	if mode == "off" {
+		g.goSites.setDoH("", "")
+		goDoHNow.Store(nil)
+		goDNSChanged()
+		return nil
+	}
+	if preset, ok := goDoHPresets[mode]; ok {
+		endpoint = preset.endpoint
+	} else if mode != "custom" {
+		return errors.New("That isn't a DNS over HTTPS choice.")
+	} else {
+		var err error
+		if endpoint, err = goDoHEndpoint(endpoint); err != nil {
+			return err
+		}
+	}
+	var pinned []netip.Addr
+	if p, ok := goDoHPresets[mode]; ok {
+		pinned = p.addrs
+	}
+	doh := newGoDoH(endpoint, pinned)
+	if err := doh.check(context.Background()); err != nil {
+		return err
+	}
+	g.goSites.setDoH(mode, endpoint)
+	goDoHNow.Store(doh)
+	goDNSChanged()
+	return nil
 }
 
 // --- Pop-ups -----------------------------------------------------------------
