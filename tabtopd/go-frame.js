@@ -981,14 +981,16 @@
         const w = Number(attrOf(n, "width")), h = Number(attrOf(n, "height"));
         own(d, n.i, box);
         const info = {
-            tag, node: d.top ? 0 : n.i, key: 0, src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
+            // own: it has a src (empty: nothing to play), its <source>s not
+            // looked at, as a browser doesn't.
+            tag, node: d.top ? 0 : n.i, key: 0, own: hasAttr(n, "src"), src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
             muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), play: hasAttr(n, "autoplay"),
             size: { width: dimension("width"), height: dimension("height"), aspectRatio: tag === "video" ? (w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9") : "" },
             style: "",
         };
         mediaOf.set(box, info);
         mediaStyle(box);
-        mediaSource(d, box, info.src || firstSource(n.c));
+        mediaSource(d, box, info.own ? info.src ?? "" : firstSource(n.c));
         return box;
     }
     // Its own file, or else its first source's.
@@ -1043,7 +1045,7 @@
         if (!info) return false;
         if (op.o === "c") {
             // Its sources: its children aren't drawn.
-            if (!info.src) mediaSource(d, box, firstSource(op.c));
+            if (!info.own) mediaSource(d, box, firstSource(op.c));
             return true;
         }
         if (op.o === "m") {
@@ -1071,7 +1073,8 @@
                 // A relayed source already has live native buffers. A
                 // repeated assignment must not destroy that connection.
                 if (v === info.src && v?.startsWith("blob:tabtop-media/")) return true;
-                info.src = v;
+                info.src = v || null;
+                info.own = v !== null && v !== undefined;
                 mediaSource(d, box, v ?? "");
                 return true;
             case "poster":

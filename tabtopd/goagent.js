@@ -555,6 +555,10 @@
         // nothing to play), else its first <source> with one that isn't
         // empty (a placeholder <source src=""> passed over). As gomedia.js's.
         const mediaURL = (el) => el.hasAttribute("src") ? el.getAttribute("src") || null : el.querySelector(':scope > source[src]:not([src=""])')?.getAttribute("src") ?? null;
+        // What the copy's src says: the element's own if it has one ("":
+        // empty, its <source>s not to be looked at), else its <source>'s,
+        // else none (null: the copy looks at its <source>s, as it's sent them).
+        const mediaSrc = (el) => el.hasAttribute("src") ? el.getAttribute("src") : mediaURL(el);
 
         function ser(n, depth) {
             if (++count > 400000) throw new Error("too many nodes");
@@ -570,7 +574,7 @@
                 if (v !== null) a.push(k, v);
             };
             if (n instanceof HTMLMediaElement) {
-                const url = mediaURL(n);
+                const url = mediaSrc(n);
                 set("src", url);
                 mediaURLs.set(n, url);
             } else if (name === "input") {
@@ -833,7 +837,7 @@
             }
             for (const el of changedMedia) {
                 if (!el.isConnected || !old(el)) continue;
-                const url = mediaURL(el);
+                const url = mediaSrc(el);
                 if (url === mediaURLs.get(el)) continue;
                 mediaURLs.set(el, url);
                 ops.push({ o: "a", i: id(el), n: "src", v: url });
