@@ -3399,6 +3399,36 @@ async function check(base, port, site, adSite) {
         if (colours !== JSON.stringify({ bg: "rgb(0, 0, 0)", text: "rgb(255, 255, 255)" })) throw new Error(`the copy's colours: ${colours}`);
     });
 
+    await step("Continue pressed on a certificate warning while the connection's lost is done once it's back", async () => {
+        const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+            if (window !== top) return;
+            const W = WebSocket;
+            window.__sockets = [];
+            window.__down = false;
+            window.WebSocket = class extends W {
+                constructor(url, protocols) {
+                    super(window.__down ? String(url).replace(/^(wss?:\\/\\/[^/]+).*$/, "$1/go-check-down") : url, protocols);
+                    window.__sockets.push(this);
+                }
+            };
+        })()` });
+        try {
+            // A tab of its own (no exception yet), its sockets known.
+            await ev(`(() => { window.__leaving = true; sessionStorage.clear(); location.href = location.origin + location.pathname.replace(/\\/go\\/.*$/, "/go/tab"); })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && document.getElementById("go_progress")?.hidden && window.__sockets?.some((s) => s.readyState === 1)`, "a tab of its own, connected", 30000);
+            const secure = site.replace(/^http:/, "https:");
+            await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(secure + "index.html?offline-continue")}; i.form.requestSubmit(); })()`);
+            await waitFor(`!document.getElementById("go_cert").hidden`, "the certificate warning", 30000);
+            await ev(`window.__down = true; for (const s of window.__sockets) s.close()`);
+            await waitFor(`/Connection lost/.test(document.getElementById("tabtop_reconnect")?.textContent ?? "")`, "the connection said lost", 15000);
+            await ev(`document.querySelector("#go_cert .go").click()`);
+            await ev(`window.__down = false; document.querySelector("#tabtop_reconnect button")?.click()`);
+            await waitFor(`document.title.startsWith("Fixture") && document.getElementById("go_cert").hidden && !document.getElementById("tabtop_reconnect")`, "the page continued to, once connected", 30000);
+        } finally {
+            await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+        }
+    });
+
     await step("no request left this browser except to TabTop", async () => {
         const elsewhere = requests.filter((u) => !u.startsWith(origin + "/") && !/^(data|blob|about|chrome|devtools):/.test(u));
         if (elsewhere.length) throw new Error(`requests elsewhere: ${[...new Set(elsewhere)].join(", ")}`);

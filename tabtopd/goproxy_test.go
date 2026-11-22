@@ -491,11 +491,24 @@ func TestGoProxyCertException(t *testing.T) {
 		res.Body.Close()
 		t.Fatal("another host's HTTPS, its certificate unchecked, let through")
 	}
-	if code := connect(t, addr, strings.TrimPrefix(site.URL, "http://"), ""); code != http.StatusBadGateway {
-		t.Errorf("a tunnel to another host: %d", code)
-	}
 	if !certs.tookRefused("127.0.0.1") {
 		t.Error("the refusal not told")
+	}
+	// A tunnel by another port than 443 to another host: what's plain goes
+	// (a ws:// WebSocket); TLS through it doesn't (https://host:80/).
+	{
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host := strings.TrimPrefix(site.URL, "http://")
+		fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\nGET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host, host, host)
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		got, _ := io.ReadAll(c)
+		c.Close()
+		if !strings.Contains(string(got), "200 Connection established") || !strings.Contains(string(got), "plain hello") {
+			t.Errorf("plain through a tunnel to another host: %q", got)
+		}
 	}
 	res, err := client.Get(site.URL)
 	if err != nil {

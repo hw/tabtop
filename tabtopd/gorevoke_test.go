@@ -250,12 +250,12 @@ func TestGoRevokedCRLDown(t *testing.T) {
 	defer crlSrv.Close()
 	defer close(hang)
 	goTestPorts(t, portOf(t, crlSrv.URL))
-	r := &goRevocation{now: time.Now}
+	r := &goRevocation{now: time.Now, crlWait: 250 * time.Millisecond}
 	check := func(serial int64) time.Duration {
 		cert := ca.leaf(t, serial, crlSrv.URL+"/1.crl")
 		leaf, _ := x509.ParseCertificate(cert.Certificate[0])
 		cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, ca.cert}, VerifiedChains: [][]*x509.Certificate{{leaf, ca.cert}}}
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		start := time.Now()
 		if revoked, sure := r.revokedState(ctx, cs, (&net.Dialer{}).DialContext); revoked || sure {
@@ -263,8 +263,8 @@ func TestGoRevokedCRLDown(t *testing.T) {
 		}
 		return time.Since(start)
 	}
-	if d := check(7); d < 250*time.Millisecond {
-		t.Fatalf("the first check didn't wait for the CRL: %v", d)
+	if d := check(7); d < 200*time.Millisecond || d > time.Second {
+		t.Fatalf("the first check didn't wait for the CRL's own time: %v", d)
 	}
 	for _, serial := range []int64{8, 7} {
 		if d := check(serial); d > 100*time.Millisecond {
@@ -343,5 +343,62 @@ func TestGoRevokedPartialCRL(t *testing.T) {
 		if (err != nil) != c.partial {
 			t.Errorf("%s: %v", c.name, err)
 		}
+	}
+}
+
+// TestGoRevokedCRLSlowAsker: an asker that gives up before a slow CRL comes
+// (its own time spent on a slow host's handshake) doesn't have the CRL's
+// server taken as down: the CRL's fetched on its own time, kept, and the
+// next asker has its answer.
+func TestGoRevokedCRLSlowAsker(t *testing.T) {
+	ca := newRevokeCA(t, "TabTop Test CA")
+	crlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		w.Write(ca.crl(t, ca.key, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), "", 7))
+	}))
+	defer crlSrv.Close()
+	goTestPorts(t, portOf(t, crlSrv.URL))
+	r := &goRevocation{now: time.Now, crlWait: 2 * time.Second}
+	cert := ca.leaf(t, 7, crlSrv.URL+"/1.crl")
+	leaf, _ := x509.ParseCertificate(cert.Certificate[0])
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, ca.cert}, VerifiedChains: [][]*x509.Certificate{{leaf, ca.cert}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	if revoked, sure := r.revokedState(ctx, cs, (&net.Dialer{}).DialContext); revoked || sure {
+		t.Fatalf("an asker out of time: revoked %v, sure %v", revoked, sure)
+	}
+	cancel()
+	time.Sleep(400 * time.Millisecond)
+	if revoked, sure := r.revokedState(context.Background(), cs, (&net.Dialer{}).DialContext); !revoked || !sure {
+		t.Fatalf("the next asker: revoked %v, sure %v (the CRL taken as down?)", revoked, sure)
+	}
+}
+
+// TestGoCRLKeptBounded: CRLs kept come to goCRLSerials serials at most, all
+// together; one of more isn't kept.
+func TestGoCRLKeptBounded(t *testing.T) {
+	was := goCRLSerials
+	goCRLSerials = 10
+	t.Cleanup(func() { goCRLSerials = was })
+	r := &goRevocation{now: time.Now}
+	crl := func(n int) *goCRL {
+		c := &goCRL{serials: map[string]struct{}{}, next: time.Now().Add(time.Hour)}
+		for i := range n {
+			c.serials[string(rune('a'+i))] = struct{}{}
+		}
+		return c
+	}
+	for i := range 5 {
+		r.keepCRL(string(rune('A'+i)), crl(4))
+		total := 0
+		for _, c := range r.crls {
+			total += len(c.serials)
+		}
+		if total > 10 {
+			t.Fatalf("after %d: %d serials kept", i+1, total)
+		}
+	}
+	r.keepCRL("big", crl(11))
+	if _, ok := r.crls["big"]; ok {
+		t.Error("a CRL of more than all may come to kept")
 	}
 }

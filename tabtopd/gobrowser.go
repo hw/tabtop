@@ -1042,7 +1042,11 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 				if strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goCertHostOf(u)) {
 					at = u
 				} else if d := b.docRequest[1]; d != "" && d != u && strings.HasPrefix(d, "https:") && b.certs.tookRevoked(goCertHostOf(d)) {
+					// (As Continue's address will be taken: goURL.)
 					at = d
+					if g, err := goURL(d); err == nil {
+						at = g
+					}
 				}
 				if at != "" {
 					b.failedURL = at
@@ -2089,8 +2093,12 @@ func (b *goBrowser) certIgnore(ctx context.Context, raw string) {
 	var cdpErr *cdpError
 	if errors.As(err, &cdpErr) && cdpErr.Code == -32601 {
 		// An engine without it: it heeds them, certainly; nothing's
-		// continued to on it (cert-continue).
+		// continued to on it (cert-continue), and the exception just made
+		// for its error is taken away (it'd only skip TabTop's own checks).
 		b.certUnsupported.Store(true)
+		if want {
+			b.certs.dropEngine(u.Hostname())
+		}
 		b.certTold = 0
 		b.certs.ignoring.Store(false)
 		b.certs.heeding()

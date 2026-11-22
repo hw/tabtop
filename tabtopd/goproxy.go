@@ -288,7 +288,12 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	// While the engine ignores certificate errors (its page an exception's:
 	// gocert.go), it reaches no other host's HTTPS: that host's certificate
 	// can't be checked here (not without intercepting it).
-	if p.certs.Load().refuses(host) {
+	// Port 443's refused at once; port 80's is TLS refused (https://host:80/
+	// as much as 443's), and what's plain let through (a ws:// WebSocket has
+	// no certificate to take on trust): decided by its first byte.
+	certs := p.certs.Load()
+	tlsRefused := certs.wouldRefuse(host)
+	if tlsRefused && port == "443" && certs.refuses(host) {
 		p.logf("go: refused %s (the engine ignoring certificate errors, for an exception's)", host)
 		goRefuse(w, "cert", http.StatusBadGateway)
 		return
@@ -343,6 +348,20 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	p.tunnels.Add(1)
 	p.mu.Unlock()
 	defer p.tunnels.Done()
+	if tlsRefused {
+		// The engine's first byte: a TLS handshake's (0x16) refused.
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		first, err := buf.Reader.Peek(1)
+		conn.SetReadDeadline(time.Time{})
+		if err != nil || first[0] == 0x16 {
+			if err == nil && certs.refuses(host) {
+				p.logf("go: refused %s (TLS while the engine ignores certificate errors, for an exception's)", host)
+			}
+			conn.Close()
+			up.Close()
+			return
+		}
+	}
 	stop := make(chan struct{})
 	go func() {
 		select {

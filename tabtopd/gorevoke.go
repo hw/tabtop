@@ -62,6 +62,11 @@ const (
 	goCRLSkew      = 5 * time.Minute // clocks' disagreement allowed
 )
 
+// goCRLSerials bounds the revoked serials kept, all CRLs together (a CRL of
+// more isn't kept, only used for the answer it was fetched for). (A
+// variable: tests lower it.)
+var goCRLSerials = 1 << 20
+
 // errGoCertRevoked is a connection refused for its certificate's revocation.
 var errGoCertRevoked = errors.New("the site's certificate has been revoked by its issuer")
 
@@ -74,9 +79,12 @@ type goDialFunc func(ctx context.Context, network, addr string) (net.Conn, error
 type goRevocation struct {
 	now   func() time.Time
 	roots *x509.CertPool // what chains are verified to (nil: the system's; tests set it)
-	mu    sync.Mutex
-	hosts map[string]goRevokeAnswer
-	crls  map[string]*goCRL
+	// crlWait is how long a CRL's fetch may take, on its own time, not its
+	// asker's (0: goRevokeWait; tests set it).
+	crlWait time.Duration
+	mu      sync.Mutex
+	hosts   map[string]goRevokeAnswer
+	crls    map[string]*goCRL
 	// crlDown: CRL addresses that didn't answer lately (till when), not
 	// asked again meanwhile: a CA's CRL server down would stall every new
 	// host's tunnel, and each new connection of TabTop's own, its wait each.
@@ -239,26 +247,35 @@ func (r *goRevocation) crl(ctx context.Context, address string, issuer *x509.Cer
 	}
 	r.mu.Unlock()
 	if !going {
-		call.crl, call.err = r.fetchCRL(ctx, address, issuer, dial)
-		r.mu.Lock()
-		switch {
-		case call.err == nil:
-			r.keepCRL(address, call.crl)
-			delete(r.crlDown, address)
-		case !errors.Is(call.err, context.Canceled):
-			// (Not the asker giving up: the server not answering, or not
-			// with a CRL that's good.)
-			if r.crlDown == nil {
-				r.crlDown = map[string]time.Time{}
-			}
-			if len(r.crlDown) >= goCRLsKept {
-				clear(r.crlDown)
-			}
-			r.crlDown[address] = r.now().Add(goRevokeUnsure)
+		// On its own time, not the asker's: an asker that's spent its own
+		// on a slow host's handshake gives up, and the CRL's still fetched,
+		// kept for the next; only the CRL's server too slow, or failing,
+		// has it taken as down.
+		wait := r.crlWait
+		if wait <= 0 {
+			wait = goRevokeWait
 		}
-		delete(r.calls, key)
-		r.mu.Unlock()
-		close(call.done)
+		go func() {
+			fctx, cancel := context.WithTimeout(context.Background(), wait)
+			defer cancel()
+			call.crl, call.err = r.fetchCRL(fctx, address, issuer, dial)
+			r.mu.Lock()
+			if call.err == nil {
+				r.keepCRL(address, call.crl)
+				delete(r.crlDown, address)
+			} else {
+				if r.crlDown == nil {
+					r.crlDown = map[string]time.Time{}
+				}
+				if len(r.crlDown) >= goCRLsKept {
+					clear(r.crlDown)
+				}
+				r.crlDown[address] = r.now().Add(goRevokeUnsure)
+			}
+			delete(r.calls, key)
+			r.mu.Unlock()
+			close(call.done)
+		}()
 	}
 	select {
 	case <-call.done:
@@ -454,15 +471,32 @@ func (r *goRevocation) keepHost(key string, a goRevokeAnswer) {
 }
 
 func (r *goRevocation) keepCRL(address string, c *goCRL) {
+	if len(c.serials) > goCRLSerials {
+		return // (more than all may come to: used, not kept)
+	}
 	if r.crls == nil {
 		r.crls = map[string]*goCRL{}
 	}
-	if len(r.crls) >= goCRLsKept {
+	delete(r.crls, address)
+	total := len(c.serials)
+	for _, v := range r.crls {
+		total += len(v.serials)
+	}
+	if len(r.crls) >= goCRLsKept || total > goCRLSerials {
+		// The out of date first, then any, till it fits.
 		now := r.now()
 		for k, v := range r.crls {
-			if !now.Before(v.next) || len(r.crls) >= goCRLsKept {
+			if !now.Before(v.next) {
+				total -= len(v.serials)
 				delete(r.crls, k)
 			}
+		}
+		for k, v := range r.crls {
+			if len(r.crls) < goCRLsKept && total <= goCRLSerials {
+				break
+			}
+			total -= len(v.serials)
+			delete(r.crls, k)
 		}
 	}
 	r.crls[address] = c

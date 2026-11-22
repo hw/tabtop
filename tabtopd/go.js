@@ -902,7 +902,13 @@ function certWarning(m) {
         loading = true;
         show(`Loading ${host}…`);
         update();
-        ws?.send(JSON.stringify({ op: "cert-continue", url: m.url }));
+        if (ws) ws.send(JSON.stringify({ op: "cert-continue", url: m.url }));
+        else {
+            // Not connected: said once it is (the tab taken back as it was;
+            // a tab of its own loads the page again, and is warned again).
+            continuedOffline = m.url;
+            connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
+        }
     };
     certBox.hidden = false;
     certBox.querySelector(".back").focus();
@@ -1149,8 +1155,9 @@ function load(url, { push = true } = {}) {
     ws.send(JSON.stringify({ op: "navigate", url, view: sentView }));
 }
 // askedOffline: an address asked for while not connected, gone to once
-// connected (a tab taken back as it was would show its page instead).
-let askedOffline = null;
+// connected (a tab taken back as it was would show its page instead);
+// continuedOffline: a certificate warning's Continue, likewise.
+let askedOffline = null, continuedOffline = null;
 
 // The page's window in the engine is the size of the frame here (and its
 // pixel ratio), so a page laying itself out for a phone or a wide screen,
@@ -1289,7 +1296,10 @@ function open() {
                 if (askedOffline) {
                     ws.send(JSON.stringify({ op: "navigate", url: askedOffline, view: sentView }));
                     askedOffline = null;
+                } else if (continuedOffline) {
+                    ws.send(JSON.stringify({ op: "cert-continue", url: continuedOffline }));
                 } else show("Carrying on…");
+                continuedOffline = null;
                 // Nothing from it soon (held up on the server): a tab of
                 // its own, the page loaded again, as without one to take back.
                 heard = false;
@@ -1301,6 +1311,7 @@ function open() {
                     connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
                 }, 10_000);
             } else if (at >= 0) {
+                continuedOffline = null; // (warned again as it loads, if it is)
                 load(entries[at].url, { push: false });
             }
             resolve(true);

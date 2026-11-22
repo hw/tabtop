@@ -112,6 +112,14 @@
         }
         return nativePause.call(this);
     };
+    // The page's play(): what it paused, it wants playing again: the
+    // person's player's reports taken at once, not held (a native file's
+    // element's too; the stream's stub below says so itself).
+    const nativePlay = proto.play;
+    proto.play = function play() {
+        held.delete(this);
+        return nativePlay.apply(this, arguments);
+    };
     document.addEventListener(SEND, (e) => {
         const el = e.target;
         if (!(el instanceof HTMLMediaElement)) return;

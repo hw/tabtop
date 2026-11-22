@@ -348,3 +348,48 @@ func TestGoCertRevokedExceptionStillChecks(t *testing.T) {
 		t.Error("the engine error's exception refused")
 	}
 }
+
+// TestGoCertIgnoreUnsupportedDrops: on an engine without
+// Security.setIgnoreCertificateErrors, the exception just made for its
+// error is taken away (it'd only have TabTop's own fetches skip the host's
+// checks); a revocation's alone isn't one the engine's asked about.
+func TestGoCertIgnoreUnsupportedDrops(t *testing.T) {
+	cdp, _ := fakeCDPCode(t, -32601, func(string, int) bool { return true })
+	b := &goBrowser{ctx: context.Background(), cdp: cdp, certs: &goCertExceptions{}}
+	b.certs.add("lan.test", false)
+	b.certs.add("revoked.test", true)
+	b.certIgnore(context.Background(), "https://lan.test/")
+	if !b.certUnsupported.Load() {
+		t.Fatal("the engine's lack not learned")
+	}
+	if b.certs.allows("lan.test") {
+		t.Error("the engine error's exception kept on an engine that can't ignore errors")
+	}
+	if !b.certs.allows("revoked.test") {
+		t.Error("a revocation's exception taken away")
+	}
+}
+
+// TestGoCertRevokedNotes: a note of a host refused for its revocation is
+// a load's for a while, then let go; with many (pictures' hosts), the
+// oldest go first, so a page's own is always noted.
+func TestGoCertRevokedNotes(t *testing.T) {
+	c := &goCertExceptions{}
+	for i := range 80 {
+		c.refusedRevoked(fmt.Sprintf("img%d.test", i))
+	}
+	c.refusedRevoked("page.test")
+	if !c.tookRevoked("page.test") {
+		t.Error("a page's note lost among others")
+	}
+	if c.tookRevoked("img0.test") {
+		t.Error("the oldest note not let go")
+	}
+	c.refusedRevoked("old.test")
+	c.mu.Lock()
+	c.revokedRefused["old.test"] = time.Now().Add(-time.Minute)
+	c.mu.Unlock()
+	if c.tookRevoked("old.test") {
+		t.Error("a note a minute old taken")
+	}
+}

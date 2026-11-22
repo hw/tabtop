@@ -48,7 +48,7 @@ type goCertExceptions struct {
 	// revokedRefused: hosts the proxy refused this tab a tunnel to for
 	// their certificate's revocation (gorevoke.go), till the tab's told
 	// (tookRevoked): a load that failed so is warned of as that.
-	revokedRefused map[string]bool
+	revokedRefused map[string]time.Time          // (when: a note's for the load going, 30 s)
 	refused        map[string]bool               // refused by the proxy, while ignoring
 	clients        map[*http.Client]*http.Client // TabTop's own clients, with the exceptions
 
@@ -105,10 +105,43 @@ func (c *goCertExceptions) refusedRevoked(host string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.revokedRefused == nil {
-		c.revokedRefused = map[string]bool{}
+		c.revokedRefused = map[string]time.Time{}
 	}
-	if len(c.revokedRefused) < 64 {
-		c.revokedRefused[goCertHost(host)] = true
+	// (Notes for what isn't a page, a picture's, say, are never taken: let
+	// go as they age, the oldest first when there are too many, so a page's
+	// own is always noted.)
+	now := time.Now()
+	oldest, at := "", now
+	for h, t := range c.revokedRefused {
+		if now.Sub(t) > goRevokedNoteAge {
+			delete(c.revokedRefused, h)
+		} else if t.Before(at) {
+			oldest, at = h, t
+		}
+	}
+	if len(c.revokedRefused) >= 64 {
+		delete(c.revokedRefused, oldest)
+	}
+	c.revokedRefused[goCertHost(host)] = now
+}
+
+// goRevokedNoteAge is how long a note of a host refused for its
+// certificate's revocation is a load's to be warned of.
+const goRevokedNoteAge = 30 * time.Second
+
+// dropEngine takes host's exception away, if it's one past an engine's
+// error (not a revocation's alone): continued to on an engine that can't
+// ignore errors (gobrowser.go, certIgnore), it'd skip TabTop's own checks
+// for the host and do nothing else.
+func (c *goCertExceptions) dropEngine(host string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	host = goCertHost(host)
+	if c.hosts[host] && !c.revoked[host] {
+		delete(c.hosts, host)
 	}
 }
 
@@ -121,9 +154,9 @@ func (c *goCertExceptions) tookRevoked(host string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	host = goCertHost(host)
-	was := c.revokedRefused[host]
+	at, was := c.revokedRefused[host]
 	delete(c.revokedRefused, host)
-	return was
+	return was && time.Since(at) <= goRevokedNoteAge
 }
 
 // ignores is whether the engine's to ignore certificate errors on host's
@@ -248,6 +281,13 @@ func goCertVerify(cs tls.ConnectionState, roots *x509.CertPool) error {
 	}
 	_, err := cs.PeerCertificates[0].Verify(opts)
 	return err
+}
+
+// wouldRefuse is whether a tunnel to host is one the proxy refuses TLS
+// through, while the engine ignores certificate errors (refuses, without
+// noting it).
+func (c *goCertExceptions) wouldRefuse(host string) bool {
+	return c != nil && c.ignoring.Load() && !c.ignores(host)
 }
 
 // refuses is whether the proxy's to refuse a tunnel to host: while the
