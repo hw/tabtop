@@ -16,7 +16,12 @@
         return new Promise((resolve, reject) => {
             const request = ++next;
             const command = { request, op, ...fields };
-            if (pending.size >= 32 || queue.length >= 32 || JSON.stringify(command).length > 49152) throw new RangeError("EME request limit");
+            // Format probes (decodingInfo, with or without a key system: only
+            // the viewer can say what plays, the engine having no media) are
+            // asked many at once by players (Promise.all over their variants):
+            // queued, not refused, up to 256; the rest 32.
+            const most = op === "decoding" ? 256 : 32;
+            if (pending.size >= most || queue.length >= most || JSON.stringify(command).length > 49152) throw new RangeError("EME request limit");
             const timer = setTimeout(() => {
                 pending.delete(request);
                 reject(new DOMException("The viewer did not answer", "TimeoutError"));

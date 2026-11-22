@@ -345,7 +345,10 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 			opData["path"] = path
 		}
 		op, _ := json.Marshal(opData)
-		if b.framesSent+len(op) > goFramesBytes {
+		// Within a second's budget; or, first in its second, one larger (a
+		// frame with its nested frames grafted in can be more than the
+		// budget, and would otherwise never be sent), up to a snapshot's.
+		if b.framesSent > 0 && b.framesSent+len(op) > goFramesBytes || len(op) > goSnapshotLimit {
 			c.due = true
 			continue
 		}

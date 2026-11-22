@@ -797,8 +797,14 @@ func (b *goBrowser) run() {
 					b.setView(*m.View)
 				}
 			case "theme":
-				// Dark mode changed (Site controls): the page told again.
-				b.job(func() any { b.schemeAt(""); return nil }, func(any) {})
+				// Dark mode changed (Site controls): the page told again, and
+				// read again whole, for its copy's styles to go by it too
+				// (goSchemeOf, go-frame.js).
+				b.job(func() any { b.schemeAt(""); return nil }, func(any) {
+					if b.shown == b.gen && b.gen != 0 {
+						b.readAgain(b.gen)
+					}
+				})
 			case "res":
 				// A resource for the page shown, from any generation: a
 				// page being left may still ask, and it's kept.
@@ -1069,9 +1075,11 @@ func (b *goBrowser) setView(v goView) {
 				goDebugf("touch emulation %v: %v", v.Touch, terr)
 			}
 		}
-		if err == nil && scheme {
+		if scheme {
 			// The person's light or dark: CSS and matchMedia in the engine,
 			// unless the page's site's Dark mode says otherwise (gotheme.go).
+			// Told whether or not the engine took the size: it's not asked
+			// again for the same scheme (b.view has it).
 			b.deviceScheme(v.Scheme)
 		}
 		if err == nil {
@@ -1498,7 +1506,8 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 				return
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
-				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc)})
+				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc),
+				"scheme": b.goSchemeOf(s.URL)})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return

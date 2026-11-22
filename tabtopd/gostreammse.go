@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path"
 	"sort"
@@ -35,11 +36,12 @@ const (
 )
 
 const (
-	mseStageLimit   = 512 << 20
-	mseChunk        = 256 << 10
-	mseKindInit     = 1
-	mseKindPart     = 2
-	mseKindProgress = 3
+	mseStageLimit    = 512 << 20
+	mseChunk         = 256 << 10
+	mseKindInit      = 1
+	mseKindPart      = 2
+	mseKindProgress  = 3
+	mseKindTimedPart = 4
 )
 
 // mseStageKept is how long a stage is kept with nothing spilled to it: a
@@ -64,8 +66,9 @@ type mseStage struct {
 }
 
 type mseStageTrack struct {
-	init  string   // relative path
-	parts []string // relative paths
+	init    string   // relative path
+	parts   []string // relative paths
+	offsets []float64
 }
 
 func (m *fetchManager) stagesLocked() map[string]*mseStage {
@@ -240,6 +243,17 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 	if track < 0 || track > 7 {
 		return errors.New("invalid stream track")
 	}
+	var offset float64
+	if kind == mseKindTimedPart {
+		if len(data) <= 8 {
+			return errors.New("missing timed fragment")
+		}
+		offset = math.Float64frombits(binary.BigEndian.Uint64(data))
+		if math.IsNaN(offset) || math.IsInf(offset, 0) {
+			return errors.New("invalid fragment offset")
+		}
+		data, kind = data[8:], mseKindPart
+	}
 	if len(data) == 0 || int64(len(data)) > segmentLimit {
 		return errors.New("invalid stream segment")
 	}
@@ -311,6 +325,7 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 			return err
 		}
 		tr.parts = append(tr.parts, name)
+		tr.offsets = append(tr.offsets, offset)
 	default:
 		return errors.New("invalid stream frame")
 	}
@@ -341,7 +356,7 @@ func (s *mseStage) inputLocked() (mseSaveInput, error) {
 		if tr.init == "" || len(tr.parts) == 0 {
 			return mseSaveInput{}, errors.New("buffered stream has no media segments yet")
 		}
-		tracks = append(tracks, mseTrackFiles{init: tr.init, parts: append([]string(nil), tr.parts...)})
+		tracks = append(tracks, mseTrackFiles{init: tr.init, parts: append([]string(nil), tr.parts...), offsets: tr.offsets})
 	}
 	return mseSaveInput{tracks: tracks}, nil
 }
@@ -354,8 +369,9 @@ type mseSaveInput struct {
 }
 
 type mseTrackFiles struct {
-	init  string
-	parts []string
+	offsets []float64
+	init    string
+	parts   []string
 }
 
 // takeMSEStage takes a stage for saving, in one step under its lock (so it
@@ -512,7 +528,7 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 				return err
 			}
 			parts := tr.parts
-			tracks = append(tracks, streamTrack{initData: init, partCount: len(parts),
+			tracks = append(tracks, streamTrack{initData: init, partCount: len(parts), offsets: tr.offsets,
 				partAt: func(i int) ([]byte, error) { return store.root.ReadFile(parts[i]) }})
 		}
 		name, err = m.writeStreamTracks(ctx, j, tracks, nil, up, "stream.mp4")
@@ -670,16 +686,18 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 // files, which the save gives back once it's done with them, and reports
 // the save till it ends.
 func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) {
-	in, release, err := m.takeMSEStage(stage)
-	if err != nil {
-		r.fail(err.Error())
-		m.forgetMSEStage(stage.id)
-		return
-	}
+	// The save started first: refused (every fetch going, say), the stage's
+	// kept, with all it holds, to be saved once there's room.
 	j, input, err := m.startMSE(stage.folder, by, ip, who, from, userAgent)
 	if err != nil {
-		release()
 		r.fail(err.Error())
+		return
+	}
+	in, release, err := m.takeMSEStage(stage)
+	if err != nil {
+		j.cancel()
+		r.fail(err.Error())
+		m.forgetMSEStage(stage.id)
 		return
 	}
 	go func() {
@@ -741,7 +759,11 @@ func readMSEFrameFrom(t *tunnel, first []byte) (track int, kind byte, data []byt
 				track = int(buf[0])
 				kind = buf[1]
 				need = int(binary.BigEndian.Uint32(buf[2:6]))
-				if need <= 0 || need > segmentLimit {
+				limit := segmentLimit
+				if kind == mseKindTimedPart {
+					limit += 8
+				}
+				if need <= 0 || need > limit {
 					return 0, 0, nil, errors.New("invalid stream segment")
 				}
 				buf = buf[6:]

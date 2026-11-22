@@ -103,12 +103,7 @@ func TestGoStreamsKept(t *testing.T) {
 	if f := b.streams.found; len(f) != maxGoStreams || f[len(f)-1] != fmt.Sprintf("https://many.example/%d.m3u8", maxGoStreams+1) || slices.Contains(f, "https://vod.example/master.m3u8") {
 		t.Errorf("kept %d, the last %q", len(f), f[len(f)-1])
 	}
-	// Another place in the page: none kept, and the page told.
-	w.msg = nil
-	b.streamsLeft()
-	if len(b.streams.found) != 0 || len(w.msg) != 1 || !strings.Contains(string(w.msg[0]), `"go-manifests-clear"`) {
-		t.Errorf("after leaving: %d kept, said %q", len(b.streams.found), w.msg)
-	}
+	// (Another place in the page: TestGoStreamsKeptOverAddressChange.)
 }
 
 // TestGoStreamsMalformed: a playlist that makes the m3u8 package panic
@@ -177,5 +172,37 @@ func TestGoStreamsAbout(t *testing.T) {
 	}
 	if h := goStreamHeight("1280X720"); h != 720 {
 		t.Errorf("height %d", h)
+	}
+}
+
+// TestGoStreamsKeptOverAddressChange: a page rewriting its address
+// (history.replaceState, a player's ?t=) keeps its streams offered: they
+// were cleared, and the manifest, loaded already, never read again. A
+// stream offered after the change (a single-page site's next video) takes
+// their place.
+func TestGoStreamsKeptOverAddressChange(t *testing.T) {
+	w := &goWrites{}
+	conn := &goConn{cur: newGoLink(w, false)}
+	b := &goBrowser{t: conn, conn: conn, gen: 1}
+	b.streamSeen("1", "https://vod.example/one/master.m3u8")
+	b.offerStream(goStreamSeen{id: "1", url: "https://vod.example/one/master.m3u8", gen: 1}, nil)
+	w.msg = nil
+	b.streamsLeft() // ?t=5
+	if !slices.Contains(b.streams.found, "https://vod.example/one/master.m3u8") || len(w.msg) != 0 {
+		t.Fatalf("after the address changed: kept %v, said %q", b.streams.found, w.msg)
+	}
+	// Asked for again (a live playlist's reload): still not read again.
+	b.streamSeen("again", "https://vod.example/one/master.m3u8")
+	if _, ok := b.streams.pending["again"]; ok {
+		t.Error("an offered manifest is to be read again")
+	}
+	// The next video's.
+	b.streamSeen("2", "https://vod.example/two/master.m3u8")
+	b.offerStream(goStreamSeen{id: "2", url: "https://vod.example/two/master.m3u8", gen: 1}, nil)
+	if f := b.streams.found; len(f) != 1 || f[0] != "https://vod.example/two/master.m3u8" {
+		t.Errorf("after the next video's: %v", f)
+	}
+	if len(w.msg) != 2 || !strings.Contains(string(w.msg[0]), `"go-manifests-clear"`) || !strings.Contains(string(w.msg[1]), "two/master") {
+		t.Errorf("said %q", w.msg)
 	}
 }

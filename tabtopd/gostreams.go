@@ -48,6 +48,10 @@ type goStreams struct {
 	about   map[string]goStreamAbout // what each offered is, by its address
 	parts   map[string]string        // a master's variant and audio playlists: the master's
 	queue   chan goStreamSeen
+	// stale: the page's gone elsewhere in itself (pushState, replaceState):
+	// what's offered is kept (a player's ?t=, or tracking taken out of the
+	// address, is the same video) till another stream's offered.
+	stale bool
 }
 
 // goStreamAbout is what a stream offered is: its best picture's height
@@ -73,7 +77,7 @@ func (s *goStreams) at(gen int) {
 	if s.gen == gen && s.pending != nil {
 		return
 	}
-	s.gen, s.pending, s.found, s.about, s.parts = gen, map[string]goStreamSeen{}, nil, map[string]goStreamAbout{}, map[string]string{}
+	s.gen, s.pending, s.found, s.about, s.parts, s.stale = gen, map[string]goStreamSeen{}, nil, map[string]goStreamAbout{}, map[string]string{}, false
 }
 
 // goManifestResponse is whether a response is a stream's manifest, by its
@@ -115,18 +119,16 @@ func (b *goBrowser) streamFailed(ev cdpEvent) {
 	s.mu.Unlock()
 }
 
-// streamsLeft is the page gone to another place in itself (a single-page
-// site's next video, by pushState): its streams afresh, told to the page.
+// streamsLeft is the page gone to another place in itself (pushState,
+// replaceState): its streams offered are kept till another's offered (a
+// single-page site's next video), which takes their place (offerStream).
+// An address rewritten for the same video keeps them.
 func (b *goBrowser) streamsLeft() {
 	s := &b.streams
 	s.mu.Lock()
-	had := len(s.found) > 0
-	s.pending = nil
 	s.at(b.gen)
+	s.stale = len(s.found) > 0
 	s.mu.Unlock()
-	if had {
-		b.send(map[string]any{"type": "go-manifests-clear", "gen": b.gen})
-	}
 }
 
 // streamLoaded is a request finished (the tab's event loop): a manifest
@@ -207,6 +209,20 @@ func (b *goBrowser) offerStream(m goStreamSeen, body []byte) {
 		s.mu.Unlock()
 		return // the page it was of is left
 	}
+	// A new stream after the page went elsewhere in itself: the next
+	// video's, in place of those offered before.
+	// (The page told once s.mu's let go, before what's offered now.)
+	cleared := false
+	if _, part := s.parts[m.url]; s.stale && !part && !slices.Contains(s.found, m.url) {
+		s.found, s.about, s.parts, s.stale = nil, map[string]goStreamAbout{}, map[string]string{}, false
+		cleared = true
+	}
+	unlock := func() {
+		s.mu.Unlock()
+		if cleared {
+			b.send(map[string]any{"type": "go-manifests-clear", "gen": m.gen})
+		}
+	}
 	for _, part := range parts {
 		if r, err := u.Parse(part); part != "" && err == nil {
 			if _, had := s.parts[r.String()]; !had {
@@ -218,17 +234,17 @@ func (b *goBrowser) offerStream(m goStreamSeen, body []byte) {
 		// Its master's: how long it lasts, if that's not known yet.
 		was := s.about[of]
 		if !slices.Contains(s.found, of) || was.timed() || !about.timed() {
-			s.mu.Unlock()
+			unlock()
 			return
 		}
 		was.Duration, was.Live = about.Duration, about.Live
 		s.about[of] = was
-		s.mu.Unlock()
+		unlock()
 		b.send(goManifestMessage(m.gen, of, was))
 		return
 	}
 	if slices.Contains(s.found, m.url) {
-		s.mu.Unlock()
+		unlock()
 		return
 	}
 	// The newest kept: past maxGoStreams, the oldest goes (as the page's
@@ -239,7 +255,7 @@ func (b *goBrowser) offerStream(m goStreamSeen, body []byte) {
 	}
 	s.found = append(s.found, m.url)
 	s.about[m.url] = about
-	s.mu.Unlock()
+	unlock()
 	b.send(goManifestMessage(m.gen, m.url, about))
 }
 

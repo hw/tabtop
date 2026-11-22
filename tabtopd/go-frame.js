@@ -483,7 +483,19 @@
                 // Left out, as a browser leaves a sheet it can't load.
             }
         }
-        return imported + css.generate(ast);
+        return schemed(imported + css.generate(ast));
+    }
+
+    // The site's Dark mode, when it's Light or Dark (the render's scheme):
+    // the copy's styles go by it, not by this browser's own preference.
+    // Their prefers-color-scheme conditions are made always true or always
+    // false. (Setting color-scheme on the frame would, but a frame whose
+    // scheme isn't its page's is painted opaque, over the players' holes.)
+    let colorScheme = "";
+    function schemed(text) {
+        if (!colorScheme || !/prefers-color-scheme/i.test(text)) return text;
+        return text.replace(/\(\s*prefers-color-scheme\s*:\s*(light|dark)\s*\)/gi,
+            (_, want) => (want.toLowerCase() === colorScheme ? "(min-width:0px)" : "(max-width:0px)"));
     }
 
     async function inlineStyle(text, base, budget, alive) {
@@ -1110,7 +1122,10 @@
                     m.asked = false;
                     continue;
                 }
-                const geometryHole = `${Math.round(r.x)}:${Math.round(r.y)}:${Math.round(r.width)}:${Math.round(r.height)}`;
+                // Where it is in the document, not the window: scrolling the
+                // page moves what overlaps it with it, so its hole (and the
+                // scan of what covers it) isn't made again at every step.
+                const geometryHole = `${Math.round(r.x + scrollX)}:${Math.round(r.y + scrollY)}:${Math.round(r.width)}:${Math.round(r.height)}`;
                 if (m.asked && m.box.classList.contains("go-media-live") && m.holeGeometry !== geometryHole) {
                     m.holeGeometry = geometryHole;
                     punchMediaHole(m.box);
@@ -1769,6 +1784,7 @@
 
     function render(m) {
         current = m.gen;
+        colorScheme = m.scheme === "light" || m.scheme === "dark" ? m.scheme : "";
         const d = newDoc(m);
         building = d;
         lastChange = performance.now();

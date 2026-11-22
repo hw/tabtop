@@ -64,3 +64,15 @@ func (b *goBrowser) deviceScheme(scheme string) {
 	b.colors.mu.Unlock()
 	b.schemeAt("")
 }
+
+// goSchemeOf is the scheme the copy of a page at raw must take for its
+// styles, whatever the person's own device prefers: its site's Dark mode,
+// if that's Light or Dark; "" for Follow device (the device's is the
+// viewer's own, which the copy's styles already go by).
+func (b *goBrowser) goSchemeOf(raw string) string {
+	switch t := b.sites.themeFor(goURLHost(raw)); t {
+	case "light", "dark":
+		return t
+	}
+	return ""
+}

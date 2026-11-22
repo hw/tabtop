@@ -221,3 +221,62 @@ func TestMSEStageKeptWhileUsed(t *testing.T) {
 		t.Error("kept after mseStageKept with nothing")
 	}
 }
+
+// TestMSESaveWhenBusyKeepsStage: Save while the fetches are all going is
+// refused ("wait"), and the stage, with all it holds, is kept to save
+// later (it was deleted: everything captured lost).
+func TestMSESaveWhenBusyKeepsStage(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	stage, err := m.openMSEStage("tab-1", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.forgetMSEStage(stage.id)
+	// The fetches all going.
+	m.mu.Lock()
+	if m.jobs == nil {
+		m.jobs = map[string]*fetchJob{}
+	}
+	var fake []string
+	for i := 0; i < maxFetches; i++ {
+		id := string(rune('a' + i))
+		fake = append(fake, id)
+		m.jobs[id] = &fetchJob{id: id, done: make(chan struct{}), total: -1}
+	}
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		for _, id := range fake {
+			delete(m.jobs, id)
+		}
+		m.mu.Unlock()
+	}()
+	srv, cli := mseTunnelPair(t)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, "by", "127.0.0.1", "who", nil, "")
+	}()
+	mseSend(t, cli, 0, mseKindInit, []byte("init"))
+	mseSend(t, cli, 0, mseKindPart, []byte("part"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cli.Write(ctx, websocket.MessageText, []byte(`{"finalize":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if r := mseReply(t, cli); r["error"] == nil {
+		t.Fatalf("saved with every fetch going: %v", r)
+	}
+	if m.mseStage(stage.id) == nil {
+		t.Error("the stage was given up, its save refused as busy")
+	}
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.root.Stat(stage.dir); err != nil {
+		t.Errorf("the stage's files are gone, its save refused as busy: %v", err)
+	}
+}

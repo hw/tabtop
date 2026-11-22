@@ -120,3 +120,52 @@ test("the player switching quality (a new init) begins a new session with it", a
     assert.ok(last.tracks.get(0).parts.length >= 1);
     assert.equal(cap.saveable(), true);
 });
+
+test("appends dropped while the capture is full leave no broken parts", async () => {
+    const srv = server();
+    let hold = null;
+    const cap = createCapture({
+        spill: async (ev) => { if (hold) await hold; srv.spill(ev); },
+        onRestart: () => srv.drop(),
+    });
+    cap.add(0, "video/mp4");
+    cap.append(0, concat(init(1), part(100)));
+    await cap.flush();
+    // The upload stalls; playback goes on, its fragments appended in pieces.
+    let go;
+    hold = new Promise((r) => { go = r; });
+    const big = part(3 << 20);
+    for (let i = 0; i < 8; i++) {
+        cap.append(0, big.subarray(0, 256 << 10));       // a fragment's start…
+        cap.append(0, big.subarray(256 << 10));          // …and its rest
+    }
+    assert.equal(cap.full, true, "never full");
+    go();
+    hold = null;
+    await new Promise((r) => setTimeout(r, 20));
+    // Playback goes on: the next fragments in pieces again, then three marked
+    // ones (an mdat of 101, 102, 103 bytes), which should all reach the server.
+    for (let i = 0; i < 2; i++) {
+        cap.append(0, big.subarray(0, 256 << 10));
+        cap.append(0, big.subarray(256 << 10));
+    }
+    for (const n of [101, 102, 103]) cap.append(0, part(n));
+    await cap.flush();
+    const sizes = srv.sessions.flatMap((ss) => [...ss.tracks.values()].flatMap((tr) => tr.parts.map((p) => p.length)));
+    for (const n of [101, 102, 103]) assert.ok(sizes.includes(16 + n), `the part appended after the stall (${n}) never spilled: ${sizes.slice(-6).join(",")}`);
+    for (const session of srv.sessions) {
+        for (const tr of session.tracks.values()) {
+            for (const p of tr.parts) {
+                // Each part whole: a moof, then an mdat ending where the part does.
+                let at = 0, types = [];
+                for (let n = 0; at + 8 <= p.length && n < 64; n++) {
+                    const size = new DataView(p.buffer, p.byteOffset + at).getUint32(0);
+                    types.push(String.fromCharCode(...p.subarray(at + 4, at + 8)));
+                    if (size < 8) break;
+                    at += size;
+                }
+                assert.ok(at === p.length && types[0] === "moof" && types.every((t) => t === "moof" || t === "mdat"), `a broken part: ${types.join(",")} (${at} of ${p.length})`);
+            }
+        }
+    }
+});

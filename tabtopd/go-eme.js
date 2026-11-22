@@ -25,6 +25,25 @@ export function encryptedMedia(reply, allowed) {
     function reserve(map, id) {
         if (map.size >= 32 || !Number.isSafeInteger(id) || id <= 0 || map.has(id)) throw invalid();
     }
+    // admit makes room in a map of handles for id: its oldest that may go
+    // (keep says which mustn't) goes, if it's full. A page probing formats
+    // (decodingInfo, each answer an access) and making keys episode after
+    // episode would otherwise run out, its later requests all refused.
+    function admit(map, id, keep = () => false) {
+        if (!Number.isSafeInteger(id) || id <= 0 || map.has(id)) throw invalid();
+        if (map.size < 32) return;
+        for (const old of map.keys()) {
+            if (!keep(old)) {
+                map.delete(old);
+                return;
+            }
+        }
+        throw invalid();
+    }
+    // Keys in use: attached to a player, or a live session's.
+    const keysOfSessions = new Map();  // session -> its keys' handle
+    const keysAttached = new Map();    // node -> its keys' handle
+    const keysInUse = (id) => [...keysAttached.values(), ...keysOfSessions.values()].includes(id);
     function listen(element, node) {
         if (!node) return;
         element.addEventListener("encrypted", e => {
@@ -51,7 +70,7 @@ export function encryptedMedia(reply, allowed) {
     }
     function keepAccess(id, access) {
         if (stopped) throw invalid();
-        reserve(accesses, id);
+        admit(accesses, id);
         accesses.set(id, access);
         return { system: access.keySystem, handle: id, config: access.getConfiguration() };
     }
@@ -60,7 +79,7 @@ export function encryptedMedia(reply, allowed) {
         const id = c.request;
         switch (c.op) {
             case "access": {
-                reserve(accesses, id);
+                admit(accesses, id);
                 if (!navigator.requestMediaKeySystemAccess || !Array.isArray(c.configs)) throw unsupported();
                 const configs = c.configs.map(temporaryConfig).filter(Boolean);
                 if (!configs.length) throw unsupported();
@@ -78,7 +97,7 @@ export function encryptedMedia(reply, allowed) {
                     access: result.keySystemAccess ? keepAccess(id, result.keySystemAccess) : null };
             }
             case "keys": {
-                reserve(keys, id);
+                admit(keys, id, keysInUse);
                 const value = await lookup(accesses, c.access).createMediaKeys();
                 if (stopped) throw invalid();
                 keys.set(id, value);
@@ -97,8 +116,13 @@ export function encryptedMedia(reply, allowed) {
                     throw error;
                 }
                 if (!stopped) {
-                    if (c.keys === null) elements.delete(c.node);
-                    else elements.set(c.node, el);
+                    if (c.keys === null) {
+                        elements.delete(c.node);
+                        keysAttached.delete(c.node);
+                    } else {
+                        elements.set(c.node, el);
+                        keysAttached.set(c.node, c.keys);
+                    }
                 }
                 return;
             }
@@ -106,13 +130,15 @@ export function encryptedMedia(reply, allowed) {
                 reserve(sessions, c.session);
                 const session = lookup(keys, c.keys).createSession("temporary");
                 sessions.set(c.session, session);
+                keysOfSessions.set(c.session, c.keys);
                 const event = (name, fields) => send({ event: name, session: c.session, sessionId: session.sessionId, expiration: session.expiration, ...fields });
                 session.addEventListener("message", e => event("message", { type: e.messageType, data: encode(e.message) }));
                 session.addEventListener("keystatuseschange", () => event("keystatuseschange", {
                     statuses: Array.from(session.keyStatuses, ([key, status]) => [encode(key), status]),
                 }));
-                session.closed.then(reason => {
+                session.closed?.then(reason => {
                     sessions.delete(c.session);
+                    keysOfSessions.delete(c.session);
                     event("closed", { reason });
                 });
                 return;
@@ -153,6 +179,8 @@ export function encryptedMedia(reply, allowed) {
             active.clear();
             accesses.clear();
             keys.clear();
+            keysAttached.clear();
+            keysOfSessions.clear();
         },
     };
 }

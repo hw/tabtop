@@ -146,10 +146,9 @@ type tunnelRequest struct {
 	// fetch: a file the remote browser (/go) led to, fetched only where
 	// both fetches and the remote browser may go (see fetchManager).
 	SaveStream bool `json:"save_stream,omitempty"`
-	// SaveMSE: remux a clear Media Source buffer the /go page captured.
-	// With MseStage, the tunnel is a long-lived spill session (frames, then
-	// finalize); Size is unused. Without it, a one-shot payload of Size bytes
-	// follows (legacy tests).
+	// SaveMSE: remux a clear Media Source buffer the /go page captured. It
+	// needs MseStage: the tunnel is then a long-lived spill session (frames,
+	// then finalize; gostreammse.go). Size is unused.
 	SaveMSE  bool `json:"save_mse,omitempty"`
 	MseStage bool `json:"mse_stage,omitempty"`
 	FromGo   bool `json:"from_go,omitempty"`

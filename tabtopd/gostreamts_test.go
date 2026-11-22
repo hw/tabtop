@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Eyevinn/mp4ff/mp4"
 )
 
 // TestSaveStreamTS saves HLS streams of MPEG-TS segments, made by ffmpeg
@@ -137,6 +140,29 @@ func TestSaveStreamTS(t *testing.T) {
 		if len(top) < 4 || top[2] != "sidx" || top[3] != "sidx" {
 			t.Errorf("%s: its boxes %v, not indexed", c.manifest, top)
 		}
+		if c.manifest == "muxed.m3u8" {
+			out, err := mp4.DecodeFile(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			idx := out.Sidxs[0]
+			if len(idx.SidxRefs) != 3 {
+				t.Fatalf("expected one video reference per HLS segment, got %d", len(idx.SidxRefs))
+			}
+			pos := idx.AnchorPoint
+			for _, ref := range idx.SidxRefs {
+				box, err := mp4.DecodeBox(pos, bytes.NewReader(data[pos:]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				traf := box.(*mp4.MoofBox).Traf
+				traf.Trun.AddSampleDefaultValues(traf.Tfhd, out.Moov.Mvex.Trex)
+				if ref.StartsWithSAP == 0 || !traf.Trun.Samples[0].IsSync() {
+					t.Fatal("indexed HLS segment begins with a dependent frame")
+				}
+				pos += uint64(ref.ReferencedSize)
+			}
+		}
 		if errs, _ := exec.Command("ffmpeg", "-v", "error", "-i", file, "-f", "null", "-").CombinedOutput(); len(errs) > 0 {
 			t.Errorf("%s: decoding it: %s", c.manifest, errs)
 		}
@@ -176,5 +202,33 @@ func TestTSRemuxMalformed(t *testing.T) {
 	}
 	if err := newTSRemux(&tsClock{}).probe(noise); err == nil {
 		t.Error("noise: no error")
+	}
+}
+
+// TestTSAudioHeaderSplit: an ADTS frame whose header is split between PES
+// packets (its first bytes the end of one) is read whole: they were
+// dropped, the frame lost, and the next packet read from mid-frame.
+func TestTSAudioHeaderSplit(t *testing.T) {
+	frame := func(n int) []byte {
+		l := 7 + n
+		f := []byte{0xff, 0xf1, 1<<6 | 4<<2, 2<<6 | byte(l>>11), byte(l >> 3), byte(l&7)<<5 | 0x1f, 0xfc}
+		return append(f, make([]byte, n)...)
+	}
+	data := append(append(frame(100), frame(120)...), frame(140)...)
+	cut := 107 + 3 // 3 bytes into the second frame's header
+	r, s := &tsRemux{}, &tsStream{}
+	if err := r.audioFrames(s, data[:cut], 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.audioFrames(s, data[cut:], -1); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.samples) != 3 {
+		t.Fatalf("%d frames read of 3", len(s.samples))
+	}
+	for i, want := range []int{100, 120, 140} {
+		if len(s.samples[i].Data) != want {
+			t.Errorf("frame %d: %d bytes, want %d", i, len(s.samples[i].Data), want)
+		}
 	}
 }

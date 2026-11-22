@@ -1279,7 +1279,8 @@ function message(m) {
             shown = m.gen;
             applyMediaPolicy(m.mediaPolicy ?? "allow");
             media.blockHosts(m.videoHosts);
-            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide };
+            lastRender = { type: "render", gen: m.gen, url: m.url, base: m.base, doc: m.doc, again: !!m.again, io: m.io, at: m.at, hide: m.hide,
+                scheme: m.scheme === "light" || m.scheme === "dark" ? m.scheme : "" };
             toFrame(lastRender);
             update();
             break;
@@ -1854,7 +1855,7 @@ async function saveFile(url, say = null, stream = false, job = { id: "", label: 
 // MSE spill staging: completed clear-MP4 pieces go to the server while the
 // stream plays (gostreammse.go); Save finalizes the remux into Downloads.
 const MSE_UPLOAD_CHUNK = 256 * 1024;
-const MSE_KIND = { init: 1, part: 2, progressive: 3 };
+const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4 };
 const mseStages = new WeakMap(); // stream -> stage session
 
 async function openMSEStageSession() {
@@ -1878,21 +1879,24 @@ async function openMSEStageSession() {
     return {
         id,
         tunnel: t,
-        async write({ track, kind, bytes }) {
+        async write({ track, kind, bytes, offset: timestampOffset = 0 }) {
             if (closed) throw new Error("buffered stream was cancelled");
-            const kindByte = MSE_KIND[kind];
+            const timed = kind === "part" && timestampOffset !== 0;
+            const kindByte = timed ? MSE_KIND.timedPart : MSE_KIND[kind];
             if (!kindByte || !(bytes instanceof Uint8Array) || !bytes.length) {
                 throw new Error("invalid stream frame");
             }
-            const header = new Uint8Array(6);
+            const header = new Uint8Array(timed ? 14 : 6);
             header[0] = track & 0xff;
             header[1] = kindByte;
-            new DataView(header.buffer).setUint32(2, bytes.length);
+            const view = new DataView(header.buffer);
+            view.setUint32(2, bytes.length + header.length - 6);
+            if (timed) view.setFloat64(6, timestampOffset);
             let offset = 0;
-            const firstLen = Math.min(bytes.length, MSE_UPLOAD_CHUNK - 6);
-            const first = new Uint8Array(6 + firstLen);
+            const firstLen = Math.min(bytes.length, MSE_UPLOAD_CHUNK - header.length);
+            const first = new Uint8Array(header.length + firstLen);
             first.set(header);
-            first.set(bytes.subarray(0, firstLen), 6);
+            first.set(bytes.subarray(0, firstLen), header.length);
             await sendAndAck(first);
             offset = firstLen;
             while (offset < bytes.length) {

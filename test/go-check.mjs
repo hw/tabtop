@@ -217,6 +217,8 @@ try {
 }
 </script>`,
         // What a page is told of light or dark (Dark mode), as it changes.
+        // The same in its CSS, which the copy's styles go by.
+        "schemecss.html": `<!doctype html><title>Scheme CSS</title><style>#c { color: rgb(1, 1, 1); } @media (prefers-color-scheme: dark) { #c { color: rgb(2, 2, 2); } }</style><p id="c">css</p>`,
         "scheme.html": `<!doctype html><title>Scheme</title><p id="s"></p><script>const q = matchMedia("(prefers-color-scheme: dark)"); const say = () => { document.getElementById("s").textContent = q.matches ? "dark" : "light"; }; say(); q.addEventListener("change", say);</script>`,
         "interact.html": `<!doctype html><title>Interact</title>
 <p id="status">ready</p>
@@ -1303,6 +1305,10 @@ async function check(base, port, site, adSite) {
             await setTheme("theme-dark");
             await goTo(site + "scheme.html", "Scheme");
             if ((await told()) !== "dark") throw new Error(`Dark: told ${await told()}`);
+            // And the copy's styles go by it, this browser being light.
+            await goTo(site + "schemecss.html", "Scheme CSS");
+            if ((await frame(`getComputedStyle(document.getElementById("c")).color`)) !== "rgb(2, 2, 2)") throw new Error(`Dark: the copy's styles ${await frame(`getComputedStyle(document.getElementById("c")).color`)}, not the page's dark ones`);
+            await goTo(site + "scheme.html", "Scheme");
             // Changed in Site controls (its lightbox), the page shown follows.
             await ev(`document.getElementById("go_site").click()`);
             await waitFor(`(() => { const d = document.querySelector("#go_settings iframe")?.contentDocument; return d?.getElementById("theme")?.value === "dark" && !d.getElementById("theme").disabled; })()`, "the site's Dark mode in Site controls", 15000);

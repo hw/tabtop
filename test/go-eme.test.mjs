@@ -86,3 +86,44 @@ test("EME uses a temporary viewer session and binds its keys to the element used
     assert.equal(events.shift().message.reason, "closed-by-application");
     assert.equal((await call("update", { session: 11, data: "" })).name, "InvalidStateError");
 });
+
+test("EME: a page probing many formats can still get keys (old accesses and keys make room)", async (t) => {
+    const video = new EventTarget();
+    video.setMediaKeys = async (value) => { video.mediaKeys = value; };
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => video } });
+    t.after(() => {
+        if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+        else delete globalThis.document;
+        delete navigator.requestMediaKeySystemAccess;
+        delete navigator.mediaCapabilities;
+    });
+    const system = "com.example.test";
+    const access = () => ({ keySystem: system, getConfiguration: () => ({}), createMediaKeys: async () => ({ createSession: () => Object.assign(new EventTarget(), { closed: new Promise(() => {}), close: async () => {} }) }) });
+    navigator.requestMediaKeySystemAccess = async () => access();
+    navigator.mediaCapabilities = { async decodingInfo() { return { supported: true, smooth: true, powerEfficient: true, keySystemAccess: access() }; } };
+    let resolve, request = 0;
+    const relay = encryptedMedia((message) => { if (message.request) resolve(message); }, () => true);
+    t.after(() => relay.stop());
+    const call = (op, fields) => new Promise((r) => { resolve = r; relay.receive([{ op, request: ++request, ...fields }]); });
+    const config = { type: "media-source", video: { contentType: 'video/mp4; codecs="avc1.42E01E"', width: 640, height: 360, bitrate: 1, framerate: 30 },
+        keySystemConfiguration: { keySystem: system, initDataType: "cenc" } };
+    // Shaka probing its variants, episode after episode: 40 probes, and keys made for some.
+    let lastKeys = 0;
+    for (let i = 0; i < 40; i++) {
+        const probe = await call("decoding", { config });
+        assert.equal(probe.error, undefined, `probe ${i}: ${probe.error}`);
+        if (i % 5 === 0) {
+            const made = await call("keys", { access: probe.value.access.handle });
+            assert.equal(made.error, undefined, `keys ${i}: ${made.error}`);
+            lastKeys = made.value;
+        }
+    }
+    // Keys in use (attached to a player) are kept.
+    assert.equal((await call("attach", { node: 5, keys: lastKeys, kind: "video" })).error, undefined);
+    for (let i = 0; i < 40; i++) {
+        const made = await call("keys", { access: (await call("access", { system, configs: [{}] })).value.handle });
+        assert.equal(made.error, undefined);
+    }
+    assert.equal((await call("session", { keys: lastKeys, session: 1 })).error, undefined, "keys attached to a player were let go");
+});

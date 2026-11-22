@@ -70,6 +70,7 @@ type tsStream struct {
 
 // tsRemux takes a playlist's segments, in turn, out of MPEG-TS into MP4.
 type tsRemux struct {
+	pending bool // one segment awaits the following video DTS
 	clock   *tsClock
 	pmt     uint16
 	pmtRead bool
@@ -119,7 +120,7 @@ func (r *tsRemux) probe(seg []byte) (err error) {
 	}
 	// Read again from the start, for its samples.
 	for _, s := range r.streams {
-		s.lastRead, s.pes = false, nil
+		s.lastRead, s.pes, s.carry = false, nil, nil // (read again, from its start)
 	}
 	return nil
 }
@@ -170,13 +171,51 @@ func (r *tsRemux) segment(seg []byte, discontinuity bool, seq uint32) (frag []by
 			s.lastRead = false // (another clock: not a wrap of this one)
 		}
 	}
+	// Keep the preceding segment together until its last video's duration is
+	// known. Otherwise its final dependent frame leads the next segment.
+	var videoCount, audioCount int
+	var held *mp4.FullSample
+	if r.video != nil {
+		videoCount, held = len(r.video.samples), r.video.held
+	}
+	if r.audio != nil {
+		audioCount = len(r.audio.samples)
+	}
 	if err := r.read(seg); err != nil {
 		return nil, err
 	}
-	return r.fragment(seq)
+	if r.video == nil {
+		return r.fragment(seq)
+	}
+	if !r.pending {
+		r.pending = true
+		return nil, nil
+	}
+	if held != nil {
+		if r.video.held == held {
+			// The next segment contained no video to supply its duration.
+			held.Dur = max(r.video.lastDur, 1)
+			r.video.samples = append(r.video.samples, *held)
+			r.video.held = nil
+		}
+		videoCount++
+	}
+	video := r.video.samples[videoCount:]
+	r.video.samples = r.video.samples[:videoCount]
+	var audio []mp4.FullSample
+	if r.audio != nil {
+		audio = r.audio.samples[audioCount:]
+		r.audio.samples = r.audio.samples[:audioCount]
+	}
+	frag, err = r.fragment(seq)
+	r.video.samples = video
+	if r.audio != nil {
+		r.audio.samples = audio
+	}
+	return frag, err
 }
 
-// finish is the last samples (the video's held one) as a fragment.
+// finish emits the pending segment, including its final video frame.
 func (r *tsRemux) finish(seq uint32) (frag []byte, err error) {
 	defer tsRecover(&err)
 	if v := r.video; v != nil && v.held != nil {
@@ -565,6 +604,11 @@ func (r *tsRemux) audioFrames(s *tsStream, data []byte, at int64) error {
 		s.samples = append(s.samples, mp4.FullSample{Sample: mp4.NewSample(mp4.SyncSampleFlags, uint32(dur), uint32(len(f.payload)), 0), DecodeTime: s.next, Data: f.payload})
 		s.next += dur
 		at = -1 // (the packet's later frames: one after another)
+	}
+	// Under a header's length left: the next frame's start, perhaps, its
+	// header split between packets, kept for the next.
+	if len(data) > 0 {
+		s.carry = append([]byte(nil), data...)
 	}
 	return nil
 }

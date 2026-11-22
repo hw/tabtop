@@ -67,18 +67,38 @@ export function splitMp4(data) {
         initEnd = b.end;
     }
     if (initEnd <= 0) throw new Error("buffered stream has no MP4 header");
-    const parts = [];
-    let partStart = -1;
-    for (const b of boxes) {
-        if (b.start < initEnd) continue;
-        if (b.type === "styp" || b.type === "moof") {
-            if (partStart >= 0) parts.push(data.subarray(partStart, b.start));
-            partStart = b.start;
-        }
-    }
-    if (partStart >= 0) parts.push(data.subarray(partStart));
+    const { ranges } = fragmentRanges(boxes.filter(b => b.start >= initEnd), data.length, true);
+    const parts = ranges.map(([start, end]) => data.subarray(start, end));
     if (!parts.length) throw new Error("buffered stream has no media segments yet");
     return { init: data.subarray(0, initEnd), parts };
+}
+
+// styp starts a segment and belongs to its following moof/mdat pair.
+function fragmentRanges(boxes, end, flush) {
+    const ranges = [];
+    let start = -1, moof = false, mdat = false;
+    for (const b of boxes) {
+        if (b.type === "styp" || b.type === "moof") {
+            if (moof && mdat) {
+                ranges.push([start, b.start]);
+                start = -1;
+                moof = mdat = false;
+            }
+            if (start < 0) start = b.start;
+            if (b.type === "moof") moof = true;
+        } else if (b.type === "mdat" && moof) mdat = true;
+    }
+    if (flush && moof && mdat) ranges.push([start, end]);
+    return { ranges, consumeTo: ranges.at(-1)?.[1] ?? 0 };
+}
+
+// startsFragment is whether data begins with a box a fragment (or an init)
+// begins with, of a size that can be one.
+const FRAGMENT_STARTS = new Set(["moof", "styp", "ftyp", "moov", "emsg", "prft", "sidx"]);
+function startsFragment(data) {
+    if (data.length < 8) return false;
+    const size = (data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3]) >>> 0;
+    return (size === 1 || size >= 8) && FRAGMENT_STARTS.has(String.fromCharCode(data[4], data[5], data[6], data[7]));
 }
 
 function listBoxes(data) {
@@ -101,6 +121,7 @@ function listBoxes(data) {
 export function createCapture({ spill, onRestart } = {}) {
     const tracks = new Map();
     let encrypted = false, full = false, ended = false, sealed = false;
+    let incomplete = false;
     let spilledProgressive = 0, spilledParts = 0, unsaved = false;
     let generation = 0;  // restarts: a spill of an earlier one doesn't count
     let spillChain = Promise.resolve();
@@ -111,6 +132,7 @@ export function createCapture({ spill, onRestart } = {}) {
         if (!t) {
             t = {
                 mime: "",
+                offset: 0,
                 buf: new Uint8Array(0),
                 init: null,
                 parts: [],
@@ -221,37 +243,22 @@ export function createCapture({ spill, onRestart } = {}) {
             restart(t);
             return parseTrack(t, force);
         }
-        let partStart = -1;
-        const ranges = [];
-        for (const b of partBoxes) {
-            if (b.type === "styp" || b.type === "moof") {
-                if (partStart >= 0) ranges.push([partStart, b.start]);
-                partStart = b.start;
-            }
-        }
-        if (force && partsComplete && partStart >= 0) {
-            const frag = partBoxes.filter((b) => b.start >= partStart);
-            if (frag.some((b) => b.type === "moof") && frag.some((b) => b.type === "mdat")) {
-                ranges.push([partStart, t.buf.length]);
-                partStart = -1;
-            }
-        }
+        const { ranges, consumeTo } = fragmentRanges(partBoxes, t.buf.length, force && partsComplete);
         if (!ranges.length) return;
-        const consumeTo = partStart >= 0 ? partStart : ranges[ranges.length - 1][1];
         for (const [start, end] of ranges) {
             const piece = t.buf.subarray(start, end);
-            t.parts.push(piece);
+            t.parts.push({ bytes: piece, offset: t.offset });
             t.partsBytes += piece.length;
         }
         setBuf(t, t.buf.subarray(consumeTo));
     };
 
-    const emit = async (track, kind, bytes) => {
+    const emit = async (track, kind, bytes, offset = 0) => {
         if (!(bytes instanceof Uint8Array) || !bytes.length) return;
         const was = generation;
         if (typeof spill === "function") {
             try {
-                await spill({ track, kind, bytes });
+                await spill({ track, kind, bytes, offset });
             } catch (err) {
                 // Its session's gone, and what was spilled to it.
                 if (was === generation) restart();
@@ -302,8 +309,8 @@ export function createCapture({ spill, onRestart } = {}) {
 
             while (t.parts.length) {
                 const part = t.parts.shift();
-                t.partsBytes -= part.length;
-                await emit(index, "part", part);
+                t.partsBytes -= part.bytes.length;
+                await emit(index, "part", part.bytes, part.offset);
                 full = localHeld() > MSE_CAPTURE_LIMIT;
                 if (!force && t.partsBytes < MSE_SPILL_SOFT && localHeld() < MSE_SPILL_SOFT) break;
             }
@@ -315,6 +322,7 @@ export function createCapture({ spill, onRestart } = {}) {
     // track whose init was just replaced (its parts already dropped).
     function restart(kept = null) {
         generation++;
+        incomplete = false;
         spilledParts = 0;
         spilledProgressive = 0;
         unsaved = false;
@@ -370,17 +378,40 @@ export function createCapture({ spill, onRestart } = {}) {
             const t = trackOf(index);
             if (mime) t.mime = String(mime);
         },
-        append(index, bytes) {
-            if (encrypted || full || !(bytes instanceof Uint8Array) || !bytes.length) return;
+        append(index, bytes, offset = 0) {
+            if (encrypted || !(bytes instanceof Uint8Array) || !bytes.length) return;
             if (mp4Encrypted(bytes)) {
                 setEncrypted();
                 return;
             }
             const t = trackOf(index);
             if (/webm/i.test(t.mime) || t.mode === "lost") return;
-            if (localHeld() + bytes.length > MSE_CAPTURE_LIMIT) {
+            if (t.offset !== offset) {
+                // Attribute all complete fragments already buffered to the old offset.
+                parseTrack(t, true);
+                if (t.mode === "fmp4" && t.buf.length) incomplete = true;
+                t.offset = offset;
+            }
+            if (full || localHeld() + bytes.length > MSE_CAPTURE_LIMIT) {
+                // Spills lag playback: this append's dropped. A fragment left
+                // half had would run into the next (its box sizes from
+                // mid-data): what's buffered of it goes too, and nothing's
+                // taken again till an append starts a fragment (resync). A
+                // progressive file can't have a gap: not saveable any more.
+                incomplete = true;
                 full = true;
+                if (t.mode === "progressive") {
+                    t.mode = "lost";
+                    t.progressiveReady = [];
+                    t.progressiveBytes = 0;
+                }
+                t.buf = new Uint8Array(0);
+                t.resync = true;
                 return;
+            }
+            if (t.resync) {
+                if (!startsFragment(bytes)) return;
+                t.resync = false;
             }
             const next = new Uint8Array(t.buf.length + bytes.length);
             next.set(t.buf);
@@ -393,11 +424,12 @@ export function createCapture({ spill, onRestart } = {}) {
         },
         // seal stops further spills (Save is finalizing the staging tunnel).
         async seal() {
+            if (incomplete) throw new Error("some buffered media was missed");
             sealed = true;
             await scheduleSpill(true);
         },
         saveable() {
-            if (encrypted) return false;
+            if (encrypted || incomplete) return false;
             if (unsaved && (spilledProgressive > 0 || spilledParts > 0)) return true;
             for (const t of tracks.values()) {
                 if (/webm/i.test(t.mime)) return false;
