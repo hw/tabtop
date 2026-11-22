@@ -352,8 +352,22 @@ func (j *goCookieJar) apply(prev, now map[goCookieKey]goCookie) (changed int) {
 }
 
 // goForgetWithin is the times that can be cleared (seconds; 0 for all):
-// the last hour, day, week, month (30 days) and six months (182).
+// the last hour, day, week, month (30 days) and six months (182); or, as
+// older (go-cookies-forget's Older), what's older than they are.
 var goForgetWithin = []int64{0, 3600, 86400, 7 * 86400, 30 * 86400, 182 * 86400}
+
+// goForgetRange is when what's cleared was last changed (or visited): from
+// since (zero: the start) till before (zero: now). Both zero: all of it.
+type goForgetRange struct{ since, before time.Time }
+
+func (r goForgetRange) all() bool { return r.since.IsZero() && r.before.IsZero() }
+
+func (r goForgetRange) matches(t time.Time) bool {
+	return (r.since.IsZero() || !t.Before(r.since)) && (r.before.IsZero() || t.Before(r.before))
+}
+
+// matchesMs is matches for a time in Unix ms (0, not known: of long ago).
+func (r goForgetRange) matchesMs(ms int64) bool { return r.matches(time.UnixMilli(ms)) }
 
 // routeGoCookies lists the sites with cookies kept, or data in a tab
 // open: their names and counts, never their cookies' values (a site's
@@ -374,7 +388,7 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		c.r.fail("The remote browser is off or unavailable, so it keeps no cookies.")
 		return
 	}
-	within := c.req.Within
+	within, older := c.req.Within, c.req.Older
 	if len(c.req.Names) > 500 {
 		c.r.fail("Too many sites to clear at once.")
 		return
@@ -391,7 +405,8 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		sites = append(sites, name)
 	}
 	// Sites named, none of them one (blank): not taken as none named (all).
-	if len(sites) == 0 && (c.req.Name != "" || len(c.req.Names) > 0) || len(sites) == 0 && !slices.Contains(goForgetWithin, within) {
+	if len(sites) == 0 && (c.req.Name != "" || len(c.req.Names) > 0) || len(sites) == 0 && !slices.Contains(goForgetWithin, within) ||
+		older != 0 && (within != 0 || len(sites) > 0 || !slices.Contains(goForgetWithin, older)) {
 		c.r.fail("That isn't a site or a time to clear.")
 		return
 	}
@@ -405,18 +420,22 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		c.r.fail("Too many sites to clear at once.")
 		return
 	}
-	var since time.Time
-	if len(sites) == 0 && within > 0 {
-		since = time.Now().Add(-time.Duration(within) * time.Second)
+	var when goForgetRange
+	switch {
+	case len(sites) > 0:
+	case older > 0:
+		when.before = time.Now().Add(-time.Duration(older) * time.Second)
+	case within > 0:
+		when.since = time.Now().Add(-time.Duration(within) * time.Second)
 	}
 	forgetOne := func(site string) int {
 		var n int
 		if g.goStorage != nil {
-			g.goStorage.forget(site, since, func(selected map[string]bool) {
-				n = g.goCookies.forgetWithStorage(site, since, selected)
+			g.goStorage.forget(site, when, func(selected map[string]bool) {
+				n = g.goCookies.forgetWithStorage(site, when, selected)
 			})
 		} else {
-			n = g.goCookies.forget(site, since)
+			n = g.goCookies.forget(site, when)
 		}
 		return n
 	}
@@ -432,6 +451,8 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 	switch {
 	case len(sites) > 1:
 		what = strconv.Itoa(len(sites)) + " sites'"
+	case len(sites) == 0 && older > 0:
+		what = "what's older than " + strconv.FormatInt(older, 10) + " s"
 	case len(sites) == 0:
 		what = "the last " + strconv.FormatInt(within, 10) + " s's"
 		if within == 0 {
@@ -504,7 +525,7 @@ func (j *goCookieJar) sites(use map[string]goStorageUse) []goSiteInfo {
 		info.Changed = max(info.Changed, u.Changed)
 	}
 	for _, b := range tabs {
-		for origin, visited := range b.visitedOrigins(time.Time{}) {
+		for origin, visited := range b.visitedOrigins() {
 			s := goSite(goOriginHost(origin))
 			if by[s] == nil {
 				by[s] = &goSiteInfo{Site: s}
@@ -529,18 +550,18 @@ func (j *goCookieJar) tabList() []*goBrowser {
 	return out
 }
 
-// forget removes the site's cookies (site "" with since: those set since
-// then; since zero, all), and clears them, and the storage of the site (or
-// of what was visited since), in the tabs open.
-func (j *goCookieJar) forget(site string, since time.Time) int {
-	return j.forgetWithStorage(site, since, nil)
+// forget removes the site's cookies (site "": those changed in when; when
+// all, every one), and clears them, and the storage of the site (or of
+// what was visited in when), in the tabs open.
+func (j *goCookieJar) forget(site string, when goForgetRange) int {
+	return j.forgetWithStorage(site, when, nil)
 }
 
-func (j *goCookieJar) forgetWithStorage(site string, since time.Time, selected map[string]bool) int {
+func (j *goCookieJar) forgetWithStorage(site string, when goForgetRange, selected map[string]bool) int {
 	j.mu.Lock()
 	var gone []goCookie
 	for k, c := range j.cookies {
-		if site != "" && goSite(c.host()) != site || site == "" && c.Changed < since.UnixMilli() {
+		if site != "" && goSite(c.host()) != site || site == "" && !when.matchesMs(c.Changed) {
 			continue
 		}
 		gone = append(gone, *c)
@@ -552,7 +573,7 @@ func (j *goCookieJar) forgetWithStorage(site string, since time.Time, selected m
 	tabs := j.tabList()
 	j.mu.Unlock()
 	for _, b := range tabs {
-		b.forgetCookies(gone, site, since, selected)
+		b.forgetCookies(gone, site, when, selected)
 	}
 	return len(gone)
 }
@@ -939,14 +960,12 @@ func (b *goBrowser) siteCookiesAt(u *url.URL, top string) string {
 	return goCookieHeader(list)
 }
 
-func (b *goBrowser) visitedOrigins(since time.Time) map[string]time.Time {
+func (b *goBrowser) visitedOrigins() map[string]time.Time {
 	b.cookies.mu.Lock()
 	defer b.cookies.mu.Unlock()
-	out := map[string]time.Time{}
+	out := make(map[string]time.Time, len(b.cookies.visits))
 	for o, t := range b.cookies.visits {
-		if !t.Before(since) {
-			out[o] = t
-		}
+		out[o] = t
 	}
 	return out
 }
@@ -967,10 +986,10 @@ func goOrigin(rawURL string) string {
 }
 
 // forgetCookies removes cookies the jar forgot from the engine, and clears
-// the storage of the site's origins (site), or of those visited since
-// (site ""), that the tab has been to; then reads the engine again, so
+// the storage of the site's origins (site), or of those last visited in
+// when (site ""), that the tab has been to; then reads the engine again, so
 // what it no longer has isn't taken as its doing.
-func (b *goBrowser) forgetCookies(gone []goCookie, site string, since time.Time, selected map[string]bool) {
+func (b *goBrowser) forgetCookies(gone []goCookie, site string, when goForgetRange, selected map[string]bool) {
 	b.cookies.mu.Lock()
 	defer b.cookies.mu.Unlock()
 	if !b.cookies.started {
@@ -978,7 +997,7 @@ func (b *goBrowser) forgetCookies(gone []goCookie, site string, since time.Time,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	b.forgetStorage(ctx, site, selected, site == "" && since.IsZero())
+	b.forgetStorage(ctx, site, selected, site == "" && when.all())
 	for _, c := range gone {
 		b.cdp.call(ctx, b.page, "Network.deleteCookies", map[string]any{"name": c.Name, "domain": c.Domain, "path": c.Path}, nil)
 	}
@@ -987,11 +1006,13 @@ func (b *goBrowser) forgetCookies(gone []goCookie, site string, since time.Time,
 		storageTypes = strings.TrimPrefix(storageTypes, "local_storage,")
 	}
 	for origin, t := range b.cookies.visits {
-		if site != "" && goSite(goOriginHost(origin)) != site || site == "" && t.Before(since) {
+		if site != "" && goSite(goOriginHost(origin)) != site || site == "" && !when.matches(t) {
 			continue
 		}
 		b.cdp.call(ctx, "", "Storage.clearDataForOrigin", map[string]any{"origin": origin, "storageTypes": storageTypes}, nil)
-		if site != "" || since.IsZero() {
+		// (Its visit forgotten too, unless it's one of lately's: still
+		// visited, its data cleared.)
+		if site != "" || when.since.IsZero() {
 			delete(b.cookies.visits, origin)
 		}
 	}

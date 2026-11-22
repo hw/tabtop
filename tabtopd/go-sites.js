@@ -61,9 +61,8 @@ function renderSelection() {
     const names = [...checked];
     const n = names.length;
     $("selection_count").textContent = n ? `${n} selected` : "Select sites";
-    const all = listedSites.length > 0 && listedSites.every((name) => checked.has(name));
-    $("select_all").textContent = all ? "Select none" : "Select all";
-    $("select_all").disabled = state.busy || !listedSites.length;
+    $("select_pick").disabled = $("select_invert").disabled = state.busy || !listedSites.length;
+    if ($("select_pick").disabled) $("select_menu").hidePopover?.();
     const withData = names.filter(siteHasData).length, withSettings = names.filter(savedUnder).length;
     $("clear_selected").textContent = withData ? `Clear data (${withData})…` : "Clear data…";
     $("clear_selected").disabled = state.busy || !withData;
@@ -123,6 +122,7 @@ function renderSites() {
     ]);
     const hasData = (name) => !!(usage.get(name)?.cookies || usage.get(name)?.storageItems);
     const when = (name) => Math.max(usage.get(name)?.visited ?? 0, usage.get(name)?.changed ?? 0);
+    siteWhen = when;
     const sort = $("sort_sites").value;
     const score = (name) => sort === "size" ? usage.get(name)?.storage ?? 0 : sort === "recent" ? when(name) : 0;
     // Found by the search: a site named so, or one that covers the host
@@ -669,9 +669,78 @@ function confirmClear(target) {
     $("confirm_clear").showModal();
 }
 $("select_sites").addEventListener("click", () => select(true));
-$("select_all").addEventListener("click", () => {
-    const all = listedSites.every((name) => checked.has(name));
-    for (const name of listedSites) all ? checked.delete(name) : checked.add(name);
+// Select ▾: a menu of what to select, of the sites listed (as filtered
+// and searched): all, none, or by when they were last active (visited, or
+// their data changed): within a time, or not for one. A site with no time
+// (settings alone) is in neither. Each choice is the selection, not added
+// to it. Invert: those not selected, and not those that are.
+const DAY = 86400e3;
+const selectChoices = [
+    ["All", () => true],
+    ["None", () => false],
+    "Active in the last",
+    ["Hour", (t) => t > 0 && Date.now() - t < 3600e3],
+    ["24 hours", (t) => t > 0 && Date.now() - t < DAY],
+    ["Week", (t) => t > 0 && Date.now() - t < 7 * DAY],
+    ["Month", (t) => t > 0 && Date.now() - t < 30 * DAY],
+    "Not active for",
+    ["An hour", (t) => t > 0 && Date.now() - t >= 3600e3],
+    ["24 hours", (t) => t > 0 && Date.now() - t >= DAY],
+    ["A week", (t) => t > 0 && Date.now() - t >= 7 * DAY],
+    ["A month", (t) => t > 0 && Date.now() - t >= 30 * DAY],
+    ["6 months", (t) => t > 0 && Date.now() - t >= 182 * DAY],
+];
+let siteWhen = () => 0; // (renderSites': a listed site's last activity, unix ms)
+function selectWhere(test) {
+    checked.clear();
+    for (const name of listedSites) if (test(siteWhen(name))) checked.add(name);
+    renderSites();
+}
+{
+    const menu = $("select_menu"), pick = $("select_pick");
+    let group = "";
+    for (const choice of selectChoices) {
+        if (typeof choice === "string") {
+            group = choice;
+            const label = Object.assign(document.createElement("div"), { className: "sel-menu-label", textContent: choice });
+            label.setAttribute("role", "presentation");
+            menu.append(label);
+            continue;
+        }
+        const [text, test] = choice;
+        const item = Object.assign(document.createElement("button"), { type: "button", textContent: text });
+        item.setAttribute("role", "menuitem");
+        if (group) item.setAttribute("aria-label", `${group} ${text.toLowerCase()}`);
+        item.addEventListener("click", () => {
+            menu.hidePopover();
+            selectWhere(test);
+            pick.focus();
+        });
+        menu.append(item);
+    }
+    const items = () => [...menu.querySelectorAll("button")];
+    pick.addEventListener("click", () => {
+        menu.togglePopover();
+        if (!menu.matches(":popover-open")) return;
+        // Under its button, kept on the screen.
+        const b = pick.getBoundingClientRect(), m = menu.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, Math.min(b.left, innerWidth - m.width - 8))}px`;
+        menu.style.top = `${Math.max(8, Math.min(b.bottom + 4, innerHeight - m.height - 8))}px`;
+        items()[0].focus();
+    });
+    menu.addEventListener("toggle", (event) => pick.setAttribute("aria-expanded", String(event.newState === "open")));
+    menu.addEventListener("keydown", (event) => {
+        const list = items(), at = list.indexOf(document.activeElement);
+        if (event.key === "Escape") { event.preventDefault(); menu.hidePopover(); pick.focus(); }
+        else if (event.key === "ArrowDown") { event.preventDefault(); list[(at + 1) % list.length].focus(); }
+        else if (event.key === "ArrowUp") { event.preventDefault(); list[(at - 1 + list.length) % list.length].focus(); }
+        else if (event.key === "Home") { event.preventDefault(); list[0].focus(); }
+        else if (event.key === "End") { event.preventDefault(); list.at(-1).focus(); }
+        event.stopPropagation(); // (Esc here isn't selecting's end)
+    });
+}
+$("select_invert").addEventListener("click", () => {
+    for (const name of listedSites) checked.has(name) ? checked.delete(name) : checked.add(name);
     renderSites();
 });
 $("forget_selected").addEventListener("click", () => {
@@ -740,7 +809,11 @@ $("clear_cache").addEventListener("click", () => run(async () => {
 $("confirm_clear").addEventListener("close", () => {
     if ($("confirm_clear").returnValue !== "clear") return;
     const target = pendingClear;
-    const within = Number($("within").value);
+    // "older:N": what wasn't changed in the last N seconds; else the last N
+    // (0: all time).
+    const range = $("within").value, older = range.startsWith("older:");
+    const seconds = Number(older ? range.slice(6) : range);
+    const rangeText = $("within").selectedOptions[0]?.textContent.toLowerCase() ?? "";
     run(async () => {
         if (Array.isArray(target)) {
             // (In batches: the server takes 500 sites a request.)
@@ -750,12 +823,12 @@ $("confirm_clear").addEventListener("close", () => {
                 for (const name of batch) checked.delete(name);
             }
         } else {
-            data = await ask({ type: "go-cookies-forget", name: target, within: target ? 0 : within });
+            data = await ask({ type: "go-cookies-forget", name: target, ...(target ? {} : older ? { older: seconds } : { within: seconds }) });
             if (target) checked.delete(target);
         }
     }, Array.isArray(target)
         ? (target.length === 1 ? `Cleared site data for ${target[0]}.` : `Cleared site data for ${target.length} sites.`)
-        : target ? `Cleared site data for ${target}.` : "Cleared browsing data for the selected time range.");
+        : target ? `Cleared site data for ${target}.` : older ? `Cleared browsing data ${rangeText}.` : seconds ? `Cleared browsing data from the ${rangeText}.` : "Cleared all browsing data.");
 });
 
 run(async () => {

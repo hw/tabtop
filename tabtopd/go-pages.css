@@ -214,6 +214,15 @@ code { font: .85em ui-monospace, SFMono-Regular, Menlo, monospace; background: v
 .row-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; font-weight: 500; }
 .row-menu button:not(:disabled):hover, .row-menu button:focus-visible { background: var(--hover); outline: none; }
 .row-menu .danger { color: #ffc1ba; background: transparent; }
+/* Site controls' Select ▾: what to select (all, none, by when active), a
+   menu by its button (a popover: kept on the screen by go-sites.js). */
+.sel-pick { display: inline-flex; }
+.sel-chev { display: inline-block; width: 7px; height: 7px; margin: 0 2px 3px 8px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.sel-menu { position: fixed; inset: auto; margin: 0; min-width: 13rem; max-height: calc(100vh - 16px); overflow: auto; padding: 4px;
+    border: 1px solid var(--line); border-radius: 12px; background: #2a2a2f; color: inherit; box-shadow: 0 8px 24px #0008; }
+.sel-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; font-weight: 500; }
+.sel-menu button:not(:disabled):hover, .sel-menu button:focus-visible { background: var(--hover); outline: none; }
+.sel-menu-label { margin-top: 4px; padding: 8px 12px 2px; border-top: 1px solid var(--line); color: var(--muted); font-size: .75rem; font-weight: 550; }
 .storage-meter { margin-top: 12px; font-size: .875rem; color: var(--muted); }
 .storage-text { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .storage-text span:first-child { color: inherit; font-weight: 550; }

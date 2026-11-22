@@ -1357,6 +1357,9 @@ async function check(base, port, site, adSite) {
         await goTo(site + "cookie?set", "Cookie");
         await browserPage("go/cookie");
         await waitFor(`[...document.querySelectorAll("#sites li")].some((li) => li.querySelector(".site").textContent === ${JSON.stringify(host)} && /1 cookie/.test(li.textContent))`, "the site listed with its cookie", 20000);
+        // Older than an hour: the cookie just set isn't, kept.
+        await ev(`document.getElementById("show_browser").click(); document.getElementById("clear_browser").click(); document.getElementById("within").value = "older:3600"; document.getElementById("clear").click();`);
+        await waitFor(`document.getElementById("done").textContent === "Cleared browsing data older than 1 hour." && [...document.querySelectorAll("#sites li")].some((li) => li.querySelector(".site").textContent === ${JSON.stringify(host)} && /1 cookie/.test(li.textContent))`, "older than an hour cleared, the cookie just set kept");
         await ev(`document.getElementById("show_browser").click(); document.getElementById("clear_browser").click(); document.getElementById("within").value = "3600"; document.getElementById("clear").click();`);
         await waitFor(`/Cleared/.test(document.getElementById("done").textContent) && !/cookie/.test(document.getElementById("sites").textContent)`, "the last hour's cleared");
         await newTab();
@@ -1466,6 +1469,29 @@ async function check(base, port, site, adSite) {
         await ev(`window.confirm = () => true; document.getElementById("forget_selected").click()`);
         await waitFor(`/Deleted the saved settings for rules-only\\.example/.test(document.getElementById("done").textContent) && !${row("rules-only.example")}`, "the selected site's settings deleted");
         if ((await bar()) !== "1 selected|Clear data (1)…|false|Delete settings…|true") throw new Error(`after deleting settings: ${await bar()}`);
+        // Select ▾: all, none, or by when active (the site's cookie was set
+        // just now); Invert.
+        const choose = async (label) => {
+            await ev(`document.getElementById("select_pick").click()`);
+            await waitFor(`document.getElementById("select_menu").matches(":popover-open") && document.activeElement?.parentElement?.id === "select_menu"`, "the Select menu open, its first choice focused");
+            await ev(`[...document.querySelectorAll("#select_menu button")].find((b) => (b.getAttribute("aria-label") || b.textContent) === ${JSON.stringify(label)}).click()`);
+            await waitFor(`!document.getElementById("select_menu").matches(":popover-open")`, "the menu closed");
+        };
+        const pressed = (name) => ev(`${row(name)}.querySelector(".site-row").getAttribute("aria-pressed")`);
+        const listed = await ev(`document.querySelectorAll("#sites li").length`);
+        await choose("None");
+        if ((await ev(`document.getElementById("selection_count").textContent`)) !== "Select sites") throw new Error("None left some selected");
+        await choose("Active in the last hour");
+        if ((await pressed(host)) !== "true") throw new Error("a site active just now not selected as active in the last hour");
+        await choose("Not active for an hour");
+        if ((await pressed(host)) !== "false") throw new Error("a site active just now selected as not active for an hour");
+        await ev(`document.getElementById("select_invert").click()`);
+        if ((await pressed(host)) !== "true") throw new Error("Invert didn't select what wasn't");
+        await choose("All");
+        if ((await ev(`document.getElementById("selection_count").textContent`)) !== `${listed} selected`) throw new Error(`All: ${await ev(`document.getElementById("selection_count").textContent`)} of ${listed}`);
+        await ev(`document.getElementById("select_invert").click()`);
+        if ((await ev(`document.getElementById("selection_count").textContent`)) !== "Select sites") throw new Error("Invert of all left some selected");
+        await ev(`${row(host)}.querySelector(".site-row").click()`);
         // Done (or Esc): rows open their sites again.
         await ev(`document.getElementById("clear_selection").click()`);
         if (!(await ev(`document.getElementById("selection_bar").hidden && !${row(host)}.querySelector(".site-row").hasAttribute("aria-pressed")`))) throw new Error("Done kept selecting");

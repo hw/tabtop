@@ -94,16 +94,16 @@ func TestGoCookieJarForget(t *testing.T) {
 	if len(sites) != 3 || sites[0].Site != "example.co.uk" || sites[0].Cookies != 2 {
 		t.Fatalf("sites %+v", sites)
 	}
-	if n := j.forget("", clock.Add(-time.Hour)); n != 1 {
+	if n := j.forget("", goForgetRange{since: clock.Add(-time.Hour)}); n != 1 {
 		t.Errorf("the last hour: %d forgotten", n)
 	}
 	if _, ok := j.cookies[goCookieKey{"c", "other.com", "/"}]; !ok {
 		t.Error("an older cookie went with the last hour's")
 	}
-	if n := j.forget("example.co.uk", time.Time{}); n != 2 {
+	if n := j.forget("example.co.uk", goForgetRange{}); n != 2 {
 		t.Errorf("the site: %d forgotten", n)
 	}
-	if n := j.forget("", time.Time{}); n != 1 || len(j.cookies) != 0 {
+	if n := j.forget("", goForgetRange{}); n != 1 || len(j.cookies) != 0 {
 		t.Errorf("all: %d forgotten, %d left", n, len(j.cookies))
 	}
 }
@@ -298,5 +298,55 @@ func TestGoReferrer(t *testing.T) {
 	none.apply(r)
 	if r.Header.Get("Cookie") != "" {
 		t.Error("nil left a cookie")
+	}
+}
+
+// Older than a time: what wasn't set in it goes, what was stays (Clear
+// browsing data's "Older than 1 hour").
+func TestGoCookieJarForgetOlder(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	j := newGoCookieJar("", "")
+	j.now = func() time.Time { return clock }
+	j.apply(nil, goCookieMap(goTestCookie("a", "1", ".example.co.uk"), goTestCookie("c", "1", "other.com")))
+	clock = clock.Add(2 * time.Hour)
+	j.apply(nil, goCookieMap(goTestCookie("d", "1", "late.com")))
+	if n := j.forget("", goForgetRange{before: clock.Add(-time.Hour)}); n != 2 {
+		t.Errorf("older than an hour: %d forgotten", n)
+	}
+	if _, ok := j.cookies[goCookieKey{"d", "late.com", "/"}]; !ok || len(j.cookies) != 1 {
+		t.Errorf("the last hour's cookie not the one kept: %v", j.cookies)
+	}
+}
+
+// A request for what's older: done; with a time it's not one of, with a
+// range of the last too, or with sites named, refused.
+func TestGoCookiesForgetOlderRequest(t *testing.T) {
+	g, srv := newE2EServer(t)
+	g.goOn = true
+	g.goCookies = newGoCookieJar("", "")
+	j := g.goCookies
+	j.apply(nil, goCookieMap(goTestCookie("c", "1", ".keep.com")))
+	s := login(t, testCtx(t), srv.URL, code(0))
+	ask := func(req tunnelRequest) map[string]any {
+		return openSession(t, testCtx(t), srv.URL, s).request(t, testCtx(t), req)
+	}
+	for _, bad := range []tunnelRequest{
+		{Type: "go-cookies-forget", Older: 1234},
+		{Type: "go-cookies-forget", Older: 3600, Within: 3600},
+		{Type: "go-cookies-forget", Older: 3600, Name: "keep.com"},
+	} {
+		if reply := ask(bad); reply["ok"] == true {
+			t.Errorf("%+v taken", bad)
+		}
+	}
+	if _, ok := j.cookies[goCookieKey{"c", ".keep.com", "/"}]; !ok {
+		t.Fatal("a refused request cleared")
+	}
+	// Set just now: not older than an hour, kept.
+	if reply := ask(tunnelRequest{Type: "go-cookies-forget", Older: 3600}); reply["ok"] != true {
+		t.Fatalf("older than an hour: %v", reply)
+	}
+	if _, ok := j.cookies[goCookieKey{"c", ".keep.com", "/"}]; !ok {
+		t.Error("a cookie of the last hour cleared as older")
 	}
 }

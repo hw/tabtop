@@ -34,7 +34,11 @@
         <div class="selection-bar" id="selection_bar" role="region" aria-label="Selecting sites" hidden>
             <div class="sel-head">
                 <span id="selection_count" role="status"></span>
-                <button type="button" id="select_all" class="quiet"></button>
+                <span class="sel-pick">
+                    <button type="button" id="select_pick" class="quiet" aria-haspopup="menu" aria-expanded="false" aria-controls="select_menu">Select <span class="sel-chev" aria-hidden="true"></span></button>
+                    <div id="select_menu" class="sel-menu" role="menu" aria-label="Select sites" popover="auto"></div>
+                </span>
+                <button type="button" id="select_invert" class="quiet" title="Select those not selected, and not those that are">Invert</button>
                 <button type="button" id="clear_selection">Done</button>
             </div>
             <div class="sel-actions">
@@ -134,11 +138,20 @@
         <h2 id="clear_heading"></h2>
         <p id="clear_summary"></p>
         <p id="time_range"><label>Time range <span class="select"><select id="within">
-            <option value="3600">Last hour</option>
-            <option value="86400">Last 24 hours</option>
-            <option value="604800">Last week</option>
-            <option value="2592000">Last month</option>
-            <option value="15724800">Last 6 months</option>
+            <optgroup label="Changed in the">
+                <option value="3600">Last hour</option>
+                <option value="86400">Last 24 hours</option>
+                <option value="604800">Last week</option>
+                <option value="2592000">Last month</option>
+                <option value="15724800">Last 6 months</option>
+            </optgroup>
+            <optgroup label="Not changed in the last">
+                <option value="older:3600">Older than 1 hour</option>
+                <option value="older:86400">Older than 24 hours</option>
+                <option value="older:604800">Older than a week</option>
+                <option value="older:2592000">Older than a month</option>
+                <option value="older:15724800">Older than 6 months</option>
+            </optgroup>
             <option value="0">All time</option>
         </select></span></label></p>
         <form method="dialog" class="tools"><button autofocus>Cancel</button><button value="clear" class="danger" id="clear">Clear data</button></form>

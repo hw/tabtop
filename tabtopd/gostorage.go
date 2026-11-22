@@ -281,13 +281,13 @@ func (s *goStorage) dropOriginLocked(origin string) {
 
 // forget clears the matching whole sites and suspends capture for them
 // while the same data is cleared from the open engines.
-func (s *goStorage) forget(site string, since time.Time, clearTabs func(map[string]bool)) {
+func (s *goStorage) forget(site string, when goForgetRange, clearTabs func(map[string]bool)) {
 	s.forgetMu.Lock()
 	defer s.forgetMu.Unlock()
 	s.mu.Lock()
 	sites := map[string]bool{}
 	for origin, o := range s.origins {
-		if o.Changed >= since.UnixMilli() {
+		if when.matchesMs(o.Changed) {
 			sites[goStorageSite(origin)] = true
 		}
 	}
@@ -306,7 +306,7 @@ func (s *goStorage) forget(site string, since time.Time, clearTabs func(map[stri
 		s.saveSoonLocked()
 	}
 	s.clearing = sites
-	s.clearAll = site == "" && since.IsZero()
+	s.clearAll = site == "" && when.all()
 	s.mu.Unlock()
 	clearTabs(sites)
 	s.mu.Lock()

@@ -39,7 +39,7 @@ func TestGoStorageSealedAndClear(t *testing.T) {
 	if got := s.items(a)["private-key"]; got != value {
 		t.Fatal("sealed data did not reload")
 	}
-	s.forget("", now.Add(-time.Hour), func(selected map[string]bool) {
+	s.forget("", goForgetRange{since: now.Add(-time.Hour)}, func(selected map[string]bool) {
 		if len(selected) != 1 || !selected["example.com"] {
 			t.Fatalf("selected sites: %v", selected)
 		}
@@ -48,7 +48,7 @@ func TestGoStorageSealedAndClear(t *testing.T) {
 	if s.items(a) != nil || s.items(b) != nil || s.items(c) == nil {
 		t.Fatal("time-based clear did not remove the entire matching site")
 	}
-	s.forget("example.net", time.Time{}, func(map[string]bool) {})
+	s.forget("example.net", goForgetRange{}, func(map[string]bool) {})
 	if _, used := s.use(); used != 0 {
 		t.Fatalf("after deleting the remaining site, usage = %d", used)
 	}
@@ -231,13 +231,13 @@ func TestGoStorageWithMoli(t *testing.T) {
 	clearTabs := func(selected map[string]bool) {
 		first.forgetStorage(ctx, "", selected, false)
 	}
-	store.forget("", time.Now().Add(-time.Hour), clearTabs)
+	store.forget("", goForgetRange{since: time.Now().Add(-time.Hour)}, clearTabs)
 	if got := eval(first, "String(localStorage.length)"); got != "0" {
 		t.Fatalf("open engine has %s items after time-based clear", got)
 	}
 	eval(first, `localStorage.setItem("new", "value")`)
 	awaitChange(first, "new", "value")
-	store.forget(goStorageSite(site.URL), time.Time{}, clearTabs)
+	store.forget(goStorageSite(site.URL), goForgetRange{}, clearTabs)
 	first.endStorage()
 	if got := store.items(site.URL); got != nil {
 		t.Fatal("closing a cleared tab put storage back")
@@ -255,7 +255,7 @@ func TestGoStorageWithMoli(t *testing.T) {
 	if !strings.HasSuffix(partition, ";top-level-site=http://localhost") || store.items(site.URL) != nil {
 		t.Fatalf("wrong embedded partition: %q, top-level stored = %v", partition, store.items(site.URL) != nil)
 	}
-	store.forget(goStorageSite(site.URL), time.Time{}, func(selected map[string]bool) {
+	store.forget(goStorageSite(site.URL), goForgetRange{}, func(selected map[string]bool) {
 		embedded.forgetStorage(ctx, "", selected, false)
 	})
 	id := goStorageID(site.URL)

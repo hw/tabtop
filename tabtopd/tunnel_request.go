@@ -50,6 +50,9 @@ type tunnelRequest struct {
 	Name string `json:"name,omitempty"` // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle; go-cookies-forget, go-settings, go-site-data(-delete): the site
 	// go-cookies-forget: what was set in the last Within seconds (0: all), when Name and Names are empty.
 	Within int64 `json:"within,omitempty"`
+	// go-cookies-forget: what wasn't changed (visited, for storage) in the
+	// last Older seconds, when Name and Names are empty (not with Within).
+	Older int64 `json:"older,omitempty"`
 	// go-site-data-delete: one of the site's (Name) cookies, or one of its
 	// origins' localStorage items, to delete.
 	Cookie  *goCookieRef  `json:"cookie,omitempty"`
