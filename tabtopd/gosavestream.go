@@ -34,9 +34,11 @@ type streamTrack struct {
 	ts    *tsRemux
 	jumps map[int]bool
 	first []byte // its first part, read for the header: not read again
-	// In-memory segments (MSE capture): used instead of init/parts URLs.
-	initData []byte
-	partData [][]byte
+	// A buffered stream's (MSE capture's): its init, and its parts read as
+	// they're written (from its staging folder), instead of init/parts URLs.
+	initData  []byte
+	partCount int
+	partAt    func(i int) ([]byte, error)
 }
 
 // A stream's request is tried streamTries times, for what can pass (a
@@ -510,11 +512,7 @@ func (m *fetchManager) writeStreamTracks(ctx context.Context, j *fetchJob, track
 	}
 	totalParts, tsTracks := 0, 0
 	for _, t := range tracks {
-		if t.partData != nil {
-			totalParts += len(t.partData)
-		} else {
-			totalParts += len(t.parts)
-		}
+		totalParts += streamPartCount(t)
 		if t.ts != nil {
 			tsTracks++
 		}
@@ -550,11 +548,13 @@ func (m *fetchManager) writeStreamTracks(ctx context.Context, j *fetchJob, track
 		var data []byte
 		if t.ts != nil && part.i == 0 && t.first != nil {
 			data, t.first = t.first, nil
-		} else if t.partData != nil {
-			if part.i >= len(t.partData) {
+		} else if t.partAt != nil {
+			if part.i >= t.partCount {
 				return "", errors.New("missing media segment")
 			}
-			data = t.partData[part.i]
+			if data, err = t.partAt(part.i); err != nil {
+				return "", err
+			}
 		} else if reader == nil {
 			return "", errors.New("missing media segment")
 		} else if data, _, err = reader.read(t.base, t.parts[part.i], segmentLimit); err != nil {
@@ -722,8 +722,8 @@ type streamPart struct{ track, i int }
 // video); a track whose times aren't known, part by part, in turn with the
 // others.
 func streamPartCount(t streamTrack) int {
-	if t.partData != nil {
-		return len(t.partData)
+	if t.partAt != nil {
+		return t.partCount
 	}
 	return len(t.parts)
 }

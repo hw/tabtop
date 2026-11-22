@@ -306,6 +306,9 @@ $("pad").addEventListener("wheel", (e) => log("wheel " + (e.deltaY > 0 ? "down" 
 $("pad").addEventListener("click", (e) => log("pad " + (e.offsetX < 100 ? "left" : "right")));
 $("under").addEventListener("click", () => log("under clicked"));
 </script>`,
+        // A video on a dark page: the page stays dark around it.
+        "darkvideo.html": `<!doctype html><title>Dark video</title><style>html { background: #102030; color: #eee; }</style><p>a clip:</p>
+<video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
         "video.html": `<!doctype html><title>Video</title><link rel="stylesheet" href="style.css"><p>a clip:</p>
 <div style="position:relative;width:320px;height:180px"><div style="overflow:hidden;width:1px;height:1px">
 <video id="clip" src="clip.mp4" width="320" height="180" poster="pic.png" style="position:absolute;top:0;left:0;object-fit:cover;object-position:75% 25%" muted></video>
@@ -1998,6 +2001,22 @@ async function check(base, port, site, adSite) {
         await frameWait(`(() => { const gl = document.getElementById("lit").getContext("webgl2"); const p = new Uint8Array(4); gl.readPixels(64, 64, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
             return p[1] > 100 && p[0] < 100 && p[2] < 100; })() && ${glAt("lit", 2, 2, [0, 0, 0, 255])}`, "three.js's lit green ball on black");
         return `${seen.size} frames of the animation seen, its last in ${animated} ms`;
+    });
+
+    await step("the page's view is white where a page draws nothing, and a dark page keeps its colour around a video played under it", async () => {
+        // A screenshot's pixel, in the view's right half, clear of its notes.
+        const viewPixel = async () => {
+            const shot = (await cdp("Page.captureScreenshot", { format: "png" })).data;
+            const at = await ev(`(() => { const r = document.getElementById("go_view").getBoundingClientRect(); return { x: Math.round(r.right - 40), y: Math.round(r.top + 300) }; })()`);
+            return ev(`new Promise((r) => { const i = new Image(); i.onload = () => { const c = document.createElement("canvas"); c.width = i.width; c.height = i.height; const g = c.getContext("2d"); g.drawImage(i, 0, 0); r([...g.getImageData(${at.x}, ${at.y}, 1, 1).data].slice(0, 3).join()); }; i.src = "data:image/png;base64,${shot}"; })`);
+        };
+        await goTo(site + "second.html", "Second");
+        await sleep(500);
+        if (await viewPixel() !== "255,255,255") throw new Error(`a page with no background of its own shows ${await viewPixel()}, not white`);
+        await goTo(site + "darkvideo.html", "Dark video");
+        await waitFor(`document.getElementById("go_view").classList.contains("go-underlaid")`, "the video's player under the copy", 30000);
+        await sleep(1000);
+        if (await viewPixel() !== "16,32,48") throw new Error(`the dark page shows ${await viewPixel()} around its video, not its own #102030`);
     });
 
     await step("a video plays in a player under the copy, its file read through the server", async () => {

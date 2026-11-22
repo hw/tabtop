@@ -1562,6 +1562,9 @@ window.addEventListener("message", (e) => {
             // The page started or stopped its player (a feed's next video).
             if (m.gen === shown && Number.isSafeInteger(m.key)) media.play(m.key, !!m.play);
             break;
+        case "media-backdrop":
+            if (m.gen === shown) media.backdrop(m.color);
+            break;
         case "media-positions":
             if (m.gen === shown && Array.isArray(m.positions)) {
                 const keys = new Set();
@@ -1919,7 +1922,15 @@ async function ensureMSEStage(stream) {
 
 async function spillMSECapture(stream, ev) {
     const stage = await ensureMSEStage(stream);
-    await stage.write(ev);
+    try {
+        await stage.write(ev);
+    } catch (err) {
+        // The server's let it go (its time up, a refused piece): the next
+        // spill opens another (the capture begins again: mse-capture.js).
+        if (mseStages.get(stream) === stage) mseStages.delete(stream);
+        stage.markClosed();
+        throw err;
+    }
 }
 
 function abortMSECapture(stream) {
@@ -1960,11 +1971,13 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         if (stream?.capture?.seal) await stream.capture.seal();
         else await stream?.capture?.flush?.();
     } catch (err) {
+        stream?.capture?.unseal?.();
         if (say) say(`Not saved: ${err.message}`);
         else warn(`Not saved: ${err.message}`);
         return;
     }
     if (!stream?.capture?.saveable()) {
+        stream?.capture?.unseal?.();
         if (say) say("Not saved: buffered stream has no media segments yet");
         else warn("Not saved: buffered stream has no media segments yet");
         return;
@@ -1988,6 +2001,8 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         if (job.say) job.say("Cancelling download…", null);
     };
     let saying = [`Saving buffered stream into Downloads…`, null];
+    // Once finalize's sent, the server's session is gone, saved or not.
+    let finalized = false, saved = false;
     job.tell = () => {
         if (job.say) job.say(saying[0], saying[1], job.cancelling ? null : cancel);
         else show(saying[0] + (typeof saying[1] === "number" ? ` · ${Math.floor(saying[1] * 100)}%` : ""));
@@ -2005,6 +2020,7 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
             throw new Error("cancelled");
         }
         stage.tunnel.sendText(JSON.stringify({ finalize: true }));
+        finalized = true;
         mseStages.delete(stream);
         stage.markClosed();
         for (;;) {
@@ -2037,6 +2053,7 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
                 continue;
             }
             if (res.fetch?.done) {
+                saved = true;
                 stream?.capture?.markSaved?.();
                 if (job.say) return job.say(`Saved ${res.fetch.name} into Downloads.`);
                 show("");
@@ -2062,6 +2079,10 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         show("");
         warn(`Not saved: ${err.message}`, { retry: () => openPage("files"), label: "Open Downloads" });
     } finally {
+        if (!saved) {
+            if (finalized) stream?.capture?.saveFailed?.();
+            else stream?.capture?.unseal?.();
+        }
         try { stage?.tunnel?.close(); } catch { /* closed */ }
         downloads.delete(job);
         button.remove();

@@ -92,10 +92,17 @@ function listBoxes(data) {
 // createCapture keeps a small local working set and calls spill({track, kind, bytes})
 // for completed pieces (kind: "init" | "part" | "progressive"). If spill returns a
 // Promise, bytes stay counted until it settles (backpressure).
-export function createCapture({ spill } = {}) {
+//
+// What's spilled goes to one staging session on the server. When that's gone
+// (saved, a save failed, a spill failed) or must be (the player switched
+// quality, which brings a new init), restart() begins again: onRestart is told
+// (to let the old session go), each fMP4 track's init is sent again first, and
+// a progressive stream, whose start is gone with it, isn't saveable any more.
+export function createCapture({ spill, onRestart } = {}) {
     const tracks = new Map();
     let encrypted = false, full = false, ended = false, sealed = false;
     let spilledProgressive = 0, spilledParts = 0, unsaved = false;
+    let generation = 0;  // restarts: a spill of an earlier one doesn't count
     let spillChain = Promise.resolve();
     let spilling = false, spillAgain = false, spillForce = false;
 
@@ -111,7 +118,8 @@ export function createCapture({ spill } = {}) {
                 progressiveReady: [],
                 progressiveBytes: 0,
                 spilledInit: false,
-                mode: "", // "" | "fmp4" | "progressive"
+                initCopy: null,  // its init, to send again after a restart
+                mode: "", // "" | "fmp4" | "progressive" | "lost" (progressive, its start gone)
             };
             tracks.set(index, t);
         }
@@ -178,6 +186,7 @@ export function createCapture({ spill } = {}) {
             return;
         }
 
+        if (t.mode !== "fmp4") return;
         // fMP4
         if (!t.spilledInit && !t.init) {
             let initEnd = 0;
@@ -187,12 +196,31 @@ export function createCapture({ spill } = {}) {
             }
             if (initEnd <= 0) return;
             t.init = t.buf.subarray(0, initEnd);
+            t.initCopy = t.init;
             setBuf(t, t.buf.subarray(initEnd));
             return parseTrack(t, force);
         }
 
         const { boxes: partBoxes, complete: partsComplete } = listBoxes(t.buf);
         if (!partBoxes.length) return;
+        // A new init (ftyp, moov): the player switched quality (hls.js,
+        // dash.js and Shaka append the new rendition's init to the same
+        // buffer). Parts before it are of the old init, which can't be saved
+        // with the new one's: begin again from it.
+        const moovAt = partBoxes.findIndex((b) => b.type === "moov");
+        if (moovAt >= 0) {
+            const start = moovAt > 0 && partBoxes[moovAt - 1].type === "ftyp" ? partBoxes[moovAt - 1].start : partBoxes[moovAt].start;
+            const next = partBoxes.find((b, k) => k > moovAt && (b.type === "moof" || b.type === "styp"));
+            if (!next) return;  // (its first part, to know where it ends)
+            t.init = t.buf.subarray(start, next.start);
+            t.initCopy = t.init;
+            t.spilledInit = false;
+            t.parts = [];
+            t.partsBytes = 0;
+            setBuf(t, t.buf.subarray(next.start));
+            restart(t);
+            return parseTrack(t, force);
+        }
         let partStart = -1;
         const ranges = [];
         for (const b of partBoxes) {
@@ -220,7 +248,17 @@ export function createCapture({ spill } = {}) {
 
     const emit = async (track, kind, bytes) => {
         if (!(bytes instanceof Uint8Array) || !bytes.length) return;
-        if (typeof spill === "function") await spill({ track, kind, bytes });
+        const was = generation;
+        if (typeof spill === "function") {
+            try {
+                await spill({ track, kind, bytes });
+            } catch (err) {
+                // Its session's gone, and what was spilled to it.
+                if (was === generation) restart();
+                throw err;
+            }
+        }
+        if (was !== generation) return;  // spilled to a session since let go
         if (kind === "part") spilledParts++;
         if (kind === "progressive") spilledProgressive += bytes.length;
         if (kind === "init") {
@@ -273,6 +311,29 @@ export function createCapture({ spill } = {}) {
         full = localHeld() > MSE_CAPTURE_LIMIT;
     };
 
+    // restart begins a new staging session (see createCapture): kept is a
+    // track whose init was just replaced (its parts already dropped).
+    function restart(kept = null) {
+        generation++;
+        spilledParts = 0;
+        spilledProgressive = 0;
+        unsaved = false;
+        sealed = false;
+        for (const t of tracks.values()) {
+            if (t.mode === "progressive" && t !== kept) {
+                t.mode = "lost";
+                t.progressiveReady = [];
+                t.progressiveBytes = 0;
+                t.buf = new Uint8Array(0);
+            } else if (t.mode === "fmp4" && t !== kept) {
+                t.spilledInit = false;
+                t.init = t.initCopy;
+            }
+        }
+        full = localHeld() > MSE_CAPTURE_LIMIT;
+        try { onRestart?.(); } catch { /* the session's let go regardless */ }
+    }
+
     const scheduleSpill = (force = false) => {
         if (force) spillForce = true;
         spillAgain = true;
@@ -316,7 +377,7 @@ export function createCapture({ spill } = {}) {
                 return;
             }
             const t = trackOf(index);
-            if (/webm/i.test(t.mime)) return;
+            if (/webm/i.test(t.mime) || t.mode === "lost") return;
             if (localHeld() + bytes.length > MSE_CAPTURE_LIMIT) {
                 full = true;
                 return;
@@ -340,6 +401,7 @@ export function createCapture({ spill } = {}) {
             if (unsaved && (spilledProgressive > 0 || spilledParts > 0)) return true;
             for (const t of tracks.values()) {
                 if (/webm/i.test(t.mime)) return false;
+                if (t.mode === "lost") continue;
                 if (t.mode === "progressive" && t.progressiveBytes > 0) return true;
                 if ((t.spilledInit || t.init) && t.parts.length > 0) return true;
                 try {
@@ -351,8 +413,14 @@ export function createCapture({ spill } = {}) {
             return false;
         },
         // markSaved clears the offer after a successful finalize; further
-        // appends may spill again to a new staging session.
-        markSaved() { unsaved = false; sealed = false; },
+        // appends spill again, to a new staging session (restart).
+        markSaved() { restart(); },
+        // saveFailed: a finalize that didn't save. Its session's gone (the
+        // server gives a session up once it's finalized, saved or not).
+        saveFailed() { restart(); },
+        // unseal: a save that never finalized (nothing to save yet): spills go
+        // on to the same session.
+        unseal() { sealed = false; },
         flush() {
             return scheduleSpill(true);
         },

@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,8 +40,12 @@ const (
 	mseKindInit     = 1
 	mseKindPart     = 2
 	mseKindProgress = 3
-	mseStageKept    = 30 * time.Minute
 )
+
+// mseStageKept is how long a stage is kept with nothing spilled to it: a
+// paused video, or a stream slow to fill a spill, keeps it; one left is
+// forgotten. (A var for tests.)
+var mseStageKept = 30 * time.Minute
 
 // mseStage holds spilled clear-MP4 pieces on disk until Save remuxes them.
 type mseStage struct {
@@ -53,8 +58,9 @@ type mseStage struct {
 	bytes       int64
 	progressive string // relative path of progressive file, or ""
 	tracks      map[int]*mseStageTrack
-	done        bool
-	abort       chan struct{}
+	done        bool          // forgotten, or taken for saving
+	abort       chan struct{} // closed as it's done
+	idle        *time.Timer   // forgets it after mseStageKept with nothing spilled
 }
 
 type mseStageTrack struct {
@@ -117,7 +123,13 @@ func (m *fetchManager) openMSEStage(tab, dir string) (*mseStage, error) {
 		abort:  make(chan struct{}),
 	}
 	m.mu.Lock()
-	if n := len(m.stagesLocked()); n >= mseStagesMax {
+	mine = 0
+	for _, o := range m.stagesLocked() {
+		if o.tab == tab {
+			mine++
+		}
+	}
+	if mine >= mseStagesPerTab || len(m.mseStages) >= mseStagesMax {
 		// (Others opened meanwhile.)
 		m.mu.Unlock()
 		store.root.RemoveAll(stageDir)
@@ -125,8 +137,8 @@ func (m *fetchManager) openMSEStage(tab, dir string) (*mseStage, error) {
 		return nil, errors.New("too many buffered streams are being kept just now: save or close one")
 	}
 	m.mseStages[id] = s
+	s.idle = time.AfterFunc(mseStageKept, func() { m.forgetMSEStage(id) })
 	m.mu.Unlock()
-	time.AfterFunc(mseStageKept, func() { m.forgetMSEStage(id) })
 	return s, nil
 }
 
@@ -147,15 +159,29 @@ func (m *fetchManager) forgetMSEStage(id string) {
 		return
 	}
 	s.mu.Lock()
-	if !s.done {
-		s.done = true
-		close(s.abort)
+	if s.done {
+		// Taken for saving: the save gives it back (takeMSEStage).
+		s.mu.Unlock()
+		return
 	}
-	dir, held := s.dir, s.bytes
+	s.done = true
+	close(s.abort)
+	s.mu.Unlock()
+	m.releaseMSEStage(s)
+}
+
+// releaseMSEStage gives back what a stage done with held: its staging
+// folder, its bytes of all stages', its write into its folder.
+func (m *fetchManager) releaseMSEStage(s *mseStage) {
+	if s.idle != nil {
+		s.idle.Stop()
+	}
+	s.mu.Lock()
+	held := s.bytes
 	s.bytes = 0
 	s.mu.Unlock()
 	if store, err := m.files.openStore(); err == nil {
-		store.root.RemoveAll(dir)
+		store.root.RemoveAll(s.dir)
 		store.Close()
 	}
 	m.mu.Lock()
@@ -289,24 +315,17 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 		return errors.New("invalid stream frame")
 	}
 	kept = true
+	if s.idle != nil {
+		s.idle.Reset(mseStageKept) // kept while it's spilled to
+	}
 	return nil
 }
 
-func (s *mseStage) input(store *downloadStore) (mseSaveInput, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.done {
-		return mseSaveInput{}, errors.New("buffered stream was cancelled")
-	}
+// inputLocked lists what the stage holds, for saving: its files, in track
+// order. (They're read as the save writes them, not into memory.)
+func (s *mseStage) inputLocked() (mseSaveInput, error) {
 	if s.progressive != "" {
-		data, err := store.root.ReadFile(s.progressive)
-		if err != nil {
-			return mseSaveInput{}, err
-		}
-		if len(data) == 0 {
-			return mseSaveInput{}, errors.New("buffered stream has no media tracks")
-		}
-		return mseSaveInput{progressive: data}, nil
+		return mseSaveInput{progressive: s.progressive}, nil
 	}
 	if len(s.tracks) == 0 {
 		return mseSaveInput{}, errors.New("buffered stream has no media tracks")
@@ -315,43 +334,60 @@ func (s *mseStage) input(store *downloadStore) (mseSaveInput, error) {
 	for i := range s.tracks {
 		indexes = append(indexes, i)
 	}
-	for i := 0; i < len(indexes); i++ {
-		for j := i + 1; j < len(indexes); j++ {
-			if indexes[j] < indexes[i] {
-				indexes[i], indexes[j] = indexes[j], indexes[i]
-			}
-		}
-	}
-	var tracks []streamTrack
+	sort.Ints(indexes)
+	var tracks []mseTrackFiles
 	for _, i := range indexes {
 		tr := s.tracks[i]
 		if tr.init == "" || len(tr.parts) == 0 {
 			return mseSaveInput{}, errors.New("buffered stream has no media segments yet")
 		}
-		init, err := store.root.ReadFile(tr.init)
-		if err != nil {
-			return mseSaveInput{}, err
-		}
-		parts := make([][]byte, 0, len(tr.parts))
-		for _, p := range tr.parts {
-			data, err := store.root.ReadFile(p)
-			if err != nil {
-				return mseSaveInput{}, err
-			}
-			parts = append(parts, data)
-		}
-		tracks = append(tracks, streamTrack{initData: init, partData: parts})
+		tracks = append(tracks, mseTrackFiles{init: tr.init, parts: append([]string(nil), tr.parts...)})
 	}
 	return mseSaveInput{tracks: tracks}, nil
 }
 
+// mseSaveInput is a stage's files, to be saved: a progressive MP4's, or
+// each track's init and parts.
 type mseSaveInput struct {
-	progressive []byte
-	tracks      []streamTrack
+	progressive string
+	tracks      []mseTrackFiles
+}
+
+type mseTrackFiles struct {
+	init  string
+	parts []string
+}
+
+// takeMSEStage takes a stage for saving, in one step under its lock (so it
+// can't be forgotten meanwhile, by its tab's end or its time up, and closed
+// twice): no longer listed or spilled to, its files the save's till
+// release, which gives back all it held (its folder, its bytes, its write)
+// and is called once the save's done with them, whatever came of it.
+func (m *fetchManager) takeMSEStage(stage *mseStage) (mseSaveInput, func(), error) {
+	stage.mu.Lock()
+	if stage.done {
+		stage.mu.Unlock()
+		return mseSaveInput{}, nil, errors.New("buffered stream was cancelled")
+	}
+	in, err := stage.inputLocked()
+	if err != nil {
+		stage.mu.Unlock()
+		return mseSaveInput{}, nil, err
+	}
+	stage.done = true
+	close(stage.abort)
+	stage.mu.Unlock()
+	m.mu.Lock()
+	delete(m.mseStages, stage.id)
+	m.mu.Unlock()
+	var once sync.Once
+	return in, func() { once.Do(func() { m.releaseMSEStage(stage) }) }, nil
 }
 
 // startMSE starts a fetch that remuxes staged (or in-memory) MSE tracks into Downloads.
 func (m *fetchManager) startMSE(dir, by, ip, who string, from *goFrom, userAgent string) (job *fetchJob, input chan<- mseSaveInput, err error) {
+	// (The input's files are its caller's to give back: takeMSEStage's
+	// release, once the job's done.)
 	var releaseTab func()
 	if from != nil && from.holdDownload != nil {
 		releaseTab, err = from.holdDownload()
@@ -466,10 +502,20 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 		}
 	}()
 	var name string
-	if len(in.progressive) > 0 {
-		name, err = m.saveProgressiveMSE(ctx, j, in.progressive, up)
+	if in.progressive != "" {
+		name, err = m.saveProgressiveMSE(ctx, j, store, in.progressive, up)
 	} else {
-		name, err = m.writeStreamTracks(ctx, j, in.tracks, nil, up, "stream.mp4")
+		tracks := make([]streamTrack, 0, len(in.tracks))
+		for _, tr := range in.tracks {
+			init, err := store.root.ReadFile(tr.init)
+			if err != nil {
+				return err
+			}
+			parts := tr.parts
+			tracks = append(tracks, streamTrack{initData: init, partCount: len(parts),
+				partAt: func(i int) ([]byte, error) { return store.root.ReadFile(parts[i]) }})
+		}
+		name, err = m.writeStreamTracks(ctx, j, tracks, nil, up, "stream.mp4")
 	}
 	if err != nil {
 		return err
@@ -495,29 +541,57 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 	return nil
 }
 
-func (m *fetchManager) saveProgressiveMSE(ctx context.Context, j *fetchJob, data []byte, up *upload) (string, error) {
+func (m *fetchManager) saveProgressiveMSE(ctx context.Context, j *fetchJob, store *downloadStore, file string, up *upload) (string, error) {
 	name := "stream.mp4"
+	f, err := store.root.Open(file)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if st.Size() == 0 {
+		return "", errors.New("buffered stream has no media tracks")
+	}
 	j.set(func(j *fetchJob) {
 		j.name = name
-		j.total = int64(len(data))
+		j.total = st.Size()
 		j.parts = 1
 	})
-	if free, _, ok := m.files.uploadRoom(up.f); ok && free < int64(len(data))+fetchSpare {
+	if free, _, ok := m.files.uploadRoom(up.f); ok && free < st.Size()+fetchSpare {
 		return "", errors.New("insufficient disk space for stream")
 	}
-	if _, err := up.Write(data); err != nil {
-		return "", err
+	// Copied a piece at a time, so a cancel's taken between pieces.
+	buf := make([]byte, 1<<20)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, err := f.Read(buf)
+		if n > 0 {
+			if _, werr := up.Write(buf[:n]); werr != nil {
+				return "", werr
+			}
+			j.set(func(j *fetchJob) { j.got += int64(n) })
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	j.set(func(j *fetchJob) { j.got = int64(len(data)); j.partsDone = 1 })
+	j.set(func(j *fetchJob) { j.partsDone = 1 })
 	return name, nil
 }
 
 var errMSEText = errors.New("mse text")
 
-// serveMSEStage accepts spilled frames until finalize or cancel.
+// serveMSEStage accepts spilled frames until finalize or cancel. It waits
+// for the next frame as long as the stage is kept (mseStageKept since the
+// last: a paused video sends none), not a transfer's stall.
 func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) {
 	store, err := m.files.openStore()
 	if err != nil {
@@ -527,23 +601,32 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 	}
 	defer store.Close()
 
-	ended := make(chan struct{})
+	// Its life: over as it's forgotten (its tab's end, its time up) or taken.
+	life, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		select {
+		case <-stage.abort:
+			stop()
+		case <-life.Done():
+		}
+	}()
 	if from != nil && from.ended != nil {
 		go func() {
 			select {
 			case <-from.ended:
 				m.forgetMSEStage(stage.id)
-			case <-ended:
+			case <-life.Done():
 			}
 		}()
 	}
-	defer close(ended)
 
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), fileStall)
-		typ, p, err := t.Read(ctx)
-		cancel()
+		typ, p, err := t.Read(life)
 		if err != nil {
+			if life.Err() != nil {
+				r.fail("buffered stream was cancelled")
+			}
 			m.forgetMSEStage(stage.id)
 			return
 		}
@@ -552,7 +635,7 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 				Cancel   bool `json:"cancel"`
 				Finalize bool `json:"finalize"`
 			}
-			if json.Unmarshal(p, &msg) != nil {
+			if json.Unmarshal(p, &msg) != nil || !msg.Cancel && !msg.Finalize {
 				r.fail("invalid stream message")
 				m.forgetMSEStage(stage.id)
 				return
@@ -562,91 +645,80 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 				r.fail("cancelled")
 				return
 			}
-			if !msg.Finalize {
-				r.fail("invalid stream message")
-				m.forgetMSEStage(stage.id)
-				return
-			}
-			in, err := stage.input(store)
-			if err != nil {
-				r.fail(err.Error())
-				m.forgetMSEStage(stage.id)
-				return
-			}
-			// Mark done so forget won't race; remux owns the files until copied.
-			stage.mu.Lock()
-			stage.done = true
-			close(stage.abort)
-			stage.mu.Unlock()
-			m.mu.Lock()
-			delete(m.mseStages, stage.id)
-			m.mu.Unlock()
-			defer func() {
-				if store2, err := m.files.openStore(); err == nil {
-					store2.root.RemoveAll(stage.dir)
-					store2.Close()
-				}
-			}()
-
-			j, input, err := m.startMSE(stage.folder, by, ip, who, from, userAgent)
-			if err != nil {
-				r.fail(err.Error())
-				return
-			}
-			if err := writeJSON(t, map[string]any{"fetch": j.state()}); err != nil {
-				j.cancel()
-				return
-			}
-			select {
-			case input <- in:
-			case <-j.done:
-			}
-			gone := cancelOnText(t, j.cancel)
-			tick := time.NewTicker(fetchTick)
-			defer tick.Stop()
-			for {
-				select {
-				case <-j.done:
-					s := j.state()
-					if s.Error != "" {
-						r.fail(s.Error)
-						return
-					}
-					res := map[string]any{"fetch": s}
-					j.mu.Lock()
-					if j.warning != "" {
-						res["warning"] = j.warning
-					}
-					j.mu.Unlock()
-					r.finish(res)
-					return
-				case <-gone:
-					return
-				case <-tick.C:
-					if err := writeJSON(t, map[string]any{"fetch": j.state()}); err != nil {
-						return
-					}
-				}
-			}
+			m.finishMSEStage(t, stage, r, by, ip, who, from, userAgent)
+			return
 		}
-		// Binary: push this message back by handling as start of a frame.
-		// Re-read using a buffer that already has p.
 		track, kind, data, err := readMSEFrameFrom(t, p)
 		if err != nil {
-			if errors.Is(err, errMSEText) {
-				// Shouldn't happen; treat as cancel.
-				m.forgetMSEStage(stage.id)
-				r.fail("cancelled")
-				return
-			}
 			m.forgetMSEStage(stage.id)
-			r.fail(err.Error())
+			if errors.Is(err, errMSEText) {
+				r.fail("cancelled") // (a text message within a frame)
+			} else {
+				r.fail(err.Error())
+			}
 			return
 		}
 		if err := stage.appendFrame(store, track, kind, data); err != nil {
 			m.forgetMSEStage(stage.id)
 			r.fail(err.Error())
 			return
+		}
+	}
+}
+
+// finishMSEStage saves a stage (Save): takes it, starts the save with its
+// files, which the save gives back once it's done with them, and reports
+// the save till it ends.
+func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) {
+	in, release, err := m.takeMSEStage(stage)
+	if err != nil {
+		r.fail(err.Error())
+		m.forgetMSEStage(stage.id)
+		return
+	}
+	j, input, err := m.startMSE(stage.folder, by, ip, who, from, userAgent)
+	if err != nil {
+		release()
+		r.fail(err.Error())
+		return
+	}
+	go func() {
+		<-j.done
+		release()
+	}()
+	select {
+	case input <- in:
+	case <-j.done:
+	}
+	if err := writeJSON(t, map[string]any{"fetch": j.state()}); err != nil {
+		j.cancel()
+		return
+	}
+	gone := cancelOnText(t, j.cancel)
+	tick := time.NewTicker(fetchTick)
+	defer tick.Stop()
+	for {
+		select {
+		case <-j.done:
+			s := j.state()
+			if s.Error != "" {
+				r.fail(s.Error)
+				return
+			}
+			res := map[string]any{"fetch": s}
+			j.mu.Lock()
+			if j.warning != "" {
+				res["warning"] = j.warning
+			}
+			j.mu.Unlock()
+			r.finish(res)
+			return
+		case <-gone:
+			return
+		case <-tick.C:
+			if err := writeJSON(t, map[string]any{"fetch": j.state()}); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -701,71 +773,4 @@ func readMSEFrameFrom(t *tunnel, first []byte) (track int, kind byte, data []byt
 			return 0, 0, nil, err
 		}
 	}
-}
-
-// parseMSEPayload kept for tests of the legacy length-prefixed blob format.
-func parseMSEPayload(buf []byte) (mseSaveInput, error) {
-	if len(buf) < 4 {
-		return mseSaveInput{}, errors.New("invalid buffered stream")
-	}
-	n := binary.BigEndian.Uint32(buf)
-	buf = buf[4:]
-	if n == 0 || n > 8 {
-		return mseSaveInput{}, errors.New("invalid buffered stream")
-	}
-	var progressive []byte
-	var tracks []streamTrack
-	for i := uint32(0); i < n; i++ {
-		if len(buf) < 5 {
-			return mseSaveInput{}, io.ErrUnexpectedEOF
-		}
-		kind := buf[0]
-		buf = buf[1:]
-		initLen := binary.BigEndian.Uint32(buf)
-		buf = buf[4:]
-		if int(initLen) > len(buf) || initLen > mseStageLimit {
-			return mseSaveInput{}, io.ErrUnexpectedEOF
-		}
-		init := append([]byte(nil), buf[:initLen]...)
-		buf = buf[initLen:]
-		if kind == 1 {
-			if progressive != nil || len(tracks) > 0 || n != 1 {
-				return mseSaveInput{}, errors.New("invalid buffered stream")
-			}
-			progressive = init
-			continue
-		}
-		if kind != 0 || len(buf) < 4 {
-			return mseSaveInput{}, errors.New("invalid buffered stream")
-		}
-		partsN := binary.BigEndian.Uint32(buf)
-		buf = buf[4:]
-		if partsN == 0 || partsN > 100000 {
-			return mseSaveInput{}, errors.New("invalid buffered stream")
-		}
-		parts := make([][]byte, 0, partsN)
-		for k := uint32(0); k < partsN; k++ {
-			if len(buf) < 4 {
-				return mseSaveInput{}, io.ErrUnexpectedEOF
-			}
-			plen := binary.BigEndian.Uint32(buf)
-			buf = buf[4:]
-			if int(plen) > len(buf) || plen > segmentLimit {
-				return mseSaveInput{}, io.ErrUnexpectedEOF
-			}
-			parts = append(parts, append([]byte(nil), buf[:plen]...))
-			buf = buf[plen:]
-		}
-		tracks = append(tracks, streamTrack{initData: init, partData: parts})
-	}
-	if len(buf) != 0 {
-		return mseSaveInput{}, errors.New("invalid buffered stream")
-	}
-	if progressive != nil {
-		return mseSaveInput{progressive: progressive}, nil
-	}
-	if len(tracks) == 0 {
-		return mseSaveInput{}, errors.New("buffered stream has no media tracks")
-	}
-	return mseSaveInput{tracks: tracks}, nil
 }

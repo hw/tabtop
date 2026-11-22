@@ -84,6 +84,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // underlay: white page backdrop + players, behind the transparent frame.
     // overlay: loading UI only, above the frame.
     let underlay = null, backdrop = null, overlay = null;
+    // The page's own background, which the copy clears around a video's
+    // hole (go-frame.js punchMediaHole): drawn behind the frame instead.
+    let backdropColor = "#fff";
     const streams = new Map();
     const streamLimit = 16 << 20;
     let streamBytes = 0;
@@ -100,6 +103,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     function makeCapture(stream) {
         return createCapture({
             spill: spillMSE ? (ev) => spillMSE(stream, ev) : undefined,
+            // A new staging session: the old one's let go (go.js).
+            onRestart: abortMSE ? () => abortMSE(stream) : undefined,
         });
     }
 
@@ -452,9 +457,10 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             underlay = document.createElement("div");
             Object.assign(underlay.style, { position: "absolute", inset: "0", zIndex: "0", pointerEvents: "none", overflow: "hidden" });
             backdrop = document.createElement("div");
-            Object.assign(backdrop.style, { position: "absolute", background: "#fff", zIndex: "0" });
+            Object.assign(backdrop.style, { position: "absolute", background: backdropColor, zIndex: "0" });
             underlay.append(backdrop);
             frame.parentElement.insertBefore(underlay, frame);
+            frame.classList.add("go-underlaid");
             syncBackdrop();
         }
         return underlay;
@@ -871,6 +877,13 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (media.paused) media.play().catch(() => {});
             told();
         },
+        // backdrop takes the page's background colour (an rgb() or rgba() of
+        // the copy's: anything else is ignored), drawn behind the frame.
+        backdrop(color) {
+            if (typeof color !== "string" || !/^rgba?\(\d{1,3}, \d{1,3}, \d{1,3}(, (0|1|0?\.\d+))?\)$/.test(color)) return;
+            backdropColor = /, 0\)$/.test(color) ? "#fff" : color;  // (none: a browser's white)
+            if (backdrop) backdrop.style.background = backdropColor;
+        },
         // pauseAll pauses every player: the page they're on is being left.
         pauseAll() {
             for (const player of players.values()) player.element?.pause();
@@ -889,7 +902,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             streams.clear();
             underlay?.remove();
             overlay?.remove();
+            frame.classList.remove("go-underlaid");
             underlay = backdrop = overlay = null;
+            backdropColor = "#fff";
             marked?.(null);
         },
     };

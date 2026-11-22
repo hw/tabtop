@@ -758,7 +758,7 @@
     function punchMediaAncestor(el) {
         let state = mediaHoleAncestors.get(el);
         if (state) { state.refs++; return; }
-        state = { refs: 1, background: el.style.background, backgroundImage: el.style.backgroundImage, backgroundColor: el.style.backgroundColor };
+        state = { refs: 1, background: el.style.background, backgroundImage: el.style.backgroundImage, backgroundColor: el.style.backgroundColor, computed: getComputedStyle(el).backgroundColor };
         mediaHoleAncestors.set(el, state);
         el.style.setProperty("background", "transparent", "important");
         el.style.setProperty("background-image", "none", "important");
@@ -794,9 +794,21 @@
         for (const el of punched.ancestors) sealMediaAncestor(el);
         for (const el of punched.covers) sealMediaCover(el);
     }
+    // pageBackground is the colour the page shows where nothing's drawn: its
+    // root's background, else its body's (as a browser paints the canvas),
+    // before a hole's cleared them; for the parent to draw behind the frame.
+    function pageBackground() {
+        for (const el of [document.documentElement, document.body]) {
+            if (!el) continue;
+            const color = mediaHoleAncestors.has(el) ? mediaHoleAncestors.get(el).computed : getComputedStyle(el).backgroundColor;
+            if (color && !/^rgba\(\d+, \d+, \d+, 0\)$/.test(color) && color !== "transparent") return color;
+        }
+        return "rgba(0, 0, 0, 0)";
+    }
     function punchMediaHole(box) {
         sealMediaHole(box);
         if (!box?.isConnected) return;
+        if (doc) tell({ type: "media-backdrop", gen: doc.gen, color: pageBackground() });
         const ancestors = [];
         for (let el = box.parentElement; el; el = el.parentElement) {
             if (mediaBackgroundBlocks(el) || el === document.body || el === document.documentElement) {
