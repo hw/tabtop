@@ -768,8 +768,8 @@ function mediaMenu() {
         if (!endedVideo) holdToBlock(skip, p);
         const acts = [
             ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
-            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
             ...(p.saveable ? [saveGlyph(p, which, note)].filter(Boolean) : []),
+            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
             skip,
         ];
         for (const [j, b] of acts.entries()) b.dataset.act = String(j);

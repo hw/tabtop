@@ -1969,8 +1969,8 @@ async function check(base, port, site, adSite) {
         // closed again.
         const watch = async () => {
             await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
-            await waitFor(`!!document.querySelector("#go_menu_media li .acts button:nth-child(1):not(:disabled)")`, "Watch offered", 30000);
-            await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(1)").click()`);
+            await waitFor(`[...document.querySelectorAll("#go_menu_media li .acts button")].some((b) => /^Watch /.test(b.getAttribute("aria-label") || "") && !b.disabled)`, "Watch offered", 30000);
+            await ev(`[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Watch /.test(b.getAttribute("aria-label") || "")).click()`);
             await waitFor(`!!document.querySelector("#video_player")`, "the player");
         };
         const unwatch = () => ev(`document.querySelector("#video_player button[aria-label^='Close the player']")?.click()`);
@@ -2434,6 +2434,15 @@ async function check(base, port, site, adSite) {
         await goTo(site + "video.html", "Video");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1)`, "the player", 30000);
         await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        // Download sits left of Play/Pause (Watch … Download … Play/Pause … Skip).
+        const order = await ev(`(() => {
+            const labels = [...document.querySelectorAll("#go_menu_media li .acts button")].map((b) => b.getAttribute("aria-label") || "");
+            const i = (re) => labels.findIndex((l) => re.test(l));
+            return { labels: labels.map((l) => l.split(" ")[0]), download: i(/^Download /), play: i(/^(Play|Pause) /) };
+        })()`);
+        if (order.download < 0 || order.play < 0 || order.download >= order.play) {
+            throw new Error(`menu acts order (want Download left of Play/Pause): ${JSON.stringify(order)}`);
+        }
         const save = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Download video/.test(b.getAttribute("aria-label")) || /^Cancel/.test(b.getAttribute("aria-label")) || b.classList.contains("saving"))`;
         await waitFor(`!!${save}`, "the clip's Save in the menu");
         await ev(`${save}.click()`);
@@ -2574,14 +2583,15 @@ async function check(base, port, site, adSite) {
             if (!(await ev(`document.querySelector("video").paused`))) throw new Error("the page played it, autoplay paused");
             await ev(`document.getElementById("go_menu").click()`);
             await waitFor(`!!document.querySelector("#go_menu_media li .acts button")`, "the menu again");
-            await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(2)").click()`);  // play (the player's glyph first)
+            await ev(`[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "")).click()`);
             await waitFor(`!document.querySelector("video").paused`, "played from the menu");
         } finally {
             await ev(`(() => { if (document.getElementById("go_menu_panel").hidden) document.getElementById("go_menu").click(); const b = document.getElementById("go_menu_autoplay"); if (b.getAttribute("aria-checked") === "false") b.click(); })()`);
         }
         // The player: the video taken into it, full screen, kept to its
         // proportions; its speed and back 10 s; closed, given back.
-        await waitFor(`!!document.querySelector("#go_menu_media li .acts button:nth-child(1):not(:disabled)")`, "Watch offered");
+        await waitFor(`[...document.querySelectorAll("#go_menu_media li .acts button")].some((b) => /^Watch /.test(b.getAttribute("aria-label") || "") && !b.disabled)`, "Watch offered");
+        // Watch stays first in the acts row.
         await press("#go_menu_media li .acts button:nth-child(1)");
         await waitFor(`!!document.querySelector("#video_player .stage video") && document.fullscreenElement?.id === "video_player"`, "the video in the player, full screen", 10000);
         const shape = await ev(`(() => { const v = document.querySelector("#video_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
@@ -2708,11 +2718,11 @@ async function check(base, port, site, adSite) {
         // In the menu: a skipped video can be hidden, then restored by
         // opening it in the /go player or by playing it again.
         await ev(`document.getElementById("go_menu").click()`);
-        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, hide: li.querySelector(".acts button:last-child").getAttribute("aria-label"), playDisabled: li.querySelector(".acts button:nth-child(2)").disabled }))`);
+        const rows = await ev(`[...document.querySelectorAll("#go_menu_media li")].map((li) => ({ state: li.querySelector(".state").textContent, hide: li.querySelector(".acts button:last-child").getAttribute("aria-label"), playDisabled: [...li.querySelectorAll(".acts button")].find((b) => /^(Play|Pause) /.test(b.getAttribute("aria-label") || ""))?.disabled }))`);
         if (rows.length !== 1 || rows[0].state !== "Skipped" || !rows[0].hide.startsWith("Hide") || rows[0].playDisabled) throw new Error(`the menu, after: ${JSON.stringify(rows)}`);
         await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
         await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the skipped video hidden");
-        await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(2)").click()`);
+        await ev(`[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "")).click()`);
         await waitFor(`getComputedStyle(document.querySelector("video")).display !== "none" && !document.querySelector("video").paused`, "the video restored by Play");
         // (Each pressed once it's offered: Skip as the video can be skipped again, Hide once it's skipped.)
         const offered = (what) => `(() => { const b = document.querySelector("#go_menu_media li .acts button:last-child"); return !!b && !b.disabled && b.getAttribute("aria-label").startsWith(${JSON.stringify(what)}); })()`;
@@ -2725,7 +2735,7 @@ async function check(base, port, site, adSite) {
         await ev(`document.querySelector("#go_menu_media li .acts button:last-child").click()`);
         await waitFor(`getComputedStyle(document.querySelector("video")).display === "none"`, "the video hidden again");
         await ev(`document.getElementById("go_menu").click()`);
-        await ev(`document.querySelector("#go_menu_media li .acts button:nth-child(1)").click()`);
+        await ev(`[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Watch /.test(b.getAttribute("aria-label") || "")).click()`);
         await waitFor(`!!document.querySelector("#video_player video")`, "the hidden video opened in the /go player");
         await ev(`document.querySelector("#video_player button[aria-label^='Close the player']").click()`);
         await waitFor(`!!document.querySelector("video") && getComputedStyle(document.querySelector("video")).display !== "none"`, "the video restored from the /go player");
