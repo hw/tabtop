@@ -1254,7 +1254,16 @@
     const glLimits = { size: 4096, depth: 256, texels: 64 << 20, levels: 13, samples: 8, buffer: 64 << 20, draw: 16 << 20, instances: 1 << 20, context: 256 << 20, mirrors: 16 };
     const glLive = new Map();  // canvases with a replay context -> their document's generation
     const glAttached = new WeakSet();  // of those, the ones seen in the page
-    let glLosses = 0;          // viewer contexts lost (GPU resets): after 3, no more WebGL here
+    // When the viewer's contexts were lost (GPU resets), in the last minute:
+    // a reset loses them all at once, and counts once (losses within a
+    // second of its first). After 3, no more WebGL here till they're older.
+    let glResets = [];
+    const glResetsLately = (now = performance.now()) => (glResets = glResets.filter((t) => now - t < 60000)).length;
+    function glReset() {
+        const now = performance.now();
+        if (!glResets.length || now - glResets.at(-1) >= 1000) glResets.push(now);
+        return glResetsLately(now);
+    }
     // Calls a string may be passed to, and those a sequence may (uniform*v
     // and the like): WebGL would turn any other string or array into a
     // number, past the bounds checked here.
@@ -1458,7 +1467,7 @@
             if (mirror?.failed) throw new Error("WebGL mirror requires a full snapshot");
             if (!reset && !mirror) throw new Error("WebGL calls without their log");
             if (!mirror) {
-                if (glLosses >= 3) throw new Error("WebGL off after repeated GPU resets");
+                if (glResetsLately() >= 3) throw new Error("WebGL off after repeated GPU resets");
                 // Those gone from the copy give theirs up: of a document since
                 // replaced (still shown while the next is made), or seen in it
                 // and not now. (One being made, in a snapshot not yet shown,
@@ -1485,7 +1494,7 @@
                         // Given back at most once, and not a context we gave up
                         // or one whose replay failed: a log that resets the GPU
                         // isn't replayed again and again.
-                        if (current?.history && !current.failed && !current.restored && ++glLosses < 3) event.preventDefault();
+                        if (current?.history && !current.failed && !current.restored && glReset() < 3) event.preventDefault();
                         else glLive.delete(el);
                         if (current) current.failed = true;
                         el.title = "WebGL content is unavailable in the remote view";

@@ -2287,11 +2287,13 @@ async function check(base, port, site, adSite) {
         await frameWait(glAt("upload", 32, 32, [0, 255, 0, 255]), "the canvas to upload to, green");
         await frameClick("#upload");
         await frameWait(`/mirrored/.test(document.getElementById("upload").title) && ${glAt("upload", 32, 32, [0, 0, 255, 255])}`, "the big upload's canvas, blue, still mirrored", 30000);
-        // The viewer's context lost and given back: replayed from what it kept.
-        await frame(`(() => { const c = document.getElementById("still"); window.__lose = c.getContext("webgl").getExtension("WEBGL_lose_context"); window.__lose.loseContext(); })()`);
-        await frameWait(`/unavailable/.test(document.getElementById("still").title)`, "the lost context labelled");
-        await frame(`window.__lose.restoreContext()`);
-        await frameWait(`/mirrored/.test(document.getElementById("still").title) && ${glAt("still", 32, 32, [0, 255, 0, 255])} && ${glAt("still", 2, 2, [255, 0, 0, 255])}`, "the context given back, drawn again");
+        // The viewer's contexts lost together, as a GPU reset loses them, and
+        // given back: each replayed from what it kept (one reset, however
+        // many contexts it took).
+        await frame(`(window.__lose = ["still", "two", "moving"].map((id) => { const c = document.getElementById(id), lose = (c.getContext("webgl2") || c.getContext("webgl")).getExtension("WEBGL_lose_context"); lose.loseContext(); return lose; }), 0)`);
+        await frameWait(`["still", "two", "moving"].every((id) => /unavailable/.test(document.getElementById(id).title))`, "the lost contexts labelled");
+        await frame(`(window.__lose.forEach((lose) => lose.restoreContext()), 0)`);
+        await frameWait(`["still", "two", "moving"].every((id) => /mirrored/.test(document.getElementById(id).title)) && ${glAt("still", 32, 32, [0, 255, 0, 255])} && ${glAt("still", 2, 2, [255, 0, 0, 255])} && ${glAt("two", 32, 32, [0, 0, 255, 255])} && ${glAt("moving", 32, 32, [0, 0, 255, 255])}`, "the contexts given back, drawn again");
         const titles = await frame(`["still", "two", "moving", "broken"].map((id) => document.getElementById(id).title)`);
         if (titles.slice(0, 3).some((t) => !/mirrored/.test(t)) || !/unavailable/.test(titles[3])) throw new Error(`the canvases say ${JSON.stringify(titles)}`);
         // In embedded pages: the same site's (read by the page's agent, its
