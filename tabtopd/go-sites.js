@@ -44,6 +44,10 @@ function override(map, site) {
 const policyLabel = { ask: "Ask", allow: "Allow", block: "Block", "no-autoplay": "No autoplay" };
 const themeLabel = { auto: "Follow device", light: "Light", dark: "Dark" };
 
+// kept is whether a site's cookies and data are kept (Keep): spared by
+// clearing browsing data by time, not picked by Select's choices.
+const kept = (name) => !!settings?.keep?.includes(name);
+
 // siteHasData is whether a site keeps cookies or localStorage: what Clear
 // data clears.
 function siteHasData(name) {
@@ -106,6 +110,7 @@ function siteState(name) {
     if (ads !== "default") chips.push([{ block: "Ads: blocked", allow: "Ads: allowed" }[ads]]);
     const theme = override(settings?.theme, name);
     if (theme !== "default") chips.push([{ auto: "Dark mode: device", light: "Dark mode: light", dark: "Dark mode: dark" }[theme]]);
+    if (kept(name)) chips.push(["Data kept"]);
     return { chips, blocked, custom: popup !== "default" || media !== "default" || ads !== "default" || theme !== "default" || videoHost };
 }
 
@@ -118,7 +123,7 @@ function renderSites() {
     const names = new Set([
         ...usage.keys(), ...(settings?.blocked ?? []), ...Object.keys(settings?.media ?? {}),
         ...Object.keys(settings?.popups ?? {}), ...Object.keys(settings?.ads ?? {}), ...(settings?.videoHosts ?? []),
-        ...Object.keys(settings?.theme ?? {}),
+        ...Object.keys(settings?.theme ?? {}), ...(settings?.keep ?? []),
     ]);
     const hasData = (name) => !!(usage.get(name)?.cookies || usage.get(name)?.storageItems);
     const when = (name) => Math.max(usage.get(name)?.visited ?? 0, usage.get(name)?.changed ?? 0);
@@ -259,9 +264,9 @@ document.addEventListener("click", (event) => {
 });
 
 // savedUnder is whether any setting is kept under name: its block, its
-// pop-ups, videos or ads, or its videos blocked by host.
+// pop-ups, videos or ads, its videos blocked by host, or its Keep.
 function savedUnder(name) {
-    return !!(settings?.blocked?.includes(name) || settings?.videoHosts?.includes(name) ||
+    return !!(settings?.blocked?.includes(name) || settings?.videoHosts?.includes(name) || kept(name) ||
         [settings?.popups, settings?.media, settings?.ads, settings?.theme].some((map) => map && Object.hasOwn(map, name)));
 }
 
@@ -274,7 +279,7 @@ function forgetSettings(names, label, host = label) {
     const over = host && covering(host, settings?.blocked);
     const parent = over && !names.includes(over) ? ` The block for ${over}, which covers it, stays.` : "";
     const its = names.length > 1 && !host ? "Their" : "Its";
-    if (!confirm(`Delete all saved settings for ${label}? ${its} block, pop-ups, videos and sound, Dark mode, and ads go back to the browser's defaults. ${its} cookies and site data are kept.${parent}`)) return;
+    if (!confirm(`Delete all saved settings for ${label}? ${its} block, pop-ups, videos and sound, Dark mode, ads, and Keep go back to the browser's defaults. ${its} cookies and site data stay, till they're cleared.${parent}`)) return;
     return run(async () => {
         for (const name of names) {
             settings = await ask({ type: "go-settings-set", name, setting: "forget" });
@@ -399,6 +404,13 @@ function renderSite() {
     if (!parts.length) parts.push(data ? "No site data." : "Site data unavailable.");
     parts.forEach((p, i) => dataNote.append(...(i ? [" · ", p] : [p])));
     $("clear_site").disabled = state.busy || !info?.cookies && !info?.storageItems;
+    // Keep: spared by clearing browsing data (by time), the last to go when
+    // there's no room, its sign-ins lasting a restart.
+    $("keep_site").checked = kept(site);
+    $("keep_site").disabled = state.busy;
+    $("keep_note").textContent = kept(site)
+        ? "Clearing browsing data leaves it, and its sign-ins last a restart. Clear data here still clears it."
+        : "Clearing browsing data clears it too.";
     $("inspect_site").disabled = state.busy || !info?.cookies && !info?.storageItems;
     // Reset: what's changed of it, back to the defaults (asked: the list).
     const changes = resetChanges();
@@ -645,6 +657,8 @@ $("default_popups").addEventListener("change", () => set("", "popups-" + $("defa
 $("default_videos").addEventListener("change", () => set("", "videos-" + $("default_videos").value));
 $("default_theme").addEventListener("change", () => set("", "theme-" + $("default_theme").value));
 $("theme").addEventListener("change", () => set(selected.site, "theme-" + $("theme").value));
+$("keep_site").addEventListener("change", () => set(selected.site, $("keep_site").checked ? "keep" : "keep-off",
+    $("keep_site").checked ? `${selected.site}'s cookies and site data are kept.` : `${selected.site}'s cookies and site data are no longer kept.`));
 $("referer").addEventListener("change", () => set("", $("referer").checked ? "referer-on" : "referer-off"));
 
 // confirmClear asks before clearing one site's data (string), several
@@ -654,15 +668,18 @@ function confirmClear(target) {
     if (Array.isArray(target)) {
         const n = target.length;
         $("clear_heading").textContent = n === 1 ? `Clear data for ${target[0]}?` : `Clear data for ${n} sites?`;
-        $("clear_summary").textContent = n === 1
+        const keptNamed = target.filter(kept);
+        $("clear_summary").textContent = (n === 1
             ? "This clears cookies and site data for this site. You may be signed out."
-            : "This clears cookies and site data for the selected sites. You may be signed out.";
+            : "This clears cookies and site data for the selected sites. You may be signed out.") +
+            (keptNamed.length ? ` ${keptNamed.length === 1 && n === 1 ? "It's" : keptNamed.length === 1 ? `${keptNamed[0]} is` : `${keptNamed.length} of them are`} kept, but cleared all the same.` : "");
         $("time_range").hidden = true;
     } else {
         $("clear_heading").textContent = target ? `Clear data for ${target}?` : "Clear browsing data?";
+        const keep = settings?.keep ?? [];
         $("clear_summary").textContent = target
-            ? "This clears cookies and site data for this site. You may be signed out."
-            : "This clears cookies and site data across sites for the selected time range. You may be signed out.";
+            ? `This clears cookies and site data for this site. You may be signed out.${kept(target) ? " It's kept, but cleared all the same." : ""}`
+            : `This clears cookies and site data across sites for the selected time range. You may be signed out.${keep.length ? ` Kept sites aren't cleared: ${keep.length > 3 ? `${keep.slice(0, 3).join(", ")} and ${keep.length - 3} more` : keep.join(", ")}.` : ""}`;
         $("time_range").hidden = !!target;
     }
     $("confirm_clear").returnValue = "";
@@ -673,7 +690,8 @@ $("select_sites").addEventListener("click", () => select(true));
 // and searched): all, none, or by when they were last active (visited, or
 // their data changed): within a time, or not for one. A site with no time
 // (settings alone) is in neither. Each choice is the selection, not added
-// to it. Invert: those not selected, and not those that are.
+// to it. Invert: those not selected, and not those that are. A kept site
+// (Keep) is picked by none of them, only by a tap of its own.
 const DAY = 86400e3;
 const selectChoices = [
     ["All", () => true],
@@ -693,7 +711,7 @@ const selectChoices = [
 let siteWhen = () => 0; // (renderSites': a listed site's last activity, unix ms)
 function selectWhere(test) {
     checked.clear();
-    for (const name of listedSites) if (test(siteWhen(name))) checked.add(name);
+    for (const name of listedSites) if (!kept(name) && test(siteWhen(name))) checked.add(name);
     renderSites();
 }
 {
@@ -740,7 +758,7 @@ function selectWhere(test) {
     });
 }
 $("select_invert").addEventListener("click", () => {
-    for (const name of listedSites) checked.has(name) ? checked.delete(name) : checked.add(name);
+    for (const name of listedSites) checked.has(name) ? checked.delete(name) : kept(name) || checked.add(name);
     renderSites();
 });
 $("forget_selected").addEventListener("click", () => {

@@ -63,7 +63,9 @@ type goStorage struct {
 	forgetMu sync.Mutex
 	clearing map[string]bool
 	clearAll bool
-	now      func() time.Time
+	// clearSpare: the sites a clear of all spares (kept: goForgetRange's).
+	clearSpare map[string]bool
+	now        func() time.Time
 }
 
 func newGoStorage(file string, key []byte) *goStorage {
@@ -137,7 +139,8 @@ func (s *goStorage) save() {
 	}
 }
 
-// trimLocked evicts whole sites in order of oldest use.
+// trimLocked evicts whole sites in order of oldest use, kept sites
+// (goKeptSite) after every other.
 func (s *goStorage) trimLocked() {
 	type usage struct {
 		origins []string
@@ -164,8 +167,12 @@ func (s *goStorage) trimLocked() {
 			names = append(names, site)
 		}
 	}
+	kept := make(map[string]bool, len(names))
+	for _, site := range names {
+		kept[site] = goKeptSite(site)
+	}
 	slices.SortFunc(names, func(a, b string) int {
-		return cmp.Or(cmp.Compare(sites[a].used, sites[b].used), cmp.Compare(a, b))
+		return cmp.Or(goBoolCompare(kept[a], kept[b]), cmp.Compare(sites[a].used, sites[b].used), cmp.Compare(a, b))
 	})
 	for _, site := range names {
 		u := sites[site]
@@ -181,13 +188,24 @@ func (s *goStorage) trimLocked() {
 
 func (o *goStorageOrigin) lastUsed() int64 { return max(o.Used, o.Changed) }
 
+// goBoolCompare orders false before true.
+func goBoolCompare(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
+}
+
 func goStorageSite(origin string) string { return goSite(strings.Trim(goOriginHost(origin), "[]")) }
 
 // items is a copy of origin's kept items (nil: none).
 func (s *goStorage) items(origin string) map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.clearAll || s.clearing[goStorageSite(origin)] {
+	if s.clearAll && !s.clearSpare[goStorageSite(origin)] || s.clearing[goStorageSite(origin)] {
 		return nil
 	}
 	o := s.origins[origin]
@@ -211,7 +229,7 @@ func (s *goStorage) set(origin, key string, value *string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	site := goStorageSite(origin)
-	if s.clearAll || s.clearing[site] {
+	if s.clearAll && !s.clearSpare[site] || s.clearing[site] {
 		return
 	}
 	o := s.origins[origin]
@@ -287,7 +305,7 @@ func (s *goStorage) forget(site string, when goForgetRange, clearTabs func(map[s
 	s.mu.Lock()
 	sites := map[string]bool{}
 	for origin, o := range s.origins {
-		if when.matchesMs(o.Changed) {
+		if when.matchesMs(o.Changed) && !when.spares(goStorageSite(origin)) {
 			sites[goStorageSite(origin)] = true
 		}
 	}
@@ -307,10 +325,11 @@ func (s *goStorage) forget(site string, when goForgetRange, clearTabs func(map[s
 	}
 	s.clearing = sites
 	s.clearAll = site == "" && when.all()
+	s.clearSpare = when.spare
 	s.mu.Unlock()
 	clearTabs(sites)
 	s.mu.Lock()
-	s.clearing, s.clearAll = nil, false
+	s.clearing, s.clearAll, s.clearSpare = nil, false, nil
 	s.mu.Unlock()
 }
 
@@ -652,13 +671,13 @@ func (b *goBrowser) endStorage() {
 	}
 }
 
-func (b *goBrowser) forgetStorage(ctx context.Context, site string, selected map[string]bool, all bool) {
+func (b *goBrowser) forgetStorage(ctx context.Context, site string, selected map[string]bool, all bool, spare map[string]bool) {
 	t := &b.storageTab
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, origin := range t.embedded {
 		name := goStorageSite(origin)
-		if all || name == site || selected[name] {
+		if all && !spare[name] || name == site || selected[name] {
 			if b.cdp.call(ctx, b.page, "DOMStorage.clear", map[string]any{
 				"storageId": map[string]any{"securityOrigin": origin, "storageKey": key, "isLocalStorage": true},
 			}, nil) == nil {
@@ -668,7 +687,7 @@ func (b *goBrowser) forgetStorage(ctx context.Context, site string, selected map
 	}
 	for origin, doc := range t.documents {
 		name := goStorageSite(origin)
-		if !all && name != site && !selected[name] {
+		if !(all && !spare[name]) && name != site && !selected[name] {
 			continue
 		}
 		b.removeStorageScript(ctx, doc)

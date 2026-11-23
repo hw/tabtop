@@ -11,8 +11,11 @@
 // for clearing what was set in the last hour, day, and so on.
 //
 // Session cookies (no expiry) are kept in memory only, as a browser keeps
-// them till it's closed: this server's run. Their values never go to the
-// client: the settings get sites and counts.
+// them till it's closed: this server's run; but a kept site's (Keep in
+// Site controls: goKeptSite) are saved too, its sign-in lasting a restart.
+// A kept site's are also spared when what was changed in a time is
+// cleared, and are the last to go when the jar's over its limits. Their
+// values never go to the client: the settings get sites and counts.
 //
 // Moli's top-level localStorage is kept by gostorage.go. IndexedDB and
 // other engine-local data are cleared in open tabs by this settings route.
@@ -201,7 +204,7 @@ func (j *goCookieJar) load() {
 	now := j.now()
 	for i := range list {
 		c := list[i]
-		if c.Session || c.expired(now) || len(c.Name)+len(c.Value) > maxGoCookieValue || c.Domain == "" {
+		if c.Session && !goKeptSite(goSite(c.host())) || c.expired(now) || len(c.Name)+len(c.Value) > maxGoCookieValue || c.Domain == "" {
 			continue
 		}
 		j.cookies[c.key()] = &c
@@ -236,7 +239,14 @@ func goOpenSealed(key []byte, ad string, data []byte) ([]byte, error) {
 	return aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], []byte(ad))
 }
 
-// saveSoon writes the jar a moment later (changes come in runs).
+// saveSoon writes the jar a moment later (changes come in runs; or a
+// site's Keep changed, its session cookies saved or no longer).
+func (j *goCookieJar) saveSoon() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.saveSoonLocked()
+}
+
 func (j *goCookieJar) saveSoonLocked() {
 	if j.file == "" || j.saving != nil {
 		return
@@ -250,7 +260,7 @@ func (j *goCookieJar) save() {
 	now := j.now()
 	list := make([]goCookie, 0, len(j.cookies))
 	for _, c := range j.cookies {
-		if !c.Session && !c.expired(now) {
+		if !c.expired(now) && (!c.Session || goKeptSite(goSite(c.host()))) {
 			list = append(list, *c)
 		}
 	}
@@ -264,7 +274,8 @@ func (j *goCookieJar) save() {
 }
 
 // trimLocked keeps the jar within its count and size: the least lately
-// changed go first (a page can set cookies without end).
+// changed go first (a page can set cookies without end), a kept site's
+// after every other's.
 func (j *goCookieJar) trimLocked() {
 	bytes := 0
 	for _, c := range j.cookies {
@@ -277,7 +288,23 @@ func (j *goCookieJar) trimLocked() {
 	for _, c := range j.cookies {
 		all = append(all, c)
 	}
-	slices.SortFunc(all, func(a, b *goCookie) int { return int(min(max(a.Changed-b.Changed, -1), 1)) })
+	kept := map[string]bool{}
+	for _, c := range all {
+		site := goSite(c.host())
+		if _, seen := kept[site]; !seen {
+			kept[site] = goKeptSite(site)
+		}
+	}
+	slices.SortFunc(all, func(a, b *goCookie) int {
+		ka, kb := kept[goSite(a.host())], kept[goSite(b.host())]
+		if ka != kb {
+			if ka {
+				return 1
+			}
+			return -1
+		}
+		return int(min(max(a.Changed-b.Changed, -1), 1))
+	})
 	for _, c := range all {
 		if len(j.cookies) <= maxGoCookies && bytes <= maxGoCookieBytes {
 			break
@@ -357,10 +384,18 @@ func (j *goCookieJar) apply(prev, now map[goCookieKey]goCookie) (changed int) {
 var goForgetWithin = []int64{0, 3600, 86400, 7 * 86400, 30 * 86400, 182 * 86400}
 
 // goForgetRange is when what's cleared was last changed (or visited): from
-// since (zero: the start) till before (zero: now). Both zero: all of it.
-type goForgetRange struct{ since, before time.Time }
+// since (zero: the start) till before (zero: now). Both zero: all of it;
+// but, either way, not the sites spared (those kept: goKeptSite), whose
+// cookies and data a clear by time leaves.
+type goForgetRange struct {
+	since, before time.Time
+	spare         map[string]bool
+}
 
 func (r goForgetRange) all() bool { return r.since.IsZero() && r.before.IsZero() }
+
+// spares is whether site (a goSite name) is left by the clear.
+func (r goForgetRange) spares(site string) bool { return r.spare[site] }
 
 func (r goForgetRange) matches(t time.Time) bool {
 	return (r.since.IsZero() || !t.Before(r.since)) && (r.before.IsZero() || t.Before(r.before))
@@ -427,6 +462,10 @@ func (g *server) routeGoCookiesForget(c *tunnelCall) {
 		when.before = time.Now().Add(-time.Duration(older) * time.Second)
 	case within > 0:
 		when.since = time.Now().Add(-time.Duration(within) * time.Second)
+	}
+	// By time, the kept sites are spared (named, they're cleared).
+	if len(sites) == 0 && g.goSites != nil {
+		when.spare = g.goSites.keptSites()
 	}
 	forgetOne := func(site string) int {
 		var n int
@@ -561,7 +600,7 @@ func (j *goCookieJar) forgetWithStorage(site string, when goForgetRange, selecte
 	j.mu.Lock()
 	var gone []goCookie
 	for k, c := range j.cookies {
-		if site != "" && goSite(c.host()) != site || site == "" && !when.matchesMs(c.Changed) {
+		if site != "" && goSite(c.host()) != site || site == "" && (!when.matchesMs(c.Changed) || when.spares(goSite(c.host()))) {
 			continue
 		}
 		gone = append(gone, *c)
@@ -997,7 +1036,7 @@ func (b *goBrowser) forgetCookies(gone []goCookie, site string, when goForgetRan
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	b.forgetStorage(ctx, site, selected, site == "" && when.all())
+	b.forgetStorage(ctx, site, selected, site == "" && when.all(), when.spare)
 	for _, c := range gone {
 		b.cdp.call(ctx, b.page, "Network.deleteCookies", map[string]any{"name": c.Name, "domain": c.Domain, "path": c.Path}, nil)
 	}
@@ -1006,7 +1045,7 @@ func (b *goBrowser) forgetCookies(gone []goCookie, site string, when goForgetRan
 		storageTypes = strings.TrimPrefix(storageTypes, "local_storage,")
 	}
 	for origin, t := range b.cookies.visits {
-		if site != "" && goSite(goOriginHost(origin)) != site || site == "" && !when.matches(t) {
+		if site != "" && goSite(goOriginHost(origin)) != site || site == "" && (!when.matches(t) || when.spares(goSite(goOriginHost(origin)))) {
 			continue
 		}
 		b.cdp.call(ctx, "", "Storage.clearDataForOrigin", map[string]any{"origin": origin, "storageTypes": storageTypes}, nil)

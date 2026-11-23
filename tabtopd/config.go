@@ -199,6 +199,10 @@ func newServer(c serverConfig) (*server, error) {
 				goPruneCacheSoon(g.goConfig.cache)
 			}
 			if g.goMode != goUnavailable {
+				// (The settings first: the kept sites' session cookies are
+				// read with the jar, and both stores spare them.)
+				g.goSites = newGoSiteSettings(c.goSitesFile)
+				goKeptSite = g.goSites.kept
 				g.goCookies = newGoCookieJar(c.goCookiesFile, c.goCookiesKeyFile)
 				if goAdapterFor(c.goEngine).name == "Moli" {
 					key := g.goCookies.key
@@ -207,7 +211,6 @@ func newServer(c serverConfig) (*server, error) {
 					}
 					g.goStorage = newGoStorage(c.goStorageFile, key)
 				}
-				g.goSites = newGoSiteSettings(c.goSitesFile)
 				if endpoint, pinned := g.goSites.dohServer(); endpoint != "" {
 					goDoHNow.Store(newGoDoH(endpoint, pinned)) // (DNS over HTTPS, as chosen: godoh.go)
 				}

@@ -229,7 +229,7 @@ func TestGoStorageWithMoli(t *testing.T) {
 		t.Fatal("closing a stale tab did not preserve changes from both tabs")
 	}
 	clearTabs := func(selected map[string]bool) {
-		first.forgetStorage(ctx, "", selected, false)
+		first.forgetStorage(ctx, "", selected, false, nil)
 	}
 	store.forget("", goForgetRange{since: time.Now().Add(-time.Hour)}, clearTabs)
 	if got := eval(first, "String(localStorage.length)"); got != "0" {
@@ -256,7 +256,7 @@ func TestGoStorageWithMoli(t *testing.T) {
 		t.Fatalf("wrong embedded partition: %q, top-level stored = %v", partition, store.items(site.URL) != nil)
 	}
 	store.forget(goStorageSite(site.URL), goForgetRange{}, func(selected map[string]bool) {
-		embedded.forgetStorage(ctx, "", selected, false)
+		embedded.forgetStorage(ctx, "", selected, false, nil)
 	})
 	id := goStorageID(site.URL)
 	id["storageKey"] = partition

@@ -52,6 +52,12 @@ type goSiteSettings struct {
 	doh, dohURL string
 	// Local DNS records (gohosts.go; Settings): names at addresses given.
 	hosts []goHostRecord
+	// Sites whose cookies and site data are kept (Keep): spared when
+	// browsing data is cleared by time, and the last to go when the
+	// cookies or storage are over their limits; their session cookies are
+	// saved too, so a sign-in lasts a restart (gocookies.go, gostorage.go).
+	// Cleared by name, they're cleared.
+	keep []string
 }
 
 type goSiteSettingsFile struct {
@@ -72,6 +78,7 @@ type goSiteSettingsFile struct {
 	DoH          string            `json:"doh,omitempty"`
 	DoHURL       string            `json:"dohURL,omitempty"`
 	Hosts        []goHostRecord    `json:"hosts,omitempty"`
+	Keep         []string          `json:"keep,omitempty"`
 }
 
 // goSearchEngines are the address bar's search engines (Settings; go.js
@@ -80,6 +87,10 @@ type goSiteSettingsFile struct {
 var goSearchEngines = map[string]bool{
 	"duckduckgo": true, "google": true, "bing": true, "brave": true,
 }
+
+// goKeptSite is whether a site's cookies and data are kept (Keep: a
+// goSite name). None, till the settings are read.
+var goKeptSite = func(string) bool { return false }
 
 // goBlockedHost is whether a host is blocked in the settings: the engine's
 // proxy, the server's fetches for a page, and navigations ask it. Nothing,
@@ -170,6 +181,12 @@ func newGoSiteSettings(file string) *goSiteSettings {
 	} else if u, err := goDoHEndpoint(f.DoHURL); f.DoH == "custom" && err == nil {
 		s.doh, s.dohURL = "custom", u
 	}
+	for _, h := range f.Keep {
+		if h = goSettingHost(h); h != "" && !slices.Contains(s.keep, goSite(h)) && len(s.keep) < maxGoSiteSettings {
+			s.keep = append(s.keep, goSite(h))
+		}
+	}
+	slices.Sort(s.keep)
 	// Each record kept that can be (one that can't isn't the end of the
 	// others, nor are they of it), as many as may be.
 	for _, r := range f.Hosts {
@@ -306,7 +323,7 @@ func (s *goSiteSettings) save() {
 		return
 	}
 	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts,
-		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts}
+		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -315,6 +332,25 @@ func (s *goSiteSettings) save() {
 	if err := writeFileAtomic(s.file, data); err != nil {
 		log.Printf("go: site settings: saving: %v", err)
 	}
+}
+
+// kept is whether site's (a goSite name's) cookies and data are kept.
+func (s *goSiteSettings) kept(site string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, found := slices.BinarySearch(s.keep, site)
+	return found
+}
+
+// keptSites is the sites kept, for a clear that spares them.
+func (s *goSiteSettings) keptSites() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]bool, len(s.keep))
+	for _, site := range s.keep {
+		out[site] = true
+	}
+	return out
 }
 
 // isBlocked is whether host is a blocked site's, or a subdomain of one.
@@ -475,7 +511,7 @@ func (s *goSiteSettings) set(site, setting string) error {
 	}
 	// The whole site's (m.youtube.com: youtube.com); a video host's, its
 	// own host (cdn.example.com, as its videos' addresses name it).
-	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") || strings.HasPrefix(setting, "theme-")) && !strings.HasPrefix(setting, "videos-host-") {
+	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") || strings.HasPrefix(setting, "theme-") || setting == "keep" || setting == "keep-off") && !strings.HasPrefix(setting, "videos-host-") {
 		h = goSite(h)
 	}
 	switch setting {
@@ -529,16 +565,27 @@ func (s *goSiteSettings) set(site, setting string) error {
 		s.theme[h] = strings.TrimPrefix(setting, "theme-")
 	case "theme-default":
 		delete(s.theme, h)
+	case "keep":
+		if !slices.Contains(s.keep, h) {
+			if len(s.keep) >= maxGoSiteSettings {
+				return errors.New("Too many sites are kept.")
+			}
+			s.keep = append(s.keep, h)
+			slices.Sort(s.keep)
+		}
+	case "keep-off":
+		s.keep = slices.DeleteFunc(s.keep, func(k string) bool { return k == h })
 	case "forget":
 		// Everything kept under the name: its block, its pop-ups, videos and
-		// ads, its videos blocked by host. (A block of a domain over it, kept
-		// under that domain's name, stays.)
+		// ads, its videos blocked by host, its Keep. (A block of a domain over
+		// it, kept under that domain's name, stays.)
 		s.blocked = slices.DeleteFunc(s.blocked, func(b string) bool { return b == h })
 		delete(s.popups, h)
 		delete(s.media, h)
 		delete(s.ads, h)
 		delete(s.theme, h)
 		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
+		s.keep = slices.DeleteFunc(s.keep, func(k string) bool { return k == h })
 	default:
 		return errors.New("That isn't a setting.")
 	}
@@ -560,7 +607,7 @@ func (s *goSiteSettings) report() map[string]any {
 		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
 		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
 		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL,
-		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...)}
+		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...), "keep": slices.Clone(s.keep)}
 }
 
 // routeGoSettings answers the settings page: what's set.
@@ -635,6 +682,8 @@ func (g *server) routeGoSettingsSet(c *tunnelCall) {
 	} else if err := g.goSites.set(c.req.Name, c.req.Setting); err != nil {
 		c.r.fail(err.Error())
 		return
+	} else if (c.req.Setting == "keep" || c.req.Setting == "keep-off" || c.req.Setting == "forget") && g.goCookies != nil {
+		g.goCookies.saveSoon() // (its session cookies saved, or no longer)
 	}
 	log.Printf("go: site settings: %s from %s", c.req.Setting, c.ip)
 	report := g.goSites.report()

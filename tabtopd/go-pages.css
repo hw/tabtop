@@ -147,7 +147,7 @@ dialog .tools { justify-content: flex-end; }
 #ad_lists label { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; }
 #ad_lists label > span { display: grid; gap: 2px; min-width: 0; }
 #ad_lists .name { overflow-wrap: anywhere; }
-#ad_lists input[type="checkbox"], .toggle input { width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--accent); flex-shrink: 0; }
+#ad_lists input[type="checkbox"], .toggle input, #keep_site { width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--accent); flex-shrink: 0; }
 #ad_lists .detail.error { color: #ffb4ab; }
 .toggle { display: flex; align-items: flex-start; gap: 10px; }
 #ad_add input { min-height: 38px; padding: 7px 13px; border: 1px solid var(--line); border-radius: 10px; background: #202024; }

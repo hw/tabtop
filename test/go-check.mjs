@@ -736,9 +736,11 @@ const handle = function handle(req, res) {
       'document.getElementById("storage").textContent = localStorage.getItem("check") ?? "empty";</script>');
   }
   if (req.url.startsWith("/cookie")) {
-    // What the browser sent of its cookies; ?set sets one (for an hour).
+    // What the browser sent of its cookies; ?set sets one (for an hour),
+    // ?session one for the session (no expiry).
     const head = { "Content-Type": "text/html", "Cache-Control": "no-store" };
     if (req.url.includes("?set")) head["Set-Cookie"] = "kept=yes; Path=/; Max-Age=3600; HttpOnly";
+    if (req.url.includes("?session")) head["Set-Cookie"] = "signin=s; Path=/; HttpOnly";
     res.writeHead(200, head);
     return res.end("<!doctype html><title>Cookie</title><p id=c>sent " + (req.headers.cookie || "nothing").replace(/[<&]/g, "") + "</p>");
   }
@@ -1442,6 +1444,61 @@ async function check(base, port, site, adSite) {
             await goTo(site + "storage", "Site storage");
             if ((await frame(`document.getElementById("storage")?.textContent`)) !== "empty") throw new Error("the deleted item was restored");
         }
+    });
+
+    await step("Keep: a site kept keeps its cookies (its session's too) and storage through Clear browsing data, all time; Select's choices pass it by", async () => {
+        const host = new URL(site).hostname;
+        const moli = process.env.GO_IMAGE ? (process.env.GO_ENGINE || "moli") === "moli" : true;
+        const browserPage = async (path) => {
+            await ev(`(() => { window.__leaving = true; sessionStorage.removeItem("tabtop-go-kept"); sessionStorage.removeItem("tabtop-go-history"); sessionStorage.removeItem("tabtop-go-resume"); location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete"`, "the page loaded anew", 30000);
+        };
+        const sitePage = async () => {
+            await browserPage(`go/sites?site=${encodeURIComponent(host)}`);
+            await waitFor(`!document.getElementById("site_settings").hidden && !document.getElementById("keep_site").disabled`, "the site's page", 20000);
+        };
+        await goTo(site + "cookie?set", "Cookie");
+        await goTo(site + "cookie?session", "Cookie");
+        if (moli) await goTo(site + "storage?set", "Site storage");
+        await sleep(500);
+        // Kept, from its page.
+        await sitePage();
+        if (await ev(`document.getElementById("keep_site").checked`)) throw new Error("kept before it was asked");
+        await ev(`document.getElementById("keep_site").click()`);
+        await waitFor(`/are kept/.test(document.getElementById("done").textContent) && document.getElementById("keep_site").checked && /leaves it/.test(document.getElementById("keep_note").textContent)`, "kept");
+        // All sites: marked; Select ▸ All passes it by.
+        await ev(`document.getElementById("show_all").click()`);
+        const row = `document.querySelector('#sites li[data-site=${JSON.stringify(host)}]')`;
+        await waitFor(`/Data kept/.test(${row}?.textContent ?? "")`, "marked kept in All sites", 20000);
+        await ev(`document.getElementById("select_sites").click(); document.getElementById("select_pick").click(); [...document.querySelectorAll("#select_menu button")].find((b) => b.textContent === "All").click()`);
+        if (await ev(`${row}.querySelector(".site-row").getAttribute("aria-pressed")`) !== "false") throw new Error("Select ▸ All picked the kept site");
+        await ev(`document.getElementById("clear_selection").click()`);
+        // Clear browsing data, all time: said to spare it, and does.
+        await ev(`document.getElementById("show_browser").click(); document.getElementById("clear_browser").click(); document.getElementById("within").value = "0"`);
+        const summary = await ev(`document.getElementById("clear_summary").textContent`);
+        if (!summary.includes(`Kept sites aren't cleared: ${host}`)) throw new Error(`the dialog: ${summary}`);
+        await ev(`document.getElementById("clear").click()`);
+        await waitFor(`document.getElementById("done").textContent === "Cleared all browsing data."`, "all browsing data cleared");
+        await browserPage("go/tab");
+        await waitFor(`!!document.getElementById("go_url") && !!document.getElementById("go_menu") && document.getElementById("go_progress").hidden`, "the browser page again, connected");
+        await sleep(1000);
+        await goTo(site + "cookie", "Cookie");
+        const sent = await frame(`document.getElementById("c")?.textContent`);
+        if (!/kept=yes/.test(sent) || !/signin=s/.test(sent)) throw new Error(`a new tab, after all time cleared, sent ${sent}`);
+        if (moli) {
+            await goTo(site + "storage", "Site storage");
+            if ((await frame(`document.getElementById("storage")?.textContent`)) !== "saved") throw new Error("the kept site's storage was cleared");
+        }
+        // Keep off, and its data cleared by name, for the steps after.
+        await sitePage();
+        await ev(`document.getElementById("keep_site").click()`);
+        await waitFor(`/no longer kept/.test(document.getElementById("done").textContent) && !document.getElementById("keep_site").checked`, "kept no longer");
+        await waitFor(`!document.getElementById("clear_site").disabled`, "Clear data offered");
+        await ev(`document.getElementById("clear_site").click(); document.getElementById("clear").click()`);
+        await waitFor(`/Cleared site data/.test(document.getElementById("done").textContent)`, "its data cleared");
+        await browserPage("go/tab");
+        await waitFor(`!!document.getElementById("go_url") && !!document.getElementById("go_menu") && document.getElementById("go_progress").hidden`, "the browser page again, connected");
+        await sleep(1000);
     });
 
     await step("All sites: Select, any site selected (bordered), Clear data and Delete settings for those each applies to; a site typed opened from the list", async () => {
