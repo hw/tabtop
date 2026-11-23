@@ -7,7 +7,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../tabtopd/gogl.js", import.meta.url), "utf8");
+// As gobrowser.go puts it in the page (goGLPageJS): the constants and the
+// reading of shaders' source, then the hook, in one function.
+const file = (name) => readFileSync(new URL(`../tabtopd/${name}`, import.meta.url), "utf8");
+const source = "(() => {\n" + file("gogl-enums.js") + "\n" + file("goglsl.js") + "\n" + file("gogl.js") + "\n})();\n";
 
 function page() {
     const context = vm.createContext({ btoa, atob, Promise, Symbol, Math, JSON, Number, String, Array, Object, Reflect, Map, Set, WeakMap, WeakSet, Error, ArrayBuffer, Uint8Array, Uint16Array, Int32Array, Float32Array, Uint8ClampedArray, DataView });
@@ -99,6 +102,13 @@ uniform vec4 tint;
 uniform sampler2D shadows[3];
 out vec4 color;
 void main() { color = tint; }`;
+
+test("the hook's constants and shader reading are its own, not the page's", () => {
+    const { context } = page();
+    for (const name of ["enums", "gl2Enums", "standardEnums1", "standardEnums2", "glslTypes", "glslValue", "glslActive", "glslDeclared"]) {
+        assert.equal(vm.runInContext(`typeof ${name}`, context), "undefined", name);
+    }
+});
 
 test("VENDOR and RENDERER are fixed WebKit-like strings for WebGL1 and WebGL2", () => {
     const { context } = page();

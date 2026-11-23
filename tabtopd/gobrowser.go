@@ -52,6 +52,18 @@ var goCanvasJS string
 //go:embed gogl.js
 var goGLJS string
 
+//go:embed gogl-enums.js
+var goGLEnumsJS string
+
+//go:embed goglsl.js
+var goGLSLJS string
+
+// goGLPageJS is the page's WebGL hook: its constants and its reading of
+// shaders' source, then the hook, in one function, so that their names are
+// its own, not the page's. (test/gogl.test.mjs puts them together the same
+// way.)
+var goGLPageJS = "(() => {\n" + goGLEnumsJS + "\n" + goGLSLJS + "\n" + goGLJS + "\n})();\n"
+
 // goObserveJS is the page's IntersectionObserver, run before its scripts
 // (see goobserve.js).
 //
@@ -688,7 +700,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLJS + "\n" + goEMEJS + "\n" + goSheetsJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
