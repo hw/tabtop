@@ -1,0 +1,28 @@
+name: FFmpeg
+description: >-
+  Installs Ubuntu's FFmpeg, its packages kept in the GHA cache, by the
+  version apt would install: Ubuntu's mirror has taken minutes for them
+  (66 MB at 150 kB/s), which the checks waited on.
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      run: |
+        sudo apt-get update
+        version=$(apt-cache policy ffmpeg | awk '/Candidate:/ { print $2 }' | tr ':' '_')
+        echo "key=ffmpeg-debs-$(lsb_release -rs)-$(dpkg --print-architecture)-$version" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/ffmpeg-debs
+        key: ${{ steps.version.outputs.key }}
+    # Packages already in the folder (from the cache) aren't fetched again;
+    # those fetched are kept there, for the cache to save if it missed.
+    - shell: bash
+      run: |
+        debs=$RUNNER_TEMP/ffmpeg-debs
+        sudo mkdir -p "$debs/partial"
+        sudo apt-get install -y --no-install-recommends \
+            -o Dir::Cache::archives="$debs" -o APT::Keep-Downloaded-Packages=true ffmpeg
+        sudo rm -rf "$debs/partial" "$debs/lock"
+        sudo chmod -R a+rX "$debs"

@@ -117,7 +117,7 @@ jobs:
           tags: tabtop:check
           cache-from: type=gha,scope=tabtop
       - if: matrix.ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        uses: ./.github/actions/ffmpeg
       - run: for g in ${{ matrix.groups }}; do test/browser-check.sh tabtop:check --group "$g"; done
       - if: matrix.lite
         uses: docker/build-push-action@v7
@@ -155,7 +155,7 @@ jobs:
           tags: tabtop-lite:check
           cache-from: type=gha,scope=tabtop-lite
       # The test site's videos are made with FFmpeg.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - uses: ./.github/actions/ffmpeg
       # Ubuntu's runners only let AppArmor-profiled programs make user
       # namespaces, containers' too.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
