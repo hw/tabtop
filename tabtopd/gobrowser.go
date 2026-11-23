@@ -1859,24 +1859,20 @@ func goCanvasOp(op map[string]any, path []int) map[string]any {
 	return op
 }
 
-// glStreamOK says whether canvas id has a stream.
-func (s *goSeen) glStreamOK(id int) (*goGLStream, bool) {
-	if s == nil || s.gl == nil {
-		return nil, false
-	}
-	stream, ok := s.gl[id]
-	return stream, ok
-}
-
-// glFull says whether the document has as many WebGL canvases as it may.
-func (s *goSeen) glFull() bool { return s != nil && s.gl != nil && len(s.gl) >= goGLStreamsMax }
-
-// glStream is the WebGL stream checked so far for canvas id, if any.
-func (s *goSeen) glStream(id int) *goGLStream {
-	if s == nil || s.gl == nil {
-		return nil
-	}
-	return s.gl[id]
+// goChangeOp is one of a batch's changes (goagent.js's ops).
+type goChangeOp struct {
+	O          string    `json:"o"`
+	I          int       `json:"i"`
+	N          string    `json:"n"`
+	V          *string   `json:"v"`
+	PE         string    `json:"pe"`
+	W          int       `json:"w"`
+	H          int       `json:"h"`
+	R          bool      `json:"r"`
+	Version    int       `json:"version"`
+	Attributes int       `json:"attributes"`
+	Path       []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
+	C          []*goNode `json:"c"`
 }
 
 // goCleanOps takes event handler attributes and what's never shown out of a
@@ -1885,20 +1881,7 @@ func (s *goSeen) glStream(id int) *goGLStream {
 func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 	out := []any{} // [] if none, not null: a batch may bring only what's observed
 	for _, r := range raw {
-		var op struct {
-			O          string    `json:"o"`
-			I          int       `json:"i"`
-			N          string    `json:"n"`
-			V          *string   `json:"v"`
-			PE         string    `json:"pe"`
-			W          int       `json:"w"`
-			H          int       `json:"h"`
-			R          bool      `json:"r"`
-			Version    int       `json:"version"`
-			Attributes int       `json:"attributes"`
-			Path       []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
-			C          []*goNode `json:"c"`
-		}
+		var op goChangeOp
 		if json.Unmarshal(r, &op) != nil {
 			continue
 		}
@@ -1952,32 +1935,7 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 			if op.I <= 0 {
 				continue
 			}
-			// A delta continues the stream the server has checked so far;
-			// without one (refused before, or never sent whole) it's refused.
-			var prior *goGLStream
-			ok := op.V != nil && op.Attributes >= 0 && op.Attributes <= 63
-			if ok && !op.R {
-				prior = seen.glStream(op.I)
-				ok = prior != nil
-			}
-			if _, known := seen.glStreamOK(op.I); ok && op.R && !known && seen.glFull() {
-				ok = false // one WebGL canvas too many
-			}
-			var stream *goGLStream
-			if ok {
-				stream, ok = goCanvasGLCheck(*op.V, op.W, op.H, op.Version, prior)
-			}
-			if ok && seen != nil && seen.gl != nil {
-				seen.gl[op.I] = stream
-			}
-			if ok {
-				out = append(out, goCanvasOp(map[string]any{"o": "g", "i": op.I, "v": *op.V, "w": op.W, "h": op.H, "r": op.R, "version": op.Version, "attributes": op.Attributes}, op.Path))
-			} else {
-				if seen != nil && seen.gl != nil {
-					delete(seen.gl, op.I)
-				}
-				out = append(out, goCanvasOp(map[string]any{"o": "p", "i": op.I, "v": "", "pe": "unsupported"}, op.Path))
-			}
+			out = append(out, seen.glOp(&op))
 		case "t", "v":
 			v := ""
 			if op.V != nil {
