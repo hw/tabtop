@@ -1251,7 +1251,7 @@
     // holds at once (its objects' storage, by what's bound when it's given).
     const glExtensionList = ["OES_element_index_uint", "OES_standard_derivatives", "WEBGL_depth_texture", "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float", "OES_texture_half_float_linear", "EXT_color_buffer_float", "EXT_color_buffer_half_float", "EXT_float_blend", "OES_draw_buffers_indexed", "WEBGL_polygon_mode", "EXT_texture_filter_anisotropic", "EXT_disjoint_timer_query", "EXT_disjoint_timer_query_webgl2", "OES_vertex_array_object", "ANGLE_instanced_arrays", "WEBGL_draw_buffers", "WEBGL_multi_draw", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_pvrtc", "WEBGL_compressed_texture_atc", "WEBGL_compressed_texture_astc", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc"];
     const glExtensionNames = new Set(glExtensionList);
-    const glLimits = { size: 4096, depth: 256, texels: 64 << 20, levels: 13, samples: 8, buffer: 64 << 20, draw: 16 << 20, instances: 1 << 20, context: 256 << 20, mirrors: 16 };
+    const glLimits = { size: 4096, depth: 256, texels: 64 << 20, levels: 13, samples: 8, buffer: 64 << 20, draw: 16 << 20, instances: 1 << 20, context: 256 << 20, mirrors: 16, commands: 4096, log: 4 << 20 };
     const glLive = new Map();  // canvases with a replay context -> their document's generation
     const glAttached = new WeakSet();  // of those, the ones seen in the page
     // When the viewer's contexts were lost (GPU resets), in the last minute:
@@ -1468,9 +1468,9 @@
     function webglFrame(el, encoded, width, height, version = 1, attributes = 27, reset = true, d = null) {
         if (reset && (glCanvases.has(el) || canvasDraws.has(el))) el = freshCanvas(d, el);
         try {
-            if (typeof encoded !== "string" || encoded.length > (4 << 20) || !Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(attributes) || attributes < 0 || attributes > 63 || !Number.isInteger(version) || ![1, 2].includes(version) || width < 1 || height < 1 || width > 4096 || height > 4096 || width * height > (16 << 20)) throw new Error("limits");
+            if (typeof encoded !== "string" || encoded.length > glLimits.log || !Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(attributes) || attributes < 0 || attributes > 63 || !Number.isInteger(version) || ![1, 2].includes(version) || width < 1 || height < 1 || width > 4096 || height > 4096 || width * height > (16 << 20)) throw new Error("limits");
             const commands = JSON.parse(encoded);
-            if (!Array.isArray(commands) || commands.length > 4096) throw new Error("commands");
+            if (!Array.isArray(commands) || commands.length > glLimits.commands) throw new Error("commands");
             let mirror = !reset ? glCanvases.get(el) : null;
             if (mirror?.failed) throw new Error("WebGL mirror requires a full snapshot");
             if (!reset && !mirror) throw new Error("WebGL calls without their log");
@@ -1641,7 +1641,7 @@
                 for (const command of commands) mirror.history.push(command);
                 mirror.historyBytes += encoded.length;
             }
-            if (mirror.history.length > 4096 || mirror.historyBytes > (4 << 20)) throw new Error("history limits");
+            if (mirror.history.length > glLimits.commands || mirror.historyBytes > glLimits.log) throw new Error("history limits");
             el.removeAttribute("aria-label");
             el.title = "WebGL rendering mirrored from the remote page";
         } catch {

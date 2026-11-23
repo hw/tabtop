@@ -274,6 +274,7 @@ const (
 	goCanvasSizeMax   = 4096
 	goCanvasGLMax     = 4 << 20
 	goCanvasGLOpsMax  = 4096
+	goCanvasGLDataMax = 2 << 20 // a typed array's or texture's bytes
 )
 
 var goCanvasGLMethods = func() map[string]bool {
@@ -391,7 +392,7 @@ func goCanvasGLArg(raw json.RawMessage) bool {
 					return false
 				}
 				decoded, err := base64.StdEncoding.DecodeString(data)
-				return err == nil && len(decoded) <= 2<<20
+				return err == nil && len(decoded) <= goCanvasGLDataMax
 			}
 			return false
 		default:
@@ -473,6 +474,10 @@ var goCanvasGLExtensions = func() map[string]bool {
 	}
 	return out
 }()
+
+// goCanvasGL2Extensions are those only WebGL2 has (gogl.js's
+// extensionSupported).
+var goCanvasGL2Extensions = map[string]bool{"EXT_color_buffer_float": true, "OES_draw_buffers_indexed": true}
 
 // goCanvasGLStringMethods take a string argument; goCanvasGLSequenceMethod
 // says which take a sequence (uniform*v and the like).
@@ -583,7 +588,7 @@ func goCanvasGLCheck(encoded string, width, height, version int, prior *goGLStre
 			if len(command.Args) != 1 || json.Unmarshal(command.Args[0], &extension) != nil || !goCanvasGLExtensions[extension] {
 				return nil, false
 			}
-			if version == 1 && (extension == "EXT_color_buffer_float" || extension == "OES_draw_buffers_indexed") {
+			if version == 1 && goCanvasGL2Extensions[extension] {
 				return nil, false
 			}
 			extensions[extension] = true
