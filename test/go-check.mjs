@@ -309,7 +309,7 @@ chat.addEventListener("keydown", (e) => {
 <x-late id="late"></x-late>
 <x-dsd id="dsd"><template shadowrootmode="open"><style>em { color: rgb(5, 6, 7) }</style><em id="declared">declared</em></template></x-dsd>
 <x-lazy id="lazy"></x-lazy>
-<button id="define">Define</button> <button id="restyle">Restyle</button>
+<button id="define">Define</button> <button id="restyle">Restyle</button> <button id="rerule">Rule</button>
 <p id="clicks">clicks 0</p><p id="edgot">engine: edit me</p>
 <script>
 const sheet = new CSSStyleSheet();
@@ -348,6 +348,21 @@ customElements.define("x-lazy", class extends HTMLElement {
         new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) r.getElementById("lazybox").textContent = "seen"; }).observe(r.getElementById("lazybox"));
     }
 });
+// A <style> in a root filled by script (insertRule, no text: styled-
+// components'), its root closed and made before it's in the document; a
+// rule put in later, at a press.
+customElements.define("x-ruled", class extends HTMLElement {
+    constructor() {
+        super();
+        const r = this.attachShadow({ mode: "closed" });
+        r.innerHTML = '<style></style><u id="ruledtext">ruled text</u>';
+        this.sheetOf = () => r.querySelector("style").sheet;
+    }
+    connectedCallback() { this.sheetOf().insertRule("u { color: rgb(11, 22, 33) }"); }
+});
+const ruled = document.createElement("x-ruled");
+document.body.append(ruled);
+document.getElementById("rerule").addEventListener("click", () => ruled.sheetOf().insertRule("u { color: rgb(44, 55, 66) }", 1));
 window.pageSees = String(document.getElementById("closed").shadowRoot);
 </script>`,
         "shadow-frame.html": `<!doctype html><title>Shadow frame</title><p id="infr">in a frame in a shadow root</p><x-fcard></x-fcard>
@@ -2009,6 +2024,12 @@ async function check(base, port, site, adSite) {
         if (!slotted || slotted[1] !== "rgb(40, 50, 60)" || !slotted[2]) throw new Error(`the slotted child: ${JSON.stringify(slotted)}`);
         // A closed one: shown (the page still told it's closed).
         await frameWait(`(() => { ${deep} const e = deep(document, "#secret"); return e?.textContent === "closed text" && getComputedStyle(e).color === "rgb(70, 80, 90)"; })()`, "the closed shadow root's content, with its <style>");
+        // A <style> in a (closed) root filled by script: its rules, and one
+        // put in later.
+        const ruledColor = (c) => `(() => { ${deep} const e = deep(document, "#ruledtext"); return e?.textContent === "ruled text" && getComputedStyle(e).color === "${c}"; })()`;
+        await frameWait(ruledColor("rgb(11, 22, 33)"), "a <style> in a shadow root, its rules put in by script");
+        await frameClick("#rerule");
+        await frameWait(ruledColor("rgb(44, 55, 66)"), "a rule put in later, in a <style> in a shadow root");
         // One from its HTML, taken up by its element; one drawn once seen.
         await frameWait(`(() => { ${deep} const e = deep(document, "#declared"); return e?.getAttribute("data-taken") === "yes" && getComputedStyle(e).color === "rgb(5, 6, 7)"; })()`, "a declarative shadow root, taken up by its element");
         await frame(`(() => { ${deep} deep(document, "#lazybox").scrollIntoView({ block: "center" }); })()`);
