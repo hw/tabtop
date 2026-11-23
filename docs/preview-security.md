@@ -37,7 +37,7 @@ EPUB's original styles and media remain outside its XML sanitizer's allowlist;
 Markdown continues to omit raw HTML.
 
 HTML's **Proxy** mode uses the authenticated E2E tunnel for stylesheets, imports,
-fonts, background images and media, without saving files. CSS Tree 3.1.0 is
+fonts, background images and media, without saving files. CSS Tree 3.2.1 is
 vendored with its MIT license and archive integrity in `tabtopd/third-party/`.
 `preview-css.js` rejects opaque parser recovery nodes,
 unknown URL-bearing functions and unsupported rules/properties. Selectors are

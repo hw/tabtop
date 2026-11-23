@@ -1,7 +1,7 @@
-CSS Tree 3.1.0, MIT license (css-tree.LICENSE).
-Source: https://registry.npmjs.org/css-tree/-/css-tree-3.1.0.tgz
+CSS Tree 3.2.1, MIT license (css-tree.LICENSE).
+Source: https://registry.npmjs.org/css-tree/-/css-tree-3.2.1.tgz
 The unmodified package/dist/csstree.js is the classic browser parser bundle.
-Archive integrity: sha512-0eW44TGN5SQXU1mWSkKwFstI/22X2bG1nYzZTYMAWjylYURhse752YgbE4Cx46AC+bAvI+/dYTPRk1LqSUnu6w==
+Archive integrity: sha512-X7sjQzceUhu1u7Y/ylrRZFU2FS6LRiFVp6rKLPg23y3x3c3DOKAwuXGDp+PAGjh6CSnCjYeAul8pcT8bAl+lSA==
 
 The bundle also includes source-map-js (BSD-3-Clause) and MDN data (CC0).
 Their license texts are included alongside CSS Tree's license.

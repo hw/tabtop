@@ -11,8 +11,8 @@
 | `GHOSTTY_WEB_SHA256` | *(checksum of 0.4.0)* | SHA-256 of `https://registry.npmjs.org/ghostty-web/-/ghostty-web-<version>.tgz`. |
 | `NERD_FONTS_VERSION` | `v3.5.1` | Nerd Fonts release that the terminal's font, JetBrains Mono Nerd Font (its `NL Mono` regular and bold, made WOFF2), and its license are taken from. |
 | `NERD_FONT_SHA256` | *(checksum of v3.5.1)* | SHA-256 of `https://github.com/ryanoasis/nerd-fonts/releases/download/<version>/JetBrainsMono.tar.xz`. |
-| `MOLI_VERSION` | `1.1.25` | [Moli](https://github.com/lexmount/moli) release, the remote browser's page engine (`/go`), downloaded from GitHub for the image's architecture (amd64 or arm64). |
-| `MOLI_AMD64_SHA256`, `MOLI_ARM64_SHA256` | *(checksums of 1.1.25)* | SHA-256 of `https://github.com/lexmount/moli/releases/download/v<version>/moli-<x86_64 or aarch64>-unknown-linux-gnu.tar.gz`. CI's tests take the version and the amd64 checksum from the Dockerfile too. |
+| `MOLI_VERSION` | `1.1.27` | [Moli](https://github.com/lexmount/moli) release, the remote browser's page engine (`/go`), downloaded from GitHub for the image's architecture (amd64 or arm64). |
+| `MOLI_AMD64_SHA256`, `MOLI_ARM64_SHA256` | *(checksums of 1.1.27)* | SHA-256 of `https://github.com/lexmount/moli/releases/download/v<version>/moli-<x86_64 or aarch64>-unknown-linux-gnu.tar.gz`. CI's tests take the version and the amd64 checksum from the Dockerfile too. |
 | `NOBLE_CIPHERS_VERSION` | `2.4.0` | `@noble/ciphers` release from npm, whose ChaCha20-Poly1305 the page uses for the [tunnel](encryption.md). |
 | `NOBLE_CIPHERS_SHA256` | *(checksum of 2.4.0)* | SHA-256 of `https://registry.npmjs.org/@noble/ciphers/-/ciphers-<version>.tgz`. |
 | `NOBLE_CURVES_VERSION` | `2.4.0` | `@noble/curves` release from npm, whose X25519 the page uses for the [tunnel](encryption.md). |
@@ -23,27 +23,27 @@
 | `HIGHLIGHT_SHA256` | *(checksum of 11.12.0)* | SHA-256 of `https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-<version>.tgz`. |
 | `THREE_VERSION` | `0.187.0` | three.js release from npm (`three`), which draws 3D models and G-code in the files page's previews. `scripts/three/vendor.sh` copies what's used into one folder, its imports pointing within it; `scripts/three/check.mjs` and `test/model-worker.test.mjs` check it at build time. |
 | `THREE_SHA256` | *(checksum of 0.187.0)* | SHA-256 of `https://registry.npmjs.org/three/-/three-<version>.tgz`. |
-| `PDFJS_VERSION` | `6.4.299` | pdf.js release from npm (`pdfjs-dist`), its legacy build, which shows PDFs in the files page's previews. |
-| `PDFJS_SHA256` | *(checksum of 6.4.299)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
+| `PDFJS_VERSION` | `6.5.438` | pdf.js release from npm (`pdfjs-dist`), its legacy build, which shows PDFs in the files page's previews. |
+| `PDFJS_SHA256` | *(checksum of 6.5.438)* | SHA-256 of `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-<version>.tgz`. |
 | `ICED_X86_VERSION` | `1.22.0` | iced-x86 release from npm (`iced-x86`), which disassembles x86 code in the hex preview's data inspector. `scripts/disasm/build.mjs` makes its Node build loadable in a browser worker, without its documentation comments, and checks it at build time. |
 | `ICED_X86_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/iced-x86/-/iced-x86-<version>.tgz`. |
 | `CAPSTONE_JS_REV`, `CAPSTONE_JS_SHA256` | *(revision and checksum in Dockerfile)* | Capstone.js wrapper source, built with Emscripten 4.0.23 and only the ARM backend. A second build, of ARM64, MIPS and RISC-V, checks fARM64, `mips-asm.js` and `riscv-asm.js` during the image build and isn't put in the image. |
 | *(Rust image and `Cargo.lock`)* | `rust:1.100.0-slim-trixie`, fARM64 `0.1.0` | The ARM64 disassembler and assembler in `scripts/disasm/arm64-asm` is built to WebAssembly in the `arm64asm` stage. fARM64's version and checksum are pinned in its `Cargo.lock`, and the build uses `--locked`. |
 | `CAPSTONE_REV`, `CAPSTONE_SHA256` | *(revision and checksum in Dockerfile)* | The Capstone submodule matching that wrapper revision. Update both source pins together. |
-| `ONNX_WEB_VERSION` | `1.22.0` | ONNX Runtime Web, WASM backend only, for U2NetP background removal in the image editor. |
-| `ONNX_WEB_SHA256` | *(checksum of 1.22.0)* | SHA-256 of `https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-<version>.tgz`. Update the pinned runtime license and third-party notice checksums with the version. |
+| `ONNX_WEB_VERSION` | `1.31.1` | ONNX Runtime Web, WASM backend only, for U2NetP background removal in the image editor. |
+| `ONNX_WEB_SHA256` | *(checksum of 1.31.1)* | SHA-256 of `https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-<version>.tgz`. Update the runtime's license and third-party notices in `scripts/onnxruntime` with the version (from its release's Python wheel, as `scripts/onnxruntime/README.md` says: its GitHub repository is gone). |
 | `U2NETP_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the U2NetP ONNX weights from rembg's `v0.0.0` release. |
 | `MIGAN_REVISION` | `406830d0fa60666da0071c342ad2fbc8f30c5c64` | Hugging Face revision of the authors' `andraniksargsyan/migan` repository, for the ONNX pipeline and its MIT weights license. |
 | `MIGAN_SHA256` | *(checksum in Dockerfile)* | SHA-256 of `migan_pipeline_v2.onnx`. The bundled model is the official 28.1 MB export, without additional quantization. |
 | `MOBILESAM_ONNX_REVISION` | `0d3b403339b4674a82493d5e97964dd78089ddc8` | Hugging Face revision of `Acly/MobileSAM`, for MobileSAM's ONNX image encoder and the Segment Anything single-mask decoder. |
 | `MOBILESAM_ENCODER_SHA256`, `MOBILESAM_DECODER_SHA256` | *(checksums in Dockerfile)* | SHA-256 of `mobile_sam_image_encoder.onnx` (28.2 MB) and `sam_mask_decoder_single.onnx` (16.5 MB). |
 | `MOBILESAM_REV`, `SAM_REV` | *(revisions in Dockerfile)* | MobileSAM's and Segment Anything's repositories, for their Apache-2.0 licence files. |
-| `KATEX_VERSION` | `0.19.0` | KaTeX release from npm (`katex`), which draws math in Markdown previews. |
-| `KATEX_SHA256` | *(checksum of 0.19.0)* | SHA-256 of `https://registry.npmjs.org/katex/-/katex-<version>.tgz`. |
-| `MERMAID_VERSION` | `12.2.0` | Mermaid release from npm (`mermaid`), which draws diagrams in Markdown previews. |
+| `KATEX_VERSION` | `0.19.1` | KaTeX release from npm (`katex`), which draws math in Markdown previews. |
+| `KATEX_SHA256` | *(checksum of 0.19.1)* | SHA-256 of `https://registry.npmjs.org/katex/-/katex-<version>.tgz`. |
+| `MERMAID_VERSION` | `12.3.0` | Mermaid release from npm (`mermaid`), which draws diagrams in Markdown previews. |
 | `KAITAI_FORMATS_COMMIT` | `7d175667527372eb0c521045c1dac212230d9779` | Pinned Kaitai format library snapshot (191 formats). |
 | `KAITAI_FORMATS_SHA256` | *(checksum in Dockerfile)* | SHA-256 of the format library archive. |
-| `MERMAID_SHA256` | *(checksum of 12.2.0)* | SHA-256 of `https://registry.npmjs.org/mermaid/-/mermaid-<version>.tgz`. |
+| `MERMAID_SHA256` | *(checksum of 12.3.0)* | SHA-256 of `https://registry.npmjs.org/mermaid/-/mermaid-<version>.tgz`. |
 | `BUILD_TIME` | *(UTC now)* | When this tabtopd was built (UTC RFC3339), shown on Sessions and Activity. Linked into the binary as `main.buildTime`. |
 | `BOOTSTRAP_DECODER_SHA256` | *(sha256 of `tabtopd/bootstrap.html`)* | SHA-256 of the offline decoder (`/auth/bootstrap`), shown on Sessions. Linked in as `main.bootstrapDecoderHash`; empty hashes the `bootstrap.html` copied into the tabtopd stage. |
 

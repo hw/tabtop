@@ -166,10 +166,10 @@ RUN mkdir -p /src /highlight/languages /highlight/classic/languages \
 # themselves, so its fonts and stylesheet aren't needed. From npm; bump each
 # version together with its checksum.
 FROM debian:trixie-slim AS preview
-ARG KATEX_VERSION=0.19.0
-ARG KATEX_SHA256=d8e49f2fea6eeed7cdae2cf4fd48e2f1d348758aa9e5740715e4533c2c96d1ee
-ARG MERMAID_VERSION=12.2.0
-ARG MERMAID_SHA256=071914164d0f6d53e5c26a10a220230d4ae8d37ed0f2263fbf072266f0af3a0a
+ARG KATEX_VERSION=0.19.1
+ARG KATEX_SHA256=24da5a599eb2fcede2e270b99a6ff48bca816beecc95feeb84e8cccbd1bb34fd
+ARG MERMAID_VERSION=12.3.0
+ARG MERMAID_SHA256=be0684e8d20bfc874df12c0f04927a5c482f57f2200eec54cca52a4583fd4040
 ADD --checksum=sha256:${KATEX_SHA256} https://registry.npmjs.org/katex/-/katex-${KATEX_VERSION}.tgz /katex.tgz
 ADD --checksum=sha256:${MERMAID_SHA256} https://registry.npmjs.org/mermaid/-/mermaid-${MERMAID_VERSION}.tgz /mermaid.tgz
 RUN set -e; mkdir /preview; for p in katex mermaid; do \
@@ -186,8 +186,8 @@ RUN set -e; mkdir /preview; for p in katex mermaid; do \
 # tabtopd serves every file in these folders (see pdfjsFolders). From npm;
 # bump the version together with its checksum.
 FROM debian:trixie-slim AS pdfjs
-ARG PDFJS_VERSION=6.4.299
-ARG PDFJS_SHA256=86269b40170eb41740ea05ad2102d71d33de4f122b34eb2f478be0ea7779c415
+ARG PDFJS_VERSION=6.5.438
+ARG PDFJS_SHA256=7461aefcd27c4ef0dd76f9ca5760f09466eb6b3f934432670c12132e7b3d6faa
 ADD --checksum=sha256:${PDFJS_SHA256} https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-${PDFJS_VERSION}.tgz /pdfjs.tgz
 RUN mkdir -p /src /pdfjs/wasm \
  && tar -xzf /pdfjs.tgz -C /src --no-same-owner \
@@ -303,13 +303,16 @@ RUN mkdir -p /src && tar -xzf /iced.tgz -C /src --no-same-owner \
 # U2NetP background removal runs in the browser, with ONNX Runtime Web's
 # WASM backend. Bundle all assets so no model or script is fetched remotely.
 FROM debian:trixie-slim AS background
-ARG ONNX_WEB_VERSION=1.22.0
-ARG ONNX_WEB_SHA256=e293551f9d36d003e293d0f2937fee7b3dfdcef76d71d1449b55e2d4157c7aea
+ARG ONNX_WEB_VERSION=1.31.1
+ARG ONNX_WEB_SHA256=bdccdb9fbb9ab537247c0c734e9b1d2b1b338b4f2a09faa58f0dc1cfa27c312c
 ARG U2NETP_SHA256=309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8
 ADD --checksum=sha256:${ONNX_WEB_SHA256} https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-${ONNX_WEB_VERSION}.tgz /ort.tgz
 ADD --checksum=sha256:${U2NETP_SHA256} https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx /background/u2netp.onnx
-ADD --checksum=sha256:2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c https://raw.githubusercontent.com/microsoft/onnxruntime/v${ONNX_WEB_VERSION}/LICENSE /background/LICENSE.onnxruntime
-ADD --checksum=sha256:e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc https://raw.githubusercontent.com/microsoft/onnxruntime/v${ONNX_WEB_VERSION}/ThirdPartyNotices.txt /background/ThirdPartyNotices.onnxruntime
+# Its license and third-party notices: kept here (scripts/onnxruntime, from
+# the release's Python wheel), as its GitHub repository is gone; bump them
+# with the version.
+COPY scripts/onnxruntime/LICENSE /background/LICENSE.onnxruntime
+COPY scripts/onnxruntime/ThirdPartyNotices.txt /background/ThirdPartyNotices.onnxruntime
 ADD --checksum=sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 https://raw.githubusercontent.com/xuebinqin/U-2-Net/ac7e1c817ecab7c7dff5ce6b1abba61cd213ff29/LICENSE /background/LICENSE.u2net
 RUN mkdir /src && tar -xzf /ort.tgz -C /src --no-same-owner \
  && cp /src/package/dist/ort.wasm.min.js /src/package/dist/ort-wasm-simd-threaded.mjs /src/package/dist/ort-wasm-simd-threaded.wasm /background/ \
@@ -396,9 +399,9 @@ RUN mkdir /formats \
 # together; they are of the release's moli-<arch>-unknown-linux-gnu.tar.gz.
 FROM debian:trixie-slim AS moli
 ARG TARGETARCH
-ARG MOLI_VERSION=1.1.25
-ARG MOLI_AMD64_SHA256=04c73204626054c9ec0064f7fc00abb0dcfa7f8b9c3ec9df5de8e2afc301087f
-ARG MOLI_ARM64_SHA256=95c094a0214431193ee93142dec91cc7affbea79e9b35094213b8b9230ccd134
+ARG MOLI_VERSION=1.1.27
+ARG MOLI_AMD64_SHA256=2ede138ca107f16313183be06ef137c0760eaeb83598570d7f4a4263595cd1a6
+ARG MOLI_ARM64_SHA256=f33ce375155f36beea672f9f45785a09ab8913c69955b166c7a479712b8456ad
 ADD --checksum=sha256:${MOLI_AMD64_SHA256} \
     https://github.com/lexmount/moli/releases/download/v${MOLI_VERSION}/moli-x86_64-unknown-linux-gnu.tar.gz /moli-amd64.tar.gz
 ADD --checksum=sha256:${MOLI_ARM64_SHA256} \
