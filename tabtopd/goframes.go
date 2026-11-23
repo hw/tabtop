@@ -394,6 +394,7 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 			c.changed-- // settling
 		}
 	}
+	b.closedFramesRead() // (a closed root waiting for its frame's world)
 }
 
 func findGoNode(n *goNode, id int) *goNode {

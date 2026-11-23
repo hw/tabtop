@@ -234,6 +234,9 @@ type goBrowser struct {
 	certErrText              string    // its certificate error, the engine's words
 	certRetried              string    // a document the proxy refused (the engine ignoring errors), loaded again
 	docPosted                bool      // its request isn't a GET (a form posted)
+	// The closed shadow roots from its HTML, given to the agents
+	// (goclosedroots.go).
+	closed goClosedRoots
 	// What the engine's been told of certificate errors (certIgnore's
 	// alone, under certMu: the jobs and a paused document's request): 0 to
 	// heed them, 1 to ignore them, -1 not known (a call that failed may
@@ -1377,6 +1380,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		switch ev.Method {
 		case "Network.loadingFinished":
 			b.streamLoaded(ev)
+			b.closedLoaded(ev)
 		case "Network.loadingFailed":
 			b.streamFailed(ev)
 			if u := b.docFailedCert(ev); u != "" {
@@ -1401,6 +1405,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			}
 		case "Network.requestWillBeSent":
 			b.docRequested(ev)
+			b.closedRequested(ev)
 		}
 		b.network(ev)
 	case "Page.domContentEventFired", "Page.loadEventFired":
@@ -1664,6 +1669,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			if b.dirty {
 				b.readChanges()
 			}
+			b.closedShown()
 		}
 	}, func(r any) { r.(func())() })
 }

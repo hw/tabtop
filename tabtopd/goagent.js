@@ -963,6 +963,52 @@
         const shadowsNew = new Set();
         // A same-origin frame's: a root attached, or its sheets changed, in
         // it (goshadow.js, from its iframe): it's read again, whole.
+        // A closed root from the page's HTML (<template shadowrootmode=
+        // "closed">), which nothing in the page's world or this one can
+        // read: the server finds it through the engine and gives it here
+        // (goclosedroots.go), with its host. Kept as goshadow.js's are; its
+        // host sent already, it's sent. In a frame this world reads, the
+        // nodes given aren't the ones this world has of it, through its
+        // iframe (another view of them, measured in Moli): its host is
+        // found there by its place, and that frame's read again; "later"
+        // if this world hasn't read that frame (as it is) yet.
+        function closedRoot(root, host) {
+            if (root?.nodeType !== 11 || host?.nodeType !== 1) return "";
+            let state = null;
+            if (host.ownerDocument !== document) {
+                let owner = null;
+                try { owner = host.ownerDocument.defaultView.frameElement; } catch { /* another origin's */ }
+                state = owner && frames.get(owner);
+                if (!state?.child) return "later";
+                // Its place: each node's index among its parent's, up to the
+                // document, a root's host (-1) between a root and the node
+                // it's in.
+                const steps = [];
+                for (let n = host; ;) {
+                    const p = n.parentNode;
+                    if (!p || steps.length > 512) return "later";
+                    steps.push(Array.prototype.indexOf.call(p.childNodes, n));
+                    if (p.nodeType === 9) break;
+                    if (p.nodeType === 11) {
+                        steps.push(-1);
+                        n = rootHosts.get(p) ?? p.host;
+                        if (!n) return "later";
+                    } else {
+                        n = p;
+                    }
+                }
+                let at = state.child;
+                for (let i = steps.length - 1; i >= 0 && at; i--) at = steps[i] < 0 ? shadowOf(at) : at.childNodes[steps[i]];
+                if (at?.nodeType !== 1 || at.nodeName !== host.nodeName) return "later";
+                host = at;
+            }
+            if (hostRoots.has(host)) return hostRoots.get(host) === root ? "ok" : "";
+            hostRoots.set(host, root);
+            rootHosts.set(root, host);
+            if (state) state.dirty = true;
+            else if (shadowsNew.size < 4096) shadowsNew.add(host);
+            return "ok";
+        }
         document.addEventListener("__tabtop_frame_shadow", (e) => {
             const state = frames.get(at(e));
             if (state) state.dirty = true;
@@ -1664,7 +1710,7 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted };
+        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot };
         // What the page observed before this world was made (as it loaded),
         // asked for again: posted, not dispatched. An event from this world
         // handled in the page's, as the page loads, leaves part of it

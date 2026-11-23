@@ -308,6 +308,7 @@ chat.addEventListener("keydown", (e) => {
 <x-closed id="closed"></x-closed>
 <x-late id="late"></x-late>
 <x-dsd id="dsd"><template shadowrootmode="open"><style>em { color: rgb(5, 6, 7) }</style><em id="declared">declared</em></template></x-dsd>
+<div id="dsdc"><template shadowrootmode="closed"><style>s { color: rgb(12, 13, 14) }</style><s id="dsdclosed">closed, from the HTML</s></template></div>
 <x-lazy id="lazy"></x-lazy>
 <button id="define">Define</button> <button id="restyle">Restyle</button> <button id="rerule">Rule</button>
 <p id="clicks">clicks 0</p><p id="edgot">engine: edit me</p>
@@ -366,6 +367,7 @@ document.getElementById("rerule").addEventListener("click", () => ruled.sheetOf(
 window.pageSees = String(document.getElementById("closed").shadowRoot);
 </script>`,
         "shadow-frame.html": `<!doctype html><title>Shadow frame</title><p id="infr">in a frame in a shadow root</p><x-fcard></x-fcard>
+<div><template shadowrootmode="closed"><b class="fdsd">closed in a frame, from its HTML</b></template></div>
 <button id="fbtn" onclick="this.textContent = 'frame pressed'">frame button</button>
 <script>
 const s = new CSSStyleSheet();
@@ -2030,6 +2032,9 @@ async function check(base, port, site, adSite) {
         await frameWait(ruledColor("rgb(11, 22, 33)"), "a <style> in a shadow root, its rules put in by script");
         await frameClick("#rerule");
         await frameWait(ruledColor("rgb(44, 55, 66)"), "a rule put in later, in a <style> in a shadow root");
+        // A closed one from its HTML (which the page's world can't open):
+        // shown all the same, with its <style>.
+        await frameWait(`(() => { ${deep} const e = deep(document, "#dsdclosed"); return e?.textContent === "closed, from the HTML" && getComputedStyle(e).color === "rgb(12, 13, 14)"; })()`, "a closed shadow root from the page's HTML", 15000);
         // One from its HTML, taken up by its element; one drawn once seen.
         await frameWait(`(() => { ${deep} const e = deep(document, "#declared"); return e?.getAttribute("data-taken") === "yes" && getComputedStyle(e).color === "rgb(5, 6, 7)"; })()`, "a declarative shadow root, taken up by its element");
         await frame(`(() => { ${deep} deep(document, "#lazybox").scrollIntoView({ block: "center" }); })()`);
@@ -2074,6 +2079,10 @@ async function check(base, port, site, adSite) {
         // A component in each frame: its root and its adopted stylesheet.
         const framed = (n) => `(() => { const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.classList?.contains("finner")) all.push(getComputedStyle(el).color); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all.length === ${n} && all.every((c) => c === "rgb(33, 44, 55)"); })()`;
         await frameWait(framed(adSite ? 2 : 1), "a component in each frame, styled by its adopted stylesheet", 30000);
+        // A closed root from its HTML in each frame (this site's, read by
+        // the page's agent; another's, by its own).
+        const closedFramed = `(() => { let n = 0; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.classList?.contains("fdsd")) n++; if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return n; })()`;
+        await frameWait(`${closedFramed} === ${adSite ? 2 : 1}`, "a closed shadow root from its HTML in each frame", 30000);
         // A button in each frame there, pressed: in its page in the engine.
         const frameButtons = `(() => { const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.id === "fbtn") all.push(el); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all; })()`;
         for (let i = 0; i < (adSite ? 2 : 1); i++) {
