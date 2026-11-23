@@ -3,8 +3,9 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"regexp"
-	"strconv"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -117,77 +118,74 @@ func TestGoCanvasGLRefused(t *testing.T) {
 	}
 }
 
-// glViewerJS is the viewer's WebGL replay.
-const glViewerJS = "go-frame-gl.js"
+// TestGoGLSurfaceGenerated: gogl-surface.js, the page's hook's and the
+// viewer's copy of gogl-surface.json, is the one go generate makes of it
+// now (go generate, then commit both).
+func TestGoGLSurfaceGenerated(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		gobin = filepath.Join(runtime.GOROOT(), "bin", "go")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command(gobin, "run", "gen_gogl_surface.go", dir).CombinedOutput(); err != nil {
+		t.Fatalf("go run gen_gogl_surface.go: %v\n%s", err, out)
+	}
+	want, _ := os.ReadFile(filepath.Join(dir, "gogl-surface.js"))
+	if got, _ := os.ReadFile("gogl-surface.js"); len(want) == 0 || string(got) != string(want) {
+		t.Error("gogl-surface.js isn't gogl-surface.json's: run go generate")
+	}
+}
 
-// TestGoCanvasGLMethodLists: the calls the page's hook records (gogl.js),
-// the server forwards and the viewer replays (go-frame-gl.js) are the same
-// list, kept by hand in three places. Queries answered in the engine alone
-// (gogl.js's localQueryMethods) are never recorded.
-func TestGoCanvasGLMethodLists(t *testing.T) {
-	words := func(file, start string) map[string]bool {
-		t.Helper()
-		b, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s := string(b)
-		i := strings.Index(s, start)
-		if i < 0 {
-			t.Fatalf("%s: %q not found", file, start)
-		}
-		s = s[i+len(start):]
-		s = s[:strings.Index(s, ").split")]
-		out := map[string]bool{}
-		for _, m := range regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(s, -1) {
-			for _, w := range strings.Fields(m[1]) {
-				out[w] = true
+// TestGoGLSurfaceInStep: gogl-surface.json's tables agree with each other:
+// WebGL2's calls, and the extensions' and those taking strings, are calls
+// the mirror has; the extensions they name are ones it has.
+func TestGoGLSurfaceInStep(t *testing.T) {
+	s := goGLSurface
+	once := func(what string, list []string) map[string]bool {
+		seen := map[string]bool{}
+		for _, name := range list {
+			if name == "" || seen[name] {
+				t.Errorf("%s: %q empty or twice", what, name)
 			}
+			seen[name] = true
 		}
-		return out
+		return seen
 	}
-	hook := words("gogl.js", "const allowed = new Set((")
-	viewer := words(glViewerJS, "const glMethods = new Set((")
-	for _, local := range strings.Fields("beginQuery createQuery deleteQuery endQuery getQuery getQueryParameter queryCounter") {
-		delete(hook, local)
-		delete(viewer, local)
+	methods, extensions := once("methods", s.Methods), once("extensions", s.Extensions)
+	webgl2 := once("webgl2Methods", s.WebGL2Methods)
+	for name := range webgl2 {
+		if !methods[name] {
+			t.Errorf("WebGL2's %s isn't among the methods", name)
+		}
 	}
-	server := map[string]bool{}
-	for m := range goCanvasGLMethods {
-		server[m] = true
+	for name := range once("stringMethods", s.StringMethods) {
+		if !methods[name] {
+			t.Errorf("%s takes a string but isn't among the methods", name)
+		}
 	}
-	for _, local := range strings.Fields("beginQuery createQuery deleteQuery endQuery getQuery getQueryParameter queryCounter") {
-		delete(server, local)
+	for name := range once("webgl2Extensions", s.WebGL2Extensions) {
+		if !extensions[name] {
+			t.Errorf("WebGL2's extension %s isn't among the extensions", name)
+		}
 	}
-	compare := func(aName string, a map[string]bool, bName string, b map[string]bool) {
-		for m := range a {
-			if !b[m] {
-				t.Errorf("%s has %s, %s hasn't", aName, m, bName)
+	for method, aliases := range s.WebGL1Aliases {
+		if !webgl2[method] || len(aliases) == 0 {
+			t.Errorf("WebGL1 alias of %s: not WebGL2's, or by no extension", method)
+		}
+		for _, alias := range aliases {
+			if !extensions[alias[0]] || alias[1] == "" {
+				t.Errorf("WebGL1 alias of %s: %v", method, alias)
 			}
 		}
 	}
-	compare("gogl.js", hook, "gocanvasgl.go", server)
-	compare("gocanvasgl.go", server, "gogl.js", hook)
-	compare("gogl.js", hook, "go-frame-gl.js", viewer)
-	// And the extensions replayed.
-	b, _ := os.ReadFile(glViewerJS)
-	m := regexp.MustCompile(`const glExtensionList = \[([^\]]*)\]`).FindSubmatch(b)
-	if m == nil {
-		t.Fatal("go-frame-gl.js: glExtensionList not found")
-	}
-	listed := map[string]bool{}
-	for _, name := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(m[1], -1) {
-		listed[string(name[1])] = true
-		if !goCanvasGLExtensions[string(name[1])] {
-			t.Errorf("go-frame-gl.js replays extension %s, gocanvasgl.go refuses it", name[1])
+	for method, extension := range s.ExtensionCommands {
+		if !methods[method] || webgl2[method] || !extensions[extension] {
+			t.Errorf("extension call %s (%s): not a method, the WebGL2 context's own, or an extension not had", method, extension)
 		}
 	}
-	for name := range goCanvasGLExtensions {
-		if !listed[name] {
-			t.Errorf("gocanvasgl.go accepts extension %s, go-frame-gl.js doesn't replay it", name)
-		}
+	if l := s.Limits; l.Commands < 1 || l.LogBytes < 1 || l.DataBytes < 1 || l.DataBytes > l.LogBytes || l.Canvases < 1 {
+		t.Errorf("limits: %+v", l)
 	}
-	compare("go-frame-gl.js", viewer, "gogl.js", hook)
 }
 
 // TestGoCanvasGLCanvasesBounded: a document's WebGL canvases are bounded,
@@ -236,158 +234,6 @@ func TestGoCanvasGLExtensionCommands(t *testing.T) {
 			if got := goCanvasGLValid(c.log, 4, 4, version); got != c.want {
 				t.Errorf("WebGL%d %s: valid %v, want %v", version, c.log, got, c.want)
 			}
-		}
-	}
-}
-
-// glLine is the line of file that starts (after its indent) with start.
-func glLine(t *testing.T, file, start string) string {
-	t.Helper()
-	b, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), start) {
-			return line
-		}
-	}
-	t.Fatalf("%s: %q not found", file, start)
-	return ""
-}
-
-// glStrings are the words in a line's string literals.
-func glStrings(line string) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(line, -1) {
-		for _, w := range strings.Fields(m[1]) {
-			out[w] = true
-		}
-	}
-	return out
-}
-
-// glNumber is the value of a JS number literal, or a shift of two.
-func glNumber(t *testing.T, s string) int {
-	t.Helper()
-	m := regexp.MustCompile(`^(\d+)(?: << (\d+))?$`).FindStringSubmatch(strings.TrimSpace(s))
-	if m == nil {
-		t.Fatalf("not a number: %q", s)
-	}
-	n, _ := strconv.Atoi(m[1])
-	if m[2] != "" {
-		shift, _ := strconv.Atoi(m[2])
-		n <<= shift
-	}
-	return n
-}
-
-func glSameSet(t *testing.T, what string, aName string, a map[string]bool, bName string, b map[string]bool) {
-	t.Helper()
-	for k := range a {
-		if !b[k] {
-			t.Errorf("%s: %s has %s, %s hasn't", what, aName, k, bName)
-		}
-	}
-	for k := range b {
-		if !a[k] {
-			t.Errorf("%s: %s has %s, %s hasn't", what, bName, k, aName)
-		}
-	}
-}
-
-// TestGoCanvasGLTablesInStep: the rest of what the page's hook (gogl.js),
-// the server and the viewer each keep by hand of the WebGL they mirror
-// agree: WebGL2's calls, the extensions WebGL1 has them by, the
-// extensions' own calls, the calls taking strings, WebGL2's own
-// extensions, and the limits on a log.
-func TestGoCanvasGLTablesInStep(t *testing.T) {
-	// WebGL2's calls (the hook's are the context's: the iOES calls are an
-	// extension's, not the context's).
-	viewer2 := glStrings(glLine(t, glViewerJS, "const gl2OnlyMethods"))
-	hook2 := glStrings(glLine(t, "gogl.js", "const gl2OnlyMethods"))
-	viewerContext2 := map[string]bool{}
-	for m := range viewer2 {
-		if !strings.HasSuffix(m, "iOES") {
-			viewerContext2[m] = true
-		}
-	}
-	glSameSet(t, "WebGL2 calls", "gogl.js", hook2, glViewerJS, viewerContext2)
-	glSameSet(t, "WebGL2 calls", "gocanvasgl.go", goCanvasGL2Methods, glViewerJS, viewer2)
-
-	// WebGL2's calls in WebGL1, by extension: method -> extensions.
-	aliases := map[string]bool{}
-	line := glLine(t, glViewerJS, "const extensionMethods")
-	for _, m := range regexp.MustCompile(`(\w+): \[([^\]]*)\]`).FindAllStringSubmatch(line, -1) {
-		names := regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(m[2], -1)
-		var extensions []string
-		for i := 0; i < len(names); i += 2 {
-			extensions = append(extensions, names[i][1])
-		}
-		aliases[m[1]+"="+strings.Join(extensions, "|")] = true
-	}
-	server := map[string]bool{}
-	for m, extensions := range goCanvasGLExtensionMethods {
-		server[m+"="+extensions] = true
-	}
-	glSameSet(t, "WebGL1 aliases", "gocanvasgl.go", server, glViewerJS, aliases)
-
-	// An extension's own calls: method -> its extension.
-	commands := map[string]bool{}
-	line = glLine(t, glViewerJS, "const extensionCommandMethods")
-	m := regexp.MustCompile(`\[([^\]]*)\]\.map\(\(name\) => \[name, \["(\w+)", name\]\]\)`).FindStringSubmatch(line)
-	if m == nil {
-		t.Fatalf("%s: extensionCommandMethods not understood: %s", glViewerJS, line)
-	}
-	for name := range glStrings(m[1]) {
-		commands[name+"="+m[2]] = true
-	}
-	b, _ := os.ReadFile(glViewerJS)
-	for _, m := range regexp.MustCompile(`extensionCommandMethods\.(\w+) = \["(\w+)"`).FindAllStringSubmatch(string(b), -1) {
-		commands[m[1]+"="+m[2]] = true
-	}
-	server = map[string]bool{}
-	for m, extension := range goCanvasGLExtensionCommands {
-		server[m+"="+extension] = true
-	}
-	glSameSet(t, "extension calls", "gocanvasgl.go", server, glViewerJS, commands)
-
-	// Calls taking strings.
-	glSameSet(t, "string calls", "gocanvasgl.go", goCanvasGLStringMethods, glViewerJS, glStrings(glLine(t, glViewerJS, "const glStringMethods")))
-
-	// The extensions the hook offers, and WebGL2's own.
-	glSameSet(t, "extensions", "gocanvasgl.go", goCanvasGLExtensions, "gogl.js", glStrings(glLine(t, "gogl.js", "const supportedExtensions")))
-	line = glLine(t, "gogl.js", "function extensionSupported")
-	only2 := map[string]bool{}
-	for _, m := range regexp.MustCompile(`name !== "(\w+)"`).FindAllStringSubmatch(line, -1) {
-		only2[m[1]] = true
-	}
-	if !strings.Contains(line, "state.version === 2") {
-		t.Errorf("gogl.js: extensionSupported not understood: %s", line)
-	}
-	glSameSet(t, "WebGL2 extensions", "gocanvasgl.go", goCanvasGL2Extensions, "gogl.js", only2)
-
-	// The limits: a log's calls and bytes, a call's data, a page's canvases.
-	hookLimit := func(name string) int {
-		line := glLine(t, "gogl.js", "const "+name+" = ")
-		return glNumber(t, strings.TrimSuffix(strings.SplitN(line, " = ", 2)[1], ";"))
-	}
-	limits := map[string]int{}
-	line = glLine(t, glViewerJS, "const glLimits = ")
-	for _, m := range regexp.MustCompile(`(\w+): ([\d <]+)`).FindAllStringSubmatch(line, -1) {
-		limits[m[1]] = glNumber(t, m[2])
-	}
-	for _, c := range []struct {
-		what                 string
-		server, hook, viewer int
-	}{
-		{"calls in a log", goCanvasGLOpsMax, hookLimit("maxCommands"), limits["commands"]},
-		{"a log's bytes", goCanvasGLMax, hookLimit("maxJSON"), limits["log"]},
-		{"a call's data", goCanvasGLDataMax, hookLimit("maxData"), goCanvasGLDataMax},
-		{"a page's WebGL canvases", goGLStreamsMax, goGLStreamsMax, limits["mirrors"]},
-	} {
-		if c.server != c.hook || c.server != c.viewer {
-			t.Errorf("%s: gocanvasgl.go %d, gogl.js %d, %s %d", c.what, c.server, c.hook, glViewerJS, c.viewer)
 		}
 	}
 }

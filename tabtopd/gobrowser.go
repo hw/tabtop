@@ -58,11 +58,15 @@ var goGLEnumsJS string
 //go:embed goglsl.js
 var goGLSLJS string
 
-// goGLPageJS is the page's WebGL hook: its constants and its reading of
-// shaders' source, then the hook, in one function, so that their names are
+//go:embed gogl-surface.js
+var goGLSurfaceJS string
+
+// goGLPageJS is the page's WebGL hook: the calls and extensions it
+// records, its constants and its reading of shaders' source, then the hook,
+// in one function, so that their names are
 // its own, not the page's. (test/gogl.test.mjs puts them together the same
 // way.)
-var goGLPageJS = "(() => {\n" + goGLEnumsJS + "\n" + goGLSLJS + "\n" + goGLJS + "\n})();\n"
+var goGLPageJS = "(() => {\n" + goGLSurfaceJS + "\n" + goGLEnumsJS + "\n" + goGLSLJS + "\n" + goGLJS + "\n})();\n"
 
 // goObserveJS is the page's IntersectionObserver, run before its scripts
 // (see goobserve.js).

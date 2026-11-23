@@ -8,49 +8,94 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"math"
 	"strings"
 )
 
-const (
-	goCanvasGLMax     = 4 << 20
-	goCanvasGLOpsMax  = 4096
-	goCanvasGLDataMax = 2 << 20 // a typed array's or texture's bytes
+// goGLSurface is the WebGL the mirror records (gogl.js), forwards (here)
+// and replays (go-frame-gl.js), in one file for the three:
+// gogl-surface.json, which go generate makes gogl-surface.js of for the two
+// scripts.
+//
+//go:generate go run gen_gogl_surface.go
+//go:embed gogl-surface.json
+var goGLSurfaceJSON []byte
+
+var goGLSurface = func() (s struct {
+	Methods       []string `json:"methods"`
+	WebGL2Methods []string `json:"webgl2Methods"` // the WebGL2 context's own
+	// WebGL1Aliases are WebGL2's calls a WebGL1 context has by an
+	// extension: [extension, its method], in the order tried.
+	WebGL1Aliases     map[string][][2]string `json:"webgl1Aliases"`
+	ExtensionCommands map[string]string      `json:"extensionCommands"`
+	StringMethods     []string               `json:"stringMethods"`
+	Extensions        []string               `json:"extensions"` // in the order the page is told them
+	WebGL2Extensions  []string               `json:"webgl2Extensions"`
+	Limits            struct {
+		Commands  int `json:"commands"`
+		LogBytes  int `json:"logBytes"`
+		DataBytes int `json:"dataBytes"`
+		Canvases  int `json:"canvases"`
+	} `json:"limits"`
+}) {
+	decoder := json.NewDecoder(bytes.NewReader(goGLSurfaceJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&s); err != nil {
+		panic("gogl-surface.json: " + err.Error())
+	}
+	return s
+}()
+
+func goGLSet(names ...[]string) map[string]bool {
+	out := map[string]bool{}
+	for _, list := range names {
+		for _, name := range list {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+var (
+	goCanvasGLMax     = goGLSurface.Limits.LogBytes
+	goCanvasGLOpsMax  = goGLSurface.Limits.Commands
+	goCanvasGLDataMax = goGLSurface.Limits.DataBytes // a typed array's or texture's bytes
 )
 
-var goCanvasGLMethods = func() map[string]bool {
-	methods := strings.Fields("activeTexture attachShader disableVertexAttribArray polygonModeWEBGL bindAttribLocation bindBuffer bindFramebuffer bindRenderbuffer bindTexture blendColor blendEquation blendEquationSeparate blendFunc blendFuncSeparate bufferData bufferSubData clear clearColor clearDepth clearStencil colorMask compileShader copyTexImage2D copyTexSubImage2D cullFace deleteBuffer deleteFramebuffer deleteProgram deleteRenderbuffer deleteShader deleteTexture depthFunc depthMask depthRange detachShader disable enable enableVertexAttribArray framebufferRenderbuffer framebufferTexture2D frontFace generateMipmap getAttribLocation getExtension getUniformLocation hint lineWidth linkProgram pixelStorei polygonOffset renderbufferStorage sampleCoverage scissor shaderSource stencilFunc stencilFuncSeparate stencilMask stencilMaskSeparate stencilOp stencilOpSeparate texImage2D texParameterf texParameteri texSubImage2D uniform1f uniform1fv uniform1i uniform1iv uniform2f uniform2fv uniform2i uniform2iv uniform3f uniform3fv uniform3i uniform3iv uniform4f uniform4fv uniform4i uniform4iv uniformMatrix2fv uniformMatrix3fv uniformMatrix4fv useProgram validateProgram vertexAttrib1f vertexAttrib1fv vertexAttrib2f vertexAttrib2fv vertexAttrib3f vertexAttrib3fv vertexAttrib4f vertexAttrib4fv vertexAttribPointer viewport drawArrays drawElements createBuffer createFramebuffer createProgram createRenderbuffer createShader createTexture bindBufferBase bindBufferRange bindVertexArray blitFramebuffer clearBufferfi clearBufferfv clearBufferiv clearBufferuiv copyTexSubImage3D createVertexArray deleteVertexArray drawArraysInstanced drawElementsInstanced drawRangeElements framebufferTextureLayer readBuffer renderbufferStorageMultisample texImage3D texStorage2D texStorage3D texSubImage3D vertexAttribDivisor drawBuffers samplerParameterf samplerParameteri bindSampler createSampler deleteSampler bindTransformFeedback beginTransformFeedback endTransformFeedback createTransformFeedback deleteTransformFeedback pauseTransformFeedback resumeTransformFeedback createQuery deleteQuery beginQuery endQuery queryCounter getQuery getQueryParameter getFragDataLocation enableiOES disableiOES blendEquationiOES blendEquationSeparateiOES blendFunciOES blendFuncSeparateiOES colorMaskiOES copyBufferSubData invalidateFramebuffer invalidateSubFramebuffer compressedTexImage2D compressedTexSubImage2D compressedTexImage3D compressedTexSubImage3D uniform1ui uniform1uiv uniform2ui uniform2uiv uniform3ui uniform3uiv uniform4ui uniform4uiv uniformMatrix2x3fv uniformMatrix2x4fv uniformMatrix3x2fv uniformMatrix3x4fv uniformMatrix4x2fv uniformMatrix4x3fv uniformBlockBinding transformFeedbackVaryings vertexAttribIPointer vertexAttribI4i vertexAttribI4iv vertexAttribI4ui vertexAttribI4uiv")
-	out := make(map[string]bool, len(methods))
-	for _, method := range methods {
-		out[method] = true
-	}
-	return out
-}()
+var goCanvasGLMethods = goGLSet(goGLSurface.Methods)
 
+// goCanvasGL2Methods are WebGL2's: the context's, and the calls of an
+// extension only WebGL2 has.
 var goCanvasGL2Methods = func() map[string]bool {
-	methods := strings.Fields("bindBufferBase bindBufferRange bindSampler bindTransformFeedback bindVertexArray beginQuery beginTransformFeedback blitFramebuffer clearBufferfi clearBufferfv clearBufferiv clearBufferuiv compressedTexImage3D compressedTexSubImage3D copyBufferSubData copyTexSubImage3D createQuery createSampler createTransformFeedback createVertexArray deleteQuery deleteSampler deleteTransformFeedback deleteVertexArray drawArraysInstanced drawBuffers drawElementsInstanced drawRangeElements endQuery endTransformFeedback framebufferTextureLayer getFragDataLocation enableiOES disableiOES blendEquationiOES blendEquationSeparateiOES blendFunciOES blendFuncSeparateiOES colorMaskiOES getQuery getQueryParameter invalidateFramebuffer invalidateSubFramebuffer pauseTransformFeedback queryCounter readBuffer renderbufferStorageMultisample resumeTransformFeedback samplerParameterf samplerParameteri texImage3D texStorage2D texStorage3D texSubImage3D transformFeedbackVaryings uniform1ui uniform1uiv uniform2ui uniform2uiv uniform3ui uniform3uiv uniform4ui uniform4uiv uniformBlockBinding uniformMatrix2x3fv uniformMatrix2x4fv uniformMatrix3x2fv uniformMatrix3x4fv uniformMatrix4x2fv uniformMatrix4x3fv vertexAttribDivisor vertexAttribIPointer vertexAttribI4i vertexAttribI4iv vertexAttribI4ui vertexAttribI4uiv")
-	out := make(map[string]bool, len(methods))
-	for _, method := range methods {
-		out[method] = true
+	out := goGLSet(goGLSurface.WebGL2Methods)
+	for method, extension := range goGLSurface.ExtensionCommands {
+		if goCanvasGL2Extensions[extension] {
+			out[method] = true
+		}
 	}
 	return out
 }()
 
-var goCanvasGLExtensionMethods = map[string]string{
-	"createVertexArray": "OES_vertex_array_object", "bindVertexArray": "OES_vertex_array_object", "deleteVertexArray": "OES_vertex_array_object",
-	"drawArraysInstanced": "ANGLE_instanced_arrays|WEBGL_multi_draw", "drawElementsInstanced": "ANGLE_instanced_arrays|WEBGL_multi_draw", "vertexAttribDivisor": "ANGLE_instanced_arrays", "drawBuffers": "WEBGL_draw_buffers",
-}
+// goCanvasGLExtensionMethods: WebGL2's calls a WebGL1 stream may have, by
+// the extensions any of which gives it ("a|b").
+var goCanvasGLExtensionMethods = func() map[string]string {
+	out := map[string]string{}
+	for method, aliases := range goGLSurface.WebGL1Aliases {
+		var extensions []string
+		for _, alias := range aliases {
+			extensions = append(extensions, alias[0])
+		}
+		out[method] = strings.Join(extensions, "|")
+	}
+	return out
+}()
 
 // goCanvasGLExtensionCommands are an extension's own calls (not WebGL2's
-// under another name): refused unless it's turned on, in either version
-// (go-frame-gl.js's extensionCommandMethods).
-var goCanvasGLExtensionCommands = map[string]string{
-	"enableiOES": "OES_draw_buffers_indexed", "disableiOES": "OES_draw_buffers_indexed", "blendEquationiOES": "OES_draw_buffers_indexed", "blendEquationSeparateiOES": "OES_draw_buffers_indexed",
-	"blendFunciOES": "OES_draw_buffers_indexed", "blendFuncSeparateiOES": "OES_draw_buffers_indexed", "colorMaskiOES": "OES_draw_buffers_indexed",
-	"polygonModeWEBGL": "WEBGL_polygon_mode",
-}
+// under another name): refused unless it's turned on, in either version.
+var goCanvasGLExtensionCommands = goGLSurface.ExtensionCommands
 
 func goCanvasGLArg(raw json.RawMessage) bool {
 	if len(raw) > goCanvasGLMax {
@@ -230,25 +275,16 @@ type goGLStream struct {
 
 // goGLStreamsMax bounds a document's WebGL canvases: those beyond are shown
 // as unsupported (each costs the viewer a GPU context).
-const goGLStreamsMax = 16
+var goGLStreamsMax = goGLSurface.Limits.Canvases
 
-// goCanvasGLExtensions are the extensions the mirror replays (gogl.js's
-// supportedExtensions, go-frame-gl.js's glExtensionList).
-var goCanvasGLExtensions = func() map[string]bool {
-	out := map[string]bool{}
-	for _, name := range strings.Fields("OES_element_index_uint OES_standard_derivatives WEBGL_depth_texture OES_texture_float OES_texture_float_linear OES_texture_half_float OES_texture_half_float_linear EXT_color_buffer_float EXT_color_buffer_half_float EXT_float_blend OES_draw_buffers_indexed WEBGL_polygon_mode EXT_texture_filter_anisotropic EXT_disjoint_timer_query EXT_disjoint_timer_query_webgl2 OES_vertex_array_object ANGLE_instanced_arrays WEBGL_draw_buffers WEBGL_multi_draw WEBGL_compressed_texture_s3tc WEBGL_compressed_texture_s3tc_srgb WEBGL_compressed_texture_etc WEBGL_compressed_texture_etc1 WEBGL_compressed_texture_pvrtc WEBGL_compressed_texture_atc WEBGL_compressed_texture_astc EXT_texture_compression_bptc EXT_texture_compression_rgtc") {
-		out[name] = true
-	}
-	return out
-}()
-
-// goCanvasGL2Extensions are those only WebGL2 has (gogl.js's
-// extensionSupported).
-var goCanvasGL2Extensions = map[string]bool{"EXT_color_buffer_float": true, "OES_draw_buffers_indexed": true}
+// goCanvasGLExtensions are the extensions the mirror replays;
+// goCanvasGL2Extensions those only WebGL2 has.
+var goCanvasGLExtensions = goGLSet(goGLSurface.Extensions)
+var goCanvasGL2Extensions = goGLSet(goGLSurface.WebGL2Extensions)
 
 // goCanvasGLStringMethods take a string argument; goCanvasGLSequenceMethod
 // says which take a sequence (uniform*v and the like).
-var goCanvasGLStringMethods = map[string]bool{"shaderSource": true, "getExtension": true, "bindAttribLocation": true, "getUniformLocation": true, "getAttribLocation": true, "getFragDataLocation": true, "transformFeedbackVaryings": true}
+var goCanvasGLStringMethods = goGLSet(goGLSurface.StringMethods)
 
 func goCanvasGLSequenceMethod(m string) bool {
 	return strings.HasSuffix(m, "v") || m == "drawBuffers" || strings.HasPrefix(m, "invalidate") || m == "transformFeedbackVaryings"

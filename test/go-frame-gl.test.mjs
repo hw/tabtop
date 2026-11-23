@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const source = readFileSync(new URL("../tabtopd/go-frame-gl.js", import.meta.url), "utf8");
+// After the calls and extensions it replays (gogl-surface.js), as
+// go-frame.html loads them.
+const file = (name) => readFileSync(new URL(`../tabtopd/${name}`, import.meta.url), "utf8");
+const source = file("gogl-surface.js") + "\n" + file("go-frame-gl.js");
 // A replay of its own, with what the copy gives it (host) and a clock.
 function makeGL({ host = {}, now = () => 0 } = {}) {
     const scope = {};

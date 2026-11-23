@@ -1,7 +1,9 @@
 // A bounded WebGL1/WebGL2 command mirror for /go. The page keeps its context in Moli;
 // missing engine methods get compatibility shims and calls replay in the viewer.
-// Its constants are in gogl-enums.js and its reading of shaders' source in
-// goglsl.js: gobrowser.go puts the three in one function (goGLPageJS).
+// The calls and extensions it records are gogl-surface.js's (made from
+// gogl-surface.json, which the server and viewer read too), its constants
+// are in gogl-enums.js and its reading of shaders' source in goglsl.js:
+// gobrowser.go puts the four in one function (goGLPageJS).
 (() => {
     const Canvas = globalThis.HTMLCanvasElement;
     const GL = globalThis.WebGLRenderingContext;
@@ -15,9 +17,9 @@
     const originalDispatch = EventTarget.prototype.dispatchEvent;
     const EventCtor = Event;
     const CustomEventCtor = CustomEvent;
-    const maxCommands = 4096;
-    const maxData = 2 << 20;
-    const maxJSON = 4 << 20;
+    const maxCommands = glSurface.limits.commands;
+    const maxData = glSurface.limits.dataBytes;
+    const maxJSON = glSurface.limits.logBytes;
     // The constants Moli's contexts lack (gogl-enums.js), on their
     // constructors and prototypes.
     for (const [target, tables] of [[GL, [standardEnums1]], ...(GL2 ? [[GL2, [standardEnums1, standardEnums2]]] : [])]) {
@@ -56,32 +58,18 @@
         } catch { /* sealed */ }
     }
 
-    const allowed = new Set((
-        "activeTexture attachShader disableVertexAttribArray bindAttribLocation bindBuffer bindTexture blendColor blendEquation blendEquationSeparate blendFunc blendFuncSeparate " +
-        "bindFramebuffer bindRenderbuffer bufferData bufferSubData clear clearColor clearDepth clearStencil colorMask compileShader copyTexImage2D copyTexSubImage2D cullFace deleteBuffer deleteFramebuffer deleteProgram deleteRenderbuffer deleteShader deleteTexture detachShader " +
-        "depthFunc depthMask depthRange disable enable enableVertexAttribArray framebufferRenderbuffer framebufferTexture2D frontFace generateMipmap getAttribLocation getExtension getUniformLocation " +
-        "hint lineWidth linkProgram pixelStorei polygonOffset scissor shaderSource stencilFunc stencilFuncSeparate stencilMask " +
-        "stencilOp stencilOpSeparate texParameterf texParameteri uniform1f uniform1fv uniform1i uniform1iv uniform2f uniform2fv uniform2i uniform2iv " +
-        "uniform3f uniform3fv uniform3i uniform3iv uniform4f uniform4fv uniform4i uniform4iv uniformMatrix2fv uniformMatrix3fv uniformMatrix4fv " +
-        "renderbufferStorage sampleCoverage stencilMaskSeparate texImage2D texSubImage2D useProgram validateProgram vertexAttrib1f vertexAttrib1fv vertexAttrib2f vertexAttrib2fv vertexAttrib3f vertexAttrib3fv vertexAttrib4f vertexAttrib4fv " +
-        "vertexAttribPointer viewport drawArrays drawElements createBuffer createFramebuffer createProgram createRenderbuffer createShader createTexture " +
-        "bindBufferBase bindBufferRange bindVertexArray blitFramebuffer clearBufferfi clearBufferfv clearBufferiv clearBufferuiv copyTexSubImage3D " +
-        "createVertexArray deleteVertexArray drawArraysInstanced drawElementsInstanced drawRangeElements framebufferTextureLayer readBuffer " +
-        "renderbufferStorageMultisample texImage3D texStorage2D texStorage3D texSubImage3D vertexAttribDivisor drawBuffers samplerParameterf samplerParameteri bindSampler createSampler deleteSampler " +
-        "bindTransformFeedback beginTransformFeedback endTransformFeedback createTransformFeedback deleteTransformFeedback pauseTransformFeedback resumeTransformFeedback getFragDataLocation " +
-        "enableiOES disableiOES blendEquationiOES blendEquationSeparateiOES blendFunciOES blendFuncSeparateiOES colorMaskiOES " +
-        "polygonModeWEBGL " +
-        "createQuery deleteQuery beginQuery endQuery queryCounter getQuery getQueryParameter " +
-        "copyBufferSubData invalidateFramebuffer invalidateSubFramebuffer compressedTexImage2D compressedTexSubImage2D compressedTexImage3D compressedTexSubImage3D " +
-        "uniform1ui uniform1uiv uniform2ui uniform2uiv uniform3ui uniform3uiv uniform4ui uniform4uiv " +
-        "uniformMatrix2x3fv uniformMatrix2x4fv uniformMatrix3x2fv uniformMatrix3x4fv uniformMatrix4x2fv uniformMatrix4x3fv " +
-        "uniformBlockBinding transformFeedbackVaryings vertexAttribIPointer vertexAttribI4i vertexAttribI4iv vertexAttribI4ui vertexAttribI4uiv"
-    ).split(/\s+/));
+    const allowed = new Set(glSurface.methods);
     const objectTypes = { createBuffer: "buffer", createFramebuffer: "framebuffer", createProgram: "program", createQuery: "query", createRenderbuffer: "renderbuffer", createSampler: "sampler", createShader: "shader", createTexture: "texture", createTransformFeedback: "transformfeedback", createVertexArray: "vertexarray" };
-    const gl2OnlyMethods = new Set(["bindBufferBase", "bindBufferRange", "bindSampler", "bindTransformFeedback", "bindVertexArray", "beginQuery", "beginTransformFeedback", "blitFramebuffer", "clearBufferfi", "clearBufferfv", "clearBufferiv", "clearBufferuiv", "compressedTexImage3D", "compressedTexSubImage3D", "copyBufferSubData", "copyTexSubImage3D", "createQuery", "createSampler", "createTransformFeedback", "createVertexArray", "deleteQuery", "deleteSampler", "deleteTransformFeedback", "deleteVertexArray", "drawArraysInstanced", "drawBuffers", "drawElementsInstanced", "drawRangeElements", "endQuery", "endTransformFeedback", "framebufferTextureLayer", "getFragDataLocation", "getQuery", "getQueryParameter", "invalidateFramebuffer", "invalidateSubFramebuffer", "pauseTransformFeedback", "queryCounter", "readBuffer", "renderbufferStorageMultisample", "resumeTransformFeedback", "samplerParameterf", "samplerParameteri", "texImage3D", "texStorage2D", "texStorage3D", "texSubImage3D", "transformFeedbackVaryings", "uniform1ui", "uniform1uiv", "uniform2ui", "uniform2uiv", "uniform3ui", "uniform3uiv", "uniform4ui", "uniform4uiv", "uniformBlockBinding", "uniformMatrix2x3fv", "uniformMatrix2x4fv", "uniformMatrix3x2fv", "uniformMatrix3x4fv", "uniformMatrix4x2fv", "uniformMatrix4x3fv", "vertexAttribDivisor", "vertexAttribIPointer", "vertexAttribI4i", "vertexAttribI4iv", "vertexAttribI4ui", "vertexAttribI4uiv"]);
+    const gl2OnlyMethods = new Set(glSurface.webgl2Methods);
     const localQueryMethods = new Set(["beginQuery", "createQuery", "deleteQuery", "endQuery", "getQuery", "getQueryParameter", "queryCounter"]);
-    const supportedExtensions = new Set(["OES_element_index_uint", "OES_standard_derivatives", "WEBGL_depth_texture", "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float", "OES_texture_half_float_linear", "EXT_color_buffer_float", "EXT_color_buffer_half_float", "EXT_float_blend", "OES_draw_buffers_indexed", "WEBGL_polygon_mode", "EXT_texture_filter_anisotropic", "EXT_disjoint_timer_query", "EXT_disjoint_timer_query_webgl2", "OES_vertex_array_object", "ANGLE_instanced_arrays", "WEBGL_draw_buffers", "WEBGL_multi_draw", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_pvrtc", "WEBGL_compressed_texture_atc", "WEBGL_compressed_texture_astc", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc"]);
-    function extensionSupported(name, state) { return supportedExtensions.has(name) && (name !== "EXT_color_buffer_float" && name !== "OES_draw_buffers_indexed" || state.version === 2); }
+    const supportedExtensions = new Set(glSurface.extensions);
+    function extensionSupported(name, state) { return supportedExtensions.has(name) && (!glSurface.webgl2Extensions.includes(name) || state.version === 2); }
+    // An extension's calls, by extension: each recorded as the call it is
+    // (WebGL2's, or the extension's own). WEBGL_multi_draw's are taken
+    // apart, draw by draw, where its object is made.
+    const extensionAliases = {};
+    for (const [method, aliases] of Object.entries(glSurface.webgl1Aliases)) for (const [extension, alias] of aliases) if (extension !== "WEBGL_multi_draw") (extensionAliases[extension] ||= {})[alias] = method;
+    for (const [method, extension] of Object.entries(glSurface.extensionCommands)) (extensionAliases[extension] ||= {})[method] = method;
     const skipQueries = new Set(["checkFramebufferStatus", "finish", "flush", "getContextAttributes", "getParameter", "getError", "getShaderParameter", "getProgramParameter", "getShaderInfoLog", "getProgramInfoLog", "getShaderSource", "getShaderPrecisionFormat", "getActiveAttrib", "getActiveUniform", "getActiveUniformBlockName", "getActiveUniformBlockParameter", "getActiveUniforms", "getAttachedShaders", "getBufferParameter", "getBufferSubData", "getFragDataLocation", "getFramebufferAttachmentParameter", "getIndexedParameter", "getInternalformatParameter", "getQueryParameter", "getRenderbufferParameter", "getSamplerParameter", "getSyncParameter", "getTexParameter", "getTransformFeedbackVarying", "getUniform", "getUniformBlockIndex", "getUniformIndices", "getSupportedExtensions", "getVertexAttrib", "getVertexAttribOffset", "isBuffer", "isContextLost", "isEnabled", "isFramebuffer", "isProgram", "isQuery", "isRenderbuffer", "isSampler", "isShader", "isSync", "isTexture", "isTransformFeedback", "isVertexArray", "readPixels"]);
     const locationMethods = new Set(["enableVertexAttribArray", "disableVertexAttribArray", "vertexAttribDivisor", "vertexAttribPointer", "vertexAttribIPointer", "vertexAttribI4i", "vertexAttribI4iv", "vertexAttribI4ui", "vertexAttribI4uiv", "vertexAttrib1f", "vertexAttrib1fv", "vertexAttrib2f", "vertexAttrib2fv", "vertexAttrib3f", "vertexAttrib3fv", "vertexAttrib4f", "vertexAttrib4fv"]);
     const drawMethods = new Set(["drawArrays", "drawElements", "drawArraysInstanced", "drawElementsInstanced", "drawRangeElements"]);
@@ -500,11 +488,7 @@
             if (typeof extension[key] === "number") continue;
             try { Object.defineProperty(extension, key, { value, configurable: true }); } catch { /* native extension objects may be sealed */ }
         }
-        const aliases = name === "OES_vertex_array_object" ? { createVertexArrayOES: "createVertexArray", deleteVertexArrayOES: "deleteVertexArray", bindVertexArrayOES: "bindVertexArray" } :
-            name === "ANGLE_instanced_arrays" ? { drawArraysInstancedANGLE: "drawArraysInstanced", drawElementsInstancedANGLE: "drawElementsInstanced", vertexAttribDivisorANGLE: "vertexAttribDivisor" } :
-                name === "WEBGL_draw_buffers" ? { drawBuffersWEBGL: "drawBuffers" } :
-                    name === "WEBGL_polygon_mode" ? { polygonModeWEBGL: "polygonModeWEBGL" } :
-                    name === "OES_draw_buffers_indexed" ? { enableiOES: "enableiOES", disableiOES: "disableiOES", blendEquationiOES: "blendEquationiOES", blendEquationSeparateiOES: "blendEquationSeparateiOES", blendFunciOES: "blendFunciOES", blendFuncSeparateiOES: "blendFuncSeparateiOES", colorMaskiOES: "colorMaskiOES" } : {};
+        const aliases = extensionAliases[name] || {};
         return new Proxy(extension, { get(target, property) {
             const multiMethod = name === "WEBGL_multi_draw" && typeof property === "string" ? property : "";
             if (["multiDrawArraysWEBGL", "multiDrawElementsWEBGL", "multiDrawArraysInstancedWEBGL", "multiDrawElementsInstancedWEBGL"].includes(multiMethod)) {

@@ -52,10 +52,10 @@ const (
 	goFrameSandbox = "allow-scripts"
 )
 
-// goFrameHTML is the frame's page: the CSS parser, its WebGL replay, then
-// its agent.
+// goFrameHTML is the frame's page: the CSS parser, the WebGL it replays
+// (gogl-surface.js) and its replay, then its agent.
 const goFrameHTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Page</title>\n" +
-	"<script src=\"third-party/css-tree.js\"></script><script src=\"go-frame-gl.js\"></script><script src=\"go-frame.js\"></script>\n"
+	"<script src=\"third-party/css-tree.js\"></script><script src=\"gogl-surface.js\"></script><script src=\"go-frame-gl.js\"></script><script src=\"go-frame.js\"></script>\n"
 
 // goPage serves the /go page and its script.
 func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
