@@ -2241,20 +2241,26 @@ async function check(base, port, site, adSite) {
         }
     });
 
-    await step("WebGL drawn in the engine is replayed in the copy: WebGL1, WebGL2, an animation through its log's compaction, resizing, the viewer's context lost and back, embedded pages of the same site and another, three.js; a shader the viewer can't compile shown unavailable", async () => {
-        // The copy's canvas's pixel at (x, y) is within 4 of want's.
-        const glAt = (id, x, y, want) => `(() => { const c = document.getElementById(${JSON.stringify(id)}); const gl = c && (c.getContext("webgl2") || c.getContext("webgl"));
-            if (!gl) return false; const p = new Uint8Array(4); gl.readPixels(${x}, ${y}, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
-            return ${JSON.stringify(want)}.every((v, i) => v === null || Math.abs(v - p[i]) <= 4); })()`;
-        const t0 = Date.now();
+    // WebGL drawn in the engine is replayed in the copy (gogl.js, gocanvasgl.go,
+    // go-frame-gl.js): webgl.html's canvases, in the steps that follow in turn.
+    // The copy's canvas's pixel at (x, y) is within 4 of want's.
+    const glAt = (id, x, y, want) => `(() => { const c = document.getElementById(${JSON.stringify(id)}); const gl = c && (c.getContext("webgl2") || c.getContext("webgl"));
+        if (!gl) return false; const p = new Uint8Array(4); gl.readPixels(${x}, ${y}, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+        return ${JSON.stringify(want)}.every((v, i) => v === null || Math.abs(v - p[i]) <= 4); })()`;
+
+    await step("WebGL drawn in the engine is replayed in the copy: WebGL1 and WebGL2", async () => {
         await goTo(site + "webgl.html", "WebGL");
         await frameWait(`${glAt("still", 32, 32, [0, 255, 0, 255])} && ${glAt("still", 2, 2, [255, 0, 0, 255])}`, "the WebGL1 square, green on red");
         await frameWait(`${glAt("two", 32, 32, [0, 0, 255, 255])} && ${glAt("two", 2, 2, [255, 0, 0, 255])}`, "the WebGL2 square, blue on red");
+    });
+
+    await step("a WebGL animation is shown frame by frame, through its log's compaction, and its canvas still takes clicks and is seen by the page's IntersectionObserver", async () => {
         // The animation, started by a click given to the engine's page: frames
         // as it goes (sent as the calls since the last), then its last one,
         // after its log has been compacted and sent whole (the canvas
         // replaced for it), and a click there still reaches the page.
         await frameWait(glAt("moving", 32, 32, [0, 0, 0, 255]), "the animation's first frame");
+        const t0 = Date.now();
         await frameClick("#moving");
         const seen = new Set();
         for (const end = Date.now() + 20000; Date.now() < end; await sleep(150)) {
@@ -2273,20 +2279,33 @@ async function check(base, port, site, adSite) {
         await frameWait(`document.getElementById("io").textContent === "out"`, "the page told its canvas, replaced, is out of view");
         await frame(`scrollTo(0, 0)`);
         await frameWait(`document.getElementById("io").textContent === "in"`, "the page told its canvas is in view again");
+        return `${seen.size} frames of the animation seen, its last ${animated} ms after the click`;
+    });
+
+    await step("a WebGL canvas drawn past its log's cap is shown unavailable, its context given up, greyed", async () => {
         // Drawn past the cap: not shown, and its last frame not left either.
         await frameWait(glAt("overrun", 32, 32, [0, 255, 0, 255]), "the canvas to overrun, green");
         await frameClick("#overrun");
         // (Its replay context given up, freeing the GPU's memory: nothing
         // drawn, on a grey background.)
         await frameWait(`(() => { const c = document.getElementById("overrun"); return /unsupported|unavailable/.test(c.title) && c.style.backgroundColor === "rgb(221, 221, 221)" && c.getContext("webgl").isContextLost(); })()`, "the overrun canvas unavailable, its context given up, greyed out");
+    });
+
+    await step("a WebGL canvas the page resizes is resized in the copy", async () => {
         // Resized by the page and drawn again: the copy's canvas too.
         await frameWait(glAt("sized", 32, 32, [0, 255, 0, 255]), "the canvas to resize, green");
         await frameClick("#sized");
         await frameWait(`document.getElementById("sized").width === 96 && document.getElementById("sized").height === 48 && ${glAt("sized", 48, 24, [0, 0, 255, 255])} && ${glAt("sized", 2, 2, [255, 0, 0, 255])}`, "the resized canvas, 96 by 48, blue on red");
+    });
+
+    await step("a WebGL update past a batch's budget still comes", async () => {
         // An update past a batch's WebGL budget still comes (first in its batch).
         await frameWait(glAt("upload", 32, 32, [0, 255, 0, 255]), "the canvas to upload to, green");
         await frameClick("#upload");
         await frameWait(`/mirrored/.test(document.getElementById("upload").title) && ${glAt("upload", 32, 32, [0, 0, 255, 255])}`, "the big upload's canvas, blue, still mirrored", 30000);
+    });
+
+    await step("the viewer's WebGL contexts lost together are given back and drawn again; a shader the viewer can't compile shown unavailable", async () => {
         // The viewer's contexts lost together, as a GPU reset loses them, and
         // given back: each replayed from what it kept (one reset, however
         // many contexts it took).
@@ -2296,6 +2315,9 @@ async function check(base, port, site, adSite) {
         await frameWait(`["still", "two", "moving"].every((id) => /mirrored/.test(document.getElementById(id).title)) && ${glAt("still", 32, 32, [0, 255, 0, 255])} && ${glAt("still", 2, 2, [255, 0, 0, 255])} && ${glAt("two", 32, 32, [0, 0, 255, 255])} && ${glAt("moving", 32, 32, [0, 0, 255, 255])}`, "the contexts given back, drawn again");
         const titles = await frame(`["still", "two", "moving", "broken"].map((id) => document.getElementById(id).title)`);
         if (titles.slice(0, 3).some((t) => !/mirrored/.test(t)) || !/unavailable/.test(titles[3])) throw new Error(`the canvases say ${JSON.stringify(titles)}`);
+    });
+
+    await step("WebGL in embedded pages of the same site and another, still and animating", async () => {
         // In embedded pages: the same site's (read by the page's agent, its
         // canvases by way of the page's gogl.js) and another site's (read in
         // a world of its own), still and animating.
@@ -2312,6 +2334,9 @@ async function check(base, port, site, adSite) {
             if (!frames.has("255,0,0,255")) throw new Error(`the animation in ${which} frame not shown to its end: ${[...frames].join(" ")}`);
             if (frameSite === site && frames.size < 5) throw new Error(`the animation in ${which} frame shown in ${frames.size} frames`);
         }
+    });
+
+    await step("a page's WebGL canvases past 16 are labelled; one replacing its canvas 20 times still shows its last", async () => {
         // A page with more WebGL canvases than are mirrored: the rest so labelled.
         await goTo(site + "glmany.html", "GL many");
         await frameWait(`(() => { const t = [...document.querySelectorAll("canvas")].map((c) => c.title); return t.length === 20 && t.filter((x) => /mirrored/.test(x)).length === 16 && t.filter((x) => /unsupported|unavailable/.test(x)).length === 4; })()`, "16 of 20 canvases mirrored, 4 labelled");
@@ -2322,6 +2347,9 @@ async function check(base, port, site, adSite) {
             const shows = await frame(`JSON.stringify({ canvases: document.querySelectorAll("canvas").length, title: document.getElementById("c")?.title, n: document.getElementById("n")?.textContent })`).catch((e) => e.message);
             throw new Error(`${err.message} (it shows ${shows})`);
         });
+    });
+
+    await step("three.js draws in the engine and in the copy", async () => {
         // three.js: a red box on blue; a lit, textured green ball on black.
         await goTo(site + "three.html", "Three");
         await frameWait(`document.getElementById("s").textContent === "drawn"`, "three.js drawing in the engine");
@@ -2329,7 +2357,6 @@ async function check(base, port, site, adSite) {
         await frameWait(`document.getElementById("f").textContent === "20"`, "three.js's 20 frames of requestAnimationFrame", 20000);
         await frameWait(`(() => { const gl = document.getElementById("lit").getContext("webgl2"); const p = new Uint8Array(4); gl.readPixels(64, 64, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
             return p[1] > 100 && p[0] < 100 && p[2] < 100; })() && ${glAt("lit", 2, 2, [0, 0, 0, 255])}`, "three.js's lit green ball on black");
-        return `${seen.size} frames of the animation seen, its last in ${animated} ms`;
     });
 
     await step("the page's view is white where a page draws nothing, and a dark page keeps its colour around a video played under it", async () => {
