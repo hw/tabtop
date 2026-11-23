@@ -96,6 +96,13 @@ var goEMEJS string
 //go:embed gosheets.js
 var goSheetsJS string
 
+// goShadowJS has the page's shadow roots read by the agent: a closed one
+// made open (the page told it's closed), each one attached said
+// (goshadow.js).
+//
+//go:embed goshadow.js
+var goShadowJS string
+
 // goDialogsJS tells the agent what the page asked by alert, confirm and
 // prompt, for an engine that answers them itself (goAdapter.noDialogs).
 //
@@ -712,7 +719,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -1900,6 +1907,7 @@ type goChangeOp struct {
 	GL   *goGLLog  `json:"gl"`   // o "g"
 	Path []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
 	C    []*goNode `json:"c"`
+	S    *goNode   `json:"s"` // o "s": a shadow root attached to element I
 }
 
 // goCleanOps takes event handler attributes and what's never shown out of a
@@ -1932,6 +1940,20 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 				}
 			}
 			out = append(out, map[string]any{"o": "c", "i": op.I, "c": kids})
+		case "s":
+			// A shadow root, given to an element sent before: cleaned as a
+			// snapshot's.
+			if op.S == nil || op.S.Type != 11 {
+				continue
+			}
+			if c := goClean(op.S); c != nil {
+				out = append(out, map[string]any{"o": "s", "i": op.I, "s": c})
+				// (Its canvases counted; not its classes, for hiding: the
+				// page's hiding rules don't reach into a shadow root.)
+				if seen != nil && seen.gl != nil {
+					goGLStreamsOf(c, seen.gl)
+				}
+			}
 		case "a":
 			if strings.HasPrefix(strings.ToLower(op.N), "on") {
 				continue

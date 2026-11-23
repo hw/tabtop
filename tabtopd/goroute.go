@@ -259,6 +259,9 @@ type goNode struct {
 	glStream  *goGLStream // the WebGL log's state, for the deltas after it
 	Attrs     []string    `json:"a,omitempty"`
 	Kids      []*goNode   `json:"c,omitempty"`
+	// Shadow is an element's shadow root (Type 11), its nodes numbered as
+	// the document's (goagent.js's serShadow).
+	Shadow *goNode `json:"s,omitempty"`
 }
 
 const (
@@ -342,12 +345,20 @@ func goClean(n *goNode) *goNode {
 		}
 		n.Attrs = attrs
 		n.Value = ""
+		// Its shadow root, cleaned as the rest: only one, a fragment.
+		if n.Shadow != nil {
+			if n.Shadow.Type == 11 {
+				n.Shadow = goClean(n.Shadow)
+			} else {
+				n.Shadow = nil
+			}
+		}
 	case 3:
-		n.Name, n.Attrs, n.Kids = "", nil, nil
+		n.Name, n.Attrs, n.Kids, n.Shadow = "", nil, nil, nil
 		n.Base = ""
 		return n
 	case 9, 11:
-		n.Name, n.Value, n.Attrs = "", "", nil
+		n.Name, n.Value, n.Attrs, n.Shadow = "", "", nil, nil
 		// An embedded page's base, which its addresses resolve against:
 		// an http(s) one, or none.
 		if u, err := goURL(n.Base); n.Type != 9 || err != nil {

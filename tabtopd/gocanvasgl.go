@@ -422,6 +422,9 @@ func goGLStreamsOf(n *goNode, streams map[int]*goGLStream) {
 	for _, k := range n.Kids {
 		goGLStreamsOf(k, streams)
 	}
+	if n.Shadow != nil {
+		goGLStreamsOf(n.Shadow, streams)
+	}
 }
 
 // glStreamOK says whether canvas id has a stream.

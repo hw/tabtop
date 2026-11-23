@@ -74,10 +74,11 @@
     const held = new WeakMap(); // element -> since (ms)
     const hold = (el) => held.set(el, performance.now());
     document.addEventListener("__tabtop_media_hold", (e) => {
-        if (!(e.target instanceof HTMLMediaElement)) return;
+        const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
+        if (!(el instanceof HTMLMediaElement)) return;
         e.stopImmediatePropagation();
-        if (e.detail === "release") held.delete(e.target);
-        else hold(e.target);
+        if (e.detail === "release") held.delete(el);
+        else hold(el);
     }, true);
     function played(el, d) {
         const since = held.get(el);
@@ -121,7 +122,7 @@
         return nativePlay.apply(this, arguments);
     };
     document.addEventListener(SEND, (e) => {
-        const el = e.target;
+        const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
         if (!(el instanceof HTMLMediaElement)) return;
         let d;
         try { d = JSON.parse(e.detail); } catch { return; }
@@ -349,8 +350,9 @@
         return 0;
     };
     document.addEventListener("__tabtop_media", (e) => {
-        const source = attached.get(e.target);
-        if (!source || sourceURL(e.target) !== prefix + source.id) return;
+        const at = (e.composedPath?.()[0] ?? e.target);
+        const source = attached.get(at);
+        if (!source || sourceURL(at) !== prefix + source.id) return;
         let play;
         try { play = JSON.parse(e.detail)?.play; } catch { return; }
         if (play?.stream !== source.id) return;
@@ -420,7 +422,7 @@
         if (!sourceURL(this)?.startsWith(prefix)) return play.call(this);
         attach(this);
         asked.add(this);
-        this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { detail: "release" }));
+        this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { composed: true, detail: "release" }));
         this.dispatchEvent(new Event("play"));
         return Promise.resolve();
     };
@@ -438,7 +440,7 @@
         const wanted = asked.delete(this);
         if (!this.paused) return pause.call(this);
         if (!wanted) return;
-        this.dispatchEvent(new CustomEvent("__tabtop_media_hold"));
+        this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { composed: true }));
         setTimeout(() => this.dispatchEvent(new Event("pause")), 0);
     };
 })();

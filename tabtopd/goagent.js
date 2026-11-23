@@ -35,7 +35,18 @@
 // playing, v "true", or stopped). Snapshots and batches carry the page's
 // IntersectionObserver targets too, io: [{op: "+", o, i, m, t, r}] (its
 // observer's number, the element's, rootMargin, thresholds, root element
-// or 0) and {op: "-", o, i}; a snapshot, all of them. With rich text
+// or 0) and {op: "-", o, i}; a snapshot, all of them.
+//
+// An element's shadow root (an open one; a closed one too, made open by
+// goshadow.js, the page told it's closed) comes with it, s: {i, t: 11, c}:
+// its nodes numbered as the document's, its adopted stylesheets as a
+// <style> of its own first ({t: 1, n: "style", a: ["data-go-adopted", ""]},
+// its text a number of its own, said again as they change); one attached
+// once its host's been sent, as {o: "s", i: host, s}. The document's adopted
+// stylesheets are such a <style> at its head's end. Changes in a shadow root
+// are said as the document's are ({o: "c", i: root, c} for its children).
+//
+// With rich text
 // (contenteditable) focused, a batch says where its caret is, sel: [anchor,
 // offset, focus, offset] (nodes by number), for the copy to put it there.
 //
@@ -46,6 +57,10 @@
 (() => {
     const w = globalThis;
     if (!w.__tabtop) {
+        // at is what an event's for: its target, in a shadow root too (the
+        // page's hooks' events are composed: their target, here at the
+        // document, would be the outermost host).
+        const at = (e) => e.composedPath?.()[0] ?? e.target;
         const ids = new WeakMap();   // node -> id
         const byId = new Map();      // id -> WeakRef(node)
         let next = 1;
@@ -79,7 +94,7 @@
             if (ownScrolling) return;
             let d;
             try { d = JSON.parse(e.detail); } catch { return; }
-            const el = e.target;
+            const el = at(e);
             if (!(el instanceof Element) || !d || (scrollsOut.size >= 64 && !scrollsOut.has(el))) return;
             const where = ["start", "center", "end", "nearest"];
             if (Array.isArray(d.into) && where.includes(d.into[0]) && where.includes(d.into[1])) scrollsOut.set(el, { into: d.into });
@@ -112,7 +127,7 @@
         document.addEventListener("__tabtop_io", (e) => {
             let d;
             try { d = JSON.parse(e.detail); } catch { return; }
-            const el = e.target;
+            const el = at(e);
             if (!d || !Number.isSafeInteger(d.o) || !(el instanceof Element)) return;
             if (d.op === "r") {
                 ioRoots.set(d.o, el);
@@ -615,7 +630,7 @@
                 const now = z ? z.join() : (e.hit ? "1" : "0") + ":" + Number(e.ratio).toFixed(3);
                 if (ioLast.get(key) === now) continue;  // as it was: not again
                 ioLast.set(key, now);
-                el.dispatchEvent(new CustomEvent("__tabtop_io_entry", { detail: JSON.stringify({ o: e.o, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: e.b, r: e.r, rb: e.rb, z }) }));
+                el.dispatchEvent(new CustomEvent("__tabtop_io_entry", { composed: true, detail: JSON.stringify({ o: e.o, hit: !!e.hit, ratio: Number(e.ratio) || 0, b: e.b, r: e.r, rb: e.rb, z }) }));
             }
             return "ok";
         }
@@ -675,16 +690,16 @@
         const frameCanvases = (doc) => Reflect.apply(Document.prototype.querySelectorAll, doc, ["canvas"]);
         function tell(el, type, detail) {
             const doc = el.ownerDocument;
-            if (doc === document) return Reflect.apply(EventTarget.prototype.dispatchEvent, el, [new CustomEvent(type, { bubbles: true, detail })]);
+            if (doc === document) return Reflect.apply(EventTarget.prototype.dispatchEvent, el, [new CustomEvent(type, { bubbles: true, composed: true, detail })]);
             const owner = frameOwners.get(doc);
             if (owner?.ownerDocument !== document) return;
             const index = Array.prototype.indexOf.call(frameCanvases(doc), el);
-            if (index >= 0) Reflect.apply(EventTarget.prototype.dispatchEvent, owner, [new CustomEvent("__tabtop_frame_canvas", { bubbles: true, detail: JSON.stringify({ index, type, detail }) })]);
+            if (index >= 0) Reflect.apply(EventTarget.prototype.dispatchEvent, owner, [new CustomEvent("__tabtop_frame_canvas", { bubbles: true, composed: true, detail: JSON.stringify({ index, type, detail }) })]);
         }
         // What the page's gogl.js passes back from a frame's canvas: its
         // reply to a read, or that it was drawn on.
         function frameCanvas(event, f) {
-            const owner = event.target;
+            const owner = at(event);
             if (!(owner instanceof HTMLIFrameElement) || typeof event.detail !== "string" || event.detail.length > (4 << 20) + 256) return;
             try {
                 const m = JSON.parse(event.detail);
@@ -697,7 +712,7 @@
         document.addEventListener("__tabtop_frame_canvas_reply", (event) => frameCanvas(event, (el, m) => typeof m.reply === "string" && canvasReply({ target: el, detail: m.reply })), true);
         document.addEventListener("__tabtop_frame_canvas_dirty", (event) => frameCanvas(event, (el) => canvasDirty({ target: el })), true);
         function canvasReply(event) {
-            const el = event.target;
+            const el = at(event);
             if (!isCanvas(el) || typeof event.detail !== "string" || event.detail.length > (4 << 20) + 64) return;
             try {
                 const result = JSON.parse(event.detail);
@@ -715,7 +730,7 @@
                 && Number.isInteger(gl.attributes) && gl.attributes >= 0 && gl.attributes <= 63 && gl.w > 0 && gl.h > 0 && gl.w <= 4096 && gl.h <= 4096;
         }
         function canvasDirty(event) {
-            const el = event.target;
+            const el = at(event);
             if (isCanvas(el) && known(el) && el.isConnected && dirtyCanvases.size < 64) dirtyCanvases.add(el);
         }
         document.addEventListener("__tabtop_canvas_dirty", canvasDirty, true);
@@ -889,9 +904,135 @@
                 c = depth < 600 && (frames.has(n) || frames.size < 64) ? frameKids(n, depth) : [];
             } else {
                 c = name === "textarea" ? [{ i: id(n.firstChild || n), t: 3, v: n.value }] : depth < 600 ? kids(n, depth) : [];
+                if (n === n.ownerDocument?.head) {
+                    const sheets = adoptedNode(n.ownerDocument);
+                    if (sheets) c.push(sheets);
+                }
             }
             if (c.length) out.c = c;
+            const root = shadowOf(n);
+            if (root && depth < 600) out.s = serShadow(root, depth + 1);
             return out;
+        }
+
+        // --- Shadow roots ------------------------------------------------
+        //
+        // shadowOf is el's shadow root, if it's one this world can read (an
+        // open one; a closed one goshadow.js made open). (Duck-typed: an
+        // embedded page's nodes may be its own world's, not this one's.)
+        // (Moli's world for this agent keeps an element's shadowRoot as it
+        // first read it: one attached since is had from goshadow.js's event,
+        // from the root.)
+        // (Nor is a root's host to be had from it, read so: each root's
+        // host is kept as it was found.)
+        const hostRoots = new WeakMap();  // host -> its root
+        const rootHosts = new WeakMap();  // root -> its host
+        const hostOf = (root) => rootHosts.get(root) ?? root.host;
+        function shadowOf(el) {
+            let root = hostRoots.get(el) ?? null;
+            if (!root) {
+                try { root = el.shadowRoot; } catch { return null; }
+                if (!root || root.nodeType !== 11 || root.host !== el) return null;
+                hostRoots.set(el, root);
+                rootHosts.set(root, el);
+            }
+            return root;
+        }
+        const watching = { subtree: true, childList: true, attributes: true, characterData: true };
+        // The shadow roots sent (to look at their adopted stylesheets each
+        // read), and the hosts given a shadow root since (goshadow.js).
+        const roots = new Set();
+        const shadowsNew = new Set();
+        document.addEventListener("__tabtop_shadow", (e) => {
+            // (From the root: its path, the root then its host.)
+            const path = e.composedPath?.() ?? [], root = path[0], host = path[1];
+            if (root?.nodeType !== 11 || host?.nodeType !== 1) return;
+            hostRoots.set(host, root);
+            rootHosts.set(root, host);
+            if (shadowsNew.size < 4096) shadowsNew.add(host);
+        }, true);
+        function serShadow(root, depth) {
+            // Watched as its document is: the page's own by this world's
+            // observer; an embedded page's by its frame's (whose changes are
+            // its document read again).
+            const doc = hostOf(root).ownerDocument;
+            if (doc === document) observer.observe(root, watching);
+            else for (const f of frames.values()) if (f.child === doc) f.observer?.observe(root, watching);
+            roots.add(root);
+            const c = [];
+            const sheets = adoptedNode(root);
+            if (sheets) c.push(sheets);
+            c.push(...kids(root, depth));
+            return { i: id(root), t: 11, c };
+        }
+        // Adopted stylesheets (constructed ones: Lit's, a design system's),
+        // which no node holds: as a <style> of their own, under numbers of
+        // their own (stand-ins kept with the root), their text the rules'.
+        const adopted = new Map();  // a root's host (or the document) -> {el, txt, text}
+        const keyOf = (root) => root.nodeType === 11 ? hostOf(root) : root;
+        const sheetTexts = new WeakMap();  // CSSStyleSheet -> {count, text}
+        // What goshadow.js, in the page's world, says of adopted
+        // stylesheets (which this world doesn't see in Moli), by the root's
+        // host (or the document), as they're adopted or change, and all
+        // again when asked; those told since the last read; and whether
+        // it's there to say.
+        const told = new WeakMap(), toldNow = new Set();
+        let helped = false;
+        document.addEventListener("__tabtop_adopted", (e) => {
+            const at = e.composedPath?.()[0];
+            if (!at || typeof e.detail !== "string") return;
+            helped = true;
+            told.set(at, e.detail);
+            if (toldNow.size < 4096) toldNow.add(at);
+        }, true);
+        const askAdopted = () => window.postMessage({ __tabtop: "adopted" }, "*");
+        askAdopted();
+        function sheetText(sheet) {
+            let rules;
+            try { rules = sheet.cssRules; } catch { return ""; }
+            const was = sheetTexts.get(sheet);
+            if (was && was.count === rules.length) return was.text;
+            let text = "";
+            for (const rule of rules) {
+                text += rule.cssText + "\n";
+                if (text.length > 1 << 20) break;
+            }
+            sheetTexts.set(sheet, { count: rules.length, text });
+            return text;
+        }
+        function adoptedText(root) {
+            const key = keyOf(root);
+            if (told.has(key)) return told.get(key);
+            if (helped) return "";  // (not adopted, or not told yet: told, it's said then)
+            // (No page's world to say: read here.)
+            let sheets;
+            try { sheets = root.adoptedStyleSheets; } catch { return ""; }
+            if (!sheets?.length) return "";
+            let text = "";
+            for (const sheet of sheets) {
+                text += sheetText(sheet);
+                if (text.length > 1 << 20) break;
+            }
+            return text;
+        }
+        function adoptedNode(root) {
+            const text = adoptedText(root);
+            let a = adopted.get(keyOf(root));
+            if (!text && !a) return null;
+            if (!a) adopted.set(keyOf(root), a = { el: {}, txt: {}, text });
+            a.text = text;
+            return { i: id(a.el), t: 1, n: "style", a: ["data-go-adopted", ""], c: [{ i: id(a.txt), t: 3, v: text }] };
+        }
+        // The children a parent's said to have, with its adopted
+        // stylesheets' <style> where it goes (a shadow root's first, the
+        // head's last).
+        function withSheets(p, c) {
+            const a = adopted.get(p.nodeType === 11 ? hostOf(p) : p === p.ownerDocument?.head ? p.ownerDocument : null);
+            if (a) {
+                if (p.nodeType === 11) c.unshift({ i: ids.get(a.el), r: 1 });
+                else c.push({ i: ids.get(a.el), r: 1 });
+            }
+            return c;
         }
         // A <style> with rules but no text: its rules as text, under a number
         // of its own for the copy's text node (a stand-in object, kept as
@@ -899,7 +1040,7 @@
         const ruled = new Map();  // style element -> {id, count, text, told}
         let sheetsAsked = 0;
         document.addEventListener("__tabtop_sheet", (e) => {
-            const r = ruled.get(e.target);
+            const r = ruled.get(at(e));
             if (!r) return;
             let d;
             try { d = JSON.parse(e.detail); } catch { return; }
@@ -970,6 +1111,9 @@
             frames.clear();
             observer.disconnect();
             observer.takeRecords();
+            roots.clear();
+            shadowsNew.clear();
+            askAdopted();  // (told again: what's read now has them, each changes after)
             parents = new Set(); attrs = new Map(); texts = new Set();
             seq = 0;
             const doc = ser(document, 0);
@@ -1083,6 +1227,43 @@
                     if (child) ops.push({ o: "c", i: id(el), c });
                 }
             }
+            // Shadow roots attached since their host was sent (goshadow.js
+            // says which): sent whole.
+            for (const host of shadowsNew) {
+                const root = shadowOf(host);
+                if (root && !roots.has(root) && host.isConnected && old(host) && host.ownerDocument === document) {
+                    ops.push({ o: "s", i: ids.get(host), s: serShadow(root, 0) });
+                }
+            }
+            shadowsNew.clear();
+            // Adopted stylesheets changed (no mutation says so): their
+            // <style>'s text again, or, first had, the root's children with
+            // it. The page's world says which changed, asked; else each is
+            // read here.
+            for (const root of roots) if (!hostOf(root).isConnected) { roots.delete(root); adopted.delete(hostOf(root)); }
+            const changedSheets = new Map();  // root -> text
+            if (helped) {
+                for (const key of toldNow) {
+                    const root = key === document ? document : shadowOf(key);
+                    if (root) changedSheets.set(root, told.get(key));
+                }
+                toldNow.clear();
+            } else {
+                for (const root of [document, ...roots]) changedSheets.set(root, adoptedText(root));
+            }
+            for (const [root, text] of changedSheets) {
+                if (root !== document && hostOf(root).ownerDocument !== document) continue;  // (an embedded page's: read again whole)
+                const a = adopted.get(keyOf(root));
+                if (a && known(a.txt)) {
+                    if (text !== a.text) {
+                        a.text = text;
+                        ops.push({ o: "t", i: ids.get(a.txt), v: text });
+                    }
+                } else if (text) {
+                    const parent = root === document ? document.head : root;
+                    if (parent && old(parent)) parents.add(parent);  // (said with its children, below)
+                }
+            }
             const changedMedia = new Set();
             for (const p of parents) {
                 if (p instanceof HTMLMediaElement) { changedMedia.add(p); continue; }
@@ -1096,6 +1277,13 @@
                         const s = ser(k, 0);
                         if (s) c.push(s);
                     }
+                }
+                // Its adopted stylesheets' <style>: as it was, or (first had) new.
+                const sheetRoot = p.nodeType === 11 ? p : p === document.head ? document : null;
+                if (sheetRoot && adopted.has(keyOf(sheetRoot))) withSheets(p, c);
+                else if (sheetRoot) {
+                    const sheets = adoptedNode(sheetRoot);
+                    if (sheets) p.nodeType === 11 ? c.unshift(sheets) : c.push(sheets);
                 }
                 ops.push({ o: "c", i: ids.get(p), c });
             }
@@ -1373,7 +1561,7 @@
                     }
                     tellingPlay = !!what.play;
                     try {
-                        el.dispatchEvent(new CustomEvent("__tabtop_media", { detail: JSON.stringify(what) }));
+                        el.dispatchEvent(new CustomEvent("__tabtop_media", { composed: true, detail: JSON.stringify(what) }));
                     } finally {
                         tellingPlay = false;
                     }
@@ -1400,7 +1588,7 @@
                             el.scrollLeft = x;
                             el.scrollTop = y;
                         });
-                        el.dispatchEvent(new CustomEvent("__tabtop_scrolled", { detail: JSON.stringify({ x, y }) }));  // goobserve.js
+                        el.dispatchEvent(new CustomEvent("__tabtop_scrolled", { composed: true, detail: JSON.stringify({ x, y }) }));  // goobserve.js
                         el.dispatchEvent(new Event("scroll"));
                     }
                     return "ok";

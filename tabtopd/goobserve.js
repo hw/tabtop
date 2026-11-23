@@ -35,7 +35,7 @@
 
     const tell = (el, what) => {
         try {
-            el.dispatchEvent(new CustomEvent(SEND, { detail: JSON.stringify(what) }));
+            el.dispatchEvent(new CustomEvent(SEND, { composed: true, detail: JSON.stringify(what) }));
         } catch { /* nothing to tell it on */ }
     };
 
@@ -168,7 +168,7 @@
         // the engine's own layout may be nowhere near it there.
         if (!z) return;
         try {
-            el.dispatchEvent(new CustomEvent("__tabtop_scroll", { detail: JSON.stringify({ x: at[0], y: at[1] }) }));
+            el.dispatchEvent(new CustomEvent("__tabtop_scroll", { composed: true, detail: JSON.stringify({ x: at[0], y: at[1] }) }));
         } catch { /* nothing to tell it on */ }
     };
     for (const [name, n] of [["scrollLeft", 0], ["scrollTop", 1]]) {
@@ -225,14 +225,15 @@
         const block = a === false ? "end" : typeof a === "object" && a ? String(a.block ?? "start") : "start";
         const inline = typeof a === "object" && a ? String(a.inline ?? "nearest") : "nearest";
         try {
-            el.dispatchEvent(new CustomEvent("__tabtop_scroll", { detail: JSON.stringify({ into: [block, inline] }) }));
+            el.dispatchEvent(new CustomEvent("__tabtop_scroll", { composed: true, detail: JSON.stringify({ into: [block, inline] }) }));
         } catch { /* nothing to tell it on */ }
     });
     document.addEventListener("__tabtop_scrolled", (e) => {
         let d;
         try { d = JSON.parse(e.detail); } catch { return; }
         const x = Number(d?.x), y = Number(d?.y);
-        if (e.target instanceof Element && x >= 0 && y >= 0 && x < 1e7 && y < 1e7) scrolls.set(e.target, [x, y]);
+        const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too: the agent's event is composed)
+        if (el instanceof Element && x >= 0 && y >= 0 && x < 1e7 && y < 1e7) scrolls.set(el, [x, y]);
     }, true);
     const sizeOf = (inline, block) => Object.freeze([Object.freeze({ inlineSize: inline, blockSize: block })]);
     class ResizeObserverEntry {
@@ -323,7 +324,7 @@
         try { d = JSON.parse(e.detail); } catch { return; }
         const o = byId.get(d?.o);
         const s = o && state.get(o);
-        const target = e.target;
+        const target = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
         if (!s || !s.targets.has(target)) return;
         if (s.box) {
             const z = Array.isArray(d.z) && d.z.length === 8 && d.z.every((v) => Number.isFinite(v) && v >= 0) ? d.z : null;

@@ -420,6 +420,9 @@ func goWants(doc *goNode, base string) []goWanted {
 		for _, k := range n.Kids {
 			walk(k, base)
 		}
+		if n.Shadow != nil {
+			walk(n.Shadow, base)
+		}
 	}
 	walk(doc, base)
 	return wanted

@@ -77,7 +77,7 @@
     const compactStateMethods = new Set(["clearColor", "clearDepth", "clearStencil", "colorMask", "depthMask", "depthFunc", "depthRange", "blendColor", "blendEquation", "blendEquationSeparate", "blendFunc", "blendFuncSeparate", "cullFace", "frontFace", "lineWidth", "polygonOffset", "polygonModeWEBGL", "sampleCoverage", "scissor", "viewport", "stencilFunc", "stencilFuncSeparate", "stencilMask", "stencilMaskSeparate", "stencilOp", "stencilOpSeparate", "drawBuffers", "enable", "disable", ...locationMethods]);
 
     function signal(canvas, name) {
-        try { apply(originalDispatch, canvas, [new EventCtor(name, { bubbles: true })]); } catch { /* detached canvas */ }
+        try { apply(originalDispatch, canvas, [new EventCtor(name, { bubbles: true, composed: true })]); } catch { /* detached canvas */ }
         // In a same-origin frame, told on its iframe too, where the page's
         // agent hears it (it doesn't hear the frame's own events in Moli).
         try {
@@ -966,7 +966,7 @@
     // the reply sent back on the iframe. (That it's drawn on, the frame's
     // own gogl.js tells on its iframe: signal.)
     globalThis.addEventListener("__tabtop_frame_canvas", (event) => {
-        const frame = event.target;
+        const frame = (event.composedPath?.()[0] ?? event.target);  // (in a shadow root too)
         if (!(frame instanceof HTMLIFrameElement) || typeof event.detail !== "string" || event.detail.length > 256) return;
         let request, doc;
         try { request = JSON.parse(event.detail); doc = frame.contentDocument; } catch { return; }
@@ -997,14 +997,15 @@
     // On the window, not the document: a frame navigated from its first
     // (about:blank) document keeps its window, and this script isn't run again.
     globalThis.addEventListener("__tabtop_webgl_undo", (event) => {
-        const state = event.target instanceof Canvas ? contextByCanvas.get(event.target) : null;
+        const at = (event.composedPath?.()[0] ?? event.target);  // (in a shadow root too)
+        const state = at instanceof Canvas ? contextByCanvas.get(at) : null;
         if (!state?.lastTake) return;
         state.sent = Math.min(state.lastTake.sent, state.commands.length);
         state.wholeNext = state.lastTake.wholeNext || event.detail === "full";
         state.lastTake = null;
     }, true);
     globalThis.addEventListener("__tabtop_webgl_capture", (event) => {
-        const canvas = event.target;
+        const canvas = (event.composedPath?.()[0] ?? event.target);  // (in a shadow root too)
         if (!(canvas instanceof Canvas)) return;
         const state = contextByCanvas.get(canvas);
         if (!state) return;

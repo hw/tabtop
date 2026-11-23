@@ -1826,6 +1826,8 @@ func (h *goAdHider) seeNode(out []string, n *goNode) []string {
 			out = h.seeNode(out, k)
 		}
 	}
+	// (Its shadow root's: not the page's to hide by its rules, which don't
+	// reach in; nor seen.)
 	return out
 }
 

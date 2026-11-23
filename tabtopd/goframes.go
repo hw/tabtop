@@ -413,5 +413,8 @@ func findGoNode(n *goNode, id int) *goNode {
 			return found
 		}
 	}
+	if n.Shadow != nil {
+		return findGoNode(n.Shadow, id)
+	}
 	return nil
 }

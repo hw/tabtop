@@ -24,7 +24,7 @@
                 text += rule.cssText + "\n";
                 if (text.length > 4 << 20) break;
             }
-            el.dispatchEvent(new CustomEvent("__tabtop_sheet", { detail: JSON.stringify({ count: rules.length, text }) }));
+            el.dispatchEvent(new CustomEvent("__tabtop_sheet", { composed: true, detail: JSON.stringify({ count: rules.length, text }) }));
         }
     });
 })();

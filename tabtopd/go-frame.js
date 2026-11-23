@@ -42,7 +42,7 @@
     // Elements left out, with all inside them: what loads, embeds or runs
     // something, or says something to the browser about the document.
     const dropped = new Set(["script", "noscript", "template", "iframe", "frame", "frameset", "object", "embed", "applet",
-        "base", "meta", "portal", "fencedframe", "param", "source", "track", "slot"]);
+        "base", "meta", "portal", "fencedframe", "param", "source", "track"]);
     // Shown as a note: what plays, or draws from script.
     const placeholders = {};
     // Elements drawn as a box of their own, and the attribute their box has,
@@ -1359,7 +1359,59 @@
         const childNS = ns === SVG && tag === "foreignobject" ? HTML : ns;
         children(d, el, n.c, childNS);
         if (ns === HTML && tag === "form") el.setAttribute("novalidate", "");
+        if (n.s) shadow(d, el, n.s);
         return el;
+    }
+
+    // --- Shadow roots ------------------------------------------------------
+    //
+    // An element's shadow root in the page is one here (open: this copy's
+    // own code reads it), its nodes by their numbers, its styles (a <style>
+    // in it, the page's adopted stylesheets one) its own, its <slot>s
+    // filled by the host's children, as the page's are: what a web
+    // component shows. pageRoots are those, as against the ones this copy
+    // makes itself for an embedded page (frameRoots) or a player.
+    const pageRoots = new WeakSet();
+    function shadow(d, el, s) {
+        if (!s || typeof s !== "object" || s.t !== 11 || !Number.isSafeInteger(s.i)) return;
+        let root = el.shadowRoot;
+        if (!root) {
+            try { root = el.attachShadow({ mode: "open" }); } catch {
+                own(d, s.i, null);  // (an element that can't have one: left out)
+                return;
+            }
+            pageRoots.add(root);
+        } else if (!pageRoots.has(root)) {
+            own(d, s.i, null);
+            return;
+        }
+        own(d, s.i, root);
+        reconcile(d, root, s.c);
+    }
+    // up is a node's parent, out of a page's shadow root to its host too.
+    const up = (n) => n.parentNode ?? (pageRoots.has(n) ? n.host : null);
+    // rootOf is the document, or the copy of an embedded page (a shadow
+    // root of this copy's), a node's in: past the page's own shadow roots.
+    function rootOf(n) {
+        let root = n?.getRootNode?.();
+        while (root instanceof ShadowRoot && pageRoots.has(root)) root = root.host.getRootNode();
+        return root;
+    }
+    // deepAt is what's under a point, in the page's shadow roots too (the
+    // document's elementFromPoint says their host).
+    function deepAt(el, cx, cy) {
+        while (el?.shadowRoot && pageRoots.has(el.shadowRoot)) {
+            const inner = el.shadowRoot.elementFromPoint(cx, cy);
+            if (!inner || inner === el) break;
+            el = inner;
+        }
+        return el;
+    }
+    // deepActive is what has the focus, in the page's shadow roots too.
+    function deepActive() {
+        let a = document.activeElement;
+        while (a?.shadowRoot && pageRoots.has(a.shadowRoot) && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+        return a;
     }
 
     // A <style>'s text, kept by its text nodes' ids, processed as one sheet.
@@ -1478,7 +1530,7 @@
     // typed in it hasn't been sent yet (else the page's, as read: a page
     // may clear a field itself).
     function keptFocus(d) {
-        const el = document.activeElement;
+        const el = deepActive();
         const id = d && el ? d.ids.get(el) : undefined;
         if (!id) return null;
         const kept = { id };
@@ -1837,7 +1889,7 @@
         }
         // Rich text focused here, and whether the batch changes it: its
         // caret's then put where the engine's is.
-        const active = d === doc && richText(document.activeElement) ? document.activeElement : null;
+        const active = d === doc && richText(deepActive()) ? deepActive() : null;
         let edited = false;
         // (A batch may bring only what the page observes: no changes.)
         for (const op of Array.isArray(m.ops) ? m.ops : []) {
@@ -1875,6 +1927,10 @@
                 case "g":
                     if (target.localName !== "canvas" || typeof op.gl?.v !== "string") return resync(d);
                     webglLog(target, op.gl, op.gl.r === true, d);
+                    break;
+                case "s":
+                    // A shadow root attached since its host was shown.
+                    if (target.nodeType === 1) shadow(d, target, op.s);
                     break;
                 case "c":
                     if (frameRoots.has(target)) {
@@ -2009,7 +2065,7 @@
     // that changes comes back as changes, or a new page. Here, only what's
     // safe happens by itself: a box ticks, text is typed, the page scrolls.
     function idOf(target) {
-        for (let n = target; n && n !== document; n = n.parentNode) {
+        for (let n = target; n && n !== document; n = up(n)) {
             const id = doc?.ids.get(n);
             if (id) return { id, node: n };
         }
@@ -2026,7 +2082,7 @@
         // the server uses the chain to reach the matching nested CDP frame.
         let n = node, leaf = null, route = [], docs = [];
         for (;;) {
-            const root = n?.getRootNode?.();
+            const root = rootOf(n);
             if (!(root instanceof ShadowRoot)) {
                 const at = idOf(n);
                 if (!at) return null;
@@ -2038,13 +2094,13 @@
             const host = root.host, fr = frameRoots.get(host);
             if (!fr?.child) return null;
             let found = null;
-            for (let at = n; at && at !== root; at = at.parentNode) {
+            for (let at = n; at && at !== root; at = up(at)) {
                 const i = fr.child.ids.get(at);
                 if (i && at.nodeType === 1) { found = { id: i, node: at }; break; }
             }
             if (!found) return null;
             if (!leaf) leaf = { ...found, fdoc: fr.docOf ?? 0 };
-            const parentRoot = host.getRootNode?.();
+            const parentRoot = rootOf(host);
             if (parentRoot instanceof ShadowRoot) {
                 const parentFr = frameRoots.get(parentRoot.host);
                 const owner = parentFr?.child?.ids.get(host);
@@ -2118,7 +2174,7 @@
         // What's under the pointer, not the event's target: a button pressed
         // keeps the mouse (its release, and moves while dragging, are its,
         // wherever they are).
-        const under = document.elementFromPoint(cx, cy);
+        const under = deepAt(document.elementFromPoint(cx, cy), cx, cy);
         if (!under) return null;  // outside the frame
         const at = idOf(under);
         if (!at || at.node.nodeType !== 1) return null;
@@ -2136,9 +2192,9 @@
             let host = at.node, n;
             for (;;) {
                 const current = frameRoots.get(host);
-                const inner = host.shadowRoot?.elementFromPoint?.(cx, cy);
+                const inner = deepAt(host.shadowRoot?.elementFromPoint?.(cx, cy), cx, cy);
                 n = null;
-                for (let x = inner; x && current?.child; x = x.parentNode) {
+                for (let x = inner; x && current?.child; x = up(x)) {
                     if (current.child.ids.has(x) && x.nodeType === 1) { n = x; break; }
                 }
                 if (!n) return null;
@@ -2600,7 +2656,7 @@
     // numberOf is a node's number in its page (an embedded page's, in its
     // copy), or 0.
     function numberOf(n) {
-        const root = n?.getRootNode?.();
+        const root = rootOf(n);
         if (root instanceof ShadowRoot) return frameRoots.get(root.host)?.child?.ids.get(n) ?? 0;
         return doc?.ids.get(n) ?? 0;
     }

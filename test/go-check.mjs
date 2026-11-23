@@ -300,6 +300,56 @@ chat.addEventListener("keydown", (e) => {
     chat.textContent = "";
 });
 </script>`,
+        // Web components: shadow roots (adopted stylesheets, a slot, a
+        // closed one, one attached later), and in them a button, rich text,
+        // and frames (?x: another site's page for one).
+        "shadow.html": `<!doctype html><title>Shadow</title>
+<x-card id="card"><span id="slotted">slotted text</span></x-card>
+<x-closed id="closed"></x-closed>
+<x-late id="late"></x-late>
+<x-dsd id="dsd"><template shadowrootmode="open"><style>em { color: rgb(5, 6, 7) }</style><em id="declared">declared</em></template></x-dsd>
+<x-lazy id="lazy"></x-lazy>
+<button id="define">Define</button>
+<p id="clicks">clicks 0</p><p id="edgot">engine: edit me</p>
+<script>
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(":host { display: block; color: rgb(1, 2, 3) } b { color: rgb(10, 20, 30) } ::slotted(span) { color: rgb(40, 50, 60) }");
+const other = new URLSearchParams(location.search).get("x");
+customElements.define("x-card", class extends HTMLElement {
+    constructor() {
+        super();
+        const r = this.attachShadow({ mode: "open" });
+        r.adoptedStyleSheets = [sheet];
+        r.innerHTML = '<b id="inner">inner text</b> <slot></slot> <button id="btn">press</button> <div id="ed" contenteditable="true">edit me</div>'
+            + '<iframe id="fr" src="shadow-frame.html" style="width: 220px; height: 50px"></iframe>' + (other ? '<iframe id="frx" src="' + other + '" style="width: 220px; height: 50px"></iframe>' : "");
+        let n = 0;
+        r.getElementById("btn").addEventListener("click", () => { document.getElementById("clicks").textContent = "clicks " + (++n); });
+        const ed = r.getElementById("ed");
+        ed.addEventListener("input", () => { document.getElementById("edgot").textContent = "engine: " + ed.textContent; });
+    }
+});
+customElements.define("x-closed", class extends HTMLElement {
+    constructor() { super(); this.attachShadow({ mode: "closed" }).innerHTML = '<style>i { color: rgb(70, 80, 90) }</style><i id="secret">closed text</i>'; }
+});
+document.getElementById("define").addEventListener("click", () => customElements.define("x-late", class extends HTMLElement {
+    constructor() { super(); this.attachShadow({ mode: "open" }).innerHTML = '<em id="later">defined later</em>'; }
+}));
+// Its root from its HTML (declarative), taken up as Lit does.
+customElements.define("x-dsd", class extends HTMLElement {
+    connectedCallback() { const r = this.shadowRoot ?? this.attachShadow({ mode: "open" }); r.querySelector("em")?.setAttribute("data-taken", "yes"); }
+});
+// Drawn once what's in its root is seen (an IntersectionObserver's).
+customElements.define("x-lazy", class extends HTMLElement {
+    constructor() {
+        super();
+        const r = this.attachShadow({ mode: "open" });
+        r.innerHTML = '<div id="lazybox" style="height: 20px">waiting</div>';
+        new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) r.getElementById("lazybox").textContent = "seen"; }).observe(r.getElementById("lazybox"));
+    }
+});
+window.pageSees = String(document.getElementById("closed").shadowRoot);
+</script>`,
+        "shadow-frame.html": `<!doctype html><title>Shadow frame</title><p id="infr">in a frame in a shadow root</p>`,
         // Rich text in an embedded page (edited by script there).
         "editable-frame.html": `<!doctype html><title>Editable frame</title>
 <div id="fed" contenteditable="true"><p>in</p></div><p id="fgot">frame: in</p>
@@ -1939,6 +1989,42 @@ async function check(base, port, site, adSite) {
         await browser.press("Enter");
         await browser.type("x");
         await frameWait(`(() => { ${deep} return deep(document, "#fgot")?.textContent === "frame: in!|x"; })()`, "the frame's page to hold in!|x");
+        await goTo(site + "interact.html", "Interact");  // (the steps after's)
+    });
+
+    await step("web components: shadow roots shown (adopted styles, a slot, a closed one, one attached later), a button and rich text in one used, frames in one shown", async () => {
+        await goTo(site + "shadow.html" + (adSite ? "?x=" + encodeURIComponent(adSite + "shadow-frame.html") : ""), "Shadow");
+        const deep = `const deep = (root, sel) => { const hit = root.querySelector(sel); if (hit) return hit; for (const el of root.querySelectorAll("*")) if (el.shadowRoot) { const f = deep(el.shadowRoot, sel); if (f) return f; } return null; };`;
+        const at = (sel) => frame(`(() => { ${deep} const e = deep(document, ${JSON.stringify(sel)}); return e ? [e.textContent, getComputedStyle(e).color, !!e.assignedSlot] : null; })()`);
+        // Shown, styled by the adopted stylesheet; the host's child in its slot.
+        await frameWait(`(() => { ${deep} return deep(document, "#inner")?.textContent === "inner text" && getComputedStyle(deep(document, "#inner")).color === "rgb(10, 20, 30)"; })()`, "the shadow root's content, styled by its adopted stylesheet");
+        const slotted = await at("#slotted");
+        if (!slotted || slotted[1] !== "rgb(40, 50, 60)" || !slotted[2]) throw new Error(`the slotted child: ${JSON.stringify(slotted)}`);
+        // A closed one: shown (the page still told it's closed).
+        await frameWait(`(() => { ${deep} const e = deep(document, "#secret"); return e?.textContent === "closed text" && getComputedStyle(e).color === "rgb(70, 80, 90)"; })()`, "the closed shadow root's content, with its <style>");
+        // One from its HTML, taken up by its element; one drawn once seen.
+        await frameWait(`(() => { ${deep} const e = deep(document, "#declared"); return e?.getAttribute("data-taken") === "yes" && getComputedStyle(e).color === "rgb(5, 6, 7)"; })()`, "a declarative shadow root, taken up by its element");
+        await frame(`(() => { ${deep} deep(document, "#lazybox").scrollIntoView({ block: "center" }); })()`);
+        await frameWait(`(() => { ${deep} return deep(document, "#lazybox")?.textContent === "seen"; })()`, "what's in a shadow root seen, as the page's IntersectionObserver is told");
+        // One attached later.
+        await frameClick("#define");
+        await frameWait(`(() => { ${deep} return deep(document, "#later")?.textContent === "defined later"; })()`, "a shadow root attached later");
+        // A button in one: pressed, in the engine.
+        const clickDeep = async (sel, dx = 0.5) => {
+            const r = await frame(`(() => { ${deep} const e = deep(document, ${JSON.stringify(sel)}); e.scrollIntoView({ block: "center" }); const b = e.getBoundingClientRect(); return { x: b.x + b.width * ${dx}, y: b.y + b.height / 2 }; })()`);
+            const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+            for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + r.x, y: f.y + r.y, button: "left", clickCount: 1 });
+        };
+        await clickDeep("#btn");
+        await frameWait(`document.getElementById("clicks").textContent === "clicks 1"`, "the button in the shadow root pressed in the engine");
+        // Rich text in one: typed at its end, in the engine.
+        await clickDeep("#ed", 0.9);
+        await frame(`(() => { ${deep} const t = deep(document, "#ed").firstChild; getSelection().setBaseAndExtent(t, 7, t, 7); })()`);
+        await browser.type("!");
+        await frameWait(`document.getElementById("edgot").textContent === "engine: edit me!"`, "typed in rich text in the shadow root");
+        // Frames in one: this site's, and another's.
+        await frameWait(`(() => { ${deep} return deep(document, "#infr")?.textContent === "in a frame in a shadow root"; })()`, "a frame's page in the shadow root", 30000);
+        if (adSite) await frameWait(`(() => { ${deep} const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.id === "infr") all.push(el); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all.length === 2; })()`, "another site's frame's page in the shadow root too", 30000);
         await goTo(site + "interact.html", "Interact");  // (the steps after's)
     });
 

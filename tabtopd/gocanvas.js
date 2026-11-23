@@ -42,7 +42,7 @@
             drawing.delete(canvas);
             if (again) dirty(canvas);
         }, 0);
-        try { apply(dispatchEvent, canvas, [new EventCtor(dirtyEvent, { bubbles: true })]); }
+        try { apply(dispatchEvent, canvas, [new EventCtor(dirtyEvent, { bubbles: true, composed: true })]); }
         catch { /* a replaced or detached canvas */ }
         // In a same-origin frame, told on its iframe too, where the page's
         // agent hears it (it doesn't hear the frame's own events in Moli),
@@ -75,7 +75,7 @@
 
     // On the window: a frame keeps it from its first (about:blank) document.
     globalThis.addEventListener("__tabtop_canvas_capture", (event) => {
-        const canvas = event.target;
+        const canvas = (event.composedPath?.()[0] ?? event.target);  // (in a shadow root too)
         if (!(canvas instanceof Canvas)) return;
         let result;
         if (!contexts.has(canvas)) {
@@ -99,7 +99,7 @@
         }
         try {
             apply(dispatchEvent, canvas, [new CustomEventCtor("__tabtop_canvas_pixels", {
-                bubbles: true, detail: JSON.stringify(result),
+                bubbles: true, composed: true, detail: JSON.stringify(result),
             })]);
         } catch { /* detached canvas */ }
     }, true);
