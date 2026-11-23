@@ -309,7 +309,7 @@ chat.addEventListener("keydown", (e) => {
 <x-late id="late"></x-late>
 <x-dsd id="dsd"><template shadowrootmode="open"><style>em { color: rgb(5, 6, 7) }</style><em id="declared">declared</em></template></x-dsd>
 <x-lazy id="lazy"></x-lazy>
-<button id="define">Define</button>
+<button id="define">Define</button> <button id="restyle">Restyle</button>
 <p id="clicks">clicks 0</p><p id="edgot">engine: edit me</p>
 <script>
 const sheet = new CSSStyleSheet();
@@ -331,6 +331,7 @@ customElements.define("x-card", class extends HTMLElement {
 customElements.define("x-closed", class extends HTMLElement {
     constructor() { super(); this.attachShadow({ mode: "closed" }).innerHTML = '<style>i { color: rgb(70, 80, 90) }</style><i id="secret">closed text</i>'; }
 });
+document.getElementById("restyle").addEventListener("click", () => sheet.replaceSync(":host { display: block } b { color: rgb(90, 91, 92) } ::slotted(span) { color: rgb(40, 50, 60) }"));
 document.getElementById("define").addEventListener("click", () => customElements.define("x-late", class extends HTMLElement {
     constructor() { super(); this.attachShadow({ mode: "open" }).innerHTML = '<em id="later">defined later</em>'; }
 }));
@@ -349,7 +350,13 @@ customElements.define("x-lazy", class extends HTMLElement {
 });
 window.pageSees = String(document.getElementById("closed").shadowRoot);
 </script>`,
-        "shadow-frame.html": `<!doctype html><title>Shadow frame</title><p id="infr">in a frame in a shadow root</p>`,
+        "shadow-frame.html": `<!doctype html><title>Shadow frame</title><p id="infr">in a frame in a shadow root</p><x-fcard></x-fcard>
+<button id="fbtn" onclick="this.textContent = 'frame pressed'">frame button</button>
+<script>
+const s = new CSSStyleSheet();
+s.replaceSync("i { color: rgb(33, 44, 55) }");
+customElements.define("x-fcard", class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: "open" }); r.adoptedStyleSheets = [s]; r.innerHTML = '<i class="finner">a component in the frame</i>'; } });
+</script>`,
         // Rich text in an embedded page (edited by script there).
         "editable-frame.html": `<!doctype html><title>Editable frame</title>
 <div id="fed" contenteditable="true"><p>in</p></div><p id="fgot">frame: in</p>
@@ -2006,6 +2013,9 @@ async function check(base, port, site, adSite) {
         await frameWait(`(() => { ${deep} const e = deep(document, "#declared"); return e?.getAttribute("data-taken") === "yes" && getComputedStyle(e).color === "rgb(5, 6, 7)"; })()`, "a declarative shadow root, taken up by its element");
         await frame(`(() => { ${deep} deep(document, "#lazybox").scrollIntoView({ block: "center" }); })()`);
         await frameWait(`(() => { ${deep} return deep(document, "#lazybox")?.textContent === "seen"; })()`, "what's in a shadow root seen, as the page's IntersectionObserver is told");
+        // Its adopted stylesheet replaced: the copy's restyled.
+        await frameClick("#restyle");
+        await frameWait(`(() => { ${deep} return getComputedStyle(deep(document, "#inner")).color === "rgb(90, 91, 92)"; })()`, "the shadow root restyled as its adopted stylesheet's replaced");
         // One attached later.
         await frameClick("#define");
         await frameWait(`(() => { ${deep} return deep(document, "#later")?.textContent === "defined later"; })()`, "a shadow root attached later");
@@ -2040,6 +2050,17 @@ async function check(base, port, site, adSite) {
         // Frames in one: this site's, and another's.
         await frameWait(`(() => { ${deep} return deep(document, "#infr")?.textContent === "in a frame in a shadow root"; })()`, "a frame's page in the shadow root", 30000);
         if (adSite) await frameWait(`(() => { ${deep} const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.id === "infr") all.push(el); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all.length === 2; })()`, "another site's frame's page in the shadow root too", 30000);
+        // A component in each frame: its root and its adopted stylesheet.
+        const framed = (n) => `(() => { const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.classList?.contains("finner")) all.push(getComputedStyle(el).color); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all.length === ${n} && all.every((c) => c === "rgb(33, 44, 55)"); })()`;
+        await frameWait(framed(adSite ? 2 : 1), "a component in each frame, styled by its adopted stylesheet", 30000);
+        // A button in each frame there, pressed: in its page in the engine.
+        const frameButtons = `(() => { const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.id === "fbtn") all.push(el); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all; })()`;
+        for (let i = 0; i < (adSite ? 2 : 1); i++) {
+            const r = await frame(`(() => { const b = ${frameButtons}[${i}]; b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+            const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+            for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + r.x, y: f.y + r.y, button: "left", clickCount: 1 });
+            await frameWait(`${frameButtons}[${i}]?.textContent === "frame pressed"`, `the button in frame ${i + 1} in the shadow root pressed`, 15000);
+        }
         await goTo(site + "interact.html", "Interact");  // (the steps after's)
     });
 

@@ -961,6 +961,12 @@
         // read), and the hosts given a shadow root since (goshadow.js).
         const roots = new Set();
         const shadowsNew = new Set();
+        // A same-origin frame's: a root attached, or its sheets changed, in
+        // it (goshadow.js, from its iframe): it's read again, whole.
+        document.addEventListener("__tabtop_frame_shadow", (e) => {
+            const state = frames.get(at(e));
+            if (state) state.dirty = true;
+        }, true);
         document.addEventListener("__tabtop_shadow", (e) => {
             // (From the root: its path, the root then its host.)
             const path = e.composedPath?.() ?? [], root = path[0], host = path[1];
@@ -1042,8 +1048,12 @@
         }
         function adoptedText(root) {
             const key = keyOf(root);
-            if (told.has(key)) return told.get(key);
-            if (helped) return "";  // (not adopted, or not told yet: told, it's said then)
+            // (An embedded page's, read here: goshadow.js tells within the
+            // frame's own document, which this world doesn't hear; its nodes
+            // here are its world's, which see their own adopted sheets.)
+            const framed = key !== document && key.ownerDocument !== document;
+            if (!framed && told.has(key)) return told.get(key);
+            if (helped && !framed) return "";  // (not adopted, or not told yet: told, it's said then)
             // (No page's world to say: read here.)
             let sheets;
             try { sheets = root.adoptedStyleSheets; } catch { return ""; }

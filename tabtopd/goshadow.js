@@ -40,6 +40,13 @@
     const Ev = CustomEvent, dispatch = EventTarget.prototype.dispatchEvent;
     const say = (target, type, detail) => {
         try { Reflect.apply(dispatch, target, [new Ev(type, { bubbles: true, composed: true, detail })]); } catch { /* not said */ }
+        // In a same-origin frame, its iframe told too, where the page's agent
+        // hears it (it doesn't hear the frame's own events in Moli): the
+        // frame's read again, with its roots and their sheets.
+        try {
+            const owner = globalThis.frameElement;
+            if (owner) Reflect.apply(dispatch, owner, [new Ev("__tabtop_frame_shadow", { bubbles: true, composed: true })]);
+        } catch { /* another origin's frame, or gone */ }
     };
     const known = new Set();  // the roots attached (or asked about), whose adopted stylesheets are looked at
     Object.defineProperty(proto, "attachShadow", { configurable: true, writable: true, value: {
@@ -48,8 +55,7 @@
             const root = Reflect.apply(attach, this, [shut ? { ...init, mode: "open" } : init]);
             if (shut) closed.add(root);
             known.add(root);
-            // (Said once what's making it is done: from the root while its
-            // host's being made a custom element, Moli undoes that.)
+            // (Said a moment later, once what's making it is done.)
             const host = this;
             queueMicrotask(() => { if (connected?.call(host)) say(root, "__tabtop_shadow", null); });
             return root;
@@ -151,9 +157,10 @@
     }
     // All of them again, asked (the agent made anew, or reading the page
     // anew): those of the roots attached, or given adopted stylesheets.
-    // (Not looked for, by every element's shadowRoot: read before Moli's
-    // made an element's root from its HTML (a declarative one), it stays
-    // null for the page, which then attaches another, which Moli refuses.)
+    // (Not looked for, by every element's shadowRoot read here: measured,
+    // with that, MDN's components' attachShadow threw now and then in Moli,
+    // "receiver must be an element", and they failed one after another;
+    // without it, every run was clean.)
     window.addEventListener("message", (e) => {
         if (e.data?.__tabtop === "adopted-check") {
             for (const root of [document, ...known]) if (told.has(root) && told.get(root) !== print(root)) later(root);

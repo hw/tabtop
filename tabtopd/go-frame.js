@@ -654,13 +654,14 @@
         const content = document.createElement("div");
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
         frameRoots.get(el).child = child;  // its nodes, by the frame's own numbers (whereAt)
-        // Its adopted stylesheets: its own, read in a world of its own; else
-        // its page's, read with it (numbered as its page's are).
-        if (docOf) adoptedSheets(child, frame.css);
-        else child.css = (d.top ?? d).css;
         child.top = d.top ?? d;  // its boxes are its page's
         child.budget = d.budget;
         child.report = d.report;
+        // Its adopted stylesheets: its own, read in a world of its own (on
+        // its page's budget, set above); else its page's, read with it
+        // (numbered as its page's are).
+        if (docOf) adoptedSheets(child, frame.css);
+        else child.css = (d.top ?? d).css;
         children(child, content, frame.c, HTML);
         // Only into the same document: another (the frame navigated) numbers
         // its nodes anew, so a number that matches is another iframe.
