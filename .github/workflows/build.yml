@@ -154,6 +154,8 @@ jobs:
           build-args: DESKTOP=none
           tags: tabtop-lite:check
           cache-from: type=gha,scope=tabtop-lite
+      # The test site's videos are made with FFmpeg.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       # Ubuntu's runners only let AppArmor-profiled programs make user
       # namespaces, containers' too.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
