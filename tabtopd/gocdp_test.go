@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestCDPDocumentPauseReserve(t *testing.T) {
@@ -42,5 +44,26 @@ func TestCDPRequestGone(t *testing.T) {
 		if got := cdpRequestGone(err); got != want {
 			t.Errorf("%v: gone %v, want %v", err, got, want)
 		}
+	}
+}
+
+// TestCDPCallCanceledKeepsConnection: a call given up (its load replaced
+// by another, say) before or as it's sent fails alone; the engine's
+// connection, the tab's for everything else, goes on. (The WebSocket
+// closes itself when a write's context ends, and the lock a write takes
+// first is had or not at random once it has.)
+func TestCDPCallCanceledKeepsConnection(t *testing.T) {
+	c, _ := fakeCDP(t, func(string, int) bool { return false })
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 32; i++ {
+		if err := c.call(canceled, "", "Page.navigate", nil, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("call %d with its context canceled: %v", i, err)
+		}
+	}
+	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
+	defer done()
+	if err := c.call(ctx, "", "Runtime.evaluate", nil, nil); err != nil {
+		t.Fatalf("a call after those canceled: %v", err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -50,6 +51,10 @@ const cdpPauseReserve = 128
 
 // cdpReadLimit is the largest message read: a whole document's DOM.
 const cdpReadLimit = 64 << 20
+
+// cdpWriteTimeout bounds writing a call to the engine: one taking longer is
+// to an engine that's stopped reading, and the connection is closed.
+const cdpWriteTimeout = 30 * time.Second
 
 type cdpConn struct {
 	ws      *websocket.Conn
@@ -196,6 +201,9 @@ var errCDPClosed = errors.New("the engine's connection closed")
 // call sends method, in session ("" for the browser), and decodes its
 // result into result (if not nil).
 func (c *cdpConn) call(ctx context.Context, session, method string, params, result any) error {
+	if err := ctx.Err(); err != nil {
+		return err // given up already: not sent
+	}
 	c.mu.Lock()
 	if c.err != nil {
 		c.mu.Unlock()
@@ -215,7 +223,14 @@ func (c *cdpConn) call(ctx context.Context, session, method string, params, resu
 	}
 	b, err := json.Marshal(msg)
 	if err == nil {
-		err = c.ws.Write(ctx, websocket.MessageText, b)
+		// Written whatever becomes of ctx: the WebSocket closes itself when
+		// a write's context ends (coder/websocket), and it's the tab's, for
+		// every call. A call given up as it's sent (its load replaced by
+		// another) stops waiting below; a write that doesn't end is to an
+		// engine that's stopped reading.
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cdpWriteTimeout)
+		err = c.ws.Write(wctx, websocket.MessageText, b)
+		cancel()
 	}
 	if err != nil {
 		c.mu.Lock()

@@ -103,7 +103,7 @@ Sandbox escape probes, in both rounds (a shell run in place of a compromised eng
 - **HTTPS goes through `CONNECT` tunnels**, so the egress proxy sees host and port, not the full URL; destination policy still applies at dial time.
 - **Memory stays allocated across sessions in one engine process**, which supports one disposable engine per browsing context.
 - **Kitesurf runs page scripts natively in V8** inside `workerd` isolates, so it needed the same host sandbox; `workerd`’s README states it “is not a hardened sandbox”.
-- **chromedp v0.23 changed to a generic API**; earlier spikes used v0.14.2. Phase 1 used neither: tabtopd has a small CDP client of its own (`gocdp.go`) over `github.com/coder/websocket`.
+- **chromedp v0.23 changed to a generic API**; earlier spikes used v0.14.2. Phase 1 used neither: tabtopd has a small CDP client of its own (`gocdp.go`) over `github.com/coder/websocket`. That library closes a connection whose write's context ends, and the CDP connection is the tab's for every call, so a call is written apart from its caller's context (bounded by a timeout of its own) and only the wait for its reply is given up: a load replaced by another, as its `Page.navigate` is sent, doesn't take the tab's engine with it.
 
 Not yet covered, carried into Phase 1:
 
