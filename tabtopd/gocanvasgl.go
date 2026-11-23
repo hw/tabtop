@@ -2,7 +2,7 @@ package main
 
 // The server's side of WebGL mirroring: a page's WebGL command logs
 // (gogl.js, read by goagent.js) are checked here before they're sent on to
-// be replayed in the viewer (go-frame.js): the calls, their arguments and
+// be replayed in the viewer (go-frame-gl.js): the calls, their arguments and
 // the objects they refer to, a delta against what its stream's full log
 // made, and how many WebGL canvases a document has.
 
@@ -45,7 +45,7 @@ var goCanvasGLExtensionMethods = map[string]string{
 
 // goCanvasGLExtensionCommands are an extension's own calls (not WebGL2's
 // under another name): refused unless it's turned on, in either version
-// (go-frame.js's extensionCommandMethods).
+// (go-frame-gl.js's extensionCommandMethods).
 var goCanvasGLExtensionCommands = map[string]string{
 	"enableiOES": "OES_draw_buffers_indexed", "disableiOES": "OES_draw_buffers_indexed", "blendEquationiOES": "OES_draw_buffers_indexed", "blendEquationSeparateiOES": "OES_draw_buffers_indexed",
 	"blendFunciOES": "OES_draw_buffers_indexed", "blendFuncSeparateiOES": "OES_draw_buffers_indexed", "colorMaskiOES": "OES_draw_buffers_indexed",
@@ -209,7 +209,7 @@ type goGLStream struct {
 const goGLStreamsMax = 16
 
 // goCanvasGLExtensions are the extensions the mirror replays (gogl.js's
-// supportedExtensions, go-frame.js's glExtensionList).
+// supportedExtensions, go-frame-gl.js's glExtensionList).
 var goCanvasGLExtensions = func() map[string]bool {
 	out := map[string]bool{}
 	for _, name := range strings.Fields("OES_element_index_uint OES_standard_derivatives WEBGL_depth_texture OES_texture_float OES_texture_float_linear OES_texture_half_float OES_texture_half_float_linear EXT_color_buffer_float EXT_color_buffer_half_float EXT_float_blend OES_draw_buffers_indexed WEBGL_polygon_mode EXT_texture_filter_anisotropic EXT_disjoint_timer_query EXT_disjoint_timer_query_webgl2 OES_vertex_array_object ANGLE_instanced_arrays WEBGL_draw_buffers WEBGL_multi_draw WEBGL_compressed_texture_s3tc WEBGL_compressed_texture_s3tc_srgb WEBGL_compressed_texture_etc WEBGL_compressed_texture_etc1 WEBGL_compressed_texture_pvrtc WEBGL_compressed_texture_atc WEBGL_compressed_texture_astc EXT_texture_compression_bptc EXT_texture_compression_rgtc") {
@@ -306,7 +306,7 @@ func goCanvasGLCheck(encoded string, width, height, version int, prior *goGLStre
 				return nil, false
 			}
 			// WebGL turns a string or an array into a number where it wants
-			// one: only the calls that take them may have them (go-frame.js's
+			// one: only the calls that take them may have them (go-frame-gl.js's
 			// glCheck, the same).
 			if t := bytes.TrimSpace(arg); len(t) > 0 && (t[0] == '"' && !goCanvasGLStringMethods[command.Method] || t[0] == '[' && !goCanvasGLSequenceMethod(command.Method)) {
 				return nil, false

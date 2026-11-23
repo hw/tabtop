@@ -118,10 +118,10 @@ func TestGoCanvasGLRefused(t *testing.T) {
 }
 
 // glViewerJS is the viewer's WebGL replay.
-const glViewerJS = "go-frame.js"
+const glViewerJS = "go-frame-gl.js"
 
 // TestGoCanvasGLMethodLists: the calls the page's hook records (gogl.js),
-// the server forwards and the viewer replays (go-frame.js) are the same
+// the server forwards and the viewer replays (go-frame-gl.js) are the same
 // list, kept by hand in three places. Queries answered in the engine alone
 // (gogl.js's localQueryMethods) are never recorded.
 func TestGoCanvasGLMethodLists(t *testing.T) {
@@ -168,26 +168,26 @@ func TestGoCanvasGLMethodLists(t *testing.T) {
 	}
 	compare("gogl.js", hook, "goroute.go", server)
 	compare("goroute.go", server, "gogl.js", hook)
-	compare("gogl.js", hook, "go-frame.js", viewer)
+	compare("gogl.js", hook, "go-frame-gl.js", viewer)
 	// And the extensions replayed.
 	b, _ := os.ReadFile(glViewerJS)
 	m := regexp.MustCompile(`const glExtensionList = \[([^\]]*)\]`).FindSubmatch(b)
 	if m == nil {
-		t.Fatal("go-frame.js: glExtensionList not found")
+		t.Fatal("go-frame-gl.js: glExtensionList not found")
 	}
 	listed := map[string]bool{}
 	for _, name := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(m[1], -1) {
 		listed[string(name[1])] = true
 		if !goCanvasGLExtensions[string(name[1])] {
-			t.Errorf("go-frame.js replays extension %s, goroute.go refuses it", name[1])
+			t.Errorf("go-frame-gl.js replays extension %s, goroute.go refuses it", name[1])
 		}
 	}
 	for name := range goCanvasGLExtensions {
 		if !listed[name] {
-			t.Errorf("goroute.go accepts extension %s, go-frame.js doesn't replay it", name)
+			t.Errorf("goroute.go accepts extension %s, go-frame-gl.js doesn't replay it", name)
 		}
 	}
-	compare("go-frame.js", viewer, "gogl.js", hook)
+	compare("go-frame-gl.js", viewer, "gogl.js", hook)
 }
 
 // TestGoCanvasGLCanvasesBounded: a document's WebGL canvases are bounded,
@@ -221,7 +221,7 @@ func TestGoCanvasGLCanvasesBounded(t *testing.T) {
 
 // TestGoCanvasGLExtensionCommands: an extension's own call is refused
 // unless its extension was turned on, in WebGL1 and WebGL2 alike, as the
-// viewer refuses it (go-frame.js's extensionCommandMethods).
+// viewer refuses it (go-frame-gl.js's extensionCommandMethods).
 func TestGoCanvasGLExtensionCommands(t *testing.T) {
 	for _, version := range []int{1, 2} {
 		for _, c := range []struct {
