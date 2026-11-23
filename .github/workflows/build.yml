@@ -5,6 +5,11 @@
 # against Xvnc from the first (test/lite-check.sh), to
 # ghcr.io/<owner>/<repo>-lite, whose remote browser (/go) is checked too
 # (test/go-check.sh). Pull requests are built and checked but not pushed.
+#
+# The tests and the images' builds start together; the checks, each in a
+# job of its own, start once the images are built (in the GHA cache, which
+# each check's build loads from), and run side by side; the push waits for
+# them all.
 name: Build
 
 on:
@@ -54,12 +59,49 @@ jobs:
       - run: mise run test
       - run: mise run test-js
 
-  image:
-    needs: test
+  # Each image built once, into its cache, for the checks and the push
+  # to load from.
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    strategy:
+      matrix:
+        include:
+          # Built as the checks and the push build them, for the same
+          # cache keys.
+          - image: tabtop
+          - image: tabtop-lite
+            build-args: DESKTOP=none
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: ${{ matrix.build-args }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # browser-check.sh in three parts, each about as long (its journey, and
+  # the previews in two), and the groups that need a container of their
+  # own after the shortest. The journey's part checks the lite image
+  # against the full one's Xvnc too.
+  browser:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: journey
+            groups: journey
+            lite: true
+          - part: images
+            groups: images,models services
+          - part: previews
+            groups: zip,media,binary,text,html,markdown,pdf,epub,tables,sqlite
+            # Its media checks make MP3/MKV/MP4 fixtures with FFmpeg.
+            ffmpeg: true
+    name: browser (${{ matrix.part }})
     env:
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
@@ -68,19 +110,43 @@ jobs:
       # Chrome.
       - uses: jdx/mise-action@v5
       - uses: docker/setup-buildx-action@v4
-      # Built into the local Docker first, to check before pushing; the
-      # pushes below reuse the caches, one for each image.
       - uses: docker/build-push-action@v7
         with:
           context: .
           load: true
           tags: tabtop:check
           cache-from: type=gha,scope=tabtop
-          cache-to: type=gha,mode=max,scope=tabtop
-      # Media preview checks generate MP3/MKV/MP4 fixtures with ffmpeg.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-      - run: test/browser-check.sh tabtop:check
-      - run: test/browser-check.sh tabtop:check --group services
+      - if: matrix.ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: for g in ${{ matrix.groups }}; do test/browser-check.sh tabtop:check --group "$g"; done
+      - if: matrix.lite
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          build-args: DESKTOP=none
+          tags: tabtop-lite:check
+          cache-from: type=gha,scope=tabtop-lite
+      - if: matrix.lite
+        run: test/lite-check.sh tabtop-lite:check tabtop:check
+
+  # The remote browser (/go), as it ships in the lite image: its Moli,
+  # sandboxed by bubblewrap, end to end in headless Chrome; then with files
+  # off, and unsandboxed. A pull request checks only the first.
+  go:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ${{ fromJSON(github.event_name == 'pull_request' && '["sandboxed"]' || '["sandboxed", "no-fs", "unsandboxed"]') }}
+    name: go (${{ matrix.mode }})
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -88,18 +154,27 @@ jobs:
           build-args: DESKTOP=none
           tags: tabtop-lite:check
           cache-from: type=gha,scope=tabtop-lite
-          cache-to: type=gha,mode=max,scope=tabtop-lite
-      - run: test/lite-check.sh tabtop-lite:check tabtop:check
-      # The remote browser (/go), as it ships in the image: its Moli,
-      # sandboxed by bubblewrap, end to end in headless Chrome. Ubuntu's
-      # runners only let AppArmor-profiled programs make user namespaces,
-      # containers' too.
+      # Ubuntu's runners only let AppArmor-profiled programs make user
+      # namespaces, containers' too.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: GO_IMAGE=tabtop-lite:check test/go-check.sh
-      - run: GO_IMAGE=tabtop-lite:check GO_NO_FS=1 test/go-check.sh
-      - run: GO_IMAGE=tabtop-lite:check GO_UNSANDBOXED=1 test/go-check.sh
+      - run: |
+          case "${{ matrix.mode }}" in
+              no-fs) export GO_NO_FS=1 ;;
+              unsandboxed) export GO_UNSANDBOXED=1 ;;
+          esac
+          GO_IMAGE=tabtop-lite:check test/go-check.sh
+
+  push:
+    needs: [test, browser, go]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -131,7 +206,7 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=tabtop
@@ -139,7 +214,7 @@ jobs:
         with:
           context: .
           build-args: DESKTOP=none
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta-lite.outputs.tags }}
           labels: ${{ steps.meta-lite.outputs.labels }}
           cache-from: type=gha,scope=tabtop-lite

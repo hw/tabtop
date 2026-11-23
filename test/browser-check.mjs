@@ -15,7 +15,10 @@
 // browser-check.sh starts the container and Chrome and runs it; it exits
 // non-zero, saying which step failed, if anything doesn't work.
 //
-// Usage: node browser-check.mjs <devtools port> <site url> <download dir> <work dir> <container>
+// Usage: node browser-check.mjs <devtools port> <site url> <download dir> <work dir> <container> [group]
+// The group is all (the default), journey (all but the previews, which
+// groups of their own check), or one or more of the groups below, with
+// commas between them.
 // The site's TOTP secret must be the Base32 of "12345678901234567890", and
 // ~/Downloads must hold hello.txt with "hello from the desktop\n", and
 // media/tone.wav, a second of sound. The work
@@ -113,7 +116,16 @@ const groups = {
     epub: [checkEPUB, checkEPUBPictureBudget], tables: [checkCells, checkStructured], sqlite: [checkSQLite], images: [checkImages, checkImageDiff], models: [checkModels],
     previews: [checkStylesheetConditions, checkSavedHTML, checkStylesAndMedia, checkExternalResources, checkBinary, checkZIP, checkAudio, checkVideo, checkMKV, checkText, checkHTML, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkTextDiff, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages, checkImageDiff, checkModels],
 };
-if (group !== "all" && !groups[group]) throw new Error(`Unknown group ${group}; choose all, ${Object.keys(groups).join(", ")}`);
+// The journey's previews, in its order: "all" has them, "journey" leaves
+// them out (to run as groups of their own, alongside).
+const previewChecks = [checkZIP, checkAudio, checkVideo, checkMKV, checkBinary, checkText, checkStylesheetConditions, checkSavedHTML, checkHTML, checkExternalResources, checkStylesAndMedia, checkMarkdownRender, checkMarkdownLinks, checkTextEdit, checkPDF, checkPDFImages, checkEPUB, checkEPUBPictureBudget, checkCells, checkStructured, checkSQLite, checkImages, checkModels];
+// A comma-separated list of groups runs each one's checks, once each,
+// after the one login.
+const journey = group === "all" || group === "journey";
+const listedChecks = journey ? [] : [...new Set(group.split(",").flatMap((g) => {
+    if (!groups[g]) throw new Error(`Unknown group ${g}; choose all, journey, ${Object.keys(groups).join(", ")}`);
+    return groups[g];
+}))];
 
 try {
     await cdp("Runtime.enable");
@@ -124,7 +136,7 @@ try {
     await cdp("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
     await cdp("Page.addScriptToEvaluateOnNewDocument", { source: socketHook });
 
-    if (group !== "all") {
+    if (!journey) {
         await step("login for " + group, async () => {
             await open(group === "services" ? "tty/" : "fs/#/", `!!document.querySelector("#tabtop_login input")`, "the login form");
             const code = await totp();
@@ -132,7 +144,7 @@ try {
             await waitFor(group === "services" ? `!document.querySelector("#tabtop_login") && !!document.querySelector("#terminal canvas")`
                 : `!document.querySelector("#tabtop_login") && ${listed}.includes("hello.txt")`, "the logged-in page");
         });
-        for (const check of groups[group]) await check(checks);
+        for (const check of listedChecks) await check(checks);
     } else {
     await step("login and desktop", async () => {
         await open("vnc.html?autoconnect=1", `!!document.querySelector("#tabtop_login input")`, "the login form");
@@ -314,41 +326,7 @@ try {
         await open("fs/#/", `document.title === "Downloads /" && !!document.querySelector("table")`, "the listing");
     });
 
-    await checkZIP(checks);
-
-    await checkAudio(checks);
-
-    await checkVideo(checks);
-
-    await checkMKV(checks);
-
-    await checkBinary(checks);
-    await checkText(checks);
-
-    await checkStylesheetConditions(checks);
-    await checkSavedHTML(checks);
-    await checkHTML(checks);
-    await checkExternalResources(checks);
-    await checkStylesAndMedia(checks);
-
-    await checkMarkdownRender(checks);
-
-    await checkMarkdownLinks(checks);
-
-    await checkTextEdit(checks);
-
-    await checkPDF(checks);
-    await checkPDFImages(checks);
-
-    await checkEPUB(checks);
-    await checkEPUBPictureBudget(checks);
-
-    await checkCells(checks);
-
-    await checkStructured(checks);
-    await checkSQLite(checks);
-    await checkImages(checks);
-    await checkModels(checks);
+    if (group === "all") for (const check of previewChecks) await check(checks);
 
     await step("files: upload", async () => {
         await setFiles(`p.upload input[type=file]:not([webkitdirectory])`, [`${work}/up.bin`]);

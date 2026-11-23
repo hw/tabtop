@@ -6,7 +6,14 @@
 # later, Python 3, FFmpeg, and Chrome or Chromium (CHROME names it if it isn't
 # found).
 #
-# Usage: test/browser-check.sh <image> [--group all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|models|previews]
+# Usage: test/browser-check.sh <image> [--group all|journey|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|models|previews]
+#
+# journey is all but the previews; with images,models and
+# zip,media,binary,text,html,markdown,pdf,epub,tables,sqlite (groups with
+# commas between them run in one container, after one login), it's all of
+# all, in three parts that can run side by side (as CI runs them).
+# services, roots, diff and image-diff each run in a container set up for
+# them, so on their own.
 set -euo pipefail
 
 image=${1:?usage: $0 <image> [--group group]}
@@ -19,8 +26,17 @@ while (($#)); do
     esac
 done
 case "$group" in
-    all|services|roots|features|diff|image-diff|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|models|previews) ;;
-    *) echo "Unknown browser test group: $group" >&2; exit 1 ;;
+    all|journey|services|roots|diff|image-diff) ;;
+    *)
+        IFS=, read -ra listed <<<"$group"
+        ((${#listed[@]})) || { echo "No browser test group given" >&2; exit 1; }
+        for g in "${listed[@]}"; do
+            case "$g" in
+                features|binary|zip|media|audio|video|mkv|text|html|markdown|editing|pdf|pdf-images|pdf-assembly|epub|tables|sqlite|images|models|previews) ;;
+                all|journey|services|roots|diff|image-diff) echo "The $g group runs on its own, not in a list" >&2; exit 1 ;;
+                *) echo "Unknown browser test group: $g" >&2; exit 1 ;;
+            esac
+        done ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
 chrome=${CHROME:-$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)}
@@ -104,7 +120,7 @@ timeout 540 node "$here/browser-check.mjs" "$port" "$site" "$work/downloads" "$w
 
 # Feature checks own their fixtures; the remaining file assertions belong to
 # the complete user journey only.
-[[ "$group" == all ]] || exit 0
+[[ "$group" == all || "$group" == journey ]] || exit 0
 
 # What the pages did, as the container sees it.
 holds() {

@@ -255,11 +255,15 @@ after `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`).
 `.github/workflows/build.yml` runs on pushes to `main`, on `v*` tags and on
 pull requests. It checks formatting, runs `mise run vet` and `mise run test`
 (with bubblewrap and the image's Moli, so the remote browser's sandbox and
-engine tests run), then builds the image and runs `test/browser-check.sh`
-on it, and builds the one without a desktop (`DESKTOP=none`) and runs
-`test/lite-check.sh` and `test/go-check.sh` (files on and off, and
-unsandboxed) on it. If all of that passes, it pushes them to `ghcr.io/<owner>/<repo>`
-and `ghcr.io/<owner>/<repo>-lite`, each with these tags:
+engine tests run). Alongside, it builds the image and the one without a
+desktop (`DESKTOP=none`) into the GHA cache; then, side by side, each check
+in a job of its own loading them from there: `test/browser-check.sh` in
+three parts (`--group journey`, `--group images,models` then `--group
+services`, and the rest of the previews), `test/lite-check.sh`, and
+`test/go-check.sh` on the one without a desktop, sandboxed, with files off,
+and unsandboxed (a pull request: sandboxed only). If all of that passes, it
+pushes them to `ghcr.io/<owner>/<repo>` and `ghcr.io/<owner>/<repo>-lite`,
+each with these tags:
 
 | Event | Tags |
 |---|---|
@@ -324,7 +328,12 @@ mise exec -- bash test/browser-check.sh tabtop:review
 ```
 
 Other groups are `audio`, `video`, `media`, `text`, `html`, `markdown`, `pdf`,
-`epub` and `tables`. Each creates its own required fixtures.
+`epub` and `tables`. Each creates its own required fixtures. Groups with
+commas between them (`--group pdf,epub`) run in one container, after one
+login. `--group journey` is the complete journey without its previews; with
+`images,models` and `zip,media,binary,text,html,markdown,pdf,epub,tables,sqlite`
+it covers the whole of it, in three parts that can run at once, as CI runs
+them.
 
 ## Binary structure previews
 
