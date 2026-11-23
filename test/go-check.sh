@@ -57,6 +57,14 @@ cleanup() {
 trap cleanup EXIT
 
 free_port() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+# up URL WHAT SECONDS waits for URL to answer, or says WHAT didn't (and
+# fails): not going on to fail later, at a connection refused.
+up() {
+    local until=$((SECONDS + $3))
+    while ((SECONDS < until)); do curl -fs -m 2 "$1" >/dev/null && return; sleep 0.1; done
+    echo "FAIL $2 didn't answer in $3 s"
+    return 1
+}
 
 if [[ -z "$go_image" ]]; then
     echo "building tabtopd"
@@ -104,7 +112,7 @@ if [[ -n "$go_image" ]]; then
     docker run -d --name "$box" -p "127.0.0.1:$port:6080" "${security[@]}" \
         -e VNC_USER=tester -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ -e WEB_VNC=0 "${files[@]}" \
         -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e TABTOP_GO_DEBUG=1 -e WEB_GO_ENGINE="${GO_ENGINE:-moli}" "$go_image" >/dev/null
-    for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port${base_path}go/" >/dev/null && break; sleep 0.2; done
+    up "http://127.0.0.1:$port${base_path}go/" "the container's /go" 60
     docker logs "$box" 2>&1 | grep -m1 "remote browser" || true
     watched_pid=$(docker inspect -f '{{.State.Pid}}' "$box")  # the container's, for the memory sampling
 else
@@ -115,7 +123,7 @@ else
         -disable-vnc "${files[@]}" -fetch=true -fetch-private=true \
         -go -go-engine "$moli" -go-private -base-path "$base_path" > "$work/tabtopd.log" 2>&1 &
     tabtopd_pid=$! watched_pid=$!
-    for _ in $(seq 100); do curl -fs "http://127.0.0.1:$port${base_path}go/" >/dev/null && break; sleep 0.1; done
+    up "http://127.0.0.1:$port${base_path}go/" "tabtopd's /go" 30
     grep -m1 "remote browser" "$work/tabtopd.log" || true
 fi
 
@@ -123,7 +131,7 @@ cport=$(free_port)
 "$chrome" --headless=new --remote-debugging-port="$cport" --user-data-dir="$work/chrome" --no-first-run \
     --no-default-browser-check about:blank > "$work/chrome.log" 2>&1 &
 chrome_pid=$!
-for _ in $(seq 100); do curl -fs "http://127.0.0.1:$cport/json/version" >/dev/null && break; sleep 0.1; done
+up "http://127.0.0.1:$cport/json/version" Chrome 30 || { echo "--- Chrome's log"; tail -n 30 "$work/chrome.log"; exit 1; }
 
 # The most memory tabtopd and the engines used, sampled through the check
 # (GO_SOAK=N makes it a long session; see go-check.mjs).
