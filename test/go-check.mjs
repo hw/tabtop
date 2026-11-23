@@ -2823,6 +2823,12 @@ async function check(base, port, site, adSite) {
             const i = (re) => labels.findIndex((l) => re.test(l));
             return { labels: labels.map((l) => l.split(" ")[0]), download: i(/^Download /), play: i(/^(Play|Pause) /) };
         })()`);
+        // With Files off there's nowhere to save it: no Download.
+        if (process.env.GO_NO_FS === "1") {
+            if (order.download >= 0 || order.play < 0) throw new Error(`with Files off, the menu's acts: ${JSON.stringify(order)}`);
+            await ev(`document.getElementById("go_menu").click()`);
+            return "no Download, Files off";
+        }
         if (order.download < 0 || order.play < 0 || order.download >= order.play) {
             throw new Error(`menu acts order (want Download left of Play/Pause): ${JSON.stringify(order)}`);
         }
