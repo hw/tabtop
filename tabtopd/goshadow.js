@@ -20,7 +20,9 @@
 // too, as the agent's world doesn't see them: each root's (or the
 // document's) rules, as text, are told in the event __tabtop_adopted from
 // its host (or the document), a moment after they're adopted or changed,
-// and all again when the agent asks ({__tabtop: "adopted"}, a message).
+// all again when the agent asks ({__tabtop: "adopted"}, a message), and
+// those changed since told when it asks so ({__tabtop: "adopted-check"}:
+// a sheet pushed onto a list, which no setter says).
 // (Told so, not as asked by an event: told within the agent's own event,
 // or from a root, Moli has its world lose the host's shadowRoot.)
 //
@@ -153,6 +155,10 @@
     // made an element's root from its HTML (a declarative one), it stays
     // null for the page, which then attaches another, which Moli refuses.)
     window.addEventListener("message", (e) => {
+        if (e.data?.__tabtop === "adopted-check") {
+            for (const root of [document, ...known]) if (told.has(root) && told.get(root) !== print(root)) later(root);
+            return;
+        }
         if (e.data?.__tabtop !== "adopted") return;
         for (const root of [document, ...known]) {
             told.delete(root);

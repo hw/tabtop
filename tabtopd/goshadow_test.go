@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ func TestGoShadowWithMoli(t *testing.T) {
 <script>
 window.sheet = new CSSStyleSheet();
 sheet.replaceSync(":host { color: rgb(1, 2, 3) }");
+window.docSheet = new CSSStyleSheet();
+docSheet.replaceSync("body { color: rgb(7, 8, 9) }");
+document.adoptedStyleSheets = [docSheet];
 customElements.define("x-card", class extends HTMLElement {
 	constructor() {
 		super();
@@ -172,8 +176,8 @@ window.pageSees = [document.getElementById("closedhost").shadowRoot === null, c.
 	if card == nil || card.Shadow == nil || card.Shadow.Type != 11 {
 		t.Fatalf("x-card's shadow root not sent: %+v", card)
 	}
-	if k := card.Shadow.Kids; len(k) < 3 || k[0].Name != "style" || !strings.Contains(text(k[0]), "rgb(1, 2, 3)") {
-		t.Errorf("its adopted stylesheet not first, as a <style>: %+v", k)
+	if ss := card.Shadow.SS; ss == 0 || !strings.Contains(snap.Doc.CSS[strconv.Itoa(ss)], "rgb(1, 2, 3)") {
+		t.Errorf("its adopted stylesheet not said (ss %d, css %v)", ss, snap.Doc.CSS)
 	}
 	if n := byID(card.Shadow, "inner"); n == nil || text(n) != "inner" {
 		t.Errorf("its content: %+v", n)
@@ -184,6 +188,24 @@ window.pageSees = [document.getElementById("closedhost").shadowRoot === null, c.
 	if byID(card, "slotted") == nil || byID(card.Shadow, "slotted") != nil {
 		t.Error("its slotted child not its own (light) child")
 	}
+	// The document's adopted stylesheets: a <style> at its head's end.
+	var head *goNode
+	var findHead func(n *goNode)
+	findHead = func(n *goNode) {
+		if n == nil || head != nil {
+			return
+		}
+		if n.Name == "head" {
+			head = n
+		}
+		for _, k := range n.Kids {
+			findHead(k)
+		}
+	}
+	findHead(snap.Doc)
+	if head == nil || len(head.Kids) == 0 || head.Kids[len(head.Kids)-1].Name != "style" || !strings.Contains(text(head.Kids[len(head.Kids)-1]), "rgb(7, 8, 9)") {
+		t.Errorf("the document's adopted stylesheet not at its head's end: %+v", head)
+	}
 	if closed := byID(snap.Doc, "closedhost"); closed == nil || closed.Shadow == nil || byID(closed.Shadow, "hidden") == nil {
 		t.Errorf("the closed root not read: %+v", closed)
 	}
@@ -193,22 +215,29 @@ window.pageSees = [document.getElementById("closedhost").shadowRoot === null, c.
 
 	// Changes: in a shadow root, a root attached since, adopted rules.
 	type op struct {
-		O string
-		I int
-		V *string
-		C []*goNode
-		S *goNode
+		O  string
+		I  int
+		V  *string
+		C  []*goNode
+		S  *goNode
+		SS int
 	}
+	var batchCSS map[string]string // the last batch's adopted texts said
 	changes := func() []op {
 		t.Helper()
+		batchCSS = nil
 		raw := in(agent, "__tabtop.changes()")
 		if raw == "" {
 			return nil
 		}
-		var b struct{ Ops []op }
+		var b struct {
+			Ops []op
+			CSS map[string]string
+		}
 		if err := json.Unmarshal([]byte(raw), &b); err != nil {
 			t.Fatal(err)
 		}
+		batchCSS = b.CSS
 		return b.Ops
 	}
 	changes()
@@ -246,12 +275,29 @@ window.pageSees = [document.getElementById("closedhost").shadowRoot === null, c.
 		if o.O == "s" && o.S != nil && byID(o.S, "later") != nil {
 			late = true
 		}
-		if o.O == "t" && o.V != nil && strings.Contains(*o.V, "rgb(4, 5, 6)") {
+		if o.O == "ss" && strings.Contains(batchCSS[strconv.Itoa(o.SS)], "rgb(4, 5, 6)") {
 			sheet = true
 		}
 	}
 	if !late || !sheet {
 		t.Errorf("a root attached since (%v), adopted rules changed (%v): %+v", late, sheet, got)
+	}
+	// A sheet pushed onto a root's adopted list (no setter called).
+	in(0, `window.extra = new CSSStyleSheet(); extra.replaceSync("b { color: rgb(11, 12, 13) }")`)
+	time.Sleep(100 * time.Millisecond)
+	changes()
+	in(0, `document.getElementById("card").shadowRoot.adoptedStyleSheets.push(extra)`)
+	var pushed bool
+	for i := 0; i < 40 && !pushed; i++ {
+		time.Sleep(50 * time.Millisecond)
+		for _, o := range changes() {
+			if o.O == "ss" && strings.Contains(batchCSS[strconv.Itoa(o.SS)], "rgb(11, 12, 13)") {
+				pushed = true
+			}
+		}
+	}
+	if !pushed {
+		t.Error("a sheet pushed onto a root's adopted list not said")
 	}
 	// The root attached since, changed itself: its own children said.
 	in(0, `document.getElementById("late").shadowRoot.append(Object.assign(document.createElement("q"), { id: "later2" }))`)

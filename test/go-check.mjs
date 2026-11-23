@@ -325,7 +325,7 @@ customElements.define("x-card", class extends HTMLElement {
         let n = 0;
         r.getElementById("btn").addEventListener("click", () => { document.getElementById("clicks").textContent = "clicks " + (++n); });
         const ed = r.getElementById("ed");
-        ed.addEventListener("input", () => { document.getElementById("edgot").textContent = "engine: " + ed.textContent; });
+        ed.addEventListener("input", () => { document.getElementById("edgot").textContent = "engine: " + [...ed.childNodes].map((n) => n.textContent).join("|"); });
     }
 });
 customElements.define("x-closed", class extends HTMLElement {
@@ -2022,6 +2022,21 @@ async function check(base, port, site, adSite) {
         await frame(`(() => { ${deep} const t = deep(document, "#ed").firstChild; getSelection().setBaseAndExtent(t, 7, t, 7); })()`);
         await browser.type("!");
         await frameWait(`document.getElementById("edgot").textContent === "engine: edit me!"`, "typed in rich text in the shadow root");
+        // Mid-text there: typed, deleted, a new paragraph, the caret moved.
+        const edEngine = (text) => frameWait(`document.getElementById("edgot").textContent === ${JSON.stringify("engine: " + text)}`, `the rich text in the shadow root to hold ${JSON.stringify(text)}`);
+        await clickDeep("#ed", 0.3);
+        await frame(`(() => { ${deep} const t = deep(document, "#ed").firstChild; getSelection().setBaseAndExtent(t, 4, t, 4); })()`);
+        await browser.type("abc");
+        await edEngine("editabc me!");
+        await browser.press("Backspace");
+        await edEngine("editab me!");
+        await browser.press("Enter");
+        await edEngine("editab| me!");
+        // The engine's caret, come back here, at the new line's start (past
+        // its space, not shown, as a browser has it): one along, after "m".
+        await browser.press("ArrowRight");
+        await browser.type("X");
+        await edEngine("editab| mXe!");
         // Frames in one: this site's, and another's.
         await frameWait(`(() => { ${deep} return deep(document, "#infr")?.textContent === "in a frame in a shadow root"; })()`, "a frame's page in the shadow root", 30000);
         if (adSite) await frameWait(`(() => { ${deep} const all = []; const walk = (root) => { for (const el of root.querySelectorAll("*")) { if (el.id === "infr") all.push(el); if (el.shadowRoot) walk(el.shadowRoot); } }; walk(document); return all.length === 2; })()`, "another site's frame's page in the shadow root too", 30000);

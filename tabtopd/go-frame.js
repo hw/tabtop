@@ -531,6 +531,7 @@
             waits: [],
             report: { elements: 0, left: {}, resources: 0, failed: 0 },
             io: new Map(),         // the page's observer's number -> {observer, ids}
+            css: new Map(),        // adopted stylesheets' number -> a promise of their sheet (adoptedSheets)
         };
     }
     const alive = (d) => () => d.gen === current;
@@ -653,6 +654,10 @@
         const content = document.createElement("div");
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
         frameRoots.get(el).child = child;  // its nodes, by the frame's own numbers (whereAt)
+        // Its adopted stylesheets: its own, read in a world of its own; else
+        // its page's, read with it (numbered as its page's are).
+        if (docOf) adoptedSheets(child, frame.css);
+        else child.css = (d.top ?? d).css;
         child.top = d.top ?? d;  // its boxes are its page's
         child.budget = d.budget;
         child.report = d.report;
@@ -1387,6 +1392,40 @@
         }
         own(d, s.i, root);
         reconcile(d, root, s.c);
+        adopt(d, root, s.ss);
+    }
+    // A shadow root's adopted stylesheets: each text the page's said, by
+    // its number, made a sheet once (processed as a stylesheet is), and that
+    // one sheet given every root that adopts it.
+    const adopting = new WeakMap();  // root -> the number it's to adopt
+    function adoptedSheets(d, css) {
+        if (!css || typeof css !== "object") return;
+        for (const [k, text] of Object.entries(css)) {
+            const n = Number(k);
+            if (!Number.isSafeInteger(n) || n < 1 || typeof text !== "string" || d.css.has(n)) continue;
+            const definitions = [];
+            const sheet = stylesheet(text, d.base, d.budget, alive(d), definitions).then((processed) => {
+                if (!alive(d)()) return null;
+                useFonts(d.gen, definitions);
+                const made = new CSSStyleSheet();
+                made.replaceSync(schemed(processed));
+                return made;
+            }).catch(() => null);
+            d.css.set(n, sheet);
+            d.waits.push(sheet);
+            later(d, sheet);
+        }
+    }
+    function adopt(d, root, n) {
+        n = Number.isSafeInteger(n) && n > 0 ? n : 0;
+        adopting.set(root, n);
+        if (!n) {
+            root.adoptedStyleSheets = [];
+            return;
+        }
+        d.css.get(n)?.then((sheet) => {
+            if (adopting.get(root) === n) root.adoptedStyleSheets = sheet ? [sheet] : [];
+        });
     }
     // up is a node's parent, out of a page's shadow root to its host too.
     const up = (n) => n.parentNode ?? (pageRoots.has(n) ? n.host : null);
@@ -1554,6 +1593,7 @@
         const d = newDoc(m);
         building = d;
         lastChange = performance.now();
+        adoptedSheets(d, m.doc?.css);
 
 
         // The document's element: its html, or one made around what's there.
@@ -1881,6 +1921,7 @@
     function applyTo(d, m) {
         if (!d || m.gen !== d.gen) return;
         if (m.hide) hideMore(d.hide, m.hide);
+        adoptedSheets(d, m.css);
         if (d === doc) {
             sizedSoon();  // what it changes may change watched sizes
             // and whether a player shows (a page hides one as it moves it to
@@ -1931,6 +1972,9 @@
                 case "s":
                     // A shadow root attached since its host was shown.
                     if (target.nodeType === 1) shadow(d, target, op.s);
+                    break;
+                case "ss":
+                    if (target instanceof ShadowRoot && pageRoots.has(target)) adopt(d, target, op.ss);
                     break;
                 case "c":
                     if (frameRoots.has(target)) {
@@ -2732,7 +2776,11 @@
         const a = d.nodes.get(sel[0]), f = d.nodes.get(sel[2]);
         if (!a || !f || !host.contains(a) || !host.contains(f)) return;
         const end = (n, at) => Math.max(0, Math.min(Number(at) || 0, n.nodeType === 3 ? n.data.length : n.childNodes.length));
-        try { getSelection().setBaseAndExtent(a, end(a, sel[1]), f, end(f, sel[3])); } catch { /* left */ }
+        // (In a page's shadow root, its own selection: the document's
+        // doesn't place a caret in it.)
+        const root = a.getRootNode?.();
+        const s = root instanceof ShadowRoot && pageRoots.has(root) && root.getSelection ? root.getSelection() : getSelection();
+        try { s.setBaseAndExtent(a, end(a, sel[1]), f, end(f, sel[3])); } catch { /* left */ }
     }
 
     document.addEventListener("keydown", (e) => keyEvent(e, "down"), true);

@@ -1714,6 +1714,8 @@ type goChanges struct {
 	// Where rich text's caret is (goagent.js's caret), with what an edit
 	// changed: [anchor, offset, focus, offset].
 	Sel []int `json:"sel"`
+	// Adopted stylesheets' texts first said, by number (goagent.js's cssRef).
+	CSS map[string]string `json:"css"`
 }
 
 // goScroll is where the page scrolled one of its elements itself, for the
@@ -1830,6 +1832,9 @@ func (b *goBrowser) readChanges() {
 				if sel := goSel(c.Sel); sel != nil && len(ops) > 0 {
 					changes["sel"] = sel
 				}
+				if css := goCleanCSS(c.CSS); len(css) > 0 {
+					changes["css"] = css
+				}
 				// What its new classes and ids bring to hide, with them.
 				if hide := b.moreHiding(seen.nodes, seen.attrs); len(hide) > 0 {
 					changes["hide"] = hide
@@ -1907,7 +1912,8 @@ type goChangeOp struct {
 	GL   *goGLLog  `json:"gl"`   // o "g"
 	Path []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
 	C    []*goNode `json:"c"`
-	S    *goNode   `json:"s"` // o "s": a shadow root attached to element I
+	S    *goNode   `json:"s"`  // o "s": a shadow root attached to element I
+	SS   int       `json:"ss"` // o "ss": the adopted stylesheets of shadow root I, by number
 }
 
 // goCleanOps takes event handler attributes and what's never shown out of a
@@ -1953,6 +1959,10 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 				if seen != nil && seen.gl != nil {
 					goGLStreamsOf(c, seen.gl)
 				}
+			}
+		case "ss":
+			if op.SS >= 0 {
+				out = append(out, map[string]any{"o": "ss", "i": op.I, "ss": op.SS})
 			}
 		case "a":
 			if strings.HasPrefix(strings.ToLower(op.N), "on") {

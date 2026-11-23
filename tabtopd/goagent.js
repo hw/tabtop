@@ -38,13 +38,16 @@
 // or 0) and {op: "-", o, i}; a snapshot, all of them.
 //
 // An element's shadow root (an open one; a closed one too, made open by
-// goshadow.js, the page told it's closed) comes with it, s: {i, t: 11, c}:
-// its nodes numbered as the document's, its adopted stylesheets as a
-// <style> of its own first ({t: 1, n: "style", a: ["data-go-adopted", ""]},
-// its text a number of its own, said again as they change); one attached
-// once its host's been sent, as {o: "s", i: host, s}. The document's adopted
-// stylesheets are such a <style> at its head's end. Changes in a shadow root
-// are said as the document's are ({o: "c", i: root, c} for its children).
+// goshadow.js, the page told it's closed) comes with it, s: {i, t: 11, c,
+// ss}: its nodes numbered as the document's, its adopted stylesheets ss, a
+// number for their text (each text said once, in the snapshot's document
+// node's css, or a batch's, {number: text}: many roots adopt the same; ss
+// said again, {o: "ss", i: root, ss}, as they change); one attached once
+// its host's been sent, as {o: "s", i: host, s}. The document's own adopted
+// stylesheets are a <style> of their own at its head's end ({t: 1, n:
+// "style", a: ["data-go-adopted", ""]}, its text said again as they
+// change). Changes in a shadow root are said as the document's are ({o:
+// "c", i: root, c} for its children).
 //
 // With rich text
 // (contenteditable) focused, a batch says where its caret is, sel: [anchor,
@@ -248,13 +251,27 @@
             const holds = (n) => editable(n.nodeType === 1 ? n : n.parentElement);
             if (!a || !f || !holds(a) || !holds(f)) return;
             const end = (n, at) => Math.max(0, Math.min(Number(at) || 0, n.nodeType === 3 ? n.data.length : n.childNodes.length));
-            try { a.ownerDocument.getSelection().setBaseAndExtent(a, end(a, sel[1]), f, end(f, sel[3])); } catch { /* left as it was */ }
+            try { selectionOf(a).setBaseAndExtent(a, end(a, sel[1]), f, end(f, sel[3])); } catch { /* left as it was */ }
+        }
+        // selectionOf is the selection a node's in: its shadow root's, if
+        // it's in one (the document's says its host), else its document's.
+        function selectionOf(n) {
+            const root = n.getRootNode?.();
+            return root?.nodeType === 11 && typeof root.getSelection === "function" ? root.getSelection() : n.ownerDocument.getSelection();
+        }
+        // deepActive is what has the focus, in a shadow root too (the
+        // document's activeElement is its host).
+        function deepActive() {
+            let a = document.activeElement;
+            for (let root = a && shadowOf(a); root?.activeElement; root = shadowOf(a)) a = root.activeElement;
+            return a;
         }
         // caret is where the selection is, as [anchor, offset, focus,
         // offset] by number, in rich text focused; or null.
         function caret() {
-            if (!editable(document.activeElement)) return null;
-            const s = getSelection();
+            const active = deepActive();
+            if (!editable(active)) return null;
+            const s = selectionOf(active);
             if (!s?.anchorNode || !s.focusNode || !known(s.anchorNode) || !known(s.focusNode)) return null;
             return [ids.get(s.anchorNode), s.anchorOffset, ids.get(s.focusNode), s.focusOffset];
         }
@@ -317,7 +334,7 @@
         // has its own selection.)
         function editDefault(host, type, data) {
             if (type === "insertParagraph" && plainText(host)) type = "insertLineBreak";
-            const doc = host.ownerDocument, s = doc.getSelection();
+            const doc = host.ownerDocument, s = selectionOf(host);
             const r = rangeOf(s);
             if (!r || !host.contains(r.startContainer)) return false;
             if (type === "insertText") {
@@ -439,7 +456,8 @@
         window.addEventListener("keydown", (e) => { if (e.isTrusted) lastKey = e; }, true);
         window.addEventListener("beforeinput", (e) => {
             if (!e.isTrusted || e.defaultPrevented || !editDefaults.has(e.inputType)) return;
-            const host = e.target?.nodeType === 1 ? e.target : null;
+            const target = at(e);  // (in a shadow root too: here, e.target is its host)
+            const host = target?.nodeType === 1 ? target : null;
             if (!editable(host)) return;
             e.preventDefault();
             let type = e.inputType;
@@ -959,11 +977,32 @@
             if (doc === document) observer.observe(root, watching);
             else for (const f of frames.values()) if (f.child === doc) f.observer?.observe(root, watching);
             roots.add(root);
-            const c = [];
-            const sheets = adoptedNode(root);
-            if (sheets) c.push(sheets);
-            c.push(...kids(root, depth));
-            return { i: id(root), t: 11, c };
+            const ss = cssRef(adoptedText(root));
+            rootCss.set(hostOf(root), ss);
+            const out = { i: id(root), t: 11, c: kids(root, depth) };
+            if (ss) out.ss = ss;
+            return out;
+        }
+        // A shadow root's adopted stylesheets, by a number for their text,
+        // each text said once (cssOut, with what's sent next) while the copy
+        // has it (cssSent: till the document's read again).
+        const cssIDs = new Map();  // text -> its number
+        let cssSent = new Set(), cssOut = {};
+        const rootCss = new WeakMap();  // a root's host -> the number its root was said to adopt
+        function cssRef(text) {
+            if (!text) return 0;
+            let n = cssIDs.get(text);
+            if (!n) cssIDs.set(text, n = cssIDs.size + 1);
+            if (!cssSent.has(n)) {
+                cssSent.add(n);
+                cssOut[n] = text;
+            }
+            return n;
+        }
+        function cssTaken() {
+            const out = cssOut;
+            cssOut = {};
+            return Object.keys(out).length ? out : null;
         }
         // Adopted stylesheets (constructed ones: Lit's, a design system's),
         // which no node holds: as a <style> of their own, under numbers of
@@ -986,6 +1025,7 @@
             if (toldNow.size < 4096) toldNow.add(at);
         }, true);
         const askAdopted = () => window.postMessage({ __tabtop: "adopted" }, "*");
+        let adoptedChecked = 0;
         askAdopted();
         function sheetText(sheet) {
             let rules;
@@ -1023,15 +1063,11 @@
             a.text = text;
             return { i: id(a.el), t: 1, n: "style", a: ["data-go-adopted", ""], c: [{ i: id(a.txt), t: 3, v: text }] };
         }
-        // The children a parent's said to have, with its adopted
-        // stylesheets' <style> where it goes (a shadow root's first, the
-        // head's last).
+        // The children a head's said to have, with its document's adopted
+        // stylesheets' <style> at their end.
         function withSheets(p, c) {
-            const a = adopted.get(p.nodeType === 11 ? hostOf(p) : p === p.ownerDocument?.head ? p.ownerDocument : null);
-            if (a) {
-                if (p.nodeType === 11) c.unshift({ i: ids.get(a.el), r: 1 });
-                else c.push({ i: ids.get(a.el), r: 1 });
-            }
+            const a = p === p.ownerDocument?.head ? adopted.get(p.ownerDocument) : null;
+            if (a) c.push({ i: ids.get(a.el), r: 1 });
             return c;
         }
         // A <style> with rules but no text: its rules as text, under a number
@@ -1113,10 +1149,14 @@
             observer.takeRecords();
             roots.clear();
             shadowsNew.clear();
+            cssSent = new Set();
+            cssOut = {};
             askAdopted();  // (told again: what's read now has them, each changes after)
             parents = new Set(); attrs = new Map(); texts = new Set();
             seq = 0;
             const doc = ser(document, 0);
+            const css = cssTaken();
+            if (css) doc.css = css;
             observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
             lastURL = here();
             // What's playing already: said with the first batch; and what the
@@ -1240,8 +1280,14 @@
             // <style>'s text again, or, first had, the root's children with
             // it. The page's world says which changed, asked; else each is
             // read here.
-            for (const root of roots) if (!hostOf(root).isConnected) { roots.delete(root); adopted.delete(hostOf(root)); }
+            for (const root of roots) if (!hostOf(root).isConnected) roots.delete(root);
             const changedSheets = new Map();  // root -> text
+            // (A sheet pushed onto a list, which nothing says: looked for
+            // once a second, by the page's world, told as it's found.)
+            if (helped && performance.now() - adoptedChecked > 1000) {
+                adoptedChecked = performance.now();
+                window.postMessage({ __tabtop: "adopted-check" }, "*");
+            }
             if (helped) {
                 for (const key of toldNow) {
                     const root = key === document ? document : shadowOf(key);
@@ -1252,7 +1298,17 @@
                 for (const root of [document, ...roots]) changedSheets.set(root, adoptedText(root));
             }
             for (const [root, text] of changedSheets) {
-                if (root !== document && hostOf(root).ownerDocument !== document) continue;  // (an embedded page's: read again whole)
+                if (root !== document) {
+                    // A shadow root's: the number it adopts said, if it's changed.
+                    const host = hostOf(root);
+                    if (host.ownerDocument !== document || !roots.has(root) || !old(root)) continue;  // (an embedded page's: read again whole)
+                    const ss = cssRef(text);
+                    if (ss !== (rootCss.get(host) ?? 0)) {
+                        rootCss.set(host, ss);
+                        ops.push({ o: "ss", i: ids.get(root), ss });
+                    }
+                    continue;
+                }
                 const a = adopted.get(keyOf(root));
                 if (a && known(a.txt)) {
                     if (text !== a.text) {
@@ -1278,12 +1334,12 @@
                         if (s) c.push(s);
                     }
                 }
-                // Its adopted stylesheets' <style>: as it was, or (first had) new.
-                const sheetRoot = p.nodeType === 11 ? p : p === document.head ? document : null;
-                if (sheetRoot && adopted.has(keyOf(sheetRoot))) withSheets(p, c);
-                else if (sheetRoot) {
-                    const sheets = adoptedNode(sheetRoot);
-                    if (sheets) p.nodeType === 11 ? c.unshift(sheets) : c.push(sheets);
+                // The document's adopted stylesheets' <style>, the head's: as
+                // it was, or (first had) new.
+                if (p === document.head && adopted.has(document)) withSheets(p, c);
+                else if (p === document.head) {
+                    const sheets = adoptedNode(document);
+                    if (sheets) c.push(sheets);
                 }
                 ops.push({ o: "c", i: ids.get(p), c });
             }
@@ -1398,7 +1454,8 @@
                 if (glAway.size >= 64) glAway.delete(glAway.values().next().value);
                 glAway.add(el);
             }
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}) });
+            const css = cssTaken();
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
         }
 
         function watch(el) {
@@ -1516,7 +1573,7 @@
                         const taken = dt && !el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
                         if (taken) return "ok";
                         if (html && !plainText(el)) {
-                            const s = el.ownerDocument.getSelection(), r = rangeOf(s);
+                            const s = selectionOf(el), r = rangeOf(s);
                             if (r && el.contains(r.startContainer) && el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertFromPaste", dataTransfer: dt }))) {
                                 r.deleteContents();
                                 const frag = pasted(el, html), last = frag.lastChild;

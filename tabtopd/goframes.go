@@ -295,7 +295,7 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		// (Its kids cleaned already, just now: wrapped, not cleaned again,
 		// their WebGL logs not checked again.)
 		base, _ := goURL(s.Base)
-		c.doc = &goNode{ID: s.Doc.ID, Type: 9, Base: base, Kids: s.Doc.Kids}
+		c.doc = &goNode{ID: s.Doc.ID, Type: 9, Base: base, Kids: s.Doc.Kids, CSS: s.Doc.CSS}
 		goGLStreamsOf(c.doc, make(map[int]*goGLStream)) // its WebGL canvases bounded as a page's are
 		c.due = false
 		// One that changes every time is read less often, up to every

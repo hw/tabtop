@@ -260,8 +260,12 @@ type goNode struct {
 	Attrs     []string    `json:"a,omitempty"`
 	Kids      []*goNode   `json:"c,omitempty"`
 	// Shadow is an element's shadow root (Type 11), its nodes numbered as
-	// the document's (goagent.js's serShadow).
-	Shadow *goNode `json:"s,omitempty"`
+	// the document's (goagent.js's serShadow); SS, a shadow root's adopted
+	// stylesheets, by the number of their text, which a document's CSS
+	// (Type 9, a snapshot's) or a batch's says.
+	Shadow *goNode           `json:"s,omitempty"`
+	SS     int               `json:"ss,omitempty"`
+	CSS    map[string]string `json:"css,omitempty"`
 }
 
 const (
@@ -345,6 +349,7 @@ func goClean(n *goNode) *goNode {
 		}
 		n.Attrs = attrs
 		n.Value = ""
+		n.SS, n.CSS = 0, nil
 		// Its shadow root, cleaned as the rest: only one, a fragment.
 		if n.Shadow != nil {
 			if n.Shadow.Type == 11 {
@@ -354,11 +359,19 @@ func goClean(n *goNode) *goNode {
 			}
 		}
 	case 3:
-		n.Name, n.Attrs, n.Kids, n.Shadow = "", nil, nil, nil
+		n.Name, n.Attrs, n.Kids, n.Shadow, n.SS, n.CSS = "", nil, nil, nil, 0, nil
 		n.Base = ""
 		return n
 	case 9, 11:
 		n.Name, n.Value, n.Attrs, n.Shadow = "", "", nil, nil
+		if n.Type == 9 {
+			n.CSS, n.SS = goCleanCSS(n.CSS), 0
+		} else {
+			n.CSS = nil
+			if n.SS < 0 {
+				n.SS = 0
+			}
+		}
 		// An embedded page's base, which its addresses resolve against:
 		// an http(s) one, or none.
 		if u, err := goURL(n.Base); n.Type != 9 || err != nil {
@@ -377,6 +390,25 @@ func goClean(n *goNode) *goNode {
 	}
 	n.Kids = kids
 	return n
+}
+
+// goCleanCSS is adopted stylesheets' texts as they're sent on, by number:
+// numbers only, as much text as a snapshot may hold.
+func goCleanCSS(css map[string]string) map[string]string {
+	if len(css) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	total := 0
+	for k, v := range css {
+		n, err := strconv.Atoi(k)
+		if err != nil || n < 1 || strconv.Itoa(n) != k || total+len(v) > goSnapshotLimit {
+			continue
+		}
+		total += len(v)
+		out[k] = v
+	}
+	return out
 }
 
 // goTitleOf is the title a snapshot gives, made one line.

@@ -1535,7 +1535,7 @@ function message(m) {
             if (m.gen === shown) media.streams(m.streams);
             if (m.gen === shown) {
                 media.eme(m.eme);
-                toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls, hide: m.hide, sel: m.sel });
+                toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls, hide: m.hide, sel: m.sel, css: m.css });
                 // Kept with the page, for a frame given it again.
                 if (Array.isArray(m.hide) && lastRender?.gen === m.gen) lastRender.hide = [...(lastRender.hide ?? []), ...m.hide];
             }
