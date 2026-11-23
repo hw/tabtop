@@ -237,6 +237,23 @@ func TestGoStorageWithMoli(t *testing.T) {
 	}
 	eval(first, `localStorage.setItem("new", "value")`)
 	awaitChange(first, "new", "value")
+	// All time, the site kept (Keep): spared in the open engine, and in
+	// the store; not kept, cleared in both.
+	allTime := func(spare map[string]bool) {
+		store.forget("", goForgetRange{spare: spare}, func(selected map[string]bool) {
+			first.forgetStorage(ctx, "", selected, true, spare)
+		})
+	}
+	allTime(map[string]bool{goStorageSite(site.URL): true})
+	if got := eval(first, `String(localStorage.getItem("new"))`); got != "value" || store.items(site.URL)["new"] != "value" {
+		t.Fatalf("a kept site's storage cleared with all time: the engine's %q, the store's %v", got, store.items(site.URL))
+	}
+	allTime(nil)
+	if got := eval(first, "String(localStorage.length)"); got != "0" || store.items(site.URL) != nil {
+		t.Fatalf("all time left the engine %s items, the store %v", got, store.items(site.URL))
+	}
+	eval(first, `localStorage.setItem("new", "value")`)
+	awaitChange(first, "new", "value")
 	store.forget(goStorageSite(site.URL), goForgetRange{}, clearTabs)
 	first.endStorage()
 	if got := store.items(site.URL); got != nil {
