@@ -2576,7 +2576,7 @@
         // caret is here (see goinput.go), not done here too.
         const edit = type === "down" && editsRich(e) && richText(at.node);
         if (edit) e.preventDefault();
-        else if (type === "down" && richText(at.node)) caretMoved = true;  // (an arrow, Home, Ctrl+A: the caret's moved here)
+        else if (type === "down" && movesCaret(e) && richText(at.node)) caretMoved = true;
         send("key", at.id, { phase: type, ...frameFields(at), key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e),
             ...(edit ? { edit: true, sel: movedTo(real(e)) } : {}) });
     }
@@ -2621,6 +2621,11 @@
     // where the caret was here, the keys typed fast would go in at one
     // place, last first).
     let caretMoved = false;
+    // A key that moves the caret here: an arrow, Home, End, Page Up or
+    // Down, Ctrl (⌘) with A. (Not Shift for a capital, nor a phone
+    // keyboard's key, which move nothing.)
+    const movesCaret = (e) => /^(Arrow(Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(e.key)
+        || (e.ctrlKey || e.metaKey) && !e.altKey && /^a$/i.test(e.key);
     function movedTo(el) {
         if (!caretMoved) return undefined;
         caretMoved = false;

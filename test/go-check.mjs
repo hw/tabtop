@@ -265,6 +265,28 @@ try {
 <p id="got">engine: hello</p>
 <div id="chat" contenteditable="true"></div><ul id="sent"></ul>
 <iframe id="fr" src="editable-frame.html" style="width: 300px; height: 120px"></iframe>
+<div id="fw" contenteditable="true"></div><p id="fwgot"></p>
+<script>
+// An editor as frameworks make them: every edit taken (beforeinput
+// cancelled), its text a model, the box made anew from it, the caret kept
+// by selectionchange.
+const fw = document.getElementById("fw");
+let model = "", place = 0;
+const render = () => {
+    const t = document.createTextNode(model);
+    fw.replaceChildren(t);
+    if (document.activeElement === fw) getSelection().setBaseAndExtent(t, place, t, place);
+    document.getElementById("fwgot").textContent = "model: " + model;
+};
+document.addEventListener("selectionchange", () => { const s = getSelection(); if (s.anchorNode && fw.contains(s.anchorNode)) place = s.anchorNode.nodeType === 3 ? s.anchorOffset : 0; });
+fw.addEventListener("beforeinput", (e) => {
+    e.preventDefault();
+    if (e.inputType === "insertText") { model = model.slice(0, place) + e.data + model.slice(place); place += e.data.length; }
+    else if (e.inputType === "deleteContentBackward" && place > 0) { model = model.slice(0, place - 1) + model.slice(place); place--; }
+    render();
+});
+render();
+</script>
 <script>
 const ed = document.getElementById("ed"), got = document.getElementById("got"), chat = document.getElementById("chat");
 const say = () => { got.textContent = "engine: " + [...ed.childNodes].map((n) => n.textContent).join("|"); };
@@ -1828,6 +1850,15 @@ async function check(base, port, site, adSite) {
         await browser.type(" world");
         await engine("hello world");
         await shown("hello world");
+        // A key that doesn't edit between two that do (Shift, for a capital):
+        // the caret's not moved by it.
+        await browser.type("a");
+        await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 8 });
+        await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 });
+        await browser.type("B");
+        await engine("hello worldaB");
+        for (let i = 0; i < 2; i++) await browser.press("Backspace");
+        await engine("hello world");
         for (let i = 0; i < 5; i++) await browser.press("Backspace");
         await engine("hello ");
         await shown("hello ");
@@ -1844,6 +1875,18 @@ async function check(base, port, site, adSite) {
         await cdp("Input.insertText", { text: "ok" });
         await engine("hello |two!ok");
         await shown("hello |two!ok");
+        // A word begun as soon as a key's typed (its change coming back as
+        // the word's chosen): shown once, and in the engine.
+        await browser.type("Q");
+        await cdp("Input.imeSetComposition", { text: "w", selectionStart: 1, selectionEnd: 1 });
+        await sleep(200);
+        await cdp("Input.imeSetComposition", { text: "wo", selectionStart: 2, selectionEnd: 2 });
+        await sleep(400);
+        await cdp("Input.insertText", { text: "wo" });
+        await engine("hello |two!okQwo");
+        await shown("hello |two!okQwo");
+        for (let i = 0; i < 3; i++) await browser.press("Backspace");
+        await engine("hello |two!ok");
         // The caret moved here (a click): typed there, not where it was.
         await frameClick("#ed p");
         await frame(`(() => { const t = document.querySelector("#ed p").firstChild; getSelection().setBaseAndExtent(t, 0, t, 0); })()`);
@@ -1861,6 +1904,27 @@ async function check(base, port, site, adSite) {
         await browser.type("hi there");
         await browser.press("Enter");
         await frameWait(`document.getElementById("sent").textContent === "hi there" && document.getElementById("chat").textContent === ""`, "the message sent, the box emptied");
+        // A word made by an IME in the box, empty: once, and sent.
+        await cdp("Input.imeSetComposition", { text: "y", selectionStart: 1, selectionEnd: 1 });
+        await cdp("Input.imeSetComposition", { text: "yo", selectionStart: 2, selectionEnd: 2 });
+        await cdp("Input.insertText", { text: "yo" });
+        await frameWait(`document.getElementById("chat").textContent === "yo"`, "the word shown once");
+        await sleep(500);
+        if ((await frame(`document.getElementById("chat").textContent`)) !== "yo") throw new Error(`the box, after the engine's change: ${await frame(`document.getElementById("chat").textContent`)}`);
+        await browser.press("Enter");
+        await frameWait(`document.getElementById("sent").textContent === "hi thereyo"`, "the word sent");
+        // An editor as frameworks make them: typed, deleted, typed where the
+        // caret's put, its box made anew each time.
+        await frameClick("#fw");
+        await browser.type("abc");
+        await browser.press("Backspace");
+        await browser.type("d");
+        await frameWait(`document.getElementById("fwgot").textContent === "model: abd"`, "the editor's model abd");
+        await frameWait(`document.getElementById("fw").textContent === "abd"`, "the editor shown");
+        await frameClick("#fw");
+        await frame(`(() => { const t = document.getElementById("fw").firstChild; getSelection().setBaseAndExtent(t, 1, t, 1); })()`);
+        await browser.type("X");
+        await frameWait(`document.getElementById("fwgot").textContent === "model: aXbd"`, "X typed where the caret was put");
         // In an embedded page: typed, and Enter a new paragraph, there.
         const deep = `const deep = (root, sel) => { const hit = root.querySelector(sel); if (hit) return hit; for (const el of root.querySelectorAll("*")) if (el.shadowRoot) { const f = deep(el.shadowRoot, sel); if (f) return f; } return null; };`;
         await frameWait(`(() => { ${deep} return !!deep(document, "#fed p"); })()`, "the frame's rich text", 30000);
@@ -1869,6 +1933,9 @@ async function check(base, port, site, adSite) {
         for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + r.x, y: f.y + r.y, button: "left", clickCount: 1 });
         await frame(`(() => { ${deep} const t = deep(document, "#fed p").firstChild; getSelection().setBaseAndExtent(t, 2, t, 2); })()`);
         await browser.type("!");
+        await frameWait(`(() => { ${deep} return deep(document, "#fgot")?.textContent === "frame: in!"; })()`, "the frame's page to hold in!");
+        const focused = `(() => { let a = document.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a?.id; })()`;
+        if ((await frame(focused)) !== "fed") throw new Error(`the frame's rich text lost the focus as it was redrawn (now ${await frame(focused)})`);
         await browser.press("Enter");
         await browser.type("x");
         await frameWait(`(() => { ${deep} return deep(document, "#fgot")?.textContent === "frame: in!|x"; })()`, "the frame's page to hold in!|x");
