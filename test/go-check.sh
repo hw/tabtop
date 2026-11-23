@@ -146,7 +146,8 @@ tree_rss() {
       ((${e:-0} > peak_engine)) && peak_engine=${e:-0}; ((${t:-0} > peak_tabtopd)) && peak_tabtopd=${t:-0}
       echo "$peak_engine $peak_tabtopd" > "$work/peak"; sleep 1
   done ) &
-node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
+# (GO_LOG: tabtopd's log, with its go-debug lines, run here; not an image's.)
+GO_LOG=$([[ -z "$go_image" ]] && echo "$work/tabtopd.log") node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
 read -r peak_engine peak_tabtopd < "$work/peak" || true
 echo "ok   the most memory used: an engine $((${peak_engine:-0} / 1024)) MiB, tabtopd $((${peak_tabtopd:-0} / 1024)) MiB"
 if [[ "${GO_NO_FS:-}" != 1 ]]; then

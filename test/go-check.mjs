@@ -3452,6 +3452,13 @@ async function check(base, port, site, adSite) {
             await ev(`document.querySelector("#go_cert .go").click()`);
             await ev(`window.__down = false; document.querySelector("#tabtop_reconnect button")?.click()`);
             await waitFor(`document.title.startsWith("Fixture") && document.getElementById("go_cert").hidden && !document.getElementById("tabtop_reconnect")`, "the page continued to, once connected", 30000);
+            // Loaded once: the Continue said on taking the tab back, not
+            // the page's address loaded again too (go-reload) to replace it.
+            if (process.env.GO_LOG) {
+                const ops = readFileSync(process.env.GO_LOG, "utf8").split("\n").filter((l) => /go-debug: op (cert-continue|navigate) /.test(l));
+                const after = ops.slice(ops.findLastIndex((l) => / op cert-continue /.test(l)) + 1);
+                if (after.length) throw new Error(`loaded again after Continue: ${after.join(" / ")}`);
+            }
         } finally {
             await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
         }

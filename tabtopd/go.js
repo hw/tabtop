@@ -1158,6 +1158,9 @@ function load(url, { push = true } = {}) {
 // connected (a tab taken back as it was would show its page instead);
 // continuedOffline: a certificate warning's Continue, likewise.
 let askedOffline = null, continuedOffline = null;
+// loadSent: the connection a tab was taken back on with one of those sent,
+// till its go-reload (the tab's own, sent first) comes.
+let loadSent = null;
 
 // The page's window in the engine is the size of the frame here (and its
 // pixel ratio), so a page laying itself out for a phone or a wide screen,
@@ -1296,8 +1299,10 @@ function open() {
                 if (askedOffline) {
                     ws.send(JSON.stringify({ op: "navigate", url: askedOffline, view: sentView }));
                     askedOffline = null;
+                    loadSent = s;
                 } else if (continuedOffline) {
                     ws.send(JSON.stringify({ op: "cert-continue", url: continuedOffline }));
+                    loadSent = s;
                 } else show("Carrying on…");
                 continuedOffline = null;
                 // Nothing from it soon (held up on the server): a tab of
@@ -1491,8 +1496,11 @@ function message(m) {
             update();
             break;
         case "go-reload":
-            // Taken back with nothing to show: loaded again.
-            if (at >= 0) load(entries[at].url, { push: false });
+            // Taken back with nothing to show: loaded again. (Not if it was
+            // taken back with a load of its own, asked for meanwhile: that
+            // one's the page, not replaced by this.)
+            if (loadSent === ws) loadSent = null;
+            else if (at >= 0) load(entries[at].url, { push: false });
             else show("");
             break;
         case "go-snapshot": {
