@@ -260,6 +260,10 @@ button.link { min-height: 0; padding: 0; border: 0; background: none; font: inhe
 .reset-list { margin: 4px 0 12px; padding-left: 1.2em; list-style: disc; }
 .reset-list li + li { border-top: 0; }
 #reset_unblock_row { margin-bottom: 8px; }
+/* Keep (a site's): its box beside its name, at any width (a narrow screen's
+   other controls go below theirs). */
+#keep_row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+#keep_row .how { justify-content: flex-end; }
 @media (max-width: 600px) {
     .setting { grid-template-columns: minmax(0, 1fr); }
     .setting .how { justify-content: flex-start; }
