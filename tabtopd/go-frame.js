@@ -152,6 +152,8 @@
                 entry.asked = false;
             }
             mediaLater();
+        } else if (m.type === "files-chosen" && Array.isArray(m.files)) {
+            showChosen(m.files);
         } else if (m.type === "media-mark") {
             for (const entry of media.values()) entry.box?.classList.toggle("go-media-mark", entry.key === m.key);
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
@@ -2023,6 +2025,8 @@
                     // sent, say), unless it's being typed in here.
                     if (pending.has(target)) break;
                     if (target.type === "checkbox" || target.type === "radio") target.checked = op.v === "true";
+                    // (A file input's: only emptied; a value can't be given one.)
+                    else if (target.type === "file") { if (!op.v && target.value) target.value = ""; }
                     else if ("value" in target && target.value !== op.v) target.value = String(op.v ?? "");
                     break;
             }
@@ -2416,7 +2420,9 @@
     // What's dragged in from outside (text, a link, from another window) is
     // given to the engine's page under it, and dropped there: its kinds as
     // it's dragged over (a browser shows no more till the drop), what it
-    // is when dropped. Files aren't (the remote browser takes no files).
+    // is when dropped. Files are sent once dropped (go.js, gouploads.go),
+    // then dropped there with them: not given as they're dragged over (a
+    // drag of no files, there).
     const DRAG_TYPES = ["text/plain", "text/uri-list", "text/html"];
     const MAX_DROP = 32 << 10;  // within a message the server takes (goClientMessage)
     let dragOver = null;
@@ -2434,6 +2440,10 @@
                 dragOver = null;
                 return;
             }
+            if ([...(e.dataTransfer?.types ?? [])].includes("Files")) {
+                dragOver = null;
+                return;
+            }
             dragOver = { phase: "over", id: w.id, fx: w.fx, fy: w.fy, items: dragTypes(e.dataTransfer).map((t) => ({ type: t, data: "" })), ...mods(e) };
             pointerSoon();
         }, true);
@@ -2448,8 +2458,15 @@
         e.preventDefault();  // not opened here
         dragOver = null;
         const dt = e.dataTransfer;
-        if (dt?.files?.length) tell({ type: "drop-files", gen: doc?.gen });
         const w = where(e);
+        if (dt?.files?.length) {
+            // The files, to the page around this, to send (gouploads.go);
+            // where, for them to be dropped there.
+            if (w && !w.frame && doc) tell({ type: "drop-files", gen: doc.gen, files: [...dt.files], id: w.id, fx: w.fx, fy: w.fy, ...mods(e) });
+            else tell({ type: "drop-files", gen: doc?.gen, frame: true });
+            send("drag", 0, { phase: "cancel" });
+            return;
+        }
         if (!w || w.frame) {
             send("drag", 0, { phase: "cancel" });
             return;
@@ -2601,6 +2618,33 @@
         }, 100);
     }, { capture: true, passive: true });
 
+    // A page's file input: its chooser is the engine's, which the page
+    // gets (the press reached it), and which the person answers from the
+    // page around this (go.js; gouploads.go): never this frame's own. The
+    // field pressed last is kept, to show what's chosen in it.
+    let fileField = null, fileFieldAt = 0;
+    document.addEventListener("click", (e) => {
+        const at = e.composedPath?.()[0] ?? e.target;
+        if (at?.localName === "input" && at.type === "file") {
+            e.preventDefault();
+            fileField = at;
+            fileFieldAt = performance.now();
+        }
+    }, true);
+    function showChosen(files) {
+        const field = fileField;
+        fileField = null;
+        if (!field?.isConnected || performance.now() - fileFieldAt > 600000) return;  // (a button of the page's opened it)
+        // Stand-ins, of nothing: what's shown is their names (the page's
+        // are the engine's).
+        try {
+            const dt = new DataTransfer();
+            for (const f of files.slice(0, 32)) {
+                if (typeof f?.name === "string") dt.items.add(new File([], f.name.slice(0, 255), { type: typeof f.type === "string" ? f.type : "" }));
+            }
+            field.files = dt.files;
+        } catch { /* shown as it was */ }
+    }
     document.addEventListener("click", (e) => {
         if (!e.isTrusted || e.button !== 0) return;
         const link = linkOf(e.target);

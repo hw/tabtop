@@ -104,6 +104,8 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// What it keeps of what sites sent: emptied (gocache.go).
 	"go-cache-clear": other((*server).routeGoCacheClear),
 
+	"go-upload": other((*server).routeGoUpload), // a file for a page's file input
+
 	// Sessions, and the activity log: kept with file support off.
 	"logout":           other((*server).routeLogout),
 	"end-session":      other((*server).routeEndSession),

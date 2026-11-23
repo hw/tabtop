@@ -139,6 +139,13 @@ func (g *server) routeGo(c *tunnelCall) {
 			err = cdp.call(ctx, page, m, nil, nil)
 		}
 	}
+	// A file input's chooser told, not shown (gouploads.go); an engine
+	// that can't, its file inputs left as they are.
+	if err == nil {
+		if ferr := cdp.call(ctx, page, "Page.setInterceptFileChooserDialog", map[string]any{"enabled": true}, nil); ferr != nil {
+			goDebugf("file chooser not intercepted: %v", ferr)
+		}
+	}
 	cancel()
 	if err != nil {
 		if cdp != nil {

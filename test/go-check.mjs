@@ -9,7 +9,8 @@
 // is recorded: none may go anywhere but the TabTop server.
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createBrowserHarness, sleep } from "./browser/harness.mjs";
@@ -666,6 +667,40 @@ setTimeout(() => { document.getElementById("box").append(c); paint(1, 0, 0); doc
         "nestfocus.html": `<!doctype html><title>Nest focus</title><p>outer</p><iframe id="p" width="420" height="220"></iframe><script>document.getElementById("p").src = "http://[::ffff:" + location.hostname + "]/nestfocusmid.html" + location.search;</script>`,
         "nestfocusmid.html": `<!doctype html><p id="tick">0</p><iframe id="c" width="300" height="100"></iframe><script>document.getElementById("c").src = new URLSearchParams(location.search).get("c"); let n = 0; setInterval(() => { document.getElementById("tick").textContent = ++n; }, 700);</script>`,
         "nestfocusin.html": `<!doctype html><input id="t" value="hello">`,
+        // File inputs: a hidden one its button opens (as most sites' are),
+        // its files read and posted; one shown, pressed itself; and one a
+        // timer opens, with no press.
+        "fileinput.html": `<!doctype html><title>File input</title>
+<input type="file" id="hidden" multiple style="display:none"><button id="pick">Upload</button>
+<input type="file" id="shown" accept=".txt">
+<p id="fgot">nothing</p><p id="fposted">not posted</p><p id="fshown">nothing</p>
+<script>
+const hidden = document.getElementById("hidden");
+document.getElementById("pick").addEventListener("click", () => hidden.click());
+hidden.addEventListener("change", async () => {
+    const parts = [];
+    for (const f of hidden.files) parts.push(f.name + "=" + await f.text());
+    document.getElementById("fgot").textContent = parts.join(", ");
+    const fd = new FormData();
+    for (const f of hidden.files) fd.append("file", f);
+    const body = await (await fetch("/posted", { method: "POST", body: fd })).text();
+    document.getElementById("fposted").textContent = ["first file's", "second file's"].every((t) => body.includes(t)) && /filename="a.txt"/.test(body) && /filename="b.txt"/.test(body) ? "both posted" : "posted: " + body.slice(0, 200);
+});
+document.getElementById("shown").addEventListener("change", async (e) => { document.getElementById("fshown").textContent = e.target.files[0].name + "=" + await e.target.files[0].text(); });
+</script>`,
+        // Files dropped: a drop zone that keeps what each drop gives it.
+        "filedrop.html": `<!doctype html><title>File drop</title>
+<div id="zone" style="width: 400px; height: 200px; background: #eef">drop files here</div><p id="dropped">nothing</p><p id="dtypes"></p>
+<script>
+const zone = document.getElementById("zone"), got = [];
+zone.addEventListener("dragover", (e) => { e.preventDefault(); document.getElementById("dtypes").textContent = [...e.dataTransfer.types].join(","); });
+zone.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    for (const f of e.dataTransfer.files) got.push(f.name + "=" + await f.text());
+    document.getElementById("dropped").textContent = got.join(", ");
+});
+</script>`,
+        "fileauto.html": `<!doctype html><title>File auto</title><input type="file" id="auto"><script>setTimeout(() => document.getElementById("auto").click(), 300);</script>`,
         // A video in another site's embedded page, on a white page.
         "clipframe.html": `<!doctype html><title>Clip frame</title><style>body { background: #fff; margin: 0 }</style><video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
         "framevideo.html": `<!doctype html><title>Frame video</title><style>html, body { background: #fff }</style><p>an embed:</p><div style="background:#fff"><iframe id="f" width="340" height="200"></iframe></div>
@@ -2189,6 +2224,74 @@ async function check(base, port, site, adSite) {
         await frameClick("#send");
         await waitFor(`document.title.startsWith("Posted")`, "the posted page", 30000);
         await frameWait(`document.getElementById("p")?.textContent === "pq=posted+value"`, "what was posted");
+    });
+
+    await step("a page's file input: its chooser answered here, its files the page's (read, posted); a shown one shows them; none opened without a press", async () => {
+        // The files, on this machine; this browser's chooser taken (not
+        // shown), and the files put in it as a person would pick them.
+        const dir = mkdtempSync(join(tmpdir(), "go-check-files-"));
+        writeFileSync(join(dir, "a.txt"), "first file's text");
+        writeFileSync(join(dir, "b.txt"), "second file's text");
+        const pickHere = async (paths) => {
+            await waitFor(`!!document.getElementById("go_file_input")?.dataset.chooser`, "the page's chooser, here", 15000);
+            const { root } = await cdp("DOM.getDocument", { depth: 0 });
+            const { nodeId } = await cdp("DOM.querySelector", { nodeId: root.nodeId, selector: "#go_file_input" });
+            await cdp("DOM.setFileInputFiles", { nodeId, files: paths });
+        };
+        // Waited for, TabTop's side said if it doesn't come: its chooser,
+        // its notice, what the page shows.
+        const pageGets = (expr, what) => frameWait(expr, what, 30000).catch(async (err) => {
+            const here = await ev(`JSON.stringify({ chooser: document.getElementById("go_file_input").dataset.chooser ?? null, files: document.getElementById("go_file_input").files.length, notice: document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p").textContent, status: document.getElementById("go_status")?.textContent ?? "" })`).catch(() => "?");
+            const there = await frame(`JSON.stringify([document.getElementById("fgot")?.textContent, document.getElementById("fshown")?.textContent])`).catch(() => "?");
+            throw new Error(`${err.message} (here ${here}; the page ${there})`);
+        });
+        await cdp("Page.setInterceptFileChooserDialog", { enabled: true });
+        try {
+            await goTo(site + "fileinput.html", "File input");
+            await frameWait(`!!document.getElementById("pick")`, "the page");
+            // Opened by its button: two files, read and posted by the page.
+            await frameClick("#pick");
+            await pickHere([join(dir, "a.txt"), join(dir, "b.txt")]);
+            await pageGets(`document.getElementById("fgot").textContent === "a.txt=first file's text, b.txt=second file's text"`, "the files, read by the page");
+            await frameWait(`document.getElementById("fposted").textContent === "both posted"`, "the files, posted to the site", 15000);
+            // A shown one, pressed: its file, and shown in it here.
+            await frameClick("#shown");
+            await pickHere([join(dir, "b.txt")]);
+            await pageGets(`document.getElementById("fshown").textContent === "b.txt=second file's text"`, "the shown field's file, read by the page");
+            const here = await frame(`(() => { const f = document.getElementById("shown"); return f.files.length + " " + (f.files[0]?.name ?? ""); })()`);
+            if (here !== "1 b.txt") throw new Error(`the shown field here holds ${JSON.stringify(here)}`);
+            // One a timer opens, no press: nothing asked here.
+            await goTo(site + "fileauto.html", "File auto");
+            await sleep(2000);
+            if (await ev(`!!document.getElementById("go_file_input").dataset.chooser`)) throw new Error("a chooser opened without a press was asked here");
+        } finally {
+            await cdp("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+            rmSync(dir, { recursive: true, force: true });
+        }
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("files dropped on the page: sent, then dropped there, each a drop of its own (Moli gives a drop one file)", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "go-check-drop-"));
+        writeFileSync(join(dir, "a.txt"), "first file's text");
+        writeFileSync(join(dir, "b.txt"), "second file's text");
+        try {
+            await goTo(site + "filedrop.html", "File drop");
+            await frameWait(`!!document.getElementById("zone")`, "the page");
+            const r = await frame(`(() => { const b = document.getElementById("zone").getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+            const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+            const to = { x: f.x + r.x, y: f.y + r.y };
+            const data = { items: [], files: [join(dir, "a.txt"), join(dir, "b.txt")], dragOperationsMask: 1 };
+            for (const type of ["dragEnter", "dragOver"]) await cdp("Input.dispatchDragEvent", { type, ...to, data });
+            await sleep(200);
+            await cdp("Input.dispatchDragEvent", { type: "drop", ...to, data });
+            await frameWait(`document.getElementById("dropped").textContent === "a.txt=first file's text, b.txt=second file's text"`, "both files, dropped on the page", 30000);
+            const types = await frame(`document.getElementById("dtypes").textContent`);
+            if (types !== "Files") throw new Error(`the page's drag had ${JSON.stringify(types)}`);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        await goTo(site + "index.html", "Fixture");
     });
 
     await step("a redirect by script, and a window the page opens, stay in this tab", async () => {

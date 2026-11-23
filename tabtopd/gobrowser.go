@@ -237,6 +237,12 @@ type goBrowser struct {
 	// The closed shadow roots from its HTML, given to the agents
 	// (goclosedroots.go).
 	closed goClosedRoots
+	// File inputs (gouploads.go): the chooser waiting for files, and
+	// what's kept; and when the person last did something in the page,
+	// for a chooser to be theirs.
+	uploads  goUploads
+	inputAt  time.Time
+	inputGen int // the page it was in (a browser's activation goes with its page)
 	// What the engine's been told of certificate errors (certIgnore's
 	// alone, under certMu: the jobs and a paused document's request): 0 to
 	// heed them, 1 to ignore them, -1 not known (a call that failed may
@@ -808,6 +814,11 @@ func (b *goBrowser) run() {
 			case "event":
 				if m.Gen == b.shown && m.Gen == b.gen {
 					b.e.use()
+					// A press, a key, a touch (not a move or a scroll): what a
+					// browser lets a page open a chooser after.
+					if m.Kind == "click" || m.Kind == "key" || m.Kind == "touch" && m.Type != "move" || m.Kind == "mouse" && (m.Type == "down" || m.Type == "up") {
+						b.inputAt, b.inputGen = time.Now(), b.gen
+					}
 				}
 			}
 			switch m.Op {
@@ -865,6 +876,12 @@ func (b *goBrowser) run() {
 					continue // for a document that's gone
 				}
 				b.act(m)
+			case "files":
+				b.chooseFiles(m) // a chooser answered (gouploads.go)
+			case "drop-files":
+				b.dropStart(m) // files dropped on the page, to be sent
+			case "dropped":
+				b.dropFiles(m) // and sent: dropped there
 			case "resync":
 				if m.Gen == b.shown && b.loading == 0 {
 					b.readAgain(b.gen)
@@ -1239,6 +1256,8 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		return loadTimeout, dialogTimeout
 	}
 	switch ev.Method {
+	case "Page.fileChooserOpened":
+		b.fileChooserOpened(ev) // a file input's (gouploads.go)
 	case "Page.javascriptDialogOpening":
 		var p struct {
 			Type    string `json:"type"`

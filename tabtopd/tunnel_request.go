@@ -79,6 +79,10 @@ type tunnelRequest struct {
 	// GoTab is the active /go tab token, used only for downloads initiated
 	// by that tab so the server can apply the tab's site cookies and headers.
 	GoTab string `json:"go_tab,omitempty"`
+	// go-upload: the chooser a file's for (gouploads.go), and its time
+	// (milliseconds since 1970, as a File's lastModified).
+	Chooser  string `json:"chooser,omitempty"`
+	Modified int64  `json:"modified,omitempty"`
 	// upload with Replace, and the edits below: only if the file there is
 	// still as the page read it, with this version (see fileVersion) and
 	// IfSize (see changed); reads: only of the file as it was, if given

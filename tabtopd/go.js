@@ -1595,6 +1595,15 @@ function message(m) {
         case "go-popup-blocked":
             note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (Site controls: the button at the address’s start).`);
             break;
+        case "go-file-chooser":
+            if (typeof m.chooser === "string" && m.gen === gen) askFiles(m);
+            break;
+        case "go-drop-ready":
+            if (typeof m.token === "string" && m.gen === gen) sendDropped(m.token);
+            break;
+        case "go-file-chooser-refused":
+            if (typeof m.why === "string") warn(m.why, { error: false });
+            break;
         case "go-file":
             loading = rendering = false;
             show("");
@@ -1821,7 +1830,9 @@ window.addEventListener("message", (e) => {
             }
             break;
         case "drop-files":
-            if (m.gen === shown) warn("Files can’t be dropped into the remote browser: it doesn’t take files from this device.", { error: false });
+            if (m.gen !== shown) break;
+            if (m.frame || !Array.isArray(m.files)) warn("Files can’t be dropped into an embedded page here: drop them on the page itself.", { error: false });
+            else dropFiles(m);
             break;
         case "media-play":
             // The page started or stopped its player (a feed's next video).
@@ -1944,6 +1955,134 @@ function offerFile(url, mime) {
     if (!filesOn) return;
     const what = `This is a file from ${hostOf(url)} (${mime || "unknown type"}), not a page.`;
     warn(`${what} Save it into Downloads?`, { error: false, retry: () => saveFile(url), label: "Save into Downloads" });
+}
+
+// --- A page's file input --------------------------------------------------
+//
+// The page's file chooser, opened (its field pressed, or a button that
+// opens it): the person's own, here, its files sent to the server, then
+// put in the page's field (gouploads.go). Opened at once if this browser
+// still counts the press that opened it, else from the notice's button.
+const fileInput = document.createElement("input");
+fileInput.type = "file";
+fileInput.id = "go_file_input";
+fileInput.hidden = true;
+document.body.append(fileInput);
+let chooser = null;  // the server's, waiting: {token}
+function askFiles(m) {
+    if (chooser) answerFiles(chooser, 0);
+    chooser = { token: m.chooser };
+    fileInput.multiple = !!m.multiple;
+    fileInput.accept = typeof m.accept === "string" ? m.accept : "";
+    fileInput.value = "";
+    fileInput.dataset.chooser = m.chooser;
+    const what = m.multiple ? "files" : "a file";
+    const pick = () => { try { fileInput.showPicker(); } catch { fileInput.click(); } };
+    let opened = false;
+    if (navigator.userActivation?.isActive) {
+        try {
+            fileInput.showPicker();
+            opened = true;
+        } catch { /* not now: from the notice */ }
+    }
+    if (!opened) warn(`The page asks for ${what}.`, { error: false, retry: pick, label: `Choose ${what}` });
+}
+function answerFiles(c, count) {
+    if (chooser === c) {
+        chooser = null;
+        delete fileInput.dataset.chooser;
+    }
+    ws?.send(JSON.stringify({ op: "files", text: c.token, count }));
+}
+fileInput.addEventListener("cancel", () => { if (chooser) answerFiles(chooser, 0); });
+fileInput.addEventListener("change", async () => {
+    const c = chooser;
+    if (!c || fileInput.dataset.chooser !== c.token) return;
+    const files = [...fileInput.files];
+    if (!files.length) return answerFiles(c, 0);
+    notice.hidden = true;
+    const total = files.reduce((n, f) => n + f.size, 0);
+    let before = 0;
+    try {
+        for (const file of files) {
+            await sendFile(file, c, (n) => show(`Sending ${files.length === 1 ? file.name : `${files.length} files`} to the page… ${total ? Math.floor((before + n) / total * 100) : 100}%`));
+            before += file.size;
+        }
+        show("");
+        if (chooser !== c) return;  // the page asked again meanwhile
+        answerFiles(c, files.length);
+        // The page's field, as it is here: its files' names shown. (Not the
+        // files: given to a field there, files from this device have
+        // Chrome end that frame, measured.)
+        frame.contentWindow?.postMessage({ type: "files-chosen", files: files.map((f) => ({ name: f.name, type: f.type })) }, "*");
+    } catch (err) {
+        show("");
+        if (chooser === c) answerFiles(c, 0);
+        warn(`The files weren't sent to the page: ${err.message}`);
+    }
+});
+// Files dropped on the page (the copy says which, and where): asked for a
+// token, sent with it, then dropped there by the server, each a drop of
+// its own (gouploads.go). One drop's at a time.
+let dropping = null;  // {files, at, gen}
+function dropFiles(m) {
+    const files = m.files.filter((f) => f instanceof File);
+    if (!files.length) return;
+    if (dropping) return warn("The files dropped before are still being sent.", { error: false });
+    if (files.length > 32) return warn("At most 32 files can be dropped on a page at once.", { error: false });
+    const d = dropping = { files, gen: m.gen, at: { id: m.id, fx: m.fx, fy: m.fy, shift: !!m.shift, ctrl: !!m.ctrl, alt: !!m.alt, meta: !!m.meta } };
+    ws?.send(JSON.stringify({ op: "drop-files", gen: m.gen, count: files.length }));
+    // No token (the page went on, say): another drop isn't held up by it.
+    setTimeout(() => { if (dropping === d && !d.sending) dropping = null; }, 15000);
+}
+async function sendDropped(token) {
+    const d = dropping;
+    if (!d || d.sending) return;
+    d.sending = true;
+    const c = { token };
+    const total = d.files.reduce((n, f) => n + f.size, 0);
+    let before = 0;
+    try {
+        for (const file of d.files) {
+            await sendFile(file, c, (n) => show(`Sending ${d.files.length === 1 ? file.name : `${d.files.length} files`} to the page… ${total ? Math.floor((before + n) / total * 100) : 100}%`));
+            before += file.size;
+        }
+        show("");
+        ws?.send(JSON.stringify({ op: "dropped", gen: d.gen, text: token, count: d.files.length, ...d.at }));
+    } catch (err) {
+        show("");
+        ws?.send(JSON.stringify({ op: "dropped", gen: d.gen, text: token, count: 0 }));
+        warn(`The files weren't dropped on the page: ${err.message}`);
+    } finally {
+        dropping = null;
+    }
+}
+// sendFile sends file to the server for chooser c, in chunks, each
+// answered, as an upload into Files is (requests.js).
+async function sendFile(file, c, progress) {
+    const CHUNK = 256 * 1024, WINDOW = 16;
+    const t = await call({ type: "go-upload", go_tab: resumeToken.get(), chooser: c.token, name: file.name, size: file.size, modified: file.lastModified });
+    try {
+        const chunks = Math.ceil(file.size / CHUNK);
+        let sent = 0, acked = 0;
+        for (;;) {
+            while (sent < chunks && sent - acked < WINDOW) {
+                t.sendData(new Uint8Array(await file.slice(sent * CHUNK, (sent + 1) * CHUNK).arrayBuffer()));
+                sent++;
+            }
+            const m = await t.next();
+            if (!m) throw new Error(t.closeReason || "the connection was lost");
+            if (m.text !== undefined) {
+                const res = JSON.parse(m.text);
+                if (res.name && acked === chunks) return;
+                throw new Error(res.error || "the server's reply is malformed");
+            }
+            acked++;
+            progress(Math.min(acked * CHUNK, file.size));
+        }
+    } finally {
+        t.close();
+    }
 }
 // saveFile saves url into Downloads, saying how it goes (say: where, as
 // the player does over the page; else the page's status, and its notice).
