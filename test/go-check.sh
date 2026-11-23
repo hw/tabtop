@@ -128,8 +128,10 @@ else
 fi
 
 cport=$(free_port)
+# --password-store=basic: not the desktop's keyring, which, locked or
+# asking, leaves every page Chrome loads waiting for its cookies' key.
 "$chrome" --headless=new --remote-debugging-port="$cport" --user-data-dir="$work/chrome" --no-first-run \
-    --no-default-browser-check about:blank > "$work/chrome.log" 2>&1 &
+    --no-default-browser-check --password-store=basic about:blank > "$work/chrome.log" 2>&1 &
 chrome_pid=$!
 up "http://127.0.0.1:$cport/json/version" Chrome 30 || { echo "--- Chrome's log"; tail -n 30 "$work/chrome.log"; exit 1; }
 

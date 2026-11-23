@@ -103,11 +103,13 @@ echo dropped >"$work/drop me.txt"
 
 # --no-sandbox: CI runners don't allow Chrome's sandbox, and the browser
 # only visits this container. The fake media device is a microphone that
-# beeps, allowed without asking.
+# beeps, allowed without asking. --password-store=basic: not the desktop's
+# keyring, which, locked or asking, leaves every page Chrome loads waiting
+# for its cookies' key.
 "$chrome" --headless=new --no-sandbox --no-first-run --remote-debugging-port=0 \
     --user-data-dir="$work/chrome" --autoplay-policy=no-user-gesture-required \
     --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
-    about:blank >"$work/chrome.log" 2>&1 &
+    --password-store=basic about:blank >"$work/chrome.log" 2>&1 &
 chrome_pid=$!
 for ((i = 0; ; i++)); do
     [[ -s "$work/chrome/DevToolsActivePort" ]] && break
