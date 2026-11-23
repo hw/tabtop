@@ -16,6 +16,7 @@
         <button type="button" data-to="sec_network">Network</button>
         <button type="button" data-to="sec_ads">Ad blocking</button>
         <button type="button" data-to="sec_backup">Backup</button>
+        <button type="button" data-to="sec_engine">Engine</button>
     </nav>
 
     <section id="browser_settings" aria-label="Settings">
@@ -142,6 +143,14 @@
                 <input type="file" id="settings_file" accept="application/json,.json" hidden>
             </div>
         </div>
+
+        <h2 id="sec_engine" class="section-head" tabindex="-1">Engine</h2>
+        <div class="card" id="engine_card">
+            <div class="setting">
+                <div class="what">Restart remote web engine<span class="hint">Reloads every tab. Cookies and settings are kept.</span></div>
+                <div class="how"><button type="button" id="engine_restart" class="danger">Restart…</button></div>
+            </div>
+        </div>
     </section>
 </main>
 <dialog id="hosts_dialog" aria-labelledby="hosts_dialog_h">
@@ -153,6 +162,24 @@
         <div class="tools">
             <button type="button" id="hosts_dialog_cancel" class="quiet">Cancel</button>
             <button type="submit" id="hosts_dialog_add" value="add" disabled>Add records</button>
+        </div>
+    </form>
+</dialog>
+<dialog id="restart_dialog" aria-labelledby="restart_dialog_h" aria-describedby="restart_dialog_note">
+    <form method="dialog" id="restart_form">
+        <h3 id="restart_dialog_h">Restart remote web engine?</h3>
+        <p class="hint" id="restart_dialog_note">Every tab reloads. Unsent input is lost.</p>
+        <div id="restart_with_passkey" hidden>
+            <button type="button" id="restart_passkey" class="wide"><span class="glyph" aria-hidden="true"></span><span class="label">Restart with a passkey</span></button>
+            <p class="or" aria-hidden="true"><span>or</span></p>
+        </div>
+        <label class="field" for="restart_code">Password + code</label>
+        <input type="password" id="restart_code" autocomplete="off" spellcheck="false" aria-describedby="restart_code_hint restart_error">
+        <p class="hint" id="restart_code_hint">Just logged in? Use the next code.</p>
+        <p class="error" id="restart_error" role="alert" hidden></p>
+        <div class="tools">
+            <button type="button" id="restart_cancel" class="quiet">Cancel</button>
+            <button type="submit" id="restart_go" value="restart" class="danger" disabled>Restart</button>
         </div>
     </form>
 </dialog>

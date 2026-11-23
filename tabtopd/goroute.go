@@ -104,9 +104,11 @@ func (g *server) routeGo(c *tunnelCall) {
 	// A tab kept while its connection was lost (goresume.go), its token
 	// brought back from the same session: taken back as it is. (A token
 	// of a tab gone, or another session's: a new tab, as before.)
+	// (A private tab only by a private page, and the reverse: a token
+	// can't make one the other.)
 	tabs := g.goTabList()
-	if t := tabs.find(c.req.Resume, c.session); t != nil {
-		if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token, "resumed": true}) {
+	if t := tabs.find(c.req.Resume, c.session); t != nil && t.private == c.req.Private {
+		if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token, "resumed": true, "private": t.private}) {
 			return
 		}
 		logGoTab("taken back", c.ip)
@@ -121,8 +123,21 @@ func (g *server) routeGo(c *tunnelCall) {
 		c.r.fail("Too many remote browser tabs are open.")
 		return
 	}
-	e, err := startGoEngine(g.goConfig)
+	// A private tab's cookies and storage, the session's private tabs'
+	// own, in memory (goincognito.go), held till it ends.
+	private := c.req.Private
+	jar, storage, releasePrivate := g.goCookies, g.goStorage, func() {}
+	if private {
+		var p *goPrivate
+		p, releasePrivate = g.goPrivates.privateFor(c.session)
+		jar, storage = p.jar, p.storage
+		if g.goStorage == nil {
+			storage = nil // (an engine whose localStorage isn't kept: config.go)
+		}
+	}
+	e, err := startGoEngine(goEngineConfigFor(g.goConfig, private))
 	if err != nil {
+		releasePrivate()
 		g.closeGo(c.session)
 		log.Printf("go: engine for %s: %v", c.ip, err)
 		c.r.fail("The remote browser's engine didn't start.")
@@ -152,6 +167,7 @@ func (g *server) routeGo(c *tunnelCall) {
 			cdp.close()
 		}
 		e.kill("its tab didn't start")
+		releasePrivate()
 		g.closeGo(c.session)
 		log.Printf("go: engine for %s: %v", c.ip, err)
 		c.r.fail("The remote browser's engine didn't start.")
@@ -163,21 +179,30 @@ func (g *server) routeGo(c *tunnelCall) {
 	e.proxy.certs.Store(b.certs) // its certificate exceptions' guard (gocert.go)
 	b.resources, b.session = g.goResources, c.session
 	// The account's cookies, given before anything's loaded; what the
-	// tab's sites set taken back as it closes (gocookies.go).
-	b.jar, b.storage = g.goCookies, g.goStorage
+	// tab's sites set taken back as it closes (gocookies.go). A private
+	// tab's: its own (above).
+	b.jar, b.storage, b.private = jar, storage, private
 	b.sites = g.goSites
-	t := &goTab{token: goToken(), session: c.session, b: b, ended: make(chan struct{})}
+	t := &goTab{token: goToken(), session: c.session, private: private, b: b, ended: make(chan struct{})}
 	tabs.add(t) // the token can be used as soon as the reply arrives
-	if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token}) {
+	if !c.r.accept(map[string]any{"sandboxed": sandboxed, "resume": t.token, "private": private}) {
 		tabs.remove(t)
 		close(t.ended)
 		cdp.close()
 		e.kill("its tab was closed")
+		releasePrivate()
 		g.closeGo(c.session)
 		return
 	}
-	log.Printf("go: remote browser tab from %s opened (%s)", c.ip, g.goMode)
-	go g.runGoTab(t, tabs, c.ip)
+	kind := ""
+	if private {
+		kind = ", private"
+	}
+	log.Printf("go: remote browser tab from %s opened (%s%s)", c.ip, g.goMode, kind)
+	go func() {
+		defer releasePrivate() // after its last cookies are taken (runGoTab's endCookies)
+		g.runGoTab(t, tabs, c.ip)
+	}()
 	if t.lend(newGoLink(c.t, c.req.Deflate), false) {
 		logGoTab("connection gone", c.ip)
 	}
@@ -193,8 +218,9 @@ func (g *server) runGoTab(t *goTab, tabs *goTabs, ip string) {
 	defer e.kill("its tab was closed")
 	defer b.cdp.close()
 	defer g.abortMSEStages(t.token)
-	defer goPruneCacheSoon(g.goConfig.cache) // what it added, kept to size
-	if dir := g.goConfig.cache; dir != "" {
+	cache := goEngineConfigFor(g.goConfig, t.private).cache
+	defer goPruneCacheSoon(cache) // what it added, kept to size
+	if dir := cache; dir != "" {
 		// And while it runs: a tab kept open for hours adds to it too.
 		prune := time.NewTicker(goCacheEvery)
 		done := make(chan struct{})

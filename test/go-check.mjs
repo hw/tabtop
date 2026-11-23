@@ -379,6 +379,10 @@ customElements.define("x-fcard", class extends HTMLElement { constructor() { sup
         "editable-frame.html": `<!doctype html><title>Editable frame</title>
 <div id="fed" contenteditable="true"><p>in</p></div><p id="fgot">frame: in</p>
 <script>const fed = document.getElementById("fed"); fed.addEventListener("input", () => { document.getElementById("fgot").textContent = "frame: " + [...fed.childNodes].map((n) => n.textContent).join("|"); });</script>`,
+        // A window opened by a press anywhere on the page (no place to find in
+        // one copy of several tabs').
+        "opener.html": `<!doctype html><title>Opener</title>
+<button id="open" style="position:fixed;inset:0;width:100%;height:100%" onclick="window.open('second.html')">Open</button>`,
         "interact.html": `<!doctype html><title>Interact</title>
 <p id="status">ready</p>
 <button id="add">Add</button><ul id="list"></ul>
@@ -700,6 +704,8 @@ zone.addEventListener("drop", async (e) => {
     document.getElementById("dropped").textContent = got.join(", ");
 });
 </script>`,
+        // A page that says when it was loaded: a new number each load.
+        "restart.html": `<!doctype html><title>Restart</title><p id="born"></p><script>document.getElementById("born").textContent = String(Math.random()).slice(2);</script>`,
         "fileauto.html": `<!doctype html><title>File auto</title><input type="file" id="auto"><script>setTimeout(() => document.getElementById("auto").click(), 300);</script>`,
         // A video in another site's embedded page, on a white page.
         "clipframe.html": `<!doctype html><title>Clip frame</title><style>body { background: #fff; margin: 0 }</style><video id="clip" src="clip.mp4" width="320" height="180" muted autoplay></video>`,
@@ -890,6 +896,12 @@ const handle = function handle(req, res) {
     return res.end('<!doctype html><title>Site storage</title><p id="storage"></p><script>' +
       (write ? 'localStorage.setItem("check", "saved");' : '') +
       'document.getElementById("storage").textContent = localStorage.getItem("check") ?? "empty";</script>');
+  }
+  if (req.url.startsWith("/sent")) {
+    // What the browser sent of its cookies, in the title (a tab's, read
+    // from the tabs' strip: no copy to find among several tabs').
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end("<!doctype html><title>Sent " + (req.headers.cookie || "nothing").replace(/[<&]/g, "") + "</title><p>sent</p>");
   }
   if (req.url.startsWith("/cookie")) {
     // What the browser sent of its cookies; ?set sets one (for an hour),
@@ -2291,6 +2303,34 @@ async function check(base, port, site, adSite) {
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("Settings: Restart remote web engine, confirmed with the password + code (a wrong one refused): the tab loads its page again in a new engine", async () => {
+        await goTo(site + "restart.html", "Restart");
+        await frameWait(`!!document.getElementById("born")?.textContent`, "the page");
+        const born = await frame(`document.getElementById("born").textContent`);
+        const d = `document.querySelector("#go_settings iframe")?.contentDocument`;
+        await ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click()`);
+        await waitFor(`${d}?.getElementById("engine_restart")?.disabled === false`, "Settings' Restart", 15000);
+        const said = `${d}.getElementById("done").textContent`;
+        const dialog = `${d}.getElementById("restart_dialog")`;
+        await ev(`${d}.getElementById("engine_restart").click()`);
+        await waitFor(`${dialog}.open && ${d}.activeElement === ${d}.getElementById("restart_code")`, "the restart's dialog, its field focused");
+        const enter = (code) => ev(`(() => { const d = ${d}; const c = d.getElementById("restart_code"); c.value = ${JSON.stringify(code)}; c.dispatchEvent(new Event("input")); d.getElementById("restart_go").click(); })()`);
+        // A wrong password + code: said in the dialog, still open, its field
+        // cleared to try again; nothing restarted.
+        await enter("0000000");
+        await waitFor(`${d}.getElementById("restart_error").textContent.startsWith("That password and code are wrong") && ${dialog}.open && !${d}.getElementById("restart_code").value`, "a wrong code refused, said in the dialog", 15000);
+        if ((await frame(`document.getElementById("born").textContent`)) !== born) throw new Error("the page was loaded again on a wrong code");
+        // The right one, in the same dialog: restarted (every tab's: others
+        // the steps before left too, kept to be taken back), the dialog closed.
+        await enter(await totp());
+        await waitFor(`!${dialog}.open && /^Engine restarted · (1 tab|[0-9]+ tabs) reloaded\\.$/.test(${said})`, "the restart done, the dialog closed", 30000);
+        await frameWait(`document.title === "Restart" && !!document.getElementById("born")?.textContent && document.getElementById("born").textContent !== ${JSON.stringify(born)}`, "the page, loaded again in a new engine", 30000);
+        if (await ev(`!document.getElementById("go_notice").hidden && document.getElementById("go_notice").dataset.connection === "1"`)) throw new Error("asked to reconnect, not connected again by itself");
+        await ev(`document.querySelector("#go_settings .close").click()`);
+        await waitFor(`!document.getElementById("go_settings").open`, "Settings closed");
         await goTo(site + "index.html", "Fixture");
     });
 
@@ -3722,6 +3762,97 @@ async function check(base, port, site, adSite) {
         if (!/^tab\?id=\d+,tab\?id=\d+$/.test(srcs)) throw new Error(`the frames are at ${srcs}`);
         // (The page left marked, and the new one's script run, connected:
         // the address it's given next taken by it, not by the bare form.)
+        await ev(`(() => { window.__leaving = true; location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
+        await waitFor(`!window.__leaving && document.readyState === "complete" && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "a tab on its own again, connected", 30000);
+    });
+
+    await step("private tabs: the account's cookies not given nor added to, shared by private tabs and forgotten with the last; no recent sites; a window one opens is private", async () => {
+        await ev(`location.href = ${JSON.stringify(new URL("go/", base).href)}`);
+        const host = new URL(site).hostname;
+        const tabDoc = (n) => `document.querySelectorAll("#frames iframe")[${n}]?.contentDocument`;
+        const inTab = (n, expr) => ev(`((document) => document ? (${expr}) : null)(${tabDoc(n)})`);
+        const count = () => ev(`document.querySelectorAll("#frames iframe").length`);
+        const connected = (n, what) => waitFor(`((d) => d?.readyState === "complete" && !!d.getElementById("go_url") && d.getElementById("go_progress")?.hidden)(${tabDoc(n)})`, what, 30000);
+        const titleOf = (n) => `(document.querySelectorAll(".tab .title")[${n}]?.textContent || "")`;
+        // A page loaded in tab n, shown (a hidden tab's view has no size),
+        // its title (the strip's) waited for.
+        const load = async (n, url, title) => {
+            await ev(`document.querySelectorAll(".tab")[${n}].click()`);
+            await inTab(n, `(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(url)}; i.form.requestSubmit(); return true; })()`);
+            await waitFor(`${titleOf(n)}.startsWith(${JSON.stringify(title)})`, `${title} in tab ${n}`, 30000).catch(async (err) => {
+                throw new Error(`${err.message} (it shows ${await ev(titleOf(n))})`);
+            });
+        };
+        const sent = async (n) => { await load(n, site + "sent", "Sent "); return (await ev(titleOf(n))).replace(/^Sent /, ""); };
+        await waitFor(`document.querySelectorAll("#frames iframe").length >= 1`, "the tabs' page", 30000);
+        await connected(0, "the first tab, connected");
+        // (Nothing kept for the site from the steps before.)
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-cookies-forget", name: ${JSON.stringify(host)} }); t.close(); })`);
+        // The account's cookie, set in a tab that isn't private.
+        await load(0, site + "cookie?set", "Cookie");
+        if ((await sent(0)) !== "kept=yes") throw new Error("the account's cookie wasn't set");
+        try { await ev(`localStorage.removeItem("tabtop-go-recent")`); } catch { /* none */ }
+        // A private tab: marked, not named in this page's title, not given
+        // the account's cookie.
+        const before = await count();
+        await ev(`document.getElementById("new_private").click()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 1}`, "a private tab");
+        const p1 = before;
+        await connected(p1, "the private tab, connected");
+        const marked = await ev(`(() => { const d = ${tabDoc(p1)}; return document.querySelectorAll(".tab")[${p1}].classList.contains("private") && d.documentElement.classList.contains("go-private") && d.getElementById("go_back").classList.contains("private") && /^Private tab/.test(d.querySelector("#go_start h1").textContent); })()`);
+        if (!marked) throw new Error("the private tab isn't marked as one");
+        if ((await sent(p1)) !== "nothing") throw new Error("a private tab was given the account's cookie");
+        if ((await ev("document.title")) !== "Private – Browser") throw new Error(`the page's title names the private tab's page: ${await ev("document.title")}`);
+        // Its own sign-in: kept for it, and for another private tab (made
+        // from its menu), not for the account's tabs nor in their jar.
+        await load(p1, site + "cookie?session", "Cookie");
+        if ((await sent(p1)) !== "signin=s") throw new Error("a private tab's own cookie wasn't kept for it");
+        if ((await ev(`localStorage.getItem("tabtop-go-recent")`)) !== null) throw new Error("a private tab's site was kept in the recent sites");
+        await inTab(p1, `(() => { document.getElementById("go_menu").click(); document.getElementById("go_menu_private").click(); return true; })()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 2} && document.querySelectorAll(".tab")[${before + 1}].classList.contains("private")`, "a second private tab, from the menu");
+        const p2 = before + 1;
+        await connected(p2, "the second private tab, connected");
+        if ((await sent(p2)) !== "signin=s") throw new Error("private tabs don't share their cookies");
+        if ((await sent(0)) !== "kept=yes") throw new Error("the account's tab got the private tab's cookie");
+        const listed = await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-cookies" }); t.close(); return t.reply.sites.find((s) => s.site === ${JSON.stringify(host)})?.cookies ?? 0; })`);
+        if (listed !== 1) throw new Error(`the account's jar lists ${listed} cookies for the site (the private tab's too?)`);
+        // A window a private tab's page opens: a private tab, nothing
+        // asked to be remembered.
+        await load(p2, site + "opener.html", "Opener");
+        await waitFor(`${tabDoc(p2)}.getElementById("go_view").getAttribute("aria-busy") !== "true"`, "the opener shown", 30000);
+        await sleep(1500);
+        const at = await ev(`(() => { const f = document.querySelectorAll("#frames iframe")[${p2}]; const r = f.getBoundingClientRect(), v = f.contentDocument.getElementById("go_view").getBoundingClientRect(); return { x: r.x + v.x + v.width / 2, y: r.y + v.y + v.height / 2 }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 3} || !${tabDoc(p2)}.getElementById("go_popup").hidden`, "the window opened, or asked about", 30000);
+        if (await count() === before + 2) {
+            if (!(await inTab(p2, `document.querySelector("#go_popup .remember").hidden`))) throw new Error("a private tab offers to remember a pop-up's answer");
+            await inTab(p2, `(document.querySelector("#go_popup .open").click(), true)`);
+        }
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 3} && /^Second/.test(${titleOf(before + 2)})`, "the opened window, in a tab of its own", 30000);
+        if (!(await ev(`document.querySelectorAll(".tab")[${before + 2}].classList.contains("private")`))) throw new Error("a window a private tab opened isn't private");
+        if ((await sent(before + 2)) !== "signin=s") throw new Error("a window a private tab opened hasn't its sign-in");
+        // The private tabs closed: their cookies forgotten; a new one starts
+        // with none.
+        for (let i = 0; i < 3; i++) {
+            await ev(`document.querySelectorAll(".tab .close")[${before}].click()`);
+            await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 2 - i}`, "a private tab closed");
+        }
+        // (Their engines ended and the session's private jar let go: the
+        // server's, at once on each tab's close, but not said to the page.)
+        await sleep(2000);
+        await ev(`document.getElementById("new_private").click()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 1}`, "a private tab again");
+        await connected(before, "the new private tab, connected");
+        if ((await sent(before)) !== "nothing") throw new Error("a new private tab had the closed ones' cookie");
+        // Kept as private through this page's reload.
+        await ev(`location.reload()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 1}`, "the tabs again", 45000);
+        await connected(before, "the private tab again, connected");
+        if (!(await ev(`document.querySelectorAll(".tab")[${before}].classList.contains("private") && ${tabDoc(before)}.documentElement.classList.contains("go-private")`))) throw new Error("a private tab came back from a reload as one that isn't");
+        await ev(`document.querySelectorAll(".tab .close")[${before}].click()`);
+        await waitFor(`document.querySelectorAll("#frames iframe").length === ${before}`, "the private tab closed");
+        // (The account's cookie forgotten: the steps after's.)
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-cookies-forget", name: ${JSON.stringify(host)} }); t.close(); })`);
         await ev(`(() => { window.__leaving = true; location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
         await waitFor(`!window.__leaving && document.readyState === "complete" && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "a tab on its own again, connected", 30000);
     });

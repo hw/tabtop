@@ -765,6 +765,7 @@ type goFrom struct {
 	page         func() string     // the page's address, for ad blocking; nil: none known
 	onAd         func(what string) // told what was refused as an ad's: a host, or an address
 	certs        *goCertExceptions // the tab's certificate exceptions (gocert.go); nil: none
+	private      bool              // for a private tab (goincognito.go): what's fetched with its cookies kept apart
 }
 
 // client is base for what f fetches: with the tab's certificate
@@ -846,7 +847,7 @@ func goReferrer(page string, u *url.URL) string {
 // from is what the tab's fetches send: its sites' cookies (siteCookies), and
 // the page shown as their Referer, if the settings say (on, at first).
 func (b *goBrowser) from() *goFrom {
-	f := &goFrom{cookies: b.siteCookies, onAd: b.adCounted, certs: b.certs, page: func() string {
+	f := &goFrom{cookies: b.siteCookies, onAd: b.adCounted, certs: b.certs, private: b.private, page: func() string {
 		b.cookies.mu.Lock()
 		defer b.cookies.mu.Unlock()
 		return b.cookies.page
@@ -872,7 +873,7 @@ func (b *goBrowser) fromNow() *goFrom {
 	b.cookies.mu.Lock()
 	page, top := b.cookies.page, b.cookies.top
 	b.cookies.mu.Unlock()
-	f := &goFrom{cookies: func(u *url.URL) string { return b.siteCookiesAt(u, top) }, page: func() string { return page }, certs: b.certs}
+	f := &goFrom{cookies: func(u *url.URL) string { return b.siteCookiesAt(u, top) }, page: func() string { return page }, certs: b.certs, private: b.private}
 	if b.sites == nil || b.sites.sendReferer() {
 		f.referer = func(u *url.URL) string { return goReferrer(page, u) }
 	}
@@ -881,8 +882,12 @@ func (b *goBrowser) fromNow() *goFrom {
 
 // goFromNoTab is what's sent for a fetch with no tab to say whose page asks
 // (a go-resource request on a tunnel of its own): the jar's cookies any
-// page may send (SameSite=None), and no Referer (no page to say).
-func (g *server) goFromNoTab() *goFrom {
+// page may send (SameSite=None), and no Referer (no page to say). For a
+// private tab's page, none: the account's aren't its (goincognito.go).
+func (g *server) goFromNoTab(private bool) *goFrom {
+	if private {
+		return &goFrom{private: true}
+	}
 	if g.goCookies == nil {
 		return nil
 	}

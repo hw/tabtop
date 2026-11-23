@@ -103,6 +103,16 @@ const inTabs = (() => {
 function toTabs(m) {
     if (inTabs) parent.postMessage({ ...m, goTab: tabId }, location.origin);
 }
+// A private tab (goincognito.go), as the tabs' page said before it began
+// (sessionStorage, never this frame's address): its sites' cookies and
+// storage the server's private tabs' own, forgotten with the last of them;
+// asked so at every connection, so a new tab made for it (a restart, a
+// token gone) is private too. Nothing of it kept on this device: no recent
+// sites, no page title in the device's history, no pop-up answer kept.
+const privateTab = (() => {
+    try { return !!tabId && sessionStorage.getItem(`tabtop-go-private:${tabId}`) === "1"; } catch { return false; }
+})();
+document.documentElement.classList.toggle("go-private", privateTab);
 const windowList = document.getElementById("go_window_list"), windowListRows = windowList.querySelector("ul");
 function hideWindowList() { windowList.hidden = true; }
 function showWindowList(tabs) {
@@ -170,11 +180,20 @@ const ICONS = {
     sites: '<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="13.5" r="1"/><circle cx="10.5" cy="15" r="1"/>',
     controls: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
     shield: '<path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/>',
+    // A private tab's: a hat and glasses, incognito.
+    private: '<path d="M3 11h18"/><path d="M6 11l1.6-6.3a1 1 0 0 1 1.3-.7L12 5.2l3.1-1.2a1 1 0 0 1 1.3.7L18 11"/><circle cx="7.5" cy="16.5" r="3"/><circle cx="16.5" cy="16.5" r="3"/><path d="M10.5 16.5c1-.8 2-.8 3 0"/>',
     // A gear (Feather's, MIT).
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
-back.innerHTML = icon("back");
+// A private tab's Back wears its mark (go.html's bar has no room for
+// another): still Back, said so by its name.
+back.innerHTML = icon(privateTab ? "private" : "back");
+if (privateTab) {
+    back.title = "Back (Alt+←): a private tab";
+    back.setAttribute("aria-label", "Back (private tab)");
+    back.classList.add("private");
+}
 forward.innerHTML = icon("forward");
 $("go_clear").innerHTML = icon("clear");
 
@@ -274,6 +293,21 @@ document.addEventListener("fullscreenchange", () => {
 
 menu.innerHTML = icon("menu");
 $("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Settings</span>`;
+// New private tab, in the menu (the tabs' strip, which has one too, isn't
+// on a phone): the tabs' page makes it.
+const newPrivate = $("go_menu_private");
+newPrivate.innerHTML = `${icon("private")}<span class="label">New private tab</span>`;
+newPrivate.hidden = !inTabs;
+newPrivate.addEventListener("click", () => {
+    openMenu(false);
+    toTabs({ type: "new-tab", private: true });
+});
+if (privateTab) {
+    const startText = start.querySelectorAll("p");
+    start.querySelector("h1").textContent = "Private tab";
+    startText[0].textContent = "Sites’ cookies and data from private tabs are kept apart from your other tabs’, on the server, in memory only, and forgotten when the last private tab closes (if this page is closed or loses its connection instead, its private tabs end 5 minutes later, or once their downloads finish). The shared cache isn’t used, and no recent sites or page titles are kept on this device.";
+    startText[1].textContent = "Downloads are still saved, site settings still apply, and sites still see the server’s address.";
+}
 // Open Site controls (go/sites) or Settings (go/settings) in a fresh
 // lightbox frame so it leaves the browser's back and forward history alone.
 const settingsBox = $("go_settings");
@@ -549,7 +583,7 @@ async function refreshMediaPolicy() {
 const menuSaves = new Map();  // a player's key -> { text, fraction, cancel, view }
 function newMedia() {
     menuSaves.clear();  // (another page's players)
-    const m = goMedia(frame, { ...mediaHelp, emeReply(message, id) {
+    const m = goMedia(frame, { ...mediaHelp, private: privateTab, emeReply(message, id) {
         if (m !== media || ws?.readyState !== TunnelSocket.OPEN) return;
         const value = JSON.stringify(message);
         if (value.length <= 49152) ws.send(JSON.stringify({ op: "event", kind: "eme-reply", id, gen: shown, value }));
@@ -952,8 +986,8 @@ function showPopupAsk() {
     const site = typeof m.site === "string" && m.site ? m.site : "This page";
     $("go_popup_text").textContent = `${site} wants to open a pop-up: ${hostOf(m.url)}`;
     popupBox.querySelector(".remember span").textContent = m.site ? `Remember for ${m.site}` : "Remember for this site";
-    popupBox.querySelector(".remember").hidden = !m.site;
-    popupBox.querySelector(".remember input").checked = true;
+    popupBox.querySelector(".remember").hidden = !m.site || privateTab;  // (a private tab keeps no answer)
+    popupBox.querySelector(".remember input").checked = !privateTab;
     popupBox.hidden = false;
     popupBox.querySelector(".open").focus();
 }
@@ -1003,7 +1037,8 @@ function update() {
     if (entry && document.activeElement !== address) showSite(entry.url);
     addressButtons();
     frame.title = entry ? entry.title || hostOf(entry.url) : "Page";
-    document.title = entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
+    // (A private tab's page isn't named: the device's history keeps it.)
+    document.title = privateTab ? "Private – Browser" : entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
     if (entry) {
         // Kept in this tab only, so that reloading it carries on (see the
         // start, below): not in the tab's own address (/go/#…), which the
@@ -1055,6 +1090,7 @@ function addressButtons() {
 // recent keeps the site of an address opened, for the start: the site
 // only (not the page), not a search, this device's only.
 function recent(url) {
+    if (privateTab) return;
     let origin;
     try {
         const u = new URL(url);
@@ -1073,7 +1109,7 @@ function recentSites() {
     } catch { return []; }
 }
 function showRecent() {
-    const list = $("go_recent"), sites = recentSites();
+    const list = $("go_recent"), sites = privateTab ? [] : recentSites();
     list.replaceChildren(...sites.map((origin) => {
         const li = document.createElement("li");
         const b = Object.assign(document.createElement("button"), { type: "button", textContent: hostOf(origin).replace(/^www\./, "") });
@@ -1279,7 +1315,7 @@ function connect() {
 function open() {
     return new Promise((resolve) => {
         const resume = resumeToken.get();
-        const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}) }, { title: "Browser" });
+        const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}), ...(privateTab ? { private: true } : {}) }, { title: "Browser" });
         show("Connecting to TabTop…");
         $("go_progress").hidden = false;
         s.onopen = () => {
@@ -1387,6 +1423,10 @@ function open() {
                 if (was) reconnect(resumeToken.get()
                     ? "Connection lost. The page carries on on the server for 5 minutes; reconnecting picks it up where it is."
                     : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
+            } else if (engineRestarting) {
+                engineRestarting = false;
+                show("The engine was restarted: loading the page again…");
+                connect().then((ok) => ok || reconnect("Can't reach the server.", connect));
             } else {
                 show("");
                 warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0, connection: true });
@@ -1598,6 +1638,11 @@ function message(m) {
         case "go-file-chooser":
             if (typeof m.chooser === "string" && m.gen === gen) askFiles(m);
             break;
+        case "go-restarting":
+            // The engine's being restarted (Settings): this tab connects
+            // again by itself once it's closed (gorestart.go).
+            engineRestarting = true;
+            break;
         case "go-drop-ready":
             if (typeof m.token === "string" && m.gen === gen) sendDropped(m.token);
             break;
@@ -1674,7 +1719,7 @@ async function fetchResource(kind, url) {
     const limit = RESOURCE_LIMITS[kind];
     if (!limit || typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("not allowed");
     if (ws?.readyState === TunnelSocket.OPEN) return viaTab(ws, kind, url, limit);
-    const t = await call({ type: "go-resource", resource: kind, url });
+    const t = await call({ type: "go-resource", resource: kind, url, ...(privateTab ? { private: true } : {}) });
     const { size, mime } = t.reply;
     if (!Number.isSafeInteger(size) || size < 0 || size > limit) {
         t.close();
@@ -1994,12 +2039,15 @@ function answerFiles(c, count) {
     }
     ws?.send(JSON.stringify({ op: "files", text: c.token, count }));
 }
-fileInput.addEventListener("cancel", () => { if (chooser) answerFiles(chooser, 0); });
+// (Not once files chosen are being sent: Chrome can say its chooser was
+// cancelled after it's given the files, measured, which would undo them.)
+fileInput.addEventListener("cancel", () => { if (chooser && !chooser.sending) answerFiles(chooser, 0); });
 fileInput.addEventListener("change", async () => {
     const c = chooser;
-    if (!c || fileInput.dataset.chooser !== c.token) return;
+    if (!c || c.sending || fileInput.dataset.chooser !== c.token) return;
     const files = [...fileInput.files];
     if (!files.length) return answerFiles(c, 0);
+    c.sending = true;
     notice.hidden = true;
     const total = files.reduce((n, f) => n + f.size, 0);
     let before = 0;
@@ -2009,7 +2057,10 @@ fileInput.addEventListener("change", async () => {
             before += file.size;
         }
         show("");
-        if (chooser !== c) return;  // the page asked again meanwhile
+        if (chooser !== c) {  // the page asked again meanwhile
+            warn("The page asked for files again before these were given to it: they weren't.", { error: false });
+            return;
+        }
         answerFiles(c, files.length);
         // The page's field, as it is here: its files' names shown. (Not the
         // files: given to a field there, files from this device have
@@ -2025,6 +2076,7 @@ fileInput.addEventListener("change", async () => {
 // token, sent with it, then dropped there by the server, each a drop of
 // its own (gouploads.go). One drop's at a time.
 let dropping = null;  // {files, at, gen}
+let engineRestarting = false;  // told so: connected again once it's closed
 function dropFiles(m) {
     const files = m.files.filter((f) => f instanceof File);
     if (!files.length) return;

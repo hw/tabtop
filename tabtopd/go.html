@@ -19,6 +19,12 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_bar button { flex: 0 0 auto; min-width: 30px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
     font: 16px system-ui, sans-serif; color: #e8e8ea; background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
 #go_bar button svg { display: block; width: 18px; height: 18px; }
+/* A private tab (go.js privateTab): a violet bar edge, and Back wearing its hat and glasses. */
+.go-private #go_bar { background: #2e2a38; border-bottom-color: #a78bfa; }
+#go_bar #go_back.private { color: #d4c4fb; }
+#go_bar #go_back.private svg { width: 20px; height: 20px; }
+#go_bar #go_back.private:disabled { color: #9d8cc4; }
+#go_menu_panel .item#go_menu_private[hidden] { display: none; }
 #go_bar button:hover:not(:disabled) { background: #3a3a3c; }
 #go_bar button:disabled { color: #6c6c70; cursor: default; }
 /* The address: the site only, but when it's being edited (the whole
@@ -305,6 +311,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
         </div>
         <div id="go_downloads"></div>
         <section id="go_menu_media" aria-labelledby="go_menu_media_h" hidden><div class="head"><h2 id="go_menu_media_h">Videos on this page</h2><button type="button" id="go_menu_autoplay"></button></div><ul></ul></section>
+        <button type="button" class="item" id="go_menu_private" hidden></button>
         <button type="button" class="item" id="go_menu_settings" aria-haspopup="dialog"></button>
     </div>
     <div id="go_history" role="menu" hidden></div>

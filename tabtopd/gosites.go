@@ -799,7 +799,8 @@ func (b *goBrowser) popupAnswer(id int, allow, remember bool) {
 		return
 	}
 	delete(b.popupAsks, id)
-	if remember && b.sites != nil && ask.site != "" {
+	// (Not from a private tab, which keeps nothing of where it went.)
+	if remember && !b.private && b.sites != nil && ask.site != "" {
 		setting := "popups-block"
 		if allow {
 			setting = "popups-allow"

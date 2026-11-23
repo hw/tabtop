@@ -1,10 +1,13 @@
 // Settings (go/settings): the browser's own, in sections: Search (the
 // address bar's engine), Network (DNS over HTTPS, godoh.go; local DNS
 // records, gohosts.go), Ad blocking (goadblock.go: on or off, its filter
-// lists, the person's own filters) and Backup (all of them, as a file).
+// lists, the person's own filters), Backup (all of them, as a file) and
+// Engine (restarting it: gorestart.go).
 // Each site's, and the defaults for them all, are in Site controls
 // (go/sites, go-sites.js).
 import { setLoginTitle } from "../tabtop/requests.js";
+import { passkeysUsable } from "../tabtop/tunnel-protocol.js";
+import { iconSVG } from "../tabtop/glyphs.js";
 import { $, ask, runner, say, told } from "./go-pages.js";
 import { addrProblem, byName, hostNameProblem, hostsText, kindOf, parseHosts, searchTemplateProblem } from "./go-settings-parse.js";
 
@@ -28,6 +31,7 @@ function render() {
     renderHosts();
     renderAds();
     renderBackup();
+    $("engine_restart").disabled = state.busy;
 }
 
 // --- Sections: jumped to by the buttons at the top (not links: a
@@ -607,3 +611,99 @@ run(load);
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && ads) run(load);
 });
+
+// --- Engine --------------------------------------------------------------------
+//
+// Restarting it (gorestart.go): every tab's engine ended, and each tab
+// loads its page again in a new one. Confirmed by the password +
+// authenticator code given again, or a passkey (its challenge asked for as
+// the dialog opens, so the browser's own asking follows the press at once).
+// The dialog stays open till it's done: what's wrong said in it, to try
+// again; done, it closes, and that's said.
+
+const b64url = (b) => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const restartDialog = $("restart_dialog");
+$("restart_passkey").querySelector(".glyph").innerHTML = iconSVG("passkey");
+let restartChallenge = null;  // a promise of a passkey's challenge, or null
+let restartBusy = "";  // "", "code" or "passkey": what's being done
+function askChallenge() {
+    restartChallenge = null;
+    if (!passkeysUsable()) return;
+    const pending = restartChallenge = ask({ type: "go-restart-challenge" }).then((r) => fromB64url(r.challenge));
+    pending.then(() => { if (restartChallenge === pending) $("restart_with_passkey").hidden = false; }, () => {});  // none added: not offered
+}
+function renderRestart() {
+    const busy = !!restartBusy;
+    $("restart_code").disabled = $("restart_cancel").disabled = $("restart_passkey").disabled = busy;
+    $("restart_go").disabled = busy || !$("restart_code").value.trim();
+    $("restart_go").textContent = restartBusy === "code" ? "Restarting…" : "Restart";
+    $("restart_passkey").querySelector(".label").textContent = restartBusy === "passkey" ? "Waiting for passkey…" : "Restart with a passkey";
+}
+function restartError(text) {
+    $("restart_error").textContent = text;
+    $("restart_error").hidden = !text;
+    $("restart_code_hint").hidden = !!text;
+}
+$("engine_restart").addEventListener("click", () => {
+    $("restart_code").value = "";
+    $("restart_with_passkey").hidden = true;
+    restartBusy = "";
+    restartError("");
+    renderRestart();
+    askChallenge();
+    restartDialog.showModal();
+    $("restart_code").focus();
+});
+$("restart_code").addEventListener("input", () => {
+    restartError("");
+    renderRestart();
+});
+$("restart_cancel").addEventListener("click", () => restartDialog.close());
+// Not dismissed (Esc) while it's restarting.
+restartDialog.addEventListener("cancel", (e) => { if (restartBusy) e.preventDefault(); });
+$("restart_form").addEventListener("submit", (e) => {
+    e.preventDefault();  // (kept open: closed once it's done)
+    const code = $("restart_code").value.trim();
+    if (code && !restartBusy) restart({ code }, "code");
+});
+$("restart_passkey").addEventListener("click", async () => {
+    const pending = restartChallenge;
+    if (!pending || restartBusy) return;
+    restartBusy = "passkey";
+    restartError("");
+    renderRestart();
+    let cred;
+    try {
+        const challenge = await pending;
+        cred = await navigator.credentials.get({ publicKey: { challenge, userVerification: "required", timeout: 110000 } });
+    } catch (err) {
+        restartBusy = "";
+        renderRestart();
+        askChallenge();  // (a fresh one: the browser may have used it)
+        restartError(err?.name === "NotAllowedError" ? "No passkey was used." : `The passkey couldn't be used: ${err?.message ?? err}`);
+        return;
+    }
+    const r = cred.response;
+    await restart({ assertion: { id: b64url(cred.rawId), authenticator_data: b64url(r.authenticatorData),
+        client_data: b64url(r.clientDataJSON), signature: b64url(r.signature), user_handle: r.userHandle ? b64url(r.userHandle) : "" } }, "passkey");
+});
+async function restart(confirm, how) {
+    restartBusy = how;
+    restartError("");
+    renderRestart();
+    try {
+        const r = await ask({ type: "go-restart", ...confirm });
+        const tabs = r?.tabs ?? 0;
+        restartBusy = "";
+        restartDialog.close();
+        say(`Engine restarted · ${tabs} ${tabs === 1 ? "tab" : "tabs"} reloaded.`);
+    } catch (err) {
+        restartBusy = "";
+        $("restart_code").value = "";  // (a code's used up, right or wrong)
+        renderRestart();
+        if (how === "passkey") askChallenge();  // (its challenge is used up)
+        restartError(err.message);
+        $("restart_code").focus();
+    }
+}

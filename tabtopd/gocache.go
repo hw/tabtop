@@ -157,12 +157,7 @@ func (g *server) routeGoCacheClear(c *tunnelCall) {
 		return
 	}
 	freed := goClearCache(g.goConfig.cache)
-	var tabs []*goBrowser
-	if g.goCookies != nil {
-		g.goCookies.mu.Lock()
-		tabs = g.goCookies.tabList()
-		g.goCookies.mu.Unlock()
-	}
+	tabs := g.goTabList().browsers() // private tabs' too
 	for _, b := range tabs {
 		b.clearCache()
 	}

@@ -106,6 +106,9 @@ var tunnelRoutes = map[string]tunnelRoute{
 
 	"go-upload": other((*server).routeGoUpload), // a file for a page's file input
 
+	"go-restart":           other((*server).routeGoRestart), // every tab's engine, on the password + code or a passkey
+	"go-restart-challenge": other((*server).routeGoRestartChallenge),
+
 	// Sessions, and the activity log: kept with file support off.
 	"logout":           other((*server).routeLogout),
 	"end-session":      other((*server).routeEndSession),

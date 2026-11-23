@@ -28,7 +28,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave, private: privateTab = false } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -50,8 +50,11 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             setTimeout(() => ahead.get(key)?.got === got && ahead.delete(key), AHEAD_KEEP);
         }
     }
+    // A tunnel of its own, for a private tab's page, says so: sent none
+    // of the account's cookies (goincognito.go).
+    const own = (req) => call(privateTab && req.type === "go-resource" ? { ...req, private: true } : req);
     async function tabCall(req) {
-        if (req.type !== "go-resource" || req.resource !== "media" || !range) return call(req);
+        if (req.type !== "go-resource" || req.resource !== "media" || !range) return own(req);
         const { url, offset = 0, length = 0, if_size: size = 0, if_mtime: mtime = "" } = req;
         const key = url + " " + offset;
         let got = ahead.get(key);
@@ -61,7 +64,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             // Not what was asked for ahead: the player went elsewhere.
             for (const k of [...ahead.keys()]) if (k.startsWith(url + " ")) ahead.delete(k);
             got = { got: part(url, offset, length, size, mtime) };
-            if (!got.got) return call(req);
+            if (!got.got) return own(req);
         }
         if (length > 0) readAhead(url, offset + length, size, mtime, length);
         const { bytes, reply } = await got.got;

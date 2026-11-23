@@ -121,6 +121,9 @@ type server struct {
 	goTabs *goTabs
 	// Its sites' localStorage, kept for the account (gostorage.go).
 	goStorage *goStorage
+	// Its private tabs' cookies and storage, by session, in memory
+	// (goincognito.go).
+	goPrivates goPrivates
 	// rootProblems are configured roots left out at startup (see
 	// parseFileRootsAll).
 	rootProblems []rootProblem

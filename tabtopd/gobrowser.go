@@ -275,6 +275,7 @@ type goBrowser struct {
 	// tab.
 	resources *http.Client
 	session   string
+	private   bool // a private tab's (goincognito.go): its fetches kept apart
 	res       *goResCache
 	serving   int
 	// What's being fetched ahead for the page shown (goprefetch.go).

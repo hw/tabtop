@@ -26,8 +26,16 @@ body.compact #strip { display: none; }
 .close:hover, .tab:hover:not([aria-selected="true"]) { background: #3a3a3c; }
 #new { flex: 0 0 auto; width: 28px; height: 28px; margin-bottom: 1px; padding: 0; color: #e8e8ea; background: none; border: 0;
     border-radius: 6px; cursor: pointer; font-size: 18px; }
-#new:hover:not(:disabled) { background: #2c2c2e; }
-#new:disabled, #overview .new:disabled { color: #6c6c70; cursor: default; }
+#new:hover:not(:disabled), #new_private:hover:not(:disabled) { background: #2c2c2e; }
+#new:disabled, #new_private:disabled, #overview .new:disabled, #overview .new-private:disabled { color: #6c6c70; cursor: default; }
+/* A private tab: a hat and glasses, and a violet edge (go.html's bar has the same). */
+#new_private { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin-bottom: 1px;
+    padding: 0; color: #c9b6f2; background: none; border: 0; border-radius: 6px; cursor: pointer; }
+#new_private svg, .tab .mark svg, #overview .pick svg { display: block; width: 16px; height: 16px; }
+.tab.private { box-shadow: inset 0 2px 0 #a78bfa; }
+.tab .mark { flex: 0 0 auto; color: #c9b6f2; }
+#overview li.private { background: #2e2a38; }
+#overview li .pick svg { display: inline-block; margin-right: 8px; vertical-align: -3px; color: #c9b6f2; }
 #strip { grid-row: 1; }
 #frames { grid-row: 2; position: relative; min-height: 0; }
 #frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #1c1c1e; }
@@ -47,10 +55,10 @@ body.compact #strip { display: none; }
 #overview li .close { width: 44px; height: 44px; font-size: 18px; }
 button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
 </style>
-<div id="strip"><div id="tabs" role="tablist" aria-label="Tabs"></div><button type="button" id="new" title="New tab" aria-label="New tab">+</button></div>
+<div id="strip"><div id="tabs" role="tablist" aria-label="Tabs"></div><button type="button" id="new" title="New tab" aria-label="New tab">+</button><button type="button" id="new_private" aria-label="New private tab"></button></div>
 <div id="frames"></div>
 <section id="overview" aria-label="Tabs" hidden>
-    <header><h1>Tabs</h1><button type="button" class="new">New tab</button><button type="button" class="done">Done</button></header>
+    <header><h1>Tabs</h1><button type="button" class="new">New tab</button><button type="button" class="new-private" aria-label="New private tab">Private</button><button type="button" class="done">Done</button></header>
     <ul></ul>
 </section>
 <script type="module" src="go-tabs.js"></script>
