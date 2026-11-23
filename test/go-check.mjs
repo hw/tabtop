@@ -3696,6 +3696,10 @@ async function check(base, port, site, adSite) {
         const deep = `const deep = (root, sel) => { const hit = root.querySelector(sel); if (hit) return hit; for (const el of root.querySelectorAll("*")) if (el.shadowRoot) { const f = deep(el.shadowRoot, sel); if (f) return f; } return null; };`;
         const active = `(() => { let a = document.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a?.tagName; })()`;
         await frameWait(`(() => { ${deep} return !!deep(document, "input"); })()`, "the innermost frame's field", 30000);
+        // The page's frame given the focus first, as a click into it would:
+        // a sandboxed frame without it can't take it by script (Chrome 158,
+        // measured; once it has it, script moves it within).
+        await ev(`document.getElementById("go_view").focus()`);
         await frame(`(() => { ${deep} deep(document, "input").focus(); })()`);
         if ((await frame(active)) !== "INPUT") throw new Error("the field couldn't be focused");
         const tick = () => frame(`(() => { ${deep} return deep(document, "#tick")?.textContent; })()`);
