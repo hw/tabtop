@@ -87,7 +87,6 @@
     const drawMethods = new Set(["drawArrays", "drawElements", "drawArraysInstanced", "drawElementsInstanced", "drawRangeElements"]);
     const frameWrites = new Set(["clear", "clearBufferfi", "clearBufferfv", "clearBufferiv", "clearBufferuiv", ...drawMethods]);
     const compactStateMethods = new Set(["clearColor", "clearDepth", "clearStencil", "colorMask", "depthMask", "depthFunc", "depthRange", "blendColor", "blendEquation", "blendEquationSeparate", "blendFunc", "blendFuncSeparate", "cullFace", "frontFace", "lineWidth", "polygonOffset", "polygonModeWEBGL", "sampleCoverage", "scissor", "viewport", "stencilFunc", "stencilFuncSeparate", "stencilMask", "stencilMaskSeparate", "stencilOp", "stencilOpSeparate", "drawBuffers", "enable", "disable", ...locationMethods]);
-    let nextContext = 0;
 
     function signal(canvas, name) {
         try { apply(originalDispatch, canvas, [new EventCtor(name, { bubbles: true })]); } catch { /* detached canvas */ }
@@ -331,8 +330,8 @@
         state.commands = kept.filter(Boolean);
         if (compactIndependentState) state.commands = compactBinds(state.commands);
         state.bytes = state.commands.reduce((sum, command) => sum + JSON.stringify(command).length, 0);
-        state.cursor = 0;
-        state.forceFull = true;
+        state.sent = 0;
+        state.wholeNext = true;
     }
     // compactBinds drops the binds nothing kept after them may use: each
     // kind's last is kept (the state the log leaves), and one before
@@ -393,7 +392,7 @@
     function stateFor(canvas, gl, version = 1) {
         let state = contexts.get(gl);
         if (!state) {
-            state = { canvas, gl, id: ++nextContext, version, attributes: contextAttributeMask(gl), objects: new WeakMap(), objectKinds: new WeakMap(), locationPrograms: new WeakMap(), framebufferDirty: new Map(), drawIDShaders: new Set(), nextObject: 0, locations: new Map(), currentProgram: 0, commands: [], cursor: 0, bytes: 0, bad: false, forceFull: true,
+            state = { canvas, gl, version, attributes: contextAttributeMask(gl), objects: new WeakMap(), objectKinds: new WeakMap(), locationPrograms: new WeakMap(), framebufferDirty: new Map(), drawIDShaders: new Set(), nextObject: 0, locations: new Map(), currentProgram: 0, commands: [], sent: 0, bytes: 0, bad: false, wholeNext: true,
                 shadow: { activeTexture: gl.TEXTURE0, buffers: new Map(), textures: new Map(), samplers: new Map(), pixelStore: new Map(), vertexArrayElementBuffers: new Map(), framebuffer: null, drawFramebuffer: null, readFramebuffer: null, renderbuffer: null, program: null, enabled: new Set(), viewport: [0, 0, canvas.width, canvas.height], clearColor: [0, 0, 0, 0], clearDepth: 1, clearStencil: 0, colorMask: [true, true, true, true], depthMask: true, stencilMasks: { front: 0xFFFFFFFF, back: 0xFFFFFFFF } } };
             contexts.set(gl, state);
             contextByCanvas.set(canvas, state);
@@ -412,9 +411,9 @@
                 state.framebufferDirty = new Map();
                 state.drawIDShaders = new Set();
                 state.commands = [];
-                state.cursor = 0;
+                state.sent = 0;
                 state.bytes = 0;
-                state.forceFull = true;
+                state.wholeNext = true;
                 state.bad = false;
                 state.shadow = { activeTexture: gl.TEXTURE0, buffers: new Map(), textures: new Map(), samplers: new Map(), pixelStore: new Map(), vertexArrayElementBuffers: new Map(), framebuffer: null, drawFramebuffer: null, readFramebuffer: null, renderbuffer: null, program: null, enabled: new Set(), viewport: [0, 0, canvas.width, canvas.height], clearColor: [0, 0, 0, 0], clearDepth: 1, clearStencil: 0, colorMask: [true, true, true, true], depthMask: true, stencilMasks: { front: 0xFFFFFFFF, back: 0xFFFFFFFF } };
                 signal(canvas, "__tabtop_webgl_dirty");
@@ -999,16 +998,26 @@
         if (typeof reply === "string") tellFrame("__tabtop_frame_canvas_reply", JSON.stringify({ index: request.index, reply }));
     }, true);
 
-    // The agent couldn't send what it just read (its batch was full): read
-    // it again next time, whole if it was meant to be whole.
+    // The capture protocol, with the agent (goagent.js's canvasPixels), on a
+    // canvas's events:
+    //   __tabtop_webgl_capture, "full" or "delta": the agent takes the log,
+    //     whole or the calls since it last took it (from state.sent), in
+    //     __tabtop_canvas_pixels's reply: {gl: {v, w, h, r, version,
+    //     attributes}}, as it goes on to the server and the viewer (r: whole),
+    //     or {e} if it can't be had. Whole, too, if the log was replaced
+    //     since (compacted, the context lost and back: state.wholeNext).
+    //   __tabtop_webgl_undo, "full" or "delta": the agent gives back what it
+    //     just took (its batch had no room): state.lastTake puts sent and
+    //     wholeNext back as they were, so it's taken again next time.
+    //   __tabtop_webgl_dirty, from here: the canvas was drawn on.
     // On the window, not the document: a frame navigated from its first
     // (about:blank) document keeps its window, and this script isn't run again.
     globalThis.addEventListener("__tabtop_webgl_undo", (event) => {
         const state = event.target instanceof Canvas ? contextByCanvas.get(event.target) : null;
-        if (!state?.undo) return;
-        state.cursor = Math.min(state.undo.cursor, state.commands.length);
-        state.forceFull = state.undo.forceFull || event.detail === "full";
-        state.undo = null;
+        if (!state?.lastTake) return;
+        state.sent = Math.min(state.lastTake.sent, state.commands.length);
+        state.wholeNext = state.lastTake.wholeNext || event.detail === "full";
+        state.lastTake = null;
     }, true);
     globalThis.addEventListener("__tabtop_webgl_capture", (event) => {
         const canvas = event.target;
@@ -1020,13 +1029,13 @@
             if (state.bad) result = { e: "unsupported" };
             else {
                 try {
-                    const full = event.detail === "full" || state.forceFull === true;
-                    const g = JSON.stringify(full ? state.commands : state.commands.slice(state.cursor));
-                    result = g.length <= maxJSON ? { g, w: canvas.width, h: canvas.height, c: state.id, r: full, version: state.version, attributes: state.attributes } : { e: "large" };
-                    if (g.length <= maxJSON) {
-                        state.undo = { cursor: state.cursor, forceFull: state.forceFull === true };
-                        state.cursor = state.commands.length;
-                        state.forceFull = false;
+                    const full = event.detail === "full" || state.wholeNext === true;
+                    const v = JSON.stringify(full ? state.commands : state.commands.slice(state.sent));
+                    result = v.length <= maxJSON ? { gl: { v, w: canvas.width, h: canvas.height, r: full, version: state.version, attributes: state.attributes } } : { e: "large" };
+                    if (v.length <= maxJSON) {
+                        state.lastTake = { sent: state.sent, wholeNext: state.wholeNext === true };
+                        state.sent = state.commands.length;
+                        state.wholeNext = false;
                     }
                 } catch { result = { e: "unsupported" }; }
             }

@@ -251,15 +251,10 @@ type goNode struct {
 	Type      int         `json:"t"`
 	Name      string      `json:"n,omitempty"`
 	Value     string      `json:"v,omitempty"`
-	Base      string      `json:"b,omitempty"` // base URL of an embedded document
-	FrameDoc  int         `json:"f,omitempty"` // identity of a separately read iframe document
-	CanvasPNG string      `json:"p,omitempty"` // bounded Canvas2D PNG, base64
-	CanvasGL  string      `json:"g,omitempty"` // bounded WebGL command log, JSON
-	CanvasGLW int         `json:"gw,omitempty"`
-	CanvasGLH int         `json:"gh,omitempty"`
-	CanvasGLR bool        `json:"gr,omitempty"`
-	CanvasGLV int         `json:"gv,omitempty"`
-	CanvasGLA int         `json:"ga,omitempty"` // context attributes bitmask plus one; zero means absent
+	Base      string      `json:"b,omitempty"`  // base URL of an embedded document
+	FrameDoc  int         `json:"f,omitempty"`  // identity of a separately read iframe document
+	CanvasPNG string      `json:"p,omitempty"`  // bounded Canvas2D PNG, base64
+	GL        *goGLLog    `json:"gl,omitempty"` // bounded WebGL command log, whole
 	CanvasErr string      `json:"pe,omitempty"` // why the canvas has no readable pixels
 	glStream  *goGLStream // the WebGL log's state, for the deltas after it
 	Attrs     []string    `json:"a,omitempty"`
@@ -318,13 +313,12 @@ func goClean(n *goNode) *goNode {
 		}
 		if strings.EqualFold(n.Name, "canvas") {
 			n.glStream = nil
-			if n.CanvasGL != "" {
-				stream, ok := goCanvasGLCheck(n.CanvasGL, n.CanvasGLW, n.CanvasGLH, n.CanvasGLV, nil)
+			if n.GL != nil {
+				stream, ok := n.GL.check(nil)
 				n.glStream = stream
-				if !ok || n.CanvasGLA < 1 || n.CanvasGLA > 64 {
+				if !ok {
 					n.glStream = nil
-					n.CanvasGL = ""
-					n.CanvasGLA = 0
+					n.GL = nil
 					n.CanvasErr = "unsupported"
 				}
 				n.CanvasPNG = ""
@@ -332,13 +326,13 @@ func goClean(n *goNode) *goNode {
 				n.CanvasPNG = ""
 				n.CanvasErr = "unavailable"
 			}
-			if n.CanvasPNG == "" && n.CanvasGL == "" {
+			if n.CanvasPNG == "" && n.GL == nil {
 				n.CanvasErr = goCanvasError(n.CanvasErr)
-			} else if n.CanvasPNG != "" || n.CanvasGL != "" {
+			} else if n.CanvasPNG != "" || n.GL != nil {
 				n.CanvasErr = ""
 			}
 		} else {
-			n.CanvasPNG, n.CanvasGL, n.CanvasGLW, n.CanvasGLH, n.CanvasGLR, n.CanvasGLV, n.CanvasGLA, n.CanvasErr = "", "", 0, 0, false, 0, 0, ""
+			n.CanvasPNG, n.GL, n.CanvasErr = "", nil, ""
 		}
 		var attrs []string
 		for i := 0; i+1 < len(n.Attrs); i += 2 {

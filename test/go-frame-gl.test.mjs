@@ -295,3 +295,17 @@ test("a WebGL canvas given up for a 2D note is greyed, its context lost; a 2D on
     assert.equal(giveUp(plain), false);
     assert.equal(plain.style.backgroundColor, undefined);
 });
+
+test("a log as the server sends it ({v, w, h, r, version, attributes}) is replayed; anything else isn't", () => {
+    const { webglLog } = makeGL();
+    const el = fakeCanvas();
+    webglLog(el, { v: clearTo(1), w: 16, h: 8, r: true, version: 2, attributes: 27 }, true);
+    assert.ok(mirrored(el), el.title);
+    assert.equal(el.getContext("webgl2")?.type, "webgl2");
+    assert.deepEqual([el.width, el.height], [16, 8]);
+    for (const log of [null, "[]", { v: clearTo(1), w: 16, h: 8, version: 3, attributes: 27 }, { v: clearTo(1), w: 16, h: 8, version: 1, attributes: 64 }]) {
+        const other = fakeCanvas();
+        webglLog(other, log, true);
+        assert.match(other.title, /unavailable/, JSON.stringify(log));
+    }
+});

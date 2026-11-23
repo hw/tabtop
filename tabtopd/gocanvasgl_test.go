@@ -13,7 +13,7 @@ import (
 // says what came out: "g" (forwarded) or "p" (the canvas marked unsupported).
 func glOps(t *testing.T, streams map[int]*goGLStream, id int, log string, full bool, version int) string {
 	t.Helper()
-	raw, _ := json.Marshal(map[string]any{"o": "g", "i": id, "v": log, "w": 10, "h": 10, "r": full, "version": version, "attributes": 27})
+	raw, _ := json.Marshal(map[string]any{"o": "g", "i": id, "gl": map[string]any{"v": log, "w": 10, "h": 10, "r": full, "version": version, "attributes": 27}})
 	seen := goSeen{gl: streams}
 	out := goCleanOps([]json.RawMessage{raw}, &seen)
 	if len(out) != 1 {
@@ -69,8 +69,8 @@ func TestGoCanvasGLDeltas(t *testing.T) {
 // TestGoCanvasGLStreamsFromSnapshot: a snapshot's canvases start the
 // streams their changes continue.
 func TestGoCanvasGLStreamsFromSnapshot(t *testing.T) {
-	doc := &goNode{ID: 1, Type: 9, Kids: []*goNode{{ID: 2, Type: 1, Name: "canvas", CanvasGL: `[{"m":"createBuffer","a":[],"r":1,"rt":"buffer"}]`, CanvasGLW: 4, CanvasGLH: 4, CanvasGLV: 2, CanvasGLA: 28},
-		{ID: 3, Type: 1, Name: "canvas", CanvasGL: `[{"m":"nope","a":[]}]`, CanvasGLW: 4, CanvasGLH: 4, CanvasGLV: 2, CanvasGLA: 28}}}
+	doc := &goNode{ID: 1, Type: 9, Kids: []*goNode{{ID: 2, Type: 1, Name: "canvas", GL: &goGLLog{Log: `[{"m":"createBuffer","a":[],"r":1,"rt":"buffer"}]`, W: 4, H: 4, Full: true, Version: 2, Attributes: 27}},
+		{ID: 3, Type: 1, Name: "canvas", GL: &goGLLog{Log: `[{"m":"nope","a":[]}]`, W: 4, H: 4, Full: true, Version: 2, Attributes: 27}}}}
 	if goClean(doc) == nil {
 		t.Fatal("snapshot refused")
 	}
@@ -79,7 +79,7 @@ func TestGoCanvasGLStreamsFromSnapshot(t *testing.T) {
 	if streams[2] == nil || !streams[2].objects[1] || streams[3] != nil {
 		t.Fatalf("streams: %v", streams)
 	}
-	if doc.Kids[1].CanvasErr != "unsupported" || doc.Kids[1].CanvasGL != "" {
+	if doc.Kids[1].CanvasErr != "unsupported" || doc.Kids[1].GL != nil {
 		t.Fatalf("an invalid log kept: %+v", doc.Kids[1])
 	}
 	if got := glOps(t, streams, 2, `[{"m":"bindBuffer","a":[34962,{"ref":1}]}]`, false, 2); got != "g" {
@@ -195,14 +195,14 @@ func TestGoCanvasGLMethodLists(t *testing.T) {
 func TestGoCanvasGLCanvasesBounded(t *testing.T) {
 	doc := &goNode{ID: 1, Type: 9}
 	for i := 0; i < goGLStreamsMax+4; i++ {
-		doc.Kids = append(doc.Kids, &goNode{ID: 10 + i, Type: 1, Name: "canvas", CanvasGL: `[]`, CanvasGLW: 4, CanvasGLH: 4, CanvasGLV: 1, CanvasGLA: 28})
+		doc.Kids = append(doc.Kids, &goNode{ID: 10 + i, Type: 1, Name: "canvas", GL: &goGLLog{Log: `[]`, W: 4, H: 4, Full: true, Version: 1, Attributes: 27}})
 	}
 	goClean(doc)
 	streams := map[int]*goGLStream{}
 	goGLStreamsOf(doc, streams)
 	shown := 0
 	for _, k := range doc.Kids {
-		if k.CanvasGL != "" {
+		if k.GL != nil {
 			shown++
 		} else if k.CanvasErr != "unsupported" {
 			t.Fatalf("a canvas past the bound: %+v", k)
@@ -388,6 +388,46 @@ func TestGoCanvasGLTablesInStep(t *testing.T) {
 	} {
 		if c.server != c.hook || c.server != c.viewer {
 			t.Errorf("%s: gocanvasgl.go %d, gogl.js %d, %s %d", c.what, c.server, c.hook, glViewerJS, c.viewer)
+		}
+	}
+}
+
+// TestGoCanvasGLLogShape: a WebGL log goes on to the viewer in one shape,
+// in a snapshot's canvas and in a change alike ({v, w, h, r, version,
+// attributes}: go-frame-gl.js's webglLog), and only with what's known of
+// it; attributes past the bitmask's six bits are refused.
+func TestGoCanvasGLLogShape(t *testing.T) {
+	const want = `{"v":"[]","w":4,"h":4,"r":true,"version":1,"attributes":27}`
+	raw, _ := json.Marshal(map[string]any{"o": "g", "i": 5, "gl": map[string]any{"v": "[]", "w": 4, "h": 4, "r": true, "version": 1, "attributes": 27, "extra": "dropped"}})
+	seen := goSeen{gl: map[int]*goGLStream{}}
+	out, _ := json.Marshal(goCleanOps([]json.RawMessage{raw}, &seen))
+	if string(out) != `[{"gl":`+want+`,"i":5,"o":"g"}]` {
+		t.Errorf("a change's log: %s", out)
+	}
+	var node goNode
+	if json.Unmarshal([]byte(`{"i":2,"t":1,"n":"canvas","gl":{"v":"[]","w":4,"h":4,"r":true,"version":1,"attributes":27}}`), &node) != nil || goClean(&node) == nil {
+		t.Fatal("snapshot canvas refused")
+	}
+	if b, _ := json.Marshal(node.GL); string(b) != want {
+		t.Errorf("a snapshot canvas's log: %s", b)
+	}
+	for _, attributes := range []int{-1, 64} {
+		node := goNode{ID: 2, Type: 1, Name: "canvas", GL: &goGLLog{Log: "[]", W: 4, H: 4, Full: true, Version: 1, Attributes: attributes}}
+		goClean(&node)
+		if node.GL != nil || node.CanvasErr != "unsupported" {
+			t.Errorf("attributes %d: %+v", attributes, node)
+		}
+	}
+}
+
+// TestGoGLCaptureEvents: the page's hook (gogl.js) and its agent
+// (goagent.js) name the capture protocol's events alike.
+func TestGoGLCaptureEvents(t *testing.T) {
+	hook, _ := os.ReadFile("gogl.js")
+	agent, _ := os.ReadFile("goagent.js")
+	for _, event := range []string{"__tabtop_webgl_capture", "__tabtop_webgl_undo", "__tabtop_webgl_dirty", "__tabtop_canvas_pixels", "__tabtop_frame_canvas", "__tabtop_frame_canvas_reply", "__tabtop_frame_canvas_dirty"} {
+		if !strings.Contains(string(hook), `"`+event+`"`) || !strings.Contains(string(agent), `"`+event+`"`) {
+			t.Errorf("%s isn't in both gogl.js and goagent.js", event)
 		}
 	}
 }

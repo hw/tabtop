@@ -1873,18 +1873,14 @@ func goCanvasOp(op map[string]any, path []int) map[string]any {
 
 // goChangeOp is one of a batch's changes (goagent.js's ops).
 type goChangeOp struct {
-	O          string    `json:"o"`
-	I          int       `json:"i"`
-	N          string    `json:"n"`
-	V          *string   `json:"v"`
-	PE         string    `json:"pe"`
-	W          int       `json:"w"`
-	H          int       `json:"h"`
-	R          bool      `json:"r"`
-	Version    int       `json:"version"`
-	Attributes int       `json:"attributes"`
-	Path       []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
-	C          []*goNode `json:"c"`
+	O    string    `json:"o"`
+	I    int       `json:"i"`
+	N    string    `json:"n"`
+	V    *string   `json:"v"`
+	PE   string    `json:"pe"`
+	GL   *goGLLog  `json:"gl"`   // o "g"
+	Path []int     `json:"path"` // a canvas's iframes, outermost first: a same-origin frame's
+	C    []*goNode `json:"c"`
 }
 
 // goCleanOps takes event handler attributes and what's never shown out of a

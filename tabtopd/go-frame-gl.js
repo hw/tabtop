@@ -437,6 +437,15 @@ globalThis.goFrameGL = (host) => {
         }
         return el;
     }
+    // webglLog replays a canvas's WebGL log as the server sends it, in a
+    // snapshot's canvas (gl) or a change (o "g"): {v: the calls, JSON;
+    // w, h; r: whole; version; attributes} (gocanvasgl.go's goGLLog). Whole
+    // (reset), it's replayed from a context's first state; else it's the
+    // calls since the last.
+    function webglLog(el, log, reset, d) {
+        if (!log || typeof log !== "object") log = {};
+        return webglFrame(el, log.v, log.w, log.h, log.version, log.attributes, reset, d);
+    }
     // forget gives up el's replay context, for a new canvas put in its
     // place (go-frame.js's freshCanvas): whether a failed replay greyed it.
     function forget(el) {
@@ -460,5 +469,5 @@ globalThis.goFrameGL = (host) => {
         }
         return !!glCanvases.get(el)?.gl;
     }
-    return { webglFrame, glDrop, forget, giveUp, glCheck, glLimits };
+    return { webglLog, webglFrame, glDrop, forget, giveUp, glCheck, glLimits };
 };

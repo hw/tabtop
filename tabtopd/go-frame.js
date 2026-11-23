@@ -1200,7 +1200,7 @@
     const canvasNoted = new WeakMap();  // a canvas given a note's title -> its own title and label
     // WebGL replay (go-frame-gl.js).
     const webgl = globalThis.goFrameGL({ current: () => current, drawn2D: (el) => canvasDraws.has(el), replaceCanvas: (d, el) => freshCanvas(d, el) });
-    const webglFrame = webgl.webglFrame;
+    const webglLog = webgl.webglLog;
     // freshCanvas puts a new canvas in place of el, for a full WebGL log to
     // be replayed from a context's first state: the old context's objects
     // and state, or a 2D fallback drawn on it, can't be taken back.
@@ -1290,7 +1290,7 @@
         }
         own(d, n.i, el);
         d.report.elements++;
-        if (typeof n.g === "string") webglFrame(el, n.g, n.gw, n.gh, n.gv, Number.isInteger(n.ga) && n.ga >= 1 && n.ga <= 64 ? n.ga - 1 : 27, true, d);
+        if (n.gl) webglLog(el, n.gl, true, d);  // (a snapshot's: whole)
         else canvasFrame(el, n.p, n.pe);
         return el;
     }
@@ -1849,7 +1849,7 @@
                 }
                 const el = at?.nodes.get(op.i);
                 if (el?.localName !== "canvas") continue;  // its frame's copy read again since
-                if (op.o === "g" && typeof op.v === "string") webglFrame(el, op.v, op.w, op.h, op.version, op.attributes, op.r === true, at);
+                if (op.o === "g" && typeof op.gl?.v === "string") webglLog(el, op.gl, op.gl.r === true, at);
                 else if (op.o === "p") canvasFrame(el, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
                 continue;
             }
@@ -1868,8 +1868,8 @@
                     canvasFrame(target, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
                     break;
                 case "g":
-                    if (target.localName !== "canvas" || typeof op.v !== "string") return resync(d);
-                    webglFrame(target, op.v, op.w, op.h, op.version, op.attributes, op.r === true, d);
+                    if (target.localName !== "canvas" || typeof op.gl?.v !== "string") return resync(d);
+                    webglLog(target, op.gl, op.gl.r === true, d);
                     break;
                 case "c":
                     if (frameRoots.has(target)) {

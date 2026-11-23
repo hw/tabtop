@@ -432,11 +432,18 @@
             try {
                 const result = JSON.parse(event.detail);
                 if (typeof result?.p === "string" && result.p.length <= (1 << 20)) canvasReplies.set(el, { p: result.p });
-                else if (typeof result?.g === "string" && result.g.length <= (4 << 20) && Number.isInteger(result.w) && Number.isInteger(result.h) && [1, 2].includes(result.version) && Number.isInteger(result.attributes) && result.attributes >= 0 && result.attributes <= 63 && result.w > 0 && result.h > 0 && result.w <= 4096 && result.h <= 4096) canvasReplies.set(el, { g: result.g, w: result.w, h: result.h, r: result.r === true, version: result.version, attributes: result.attributes });
+                else if (glLogValid(result?.gl)) canvasReplies.set(el, { gl: { v: result.gl.v, w: result.gl.w, h: result.gl.h, r: result.gl.r === true, version: result.gl.version, attributes: result.gl.attributes } });
                 else if (["unsupported", "tainted", "large"].includes(result?.e)) canvasReplies.set(el, { e: result.e });
             } catch { /* malformed or forged canvas notification */ }
         }
         document.addEventListener("__tabtop_canvas_pixels", canvasReply, true);
+        // glLogValid says whether a hook's reply carries a WebGL log, as one
+        // goes on to the server and the viewer (gogl.js's capture protocol):
+        // {v: the calls, JSON; w, h; r: whole; version; attributes}.
+        function glLogValid(gl) {
+            return !!gl && typeof gl === "object" && typeof gl.v === "string" && gl.v.length <= (4 << 20) && Number.isInteger(gl.w) && Number.isInteger(gl.h) && [1, 2].includes(gl.version)
+                && Number.isInteger(gl.attributes) && gl.attributes >= 0 && gl.attributes <= 63 && gl.w > 0 && gl.h > 0 && gl.w <= 4096 && gl.h <= 4096;
+        }
         function canvasDirty(event) {
             const el = event.target;
             if (isCanvas(el) && known(el) && el.isConnected && dirtyCanvases.size < 64) dirtyCanvases.add(el);
@@ -466,15 +473,15 @@
             canvasReplies.delete(el);
             try {
                 tell(el, "__tabtop_webgl_capture", full ? "full" : "delta");
-                const gl = canvasReplies.get(el);
-                if (gl?.g) {
+                const reply = canvasReplies.get(el), gl = reply?.gl;
+                if (gl) {
                     const actualFull = full || gl.r === true;
                     // A batch's WebGL logs: 3 MB of updates, 4 MB of whole
                     // ones; the first of either up to 4 MB (a log's most),
                     // so one never waits for good. (A frame's: a quarter.)
                     const spent = actualFull ? canvasGLSnapshotBytes : canvasGLReadBytes;
                     const canvasCap = canvasCapNow();
-                    if (spent + gl.g.length > (actualFull ? canvasCap : canvasCap * 3 / 4) && !(spent === 0 && gl.g.length <= canvasCap)) {
+                    if (spent + gl.v.length > (actualFull ? canvasCap : canvasCap * 3 / 4) && !(spent === 0 && gl.v.length <= canvasCap)) {
                         // Given back to gogl.js (whole, if it was), and read
                         // with the next changes; a whole one shown unavailable
                         // till then, so read whole then too (canvasWhole).
@@ -483,12 +490,12 @@
                         if (full) canvasWhole.add(el);
                         return full ? { e: "large" } : { later: true };
                     }
-                    canvasGLReadBytes += gl.g.length;
-                    if (actualFull) canvasGLSnapshotBytes += gl.g.length;
+                    canvasGLReadBytes += gl.v.length;
+                    if (actualFull) canvasGLSnapshotBytes += gl.v.length;
                     if (known(el)) glSent.set(el, ids.get(el));
-                    return gl;
+                    return reply;
                 }
-                if (gl?.e) return gl;
+                if (reply?.e) return reply;
                 tell(el, "__tabtop_canvas_capture", null);
             } catch { return { e: "unsupported" }; }
             const result = canvasReplies.get(el) ?? { e: "unsupported" };
@@ -588,7 +595,7 @@
             if (name === "canvas") {
                 const pixels = canvasPixels(n, true);
                 if (pixels.p) out.p = pixels.p;
-                if (pixels.g) { out.g = pixels.g; out.gw = pixels.w; out.gh = pixels.h; out.gr = pixels.r; out.gv = pixels.version; out.ga = pixels.attributes + 1; }
+                if (pixels.gl) out.gl = pixels.gl;
                 if (pixels.e) out.pe = pixels.e;
             }
             let c;
@@ -900,7 +907,7 @@
                 const pixels = canvasPixels(el, canvasWhole.delete(el));
                 const where = path.length ? { path } : {};
                 if (pixels.later) canvasLater.add(el);
-                else if (pixels.g) ops.push({ o: "g", i: ids.get(el), v: pixels.g, w: pixels.w, h: pixels.h, r: pixels.r, version: pixels.version, attributes: pixels.attributes, ...where });
+                else if (pixels.gl) ops.push({ o: "g", i: ids.get(el), gl: pixels.gl, ...where });
                 else ops.push({ o: "p", i: ids.get(el), v: pixels.p ?? "", pe: pixels.e ?? "", ...where });
                 canvasFrames++;
             }

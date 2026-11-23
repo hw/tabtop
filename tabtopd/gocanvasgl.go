@@ -194,6 +194,30 @@ func goCanvasGLRefsValid(raw json.RawMessage, objects map[int]bool) bool {
 	return check(value, 0)
 }
 
+// goGLLog is a canvas's WebGL command log as it comes from the page's
+// hook (gogl.js's capture protocol), by way of its agent, in a snapshot's
+// canvas (gl) and in a change (o "g"), and as it goes on to the viewer
+// (go-frame-gl.js's webglLog): the calls (JSON), the canvas's size, whether
+// it's whole or the calls since the last, the WebGL version and the
+// context's attributes (a bitmask).
+type goGLLog struct {
+	Log        string `json:"v"`
+	W          int    `json:"w"`
+	H          int    `json:"h"`
+	Full       bool   `json:"r"`
+	Version    int    `json:"version"`
+	Attributes int    `json:"attributes"`
+}
+
+// check checks the log: a whole one when prior is nil, else the calls
+// since the last, continuing prior (see goCanvasGLCheck).
+func (l *goGLLog) check(prior *goGLStream) (*goGLStream, bool) {
+	if l == nil || l.Attributes < 0 || l.Attributes > 63 {
+		return nil, false
+	}
+	return goCanvasGLCheck(l.Log, l.W, l.H, l.Version, prior)
+}
+
 // goGLStream is what the server knows of one canvas's WebGL command stream
 // across change batches: which objects its log has created and which
 // extensions it has turned on, so that a delta (only the calls since the last
@@ -355,7 +379,7 @@ func goGLStreamsOf(n *goNode, streams map[int]*goGLStream) {
 			streams[n.ID] = n.glStream
 		} else {
 			// One too many: shown as unsupported, as it couldn't go on.
-			n.glStream, n.CanvasGL, n.CanvasGLW, n.CanvasGLH, n.CanvasGLR, n.CanvasGLV, n.CanvasGLA = nil, "", 0, 0, false, 0, 0
+			n.glStream, n.GL = nil, nil
 			n.CanvasErr = "unsupported"
 		}
 	}
@@ -391,23 +415,23 @@ func (seen *goSeen) glOp(op *goChangeOp) map[string]any {
 	// A delta continues the stream the server has checked so far;
 	// without one (refused before, or never sent whole) it's refused.
 	var prior *goGLStream
-	ok := op.V != nil && op.Attributes >= 0 && op.Attributes <= 63
-	if ok && !op.R {
+	ok := op.GL != nil
+	if ok && !op.GL.Full {
 		prior = seen.glStream(op.I)
 		ok = prior != nil
 	}
-	if _, known := seen.glStreamOK(op.I); ok && op.R && !known && seen.glFull() {
+	if _, known := seen.glStreamOK(op.I); ok && op.GL.Full && !known && seen.glFull() {
 		ok = false // one WebGL canvas too many
 	}
 	var stream *goGLStream
 	if ok {
-		stream, ok = goCanvasGLCheck(*op.V, op.W, op.H, op.Version, prior)
+		stream, ok = op.GL.check(prior)
 	}
 	if ok && seen != nil && seen.gl != nil {
 		seen.gl[op.I] = stream
 	}
 	if ok {
-		return goCanvasOp(map[string]any{"o": "g", "i": op.I, "v": *op.V, "w": op.W, "h": op.H, "r": op.R, "version": op.Version, "attributes": op.Attributes}, op.Path)
+		return goCanvasOp(map[string]any{"o": "g", "i": op.I, "gl": op.GL}, op.Path)
 	}
 	if seen != nil && seen.gl != nil {
 		delete(seen.gl, op.I)

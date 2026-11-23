@@ -165,8 +165,8 @@ test("the log carries attributes by name, and a delta the agent couldn't send is
     gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const full = read(canvas, "full");
-    assert.equal(full.r, true);
-    const log = JSON.parse(full.g);
+    assert.equal(full.gl?.r, true);
+    const log = JSON.parse(full.gl?.v);
     const pointer = log.find((c) => c.m === "vertexAttribPointer");
     assert.deepEqual(pointer.a[0], { location: "p", program: log.find((c) => c.m === "createProgram").r });
     assert.equal(log.find((c) => c.m === "getAttribLocation").name, "p");
@@ -174,13 +174,13 @@ test("the log carries attributes by name, and a delta the agent couldn't send is
     gl.disableVertexAttribArray(at);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const delta = read(canvas);
-    assert.equal(delta.r, false);
-    assert.deepEqual(JSON.parse(delta.g).map((c) => c.m), ["disableVertexAttribArray", "drawArrays"]);
+    assert.equal(delta.gl?.r, false);
+    assert.deepEqual(JSON.parse(delta.gl?.v).map((c) => c.m), ["disableVertexAttribArray", "drawArrays"]);
     undo(canvas);
-    assert.equal(read(canvas).g, delta.g, "given back, the same calls are read again");
-    assert.equal(read(canvas).g, "[]");
+    assert.equal(read(canvas).gl?.v, delta.gl?.v, "given back, the same calls are read again");
+    assert.equal(read(canvas).gl?.v, "[]");
     undo(canvas, "full");
-    assert.equal(read(canvas).r, true, "a whole log given back is sent whole");
+    assert.equal(read(canvas).gl?.r, true, "a whole log given back is sent whole");
 });
 
 test("an extension the mirror can't replay is refused to the page, not fatal", () => {
@@ -190,7 +190,7 @@ test("an extension the mirror can't replay is refused to the page, not fatal", (
     assert.equal(gl.getExtension("WEBGL_debug_renderer_info"), null);
     assert.ok(!gl.getSupportedExtensions().includes("WEBGL_debug_renderer_info"));
     gl.clear(gl.COLOR_BUFFER_BIT);
-    assert.ok(read(canvas, "full").g, "the canvas is still mirrored");
+    assert.ok(read(canvas, "full").gl?.v, "the canvas is still mirrored");
     gl.finish();
     gl.flush();
 });
@@ -226,7 +226,7 @@ test("compaction keeps the binds what's kept after them needs", () => {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         read(canvas);
     }
-    const log = JSON.parse(read(canvas, "full").g);
+    const log = JSON.parse(read(canvas, "full").gl?.v);
     const upload = log.findIndex((c) => c.m === "texImage2D");
     assert.ok(upload > 0, "the upload lost");
     const before = log.slice(0, upload).filter((c) => c.m === "bindTexture").at(-1);
@@ -250,7 +250,7 @@ test("compaction doesn't keep a copy of the canvas without the draws it copied (
         const got = read(canvas);
         if (got?.e) return;                                         // given up: shown as unsupported, not wrong
         if (frame % 100 !== 99) continue;
-        const log = JSON.parse(read(canvas, "full").g);
+        const log = JSON.parse(read(canvas, "full").gl?.v);
         read(canvas);
         let drawn = false;
         for (const c of log) {
