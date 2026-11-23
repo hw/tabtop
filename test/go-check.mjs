@@ -3005,8 +3005,9 @@ async function check(base, port, site, adSite) {
         }
         // The player: the video taken into it, full screen, kept to its
         // proportions; its speed and back 10 s; closed, given back.
-        await waitFor(`[...document.querySelectorAll("#go_menu_media li .acts button")].some((b) => /^Watch /.test(b.getAttribute("aria-label") || "") && !b.disabled)`, "Watch offered");
-        // Watch stays first in the acts row.
+        // Watch stays first in the acts row: the first video's, pressed once
+        // it's offered (any's offered, the first's could still be loading).
+        await waitFor(`(() => { const b = document.querySelector("#go_menu_media li .acts button:nth-child(1)"); return /^Watch /.test(b?.getAttribute("aria-label") || "") && !b.disabled; })()`, "Watch offered for the first video");
         await press("#go_menu_media li .acts button:nth-child(1)");
         await waitFor(`!!document.querySelector("#video_player .stage video") && document.fullscreenElement?.id === "video_player"`, "the video in the player, full screen", 10000);
         const shape = await ev(`(() => { const v = document.querySelector("#video_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
