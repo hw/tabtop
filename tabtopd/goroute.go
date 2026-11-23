@@ -297,7 +297,15 @@ var goCanvasGL2Methods = func() map[string]bool {
 var goCanvasGLExtensionMethods = map[string]string{
 	"createVertexArray": "OES_vertex_array_object", "bindVertexArray": "OES_vertex_array_object", "deleteVertexArray": "OES_vertex_array_object",
 	"drawArraysInstanced": "ANGLE_instanced_arrays|WEBGL_multi_draw", "drawElementsInstanced": "ANGLE_instanced_arrays|WEBGL_multi_draw", "vertexAttribDivisor": "ANGLE_instanced_arrays", "drawBuffers": "WEBGL_draw_buffers",
-	"enableiOES": "OES_draw_buffers_indexed", "disableiOES": "OES_draw_buffers_indexed", "blendEquationiOES": "OES_draw_buffers_indexed", "blendEquationSeparateiOES": "OES_draw_buffers_indexed", "blendFunciOES": "OES_draw_buffers_indexed", "blendFuncSeparateiOES": "OES_draw_buffers_indexed", "colorMaskiOES": "OES_draw_buffers_indexed",
+}
+
+// goCanvasGLExtensionCommands are an extension's own calls (not WebGL2's
+// under another name): refused unless it's turned on, in either version
+// (go-frame.js's extensionCommandMethods).
+var goCanvasGLExtensionCommands = map[string]string{
+	"enableiOES": "OES_draw_buffers_indexed", "disableiOES": "OES_draw_buffers_indexed", "blendEquationiOES": "OES_draw_buffers_indexed", "blendEquationSeparateiOES": "OES_draw_buffers_indexed",
+	"blendFunciOES": "OES_draw_buffers_indexed", "blendFuncSeparateiOES": "OES_draw_buffers_indexed", "colorMaskiOES": "OES_draw_buffers_indexed",
+	"polygonModeWEBGL": "WEBGL_polygon_mode",
 }
 
 func goCanvasGLArg(raw json.RawMessage) bool {
@@ -529,7 +537,7 @@ func goCanvasGLCheck(encoded string, width, height, version int, prior *goGLStre
 		if !goCanvasGLMethods[command.Method] || command.Args == nil || len(command.Args) > 16 {
 			return nil, false
 		}
-		if strings.HasSuffix(command.Method, "iOES") && (version != 2 || !extensions["OES_draw_buffers_indexed"]) {
+		if extension, ok := goCanvasGLExtensionCommands[command.Method]; ok && !extensions[extension] {
 			return nil, false
 		}
 		if version == 1 && goCanvasGL2Methods[command.Method] {

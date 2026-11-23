@@ -214,3 +214,24 @@ func TestGoCanvasGLCanvasesBounded(t *testing.T) {
 		t.Fatalf("a full log for one already there: %s", got)
 	}
 }
+
+// TestGoCanvasGLExtensionCommands: an extension's own call is refused
+// unless its extension was turned on, in WebGL1 and WebGL2 alike, as the
+// viewer refuses it (go-frame.js's extensionCommandMethods).
+func TestGoCanvasGLExtensionCommands(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		for _, c := range []struct {
+			log  string
+			want bool
+		}{
+			{`[{"m":"polygonModeWEBGL","a":[1032,6913]}]`, false},
+			{`[{"m":"getExtension","a":["WEBGL_polygon_mode"]},{"m":"polygonModeWEBGL","a":[1032,6913]}]`, true},
+			{`[{"m":"enableiOES","a":[3042,0]}]`, false},
+			{`[{"m":"getExtension","a":["OES_draw_buffers_indexed"]},{"m":"enableiOES","a":[3042,0]}]`, version == 2},
+		} {
+			if got := goCanvasGLValid(c.log, 4, 4, version); got != c.want {
+				t.Errorf("WebGL%d %s: valid %v, want %v", version, c.log, got, c.want)
+			}
+		}
+	}
+}
