@@ -29,6 +29,10 @@ import { call, collect, setLoginTitle } from "../tabtop/requests.js";
 import { goMedia } from "./go-media.js";
 import { mseStageKeeper } from "./mse-stages.js";
 
+// Files on, on this server: where a file the page leads to, a video, or a
+// stream is saved (Downloads). Off, nothing here offers to save one.
+const filesOn = pages.some((p) => p.id === "files");
+
 // Address-bar search engines (Settings; gosites.go's goSearchEngines).
 // prefix is the URL up to and including the query parameter's "="; param
 // is that parameter's name (for showing the words searched for).
@@ -462,18 +466,18 @@ const mediaHelp = {
     // how it goes there; where Files are off, not offered.
     // (The likeliest first, the player's picker taking it: the longest,
     // not an ad's, which isn't offered; see savedStreams.)
-    streamsToSave: () => savedStreams().map(({ url, about }) => ({
+    streamsToSave: filesOn ? () => savedStreams().map(({ url, about }) => ({
         url,
         staleSince: manifestsStale,
         label: streamName(url, about),
         save: (say, opts) => saveFile(url, say, true, undefined, opts),
-    })),
-    download: pages.some((p) => p.id === "files") ? (url, say, opts) => saveFile(url, say, false, undefined, opts) : null,
+    })) : () => [],
+    download: filesOn ? (url, say, opts) => saveFile(url, say, false, undefined, opts) : null,
     // A clear Media Source buffer the player already has (no HLS/DASH
     // manifest): spilled to the server while it plays, remuxed on Save.
-    saveMSE: pages.some((p) => p.id === "files") ? (stream, say, opts) => saveMSECapture(stream, say, opts) : null,
-    spillMSE: pages.some((p) => p.id === "files") ? (stream, ev) => spillMSECapture(stream, ev) : null,
-    abortMSE: pages.some((p) => p.id === "files") ? (stream) => abortMSECapture(stream) : null,
+    saveMSE: filesOn ? (stream, say, opts) => saveMSECapture(stream, say, opts) : null,
+    spillMSE: filesOn ? (stream, ev) => spillMSECapture(stream, ev) : null,
+    abortMSE: filesOn ? (stream) => abortMSECapture(stream) : null,
 };
 
 // mediaMenu lists the page's videos and sounds at the menu's top: how
@@ -718,7 +722,7 @@ function mediaMenu() {
     // with its Save.
     const offered = players.some((p) => p.saveable && media?.saver(p.key)?.stream);
     // (Not the page's last place's: it's moved in itself since.)
-    const streams = offered || manifestsStale !== undefined || !pages.some((p) => p.id === "files") ? [] : savedStreams().slice(0, 4);
+    const streams = offered || manifestsStale !== undefined || !filesOn ? [] : savedStreams().slice(0, 4);
     menu.classList.toggle("has-media", players.length > 0);
     menu.setAttribute("aria-label", players.length ? `Menu (${players.length} playing or loading on this page)` : "Menu");
     section.hidden = !players.length && !streams.length;
@@ -1440,7 +1444,7 @@ function message(m) {
                 manifests.clear();
                 manifestsStale = undefined;
             }
-            if (typeof m.url !== "string" || !pages.some(p => p.id === "files")) break;
+            if (typeof m.url !== "string" || !filesOn) break;
             const num = (v, most) => (Number.isFinite(v) && v > 0 && v <= most ? v : 0);
             const about = { height: num(m.height, 100000), duration: num(m.duration, 1e7), live: m.live === true };
             // Offered again, with more said of it (how long, once known):
@@ -1938,7 +1942,7 @@ dialog.querySelector("form").addEventListener("submit", (e) => { e.preventDefaul
 // page does, never through this device.
 function offerFile(url, mime) {
     const what = `This is a file from ${hostOf(url)} (${mime || "unknown type"}), not a page.`;
-    if (!pages.some((p) => p.id === "files")) {
+    if (!filesOn) {
         warn(`${what} Files are turned off on this server, so it can't be saved here.`, { error: false });
         return;
     }
@@ -2377,7 +2381,7 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
     }
 }
 
-if (pages.some(p => p.id === "files")) {
+if (filesOn) {
     try {
         for (const job of JSON.parse(sessionStorage.getItem(downloadKey) || "[]")) {
             if (!/^[0-9a-f]{16}$/.test(job?.id) || typeof job.label !== "string") continue;
