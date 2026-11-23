@@ -1256,13 +1256,21 @@
     const glAttached = new WeakSet();  // of those, the ones seen in the page
     // When the viewer's contexts were lost (GPU resets), in the last minute:
     // a reset loses them all at once, and counts once (losses within a
-    // second of its first). After 3, no more WebGL here till they're older.
-    let glResets = [];
-    const glResetsLately = (now = performance.now()) => (glResets = glResets.filter((t) => now - t < 60000)).length;
+    // second of its first). After 3, no more WebGL here for a minute, and
+    // each time again after for twice as long as the last (a page that
+    // keeps resetting the GPU, with new canvases, isn't let go on).
+    let glResets = [], glOffUntil = 0, glOffTimes = 0;
+    const glOff = (now = performance.now()) => now < glOffUntil;
+    // glReset counts a context lost, and is whether WebGL's off now.
     function glReset() {
         const now = performance.now();
+        glResets = glResets.filter((t) => now - t < 60000);
         if (!glResets.length || now - glResets.at(-1) >= 1000) glResets.push(now);
-        return glResetsLately(now);
+        if (glResets.length >= 3 && !glOff(now)) {
+            glOffUntil = now + 60000 * 2 ** Math.min(glOffTimes++, 10);
+            glResets = [];
+        }
+        return glOff(now);
     }
     // Calls a string may be passed to, and those a sequence may (uniform*v
     // and the like): WebGL would turn any other string or array into a
@@ -1467,7 +1475,7 @@
             if (mirror?.failed) throw new Error("WebGL mirror requires a full snapshot");
             if (!reset && !mirror) throw new Error("WebGL calls without their log");
             if (!mirror) {
-                if (glResetsLately() >= 3) throw new Error("WebGL off after repeated GPU resets");
+                if (glOff()) throw new Error("WebGL off after repeated GPU resets");
                 // Those gone from the copy give theirs up: of a document since
                 // replaced (still shown while the next is made), or seen in it
                 // and not now. (One being made, in a snapshot not yet shown,
@@ -1494,7 +1502,7 @@
                         // Given back at most once, and not a context we gave up
                         // or one whose replay failed: a log that resets the GPU
                         // isn't replayed again and again.
-                        if (current?.history && !current.failed && !current.restored && glReset() < 3) event.preventDefault();
+                        if (current?.history && !current.failed && !current.restored && !glReset()) event.preventDefault();
                         else glLive.delete(el);
                         if (current) current.failed = true;
                         el.title = "WebGL content is unavailable in the remote view";
