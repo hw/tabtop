@@ -53,7 +53,13 @@ export async function checkTextDiff({ container, inContainer, open, listed, row,
         if (!await ev(`(()=>{const d=${dialog}, t=d.querySelector("table");return d.getBoundingClientRect().width <= innerWidth && t.getBoundingClientRect().width <= d.clientWidth && d.querySelectorAll("thead th").length === 2})()`)) throw new Error("narrow comparison overflowed or lost a side");
         await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         await cdp("Emulation.setEmulatedMedia", { features: [] });
+        // A change in the folder while comparing redraws its listing (its
+        // Compare button a new one): focus goes back to it all the same.
+        await ev(`document.querySelector("button.compare-files").dataset.before = "1"`);
+        inContainer("touch", root + "/changed.txt");
+        await waitFor(`${listed}.includes("changed.txt") && !document.querySelector("button.compare-files").dataset.before`, "the listing redrawn");
         await close();
+        inContainer("rm", root + "/changed.txt");
         if (!await ev(`document.activeElement.matches("button.compare-files")`)) throw new Error("focus wasn't restored");
     });
     await step("diff: change navigation across paged rows", async () => {

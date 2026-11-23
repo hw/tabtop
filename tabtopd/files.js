@@ -221,18 +221,21 @@ function renderFolder({ dir, reply, kept, arrived, refresh }) {
     setTimeZone(reply.tz || undefined);
     const selected = folder.selected;
     const count = el("span");
+    // A comparison closed gives the focus back to its Compare button: the
+    // one shown then, if the listing's been redrawn (the folder changed).
+    const refocus = (name) => () => page.querySelector(`button.${name}:not([hidden])`)?.focus({ preventScroll: true });
     const compare = button("compare-files", "Compare text", () => {
         const entries = [...selected.values()];
         if (!comparableText(entries)) return;
         const sides = entries.map(e => ({ name: e.name, label: join(dir, e.name), load: signal => loadDiffText(join(dir, e.name), signal) }));
-        openTextDiff({ left: sides[0], right: sides[1] });
+        openTextDiff({ left: sides[0], right: sides[1], restoreFocus: refocus("compare-files") });
     });
     compare.title = "Compare these two text files, side by side";
     const compareImages = button("compare-images", "Compare images", () => {
         const entries = [...selected.values()];
         if (!comparableImages(entries)) return;
         const [a, b] = entries.map(entry => ({ name: entry.name, path: join(dir, entry.name) }));
-        openImageDiff({ a, b });
+        openImageDiff({ a, b, restoreFocus: refocus("compare-images") });
     });
     compareImages.title = "Compare these two images: A / B / delta";
     // Each comparison is offered only while what's selected can be compared

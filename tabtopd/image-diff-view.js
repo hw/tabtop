@@ -87,7 +87,9 @@ function compute(a, b, signal) {
     });
 }
 
-export function openImageDiff({ a, b, initialMode = "side" }) {
+// Closed, it gives the focus back as openTextDiff does (restoreFocus, if
+// what had it is gone).
+export function openImageDiff({ a, b, initialMode = "side", restoreFocus = null }) {
     const focus = document.activeElement, controller = new AbortController(), { signal } = controller;
     const sources = [], canvases = [], viewports = [], figures = [], controls = [];
     const closeButton = el("button", { type: "button", className: "image-diff-close close-glyph", title: "Close (Esc)", ariaLabel: "Close" });
@@ -358,6 +360,7 @@ export function openImageDiff({ a, b, initialMode = "side" }) {
         opacityPanel.remove(); gainPanel.remove();
         if (dialog.open) dialog.close(); dialog.remove();
         if (focus?.isConnected) focus.focus({ preventScroll: true });
+        else restoreFocus?.();
     };
     closeButton.addEventListener("click", stop); dialog.addEventListener("close", stop);
     dialog.addEventListener("cancel", event => { event.preventDefault(); stop(); });

@@ -100,7 +100,9 @@ function metadata(doc) {
 
 // Each side supplies {name, label, text} or {name, label, load(signal)}.
 // Return immediately so a caller leaving its editor can cancel this dialog.
-export function openTextDiff({ left, right }) {
+// Closed, it gives the focus back to what had it, or, if that's gone (a
+// listing redrawn under it), to restoreFocus's choice.
+export function openTextDiff({ left, right, restoreFocus = null }) {
     const focus = document.activeElement;
     const controller = new AbortController();
     const { signal } = controller;
@@ -141,6 +143,7 @@ export function openTextDiff({ left, right }) {
         if (dialog.open) dialog.close();
         dialog.remove();
         if (focus?.isConnected) focus.focus({ preventScroll: true });
+        else restoreFocus?.();
     };
     closeButton.addEventListener("click", stop);
     dialog.addEventListener("close", stop);
