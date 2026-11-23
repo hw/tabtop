@@ -390,12 +390,20 @@ type goClientMsg struct {
 	// whether it was a tap (an end that didn't move).
 	// mouse in an embedded page: its element, by the frame's own number
 	// (ID being its iframe's).
-	Frame  int            `json:"frame"`
-	FDoc   int            `json:"fdoc"`            // which of its documents Frame is of (its world, as its copy came)
-	Route  []int          `json:"route,omitempty"` // iframe owner IDs, outermost to innermost
-	Docs   []int          `json:"docs,omitempty"`  // parent document identities for Route
-	Points []goTouchPoint `json:"points"`
-	Tap    bool           `json:"tap"`
+	Frame int   `json:"frame"`
+	FDoc  int   `json:"fdoc"`            // which of its documents Frame is of (its world, as its copy came)
+	Route []int `json:"route,omitempty"` // iframe owner IDs, outermost to innermost
+	// Rich text (contenteditable; goinput.go): the copy's selection, [anchor,
+	// offset, focus, offset] by node number; a key that edits (Edit: not
+	// done in the copy, for the engine to type); an edit that isn't a key
+	// (kind "edit": InputType, as a beforeinput's, and Value its text).
+	Sel       []int          `json:"sel,omitempty"`
+	Edit      bool           `json:"edit"`
+	InputType string         `json:"inputType"`
+	HTML      string         `json:"html"`           // a paste's, its text styled
+	Docs      []int          `json:"docs,omitempty"` // parent document identities for Route
+	Points    []goTouchPoint `json:"points"`
+	Tap       bool           `json:"tap"`
 	// drag: Type over, drop or cancel, at the element and place a mouse
 	// event's are; what's dragged in from outside (its kinds, as it's
 	// dragged over; itself, dropped).
@@ -1696,6 +1704,9 @@ type goChanges struct {
 	} `json:"asked"`
 	// Where the page scrolled its elements itself (goobserve.js).
 	Scrolls []goScroll `json:"scrolls"`
+	// Where rich text's caret is (goagent.js's caret), with what an edit
+	// changed: [anchor, offset, focus, offset].
+	Sel []int `json:"sel"`
 }
 
 // goScroll is where the page scrolled one of its elements itself, for the
@@ -1809,6 +1820,9 @@ func (b *goBrowser) readChanges() {
 				if strings.HasPrefix(b.docURL, "https://") && len(c.EME) <= 4 {
 					changes["eme"] = c.EME
 				}
+				if sel := goSel(c.Sel); sel != nil && len(ops) > 0 {
+					changes["sel"] = sel
+				}
 				// What its new classes and ids bring to hide, with them.
 				if hide := b.moreHiding(seen.nodes, seen.attrs); len(hide) > 0 {
 					changes["hide"] = hide
@@ -1836,7 +1850,8 @@ func (b *goBrowser) readChanges() {
 // given (goinput.go).
 func (b *goBrowser) actNow(ctx context.Context, world int, m goClientMsg) (string, error) {
 	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.ID, "value": m.Value, "checked": m.Checked, "key": m.Key,
-		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": m.Submitter, "x": m.SX, "y": m.SY})
+		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": m.Submitter, "x": m.SX, "y": m.SY,
+		"sel": goSel(m.Sel), "edit": m.Edit, "inputType": m.InputType, "html": m.HTML})
 	arg, _ := json.Marshal(string(a))
 	_, res, err := b.evaluate(ctx, world, "__tabtop.act("+string(arg)+")")
 	return res, err
@@ -1970,8 +1985,8 @@ func (b *goBrowser) act(m goClientMsg) {
 		case m.Kind == "key" && m.Type == "up":
 			// A key's press is done by script, all of it (keydown,
 			// keypress, keyup; Enter sending its form): its release is in it.
-		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus":
-			if len(m.Value) <= maxGoURL*8 {
+		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus", m.Kind == "edit":
+			if len(m.Value)+len(m.HTML) <= maxGoURL*8 {
 				b.actInFrame(m)
 			}
 		}
@@ -1989,6 +2004,9 @@ func (b *goBrowser) act(m goClientMsg) {
 		return
 	case m.Kind == "key" && (m.Type == "down" || m.Type == "up"):
 		b.key(m)
+		return
+	case m.Kind == "edit":
+		b.edit(m)
 		return
 	}
 	switch m.Kind {

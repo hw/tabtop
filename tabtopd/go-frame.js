@@ -1835,6 +1835,10 @@
             // the next video, by its style or an ancestor's): looked at again.
             if (media.size) mediaLater();
         }
+        // Rich text focused here, and whether the batch changes it: its
+        // caret's then put where the engine's is.
+        const active = d === doc && richText(document.activeElement) ? document.activeElement : null;
+        let edited = false;
         // (A batch may bring only what the page observes: no changes.)
         for (const op of Array.isArray(m.ops) ? m.ops : []) {
             if (!op || typeof op !== "object") continue;
@@ -1861,6 +1865,7 @@
                 continue;
             }
             if (target === null) continue;  // left out
+            if (active?.contains(target)) edited = true;
             if (target.nodeType === 1 && mediaChanged(d, target, op)) continue;
             switch (op.o) {
                 case "p":
@@ -1909,7 +1914,8 @@
                     break;
                 }
                 case "t":
-                    if (target.nodeType === 3) target.data = String(op.v ?? "");
+                    // (The same, not set again: a caret in it would move.)
+                    if (target.nodeType === 3 && target.data !== String(op.v ?? "")) target.data = String(op.v ?? "");
                     break;
                 case "v":
                     // A field's value set by the page's script (cleared once
@@ -1929,6 +1935,7 @@
         if (d === building) (d.ioLater ??= []).push(...(Array.isArray(m.io) ? m.io : []));
         else observeAll(d, m.io);
         if (d === doc) scrollAsked(d, m.scrolls);
+        if (edited && active.isConnected) caretFrom(d, m.sel, active);
         mediaLater();  // boxes added, gone or moved
         if (typeof m.title === "string") tell({ type: "title", gen: d.gen, title: m.title });
     }
@@ -2565,8 +2572,108 @@
         flush(at.node);  // what was typed, before the key that may use it
         if (type === "down" && (e.key === "Enter" || e.key === " ")) lastActivation = performance.now();
         if (type === "down" && e.key === "Enter") lastEnter = performance.now();
-        send("key", at.id, { phase: type, ...frameFields(at), key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e) });
+        // Rich text: a key that edits it is the engine's to do, where the
+        // caret is here (see goinput.go), not done here too.
+        const edit = type === "down" && editsRich(e) && richText(at.node);
+        if (edit) e.preventDefault();
+        else if (type === "down" && richText(at.node)) caretMoved = true;  // (an arrow, Home, Ctrl+A: the caret's moved here)
+        send("key", at.id, { phase: type, ...frameFields(at), key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, repeat: e.repeat, ...mods(e),
+            ...(edit ? { edit: true, sel: movedTo(real(e)) } : {}) });
     }
+    // --- Rich text (contenteditable) --------------------------------------
+    //
+    // Edited in the engine, as typed there (goinput.go): a key that edits
+    // it isn't done here (keyEvent), and nor is an edit that isn't a key (a
+    // phone's keyboard, a paste, a spelling fixed): sent, with where the
+    // selection is here (its nodes by number). An IME's word is made here,
+    // as it's chosen, and sent once it's done. What the engine made of it
+    // comes back, and its caret with it (applyTo).
+    const richText = (n) => {
+        const el = n?.nodeType === 1 ? n : n?.parentElement;
+        return !!el?.isContentEditable && !/^(input|textarea|select)$/.test(el.localName);
+    };
+    // A key that edits: a character (not with Ctrl or ⌘, but AltGr's),
+    // Enter, Backspace, Delete; Ctrl (⌘) with B, I, U (styles), Z, Y (undo).
+    const editsRich = (e) => e.key === "Enter" || e.key === "Backspace" || e.key === "Delete"
+        || [...e.key].length === 1 && (!(e.ctrlKey || e.metaKey) || e.ctrlKey && e.altKey)
+        || (e.ctrlKey || e.metaKey) && !e.altKey && /^[biuzy]$/i.test(e.key);
+    // numberOf is a node's number in its page (an embedded page's, in its
+    // copy), or 0.
+    function numberOf(n) {
+        const root = n?.getRootNode?.();
+        if (root instanceof ShadowRoot) return frameRoots.get(root.host)?.child?.ids.get(n) ?? 0;
+        return doc?.ids.get(n) ?? 0;
+    }
+    // A selection (or a range) by number: [anchor, offset, focus, offset];
+    // undefined if a node of it isn't the engine's.
+    function byNumber(a, ao, f, fo) {
+        const an = numberOf(a), fn = numberOf(f);
+        return an && fn ? [an, ao, fn, fo] : undefined;
+    }
+    function selectionIn(el) {
+        const root = el?.getRootNode?.();
+        const s = root instanceof ShadowRoot && root.getSelection ? root.getSelection() : getSelection();
+        return s?.anchorNode ? byNumber(s.anchorNode, s.anchorOffset, s.focusNode, s.focusOffset) : undefined;
+    }
+    // The selection's sent only once the person's moved it here (a click,
+    // a tap, an arrow): otherwise the engine's is where it was left, after
+    // the edits before, which this copy may not show yet (each sent with
+    // where the caret was here, the keys typed fast would go in at one
+    // place, last first).
+    let caretMoved = false;
+    function movedTo(el) {
+        if (!caretMoved) return undefined;
+        caretMoved = false;
+        return selectionIn(el);
+    }
+    for (const type of ["mousedown", "touchend"]) document.addEventListener(type, (e) => { if (e.isTrusted) caretMoved = true; }, true);
+    // (Composition events aren't asked to be trusted: Chrome's, made by its
+    // input protocol, aren't; and nothing here makes any.)
+    let composing = null;  // an IME's word being chosen: the selection it replaces
+    document.addEventListener("compositionstart", (e) => {
+        const el = real(e);
+        composing = richText(el) ? movedTo(el) ?? [] : null;
+    }, true);
+    document.addEventListener("compositionend", (e) => {
+        const el = real(e), at = targetOf(el), was = composing;
+        composing = null;
+        if (!at || !richText(at.node) || !e.data) return;
+        send("edit", at.id, { inputType: "insertText", value: e.data.slice(0, EDIT_MAX), sel: was?.length ? was : undefined, ...frameFields(at) });
+    }, true);
+    const EDIT_MAX = 20000;  // characters an edit puts in (goinput.go's goEditMax, in bytes)
+    document.addEventListener("beforeinput", (e) => {
+        const el = real(e), at = targetOf(el);
+        if (!e.isTrusted || !at || !richText(at.node)) return;
+        // (The IME's, sent once its word's done; a paste, as a paste.)
+        if (e.inputType === "insertCompositionText" || e.inputType === "insertFromPaste" || !e.cancelable) return;
+        e.preventDefault();
+        const r = e.getTargetRanges?.()[0];
+        // (A range it names, a word fixed, say: that; else the caret's.)
+        const sel = r && !r.collapsed ? byNumber(r.startContainer, r.startOffset, r.endContainer, r.endOffset) : movedTo(el);
+        const value = e.data ?? e.dataTransfer?.getData("text/plain") ?? "";
+        send("edit", at.id, { inputType: e.inputType, value: value.slice(0, EDIT_MAX), sel, ...frameFields(at) });
+    }, true);
+    document.addEventListener("paste", (e) => {
+        const el = real(e), at = targetOf(el);
+        if (!e.isTrusted || !at || !richText(at.node)) return;
+        e.preventDefault();
+        // Its text, and its HTML (styled, as a browser pastes it) if both fit.
+        const text = (e.clipboardData?.getData("text/plain") ?? "").slice(0, EDIT_MAX);
+        let html = e.clipboardData?.getData("text/html") ?? "";
+        if (text.length + html.length > EDIT_MAX) html = "";
+        if (text) send("edit", at.id, { inputType: "insertFromPaste", value: text, html, sel: movedTo(el), ...frameFields(at) });
+    }, true);
+    // caretFrom puts the caret where the engine's is ([anchor, offset,
+    // focus, offset]), in the rich text focused here, after what it changed
+    // there; not while an IME's word is being chosen.
+    function caretFrom(d, sel, host) {
+        if (composing || !Array.isArray(sel) || sel.length !== 4) return;
+        const a = d.nodes.get(sel[0]), f = d.nodes.get(sel[2]);
+        if (!a || !f || !host.contains(a) || !host.contains(f)) return;
+        const end = (n, at) => Math.max(0, Math.min(Number(at) || 0, n.nodeType === 3 ? n.data.length : n.childNodes.length));
+        try { getSelection().setBaseAndExtent(a, end(a, sel[1]), f, end(f, sel[3])); } catch { /* left */ }
+    }
+
     document.addEventListener("keydown", (e) => keyEvent(e, "down"), true);
     document.addEventListener("keyup", (e) => keyEvent(e, "up"), true);
     // What has the focus here has it there, for the keys that follow.

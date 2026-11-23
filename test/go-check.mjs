@@ -257,6 +257,31 @@ try {
         // The same in its CSS, which the copy's styles go by.
         "schemecss.html": `<!doctype html><title>Scheme CSS</title><style>#c { color: rgb(1, 1, 1); } @media (prefers-color-scheme: dark) { #c { color: rgb(2, 2, 2); } }</style><p id="c">css</p>`,
         "scheme.html": `<!doctype html><title>Scheme</title><p id="s"></p><script>const q = matchMedia("(prefers-color-scheme: dark)"); const say = () => { document.getElementById("s").textContent = q.matches ? "dark" : "light"; }; say(); q.addEventListener("change", say);</script>`,
+        // Rich text (contenteditable): what the engine's page holds, said
+        // in #got (its paragraphs, | between); a chat box Enter sends
+        // (Shift+Enter a new line), as a messenger's does.
+        "editable.html": `<!doctype html><title>Editable</title>
+<div id="ed" contenteditable="true"><p>hello</p></div>
+<p id="got">engine: hello</p>
+<div id="chat" contenteditable="true"></div><ul id="sent"></ul>
+<iframe id="fr" src="editable-frame.html" style="width: 300px; height: 120px"></iframe>
+<script>
+const ed = document.getElementById("ed"), got = document.getElementById("got"), chat = document.getElementById("chat");
+const say = () => { got.textContent = "engine: " + [...ed.childNodes].map((n) => n.textContent).join("|"); };
+ed.addEventListener("input", say);
+chat.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    const li = document.createElement("li");
+    li.textContent = chat.textContent;
+    document.getElementById("sent").append(li);
+    chat.textContent = "";
+});
+</script>`,
+        // Rich text in an embedded page (edited by script there).
+        "editable-frame.html": `<!doctype html><title>Editable frame</title>
+<div id="fed" contenteditable="true"><p>in</p></div><p id="fgot">frame: in</p>
+<script>const fed = document.getElementById("fed"); fed.addEventListener("input", () => { document.getElementById("fgot").textContent = "frame: " + [...fed.childNodes].map((n) => n.textContent).join("|"); });</script>`,
         "interact.html": `<!doctype html><title>Interact</title>
 <p id="status">ready</p>
 <button id="add">Add</button><ul id="list"></ul>
@@ -935,7 +960,7 @@ async function check(base, port, site, adSite) {
     // default export, given the steps' helpers, to look into a site.
     if (process.env.GO_PROBE) {
         const probe = (await import(new URL(process.env.GO_PROBE, `file://${process.cwd()}/`).href)).default;
-        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, frameClick, cdp, goTo, waitFor, sleep, writeFileSync, site, adSite })).catch(() => { process.exitCode = 1; });
+        await step("probe (GO_PROBE)", () => probe({ ev, frame, frameWait, frameClick, cdp, goTo, waitFor, sleep, writeFileSync, site, adSite, browser })).catch(() => { process.exitCode = 1; });
         ws.close();
         browser.close();
         process.exit();
@@ -1791,6 +1816,63 @@ async function check(base, port, site, adSite) {
         await browser.press("Enter");
         await frameWait(`document.getElementById("list").textContent.includes("todo milk")`, "the to-do");
         await frameWait(`document.getElementById("todo").value === ""`, "the field cleared");
+    });
+
+    await step("rich text (contenteditable): typed, deleted, a new paragraph, text put in (a phone's keyboard, a paste), in the engine's page; a chat box's Enter sends", async () => {
+        await goTo(site + "editable.html", "Editable");
+        const engine = (text) => frameWait(`document.getElementById("got").textContent === ${JSON.stringify("engine: " + text)}`, `the engine's page to hold ${JSON.stringify(text)}`);
+        const shown = (text) => frameWait(`[...document.getElementById("ed").childNodes].map((n) => n.textContent).join("|") === ${JSON.stringify(text)}`, `the copy to show ${JSON.stringify(text)}`);
+        // The caret at the end of "hello", here.
+        await frameClick("#ed p");
+        await frame(`(() => { const t = document.querySelector("#ed p").firstChild; getSelection().setBaseAndExtent(t, 5, t, 5); })()`);
+        await browser.type(" world");
+        await engine("hello world");
+        await shown("hello world");
+        for (let i = 0; i < 5; i++) await browser.press("Backspace");
+        await engine("hello ");
+        await shown("hello ");
+        await browser.press("Enter");
+        await browser.type("two");
+        await engine("hello |two");
+        await shown("hello |two");
+        // Text put in, not typed (a phone's keyboard, an IME's word).
+        await cdp("Input.insertText", { text: "!" });
+        await engine("hello |two!");
+        // An IME's word: made here as it's chosen, sent once it's done.
+        await cdp("Input.imeSetComposition", { text: "o", selectionStart: 1, selectionEnd: 1 });
+        await cdp("Input.imeSetComposition", { text: "ok", selectionStart: 2, selectionEnd: 2 });
+        await cdp("Input.insertText", { text: "ok" });
+        await engine("hello |two!ok");
+        await shown("hello |two!ok");
+        // The caret moved here (a click): typed there, not where it was.
+        await frameClick("#ed p");
+        await frame(`(() => { const t = document.querySelector("#ed p").firstChild; getSelection().setBaseAndExtent(t, 0, t, 0); })()`);
+        await browser.type("X");
+        await engine("Xhello |two!ok");
+        // Backspace at a paragraph's start: the two made one.
+        await frame(`(() => { const t = document.querySelectorAll("#ed p")[1].firstChild; getSelection().setBaseAndExtent(t, 0, t, 0); })()`);
+        await frameClick("#ed p:nth-child(2)");
+        await frame(`(() => { const t = document.querySelectorAll("#ed p")[1].firstChild; getSelection().setBaseAndExtent(t, 0, t, 0); })()`);
+        await browser.press("Backspace");
+        await engine("Xhello two!ok");
+        await shown("Xhello two!ok");
+        // A chat box: Enter sends it (the page's), not a new paragraph.
+        await frameClick("#chat");
+        await browser.type("hi there");
+        await browser.press("Enter");
+        await frameWait(`document.getElementById("sent").textContent === "hi there" && document.getElementById("chat").textContent === ""`, "the message sent, the box emptied");
+        // In an embedded page: typed, and Enter a new paragraph, there.
+        const deep = `const deep = (root, sel) => { const hit = root.querySelector(sel); if (hit) return hit; for (const el of root.querySelectorAll("*")) if (el.shadowRoot) { const f = deep(el.shadowRoot, sel); if (f) return f; } return null; };`;
+        await frameWait(`(() => { ${deep} return !!deep(document, "#fed p"); })()`, "the frame's rich text", 30000);
+        const r = await frame(`(() => { ${deep} const b = deep(document, "#fed p").getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + r.x, y: f.y + r.y, button: "left", clickCount: 1 });
+        await frame(`(() => { ${deep} const t = deep(document, "#fed p").firstChild; getSelection().setBaseAndExtent(t, 2, t, 2); })()`);
+        await browser.type("!");
+        await browser.press("Enter");
+        await browser.type("x");
+        await frameWait(`(() => { ${deep} return deep(document, "#fgot")?.textContent === "frame: in!|x"; })()`, "the frame's page to hold in!|x");
+        await goTo(site + "interact.html", "Interact");  // (the steps after's)
     });
 
     await step("a checkbox and a select", async () => {

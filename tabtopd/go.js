@@ -1535,7 +1535,7 @@ function message(m) {
             if (m.gen === shown) media.streams(m.streams);
             if (m.gen === shown) {
                 media.eme(m.eme);
-                toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls, hide: m.hide });
+                toFrame({ type: "changes", gen: m.gen, ops: m.ops, title: m.title, io: m.io, scrolls: m.scrolls, hide: m.hide, sel: m.sel });
                 // Kept with the page, for a frame given it again.
                 if (Array.isArray(m.hide) && lastRender?.gen === m.gen) lastRender.hide = [...(lastRender.hide ?? []), ...m.hide];
             }
@@ -1797,7 +1797,10 @@ window.addEventListener("message", (e) => {
                     location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy), tap: !!m.tap, frame: num(m.frame), fdoc: num(m.fdoc),
                     route: (Array.isArray(m.route) ? m.route.slice(0, 2) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 2) : []).map(num),
                     points: (Array.isArray(m.points) ? m.points.slice(0, 10) : []).map((p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
-                    items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })) };
+                    items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })),
+                    // Rich text: the copy's selection, a key that edits, an edit's kind.
+                    sel: Array.isArray(m.sel) && m.sel.length === 4 ? m.sel.map(num) : undefined, edit: !!m.edit,
+                    inputType: typeof m.inputType === "string" ? m.inputType.slice(0, 40) : "", html: typeof m.html === "string" ? m.html : "" };
                 ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter, ...input }));
             }
             break;

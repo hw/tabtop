@@ -20,6 +20,19 @@ package main
 // what keys do but type nothing. Enter in a one-line field goes with its
 // text, which is what sends the form.
 //
+// Rich text (contenteditable) has no value to send: it's edited by the
+// engine, as typed. A key that edits it (a character, Enter, Backspace,
+// Delete; Ctrl+B and the like) isn't done in the copy, but comes with the
+// copy's selection (Edit, Sel), and is given as typed (keyDown with its
+// text), so the page has its keydown, then its beforeinput, as in a
+// browser: a page that sends a message on Enter does. What the engine
+// doesn't do itself of an edit the page lets be (a deletion, a new
+// paragraph), the agent does (goagent.js's editDefault). An edit that isn't
+// a key (a phone's keyboard, an IME's word, a paste, a spelling fixed)
+// comes as one ("edit": its inputType and text), given as the key that
+// makes it or as text put in (Input.insertText). The engine's caret comes
+// back with what changed (goagent.js's caret).
+//
 // All of it runs on the acts' queue, in order, after what was typed before
 // it; a press or key may open a dialog, which holds it until answered.
 // Moves and the wheel wait one at a time, the newest kept (the wheel's
@@ -34,6 +47,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // goInputWait is how long one input may take: as long as a dialog it opens
@@ -322,8 +336,16 @@ func (b *goBrowser) inFrame(owner, fdoc int, route, docs []int, what string, exp
 			Result struct {
 				Value string `json:"value"`
 			} `json:"result"`
+			ExceptionDetails *struct {
+				Exception struct {
+					Description string `json:"description"`
+				} `json:"exception"`
+			} `json:"exceptionDetails"`
 		}
 		err := b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"expression": expr, "contextId": world, "returnByValue": true}, &r)
+		if r.ExceptionDetails != nil {
+			goDebugf("frame %d %s: threw %.300s", owner, what, r.ExceptionDetails.Exception.Description)
+		}
 		goDebugf("frame %d %s: %s %v", owner, what, r.Result.Value, err)
 		b.post(func() {
 			if gen != b.gen {
@@ -362,7 +384,8 @@ func (b *goBrowser) actInFrame(m goClientMsg) {
 		submitter = m.Submitter
 	}
 	a, _ := json.Marshal(map[string]any{"kind": m.Kind, "id": m.Frame, "value": m.Value, "checked": m.Checked, "key": m.Key,
-		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": submitter})
+		"code": m.Code, "shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta, "submitter": submitter,
+		"sel": goSel(m.Sel), "edit": m.Edit, "inputType": m.InputType, "html": m.HTML})
 	arg, _ := json.Marshal(string(a))
 	b.inFrame(m.ID, m.FDoc, m.Route, m.Docs, m.Kind, "__tabtop.act("+string(arg)+")")
 }
@@ -428,6 +451,128 @@ func (b *goBrowser) key(m goClientMsg) {
 		b.input.key(b, world, gen, m)
 		b.post(func() { b.afterInput(gen) })
 	})
+}
+
+// edit does an edit in rich text that isn't a key (see the top): on the
+// acts' queue, after the keys before it.
+func (b *goBrowser) edit(m goClientMsg) {
+	if b.acts.waiting() >= goActsWaiting || len(m.Value)+len(m.HTML) > goEditMax || len(m.InputType) > 40 {
+		return
+	}
+	world, gen := b.world, b.gen
+	b.acts.add(func() {
+		b.input.edit(b, world, gen, m)
+		b.post(func() { b.afterInput(gen) })
+	})
+}
+
+// goEditMax is the most text an edit puts in (a paste): what a message
+// from the page may hold (goClientMessage), less the rest of it.
+const goEditMax = goClientMessage - 1<<10
+
+// goEditKeys are the edits a key makes, given as that key (the page has
+// its keydown, then its beforeinput): its key, code, key code, modifiers
+// (2 Ctrl, 8 Shift) and text.
+var goEditKeys = map[string]struct {
+	key, code string
+	keyCode   int
+	modifiers int
+	text      string
+}{
+	"deleteContentBackward": {"Backspace", "Backspace", 8, 0, ""},
+	"deleteContentForward":  {"Delete", "Delete", 46, 0, ""},
+	"deleteWordBackward":    {"Backspace", "Backspace", 8, 2, ""},
+	"deleteWordForward":     {"Delete", "Delete", 46, 2, ""},
+	// A selection's cut, dragged away, or deleted: deleted as Delete does.
+	"deleteByCut":     {"Delete", "Delete", 46, 0, ""},
+	"deleteByDrag":    {"Delete", "Delete", 46, 0, ""},
+	"deleteContent":   {"Delete", "Delete", 46, 0, ""},
+	"insertParagraph": {"Enter", "Enter", 13, 0, "\r"},
+	"insertLineBreak": {"Enter", "Enter", 13, 8, "\r"},
+	"historyUndo":     {"z", "KeyZ", 90, 2, ""},
+	"historyRedo":     {"z", "KeyZ", 90, 10, ""},
+	"formatBold":      {"b", "KeyB", 66, 2, ""},
+	"formatItalic":    {"i", "KeyI", 73, 2, ""},
+	"formatUnderline": {"u", "KeyU", 85, 2, ""},
+}
+
+func (in *goInput) edit(b *goBrowser, world, gen int, m goClientMsg) {
+	ctx, cancel := context.WithTimeout(context.Background(), goInputWait)
+	defer cancel()
+	if res, err := b.keyTo(ctx, world, m.ID, m.Sel); err != nil || res != "editable" {
+		return
+	}
+	if k, ok := goEditKeys[m.InputType]; ok {
+		for _, typ := range []string{"keyDown", "keyUp"} {
+			p := map[string]any{"type": typ, "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.keyCode, "nativeVirtualKeyCode": k.keyCode, "modifiers": k.modifiers}
+			if typ == "keyDown" && k.text != "" {
+				p["text"], p["unmodifiedText"] = k.text, k.text
+			}
+			if err := b.cdp.call(ctx, b.page, "Input.dispatchKeyEvent", p, nil); err != nil {
+				return
+			}
+		}
+		return
+	}
+	switch m.InputType {
+	case "insertFromPaste":
+		// Offered to the page as a paste (its HTML too); if it doesn't take
+		// it, put in styled by the agent, or (no HTML, or plaintext-only)
+		// as typed, its lines broken as Shift+Enter breaks them.
+		if res, _ := b.actNow(ctx, world, goClientMsg{Kind: "edit", ID: m.ID, InputType: m.InputType, Value: m.Value, HTML: m.HTML, Edit: true}); res != "insert" {
+			return
+		}
+		for i, line := range strings.Split(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(m.Value), "\n") {
+			if i > 0 {
+				in.edit(b, world, gen, goClientMsg{ID: m.ID, InputType: "insertLineBreak"})
+			}
+			if line != "" && b.cdp.call(ctx, b.page, "Input.insertText", map[string]any{"text": line}, nil) != nil {
+				return
+			}
+		}
+	case "insertText", "insertReplacementText", "insertFromDrop", "insertFromYank", "insertCompositionText":
+		if m.Value != "" {
+			b.cdp.call(ctx, b.page, "Input.insertText", map[string]any{"text": m.Value}, nil)
+		}
+	}
+}
+
+// keyTo gives element id the focus keys go to (and, in rich text, the
+// copy's selection): the agent's word ("field", "editable", "ok", "gone").
+func (b *goBrowser) keyTo(ctx context.Context, world, id int, sel []int) (string, error) {
+	arg := "null"
+	if s := goSel(sel); s != nil {
+		j, _ := json.Marshal(s)
+		arg = string(j)
+	}
+	_, res, err := b.evaluate(ctx, world, "__tabtop.keyTo("+strconv.Itoa(id)+", "+arg+")")
+	return res, err
+}
+
+// goSel is a selection as it may be given ([anchor, offset, focus,
+// offset], numbers within bounds), or nil.
+func goSel(sel []int) []int {
+	if len(sel) != 4 {
+		return nil
+	}
+	for _, v := range sel {
+		if v < 0 || v > 1<<30 {
+			return nil
+		}
+	}
+	return sel
+}
+
+// goKeyText is the text a key types, as typed in rich text: a character
+// (not with Ctrl or ⌘), or Enter's.
+func goKeyText(m goClientMsg) string {
+	if m.Key == "Enter" {
+		return "\r"
+	}
+	if m.Ctrl && !m.Alt || m.Meta || utf8.RuneCountInString(m.Key) != 1 {
+		return ""
+	}
+	return m.Key
 }
 
 // afterInput reads what an input changed, now and again in a moment, as an
@@ -817,7 +962,7 @@ func (in *goInput) key(b *goBrowser, world, gen int, m goClientMsg) {
 	if m.Type == "up" {
 		p["type"] = "keyUp"
 	} else {
-		_, res, err := b.evaluate(ctx, world, "__tabtop.keyTo("+strconv.Itoa(m.ID)+")")
+		res, err := b.keyTo(ctx, world, m.ID, m.Sel)
 		if err != nil || res == "gone" {
 			return
 		}
@@ -825,6 +970,13 @@ func (in *goInput) key(b *goBrowser, world, gen int, m goClientMsg) {
 		if m.Key == "Enter" && res == "field" && goModifiers(m)&^8 == 0 {
 			// Enter in a one-line field, as typed: it sends the form.
 			p["type"], p["text"], p["unmodifiedText"] = "keyDown", "\r", "\r"
+		}
+		if m.Edit && res == "editable" {
+			// A key that edits rich text, as typed (not done in the copy).
+			p["type"] = "keyDown"
+			if text := goKeyText(m); text != "" {
+				p["text"], p["unmodifiedText"] = text, text
+			}
 		}
 	}
 	err := b.cdp.call(ctx, b.page, "Input.dispatchKeyEvent", p, nil)

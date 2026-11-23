@@ -16,9 +16,12 @@
 //                        (fractions across and down the element) lands on
 //                        it, as JSON {x, y}, or "" if it can't (not laid
 //                        out, or covered here): run after layout's refreshed
-//   __tabtop.keyTo(id)   gives the element keys go to the focus, if it isn't
-//                        the document itself (the page's own focus stays):
-//                        "field" if it's a one-line field, "ok", or "gone"
+//   __tabtop.keyTo(id, sel) gives the element keys go to the focus, if it
+//                        isn't the document itself (the page's own focus
+//                        stays), and in rich text the copy's selection (sel:
+//                        [anchor, offset, focus, offset], nodes by number):
+//                        "field" if it's a one-line field, "editable" if
+//                        it's rich text (contenteditable), "ok", or "gone"
 //   __tabtop.io(json)    what the person's browser saw of elements the page
 //                        observes, [{o, i, hit, ratio}], handed to the page
 //                        (see goobserve.js)
@@ -32,7 +35,14 @@
 // playing, v "true", or stopped). Snapshots and batches carry the page's
 // IntersectionObserver targets too, io: [{op: "+", o, i, m, t, r}] (its
 // observer's number, the element's, rootMargin, thresholds, root element
-// or 0) and {op: "-", o, i}; a snapshot, all of them.
+// or 0) and {op: "-", o, i}; a snapshot, all of them. With rich text
+// (contenteditable) focused, a batch says where its caret is, sel: [anchor,
+// offset, focus, offset] (nodes by number), for the copy to put it there.
+//
+// Rich text is edited by the engine, as typed (goinput.go's keys and
+// edits); what a browser does with an edit the page didn't take itself,
+// and Moli doesn't (a deletion, a new paragraph or line), is done here
+// (editDefault).
 (() => {
     const w = globalThis;
     if (!w.__tabtop) {
@@ -174,14 +184,270 @@
             try { readable = !!el.contentDocument; } catch { /* another origin's */ }
             return JSON.stringify({ id: known(el) ? ids.get(el) : 0, readable });
         }
-        function keyTo(id) {
+        function keyTo(id, sel) {
             const el = node(id);
             if (!el) return "gone";
             watch(el);
             if (el.nodeType === 1 && el !== document.body && el !== document.documentElement && document.activeElement !== el) el.focus?.();
+            // Rich text: edited where the copy's caret is.
+            if (editable(el)) {
+                select(sel);
+                return "editable";
+            }
             // A one-line field: Enter there sends its form (given as typed).
             const field = el.localName === "input" && !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/i.test(el.type);
             return field ? "field" : "ok";
+        }
+
+        // --- Rich text (contenteditable) -----------------------------------
+        //
+        // editable is whether el is rich text, edited as a browser edits it:
+        // contenteditable (not a field, which has its value).
+        function editable(el) {
+            if (el?.nodeType !== 1 || /^(input|textarea|select)$/.test(el.localName)) return false;
+            if (typeof el.isContentEditable === "boolean") return el.isContentEditable;
+            return editMode(el) !== "false";
+        }
+        // editMode is how el is edited, by its contenteditable or the nearest
+        // one's over it: "true" (rich text: true, or empty), "plaintext-only"
+        // (its text only, no styles), or "false" (none). A value that's none
+        // of these is its parent's (as missing), as HTML has it.
+        function editMode(el) {
+            for (let at = el; at?.nodeType === 1; at = at.parentElement) {
+                const v = at.getAttribute("contenteditable");
+                if (v === null) continue;
+                const mode = v.toLowerCase();
+                if (mode === "" || mode === "true") return "true";
+                if (mode === "plaintext-only" || mode === "false") return mode;
+            }
+            return "false";
+        }
+        // (Its text only: no paragraphs made, nothing pasted styled.)
+        const plainText = (el) => editMode(el) === "plaintext-only";
+        // select puts the selection where the copy's is: [anchor, offset,
+        // focus, offset], nodes by number (an offset past a node's end, its
+        // end). Nodes not known, or not in rich text: left as it is.
+        function select(sel) {
+            if (!Array.isArray(sel) || sel.length !== 4) return;
+            const a = node(sel[0]), f = node(sel[2]);
+            const holds = (n) => editable(n.nodeType === 1 ? n : n.parentElement);
+            if (!a || !f || !holds(a) || !holds(f)) return;
+            const end = (n, at) => Math.max(0, Math.min(Number(at) || 0, n.nodeType === 3 ? n.data.length : n.childNodes.length));
+            try { a.ownerDocument.getSelection().setBaseAndExtent(a, end(a, sel[1]), f, end(f, sel[3])); } catch { /* left as it was */ }
+        }
+        // caret is where the selection is, as [anchor, offset, focus,
+        // offset] by number, in rich text focused; or null.
+        function caret() {
+            if (!editable(document.activeElement)) return null;
+            const s = getSelection();
+            if (!s?.anchorNode || !s.focusNode || !known(s.anchorNode) || !known(s.focusNode)) return null;
+            return [ids.get(s.anchorNode), s.anchorOffset, ids.get(s.focusNode), s.focusOffset];
+        }
+
+        // What a browser does itself with these edits, and Moli doesn't
+        // (its deletion deletes nothing; its new paragraph is a "\n" in the
+        // text): done here, the page not having taken the edit.
+        const editDefaults = new Set(["deleteContentBackward", "deleteContentForward", "deleteWordBackward", "deleteWordForward", "insertParagraph", "insertLineBreak"]);
+        const blockNames = /^(p|div|li|h[1-6]|blockquote|pre|dd|dt|section|article)$/;
+        // blockOf is the block (a paragraph, a list's item) n is in, within
+        // host (not host itself); or null.
+        function blockOf(n, host) {
+            for (let at = n.nodeType === 1 ? n : n.parentNode; at && at !== host; at = at.parentNode) {
+                if (at.nodeType === 1 && blockNames.test(at.localName)) return at;
+            }
+            return null;
+        }
+        // filled keeps a block that's lost all its text a line high, as a
+        // browser does (a <br>).
+        function filled(el) {
+            if (el && !el.textContent && !el.querySelector?.("br, img")) el.append(el.ownerDocument.createElement("br"));
+        }
+        // textNear is the nearest text before (or after) a point (n,
+        // offset) within host, and where in it: {t, at}; or null.
+        function textNear(n, offset, host, back) {
+            if (n.nodeType === 3 && (back ? offset > 0 : offset < n.data.length)) return { t: n, at: offset };
+            const walk = host.ownerDocument.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+            const child = n.nodeType === 1 ? n.childNodes[offset] : null;
+            // Whether text t comes before the point.
+            const before = (t) => n.nodeType === 3 ? !!(n.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_PRECEDING)
+                : child ? !!(child.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_PRECEDING)
+                    : n.contains(t) || !!(n.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_PRECEDING);
+            let found = null;
+            for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+                if (!t.data.length || t === n) continue;
+                if (back && before(t)) found = t;
+                if (!back && !before(t)) return { t, at: 0 };
+            }
+            return found && { t: found, at: found.data.length };
+        }
+        // rangeOf is the selection's range: Moli's, in an embedded page,
+        // has one (rangeCount) it won't give (getRangeAt throws), so made
+        // from its ends.
+        function rangeOf(s) {
+            if (!s?.rangeCount) return null;
+            try { return s.getRangeAt(0); } catch { /* made, below */ }
+            if (!s.anchorNode || !s.focusNode) return null;
+            const r = s.anchorNode.ownerDocument.createRange();
+            r.setStart(s.anchorNode, s.anchorOffset);
+            r.setEnd(s.focusNode, s.focusOffset);
+            if (r.collapsed && (s.anchorNode !== s.focusNode || s.anchorOffset !== s.focusOffset)) {
+                r.setStart(s.focusNode, s.focusOffset);  // (made backwards)
+                r.setEnd(s.anchorNode, s.anchorOffset);
+            }
+            return r;
+        }
+        // editDefault does an edit as a browser would, at the selection in
+        // host: true if it did (or there was nothing to do).
+        // (The host's own document's: an embedded page's, read by this agent,
+        // has its own selection.)
+        function editDefault(host, type, data) {
+            if (type === "insertParagraph" && plainText(host)) type = "insertLineBreak";
+            const doc = host.ownerDocument, s = doc.getSelection();
+            const r = rangeOf(s);
+            if (!r || !host.contains(r.startContainer)) return false;
+            if (type === "insertText") {
+                r.deleteContents();
+                let t = r.startContainer, at = r.startOffset;
+                if (t.nodeType === 3) t.insertData(at, data);
+                else {
+                    const text = doc.createTextNode(data);
+                    r.insertNode(text);
+                    t = text, at = 0;
+                }
+                s.setBaseAndExtent(t, at + data.length, t, at + data.length);
+                return true;
+            }
+            if (type.startsWith("delete")) {
+                const back = type.endsWith("Backward"), word = type.startsWith("deleteWord");
+                if (r.collapsed) {
+                    // At a paragraph's edge: it and the one before (or
+                    // after) made one.
+                    const block = blockOf(r.startContainer, host);
+                    if (block && !textNear(r.startContainer, r.startOffset, block, back)) {
+                        const other = back ? block.previousElementSibling : block.nextElementSibling;
+                        if (!other) return true;  // the first (or last): nothing
+                        if (blockNames.test(other.localName)) {
+                            const [first, second] = back ? [other, block] : [block, other];
+                            if (!first.textContent) first.replaceChildren();  // (its <br>)
+                            if (!second.textContent) second.replaceChildren();
+                            const at = first.childNodes.length;
+                            while (second.firstChild) first.append(second.firstChild);
+                            second.remove();
+                            filled(first);
+                            s.setBaseAndExtent(first, at, first, at);
+                            return true;
+                        }
+                    }
+                    const near = textNear(r.startContainer, r.startOffset, host, back);
+                    if (!near) return true;  // at the start (or end): nothing
+                    const text = near.t.data;
+                    let at = near.at, to = near.at;
+                    if (word) {
+                        const m = back ? /\S*\s*$/.exec(text.slice(0, at)) : /^\s*\S*/.exec(text.slice(at));
+                        if (back) at -= m[0].length || 1; else to += m[0].length || 1;
+                    } else if (back) at -= /[\uDC00-\uDFFF]/.test(text[at - 1] ?? "") && at > 1 ? 2 : 1;
+                    else to += /[\uD800-\uDBFF]/.test(text[at] ?? "") ? 2 : 1;
+                    r.setStart(near.t, Math.max(0, at));
+                    r.setEnd(near.t, Math.min(text.length, to));
+                }
+                const block = blockOf(r.startContainer, host);
+                r.deleteContents();
+                s.setBaseAndExtent(r.startContainer, r.startOffset, r.startContainer, r.startOffset);
+                filled(block ?? host);
+                return true;
+            }
+            if (type === "insertLineBreak") {
+                r.deleteContents();
+                const br = doc.createElement("br");
+                r.insertNode(br);
+                // At its line's end, a second, for the new line to show.
+                let next = br.nextSibling;
+                while (next && next.nodeType === 3 && !next.data.length) next = next.nextSibling;
+                if (!next) br.after(doc.createElement("br"));
+                s.setBaseAndExtent(br.parentNode, [...br.parentNode.childNodes].indexOf(br) + 1, br.parentNode, [...br.parentNode.childNodes].indexOf(br) + 1);
+                return true;
+            }
+            if (type === "insertParagraph") {
+                r.deleteContents();
+                const block = blockOf(r.startContainer, host);
+                const box = block ?? host;
+                // What follows the caret in its block goes to a new one.
+                const rest = doc.createRange();
+                rest.setStart(r.startContainer, r.startOffset);
+                rest.setEnd(box, box.childNodes.length);
+                const moved = rest.extractContents();
+                const name = !block ? "div" : /^h[1-6]$/.test(block.localName) ? "p" : block.localName;
+                const next = doc.createElement(name);
+                next.append(moved);
+                if (block) block.after(next); else host.append(next);
+                filled(box);
+                filled(next);
+                s.setBaseAndExtent(next, 0, next, 0);
+                return true;
+            }
+            return false;
+        }
+        // pasted is a paste's HTML as a browser puts it in rich text: its
+        // text, and of its markup only what styles or orders it (bold,
+        // italics, links to web pages, paragraphs, lists, headings, quotes,
+        // code), none of its attributes but a link's address. (A fragment of
+        // host's document.)
+        const pastedTags = /^(b|strong|i|em|u|s|strike|del|ins|sub|sup|mark|code|kbd|a|p|div|br|ul|ol|li|h[1-6]|blockquote|pre|span|hr)$/;
+        function pasted(host, html) {
+            const doc = host.ownerDocument;
+            const box = doc.createElement("template");
+            box.innerHTML = html;
+            const out = doc.createDocumentFragment();
+            const copy = (from, to) => {
+                for (const n of from.childNodes) {
+                    if (n.nodeType === 3) to.append(doc.createTextNode(n.data));
+                    else if (n.nodeType !== 1) continue;
+                    else if (/^(script|style|template|noscript|iframe|object|embed|svg|math|head|title|meta|link)$/.test(n.localName)) continue;
+                    else if (!pastedTags.test(n.localName)) copy(n, to);  // its text, not it
+                    else {
+                        const el = doc.createElement(n.localName);
+                        const href = n.localName === "a" ? n.getAttribute("href") : null;
+                        if (href && /^https?:\/\//i.test(href.trim())) el.setAttribute("href", href.trim());
+                        copy(n, el);
+                        to.append(el);
+                    }
+                }
+            };
+            copy(box.content ?? box, out);
+            return out;
+        }
+        // An edit the engine's input made (its beforeinput, trusted) that
+        // the page let be: done as a browser does, not as Moli would.
+        // (Moli says a word's deletion, Ctrl+Backspace, as a character's:
+        // the key it came of says which.)
+        let lastKey = null;
+        window.addEventListener("keydown", (e) => { if (e.isTrusted) lastKey = e; }, true);
+        window.addEventListener("beforeinput", (e) => {
+            if (!e.isTrusted || e.defaultPrevented || !editDefaults.has(e.inputType)) return;
+            const host = e.target?.nodeType === 1 ? e.target : null;
+            if (!editable(host)) return;
+            e.preventDefault();
+            let type = e.inputType;
+            if (/^deleteContent/.test(type) && (lastKey?.ctrlKey || lastKey?.altKey) && /^(Backspace|Delete)$/.test(lastKey.key)) type = type.replace("Content", "Word");
+            if (editDefault(host, type, e.data ?? "")) {
+                host.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: type }));
+            }
+        });
+        // editScripted does an edit by script (an embedded page's, whose
+        // input can't be the engine's): its beforeinput, and then, unless
+        // the page takes it, the edit and its input event.
+        function editScripted(host, type, data) {
+            const go = host.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: type, data: type.startsWith("insert") && type !== "insertParagraph" && type !== "insertLineBreak" ? data : null }));
+            if (go && editDefault(host, type, data)) host.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: type, data }));
+        }
+        // editOfKey is the edit a key makes in rich text: [inputType, data].
+        function editOfKey(a) {
+            const key = String(a.key || "");
+            if (key === "Enter") return [a.shift ? "insertLineBreak" : "insertParagraph", ""];
+            if (key === "Backspace") return [a.ctrl || a.alt ? "deleteWordBackward" : "deleteContentBackward", ""];
+            if (key === "Delete") return [a.ctrl || a.alt ? "deleteWordForward" : "deleteContentForward", ""];
+            if ([...key].length === 1 && !a.ctrl && !a.meta) return ["insertText", key];
+            return null;
         }
         // scripted does, for an engine that doesn't (Obscura), what a
         // browser does with input besides its events (goinput.go asks):
@@ -239,7 +505,11 @@
                 }
                 case "tab": {
                     const all = [...document.querySelectorAll("a[href], area[href], button, input, select, textarea, summary, iframe, [tabindex], [contenteditable]")]
-                        .filter((e) => !e.disabled && e.type !== "hidden" && e.tabIndex >= 0 && e.getClientRects().length > 0);
+                        .filter((e) => !e.disabled && e.type !== "hidden" && e.tabIndex >= 0 && e.getClientRects().length > 0
+                            // Rich text, by its contenteditable alone: its editing host (not
+                            // one within another's, nor one that's false), as a browser's.
+                            && (!e.matches("[contenteditable]") || e.hasAttribute("tabindex") || e.matches("a[href], area[href], button, input, select, textarea, summary, iframe")
+                                || editable(e) && !editable(e.parentElement)));
                     // Positive tab indices first, in order; then the rest, as they come.
                     const order = [...all.filter((e) => e.tabIndex > 0).sort((x, y) => x.tabIndex - y.tabIndex), ...all.filter((e) => e.tabIndex === 0)];
                     if (!order.length) return "none";
@@ -930,6 +1200,7 @@
             document.dispatchEvent(new Event("__tabtop_read_eme"));
             const eme = emeBatch;
             if (!eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
+            const sel = ops.length ? caret() : null;
             seq++;
             const glGone = [];
             for (const [el, i] of glSent) {
@@ -939,7 +1210,7 @@
                 if (glAway.size >= 64) glAway.delete(glAway.values().next().value);
                 glAway.add(el);
             }
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}) });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}) });
         }
 
         function watch(el) {
@@ -1003,6 +1274,16 @@
                         shiftKey: !!a.shift, ctrlKey: !!a.ctrl, altKey: !!a.alt, metaKey: !!a.meta };
                     watch(el);  // as it was: what the key changes (a field cleared once sent) is sent
                     el.focus?.();
+                    // Rich text: the key's edit too, unless the page takes it.
+                    if (a.edit && editable(el)) {
+                        select(a.sel);
+                        const go = el.dispatchEvent(new KeyboardEvent("keydown", init));
+                        if (go && init.key.length === 1) el.dispatchEvent(new KeyboardEvent("keypress", init));
+                        const edit = go && editOfKey(a);
+                        if (edit) editScripted(el, edit[0], edit[1]);
+                        el.dispatchEvent(new KeyboardEvent("keyup", init));
+                        return "ok";
+                    }
                     const go = el.dispatchEvent(new KeyboardEvent("keydown", init));
                     if (go && init.key.length === 1) el.dispatchEvent(new KeyboardEvent("keypress", init));
                     el.dispatchEvent(new KeyboardEvent("keyup", init));
@@ -1023,6 +1304,56 @@
                 case "focus":
                     el.focus?.();
                     return "ok";
+                case "edit": {
+                    // An edit in rich text that wasn't a key (a phone's
+                    // keyboard, an IME's word, a paste), by script: an
+                    // embedded page's (goinput.go gives the top page's as
+                    // input). A paste is offered to the page as one first:
+                    // "insert" if it's to be put in as typed (it wasn't taken).
+                    if (!editable(el)) return "not editable";
+                    el.focus?.();
+                    select(a.sel);
+                    const type = String(a.inputType || ""), data = String(a.value ?? "");
+                    if (type === "insertFromPaste") {
+                        // Its HTML (a: its text styled) too: the page's to take,
+                        // or put in, styled, as a browser would (rich text, not
+                        // plaintext-only, whose paste is its text alone).
+                        const html = typeof a.html === "string" ? a.html : "";
+                        let dt = null;
+                        try {
+                            dt = new DataTransfer();
+                            dt.setData("text/plain", data);
+                            if (html) dt.setData("text/html", html);
+                        } catch { dt = null; }
+                        const taken = dt && !el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+                        if (taken) return "ok";
+                        if (html && !plainText(el)) {
+                            const s = el.ownerDocument.getSelection(), r = rangeOf(s);
+                            if (r && el.contains(r.startContainer) && el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertFromPaste", dataTransfer: dt }))) {
+                                r.deleteContents();
+                                const frag = pasted(el, html), last = frag.lastChild;
+                                r.insertNode(frag);
+                                if (last) {
+                                    const after = el.ownerDocument.createRange();
+                                    after.setStartAfter(last);
+                                    s.setBaseAndExtent(after.startContainer, after.startOffset, after.startContainer, after.startOffset);
+                                }
+                                el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
+                            }
+                            return "ok";
+                        }
+                        if (a.edit) return "insert";  // (the top page's: put in as input)
+                        const lines = data.split(/\r\n|\r|\n/);
+                        lines.forEach((line, i) => {
+                            if (i) editScripted(el, "insertLineBreak", "");
+                            if (line) editScripted(el, "insertText", line);
+                        });
+                        return "ok";
+                    }
+                    if (!/^(insert|delete)/.test(type)) return "not an edit";
+                    editScripted(el, type, data);
+                    return "ok";
+                }
                 case "media-meta": {
                     // What the person's player found of this element's file
                     // (its size, its length), for the page to be told
