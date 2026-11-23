@@ -2412,14 +2412,19 @@ async function check(base, port, site, adSite) {
         await goTo(site + "interact.html", "Interact");
         await frameWait(`!!document.getElementById("pdf")`, "the page");
         await frameClick("#pdf");
-        await waitFor(`!document.getElementById("go_notice").hidden && document.querySelector("#go_notice p").textContent.includes("application/pdf")`, "the file notice", 30000);
+        // With Files off, nothing's said: the page stays, no notice.
         if (process.env.GO_NO_FS === "1") {
-            if (!(await ev(`document.querySelector("#go_notice p").textContent.includes("turned off") && document.querySelector("#go_notice button").hidden`))) throw new Error("offered to save with files off");
-        } else {
-            await ev(`document.querySelector("#go_notice button").click()`);
-            await waitFor(`document.querySelector("#go_notice p").textContent.startsWith("Saved doc.pdf")`, "the file saved", 30000);
-            if (!(await ev(`document.querySelector("#go_notice .primary").textContent === "Open Downloads" && !document.querySelector("#go_notice .primary").hidden`))) throw new Error("no action to open Downloads");
+            await sleep(3000);
+            await waitFor(`document.getElementById("go_progress").hidden`, "the click's load to end", 30000);
+            const shown = await ev(`document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p").textContent`);
+            if (shown) throw new Error(`with Files off, a notice: ${shown}`);
+            if (!(await frame(`document.title === "Interact"`))) throw new Error("the page didn't stay");
+            return "nothing said, Files off";
         }
+        await waitFor(`!document.getElementById("go_notice").hidden && document.querySelector("#go_notice p").textContent.includes("application/pdf")`, "the file notice", 30000);
+        await ev(`document.querySelector("#go_notice button").click()`);
+        await waitFor(`document.querySelector("#go_notice p").textContent.startsWith("Saved doc.pdf")`, "the file saved", 30000);
+        if (!(await ev(`document.querySelector("#go_notice .primary").textContent === "Open Downloads" && !document.querySelector("#go_notice .primary").hidden`))) throw new Error("no action to open Downloads");
         return await ev(`document.querySelector("#go_notice p").textContent`);
     });
 

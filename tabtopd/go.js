@@ -1939,13 +1939,10 @@ dialog.querySelector("form").addEventListener("submit", (e) => { e.preventDefaul
 
 // offerFile offers to save a file the page led to (a PDF, an archive) into
 // Downloads: fetched there by the server, as Fetch from URL on the files
-// page does, never through this device.
+// page does, never through this device. With Files off, nothing's said.
 function offerFile(url, mime) {
+    if (!filesOn) return;
     const what = `This is a file from ${hostOf(url)} (${mime || "unknown type"}), not a page.`;
-    if (!filesOn) {
-        warn(`${what} Files are turned off on this server, so it can't be saved here.`, { error: false });
-        return;
-    }
     warn(`${what} Save it into Downloads?`, { error: false, retry: () => saveFile(url), label: "Save into Downloads" });
 }
 // saveFile saves url into Downloads, saying how it goes (say: where, as
