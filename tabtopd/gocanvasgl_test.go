@@ -166,8 +166,8 @@ func TestGoCanvasGLMethodLists(t *testing.T) {
 			}
 		}
 	}
-	compare("gogl.js", hook, "goroute.go", server)
-	compare("goroute.go", server, "gogl.js", hook)
+	compare("gogl.js", hook, "gocanvasgl.go", server)
+	compare("gocanvasgl.go", server, "gogl.js", hook)
 	compare("gogl.js", hook, "go-frame-gl.js", viewer)
 	// And the extensions replayed.
 	b, _ := os.ReadFile(glViewerJS)
@@ -179,12 +179,12 @@ func TestGoCanvasGLMethodLists(t *testing.T) {
 	for _, name := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(m[1], -1) {
 		listed[string(name[1])] = true
 		if !goCanvasGLExtensions[string(name[1])] {
-			t.Errorf("go-frame-gl.js replays extension %s, goroute.go refuses it", name[1])
+			t.Errorf("go-frame-gl.js replays extension %s, gocanvasgl.go refuses it", name[1])
 		}
 	}
 	for name := range goCanvasGLExtensions {
 		if !listed[name] {
-			t.Errorf("goroute.go accepts extension %s, go-frame-gl.js doesn't replay it", name)
+			t.Errorf("gocanvasgl.go accepts extension %s, go-frame-gl.js doesn't replay it", name)
 		}
 	}
 	compare("go-frame-gl.js", viewer, "gogl.js", hook)
@@ -313,7 +313,7 @@ func TestGoCanvasGLTablesInStep(t *testing.T) {
 		}
 	}
 	glSameSet(t, "WebGL2 calls", "gogl.js", hook2, glViewerJS, viewerContext2)
-	glSameSet(t, "WebGL2 calls", "goroute.go", goCanvasGL2Methods, glViewerJS, viewer2)
+	glSameSet(t, "WebGL2 calls", "gocanvasgl.go", goCanvasGL2Methods, glViewerJS, viewer2)
 
 	// WebGL2's calls in WebGL1, by extension: method -> extensions.
 	aliases := map[string]bool{}
@@ -330,7 +330,7 @@ func TestGoCanvasGLTablesInStep(t *testing.T) {
 	for m, extensions := range goCanvasGLExtensionMethods {
 		server[m+"="+extensions] = true
 	}
-	glSameSet(t, "WebGL1 aliases", "goroute.go", server, glViewerJS, aliases)
+	glSameSet(t, "WebGL1 aliases", "gocanvasgl.go", server, glViewerJS, aliases)
 
 	// An extension's own calls: method -> its extension.
 	commands := map[string]bool{}
@@ -350,13 +350,13 @@ func TestGoCanvasGLTablesInStep(t *testing.T) {
 	for m, extension := range goCanvasGLExtensionCommands {
 		server[m+"="+extension] = true
 	}
-	glSameSet(t, "extension calls", "goroute.go", server, glViewerJS, commands)
+	glSameSet(t, "extension calls", "gocanvasgl.go", server, glViewerJS, commands)
 
 	// Calls taking strings.
-	glSameSet(t, "string calls", "goroute.go", goCanvasGLStringMethods, glViewerJS, glStrings(glLine(t, glViewerJS, "const glStringMethods")))
+	glSameSet(t, "string calls", "gocanvasgl.go", goCanvasGLStringMethods, glViewerJS, glStrings(glLine(t, glViewerJS, "const glStringMethods")))
 
 	// The extensions the hook offers, and WebGL2's own.
-	glSameSet(t, "extensions", "goroute.go", goCanvasGLExtensions, "gogl.js", glStrings(glLine(t, "gogl.js", "const supportedExtensions")))
+	glSameSet(t, "extensions", "gocanvasgl.go", goCanvasGLExtensions, "gogl.js", glStrings(glLine(t, "gogl.js", "const supportedExtensions")))
 	line = glLine(t, "gogl.js", "function extensionSupported")
 	only2 := map[string]bool{}
 	for _, m := range regexp.MustCompile(`name !== "(\w+)"`).FindAllStringSubmatch(line, -1) {
@@ -365,7 +365,7 @@ func TestGoCanvasGLTablesInStep(t *testing.T) {
 	if !strings.Contains(line, "state.version === 2") {
 		t.Errorf("gogl.js: extensionSupported not understood: %s", line)
 	}
-	glSameSet(t, "WebGL2 extensions", "goroute.go", goCanvasGL2Extensions, "gogl.js", only2)
+	glSameSet(t, "WebGL2 extensions", "gocanvasgl.go", goCanvasGL2Extensions, "gogl.js", only2)
 
 	// The limits: a log's calls and bytes, a call's data, a page's canvases.
 	hookLimit := func(name string) int {
@@ -387,7 +387,7 @@ func TestGoCanvasGLTablesInStep(t *testing.T) {
 		{"a page's WebGL canvases", goGLStreamsMax, goGLStreamsMax, limits["mirrors"]},
 	} {
 		if c.server != c.hook || c.server != c.viewer {
-			t.Errorf("%s: goroute.go %d, gogl.js %d, %s %d", c.what, c.server, c.hook, glViewerJS, c.viewer)
+			t.Errorf("%s: gocanvasgl.go %d, gogl.js %d, %s %d", c.what, c.server, c.hook, glViewerJS, c.viewer)
 		}
 	}
 }
