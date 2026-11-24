@@ -1396,6 +1396,7 @@ function load(url, { push = true } = {}) {
         return;
     }
     askedOffline = null;
+    if (maybeSwap(url, true)) return;  // (in a fresh engine: see maybeSwap)
     sentView = view();
     ws.send(JSON.stringify({ op: "navigate", url, view: sentView }));
 }
@@ -1573,76 +1574,188 @@ function open() {
         s.onmessage = (e) => {
             inbox = inbox.then(() => take(e.data)).catch(() => {});
         };
-        const take = async (data) => {
-            if (ws !== s) return;
-            heard = true;
-            if (typeof data !== "string") {
-                // Request number 0: a large message, compressed (see
-                // sendLarge in gobrowser.go); any other, a resource's bytes.
-                if (!(data instanceof ArrayBuffer) || data.byteLength < 4 || new DataView(data).getUint32(0) !== 0) {
-                    resData(data);
-                    return;
-                }
-                data = await inflate(data.slice(4));
-                if (ws !== s) return;
-            }
-            let m;
-            try { m = JSON.parse(data); } catch { return; }
-            if (m.type === "go-taken") {
-                // This tab opened in another window (a duplicated browser
-                // tab), which has it now: this one starts its own next.
-                resumeToken.set("");
-                return;
-            }
-            if (m.type === "go-res") {
-                resHeader(m);  // of any page: not a generation's
-                return;
-            }
-            if (m.type === "go-ads") {
-                // Not a generation's either: the server's count is always
-                // the page it's at now's, whatever generation that is yet.
-                if (ws === s && typeof m.count === "number") showAds(m.count);
-                return;
-            }
-            if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
-            if (gen !== m.gen) devices.reset();
-            gen = m.gen;
-            message(m);
-        };
-        s.onclose = (e) => {
-            resLost(s);
-            if (closing || pageLeft) return;  // closed by the person, or the page left: nothing to come back to
-            const was = ws === s;
-            // One that isn't the page's now (replaced, or never opened to be
-            // it): nothing of the one that is is touched, nor said.
-            if (!was && ws) {
-                resolve(!e.lost);
-                return;
-            }
-            ws = null;
-            devices.reset();
-            loading = rendering = false;
-            closeDialog();
-            update();
-            if (e.login) {
-                forgetSession(s.session);
-                storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
-            } else if (e.lost) {
-                if (was) reconnect(resumeToken.get()
-                    ? "Connection lost. The page carries on on the server for 5 minutes; reconnecting picks it up where it is."
-                    : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
-            } else if (engineRestarting) {
-                engineRestarting = false;
-                show("The engine was restarted: loading the page again…");
-                connect().then((ok) => ok || reconnect("Can't reach the server.", connect));
-            } else {
-                show("");
-                warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0, connection: true });
-            }
-            resolve(!e.lost);
-        };
+        const take = receiver(s);
+        s.onclose = (e) => socketClosed(s, e, resolve);
     });
 }
+// receiver is what a connection's messages are taken by (in the order
+// they come: open's inbox), while it's the page's (ws).
+function receiver(s) {
+    return async (data) => {
+        if (ws !== s) return;
+        heard = true;
+        if (typeof data !== "string") {
+            // Request number 0: a large message, compressed (see
+            // sendLarge in gobrowser.go); any other, a resource's bytes.
+            if (!(data instanceof ArrayBuffer) || data.byteLength < 4 || new DataView(data).getUint32(0) !== 0) {
+                resData(data);
+                return;
+            }
+            data = await inflate(data.slice(4));
+            if (ws !== s) return;
+        }
+        let m;
+        try { m = JSON.parse(data); } catch { return; }
+        if (m.type === "go-taken") {
+            // This tab opened in another window (a duplicated browser
+            // tab), which has it now: this one starts its own next.
+            resumeToken.set("");
+            return;
+        }
+        if (m.type === "go-res") {
+            resHeader(m);  // of any page: not a generation's
+            return;
+        }
+        if (m.type === "go-ads") {
+            // Not a generation's either: the server's count is always
+            // the page it's at now's, whatever generation that is yet.
+            if (ws === s && typeof m.count === "number") showAds(m.count);
+            return;
+        }
+        if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
+        if (gen !== m.gen) devices.reset();
+        gen = m.gen;
+        message(m);
+    };
+}
+// socketClosed is a connection closing: the page's, said so and connected
+// again as it should be; another (replaced, or never opened to be it):
+// nothing of the page's touched.
+function socketClosed(s, e, resolve) {
+    resLost(s);
+    if (closing || pageLeft) return;  // closed by the person, or the page left: nothing to come back to
+    const was = ws === s;
+    // One that isn't the page's now (replaced, or never opened to be
+    // it): nothing of the one that is is touched, nor said.
+    if (!was && ws) {
+        resolve(!e.lost);
+        return;
+    }
+    ws = null;
+    devices.reset();
+    loading = rendering = false;
+    closeDialog();
+    update();
+    if (e.login) {
+        forgetSession(s.session);
+        storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
+    } else if (e.lost) {
+        if (was) reconnect(resumeToken.get()
+            ? "Connection lost. The page carries on on the server for 5 minutes; reconnecting picks it up where it is."
+            : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
+    } else if (engineRestarting) {
+        engineRestarting = false;
+        show("The engine was restarted: loading the page again…");
+        connect().then((ok) => ok || reconnect("Can't reach the server.", connect));
+    } else {
+        show("");
+        warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0, connection: true });
+    }
+    resolve(!e.lost);
+}
+
+// --- A fresh engine, the old one past its soft memory limit ----------------
+//
+// The server advises it (go-recycle: gobrowser.go's recycle) as the tab's
+// engine passes a share of its memory limit (goRecycleAt): a page that
+// keeps what it's done with (Moli keeps the DOM elements a page has
+// removed; a feed's, as YouTube's Shorts', grow it by tens of MB a minute)
+// would otherwise be ended mid-page by the watchdog at the limit. At the
+// page's next address (its own, as Shorts goes to its next reel; or one the
+// person goes to), a tab of its own is opened on the server (no resume
+// token: a fresh engine), named the tab it takes over from (whose cookies
+// it's given first: goroute.go), and loads the address while this one's
+// page stays shown here; once its page has come (go-snapshot), it's the
+// tab's: what it sent meanwhile taken, in order, and the old tab closed
+// (its engine ended). Not while something would be cut off (a download or
+// Save, a file going to the page, an ask or dialog open, typing), nor
+// again within SWAP_EVERY; one that doesn't come in WARM_FOR is let go.
+let recycleAdvised = false, lastSwap = -Infinity, warm = null, lastKeyAt = -Infinity, fsStaging = 0;
+const SWAP_EVERY = 5 * 60_000, WARM_FOR = 60_000;
+function swapBusy() {
+    return downloads.size > 0 || fsStaging > 0 || chooser || dropping || pasteAsks.length > 0 || notifyAsking || popupAsks.length > 0 ||
+        !$("go_device").hidden || !certBox.hidden || !!document.querySelector("dialog[open]") || Date.now() - lastKeyAt < 10_000;
+}
+// maybeSwap starts moving the tab to a fresh engine at url, if it's been
+// advised and nothing's in the way (byPerson: the person's going there,
+// not sent to this tab's engine: carried on here if the move doesn't
+// happen); or, one already on its way, has it go to url. True if url's the
+// fresh one's to load.
+function maybeSwap(url, byPerson = false) {
+    if (warm) {
+        warm.url = url;
+        warm.byPerson ||= byPerson;
+        if (warm.opened) warm.s.send(JSON.stringify({ op: "navigate", url, view: view() }));
+        return true;
+    }
+    if (!recycleAdvised || !ws || pageLeft || closing || performance.now() - lastSwap < SWAP_EVERY || swapBusy()) return false;
+    lastSwap = performance.now();
+    const replaces = resumeToken.get();
+    const s = new TunnelSocket({ type: "go", viewerCaps: viewerCapabilities(), deflate: canInflate, ...(privateTab ? { private: true } : {}), ...(replaces ? { replaces } : {}) }, { title: "Browser" });
+    const w = warm = { s, url, byPerson, opened: false, kept: [], timer: 0 };
+    w.timer = setTimeout(() => dropWarm(w), WARM_FOR);
+    s.onopen = () => {
+        if (warm !== w) return;
+        w.opened = true;
+        s.send(JSON.stringify({ op: "navigate", url: w.url, view: view() }));
+    };
+    let inbox = Promise.resolve();
+    s.onmessage = (e) => { inbox = inbox.then(() => warmTake(w, e.data)).catch(() => {}); };
+    s.onclose = () => dropWarm(w);
+    return true;
+}
+// warmTake keeps what the fresh tab sends (decompressed, as the page's
+// connection would take it), till its page has come: then it's the tab's.
+async function warmTake(w, data) {
+    if (warm !== w) return;
+    if (typeof data !== "string" && data instanceof ArrayBuffer && data.byteLength >= 4 && new DataView(data).getUint32(0) === 0) {
+        data = await inflate(data.slice(4));
+        if (warm !== w) return;
+    }
+    w.kept.push(data);
+    if (typeof data !== "string") return;
+    let m;
+    try { m = JSON.parse(data); } catch { return; }
+    if (m.type === "go-snapshot" && !m.again) swapTo(w);
+}
+// swapTo makes the fresh tab the page's: the old one's let go here as its
+// connection closing would (it isn't the page's then: socketClosed leaves
+// it), and closed for good on the server (its engine ended).
+function swapTo(w) {
+    clearTimeout(w.timer);
+    warm = null;
+    recycleAdvised = false;
+    const old = ws;
+    ws = w.s;
+    gen = shown = 0;
+    sentView = view();
+    resumeToken.set(typeof w.s.reply?.resume === "string" && w.s.reply.resume.length <= 64 ? w.s.reply.resume : "");
+    devices.reset();
+    closeDialog();
+    loading = rendering = false;
+    if (old) {
+        resLost(old);
+        try { old.send(JSON.stringify({ op: "close" })); } catch { /* gone */ }
+        old.close();
+    }
+    const take = receiver(w.s);
+    let inbox = Promise.resolve();
+    for (const data of w.kept) inbox = inbox.then(() => take(data)).catch(() => {});
+    w.kept = [];
+    w.s.onmessage = (e) => { inbox = inbox.then(() => take(e.data)).catch(() => {}); };
+    w.s.onclose = (e) => socketClosed(w.s, e, () => {});
+}
+// dropWarm lets a fresh tab go that didn't come (or closed): the page
+// carries on in its own; one the person was going to, there.
+function dropWarm(w) {
+    if (warm !== w) return;
+    warm = null;
+    clearTimeout(w.timer);
+    try { w.s.send(JSON.stringify({ op: "close" })); } catch { /* not open */ }
+    try { w.s.close(); } catch { /* closed */ }
+    if (w.byPerson && ws) ws.send(JSON.stringify({ op: "navigate", url: w.url, view: sentView = view() }));
+}
+window.addEventListener("pagehide", () => { if (warm) dropWarm(warm); });
 
 // The page's streams, as the player's Save stream offers them
 // (gostreams.go; go-media.js): by address, what each is ({height, duration, live}, as far as its manifests
@@ -1826,6 +1939,7 @@ function message(m) {
                 at++;
                 remember();
                 update();
+                maybeSwap(m.url);  // (advised: its next address in a fresh engine)
             }
             break;
         case "go-dialog":
@@ -1907,6 +2021,11 @@ function message(m) {
             // The page left: its notifications closed, its ask let go.
             for (const token of [...notified.keys()]) closeNotify(token);
             if (notifyAsking) notifyAnswered("");
+            break;
+        case "go-recycle":
+            // Its engine's past its soft memory limit: at the next address,
+            // a fresh one (maybeSwap).
+            recycleAdvised = true;
             break;
         case "go-restarting":
             // The engine's being restarted (Settings): this tab connects
@@ -2119,6 +2238,7 @@ window.addEventListener("message", (e) => {
             // or a field's text changed.)
             if (["click", "submit"].includes(m.kind) || (m.kind === "key" && m.phase === "down" && !m.repeat) ||
                 (m.kind === "mouse" && m.phase === "down") || (m.kind === "touch" && m.phase === "end")) lastPageInput = Date.now();
+            if (m.kind === "key" || m.kind === "input") lastKeyAt = Date.now();  // (typing, a field's or a key's: not moved to a fresh engine meanwhile)
             // Esc, while the page's fullscreen: the browser's, leaving it
             // (the page isn't given it, as browsers don't).
             if (pageFullScreen && m.kind === "key" && m.key === "Escape") {
@@ -2423,6 +2543,7 @@ async function sendFile(file, c, progress, fsTransfer = false) {
     }
 }
 async function stageFSFile(m) {
+    fsStaging++;
     try {
         const file = await devices.fileForRead(m);
         if (!file || ws !== deviceContext().socket || gen !== m.gen) throw new Error("The selected file handle expired.");
@@ -2432,6 +2553,8 @@ async function stageFSFile(m) {
         show("");
         warn(`The selected file couldn't be staged for the page: ${err.message}`);
         try { ws?.send(JSON.stringify({ op: "go-fs-cancel", gen: m.gen, text: m.transfer })); } catch { /* connection gone */ }
+    } finally {
+        fsStaging--;
     }
 }
 // saveFile saves url into Downloads, saying how it goes (say: where, as

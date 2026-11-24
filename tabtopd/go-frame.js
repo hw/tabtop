@@ -1758,6 +1758,7 @@
                         if (!was.os.size) d.sized.delete(el);
                     }
                     ioCount--;
+                    if (![...d.io.values()].some((r) => r.ids.has(el))) d.observed?.delete(el);
                 }
                 continue;
             }
@@ -1771,6 +1772,7 @@
                 if (rec.ids.has(el)) continue;
                 rec.ids.set(el, x.i);
                 rec.observer.observe(el);
+                (d.observed ??= new Set()).add(el);
                 const was = (d.sized ??= new Map()).get(el);
                 if (was) {
                     was.os.add(x.o);
@@ -1798,9 +1800,35 @@
             if (rec.ids.has(el)) continue;
             rec.ids.set(el, x.i);
             rec.observer.observe(el);
+            (d.observed ??= new Set()).add(el);
             ioCount++;
         }
     }
+    // What's observed here of what the page took out of its document: let
+    // go of once it's been out of this one a while (three looks, 10 s
+    // apart), as the page's own observers park it (goobserve.js), whose
+    // "-" for it never comes (said on the element, out of the document).
+    // Else a long feed (YouTube's Shorts) has every reel's held, and, at
+    // MAX_IO, nothing more observed. Observed again if the page says so.
+    const ioAway = new WeakMap();
+    setInterval(() => {
+        const d = doc;
+        if (!d?.observed) return;
+        for (const el of d.observed) {
+            if (el.isConnected) { ioAway.delete(el); continue; }
+            const looks = (ioAway.get(el) ?? 0) + 1;
+            if (looks < 3) { ioAway.set(el, looks); continue; }
+            ioAway.delete(el);
+            d.observed.delete(el);
+            for (const rec of d.io.values()) {
+                if (!rec.ids.has(el)) continue;
+                rec.observer.unobserve(el);
+                rec.ids.delete(el);
+                ioCount--;
+            }
+            d.sized?.delete(el);
+        }
+    }, 10000);
     function seen(d, o, entries) {
         const rec = d.io.get(o);
         if (!rec || d !== doc) return;
@@ -1914,6 +1942,7 @@
         for (const rec of d?.io.values() ?? []) rec.observer.disconnect();
         d?.io.clear();
         d?.sized?.clear();
+        d?.observed?.clear();
         ioCount = 0;
         ioSeen = [];
     }

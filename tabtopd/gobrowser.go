@@ -196,7 +196,12 @@ type goBrowser struct {
 	device                        *goDevicePending
 	fs                            goFileSystem
 	pip                           *goDevicePending
-	imagePaste                    *goImagePaste
+	// recycled: the viewer's been advised to move the tab to a fresh engine
+	// (its memory past the soft limit: goRecycleAt), and is again as it
+	// connects again.
+	recycled   bool
+	overSince  time.Time // since when its engine's been past the soft limit; zero: it isn't
+	imagePaste *goImagePaste
 	// The script telling pages what the person's browser can do (godevice.go:
 	// the jobs' worker's alone).
 	deviceScript string
@@ -1032,6 +1037,7 @@ func (b *goBrowser) run() {
 			b.framesSoon()       // other origins' frames: once a second
 			b.frameStreamsSoon() // and those streaming, as often as the page
 			b.notifySoon()       // notification answers changed (gonotify.go)
+			b.recycleSoon()      // its engine's memory past the soft limit: advised once
 		case <-loadTimeout:
 			// Show what has loaded, slow as the rest is.
 			gen := b.loading
@@ -1084,6 +1090,38 @@ func (b *goBrowser) resume() {
 		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": id, "url": a.url, "site": a.site})
 	}
 	b.resendStreams() // Save stream offered again (gostreams.go)
+	b.recycleAgain()
+}
+
+// recycleAgain advises a viewer connecting again, if the tab's been: this
+// one hasn't been.
+func (b *goBrowser) recycleAgain() {
+	if b.recycled {
+		b.send(map[string]any{"type": "go-recycle", "gen": b.gen})
+	}
+}
+
+// recycleSoon advises the viewer, once, that the tab's engine has been past
+// its soft memory limit (goRecycleAt) for goRecycleAfter: it moves the tab
+// to a fresh one.
+func (b *goBrowser) recycleSoon() {
+	if b.recycled || b.e == nil || !b.e.overSoft() {
+		b.overSince = time.Time{}
+		return
+	}
+	if b.overSince.IsZero() {
+		b.overSince = time.Now()
+	}
+	if time.Since(b.overSince) >= goRecycleAfter {
+		b.recycle()
+	}
+}
+
+// recycle advises the viewer to move the tab to a fresh engine.
+func (b *goBrowser) recycle() {
+	b.recycled = true
+	goDebugf("engine past its soft limit (%d MB): its viewer advised to move", b.e.rss.Load()>>20)
+	b.send(map[string]any{"type": "go-recycle", "gen": b.gen})
 }
 
 // goScrollAt is where a page says it's scrolled, within reason.

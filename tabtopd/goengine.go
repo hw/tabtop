@@ -379,12 +379,32 @@ type goEngine struct {
 	// uses counts what the person has done in it: busy is only a runaway
 	// page's when nobody has, for all of cfg.busy.
 	uses atomic.Int64
+	// rss is its memory, as the watchdog last read it (bytes).
+	rss atomic.Int64
 }
 
 // use notes that the person has asked something of the engine (loading a
 // page, a click), so the CPU it takes isn't held against a page: loading a
 // heavy site takes more than a core for seconds (see watch).
 func (e *goEngine) use() { e.uses.Add(1) }
+
+// goRecycleAt is the share of an engine's memory limit past which its tab
+// is advised to move to a fresh one (go.js: at its page's next address,
+// a fresh engine loads it, and takes over once it's shown). A page that
+// keeps what it's done with (Moli keeps the DOM elements a page has
+// removed: a feed's, as YouTube's Shorts', grow it by tens of MB a minute)
+// is so handed over before the watchdog's limit ends it, mid-page.
+const goRecycleAt = 0.6
+
+// goRecycleAfter is how long an engine stays past goRecycleAt before its
+// tab's advised: a page loading may pass it for a moment (YouTube's Shorts
+// does, then settles), which is no reason to move.
+const goRecycleAfter = 10 * time.Second
+
+// overSoft is whether its memory's past goRecycleAt of its limit.
+func (e *goEngine) overSoft() bool {
+	return e.cfg.memory > 0 && float64(e.rss.Load()) > goRecycleAt*float64(e.cfg.memory)
+}
 
 // startGoEngine starts an engine, and returns once it answers on CDP.
 func startGoEngine(cfg goEngineConfig) (*goEngine, error) {
@@ -673,6 +693,7 @@ func (e *goEngine) watch() {
 		case <-tick.C:
 		}
 		rss, cpu := processTreeUsage(e.cmd.Process.Pid)
+		e.rss.Store(rss)
 		if rss > e.cfg.memory {
 			e.cfg.logf("go: engine killed: %d MB of memory", rss>>20)
 			e.kill("it used too much memory")

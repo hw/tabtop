@@ -103,6 +103,9 @@ var tunnelRoutes = map[string]tunnelRoute{
 	"go-adblock-update": other((*server).routeGoAdBlockUpdate),
 	// What it keeps of what sites sent: emptied (gocache.go).
 	"go-cache-clear": other((*server).routeGoCacheClear),
+	// A tab advised now to move to a fresh engine, as past its soft memory
+	// limit (only with TABTOP_GO_DEBUG: the checks' own).
+	"go-debug-recycle": other((*server).routeGoDebugRecycle),
 
 	"go-upload":    other((*server).routeGoUpload),   // a file for a page's file input
 	"go-fs-upload": other((*server).routeGoFSUpload), // a picked file staged for a page's File handle

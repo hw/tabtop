@@ -876,6 +876,8 @@
                 reservedMedia.delete(n);
                 ids.set(n, i);
                 byId.set(i, new WeakRef(n));
+            } else if (!byId.has(i)) {
+                byId.set(i, new WeakRef(n));  // (let go of out of the document: back in it)
             }
             return i;
         }
@@ -1547,7 +1549,25 @@
             return out;
         }
 
+        // sweep lets go of what's kept of nodes out of the document (a feed
+        // replacing what it shows, YouTube's Shorts its reels, holds none):
+        // their numbers' entries, the fields acted on, what's observed of
+        // them, adopted sheets' hosts, rule-only styles. Every 30 s, as
+        // changes are read. A node put back is numbered as it was (id).
+        let swept = performance.now();
+        function sweep() {
+            swept = performance.now();
+            for (const [i, ref] of byId) {
+                const n = ref.deref();
+                if (!n || !n.isConnected) byId.delete(i);
+            }
+            for (const el of watched.keys()) if (!el.isConnected) watched.delete(el);
+            for (const el of ioTargets.keys()) if (!el.isConnected) ioTargets.delete(el);
+            for (const host of adopted.keys()) if (host !== document && !host?.isConnected) adopted.delete(host);
+            for (const el of ruled.keys()) if (!el.isConnected) ruled.delete(el);
+        }
         function changes() {
+            if (performance.now() - swept > 30000) sweep();
             for (const r of observer.takeRecords()) {
                 if (!(r.target instanceof Node)) { foreign = true; continue; }
                 if (r.type === "childList") parents.add(r.target);

@@ -83,6 +83,10 @@ type tunnelRequest struct {
 	// private tab; go-resource: asked for by one, so sent none of the
 	// account's cookies. (Not WEB_GO_PRIVATE's private networks.)
 	Private bool `json:"private,omitempty"`
+	// go: the token of the tab this new one takes over from (its engine
+	// past its soft memory limit: go.js moves it to a fresh one): its
+	// cookies taken in first, for the new one's engine.
+	Replaces string `json:"replaces,omitempty"`
 	// GoTab is the active /go tab token, used only for downloads initiated
 	// by that tab so the server can apply the tab's site cookies and headers.
 	GoTab string `json:"go_tab,omitempty"`

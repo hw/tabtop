@@ -938,6 +938,23 @@ document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xi
 document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xinner.html";
 document.getElementById("show").onclick = () => { document.getElementById("x").style.display = ""; };
 </script>`,
+        // A page that goes on to its next address itself (pushState, as
+        // YouTube's Shorts at each reel), a cookie set just before; its own
+        // number for each load of it, to tell a fresh one.
+        "swap.html": `<!doctype html><title>Swap</title><p id="load"></p><p id="where"></p><p id="c"></p><p id="ls"></p><input id="t"> <button id="next">Next</button>
+<script>
+document.getElementById("load").textContent = String(Math.random()).slice(2, 10);
+document.getElementById("where").textContent = location.search || "first";
+document.getElementById("c").textContent = document.cookie || "none";
+try { document.getElementById("ls").textContent = localStorage.getItem("justset") ?? "none"; } catch (e) { document.getElementById("ls").textContent = e.name; }
+document.getElementById("next").onclick = () => {
+    const n = String(Date.now() % 100000);
+    document.cookie = "justset=" + n + "; path=/";
+    try { localStorage.setItem("justset", n); } catch { /* none */ }
+    history.pushState({}, "", "?next" + (Date.now() % 100000));
+    document.getElementById("where").textContent = location.search;
+};
+</script>`,
         "xinner.html": `<!doctype html><style>/* old Internet Explorer's hacks, which match nothing in a document */ * html #b, *:first-child+html #b { display: none }</style><button id="b">press</button> <span id="s">not pressed</span> <button id="tb">tap</button> <span id="ts">not tapped</span>
 <form id="f"><input id="t" name="t"></form><span id="echo">nothing typed</span> <span id="sent">not sent</span>
 <div id="h" style="width:120px;height:20px;background:#ddd">hover me</div><span id="hs">not hovered</span>
@@ -2288,6 +2305,108 @@ async function check(base, port, site, adSite) {
         await frameWait(`document.getElementById("m")?.textContent === "?0"`, "desktop headers, wide again");
     });
 
+    await step("a tab whose engine is past its soft memory limit moves to a fresh one at its page's next address: shown once it's come, the old engine ended, its cookies kept; not while typing; a private tab's too", async () => {
+        const resumeKey = `Object.keys(sessionStorage).find((k) => k.startsWith("tabtop-go-resume"))`;
+        const token = () => ev(`sessionStorage.getItem(${resumeKey}) ?? ""`);
+        const advise = () => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-debug-recycle", go_tab: sessionStorage.getItem(${resumeKey}) }); t.close(); return true; })`);
+        // The engines this check's server runs, by process (none known: an image's).
+        const engines = () => {
+            const port = new URL(base).port, all = new Map();
+            let server = 0;
+            for (const d of readdirSync("/proc")) {
+                if (!/^\d+$/.test(d)) continue;
+                try {
+                    const stat = readFileSync(`/proc/${d}/stat`, "utf8"), close = stat.lastIndexOf(")");
+                    const comm = stat.slice(stat.indexOf("(") + 1, close);
+                    all.set(Number(d), { comm, ppid: Number(stat.slice(close + 2).split(" ")[1]) });
+                    if (comm === "tabtopd" && readFileSync(`/proc/${d}/cmdline`, "utf8").includes(`127.0.0.1:${port}`)) server = Number(d);
+                } catch { /* gone */ }
+            }
+            if (!server) return null;
+            const under = (p) => { while (p && p !== server && p !== 1) p = all.get(p)?.ppid; return p === server; };
+            return [...all].filter(([p, x]) => x.comm === "moli" && under(p)).map(([p]) => p);
+        };
+        const loadOf = () => frame(`document.getElementById("load")?.textContent ?? ""`);
+        // (Its new address, once the copy has it: read at once, it's the last.)
+        const next = async () => {
+            const was = await frame(`document.getElementById("where").textContent`);
+            await frameClick("#next");
+            await frameWait(`document.getElementById("where")?.textContent !== ${JSON.stringify(was)}`, "its next address", 10000);
+            return frame(`document.getElementById("where").textContent`);
+        };
+        // (Each a tab on its own, its sessionStorage this check's.)
+        const tab = async (path, setup = "") => {
+            await ev(`(() => { window.__leaving = true; sessionStorage.clear(); ${setup} location.href = ${JSON.stringify(new URL(path, base).href)}; })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "a tab of its own, connected", 30000);
+            await sleep(1000);  // (its connection's open)
+        };
+        // (Fresh: its own number for its load, not the old page's, which
+        // has the new address too: pushState.)
+        const swapped = async (what, before, loaded, where) => {
+            await waitFor(`sessionStorage.getItem(${resumeKey}) !== ${JSON.stringify(before)}`, `${what}: a fresh tab`, 30000);
+            await frameWait(`document.getElementById("load")?.textContent !== ${JSON.stringify(loaded)} && document.getElementById("where")?.textContent === ${JSON.stringify(where)}`, `${what}: its page, fresh, at ${where}`, 30000)
+                .catch(async (err) => {
+                    const targets = (await cdp("Target.getTargets")).targetInfos.filter((t) => t.url.includes("go-frame.html")).length;
+                    throw new Error(`${err.message}; the page shows ${await ev(`JSON.stringify({ title: document.title, url: document.getElementById("go_url").dataset.url, status: document.getElementById("go_status").textContent })`)}; ${targets} frame targets`);
+                });
+        };
+        try {
+            // (Its engine: the one started for it, others' kept tabs
+            // ending meanwhile.)
+            const had = new Set(engines() ?? []);
+            await tab("go/tab");
+            await goTo(site + "swap.html", "Swap");
+            await frameWait(`!!document.getElementById("next")`, "its button");
+            const mine = (engines() ?? []).filter((p) => !had.has(p));
+            // Advised: but typing (a key just now), not moved at its next address.
+            await advise();
+            await sleep(800);
+            await frameClick("#t");
+            await browser.type("a");
+            const typing = await token();
+            await next();
+            await sleep(8000);  // (a move takes a few seconds: given time to show)
+            if ((await token()) !== typing) throw new Error("moved to a fresh engine while typing");
+            // Past that (10 s): moved at its next address, its page fresh there.
+            await sleep(3000);
+            const before = await token(), loaded = await loadOf();
+            const where = await next();
+            await swapped("not typing", before, loaded, where);
+            const c = await frame(`document.getElementById("c").textContent`);
+            if (!/justset=\d+/.test(c)) throw new Error(`the cookie set just before wasn't the fresh engine's: ${c}`);
+            const ls = await frame(`document.getElementById("ls").textContent`);
+            if (ls !== /justset=(\d+)/.exec(c)[1]) throw new Error(`the site's storage set just before wasn't the fresh engine's: ${ls} (the cookie ${c})`);
+            if (engines()) {
+                const left = () => engines().filter((p) => mine.includes(p));
+                const end = Date.now() + 15000;
+                while (left().length && Date.now() < end) await sleep(500);
+                if (left().length) throw new Error(`the old engine (${left().join(", ")}) not ended after the move`);
+                if (!mine.length) throw new Error("no engine of its own seen");
+            }
+            // A private tab: its sign-in kept across the move.
+            await tab("go/tab?id=97", `sessionStorage.setItem("tabtop-go-private:97", "1");`);
+            if (!(await ev(`document.documentElement.classList.contains("go-private")`))) throw new Error("not a private tab");
+            // (Its title's "Private – Browser", whatever the page: loaded as
+            // the copy shows it.)
+            const privateTo = async (url, ready, what) => {
+                await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(url)}; i.form.requestSubmit(); })()`);
+                await frameWait(ready, what, 30000);
+            };
+            await privateTo(site + "cookie?session", `/^sent/.test(document.getElementById("c")?.textContent ?? "")`, "the private tab's sign-in");
+            await privateTo(site + "swap.html", `!!document.getElementById("next")`, "the private tab's button");
+            await advise();
+            await sleep(800);
+            const privateBefore = await token(), privateLoaded = await loadOf();
+            await swapped("a private tab", privateBefore, privateLoaded, await next());
+            await privateTo(site + "cookie", `/^sent/.test(document.getElementById("c")?.textContent ?? "") && !document.getElementById("next")`, "what the private tab sends");
+            const sent = await frame(`document.getElementById("c").textContent`);
+            if (!/signin=s/.test(sent)) throw new Error(`a private tab's sign-in not kept across the move: ${sent}`);
+            if (!(await ev(`document.documentElement.classList.contains("go-private")`))) throw new Error("the private tab moved to one that isn't");
+        } finally {
+            await tab("go/tab");
+        }
+    });
+
     await step("a font is fetched as a browser would: the one source it takes, for a face its text uses", async () => {
         await goTo(site + "fonts.html", "Fonts");
         // Shown in it: not as wide as in the fallback (monospace).
@@ -2974,8 +3093,20 @@ async function check(base, port, site, adSite) {
         await waitFor(`Object.keys(sessionStorage).some(k => k.startsWith("tabtop-go-downloads:") && JSON.parse(sessionStorage[k]).length)`, "the download ID kept");
         await ev(`location.reload()`);
         await waitFor(`!!document.querySelector("#go_downloads button")`, "Cancel available after reconnecting");
+        // Its engine past its soft memory limit: not moved to a fresh one
+        // while the download runs; once it's done, at the next address.
+        const resumeKey = `Object.keys(sessionStorage).find((k) => k.startsWith("tabtop-go-resume"))`;
+        const token = () => ev(`sessionStorage.getItem(${resumeKey}) ?? ""`);
+        const downloading = await token();
+        await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-debug-recycle", go_tab: ${JSON.stringify(downloading)} }); t.close(); return true; })`);
+        await sleep(800);
+        await goTo(site + "swap.html", "Swap");
+        await sleep(6000);  // (a move takes a few seconds: given time to show)
+        if ((await token()) !== downloading) throw new Error("moved to a fresh engine while a download ran");
         await ev(`document.querySelector("#go_downloads button").click()`);
         await waitFor(`document.querySelector("#go_notice p")?.textContent === "Download cancelled." && !document.querySelector("#go_downloads button")`, "the download cancelled");
+        await goTo(site + "stream-save.html", "Save stream");
+        await waitFor(`sessionStorage.getItem(${resumeKey}) !== ${JSON.stringify(downloading)}`, "a fresh engine once the download's done", 30000);
         // A page that only streams through Media Source (no .m3u8): Save from the buffered capture.
         await goTo(site + "mse-save.html", "MSE save");
         await sleep(1500);

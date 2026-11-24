@@ -138,6 +138,12 @@ func (g *server) routeGo(c *tunnelCall) {
 			storage = nil // (an engine whose localStorage isn't kept: config.go)
 		}
 	}
+	// Taking over from a tab of this session's, of its kind (moved to a
+	// fresh engine: go.js): what its sites set lately, read now, not at its
+	// next 15 s sync, for this one's engine to be given (startCookies).
+	if old := tabs.find(c.req.Replaces, c.session); c.req.Replaces != "" && old != nil && old.private == private {
+		old.b.syncCookies()
+	}
 	e, err := startGoEngine(goEngineConfigFor(g.goConfig, private))
 	if err != nil {
 		releasePrivate()
@@ -473,4 +479,21 @@ func sweepGoRunDirs() {
 		}
 		os.RemoveAll(dir)
 	}
+}
+
+// routeGoDebugRecycle advises the tab named (go_tab) to move to a fresh
+// engine, as if its engine were past its soft memory limit: only with
+// TABTOP_GO_DEBUG (go-check's).
+func (g *server) routeGoDebugRecycle(c *tunnelCall) {
+	if !goDebug {
+		c.r.fail("Unknown request.")
+		return
+	}
+	t := g.goTabList().find(c.req.GoTab, c.session)
+	if t == nil {
+		c.r.fail("That tab's gone.")
+		return
+	}
+	t.b.post(t.b.recycle)
+	c.r.finish(map[string]any{})
 }
