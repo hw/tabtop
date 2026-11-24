@@ -780,6 +780,10 @@
         ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
         "[data-go-video].go-media-live, [data-go-audio].go-media-live { padding: 0 !important; background: transparent !important; background-image: none !important; color: transparent !important; border-color: transparent !important; box-shadow: none !important; } " +
         ":where([data-go-video].go-media-mark, [data-go-audio].go-media-mark) { outline: 3px solid #8ab4f8; outline-offset: -3px; } " +
+        // A player with nothing to play: nothing shown, as a browser shows
+        // none, and pressed through (what's under it is what's pressed; the
+        // engine's own, over it there, is passed over: goagent.js point).
+        "[data-go-video].go-media-empty, [data-go-audio].go-media-empty { background: transparent !important; background-image: none !important; color: transparent !important; border-color: transparent !important; box-shadow: none !important; outline: none !important; pointer-events: none !important; } " +
         "[data-go-wait] { visibility: hidden !important; }";
     let mediaKey = 0;
     const mediaOf = new WeakMap();
@@ -987,12 +991,22 @@
         box.style.setProperty("--tabtop-media-ratio", size.aspectRatio || "initial");
         mediaLater();
     }
+    // A player's attributes that are its own (what it plays and how, its
+    // size): not given its box.
+    const MEDIA_OWN = new Set(["src", "srcset", "poster", "preload", "autoplay", "controls", "controlslist", "muted", "loop", "playsinline",
+        "crossorigin", "width", "height", "disablepictureinpicture", "disableremoteplayback", "type"]);
     function mediaBox(d, n, tag) {
         const box = document.createElement("div");
         box.setAttribute(drawnAs[tag], "");
-        for (const name of ["id", "class", "title", "style"]) {
-            const value = attrOf(n, name);
-            if (value) attribute(d, box, HTML, "div", name, value);
+        // Its attributes, as a change to them later gives them (data-*,
+        // aria-*, its id, class, title and style), through the same filter;
+        // not the player's own (what it plays, how), which the box's player
+        // has, nor its size, set below.
+        const attrs = Array.isArray(n.a) ? n.a : [];
+        for (let i = 0; i + 1 < attrs.length; i += 2) {
+            const name = String(attrs[i]), value = String(attrs[i + 1] ?? "");
+            if (MEDIA_OWN.has(name.toLowerCase())) continue;
+            attribute(d, box, HTML, "div", name, value);
         }
         const dimension = (name) => {
             const value = attrOf(n, name);
@@ -1048,6 +1062,7 @@
         if (!info) return;
         if (info.key) forgetMedia(info.key);  // its player stops (keep, in the page)
         info.key = 0;
+        box.classList.remove("go-media-empty");
         const what = info.tag === "video" ? "video" : "sound";
         if (/^blob:/i.test(src) && !/^blob:tabtop-media\/[1-9]\d*$/.test(src)) {
             // Fed by the page's own player (Media Source): nothing a player
@@ -1063,7 +1078,8 @@
         if (!url) {
             setMediaLive(box, false);
             box.classList.remove("go-media-mark");
-            box.textContent = `A ${what} with nothing to play.`;
+            box.classList.add("go-media-empty");
+            box.textContent = `A ${what} with nothing to play.`;  // (said, not shown)
             mediaLater();
             return;
         }

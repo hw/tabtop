@@ -45,6 +45,27 @@
         return Number.isFinite(d) && d > 0 ? Math.min(t, d) : t;
     };
     const fire = (el, ...types) => { for (const type of types) el.dispatchEvent(new Event(type)); };
+    // The engine's own player "plays" whatever it's given (Moli 1.1.27,
+    // measured: loadedmetadata, loadeddata, canplay and canplaythrough at
+    // once, readyState 4, for a stream it can't play): for a stream the
+    // person's player plays (the relay's, blob:tabtop-media/), what it has
+    // is that player's to say (the reports below), not the engine's. Its
+    // own events (trusted; these here aren't) aren't the page's, and till
+    // the person's player says, it has nothing: readyState 0, no length,
+    // no size.
+    const relayed = (el) => /^blob:tabtop-media\//.test(sourceOf(el) ?? "");
+    for (const type of ["loadedmetadata", "loadeddata", "canplay", "canplaythrough", "durationchange", "resize"]) {
+        window.addEventListener(type, (e) => {
+            if (e.isTrusted && e.target instanceof HTMLMediaElement && relayed(e.target)) e.stopImmediatePropagation();
+        }, true);
+    }
+    for (const [name, base, none] of [["readyState", proto, 0], ["duration", proto, NaN], ["videoWidth", globalThis.HTMLVideoElement?.prototype, 0], ["videoHeight", globalThis.HTMLVideoElement?.prototype, 0]]) {
+        const was = base && Object.getOwnPropertyDescriptor(base, name);
+        if (!was?.get) continue;
+        try {
+            Object.defineProperty(base, name, { ...was, get: { [name]() { return relayed(this) ? none : was.get.call(this); } }[name] });
+        } catch { /* as it is */ }
+    }
     for (const [name, get, set] of [
         ["currentTime", (el, p) => timeOf(el, p), (el, p, v) => {
             p.t = num(Number(v), 1e7);

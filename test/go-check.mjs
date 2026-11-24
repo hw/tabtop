@@ -168,6 +168,14 @@ $("read").onclick = () => navigator.clipboard.readText().then((t) => { $("got").
         // The page's fullscreen (gofullscreen.js): its player made so, left
         // by it or by the person; one asked for long after its press; one
         // in another origin's frame.
+        // An empty video (nothing to play) laid over a button.
+        "emptyvideo.html": `<!doctype html><title>Empty video</title><style>body { margin: 0 } #under { position: absolute; left: 20px; top: 20px; width: 200px; height: 80px } #v { position: absolute; left: 0; top: 0; width: 320px; height: 180px }</style>
+<button id="under">under</button><video id="v"></video><p id="r" style="position: absolute; top: 200px">none</p>
+<script>
+const r = document.getElementById("r");
+document.getElementById("under").onclick = () => { r.textContent = "button"; };
+document.getElementById("v").onclick = () => { r.textContent = "video"; };
+</script>`,
         // A page's pointer lock (gopointerlock.js): a pad that locks it,
         // adds up its moves, counts its presses; a right press leaves it.
         "lock.html": `<!doctype html><title>Lock</title><div id="pad" style="width:240px;height:160px;background:#468"></div><button id="late">Later</button>
@@ -1596,7 +1604,11 @@ async function check(base, port, site, adSite) {
     await step("log in on /go", async () => {
         // A tab on its own (go/tab), as the tabs' page has each (see the
         // tabs' step, below).
-        await open("go/tab", `!!document.querySelector("#tabtop_login input")`, "the login form");
+        await open("go/tab", `!!document.querySelector("#tabtop_login input")`, "the login form").catch(async (err) => {
+            // (What the page shows instead, to say why.)
+            const shows = await ev(`JSON.stringify({ at: location.href, title: document.title, ready: document.readyState, text: (document.body?.innerText ?? "").replace(/\\s+/g, " ").slice(0, 300) })`).catch((e) => e.message);
+            throw new Error(`${err.message} (the page shows ${shows})`);
+        });
         const code = await totp();
         await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
         await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page");
@@ -4268,6 +4280,16 @@ async function check(base, port, site, adSite) {
         await goTo(site + "sources.html", "Sources");
         await frameWait(`document.querySelector("#a[data-go-video]")?.textContent === ""`, "the first video's player, for its second <source>");
         await frameWait(`/nothing to play/.test(document.getElementById("b")?.textContent || "")`, "the second, its own src empty, nothing to play");
+    });
+
+    await step("a video with nothing to play shows nothing and is pressed through: what's under it is pressed", async () => {
+        await goTo(site + "emptyvideo.html", "Empty video");
+        await frameWait(`document.getElementById("v")?.classList.contains("go-media-empty")`, "the empty video's box");
+        const look = await frame(`(() => { const s = getComputedStyle(document.getElementById("v")); return [s.pointerEvents, s.backgroundColor, s.color].join(" "); })()`);
+        if (look !== "none rgba(0, 0, 0, 0) rgba(0, 0, 0, 0)") throw new Error(`the empty box: ${look}`);
+        await frameClick("#under");
+        await frameWait(`document.getElementById("r")?.textContent === "button"`, "the button under it pressed", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("r").textContent`)}`); });
     });
 
     await step("a player choosing its MediaSource as dash.js does gets one that works", async () => {
