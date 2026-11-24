@@ -2003,7 +2003,7 @@
                     const num = (v) => (Number.isFinite(v) ? v : 0);
                     const what = d?.play && typeof d.play === "object"
                         ? { play: { t: num(d.play.t), playing: !!d.play.playing, ended: !!d.play.ended } }  // how it plays
-                        : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration) };
+                        : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration), readyState: num(d?.readyState) };
                     if (what.play && Number.isSafeInteger(d.play.stream)) {
                         const ranges = (list) => Array.isArray(list) ? list.slice(0, 16).map((r) => [num(r?.[0]), num(r?.[1])]) : [];
                         Object.assign(what.play, { stream: d.play.stream, buffered: ranges(d.play.buffered),

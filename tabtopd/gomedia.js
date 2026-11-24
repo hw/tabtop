@@ -4,7 +4,7 @@
 // page asking a video its size or length gets 0, and its player script
 // lays it out at its guess (YouTube: 16:9, its Shorts being 9:16). The
 // agent (goagent.js) hands what the person's player found, as JSON, in an
-// event on the element, "__tabtop_media" ({w, h, duration}); this has the
+// event on the element, "__tabtop_media" ({w, h, duration, readyState}); this has the
 // element say it, and fires the events a browser's does as it learns it.
 // An engine that has found it itself is left as it is.
 //
@@ -34,6 +34,9 @@
         const state = plays.get(el);
         return state && state.source === sourceOf(el) ? state : null;
     };
+    const metadata = new WeakMap();
+    const videoFields = ["videoWidth", "videoHeight"];
+    const mediaFields = ["duration", "readyState", "networkState"];
     const native = {};
     for (const name of ["currentTime", "paused", "ended"]) native[name] = Object.getOwnPropertyDescriptor(proto, name);
     const timeOf = (el, p) => {
@@ -135,20 +138,42 @@
             played(el, d.play);
             return;
         }
-        plays.delete(el);  // a file of its own: how the last played isn't this one's
+        const source = sourceOf(el);
+        if (!source) return;
+        const readyState = Number.isInteger(d?.readyState) ? num(d.readyState, 4) : 0;
         const w = num(d?.w, 16384), h = num(d?.h, 16384), duration = num(d?.duration, 1e7);
-        if (el instanceof HTMLVideoElement && (!w || !h)) return;
-        // The engine's own, if it has them (and they weren't said here
-        // before, for an earlier file): not ours to say.
-        if (!Object.getOwnPropertyDescriptor(el, "readyState") && el.readyState > 0 && (el.duration > 0 || el.videoWidth > 0)) return;
-        const said = { duration, readyState: 4, networkState: 1 };
-        if (el instanceof HTMLVideoElement) Object.assign(said, { videoWidth: w, videoHeight: h });
-        for (const [name, value] of Object.entries(said)) {
-            try { Object.defineProperty(el, name, { configurable: true, get: () => value }); } catch { /* as it is */ }
+        const previous = metadata.get(el);
+        const was = previous?.source === source ? previous : null;
+        // A native player can report its own state. Use the viewer's
+        // report for a source the engine does not play.
+        if (!was && (!readyState || el.readyState > 0 && (el.duration > 0 || el.videoWidth > 0))) return;
+        const state = { source, duration: readyState ? duration : NaN, readyState, networkState: 1, videoWidth: w, videoHeight: h,
+            loadedData: readyState > 0 && (readyState >= 2 || !!was?.loadedData) };
+        metadata.set(el, state);
+        if (!previous) {
+            const fields = el instanceof HTMLVideoElement ? [...mediaFields, ...videoFields] : mediaFields;
+            for (const name of fields) {
+                const base = videoFields.includes(name) ? HTMLVideoElement.prototype : proto;
+                const get = Object.getOwnPropertyDescriptor(base, name)?.get;
+                try { Object.defineProperty(el, name, { configurable: true, get() {
+                    const current = metadata.get(this);
+                    return current && current.source === sourceOf(this) ? current[name] : get?.call(this);
+                } }); } catch { /* as it is */ }
+            }
         }
-        const events = ["loadedmetadata", "durationchange", "loadeddata", "canplay", "canplaythrough"];
-        if (el instanceof HTMLVideoElement) events.splice(1, 0, "resize");
-        for (const type of events) el.dispatchEvent(new Event(type));
+        const before = was?.readyState || 0;
+        // An init segment can supply metadata before any frames are buffered.
+        if (!readyState && before) {
+            plays.delete(el);
+            fire(el, "emptied");
+        }
+        if (!before && readyState) fire(el, "loadedmetadata");
+        if (readyState && duration !== was?.duration) fire(el, "durationchange");
+        if (el instanceof HTMLVideoElement && (w !== (was?.videoWidth || 0) || h !== (was?.videoHeight || 0))) fire(el, "resize");
+        if (state.loadedData && !was?.loadedData) fire(el, "loadeddata");
+        if (before < 3 && readyState >= 3) fire(el, "canplay");
+        if (before < 4 && readyState >= 4) fire(el, "canplaythrough");
+        if (before >= 3 && readyState > 0 && readyState < 3 && !el.paused) fire(el, "waiting");
     }, true);
 })();
 

@@ -72,20 +72,50 @@ source.onsourceopen = async () => {
 };
 streamed.src = URL.createObjectURL(source);
 </script>`;
-    // As HLS.js with preferManagedMediaSource: empty <source>, then attach via
-    // ManagedMediaSource (our relay) on a <source>, with startstreaming.
-    const hlsLikeVideo = `<video id="streamed" muted width="320" height="180"><source src="" type="video/mp4"></video><script>
-const streamed = document.getElementById("streamed");
+    // The site's shell stays empty. Its controller creates a second video
+    // and uses the ManagedMediaSource <source> attach path.
+    const hlsLikeVideo = `<div id="player">
+<video class="player-html5" width="320" height="180"><source src=""></video>
+<button id="start-load" type="button" disabled>Load segment</button>
+</div><script>
+const player = document.getElementById("player");
+const startLoad = document.getElementById("start-load");
+const wrapper = document.createElement("div");
+wrapper.className = "videoWrapper";
+const streamed = document.createElement("video");
+streamed.className = "videoElement";
+streamed.width = 320;
+streamed.height = 180;
+streamed.muted = true;
+wrapper.append(streamed);
+player.append(wrapper);
+const shell = player.querySelector(".player-html5");
+shell.addEventListener("canplay", () => shell.setAttribute("data-ready", "unexpected"));
+streamed.addEventListener("loadedmetadata", () => streamed.setAttribute("data-metadata", String(streamed.readyState)));
+streamed.addEventListener("canplay", () => streamed.setAttribute("data-ready", String(streamed.readyState)));
 const Ctor = window.ManagedMediaSource || window.MediaSource;
 const source = new Ctor();
 const url = URL.createObjectURL(source);
 let streaming = 0;
 source.addEventListener("startstreaming", () => { streaming++; document.documentElement.setAttribute("data-stream", "start:" + streaming); });
-source.addEventListener("sourceopen", async () => {
+source.addEventListener("sourceopen", () => {
     document.documentElement.setAttribute("data-mms", Ctor === ManagedMediaSource ? "managed" : "plain");
-    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
-    buffer.onupdateend = () => { buffer.onupdateend = null; source.endOfStream(); streamed.play().catch(() => {}); };
-    buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
+    streamed.setAttribute("data-attached", streamed.querySelector("source").getAttribute("src"));
+    const manifest = new XMLHttpRequest();
+    manifest.open("GET", "mse-hls-like.m3u8");
+    manifest.onload = async () => {
+        if (manifest.status !== 200 || !manifest.responseText.startsWith("#EXTM3U")) return;
+        document.documentElement.setAttribute("data-manifest", "loaded");
+        const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+        startLoad.onclick = async () => {
+            startLoad.disabled = true;
+            buffer.addEventListener("updateend", () => { source.endOfStream(); }, { once: true });
+            buffer.appendBuffer(await (await fetch("part.m4s")).arrayBuffer());
+        };
+        buffer.addEventListener("updateend", () => { startLoad.disabled = false; }, { once: true });
+        buffer.appendBuffer(await (await fetch("init.mp4")).arrayBuffer());
+    };
+    manifest.send();
 });
 streamed.removeAttribute("src");
 for (const s of [...streamed.querySelectorAll("source")]) s.remove();
@@ -1016,9 +1046,9 @@ else { document.getElementById("x").remove(); fetch("clip.mp4").then((r) => r.bl
         // or another's (goframestreams.go).
         "mse-frame.html": `<!doctype html><title>MSE frame</title><p>a stream in a frame:</p><iframe id="x" width="360" height="220"></iframe>
 <script>document.getElementById("x").src = (location.search === "?same" ? "" : "http://[::ffff:" + location.hostname + "]/") + "mse-save.html";</script>`,
-        // HLS.js-style attach (empty source, then MediaSource on a <source>): must
-        // play under the copy, not stay on "nothing to play".
+        // HLS-style attach and playback on a controller-created video.
         "mse-hls-like.html": `<!doctype html><title>MSE HLS-like</title>${hlsLikeVideo}`,
+        "mse-hls-like.m3u8": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:3\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:3,\npart.m4s\n#EXT-X-ENDLIST\n",
         // As YouTube's Shorts: MediaSource play is stubbed; the page's pause must
         // stop the underlaid player and read as paused on the element.
         // Its file as a browser picks it: an empty <source> passed over for
@@ -4175,15 +4205,24 @@ async function check(base, port, site, adSite) {
         }
     });
 
-    await step("a video attached as HLS.js does (empty source, then ManagedMediaSource) plays under its box, not as nothing to play", async () => {
+    await step("a video attached as HLS.js does reaches canplay on the controller's video after segments arrive", async () => {
         await goTo(site + "mse-hls-like.html", "MSE HLS-like");
         await frameWait(`document.documentElement.getAttribute("data-mms") === "managed"`, "ManagedMediaSource is our relay");
+        await frameWait(`document.querySelector(".videoElement")?.getAttribute("data-attached")?.startsWith("blob:tabtop-media/")`, "the relay attached to the controller's video");
         await frameWait(`/^start:/.test(document.documentElement.getAttribute("data-stream") || "")`, "startstreaming from the underlaid player");
-        // Relayed blob on a <source> (HLS.js ManagedMediaSource attach shape):
-        // the box must leave the empty-source placeholder once the stream is known.
-        await frameWait(`(() => { const b = document.querySelector("[data-go-video]"); const t = b?.textContent || ""; return !!b && !/nothing to play|own player/.test(t); })()`, "its box no longer a placeholder");
-        // Stream play() doesn't start the underlaid player until the person
-        // plays it (as mse-pause): from the menu.
+        await frameWait(`document.documentElement.getAttribute("data-manifest") === "loaded"`, "manifest loaded over XHR in the engine");
+        await frameWait(`document.querySelector(".videoWrapper .videoElement")?.getAttribute("data-metadata") === "1"`, "init segment gives the controller's video HAVE_METADATA");
+        await frameWait(`document.getElementById("start-load")?.disabled === false`, "init segment append completed");
+        const before = await frame(`(() => {
+            const shell = document.querySelector(".player-html5"), video = document.querySelector(".videoElement");
+            return /nothing to play/.test(shell.textContent) && !shell.hasAttribute("data-ready") &&
+                !/nothing to play|own player/.test(video.textContent) && !video.hasAttribute("data-ready");
+        })()`);
+        if (!before) throw new Error("only the shell should be empty, and neither video should report canplay before media data arrives");
+        await frameClick("#start-load");
+        await frameWait(`Number(document.querySelector(".videoElement")?.getAttribute("data-ready")) >= 3`, "canplay after the media segment", 30000);
+        if (await frame(`document.querySelector(".player-html5").hasAttribute("data-ready")`)) throw new Error("canplay reached the empty shell");
+        // Play the underlaid video from /go's menu.
         await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
         const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
         await waitFor(`!!${play}`, "Play offered in the menu", 30000);

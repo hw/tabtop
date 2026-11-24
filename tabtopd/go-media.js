@@ -913,13 +913,20 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 entry.element = media;
                 signal.throwIfAborted();
                 loadingUntilReady(media, loading, () => entry.play, signal);
-                media.addEventListener("loadedmetadata", () => {
-                    // Its proportions for its box, and its size and length
-                    // for the page (the engine has none of its own).
-                    const meta = { w: media.videoWidth || 0, h: media.videoHeight || 0, duration: Number.isFinite(media.duration) ? media.duration : 0 };
+                let lastMetadata;
+                const reportMetadata = () => {
+                    const meta = { w: media.videoWidth || 0, h: media.videoHeight || 0,
+                        duration: Number.isFinite(media.duration) ? media.duration : 0, readyState: media.readyState };
+                    if (lastMetadata?.readyState === meta.readyState && lastMetadata.duration === meta.duration &&
+                        lastMetadata.w === meta.w && lastMetadata.h === meta.h) return;
+                    lastMetadata = meta;
                     entry.length = meta.duration;
-                    sized?.(key, media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 0, meta);
-                }, { signal });
+                    sized?.(key, meta.w && meta.h ? meta.w / meta.h : 0, meta);
+                };
+                for (const type of ["loadedmetadata", "loadeddata", "canplay", "canplaythrough", "waiting", "durationchange", "resize", "emptied"]) {
+                    media.addEventListener(type, reportMetadata, { signal });
+                }
+                if (media.readyState > HTMLMediaElement.HAVE_NOTHING) reportMetadata();
                 // How it plays, for the page (its player script goes by its
                 // element's: YouTube's Shorts shows the next video's player
                 // once it's playing): as it starts, stops or ends, and where

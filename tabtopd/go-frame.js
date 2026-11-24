@@ -170,7 +170,7 @@
                 setMediaLive(box, m.error === "" && !entry.policyBlocked);
             }
             // The video's own proportions, which its box takes.
-            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) {
+            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20 && mediaOf.get(box).size.aspectRatio !== String(m.ratio)) {
                 mediaOf.get(box).size.aspectRatio = String(m.ratio);
                 mediaStyle(box);
             }
@@ -182,7 +182,7 @@
             const meta = (value) => send("media-meta", engineId, { value, ...frameFields(at) });
             const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
             if (engineId && m.meta && typeof m.meta === "object") {
-                meta(JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration) }));
+                meta(JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration), readyState: num(m.meta.readyState) }));
             }
             // How it plays, likewise.
             if (engineId && m.play && typeof m.play === "object") {
