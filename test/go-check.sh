@@ -115,7 +115,7 @@ if [[ -n "$go_image" ]]; then
     [[ "${GO_UNSANDBOXED:-}" == 1 ]] && security=(-e WEB_GO_UNSANDBOXED=1)
     docker run -d --name "$box" -p "127.0.0.1:$port:6080" "${security[@]}" \
         -e VNC_USER=tester -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ -e WEB_VNC=0 "${files[@]}" \
-        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e TABTOP_GO_DEBUG=1 -e WEB_GO_ENGINE="${GO_ENGINE:-moli}" "$go_image" >/dev/null
+        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e WEB_OFFLINE_CLIENT=1 -e TABTOP_GO_DEBUG=1 -e WEB_GO_ENGINE="${GO_ENGINE:-moli}" "$go_image" >/dev/null
     up "http://127.0.0.1:$port${base_path}go/" "the container's /go" 60
     docker logs "$box" 2>&1 | grep -m1 "remote browser" || true
     watched_pid=$(docker inspect -f '{{.State.Pid}}' "$box")  # the container's, for the memory sampling
@@ -125,7 +125,7 @@ else
     [[ "${GO_NO_FS:-}" == 1 ]] && files=(-disable-fs)
     TABTOP_GO_DEBUG=1 "$work/tabtopd" -listen "127.0.0.1:$port" -users-file "$work/users.oath" -noble-dir "$work/noble" \
         -disable-vnc "${files[@]}" -fetch=true -fetch-private=true \
-        -go -go-engine "$moli" -go-private -base-path "$base_path" > "$work/tabtopd.log" 2>&1 &
+        -go -go-engine "$moli" -go-private -offline-client -base-path "$base_path" > "$work/tabtopd.log" 2>&1 &
     tabtopd_pid=$! watched_pid=$!
     up "http://127.0.0.1:$port${base_path}go/" "tabtopd's /go" 30
     grep -m1 "remote browser" "$work/tabtopd.log" || true

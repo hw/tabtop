@@ -188,12 +188,16 @@ const ICONS = {
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 // A private tab's Back wears its mark (go.html's bar has no room for
-// another): still Back, said so by its name.
-back.innerHTML = icon(privateTab ? "private" : "back");
+// another): still Back, said so by its name. Full screen, it's Back's own
+// arrow (showScreenMode): the bar's colour still says private.
+function showBack() {
+    const marked = privateTab && !screenMode;
+    back.innerHTML = icon(marked ? "private" : "back");
+    back.classList.toggle("private", marked);
+}
 if (privateTab) {
     back.title = "Back (Alt+←): a private tab";
     back.setAttribute("aria-label", "Back (private tab)");
-    back.classList.add("private");
 }
 forward.innerHTML = icon("forward");
 $("go_clear").innerHTML = icon("clear");
@@ -203,22 +207,39 @@ $("go_clear").innerHTML = icon("clear");
 // the menu to leave the page the room).
 const menu = $("go_menu"), menuPanel = $("go_menu_panel");
 // The menu's first row (go.html): Forward (on a phone, whose bar has no
-// room for it), Desktop, Full screen, Hide browser; each a glyph over its
-// name.
+// room for it), Mobile or Desktop, Full screen, Hide browser; each a glyph
+// over its name.
 const desktop = $("go_menu_desktop");
-desktop.insertAdjacentHTML("afterbegin", iconSVG("desktop"));
 const desktopKey = "tabtop-go-desktop" + (tabId ? ":" + tabId : "");
-let desktopOn = false;
-try { desktopOn = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
-desktop.setAttribute("aria-pressed", String(desktopOn));
+// otherOn: switched to the other pages than this device's (a phone's are
+// mobile, another's desktop: phoneView, as the server's goPhone has it).
+let otherOn = false;
+try { otherOn = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
+const phoneView = () => navigator.maxTouchPoints > 0 && Math.min(Math.round(window.innerWidth), Math.round(window.innerHeight)) < 600;
+// Its glyph and name are the pages sites are asked for: a phone, Mobile; a
+// screen, Desktop. Not pressed, this device's own; pressed (highlighted),
+// switched to the other.
+function showDesktop() {
+    const mobile = phoneView() !== otherOn;
+    desktop.querySelector("svg")?.remove();
+    desktop.insertAdjacentHTML("afterbegin", iconSVG(mobile ? "mobile" : "desktop"));
+    desktop.dataset.glyph = mobile ? "mobile" : "desktop";
+    desktop.querySelector(".caption").textContent = mobile ? "Mobile" : "Desktop";
+    desktop.setAttribute("aria-pressed", String(otherOn));
+    desktop.title = `${mobile ? "Mobile" : "Desktop"} pages: sites are asked for theirs (press for their ${mobile ? "desktop" : "mobile"} pages)`;
+}
+showDesktop();
+// (A window resized from a phone's size to another's, or back: its pages
+// and so its name change with it, as the server's do.)
+addEventListener("resize", showDesktop);
 const menuForward = $("go_menu_forward");
 menuForward.insertAdjacentHTML("afterbegin", icon("forward"));
 menuForward.addEventListener("click", () => { openMenu(false); menu.focus(); goBy(1); });
 desktop.addEventListener("click", () => {
-    desktopOn = !desktopOn;
-    desktop.setAttribute("aria-pressed", String(desktopOn));
+    otherOn = !otherOn;
+    showDesktop();
     try {
-        if (desktopOn) sessionStorage.setItem(desktopKey, "1");
+        if (otherOn) sessionStorage.setItem(desktopKey, "1");
         else sessionStorage.removeItem(desktopKey);
     } catch { /* this page only */ }
     openMenu(false);
@@ -234,6 +255,7 @@ fullScreen.insertAdjacentHTML("afterbegin", icon("fullscreen"));
 exitFullScreen.innerHTML = icon("exitFullscreen");
 const fullScreenRoot = document.documentElement;
 let screenMode = "", nativeFullScreen = false, nativeRequest;
+showBack();
 // The page asked for fullscreen (gofullscreen.go): shown so for it, and
 // its leaving told to it.
 let pageFullScreen = false;
@@ -251,6 +273,7 @@ function showScreenMode(mode) {
         ws?.send(JSON.stringify({ op: "fullscreen-exit" }));
     }
     screenMode = mode;
+    showBack();
     const immersive = mode === "full";
     hideBrowser.setAttribute("aria-pressed", String(mode === "browser"));
     fullScreen.setAttribute("aria-pressed", String(immersive));
@@ -331,6 +354,11 @@ function closeSettings() {
 }
 function openSettings(page) {
     openMenu(false);
+    // (The offline client hasn't these pages: they're the server's.)
+    if (globalThis.tabtopOffline) {
+        note("Site controls and Settings aren't in the offline client: open the browser from the server for them.");
+        return;
+    }
     settingsFrame?.remove();
     settingsUnsaved = false;
     const there = new URL(page, location.href);
@@ -865,6 +893,9 @@ frame.title = "Page";
 frame.setAttribute("sandbox", "allow-scripts");
 frame.setAttribute("referrerpolicy", "no-referrer");
 const frameURL = new URL("../tabtop/go-frame.html", import.meta.url).href;
+// The offline client (see nav.js) builds the frame itself, from its own
+// files (srcdoc): none from the server.
+const offlineFrame = globalThis.tabtopOffline?.frameHTML?.("go-frame.html") ?? null;
 // A token for the frame's document alone: sent once it's loaded, and
 // required on every message from it after, so another document in the
 // frame (were one ever loaded there) is ignored.
@@ -879,7 +910,8 @@ function resetFrame() {
     frameIsReady = new Promise((resolve) => (frameReady = resolve));
     loads = 0;
     greeted = false;
-    frame.src = frameURL;
+    if (offlineFrame) frame.srcdoc = offlineFrame;
+    else frame.src = frameURL;
     if (lastRender) toFrame(lastRender);
 }
 // The frame's document should never change but by resetFrame: its policy
@@ -1391,7 +1423,7 @@ function view() {
         sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
         // Touch, if this device has it: the page offers what it offers to
         // touch screens, and takes the touches given it.
-        touch: navigator.maxTouchPoints > 0, desktop: desktopOn,
+        touch: navigator.maxTouchPoints > 0, other: otherOn,
         // Which way up the device is held: the page's screen.orientation and
         // (orientation: …) media queries follow it. Where the device doesn't
         // say, the window's shape.

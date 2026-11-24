@@ -594,8 +594,10 @@ type goView struct {
 	SW int `json:"sw"`
 	SH int `json:"sh"`
 	// The person's device has touch: the page is told so, and given it.
-	Touch   bool `json:"touch"`
-	Desktop bool `json:"desktop"`
+	Touch bool `json:"touch"`
+	// Other: the person's switched to the other pages (the menu's Mobile
+	// or Desktop, go.js): a phone's desktop ones, another's mobile ones.
+	Other bool `json:"other"`
 	// Which way up the device is held (screen.orientation's type, and its
 	// angle), told the page as its screen's.
 	Orientation string `json:"o"`
@@ -1255,7 +1257,7 @@ func (b *goBrowser) setView(v goView) {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		b.applyUA(ctx, goPhone(v) && !v.Desktop)
+		b.applyUA(ctx, goMobile(v))
 		metrics := map[string]any{
 			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
 			// The screen is the person's window: their own isn't told.

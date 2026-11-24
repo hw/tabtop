@@ -44,3 +44,22 @@ func TestGoPhone(t *testing.T) {
 		}
 	}
 }
+
+// TestGoMobile: a phone's given mobile pages, another view desktop ones;
+// each the other's once the person's switched (Other).
+func TestGoMobile(t *testing.T) {
+	phone := goView{Touch: true, SW: 390, SH: 844}
+	computer := goView{SW: 1280, SH: 800}
+	for _, c := range []struct {
+		v    goView
+		want bool
+	}{{phone, true}, {computer, false}} {
+		if goMobile(c.v) != c.want {
+			t.Errorf("%+v: mobile %v", c.v, !c.want)
+		}
+		c.v.Other = true
+		if goMobile(c.v) == c.want {
+			t.Errorf("%+v switched: mobile %v", c.v, c.want)
+		}
+	}
+}

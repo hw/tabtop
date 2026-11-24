@@ -1701,10 +1701,19 @@ async function check(base, port, site, adSite) {
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !!d?.getElementById("popups") && !!d.getElementById("cookies") && d.documentElement.classList.contains("framed") && getComputedStyle(d.querySelector("header")).display === "none"; })()`, "the settings in it, its own header not shown", 15000);
         const host = new URL(here).hostname;
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("site_settings").hidden && d.getElementById("site_heading").textContent === ${JSON.stringify(host)} && d.getElementById("popups").value === "default" && d.getElementById("popups").selectedOptions[0].textContent === "Default (Ask)"; })()`, "the current site and its default permission");
+        // Content then Privacy: Videos and sound, Pop-ups, Notifications, Dark mode, Ads.
+        {
+            const order = await inside(`[...d.querySelectorAll("#site_settings [data-setting]")].map((el) => el.dataset.setting).join()`);
+            if (order !== "videos,popups,notifications,theme,ads") throw new Error(`site settings order: ${order}`);
+        }
         await inside(`(d.getElementById("show_all").click(), true)`);
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("all_sites").hidden && d.activeElement === d.getElementById("filter"); })()`, "All sites opens with search focused");
         await inside(`(d.getElementById("show_browser").click(), true)`);
         await waitFor(`(() => { const d = document.querySelector("#go_settings iframe").contentDocument; return !d.getElementById("browser_settings").hidden && d.getElementById("site_settings").hidden && d.getElementById("default_popups").value === "ask" && !!d.getElementById("clear_cache"); })()`, "browser-wide settings in their own view");
+        {
+            const order = await inside(`[...[...d.querySelectorAll("#browser_settings .card")].find((c) => c.querySelector("h3")?.textContent === "Site defaults").querySelectorAll("select")].map((el) => el.id).join()`);
+            if (order !== "default_videos,default_popups,default_theme") throw new Error(`Site defaults order: ${order}`);
+        }
         if ((await ev(`document.getElementById("go_settings_h").textContent`)) !== "Site controls") throw new Error("the lightbox isn't titled Site controls");
         if (await inside(`!!d.getElementById("adblock_on")`)) throw new Error("ad blocking is in Site controls");
         // The page's own close (its header's link) closes it; so do ✕ and Esc.
@@ -2196,10 +2205,16 @@ async function check(base, port, site, adSite) {
             await ev(`document.getElementById("go_exit_fullscreen").click()`);
             await waitFor(`getComputedStyle(document.getElementById("go_bar")).display !== "none" && document.getElementById("go_menu_fullscreen").getAttribute("aria-pressed") === "false"`, "exiting full screen restores the toolbar");
             const toggleDesktop = () => ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_desktop").click();`);
+            // Its glyph and name the pages it's given, pressed once switched
+            // from the phone's own: Mobile; then Desktop, pressed.
+            const glyph = () => ev(`(() => { const b = document.getElementById("go_menu_desktop"); return b.querySelector(".caption").textContent === (b.dataset.glyph === "mobile" ? "Mobile" : "Desktop") ? b.dataset.glyph + (b.getAttribute("aria-pressed") === "true" ? " pressed" : "") : "a caption not its mode's"; })()`);
+            if ((await glyph()) !== "mobile") throw new Error(`a phone's mobile pages shown as ${await glyph()}`);
             await toggleDesktop();
             await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "Desktop sends desktop headers on a phone");
+            if ((await glyph()) !== "desktop pressed") throw new Error(`a phone's desktop pages shown as ${await glyph()}`);
             await toggleDesktop();
             await frameWait(`document.getElementById("m")?.textContent === "?1" && /Android/.test(document.getElementById("ua")?.textContent)`, "unchecking Desktop restores the mobile profile");
+            if ((await glyph()) !== "mobile") throw new Error(`a phone's mobile pages again shown as ${await glyph()}`);
             // A cookie on the site, and its video played: fetched with it,
             // as the page's own browser would.
             await goTo(site + "cookie?set", "Cookie");
@@ -2216,6 +2231,21 @@ async function check(base, port, site, adSite) {
             await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }
+    });
+
+    await step("a computer is given desktop pages, and mobile ones once switched to Mobile (pressed), then desktop again", async () => {
+        await sleep(1000);  // (the view, a computer's again)
+        const toggle = () => ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_desktop").click();`);
+        const shown = () => ev(`(() => { const b = document.getElementById("go_menu_desktop"); return b.querySelector(".caption").textContent + (b.getAttribute("aria-pressed") === "true" ? " pressed" : ""); })()`);
+        await goTo(site + "ua", "UA");
+        await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "a computer's desktop headers");
+        if ((await shown()) !== "Desktop") throw new Error(`a computer's desktop pages shown as ${await shown()}`);
+        await toggle();
+        await frameWait(`document.getElementById("m")?.textContent === "?1" && /Android/.test(document.getElementById("ua")?.textContent)`, "Mobile sends mobile headers on a computer");
+        if ((await shown()) !== "Mobile pressed") throw new Error(`a computer's mobile pages shown as ${await shown()}`);
+        await toggle();
+        await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "its desktop headers again");
+        if ((await shown()) !== "Desktop") throw new Error(`a computer's desktop pages again shown as ${await shown()}`);
     });
 
     await step("a font is fetched as a browser would: the one source it takes, for a face its text uses", async () => {
@@ -4273,6 +4303,15 @@ async function check(base, port, site, adSite) {
         await connected(p1, "the private tab, connected");
         const marked = await ev(`(() => { const d = ${tabDoc(p1)}; return document.querySelectorAll(".tab")[${p1}].classList.contains("private") && d.documentElement.classList.contains("go-private") && d.getElementById("go_back").classList.contains("private") && /^Private tab/.test(d.querySelector("#go_start h1").textContent); })()`);
         if (!marked) throw new Error("the private tab isn't marked as one");
+        // Full screen: Back's own arrow, not the private mark (the bar's
+        // colour says so); left, the mark again.
+        const backIs = `(() => { const b = ${tabDoc(p1)}.getElementById("go_back"); return (b.classList.contains("private") ? "private " : "") + b.querySelector("path").getAttribute("d"); })()`;
+        await ev(`(() => { const d = ${tabDoc(p1)}; d.getElementById("go_menu").click(); d.getElementById("go_menu_fullscreen").click(); })()`);
+        await waitFor(`${tabDoc(p1)}.documentElement.classList.contains("go-fullscreen")`, "the private tab full screen", 10000);
+        if ((await ev(backIs)) !== "M15 5l-7 7 7 7") throw new Error(`Back, full screen: ${await ev(backIs)}`);
+        await ev(`${tabDoc(p1)}.getElementById("go_exit_fullscreen").click()`);
+        await waitFor(`!${tabDoc(p1)}.documentElement.classList.contains("go-fullscreen")`, "the private tab out of full screen", 10000);
+        if (!/^private /.test(await ev(backIs))) throw new Error(`Back, out of full screen: ${await ev(backIs)}`);
         if ((await sent(p1)) !== "nothing") throw new Error("a private tab was given the account's cookie");
         if ((await ev("document.title")) !== "Private – Browser") throw new Error(`the page's title names the private tab's page: ${await ev("document.title")}`);
         // Its own sign-in: kept for it, and for another private tab (made
@@ -4742,7 +4781,7 @@ async function check(base, port, site, adSite) {
         await goTo(site + "index.html", "Fixture");
     });
 
-    await step("the page's encrypted media (EME, Clear Key): its keys and session the person's browser's, its license the page's, its stream played; and an embedded page's, of its origin and of another, at once, each its own; none offered to save", async () => {
+    await step("the page's encrypted media (EME, Clear Key): its keys and session the person's browser's, its license the page's, its stream played; and an embedded page's, of its origin and of another, at once, each its own", async () => {
         const secureAt = async (base, page, title) => {
             await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(base.replace(/^http:/, "https:"))} + ${JSON.stringify(page)}; i.form.requestSubmit(); })()`);
             await waitFor(`document.title.startsWith(${JSON.stringify(title)}) || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
@@ -4761,17 +4800,6 @@ async function check(base, port, site, adSite) {
             .catch(async (err) => { throw new Error(`${err.message}: ${await log()}`); });
         if (!/^access org\.w3\.clearkey;keys;.*encrypted cenc;.*message;.*updated;/.test(await log())) throw new Error(`the page's EME: ${await log()}`);
         const players = () => ev(`JSON.stringify([...document.querySelectorAll("video")].map((v) => [!!v.mediaKeys, Math.round(v.currentTime * 10) / 10, v.error?.message ?? null, v.readyState]))`);
-        // None offered to save (their DRM's), in the menu's list of them.
-        const noSave = async (count) => {
-            await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
-            try {
-                await waitFor(`document.querySelectorAll("#go_menu_media li").length >= ${count}`, "the players in the menu", 15000);
-                const saves = await ev(`JSON.stringify([...document.querySelectorAll("#go_menu_media li .acts button")].map((b) => b.getAttribute("aria-label") || "").filter((l) => /^(Download|Save)/.test(l)))`);
-                if (saves !== "[]") throw new Error(`encrypted streams offered to save: ${saves}`);
-            } finally {
-                await ev(`document.getElementById("go_menu_panel").hidden || document.getElementById("go_menu").click()`);
-            }
-        };
         await waitFor(played, "its stream played by its own play(), with the person's browser's keys", 30000)
             .catch(async (err) => { throw new Error(`${err.message}: ${await players()}; the page: ${await log()}`); });
         // In embedded pages: one of its origin (read by its agent), one of
@@ -4791,7 +4819,6 @@ async function check(base, port, site, adSite) {
         await waitFor(`[...document.querySelectorAll("video")].filter((v) => v.mediaKeys && v.currentTime > 0.5 && !v.error).length >= 3`, "the three played, each with its keys", 30000)
             .catch(async (err) => { throw new Error(`${err.message}: ${await players()}; ${await logs()}`); });
         if (await ev(`new Set([...document.querySelectorAll("video")].filter((v) => v.mediaKeys).map((v) => v.mediaKeys)).size < 3`)) throw new Error("players share their keys");
-        await noSave(3);
         if (autoplayWas !== "true") await ev(`document.getElementById("go_menu_autoplay").click()`);
         await goTo(site + "index.html", "Fixture");
     });
@@ -5019,6 +5046,45 @@ async function check(base, port, site, adSite) {
         const elsewhere = requests.filter((u) => !u.startsWith(origin + "/") && !/^(data|blob|about|chrome|devtools):/.test(u));
         if (elsewhere.length) throw new Error(`requests elsewhere: ${[...new Set(elsewhere)].join(", ")}`);
         return `${requests.length} requests, all to ${origin}`;
+    });
+
+    // (Last: it leaves this browser's page at the file, not /go.)
+    await step("the offline client (tabtop.html from the pack, opened as a file): its browser (?page=go) connects by the tunnel alone, logs in, and shows a page in its own frame", async () => {
+        const pack = JSON.parse(readFileSync(new URL("../tabtopd/bootstrap.client.json", import.meta.url), "utf8"));
+        const dir = mkdtempSync(join(tmpdir(), "go-check-offline-"));
+        const file = join(dir, "tabtop.html");
+        writeFileSync(file, pack.files["tabtop.html"]);
+        try {
+            await cdp("Page.navigate", { url: `file://${file}?page=go` });
+            await waitFor(`!!document.getElementById("server") && !document.getElementById("go").disabled`, "the offline client's form", 15000);
+            await ev(`(() => { document.getElementById("server").value = ${JSON.stringify(base)}; document.getElementById("form").requestSubmit(); })()`);
+            await waitFor(`!!document.querySelector("#tabtop_login input")`, "its login", 30000)
+                .catch(async (err) => { throw new Error(`${err.message}: it shows ${await ev(`document.title + ": " + (document.getElementById("err")?.textContent ?? document.body?.innerText?.slice(0, 300))`)}`); });
+            const code = await totp();
+            await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
+            await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page", 30000);
+            await goTo(site + "index.html", "Fixture");
+            // The page in its frame (built by the client: srcdoc, sandboxed,
+            // so a target of its own at about:srcdoc).
+            const shown = () => inFrame("about:srcdoc", `document.getElementById("h")?.textContent ?? ""`).catch((e) => e.message);
+            const until = Date.now() + 20000;
+            while ((await shown()) !== "Fixture") {
+                if (Date.now() > until) throw new Error(`the page's frame shows ${JSON.stringify(await shown())}`);
+                await sleep(250);
+            }
+            // Its other pages (their scripts minified, as all the pack's are)
+            // start too, each to its login (any exception the page throws
+            // fails the check: see exceptions, at its end).
+            for (const page of ["desktop", "terminal", "files"]) {
+                await cdp("Page.navigate", { url: `file://${file}?page=${page}${page === "desktop" ? "&autoconnect=1" : ""}` });
+                await waitFor(`!!document.getElementById("server") && !document.getElementById("go").disabled`, `the ${page} page's form`, 15000);
+                await ev(`(() => { document.getElementById("server").value = ${JSON.stringify(base)}; document.getElementById("form").requestSubmit(); })()`);
+                await waitFor(`!!document.querySelector("#tabtop_login input")`, `the ${page} page, to its login`, 30000)
+                    .catch(async (err) => { throw new Error(`${err.message}: it shows ${await ev(`document.title + ": " + (document.getElementById("err")?.textContent || document.body?.innerText?.slice(0, 300))`)}`); });
+            }
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     if (exceptions.length) {

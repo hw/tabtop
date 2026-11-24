@@ -141,9 +141,9 @@ the requesting connection cannot be trusted to deliver genuine scripts.
 ## The offline client
 
 A page the gateway serves is only as trustworthy as the connection that
-delivered it. The offline client is TabTop's desktop, terminal and files
-page in one file, run from your disk, so an intercepting proxy can't change
-their scripts:
+delivered it. The offline client is TabTop's desktop, terminal, files page
+and remote browser in one file, run from your disk, so an intercepting
+proxy can't change their scripts:
 
 1. Download the decoder (`<base>/auth/bootstrap`) and the sealed pack
    (`<base>/auth/pack`). Get the pack's passcode and hashes through a
@@ -160,15 +160,21 @@ their scripts:
 3. Open `tabtop.html` as a file, enter the address you open TabTop at, and
    **Connect**. It's remembered in this browser.
 
-The desktop, terminal and files page link to each other as they do when
-served: each opens `tabtop.html?page=desktop`, `?page=terminal` or
-`?page=files`, in a tab of its own, which connects to the server you last
-entered. Each page may reach the server only by the tunnel's WebSocket: its
+The desktop, terminal, files page and remote browser link to each other as
+they do when served: each opens `tabtop.html?page=desktop`, `?page=terminal`,
+`?page=files` or `?page=go`, in a tab of its own, which connects to the
+server you last entered. The remote browser is one tab (not the tabs' page,
+whose tabs are the server's own pages); its page is shown in a frame the
+client builds from its own files, as the previews' are. Site controls and
+Settings aren't in it: open the browser from the server for them. Each page may reach the server only by the tunnel's WebSocket: its
 Content-Security-Policy refuses any script, style, picture, frame or
 request from anywhere else, so nothing the server sends can run in it.
 
-To keep the file small (about 7.5 MB), some of the files page's viewers
-aren't in it:
+To keep the file small (about 6.5 MB), its scripts, stylesheets and JSON
+are minified when the pack is built (esbuild's WebAssembly build, its
+version and SHA-256 pinned in the build script: whitespace and local names
+only, licence comments and function names kept), and some of the files
+page's viewers aren't in it:
 
 - Syntax colouring, the disassemblers (x86, ARM, ARM64, RISC-V and MIPS),
   the demangler, Kaitai structures, the 3D viewer (three.js and its

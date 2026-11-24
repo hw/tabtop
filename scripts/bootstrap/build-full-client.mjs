@@ -27,6 +27,8 @@ import { pipeline } from "node:stream/promises";
 import { execFileSync } from "node:child_process";
 import { webcrypto } from "node:crypto";
 import { Readable } from "node:stream";
+import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { buildFileLauncherHTML } from "./file-launcher.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +58,9 @@ const NOBLE = {
 	curves: { ver: "2.4.0", sha: "55279c71b0201d6c0e58d0206d15825359e02a3932f326ba7b7909ac2d334aa9" },
 	hashes: { ver: "2.4.0", sha: "e1946149b780017b2564fcc092cb01c04e1d7f20627d0296c17da8868f4436dc" },
 };
+// The minifier (esbuild's WebAssembly build: the same on every machine),
+// as npm has it.
+const ESBUILD = { ver: "0.28.2", sha: "61594de12ce998652be2aa0ab72dda54bfa49407fb37ee3464468a2aac306baa" };
 const nobleFiles = [
 	"ciphers/chacha.js", "ciphers/_arx.js", "ciphers/_poly1305.js", "ciphers/utils.js",
 	"curves/ed25519.js", "curves/utils.js",
@@ -177,6 +182,23 @@ async function ensureTerminal(dir) {
 	writeFileSync(stamp, "ok\n");
 }
 
+async function ensureEsbuild(dir) {
+	const stamp = join(dir, `.esbuild-${ESBUILD.ver}`);
+	if (existsSync(stamp)) return;
+	rmSync(dir, { recursive: true, force: true });
+	mkdirSync(dir, { recursive: true });
+	const tgz = join(work, `esbuild-wasm-${ESBUILD.ver}.tgz`);
+	if (!existsSync(tgz) || await sha256File(tgz) !== ESBUILD.sha) {
+		const url = `https://registry.npmjs.org/esbuild-wasm/-/esbuild-wasm-${ESBUILD.ver}.tgz`;
+		console.error(`fetch ${url}`);
+		await fetchTo(url, tgz);
+	}
+	const hex = await sha256File(tgz);
+	if (hex !== ESBUILD.sha) throw new Error(`esbuild-wasm sha256 ${hex}, want ${ESBUILD.sha}`);
+	execFileSync("tar", ["-xzf", tgz, "-C", dir, "--strip-components=1"]);
+	writeFileSync(stamp, "ok\n");
+}
+
 async function ensureNoble(dir) {
 	const stamp = join(dir, ".noble-ok");
 	if (existsSync(stamp)) return;
@@ -275,11 +297,13 @@ mkdirSync(stage, { recursive: true });
 const novncDir = join(work, "novnc");
 const nobleDir = join(work, "noble");
 const terminalDir = join(work, "terminal");
+const esbuildDir = join(work, "esbuild");
 if (!args.has("skip-fetch")) {
 	await ensureNovnc(novncDir);
 	await ensureNoble(nobleDir);
 	await ensureTerminal(terminalDir);
-} else if (!existsSync(join(novncDir, "vnc.html")) || !existsSync(nobleDir) || !existsSync(join(terminalDir, "ghostty-web.js"))) {
+	await ensureEsbuild(esbuildDir);
+} else if (!existsSync(join(novncDir, "vnc.html")) || !existsSync(nobleDir) || !existsSync(join(terminalDir, "ghostty-web.js")) || !existsSync(join(esbuildDir, "lib/main.js"))) {
 	throw new Error("--skip-fetch needs a prior build in --work");
 }
 
@@ -330,6 +354,9 @@ writeFileSync(join(stage, "tabtop", "files.js"), readFileSync(join(tabtopd, "fil
 		"md-frame.html": head("Markdown", ["md-frame.css", "highlight.css"]) + '<main id="doc"></main>\n<script src="third-party/css-tree.js"></script><script src="preview-css.js"></script><script src="preview-html-links.js"></script><script src="preview-html-resources.js"></script><script src="md-frame.js"></script>\n',
 		"epub-frame.html": head("Book", ["epub-frame.css"]) + '<div id="bar"></div><nav id="contents" hidden aria-label="Contents"></nav><main id="doc"></main><nav id="ends" aria-label="Chapters"></nav>\n<script src="epub-frame.js"></script>\n',
 		"pdf-frame.html": head("PDF", ["pdf-frame.css"]) + '<div id="bar"></div><main id="pages"></main>\n<script src="pdf-frame.js"></script>\n',
+		// The remote browser's frame, where it shows a page (gopage.go's
+		// goFrameHTML).
+		"go-frame.html": '<!doctype html><html lang="en"><meta charset="utf-8"><title>Page</title>\n<script src="third-party/css-tree.js"></script><script src="gogl-surface.js"></script><script src="go-frame-gl.js"></script><script src="go-frame.js"></script>\n',
 	};
 	for (const [name, html] of Object.entries(frames)) {
 		writeFileSync(join(stage, "tabtop", name), html);
@@ -340,6 +367,14 @@ writeFileSync(join(stage, "tabtop", "files.js"), readFileSync(join(tabtopd, "fil
 	}
 	for (const f of ["third-party/css-tree.LICENSE", "third-party/mdn-data.LICENSE", "third-party/source-map-js.LICENSE"]) cpSync(join(tabtopd, f), join(stage, "tabtop", f));
 }
+
+// The remote browser (go/): one tab, its page as the gateway serves it at
+// go/tab (gopage.go's goPage: go.html), and its scripts there (those under
+// tabtop/ come with the imports, below). Not the tabs' page (go/): its tabs
+// are frames of the server's own pages, which this client doesn't load.
+mkdirSync(join(stage, "go"), { recursive: true });
+writeFileSync(join(stage, "go", "index.html"), readFileSync(join(tabtopd, "go.html")));
+for (const f of ["go.js", "go-device.js", "go-media.js", "go-eme.js", "mse-capture.js", "mse-stages.js"]) cpSync(join(tabtopd, f), join(stage, "go", f));
 
 // The offline client's own page (components/): the viewers it fetches when
 // needed, and what of them this browser keeps (see components.js).
@@ -359,13 +394,14 @@ cpSync(join(__dirname, "components.js"), join(stage, "components", "components.j
 // but those may be missing where they're a viewer's that the offline
 // client leaves out (left), which it shows it hasn't (see preview-model.js's
 // offlineOff) and never loads from the server (see file-launcher.mjs's csp).
+let importsOf;
 const left = /^(three|pdfjs|highlight|preview|kaitai|disasm|demangle|background|segment|inpaint|stream)(\/|$)|^(md|pdf|epub)-frame\.html$|^((x86|riscv|mips)-asm|asm-common)\.js$/;
 {
 	const walkJS = (d) => readdirSync(d).flatMap((n) => {
 		const p = join(d, n);
 		return statSync(p).isDirectory() ? walkJS(p) : /\.m?js$/.test(n) ? [p] : [];
 	});
-	const importsOf = (code) => {
+	importsOf = (code) => {
 		// (Not what's in comments: "import … from" in a doc comment isn't one.)
 		const bare = code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 		const out = [];
@@ -433,6 +469,54 @@ the tunnel needs; tty/ has ghostty-web and JetBrains Mono Nerd Font (their
 licences beside them). noVNC's app/, core/, and vendor/ are upstream.
 `);
 
+// The whole tree minified (its scripts, stylesheets and JSON; not its
+// pages, which the gateway's frames are checked against, nor the launcher,
+// whose sentinel the gateway replaces): licence comments kept, and names
+// (a function's, a class's) as they were; a classic script's top-level
+// names left alone, as esbuild does with a script that isn't a module (the
+// frames' scripts share them). What each was, by its SHA-256, kept with the
+// tree (minified), for the tests to tell it's the tree of tabtopd's files
+// as they are now. Each script's imports read the same after as before,
+// as the launcher finds them (rewriteJS) as the build did (importsOf).
+const minified = {};
+{
+	const esbuild = createRequire(import.meta.url)(join(esbuildDir, "lib/main.js"));
+	const walk = (d) => readdirSync(d).sort().flatMap((n) => {
+		if (n.startsWith(".")) return [];
+		const p = join(d, n);
+		return statSync(p).isDirectory() ? walk(p) : [p];
+	});
+	let before = 0, after = 0;
+	for (const path of walk(stage)) {
+		const rel = relative(stage, path).split(sep).join("/");
+		const loader = /\.m?js$/.test(rel) ? "js" : /\.css$/.test(rel) ? "css" : /\.json$/.test(rel) ? "json" : null;
+		if (!loader) continue;
+		const source = readFileSync(path, "utf8");
+		// (Not one with text the launcher rewrites by its name: see its
+		// disasmOff.)
+		if (source.includes("const DISASM_OFF = ")) continue;
+		let out;
+		if (loader === "json") out = JSON.stringify(JSON.parse(source));
+		else {
+			// (Whitespace and local names only: not minifySyntax, which
+			// rewrites code, folding a template into a string the launcher
+			// would then take for an address of the tree's.)
+			out = (await esbuild.transform(source, { loader, minifyWhitespace: true, minifyIdentifiers: true, minifySyntax: false, keepNames: loader === "js", legalComments: "inline", charset: "utf8", sourcefile: rel })).code;
+			if (loader === "js") {
+				const specs = (code) => importsOf(code).map(({ spec, must }) => `${must}:${spec}`).sort().join("\n");
+				if (specs(source) !== specs(out)) throw new Error(`${rel}: its imports read differently minified`);
+			}
+		}
+		if (out.length >= source.length) continue;
+		minified[rel] = createHash("sha256").update(source).digest("hex");
+		writeFileSync(path, out);
+		before += source.length;
+		after += out.length;
+	}
+	esbuild.stop?.();
+	console.error(`minified ${Object.keys(minified).length} files: ${before} bytes to ${after}`);
+}
+
 const files = collectFiles(stage);
 console.error("building tabtop.html (file:// launcher)…");
 const tabtopHTML = buildFileLauncherHTML(files);
@@ -442,6 +526,8 @@ const plaintextObj = {
 	name: clientName,
 	created: new Date().toISOString(),
 	files,
+	// Each file minified: the SHA-256 of what it was (tabtopd's, as built).
+	minified,
 };
 const tree = Buffer.from(JSON.stringify(plaintextObj), "utf8");
 const htmlBytes = Buffer.from(tabtopHTML, "utf8");

@@ -56,6 +56,13 @@ func goPhone(v goView) bool {
 	return v.Touch && min(v.SW, v.SH) > 0 && min(v.SW, v.SH) < 600
 }
 
+// goMobile is whether a view's given mobile pages: a phone's, unless the
+// person's switched (Other) to its desktop ones; another's, if they've
+// switched to its mobile ones. (go.js shows which, by the same rule.)
+func goMobile(v goView) bool {
+	return goPhone(v) != v.Other
+}
+
 // goSessionUAs is what each session's tabs last said they are, for what's
 // fetched for them on a tunnel of their own (no tab to ask).
 var goSessionUAs = struct {
