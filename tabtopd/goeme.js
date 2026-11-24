@@ -1,10 +1,29 @@
 // Page-world EME objects. The viewer owns the native objects and returns
 // the CDM's opaque messages to the site's own license client.
+//
+// A secure page's, and an embedded page's (its frame's, read by its own
+// agent: goframestreams.go; or, a frame of its page's origin, by its
+// page's): told on the topmost document of this one's origin it can
+// reach, whose agent reads it. Several windows may tell one agent, so a
+// request's and a session's numbers start anywhere (one window's aren't
+// another's), and a command leaves the queue only once the agent's taken
+// it (it takes so many a batch).
 (() => {
-    if (window !== top || location.protocol !== "https:") return;
+    if (location.protocol !== "https:") return;
     const pending = new Map(), sessions = new Map(), attached = new WeakMap();
     const queue = [];
-    let next = 0;
+    let next = Math.floor(Math.random() * 2 ** 40);
+    const reader = () => {
+        let w = window;
+        try {
+            while (w.parent !== w) {
+                void w.parent.document;  // (another origin's: throws)
+                w = w.parent;
+            }
+        } catch { /* this origin's topmost */ }
+        return w.document;
+    };
+    const isMedia = (el) => el?.localName === "video" || el?.localName === "audio";
     const unsupported = (message) => new DOMException(message, "NotSupportedError");
     function encode(input) {
         const bytes = ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
@@ -32,18 +51,33 @@
             }, 30000);
             pending.set(request, { resolve, reject, timer, probe });
             queue.push({ command, element });
+            listen();
         });
     }
-    document.addEventListener("__tabtop_read_eme", () => {
-        for (const { command, element } of queue.splice(0, 4)) {
-            if (!pending.has(command.request)) continue;
-            if (element) {
-                // relatedTarget identifies even a detached video across the two JS worlds.
-                document.dispatchEvent(new MouseEvent("__tabtop_eme_element", { relatedTarget: element }));
-            }
-            document.dispatchEvent(new CustomEvent("__tabtop_eme_command", { detail: JSON.stringify(command) }));
+    // Each document heard from once: this one (a reply for one of its
+    // elements, dispatched on it), and the one its agent reads (asked for
+    // its commands; its replies for none).
+    const heard = new WeakSet();
+    function listen() {
+        for (const doc of new Set([document, reader()])) {
+            if (heard.has(doc)) continue;
+            heard.add(doc);
+            doc.addEventListener("__tabtop_eme_reply", replied, true);
+            if (doc === reader()) doc.addEventListener("__tabtop_read_eme", () => {
+                while (queue.length) {
+                    const { command, element } = queue[0];
+                    if (!pending.has(command.request)) { queue.shift(); continue; }
+                    if (element) {
+                        // relatedTarget identifies even a detached video across the two JS worlds.
+                        doc.dispatchEvent(new MouseEvent("__tabtop_eme_element", { relatedTarget: element }));
+                    }
+                    // Taken (the agent's cancelled it), or left for its next batch.
+                    if (doc.dispatchEvent(new CustomEvent("__tabtop_eme_command", { detail: JSON.stringify(command), cancelable: true }))) break;
+                    queue.shift();
+                }
+            });
         }
-    });
+    }
     // MediaKeyStatusMap compares the bytes of a key ID, including typed
     // array views. JavaScript Map compares the identity of the buffer.
     class MediaKeyStatusMap {
@@ -89,8 +123,9 @@
             },
         });
     }
-    document.addEventListener("__tabtop_eme_reply", (event) => {
-        const r = JSON.parse(event.detail);
+    function replied(event) {
+        let r;
+        try { r = JSON.parse(event.detail); } catch { return; }
         if (r.request) {
             const p = pending.get(r.request);
             if (!p) return;
@@ -98,7 +133,7 @@
             pending.delete(r.request);
             if (r.error) p.reject(new DOMException(r.error, r.name));
             else p.resolve(r.value);
-        } else if (r.event === "encrypted" && event.target instanceof HTMLMediaElement) {
+        } else if (r.event === "encrypted" && isMedia(event.target)) {
             event.target.dispatchEvent(new globalThis.MediaEncryptedEvent("encrypted", { initDataType: r.type, initData: decode(r.data) }));
         } else {
             const s = sessions.get(r.session);
@@ -119,7 +154,8 @@
             s.dispatchEvent(e);
             if (typeof s["on" + e.type] === "function") s["on" + e.type](e);
         }
-    }, true);
+    }
+    listen();
     class MediaKeySession extends EventTarget {
         sessionId = "";
         expiration = NaN;

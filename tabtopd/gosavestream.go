@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -575,30 +576,66 @@ func decodeM3U8(data []byte) (p m3u8.Playlist, kind m3u8.ListType, err error) {
 	return m3u8.Decode(*bytes.NewBuffer(data), true)
 }
 
+// errStreamEncrypted is decodeInitSegment's no for an encrypted track
+// whose keys it hasn't (a Clear Key stream's come with the save).
+var errStreamEncrypted = errors.New("encrypted tracks are unsupported")
+
 func decodeStreamInit(data []byte) (init *mp4.InitSegment, err error) {
+	init, _, err = decodeInitSegment(data, nil)
+	return init, err
+}
+
+// decodeInitSegment decodes a fragmented MP4 init. With keys (a Clear Key
+// stream's: its key ID in hex, gostreammse.go), an encrypted one is
+// decrypted for saving, in place (its sample entries their old types
+// again, its pssh gone), with what decrypting its fragments takes
+// returned; without keys, it's refused.
+func decodeInitSegment(data []byte, keys map[string][]byte) (init *mp4.InitSegment, di *mp4.DecryptInfo, err error) {
 	defer func() {
 		if recover() != nil {
-			init = nil
-			err = errors.New("invalid MP4 initialization segment")
+			init, di, err = nil, nil, errors.New("invalid MP4 initialization segment")
 		}
 	}()
 	file, err := mp4.DecodeFileSR(bits.NewFixedSliceReader(data))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if file.Init == nil || file.Moov == nil || file.Moov.Mvhd == nil || file.Moov.Mvex == nil || len(file.Moov.Traks) == 0 || len(file.Moov.Mvex.Trexs) != len(file.Moov.Traks) {
-		return nil, errors.New("missing fragmented MP4 header")
+		return nil, nil, errors.New("missing fragmented MP4 header")
 	}
 	for _, trak := range file.Moov.Traks {
 		if trak.Tkhd == nil || trak.Mdia == nil || trak.Mdia.Mdhd == nil || trak.Mdia.Mdhd.Timescale == 0 || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
-			return nil, errors.New("incomplete MP4 track header")
-		}
-		stsd := trak.Mdia.Minf.Stbl.Stsd
-		if stsd.Encv != nil || stsd.Enca != nil {
-			return nil, errors.New("encrypted tracks are unsupported")
+			return nil, nil, errors.New("incomplete MP4 track header")
 		}
 	}
-	return file.Init, nil
+	encrypted := false
+	for _, trak := range file.Moov.Traks {
+		stsd := trak.Mdia.Minf.Stbl.Stsd
+		if stsd.Encv != nil || stsd.Enca != nil {
+			encrypted = true
+		}
+	}
+	if !encrypted {
+		return file.Init, nil, nil
+	}
+	if len(keys) == 0 {
+		return nil, nil, errStreamEncrypted
+	}
+	d, err := mp4.DecryptInit(file.Init)
+	if err != nil {
+		return nil, nil, err
+	}
+	di = &d
+	for _, ti := range di.TrackInfos {
+		if ti.Sinf == nil || ti.Sinf.Schi == nil || ti.Sinf.Schi.Tenc == nil {
+			continue
+		}
+		kid := hex.EncodeToString(ti.Sinf.Schi.Tenc.DefaultKID)
+		if _, ok := keys[kid]; !ok {
+			return nil, nil, fmt.Errorf("the stream's key for its key ID %s didn't come", kid)
+		}
+	}
+	return file.Init, di, nil
 }
 
 // streamName is what a stream at u is saved as: its manifest's name, as an

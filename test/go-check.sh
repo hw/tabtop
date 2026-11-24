@@ -161,7 +161,8 @@ tree_rss() {
       echo "$peak_engine $peak_tabtopd" > "$work/peak"; sleep 1
   done ) &
 # (GO_LOG: tabtopd's log, with its go-debug lines, run here; not an image's.)
-GO_LOG=$([[ -z "$go_image" ]] && echo "$work/tabtopd.log") node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
+# (GO_DOWNLOADS: where what's saved lands, read to check it; not an image's.)
+GO_DOWNLOADS=$([[ -z "$go_image" ]] && echo "$work/downloads") GO_LOG=$([[ -z "$go_image" ]] && echo "$work/tabtopd.log") node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
 read -r peak_engine peak_tabtopd < "$work/peak" || true
 echo "ok   the most memory used: an engine $((${peak_engine:-0} / 1024)) MiB, tabtopd $((${peak_tabtopd:-0} / 1024)) MiB"
 # (Not with only some steps run, GO_ONLY, GO_FROM or GO_PROBE: the files

@@ -144,3 +144,27 @@ func TestGoWebMRefused(t *testing.T) {
 		t.Error("isWebM")
 	}
 }
+
+// TestGoMediaFileName: a whole file saved with no name said (a Blob the
+// page played) is named by what its first bytes say it is.
+func TestGoMediaFileName(t *testing.T) {
+	for _, c := range []struct {
+		head []byte
+		want string
+	}{
+		{[]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00"), "stream.mp4"},
+		{[]byte("\x00\x00\x00\x20ftypM4A \x00\x00\x02\x00"), "audio.m4a"},
+		{[]byte{0x1A, 0x45, 0xDF, 0xA3, 0x9F}, "stream.webm"},
+		{[]byte("OggS\x00\x02"), "audio.ogg"},
+		{[]byte("fLaC\x00\x00"), "audio.flac"},
+		{[]byte("RIFF\x24\x00\x00\x00WAVEfmt "), "audio.wav"},
+		{[]byte("ID3\x04\x00"), "audio.mp3"},
+		{[]byte{0xFF, 0xFB, 0x90, 0x00}, "audio.mp3"},
+		{[]byte("<html>"), "media.bin"},
+		{nil, "media.bin"},
+	} {
+		if got := goMediaFileName(c.head); got != c.want {
+			t.Errorf("%q: %s, want %s", c.head, got, c.want)
+		}
+	}
+}

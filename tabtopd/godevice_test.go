@@ -145,3 +145,108 @@ func TestGoDeviceAsset(t *testing.T) {
 		t.Fatal("missing viewer module", w.Code)
 	}
 }
+
+// TestGoLocationWatch: a followed position, allowed, has its first given as
+// its answer and the rest as they come (so often at most); an error that
+// ends it, the page's stop, or the page left, ends it.
+func TestGoLocationWatch(t *testing.T) {
+	b, _ := goClipTab()
+	b.viewerCaps = goViewerCaps{Location: true}
+	pos := `{"coords":{"latitude":1,"longitude":2,"accuracy":3},"timestamp":5}`
+	b.devices(1, []goDeviceAsk{{ID: "w1", Kind: "location-watch"}})
+	if b.device == nil || b.device.kind != "location-watch" {
+		t.Fatal("not asked")
+	}
+	token := b.device.token
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: token, Accept: true, Value: pos})
+	if b.locWatch == nil || b.acts.waiting() != 1 {
+		t.Fatalf("not followed (%v), or its first not given", b.locWatch)
+	}
+	update := goClientMsg{Gen: 1, Text: token, Kind: "location-update", Value: pos}
+	b.deviceAnswer(update) // (too soon: dropped)
+	b.locWatchAt = time.Now().Add(-time.Second)
+	b.deviceAnswer(update)
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: token, Kind: "location-update", Value: `{"coords":{"latitude":91}}`})
+	if b.acts.waiting() != 2 {
+		t.Errorf("%d given (one more, not the one too soon nor the bad one)", b.acts.waiting())
+	}
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: "other", Kind: "location-update", Value: pos})
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: token, Kind: "location-error", Value: "TimeoutError"})
+	if b.locWatch == nil || b.acts.waiting() != 3 {
+		t.Errorf("a time-out ended it, or another's update was given")
+	}
+	// Stopped by the page.
+	b.devices(1, []goDeviceAsk{{ID: "s1", Kind: "location-stop"}})
+	if b.device == nil || b.device.kind != "location-stop" {
+		t.Fatal("its stop not passed on")
+	}
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: b.device.token, Accept: true})
+	if b.locWatch != nil {
+		t.Error("followed after its stop")
+	}
+	// A stop with nothing followed: refused.
+	before := b.acts.waiting()
+	b.devices(1, []goDeviceAsk{{ID: "s2", Kind: "location-stop"}})
+	if b.device != nil || b.acts.waiting() != before+1 {
+		t.Error("a stop of nothing passed on")
+	}
+	// Followed again, then the page left: ended, the page told.
+	b.devices(1, []goDeviceAsk{{ID: "w2", Kind: "location-watch"}})
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: b.device.token, Accept: true, Value: pos})
+	b.releaseDevices()
+	if b.locWatch != nil {
+		t.Error("followed after its page was left")
+	}
+}
+
+// TestGoShareFiles: files shared only where the person's browser shares
+// them, so many and so large, named as they can be saved; passed on with
+// the ask.
+func TestGoShareFiles(t *testing.T) {
+	b, w := goClipTab()
+	b.inputAt, b.inputGen, b.inputWorld = time.Now(), 1, 1
+	ask := func(files []goShareFile) bool {
+		b.device = nil
+		b.devices(1, []goDeviceAsk{{ID: "s", Kind: "share", Files: files}})
+		return b.device != nil
+	}
+	file := goShareFile{Stream: 4, Name: "../notes/report.csv", Type: "text/csv", Size: 10}
+	b.viewerCaps = goViewerCaps{Share: true}
+	if ask([]goShareFile{file}) {
+		t.Error("files shared where the browser shares none")
+	}
+	b.viewerCaps.ShareFiles = true
+	if !ask([]goShareFile{file}) {
+		t.Fatal("a file not shared")
+	}
+	got := goSentOf(w, "go-device")
+	files, _ := got[len(got)-1]["files"].([]any)
+	if len(files) != 1 || files[0].(map[string]any)["name"] != "report.csv" {
+		t.Errorf("passed on %v", got[len(got)-1]["files"])
+	}
+	many := make([]goShareFile, goShareFiles+1)
+	for i := range many {
+		many[i] = goShareFile{Stream: i + 1, Name: "a.txt", Size: 1}
+	}
+	for _, bad := range [][]goShareFile{many, {{Stream: 1, Name: "big.bin", Size: goShareFileBytes + 1}}, {{Stream: 0, Name: "a.txt"}}, {{Stream: 1, Name: "..."}}} {
+		if ask(bad) {
+			t.Errorf("shared %d files, the first %+v", len(bad), bad[0])
+		}
+	}
+}
+
+// TestGoViewerChanged: a tab taken back by a browser that can do otherwise
+// has its pages told anew (the script registered again); the same, not.
+func TestGoViewerChanged(t *testing.T) {
+	b, _ := goClipTab()
+	b.jobs = newGoQueue()
+	b.viewerCaps = goViewerCaps{Location: true}
+	b.viewerChanged(goViewerCaps{Location: true})
+	if b.jobs.waiting() != 0 {
+		t.Error("registered again for the same")
+	}
+	b.viewerChanged(goViewerCaps{Location: true, Share: true, ShareFiles: true})
+	if !b.viewerCaps.ShareFiles || b.jobs.waiting() != 1 {
+		t.Errorf("not taken: %+v, %d jobs", b.viewerCaps, b.jobs.waiting())
+	}
+}

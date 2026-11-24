@@ -303,7 +303,6 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 	for _, r := range reads {
 		seen[r.id] = true
 		b.clipboard(b.gen, r.world, r.clip)
-		b.frameStreamsGot(b.gen, r.world, r.streams)
 		c := b.children[r.id]
 		if c == nil {
 			c = &goChild{due: true}
@@ -312,7 +311,11 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		if c.url != r.url || c.owner != r.owner {
 			c.due = true
 		}
+		if c.world != 0 && c.world != r.world && !c.same {
+			b.emeGone(c.world) // (its document's keys and sessions: goframeeme.go)
+		}
 		c.id, c.parent, c.parentWorld, c.url, c.owner, c.same, c.world = r.id, r.parent, r.parentWorld, r.url, r.owner, r.same, r.world
+		b.frameStreamsGot(b.gen, r.world, r.streams) // (its EME the frame's, now it's known)
 		if r.doc == nil {
 			continue
 		}
@@ -413,7 +416,10 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 		b.sendLarge(p)
 	}
 	for id := range b.children {
-		if !seen[id] {
+		if c := b.children[id]; !seen[id] {
+			if !c.same {
+				b.emeGone(c.world)
+			}
 			delete(b.children, id) // gone from the page
 		}
 	}

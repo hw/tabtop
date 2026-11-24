@@ -28,7 +28,7 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave, private: privateTab = false } = {}) {
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave, downloaded, private: privateTab = false } = {}) {
     // The player's parts, over the tab's tunnel (range), as tunnels for
     // ranged-file.js: what a go-resource request's tunnel would say, and
     // its bytes. Without range (the tab's tunnel isn't open), one of its own.
@@ -80,7 +80,54 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     } });
 
-    const eme = encryptedMedia(emeReply, () => !blocked && !abort.signal.aborted);
+    // Encrypted Media: each document's own (the page's, 0; an embedded
+    // page of another origin's, by its world: goframeeme.go), its keys and
+    // sessions not another's; at most 8, the oldest let go. A player's is
+    // its node's: world × 2³² + its node there (go-frame.js).
+    const emes = new Map();
+    const emeOf = (doc) => {
+        let e = emes.get(doc);
+        if (!e) {
+            if (emes.size >= 8) {
+                const oldest = [...emes.keys()].find((d) => d !== 0);
+                emes.get(oldest)?.stop();
+                emes.delete(oldest);
+            }
+            e = encryptedMedia((message, node) => emeReply?.(message, node, doc), () => !blocked && !abort.signal.aborted,
+                (node, keys) => emeKeys(doc * 2 ** 32 + node, keys));
+            emes.set(doc, e);
+        }
+        return e;
+    };
+    const emeWorld = (node) => Math.floor(node / 2 ** 32);
+    const eme = {
+        player: (node, kind) => emeOf(emeWorld(node)).player(node % 2 ** 32, kind),
+        opened: (node, element) => emeOf(emeWorld(node)).opened(node % 2 ** 32, element),
+        closed: (node, element) => emes.get(emeWorld(node))?.closed(node % 2 ** 32, element),
+        receive: (commands, doc = 0) => emeOf(doc).receive(commands),
+        gone(doc) {
+            emes.get(doc)?.stop();
+            emes.delete(doc);
+        },
+        stop() {
+            for (const e of emes.values()) e.stop();
+            emes.clear();
+        },
+    };
+    // emeKeys: a Clear Key stream's keys, for its element (go-eme.js): its
+    // player's capture is told to expect them ({}), then given them as they
+    // become usable, so it spills the stream encrypted with its keys and
+    // Save saves it decrypted (mse-capture.js, gostreammse.go). Another key
+    // system's never come, and its capture isn't saved.
+    const emeKeys = (node, keys) => {
+        for (const player of players.values()) {
+            if (player.node !== node) continue;
+            const capture = player.stream?.capture;
+            if (!capture) continue;
+            if (Object.keys(keys).length) capture.markKeys?.(keys);
+            else capture.expectKeys?.();
+        }
+    };
     const players = new Map();  // the frame's box's key -> {element, stopped}
     const ours = new WeakSet();  // players being started by the page (start), not the person
     const abort = new AbortController();
@@ -241,6 +288,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     }
 
     const FILE_MAX = 256 << 20;  // a plain Blob's bytes, played whole (gomedia.js's)
+    const sharedFiles = new Map();  // a shared file's stream -> {blob, name}
+    const sharedWaits = new Map();  // and what waits for it
     let fileBytes = 0;
     function fileCommand(stream, raw) {
         try {
@@ -255,8 +304,16 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                     stream.source = null;
                     stream.capture = null;
                 }
-                const mime = typeof raw.mime === "string" && /^(?:audio|video|application)\/[\w.+-]{1,64}(?:;[^<>]{0,128})?$/i.test(raw.mime) ? raw.mime : "";
+                // A download's (gomedia.js: a link with download the page
+                // clicked): any type, saved, not played; its name said.
+                const name = typeof raw.download === "string" ? raw.download.slice(0, 255) : null;
+                // A file the page shares (navigator.share): kept for its share.
+                const shared = typeof raw.share === "string" ? raw.share.slice(0, 255) : null;
+                const mime = typeof raw.mime === "string" && (name !== null || shared !== null ? /^[\w.+-]{1,64}\/[\w.+-]{1,64}(?:;[^<>]{0,128})?$/ : /^(?:audio|video|application)\/[\w.+-]{1,64}(?:;[^<>]{0,128})?$/i).test(raw.mime) ? raw.mime : "";
                 stream.file = { parts: [], size: 0, mime, total: Number.isSafeInteger(raw.value) && raw.value > 0 ? raw.value : 0, done: false };
+                stream.capture = fileCapture(stream);
+                if (name !== null) stream.saveName = name || "download";
+                if (shared !== null) stream.shareName = shared || "file";
                 return;
             }
             const file = stream.file;
@@ -272,6 +329,30 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 return;
             }
             file.done = true;
+            if (stream.shareName !== undefined) {
+                // Shared: its file, whole, for its share (sharedFile).
+                const blob = new Blob(file.parts, file.mime ? { type: file.mime } : {});
+                fileBytes -= file.size;
+                file.parts = [];
+                for (const [id, s] of streams) {
+                    if (s !== stream) continue;
+                    streams.delete(id);
+                    sharedFiles.set(id, { blob, name: stream.shareName });
+                    if (sharedFiles.size > 16) sharedFiles.delete(sharedFiles.keys().next().value);
+                    for (const wake of sharedWaits.get(id) ?? []) wake();
+                    sharedWaits.delete(id);
+                }
+                return;
+            }
+            if (stream.saveName !== undefined) {
+                // A download: its file, whole, handed on to be saved (go.js).
+                stream.fileBlob = new Blob(file.parts, file.mime ? { type: file.mime } : {});
+                fileBytes -= file.size;
+                file.parts = [];
+                for (const [id, s] of streams) if (s === stream) streams.delete(id);
+                downloaded?.(stream, stream.saveName);
+                return;
+            }
             fileReady(stream);
         } catch (error) {
             failStream(stream, error.message);
@@ -281,10 +362,34 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     function fileReady(stream) {
         const file = stream.file;
         if (!file?.done || !stream.element || stream.url || stream.closed) return;
-        stream.url = URL.createObjectURL(new Blob(file.parts, file.mime ? { type: file.mime } : {}));
+        stream.fileBlob = new Blob(file.parts, file.mime ? { type: file.mime } : {});
+        stream.url = URL.createObjectURL(stream.fileBlob);
         fileBytes -= file.size;
         file.parts = [];
         stream.element.src = stream.url;
+    }
+
+    // fileCapture saves a file stream's file (a Blob the page played, or a
+    // download): whole, once it's all come, as one progressive piece of a
+    // stage (go.js's saveMSECapture), named by the server from its bytes,
+    // or by its download's name.
+    // (Sent once to a stage: again once a save's taken it, or failed; not
+    // when it was refused, the stage still holding it, to be saved again.)
+    function fileCapture(stream) {
+        let spilled = false;
+        return {
+            encrypted: false,
+            markEncrypted() { this.encrypted = true; },
+            saveable() { return !!stream.fileBlob && stream.fileBlob.size > 0 && !this.encrypted; },
+            async flush() {
+                if (spilled) return;
+                if (!stream.fileBlob || !spillMSE) throw new Error("its file hasn't all come yet");
+                await spillMSE(stream, { track: 0, kind: "progressive", bytes: new Uint8Array(await stream.fileBlob.arrayBuffer()) });
+                spilled = true;
+            },
+            sessionTaken() { spilled = false; },
+            saveFailed() { spilled = false; },
+        };
     }
 
     function newStream() {
@@ -332,10 +437,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         element.addEventListener("error", () => {
             if (!stream.closed) failStream(stream, element.error?.message || "The media stream could not be decoded.");
         }, { signal: entry.controller.signal });
-        // Encrypted Media: once the page asks for keys, the capture mustn't be saved.
+        // Encrypted Media: the capture is told (and, its keys coming — a
+        // Clear Key player's — it goes on spilling, and is saved
+        // decrypted); one whose keys a CDM keeps lets its stage go.
         element.addEventListener("encrypted", () => {
             stream.capture?.markEncrypted();
-            abortMSE?.(stream);
+            if (!stream.capture?.armed && !stream.capture?.keysKnown) abortMSE?.(stream);
         }, { signal: entry.controller.signal });
         element.src = stream.url;
         return element;
@@ -543,12 +650,13 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     // (go.js's streamsToSave), and its buffered capture, if it's saveable.
     function saveChoices(player) {
         const mse = player.stream?.capture;
-        if (player.element?.mediaKeys) {
+        if (player.element?.mediaKeys && !mse?.armed && !mse?.keysKnown) {
+            // Encrypted Media whose keys a CDM keeps: its stream not saved.
             mse?.markEncrypted();
             abortMSE?.(player.stream);
         }
         const mseSave = saveMSE && mse?.saveable() ? [{
-            label: "Buffered stream",
+            label: player.stream.file ? "File" : "Buffered stream",
             save: (say, opts) => saveMSE(player.stream, say, opts),
         }] : [];
         // (Not the page's last place's streams to a stream begun since it
@@ -713,7 +821,24 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             return null;
         },
         streams: receiveStreams,
-        eme: eme.receive,
+        // sharedFile is a file the page shares, by its stream's number, as a
+        // File, once it's all come (null if it doesn't within 60 s).
+        async sharedFile(id, type = "") {
+            if (!sharedFiles.has(id)) {
+                await new Promise((resolve) => {
+                    const timer = setTimeout(resolve, 60000);
+                    sharedWaits.set(id, [...(sharedWaits.get(id) ?? []), () => { clearTimeout(timer); resolve(); }]);
+                });
+            }
+            const f = sharedFiles.get(id);
+            if (!f) return null;
+            sharedFiles.delete(id);
+            return new File([f.blob], f.name, { type: type || f.blob.type });
+        },
+        // eme takes EME requests: the page's, or (doc) an embedded page's
+        // of another origin; emeGone lets one's go.
+        eme: (commands, doc = 0) => eme.receive(commands, doc),
+        emeGone: (doc) => eme.gone(doc),
         // open makes a player for the box key, of kind, playing src (an
         // http(s) address the page had); its error, if it can't.
         async open({ key, node, kind, src, rect, clip, shown, fit, position, muted, loop, poster, play }) {

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"path"
+	"strings"
 	"testing"
 
 	"github.com/Eyevinn/mp4ff/mp4"
@@ -438,5 +440,218 @@ func TestMSESavedAgain(t *testing.T) {
 	}
 	if len(out.Sidxs) != 1 || len(out.Sidxs[0].SidxRefs) != 3 {
 		t.Fatalf("indexes: %d, %+v", len(out.Sidxs), out.Sidxs)
+	}
+}
+
+func concatBytes(parts ...[]byte) []byte {
+	out := make([]byte, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+// A stage's key frames (a Clear Key stream's, mse-capture.js) are kept for
+// the save, themselves held nothing of.
+func TestMSEStageKeyFrames(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	stage, err := m.openMSEStage("keys", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.forgetMSEStage(stage.id)
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := stage.appendFrame(store, 0, mseKindInit, []byte("init-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindPart, []byte("moof-mdat-part")); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", `{`, `{"kid":"76a6c65c5ea762046bd749a2e632cc"}`, `{"kid":"76a6c65c5ea762046bd749a2e632ccbb","key":"76a6"}`,
+		`{"kid":"76a6c65c5ea762046bd749a2e632ccbg","key":"76a6c65c5ea762046bd749a2e632ccbb"}`,
+		`{"kid":"76a6c65c5ea762046bd749a2e632ccbb","key":"76a6c65c5ea762046bd749a2e632ccbg"}`} {
+		err := stage.appendFrame(store, 0, mseKindKey, []byte(bad))
+		if err == nil {
+			t.Errorf("a bad key (%q) was kept", bad)
+		}
+	}
+	if err := stage.appendFrame(store, 0, mseKindKey, []byte(`{"kid":"76a6c65c5ea762046bd749a2e632ccbb","key":"76a6c65c5ea762046bd749a2e632ccbb"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// A 32-byte key (AES-256) is one too, and a renewal replaces its key ID's.
+	if err := stage.appendFrame(store, 0, mseKindKey, []byte(`{"kid":"76a6c65c5ea762046bd749a2e632ccbb","key":"` + strings.Repeat("ab", 32) + `"}`)); err != nil {
+		t.Fatal(err)
+	}
+	in, _, err := m.takeMSEStage(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.keys) != 1 || len(in.keys["76a6c65c5ea762046bd749a2e632ccbb"]) != 32 {
+		t.Fatalf("the stage's keys: %v", in.keys)
+	}
+}
+
+// A Clear Key stream's (EME): staged encrypted, its keys spilled as its
+// page's license answered, and saved decrypted — its sample entry its old
+// type again, its pssh gone, its samples the stream's. Without its key, or
+// with another key ID's only, it's refused, not saved wrong.
+func TestMSESaveEncrypted(t *testing.T) {
+	g, _, _ := newFetchServer(t)
+	m := g.defaultRoot().fetches
+	store, err := m.files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	const kidHex, keyHex = "a7e61c373e219033c21091fa607bf3b8", "76a6c65c5ea762046bd749a2e632ccbb"
+	kidBytes, _ := hex.DecodeString(kidHex)
+	keyBytes, _ := hex.DecodeString(keyHex)
+
+	init := mp4.CreateEmptyInit()
+	trak := init.AddEmptyTrack(90000, "video", "und")
+	avcC, err := mp4.CreateAvcC([][]byte{{0x67, 0x42, 0xc0, 0x0c, 0xd9, 0x01, 0x41, 0x9f, 0x9f, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x01, 0x80, 0xf1, 0x42, 0xa4, 0x80}}, [][]byte{{0x68, 0xcb, 0x83, 0xcb, 0x20}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	avc1 := mp4.NewVisualSampleEntryBox("avc1")
+	avc1.AddChild(avcC)
+	trak.Mdia.Minf.Stbl.Stsd.AddChild(avc1)
+	var kid mp4.UUID = mp4.UUID(kidBytes)
+	iv := bytes.Repeat([]byte{7}, 16)
+	ipd, err := mp4.InitProtect(init, keyBytes, iv, "cenc", kid, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initBuf bytes.Buffer
+	if err := init.Encode(&initBuf); err != nil {
+		t.Fatal(err)
+	}
+	// AVC samples: their NAL units' payloads are what's encrypted (their
+	// 4-byte lengths and headers clear), as a stream's are.
+	nalu := func(b ...byte) []byte {
+		out := make([]byte, 4+len(b))
+		binary.BigEndian.PutUint32(out, uint32(len(b)))
+		copy(out[4:], b)
+		return out
+	}
+	samples := [][]byte{nalu(0x65, 1, 2, 3, 4, 5, 6, 7, 8), concatBytes(nalu(0x41, 9, 8, 7), nalu(0x41, 6, 5, 4, 3, 2, 1, 0))}
+	next := iv
+	frags := make([][]byte, len(samples))
+	for i, data := range samples {
+		frag, err := mp4.CreateFragment(uint32(1+i), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frag.AddFullSample(mp4.FullSample{Sample: mp4.NewSample(mp4.SyncSampleFlags, 90000, uint32(len(data)), 0), DecodeTime: uint64(i) * 90000, Data: data})
+		if next, err = mp4.EncryptFragment(frag, keyBytes, next, ipd); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := frag.Encode(&buf); err != nil {
+			t.Fatal(err)
+		}
+		frags[i] = buf.Bytes()
+	}
+
+	// Saved with the keys (the key's frame between the parts, as its
+	// license answered while it played), the file in Downloads is clear.
+	stage, err := m.openMSEStage("eme", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindInit, initBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindPart, frags[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindKey, []byte(`{"kid":"`+kidHex+`","key":"`+keyHex+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.appendFrame(store, 0, mseKindPart, frags[1]); err != nil {
+		t.Fatal(err)
+	}
+	in, release, err := m.takeMSEStage(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.keys) != 1 {
+		t.Fatalf("the stage's keys: %v", in.keys)
+	}
+	if err := m.runMSE(context.Background(), &fetchJob{real: "."}, in); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	data, err := store.root.ReadFile("stream.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Init.Moov.Psshs) != 0 {
+		t.Error("the saved stream still has its pssh")
+	}
+	if entry := out.Init.Moov.Traks[0].Mdia.Minf.Stbl.Stsd.Children[0].Type(); entry != "avc1" {
+		t.Errorf("the saved stream's sample entry is %q, still encrypted", entry)
+	}
+	trex := out.Init.Moov.Mvex.Trex
+	n := 0
+	for _, seg := range out.Segments {
+		for _, frag := range seg.Fragments {
+			got, err := frag.GetFullSamples(trex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, sample := range got {
+				if n >= len(samples) || !bytes.Equal(sample.Data, samples[n]) {
+					t.Fatalf("the saved stream's sample %d isn't the stream's: %v", n, sample.Data)
+				}
+				n++
+			}
+		}
+	}
+	if n != len(samples) {
+		t.Fatalf("the saved stream has %d samples, wants %d", n, len(samples))
+	}
+
+	// Without the keys (a stream whose keys a CDM keeps), or with another
+	// key ID's only, refused, not saved wrong.
+	for _, keys := range []map[string]string{nil, {"00000000000000000000000000000000": keyHex}} {
+		stage, err := m.openMSEStage("eme-refused", ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stage.appendFrame(store, 0, mseKindInit, initBuf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		if err := stage.appendFrame(store, 0, mseKindPart, frags[0]); err != nil {
+			t.Fatal(err)
+		}
+		if keys != nil {
+			for kid, key := range keys {
+				if err := stage.appendFrame(store, 0, mseKindKey, []byte(`{"kid":"`+kid+`","key":"`+key+`"}`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		in, release, err := m.takeMSEStage(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = m.runMSE(context.Background(), &fetchJob{real: "."}, in)
+		release()
+		if err == nil {
+			t.Error("an encrypted stream without its key was saved")
+		} else if !strings.Contains(err.Error(), "encrypted") && !strings.Contains(err.Error(), "key") {
+			t.Errorf("the save was refused for something else: %v", err)
+		}
 	}
 }

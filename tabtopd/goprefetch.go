@@ -212,7 +212,7 @@ func (b *goBrowser) nextRes() {
 // waiting on what's being fetched, which goes on, kept for whoever asks
 // next. The next page's aren't held up behind them.
 func (b *goBrowser) leftPage() {
-	b.device, b.pip, b.imagePaste = nil, nil, nil
+	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
 	b.fullscreenGone() // (gofullscreen.go)
 	b.notifyGone()     // (gonotify.go)
 	for _, m := range b.resQueue {

@@ -212,47 +212,96 @@
     const blobs = new Map();        // the page's blob: URL -> its Blob
     const blobStreams = new Map();  // blob: URL -> its stream's number
     const pumps = new Set();
+    // relayFile sends a Blob's bytes as a stream of its own (extra: what
+    // the "file" op says besides, a download's name); its number.
+    function relayFile(blob, extra = {}) {
+        const id = ++next;
+        if (blob.size > FILE_MAX || queue.length >= 512) {
+            queue.push({ stream: id, op: "error" });
+        } else {
+            queue.push({ stream: id, op: "file", mime: blob.type, value: blob.size, ...extra });
+            let at = 0, busy = false;
+            const pump = async () => {
+                if (busy) return;
+                busy = true;
+                try {
+                    while (at < blob.size && queued < FILE_AHEAD && queue.length < 480) {
+                        const part = new Uint8Array(await blob.slice(at, at + FILE_PART).arrayBuffer());
+                        if (!part.length) break;
+                        at += part.length;
+                        const data = btoa(String.fromCharCode(...part));
+                        queue.push({ stream: id, op: "chunk", data });
+                        queued += data.length;
+                    }
+                    if (at >= blob.size) {
+                        queue.push({ stream: id, op: "fileend" });
+                        pumps.delete(pump);
+                    }
+                } catch {
+                    queue.push({ stream: id, op: "error" });
+                    pumps.delete(pump);
+                } finally {
+                    busy = false;
+                }
+            };
+            pumps.add(pump);
+            pump();
+        }
+        return id;
+    }
     function relayBlob(url) {
         const blob = blobs.get(url);
         if (!blob) return;
         let id = blobStreams.get(url);
         if (!id) {
-            id = ++next;
+            id = relayFile(blob);
             blobStreams.set(url, id);
-            if (blob.size > FILE_MAX || queue.length >= 512) {
-                queue.push({ stream: id, op: "error" });
-            } else {
-                queue.push({ stream: id, op: "file", mime: blob.type, value: blob.size });
-                let at = 0, busy = false;
-                const pump = async () => {
-                    if (busy) return;
-                    busy = true;
-                    try {
-                        while (at < blob.size && queued < FILE_AHEAD && queue.length < 480) {
-                            const part = new Uint8Array(await blob.slice(at, at + FILE_PART).arrayBuffer());
-                            if (!part.length) break;
-                            at += part.length;
-                            const data = btoa(String.fromCharCode(...part));
-                            queue.push({ stream: id, op: "chunk", data });
-                            queued += data.length;
-                        }
-                        if (at >= blob.size) {
-                            queue.push({ stream: id, op: "fileend" });
-                            pumps.delete(pump);
-                        }
-                    } catch {
-                        queue.push({ stream: id, op: "error" });
-                        pumps.delete(pump);
-                    } finally {
-                        busy = false;
-                    }
-                };
-                pumps.add(pump);
-                pump();
-            }
         }
         try { reader().dispatchEvent(new CustomEvent("__tabtop_blob", { detail: JSON.stringify({ url, stream: id }) })); } catch { /* told nothing */ }
     }
+    // A file the page makes to be downloaded (an export button's: a link
+    // with download to a blob: or data: address, clicked, or click()'d as
+    // it's made, and its address let go at once): read as it's clicked,
+    // its bytes relayed as a file stream marked a download, with its name,
+    // for the person's browser to save into Downloads (go-media.js, go.js).
+    // The engine downloads nothing itself (its click's default prevented).
+    const isDownload = (a) => a?.localName === "a" && a.hasAttribute?.("download") && /^(?:blob|data):/i.test(a.href ?? "");
+    function download(a) {
+        const said = String(a.getAttribute("download") ?? "").trim();
+        fetch(a.href).then((r) => r.blob()).then((blob) => {
+            relayFile(blob, { download: (said || "download").slice(0, 255) });
+            watch();
+        }, () => { /* not readable: nothing */ });
+    }
+    // A file the page shares (navigator.share({files}): godevice.js asks,
+    // in this world): relayed as a file stream marked shared, with its
+    // name; its number said back.
+    window.addEventListener("__tabtop_share_file", (e) => {
+        const d = e.detail;
+        if (!(d?.file instanceof Blob) || typeof d.name !== "string" || d.stream !== undefined) return;
+        d.stream = relayFile(d.file, { share: d.name.slice(0, 255) });
+        watch();
+    });
+    const nativeClick = globalThis.HTMLAnchorElement?.prototype.click;
+    let clicking = null;
+    if (nativeClick) {
+        Object.defineProperty(HTMLAnchorElement.prototype, "click", { configurable: true, writable: true, enumerable: true, value: function click() {
+            if (!isDownload(this)) return nativeClick.call(this);
+            // Its click event, as a browser's (the page's handlers may
+            // cancel it), then its download.
+            clicking = this;
+            let go = true;
+            try { go = this.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: window })); } finally { clicking = null; }
+            if (go) download(this);
+        } });
+    }
+    window.addEventListener("click", (e) => {
+        if (e.defaultPrevented) return;
+        const a = e.composedPath?.().find(isDownload);
+        if (!a || a === clicking) return;
+        e.preventDefault();
+        download(a);
+    });
     // The agent, once there, asks which are streams (one in a frame is made
     // after its page has played one): said again.
     window.addEventListener("message", (e) => {

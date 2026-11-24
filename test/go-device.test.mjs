@@ -82,3 +82,76 @@ test("PNG transfer preserves bytes and frame identity across bounded tunnel mess
     await sendPasteImage(msg, () => f.ctx, assert.fail);
     assert.equal(f.sent.length, 0);
 });
+
+test("a followed position: asked, its first the answer, the rest as they come; stopped by the page, or a reset", async t => {
+    const f = fixture();
+    let found, failed;
+    const cleared = [];
+    Object.defineProperty(navigator, "geolocation", { configurable: true, value: {
+        watchPosition: (cb, err) => { found = cb; failed = err; return 42; },
+        clearWatch: id => cleared.push(id),
+    } });
+    t.after(() => { delete navigator.geolocation; f.devices.reset(); });
+    f.ask("location-watch", { options: {} });
+    assert.match(f.text.textContent, /follow your location/);
+    assert.equal(found, undefined, "followed before it's allowed");
+    f.allow.dispatchEvent(new Event("click"));
+    await tick();
+    found({ timestamp: 1, coords: { latitude: 1, longitude: 2, accuracy: 3 } });
+    await tick();
+    assert.equal(f.sent.at(-1).accept, true);
+    assert.equal(JSON.parse(f.sent.at(-1).value).coords.latitude, 1);
+    // Sooner than 250 ms: held, the newest sent when it may be.
+    found({ timestamp: 2, coords: { latitude: 5, longitude: 2, accuracy: 3 } });
+    found({ timestamp: 3, coords: { latitude: 6, longitude: 2, accuracy: 3 } });
+    assert.equal(f.sent.at(-1).accept, true, "sent at once, sooner than 250 ms");
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(f.sent.at(-1).kind, "location-update");
+    assert.equal(JSON.parse(f.sent.at(-1).value).coords.latitude, 6);
+    assert.equal(f.sent.filter(m => m.kind === "location-update").length, 1, "the one held between sent too");
+    failed({ code: 3 });
+    assert.deepEqual([f.sent.at(-1).kind, f.sent.at(-1).value], ["location-error", "TimeoutError"]);
+    // Stopped by the page: no more sent.
+    f.ask("location-stop");
+    await tick();
+    assert.deepEqual(cleared, [42]);
+    assert.equal(f.sent.at(-1).accept, true);
+    const sent = f.sent.length;
+    found({ timestamp: 3, coords: { latitude: 9, longitude: 2, accuracy: 3 } });
+    assert.equal(f.sent.length, sent, "a position sent after its stop");
+    // Followed again, then the page left (a reset): cleared.
+    f.ask("location-watch", { options: {} });
+    f.allow.dispatchEvent(new Event("click"));
+    await tick();
+    found({ timestamp: 4, coords: { latitude: 1, longitude: 2, accuracy: 3 } });
+    await tick();
+    f.devices.reset();
+    assert.deepEqual(cleared, [42, 42]);
+});
+
+test("files shared: asked once they've all come, shared as named; one that doesn't come, a data error", async t => {
+    const box = new EventTarget(), allow = new EventTarget(), refuse = new EventTarget(), text = {};
+    box.querySelector = key => ({ p: text, ".allow": allow, ".refuse": refuse })[key];
+    allow.focus = refuse.focus = () => {};
+    const sent = [], ctx = { gen: 3, socket: { send: data => sent.push(JSON.parse(data)) } };
+    const files = new Map([[11, new File(["hello"], "page-said.txt", { type: "text/plain" })]]);
+    const devices = viewerDevices(box, () => ctx, () => null, async id => files.get(id) ?? null);
+    let shared;
+    Object.defineProperty(navigator, "share", { configurable: true, value: async data => { shared = data; } });
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: data => (data.files ?? []).every(f => f instanceof File) });
+    t.after(() => { delete navigator.share; delete navigator.canShare; devices.reset(); });
+    box.hidden = true;
+    devices.ask({ kind: "share", gen: 3, ask: "s1", origin: "https://visited.example", data: { title: "Notes" }, files: [{ stream: 11, name: "note.txt", type: "text/plain", size: 5 }] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(box.hidden, false, "not asked once its file came");
+    assert.match(text.textContent, /share sheet with note\.txt/);
+    allow.dispatchEvent(new Event("click"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(shared.title, "Notes");
+    assert.equal(shared.files[0].name, "note.txt", "not shared as the server named it");
+    assert.equal(await shared.files[0].text(), "hello");
+    assert.equal(sent.at(-1).accept, true);
+    devices.ask({ kind: "share", gen: 3, ask: "s2", origin: "https://visited.example", data: {}, files: [{ stream: 99, name: "gone.txt", type: "", size: 1 }] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(sent.at(-1).value, "DataError");
+});

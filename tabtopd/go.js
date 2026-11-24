@@ -519,6 +519,7 @@ const mediaHelp = {
     // manifest): spilled to the server while it plays, remuxed on Save.
     saveMSE: filesOn ? (stream, say, opts) => saveMSECapture(stream, say, opts) : null,
     spillMSE: filesOn ? (stream, ev) => spillMSECapture(stream, ev) : null,
+    downloaded: (stream, name) => pageDownload(stream, name),
     abortMSE: filesOn ? (stream) => abortMSECapture(stream) : null,
 };
 
@@ -591,10 +592,11 @@ async function refreshMediaPolicy() {
 const menuSaves = new Map();  // a player's key -> { text, fraction, cancel, view }
 function newMedia() {
     menuSaves.clear();  // (another page's players)
-    const m = goMedia(frame, { ...mediaHelp, private: privateTab, emeReply(message, id) {
+    // (An embedded page's (doc: its world) to that page's world.)
+    const m = goMedia(frame, { ...mediaHelp, private: privateTab, emeReply(message, id, doc) {
         if (m !== media || ws?.readyState !== TunnelSocket.OPEN) return;
         const value = JSON.stringify(message);
-        if (value.length <= 49152) ws.send(JSON.stringify({ op: "event", kind: "eme-reply", id, gen: shown, value }));
+        if (value.length <= 49152) ws.send(JSON.stringify({ op: "event", kind: "eme-reply", id, gen: shown, value, ...(doc ? { fdoc: doc } : {}) }));
     } });
     m.autoplay(shouldAutoplay());
     return m;
@@ -1007,7 +1009,7 @@ async function copyOut(text, image) {
     }
 }
 const deviceContext = () => ({ socket: ws, gen });
-const devices = viewerDevices($("go_device"), deviceContext, node => media.videoForNode(node));
+const devices = viewerDevices($("go_device"), deviceContext, node => media.videoForNode(node), (stream, type) => media.sharedFile(stream, type));
 const pasteBox = $("go_paste");
 let pasteAsks = [];
 function askPaste(m) {
@@ -1745,6 +1747,13 @@ function message(m) {
             update();
             break;
         }
+        case "go-frame-plays":
+            // An embedded page of another origin's players, started or
+            // stopped by it (goframestreams.go): to their boxes' players.
+            if (m.gen === shown && Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20 && Array.isArray(m.plays)) {
+                toFrame({ type: "frame-plays", gen: m.gen, doc: m.doc, plays: m.plays.slice(0, 32) });
+            }
+            break;
         case "go-streams":
             // An embedded page's (goframestreams.go).
             if (m.gen === shown) media.streams(m.streams);
@@ -1759,8 +1768,13 @@ function message(m) {
             }
             break;
         case "go-eme":
-            // EME requests of a batch of changes let go (read again whole).
-            if (m.gen === shown) media.eme(m.eme);
+            // EME requests of a batch of changes let go (read again whole),
+            // or an embedded page's (doc: its world, goframeeme.go).
+            if (m.gen === shown && (m.doc === undefined || (Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20))) media.eme(m.eme, m.doc ?? 0);
+            break;
+        case "go-eme-gone":
+            // An embedded page's document gone: its keys and sessions too.
+            if (m.gen === shown && Number.isSafeInteger(m.doc) && m.doc > 0) media.emeGone(m.doc);
             break;
         case "go-net":
             // Whether the page being read is still loading: the frame holds
@@ -2061,6 +2075,9 @@ window.addEventListener("message", (e) => {
             if (typeof m.url === "string" && /^https?:\/\//i.test(m.url)) load(m.url);
             break;
         case "event":
+            // (The person's own use of the page, as a download's said to
+            // follow from it: pageDownload.)
+            if (["click", "key", "mouse", "touch", "submit", "change", "input"].includes(m.kind)) lastPageInput = Date.now();
             // Esc, while the page's fullscreen: the browser's, leaving it
             // (the page isn't given it, as browsers don't).
             if (pageFullScreen && m.kind === "key" && m.key === "Escape") {
@@ -2533,7 +2550,7 @@ async function saveFile(url, say = null, stream = false, job = { id: "", label: 
 // MSE spill staging: completed clear-MP4 pieces go to the server while the
 // stream plays (gostreammse.go); Save finalizes the remux into Downloads.
 const MSE_UPLOAD_CHUNK = 256 * 1024;
-const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4, windowPart: 5 };
+const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4, windowPart: 5, key: 6 };
 
 async function openMSEStageSession() {
     const t = await call({ type: "fetch", path: "", from_go: true, save_mse: true, mse_stage: true, go_tab: resumeToken.get() });
@@ -2620,6 +2637,26 @@ function abortMSECapture(stream) {
     mseStages.abort(stream);
 }
 
+// A file the page made to be downloaded (a link with download to a blob:
+// or data: address: go-media.js gathers it): saved into Downloads at once
+// if it followed the person's own use of the page (an export button's),
+// else asked first, so a page can't fill Downloads by itself.
+let lastPageInput = 0;
+function pageDownload(stream, name) {
+    const what = name || "a file";
+    if (!filesOn) {
+        warn(`The page made ${what} to download, but Files is off: nowhere to save it.`, { error: false });
+        return;
+    }
+    if (Date.now() - lastPageInput < 10000) {
+        saveMSECapture(stream);
+        return;
+    }
+    warn(`The page wants to save ${what} (${(stream.fileBlob?.size ?? 0).toLocaleString()} bytes) into Downloads.`, {
+        error: false, label: "Save", retry: () => saveMSECapture(stream),
+    });
+}
+
 const mseSaveKeys = new WeakMap();  // a buffered stream -> its downloads' key
 let mseSaveCount = 0;
 async function saveMSECapture(stream, say = null, { attach = false, detach = false } = {}) {
@@ -2644,11 +2681,13 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         }
         return;
     }
-    if (stream?.element?.mediaKeys) {
+    if (stream?.element?.mediaKeys && !stream?.capture?.armed && !stream?.capture?.keysKnown) {
+        // Encrypted Media whose keys a CDM keeps: its stage let go, its
+        // stream not saved.
         stream.capture?.markEncrypted();
         abortMSECapture(stream);
     }
-    if (stream?.capture?.encrypted) {
+    if (stream?.capture?.encrypted && !stream?.capture?.keysKnown) {
         if (say) say("Not saved: encrypted streams can't be saved");
         else warn("Not saved: encrypted streams can't be saved");
         return;
@@ -2668,7 +2707,8 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         else warn("Not saved: buffered stream has no media segments yet");
         return;
     }
-    const job = { id: "", label: "stream.mp4", url, stream: true, cancelling: false, say };
+    // (A file's: its download's name, or the server's for it, once said.)
+    const job = { id: "", label: stream?.saveName ?? (stream?.file ? "file" : "stream.mp4"), url, stream: true, cancelling: false, say };
     let stage;
     const button = document.createElement("button");
     button.className = "item";
@@ -2705,7 +2745,7 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
             sendCancel();
             throw new Error("cancelled");
         }
-        stage.tunnel.sendText(JSON.stringify({ finalize: true }));
+        stage.tunnel.sendText(JSON.stringify({ finalize: true, ...(stream?.saveName ? { name: stream.saveName } : {}) }));
         finalized = true;
         // The session's the save's once it starts; refused (every fetch
         // going), it goes on, spilled to, to be saved again.

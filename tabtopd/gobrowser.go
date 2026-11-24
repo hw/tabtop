@@ -196,7 +196,14 @@ type goBrowser struct {
 	device                        *goDevicePending
 	pip                           *goDevicePending
 	imagePaste                    *goImagePaste
-	imagePasteBusy                bool
+	// The script telling pages what the person's browser can do (godevice.go:
+	// the jobs' worker's alone).
+	deviceScript string
+	// A position followed (watchPosition: godevice.go), and when it was
+	// last passed on.
+	locWatch       *goDevicePending
+	locWatchAt     time.Time
+	imagePasteBusy bool
 	// Streams by the document that sent them first, and the frames that
 	// have streamed lately, asked often (goframestreams.go).
 	streamOwners  goStreamOwners
@@ -766,14 +773,13 @@ func (b *goBrowser) run() {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
 		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS + "\n" + goClipboardJS + "\n" + goFullscreenJS
-		caps, _ := json.Marshal(b.viewerCaps)
-		source += "\n;" + goDeviceJS + "(" + string(caps) + ");"
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
 		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": source}, nil)
 	}, func(r any) { goDebugf("fetch for data:, observer stand-in: %v", r) })
 	b.notifyRegister() // (the sites' notification answers: gonotify.go)
+	b.deviceRegister() // (what the person's browser can do: godevice.go)
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	b.cdp.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
 	cancel()
@@ -2119,6 +2125,10 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 
 // act does what the person did, in the page, then reads what it changed.
 func (b *goBrowser) act(m goClientMsg) {
+	if m.Kind == "eme-reply" && m.FDoc != 0 {
+		b.emeInFrame(m) // an embedded page's EME answered (goframeeme.go)
+		return
+	}
 	if m.Frame != 0 {
 		// In an embedded page: by its own agent, as the engine's input
 		// can't be aimed there (goinput.go).

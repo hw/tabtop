@@ -62,23 +62,53 @@ func (b *goBrowser) streamsFrom(gen, world int, commands []json.RawMessage) []js
 	return kept
 }
 
-// frameStreamsGot passes on what a frame's world said of its streams.
+// frameStreamsGot passes on what a frame's world said of its streams, and
+// its EME requests (goframeeme.go).
 func (b *goBrowser) frameStreamsGot(gen, world int, raw string) {
 	if raw == "" || gen != b.gen || b.shown != gen {
 		return
 	}
-	var commands []json.RawMessage
-	if json.Unmarshal([]byte(raw), &commands) != nil {
+	var got struct {
+		Streams []json.RawMessage `json:"streams"`
+		EME     []json.RawMessage `json:"eme"`
+		// Its players its page started or stopped ({o: "m", i, v}).
+		Plays []struct {
+			O string `json:"o"`
+			I int    `json:"i"`
+			V string `json:"v"`
+		} `json:"plays"`
+	}
+	if json.Unmarshal([]byte(raw), &got) != nil {
 		return
 	}
+	b.frameActive(world)
+	if kept := b.streamsFrom(gen, world, got.Streams); len(kept) > 0 {
+		goDebugf("frame world %d: %d stream commands", world, len(kept))
+		b.send(map[string]any{"type": "go-streams", "gen": gen, "streams": kept})
+	}
+	b.frameEME(gen, world, got.EME)
+	// Its plays, for its players (the person's browser's, by its world and
+	// their nodes: go-frame.js).
+	var plays []map[string]any
+	for _, p := range got.Plays {
+		if p.O == "m" && p.I > 0 && p.I < 1<<32 && len(plays) < 32 {
+			plays = append(plays, map[string]any{"i": p.I, "v": p.V == "true"})
+		}
+	}
+	if len(plays) > 0 && world > 0 && world < goFrameWorldMax {
+		goDebugf("frame world %d: %d players started or stopped", world, len(plays))
+		b.send(map[string]any{"type": "go-frame-plays", "gen": gen, "doc": world, "plays": plays})
+	}
+}
+
+// frameActive has a frame's world asked as often as the page's changes are
+// read, for a while (goFrameStreamsFor): it's streaming, or its DRM's
+// talking with the person's browser.
+func (b *goBrowser) frameActive(world int) {
 	if b.streamWorlds == nil {
 		b.streamWorlds = map[int]time.Time{}
 	}
 	b.streamWorlds[world] = time.Now()
-	if kept := b.streamsFrom(gen, world, commands); len(kept) > 0 {
-		goDebugf("frame world %d: %d stream commands", world, len(kept))
-		b.send(map[string]any{"type": "go-streams", "gen": gen, "streams": kept})
-	}
 }
 
 // frameStreams is what the page in a frame's world has of its streams'

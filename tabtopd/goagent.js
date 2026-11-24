@@ -146,8 +146,18 @@
                     for (const key of ["title", "text", "url"]) {
                         if (typeof d.data?.[key] === "string") ask.data[key] = d.data[key];
                     }
+                    // Its files: each relayed as a file stream (gomedia.js), by number.
+                    if (Array.isArray(d.files)) {
+                        if (d.files.length > 10) return;
+                        ask.files = [];
+                        for (const f of d.files) {
+                            if (!Number.isSafeInteger(f?.stream) || f.stream <= 0 || typeof f.name !== "string" || typeof f.type !== "string" || !Number.isSafeInteger(f.size) || f.size < 0) return;
+                            ask.files.push({ stream: f.stream, name: f.name.slice(0, 255), type: f.type.slice(0, 128), size: f.size });
+                        }
+                    }
                     break;
                 case "location":
+                case "location-watch":
                     const duration = n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
                     if (!duration(d.options?.timeout) || !duration(d.options?.maximumAge)) return;
                     ask.options = { enableHighAccuracy: d.options.enableHighAccuracy === true,
@@ -156,7 +166,7 @@
                 case "pip":
                     ask.node = el.localName === "video" ? ids.get(el) : 0;
                     break;
-                case "pip-exit": break;
+                case "pip-exit": case "location-stop": break;
                 default: return;
             }
             devices.push(ask);
@@ -268,14 +278,24 @@
         // Not those said of how the person's player plays (gomedia.js fires
         // them as it's told, within the telling): the page's doing only.
         let tellingPlay = false;
-        for (const type of ["play", "pause", "ended", "emptied"]) {
-            document.addEventListener(type, (e) => {
-                // Trust the event: gomedia.js may still mirror the person's
-                // player as playing when the page has just paused (MSE stub),
-                // and reading paused then would keep the underlaid player on.
-                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.set(e.target, type === "play");
-            }, true);
+        // (And in each frame of this origin the agent reads: frameKids. Its
+        // element is the node this world numbered: sameNode.)
+        const playedIn = new WeakSet();
+        function hearPlays(doc) {
+            if (playedIn.has(doc)) return;
+            playedIn.add(doc);
+            for (const type of ["play", "pause", "ended", "emptied"]) {
+                doc.addEventListener(type, (e) => {
+                    // Trust the event: gomedia.js may still mirror the person's
+                    // player as playing when the page has just paused (MSE stub),
+                    // and reading paused then would keep the underlaid player on.
+                    const el = e.target;
+                    if (tellingPlay || (el?.localName !== "video" && el?.localName !== "audio") || played.size >= 256) return;
+                    played.set(doc === document ? el : sameNode(el), type === "play");
+                }, true);
+            }
         }
+        hearPlays(document);
         let lastURL = "";
 
         // The page's observed elements, held by element until it's one the
@@ -1005,6 +1025,7 @@
             // nothing of this world's is handed to the frame's document,
             // whose methods are the page's to replace.
             frameOwners.set(child, el);
+            hearPlays(child);  // its players started and stopped by its page
             // This world's own MutationObserver, never the frame's: in both
             // engines a frame's window here is the page's own, and a page
             // can replace its constructor and be handed this callback (and
@@ -1418,23 +1439,47 @@
             return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll, at });
         }
 
+        // sameNode is the node this world numbered that el is: a frame of
+        // this origin's element, handed over from the page's world, may be
+        // another object here than the one met reading the frame (measured,
+        // Moli 1.1.27: the number it was given not found by it).
+        function sameNode(el) {
+            if (ids.has(el) || el.ownerDocument === document) return el;
+            for (const { child } of frames.values()) {
+                if (!child?.querySelectorAll) continue;
+                for (const m of child.querySelectorAll(el.localName)) if (m === el || m.isSameNode(el)) return m;
+            }
+            return el;
+        }
         let emeNode = 0, emeBatch = [];
         document.addEventListener("__tabtop_eme_element", e => {
             const el = e.relatedTarget;
             emeNode = 0;
-            if (!(el instanceof HTMLMediaElement)) return;
-            emeNode = ids.get(el) ?? reservedMedia.get(el);
+            // (A frame of this origin's element too: of another realm.)
+            if (el?.localName !== "video" && el?.localName !== "audio") return;
+            emeNode = ids.get(sameNode(el)) ?? reservedMedia.get(el);
             if (!emeNode) {
                 emeNode = next++;
                 reservedMedia.set(el, emeNode);
             }
         });
+        // Taken (cancelled, for the page to let it go), 4 a batch: the
+        // rest wait in the page for the next (goeme.js).
         document.addEventListener("__tabtop_eme_command", e => {
             if (typeof e.detail === "string" && e.detail.length <= 49152 && emeBatch.length < 4) {
-                try { emeBatch.push({ ...JSON.parse(e.detail), node: emeNode }); } catch { /* malformed command */ }
+                try {
+                    emeBatch.push({ ...JSON.parse(e.detail), node: emeNode });
+                    e.preventDefault();
+                } catch { /* malformed command */ }
             }
             emeNode = 0;
         });
+        const readEME = () => {
+            emeBatch = [];
+            emeNode = 0;
+            document.dispatchEvent(new Event("__tabtop_read_eme"));
+            return emeBatch;
+        };
 
         // Each page world's batch (this document's, and its frames' of its
         // origin, which tell it here: gomedia.js), together.
@@ -1451,12 +1496,23 @@
             document.dispatchEvent(new Event("__tabtop_read_stream"));
             return Array.isArray(streamBatch) ? streamBatch : [];
         };
-        // frameStreams is a frame's world's streams' commands, as JSON, or
-        // "" (its batches of changes don't carry them: goframestreams.go).
+        // frameStreams is a frame's world's streams' commands, and its EME
+        // requests, as JSON ({streams, eme}), or "" (its batches of changes
+        // don't carry them: goframestreams.go).
         const frameStreams = () => {
-            const list = readStreams();
-            return list.length ? JSON.stringify(list) : "";
+            const streams = readStreams(), eme = readEME(), plays = playsOut();
+            return streams.length || eme.length || plays.length ? JSON.stringify({ streams, eme, plays }) : "";
         };
+        // playsOut is what the page started and stopped since last asked, as
+        // ops ({o: "m", i, v}), of the players this world has numbered.
+        function playsOut() {
+            const out = [];
+            for (const [n, playing] of played) {
+                if (n.isConnected && known(n)) out.push({ o: "m", i: ids.get(n), v: String(playing) });
+            }
+            played = new Map();
+            return out;
+        }
 
         function changes() {
             for (const r of observer.takeRecords()) {
@@ -1651,10 +1707,8 @@
                 sheetsAsked = performance.now();
                 window.postMessage({ __tabtop: "sheets" }, "*");  // posted: see the io-sync below
             }
-            for (const [n, playing] of played) {
-                if (n.isConnected && known(n)) ops.push({ o: "m", i: ids.get(n), v: String(playing) });
-            }
-            played = new Map();
+            // (A frame's world's said apart: frameStreams.)
+            if (!frameWorld) ops.push(...playsOut());
             for (const [n, last] of watched) {
                 if (!n.isConnected) { watched.delete(n); continue; }
                 const v = n.type === "checkbox" || n.type === "radio" ? String(n.checked) : n.value;
@@ -1703,10 +1757,7 @@
             for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
             scrollsOut = new Map();
             const streams = frameWorld ? [] : readStreams();
-            emeBatch = [];
-            emeNode = 0;
-            document.dispatchEvent(new Event("__tabtop_read_eme"));
-            const eme = emeBatch;
+            const eme = frameWorld ? [] : readEME();
             if (!deviceBatch.length && !eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length && clipEmpty(clip)) return "";
             const sel = ops.length ? caret() : null;
             seq++;

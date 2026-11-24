@@ -112,6 +112,9 @@ func (g *server) routeGo(c *tunnelCall) {
 			return
 		}
 		logGoTab("taken back", c.ip)
+		// What this browser can do, for its pages (godevice.go).
+		caps := c.req.ViewerCaps
+		t.b.post(func() { t.b.viewerChanged(caps) })
 		if t.lend(newGoLink(c.t, c.req.Deflate), true) {
 			logGoTab("connection gone", c.ip)
 		}

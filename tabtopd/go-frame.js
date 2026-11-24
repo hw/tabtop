@@ -154,6 +154,12 @@
             mediaLater();
         } else if (m.type === "files-chosen" && Array.isArray(m.files)) {
             showChosen(m.files);
+        } else if (m.type === "frame-plays" && doc && m.gen === doc.gen && Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20 && Array.isArray(m.plays)) {
+            // An embedded page of another origin's players, started or
+            // stopped by it: by its world and their nodes (mediaNode).
+            for (const p of m.plays.slice(0, 32)) {
+                if (Number.isSafeInteger(p?.i) && p.i > 0 && p.i < 2 ** 32) playedAt(m.doc * 2 ** 32 + p.i, p.v === true);
+            }
         } else if (m.type === "media-mark") {
             for (const entry of media.values()) entry.box?.classList.toggle("go-media-mark", entry.key === m.key);
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
@@ -660,6 +666,9 @@
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
         frameRoots.get(el).child = child;  // its nodes, by the frame's own numbers (whereAt)
         child.top = d.top ?? d;  // its boxes are its page's
+        // Whose numbers its nodes are: its own world's (another origin's
+        // page), or, read with its parent, its parent's.
+        child.world = docOf || d.world || 0;
         child.budget = d.budget;
         child.report = d.report;
         // Its adopted stylesheets: its own, read in a world of its own (on
@@ -994,7 +1003,7 @@
         const info = {
             // own: it has a src (empty: nothing to play), its <source>s not
             // looked at, as a browser doesn't.
-            tag, node: d.top ? 0 : n.i, key: 0, own: hasAttr(n, "src"), src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
+            tag, node: mediaNode(d, n.i), key: 0, own: hasAttr(n, "src"), src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
             muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), play: hasAttr(n, "autoplay"),
             size: { width: dimension("width"), height: dimension("height"), aspectRatio: tag === "video" ? (w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9") : "" },
             style: "",
@@ -1003,6 +1012,24 @@
         mediaStyle(box);
         mediaSource(d, box, info.own ? info.src ?? "" : firstSource(n.c));
         return box;
+    }
+    // playedAt starts or stops the player numbered node (mediaNode), as its
+    // page did; whether there's one.
+    function playedAt(node, play) {
+        for (const m of media.values()) {
+            if (m.node === node && m.box) return mediaChanged(null, m.box, { o: "m", v: play });
+        }
+        return false;
+    }
+    // mediaNode is a player's number for the person's browser (its EME's,
+    // go-media.js): its node's, in the page or a frame read with it; in an
+    // embedded page of another origin, world × 2³² + its node there (0 if
+    // either is out of bounds).
+    function mediaNode(d, i) {
+        if (!Number.isSafeInteger(i) || i <= 0 || i >= 2 ** 32) return 0;
+        const world = d.world || 0;
+        if (!world) return i;
+        return Number.isSafeInteger(world) && world > 0 && world < 2 ** 20 ? world * 2 ** 32 + i : 0;
     }
     // Its own file, or else its first source's.
     function firstSource(kids) {
@@ -1979,6 +2006,9 @@
                 else if (op.o === "p") canvasFrame(el, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
                 continue;
             }
+            // A player in a frame of the page's origin, read with it (its
+            // node the page's agent's, not in the page's copy): its box's.
+            if (op.o === "m" && d === doc && !d.nodes.has(op.i) && playedAt(op.i, op.v === true)) continue;
             const target = d.nodes.get(op.i);
             if (target === undefined) return resync(d);
             if (op.o === "t" && d.styleOf.has(op.i)) {

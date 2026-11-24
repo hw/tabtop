@@ -8,7 +8,7 @@
 // Throughout, every request Chrome makes, from the page and from its frames,
 // is recorded: none may go anywhere but the TabTop server.
 import { execFileSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createCipheriv, createHmac } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -195,6 +195,92 @@ $("ask").onclick = () => Notification.requestPermission().then((s) => log("asked
 $("show").onclick = () => { n = new Notification("Hello", { body: "from the page", tag: "t1", icon: "https://example.com/icon.png" }); n.onshow = () => log("show"); n.onclick = () => log("click"); n.onclose = () => log("close"); n.onerror = () => log("error"); };
 $("close").onclick = () => n.close();
 $("late").onclick = () => setTimeout(() => Notification.requestPermission().then((s) => log("late " + s)), 6500);
+</script>`,
+        // Encrypted media (goeme.js, go-eme.js): a Clear Key player, its
+        // stream encrypted (enc.mp4, CENC, its pssh naming its key), fed by
+        // Media Source; its license given by the page itself, as a site's
+        // license server would. Each step said in #log.
+        "eme.html": `<!doctype html><title>EME</title><video id="v" width="320" height="180" muted></video><p id="log"></p><script src="eme.js"></script>`,
+        "eme.js": `const log = (t) => { document.getElementById("log").textContent += t + ";"; };
+const hex = (h) => Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
+const b64url = (u) => btoa(String.fromCharCode(...u)).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+const KEY = hex("76a6c65c5ea762046bd749a2e632ccbb");
+const type = 'video/mp4; codecs="avc1.42c00c"';
+const v = document.getElementById("v");
+v.addEventListener("encrypted", async (e) => {
+    log("encrypted " + e.initDataType);
+    const s = v.mediaKeys.createSession();
+    s.addEventListener("message", (m) => {
+        log("message");
+        const req = JSON.parse(new TextDecoder().decode(m.message));
+        s.update(new TextEncoder().encode(JSON.stringify({ keys: req.kids.map((kid) => ({ kty: "oct", kid, k: b64url(KEY) })), type: "temporary" })))
+            .then(() => log("updated"), (err) => log("update failed " + err.name));
+    });
+    s.addEventListener("keystatuseschange", () => { for (const [, st] of s.keyStatuses) log("key " + st); });
+    await s.generateRequest(e.initDataType, e.initData).catch((err) => log("generate failed " + err.name + " " + err.message));
+}, { once: true });
+(async () => {
+    try {
+        const access = await navigator.requestMediaKeySystemAccess("org.w3.clearkey", [{ initDataTypes: ["cenc"], videoCapabilities: [{ contentType: type }] }]);
+        log("access " + access.keySystem);
+        await v.setMediaKeys(await access.createMediaKeys());
+        log("keys");
+        const ms = new MediaSource();
+        v.src = URL.createObjectURL(ms);
+        await new Promise((r) => ms.addEventListener("sourceopen", r, { once: true }));
+        const sb = ms.addSourceBuffer(type);
+        sb.appendBuffer(await (await fetch("enc.mp4")).arrayBuffer());
+        await new Promise((r) => sb.addEventListener("updateend", r, { once: true }));
+        ms.endOfStream();
+        log("appended");
+        v.play().catch(() => {});
+    } catch (err) { log("failed " + err.name + " " + err.message); }
+})();
+`,
+        // The same player, with one in a frame of its origin and one in a
+        // frame of another (?other: its https origin), each its own keys,
+        // sessions and license: the page's, and its frames', at once.
+        "emeframe.html": `<!doctype html><title>EME frames</title><video id="v" width="320" height="180" muted></video><p id="log"></p>
+<iframe id="same" width="340" height="260" src="eme.html"></iframe> <iframe id="other" width="340" height="260"></iframe>
+<script>const other = new URLSearchParams(location.search).get("other"); if (other) document.getElementById("other").src = other + "eme.html";</script>
+<script src="eme.js"></script>`,
+        // The page's location (godevice.js): once, and followed
+        // (watchPosition) till cleared; each position, and error, in #log.
+        "where.html": `<!doctype html><title>Where</title><button id="once">Once</button> <button id="follow">Follow</button> <button id="stop">Stop</button><p id="log"></p>
+<script>
+const log = (t) => { document.getElementById("log").textContent += t + ";"; };
+let watch = null;
+document.getElementById("once").onclick = () => navigator.geolocation.getCurrentPosition((p) => log("once " + p.coords.latitude), (e) => log("once error " + e.code));
+document.getElementById("follow").onclick = () => { watch = navigator.geolocation.watchPosition((p) => log("pos " + p.coords.latitude), (e) => log("error " + e.code), { enableHighAccuracy: true }); };
+document.getElementById("stop").onclick = () => { navigator.geolocation.clearWatch(watch); log("cleared"); };
+</script>`,
+        // Files the page makes to be downloaded (gomedia.js): a CSV made as
+        // its button's pressed (a link made, clicked, let go), a picture's
+        // link (data:), and the CSV made long after its press.
+        "export.html": `<!doctype html><title>Export</title><button id="csv">Export CSV</button> <a id="png" download="dot.png" href="data:image/png;base64,${png(2, 2, [10, 200, 90]).toString("base64")}">Download the picture</a> <button id="later">Export later</button><p id="log"></p>
+<script>
+const csv = () => {
+    const url = URL.createObjectURL(new Blob(["name,count\\nalpha,1\\nbeta,2\\n"], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "report.csv";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    document.getElementById("log").textContent += "exported;";
+};
+document.getElementById("csv").onclick = csv;
+document.getElementById("later").onclick = () => setTimeout(csv, 11000);
+</script>`,
+        // Files shared (godevice.js: navigator.share({files})), and a link.
+        "share.html": `<!doctype html><title>Share</title><button id="share">Share</button> <button id="link">Share a link</button><p id="log"></p>
+<script>
+const log = (t) => { document.getElementById("log").textContent += t + ";"; };
+const files = () => [new File(["hello from the page"], "note.txt", { type: "text/plain" }), new File([new Uint8Array([1, 2, 3, 4, 5])], "data.bin", { type: "application/octet-stream" })];
+log("canShare " + navigator.canShare({ files: files() }));
+document.getElementById("share").onclick = () => navigator.share({ title: "Notes", files: files() }).then(() => log("shared"), (e) => log("failed " + e.name));
+document.getElementById("link").onclick = () => navigator.share({ url: "https://example.com/" }).then(() => log("shared link"), (e) => log("failed " + e.name));
 </script>`,
         "copyframe.html": `<!doctype html><button id="b" style="width:100%;height:60px">Copy here</button>
 <script>document.getElementById("b").onclick = () => { document.addEventListener("copy", (e) => { e.clipboardData.setData("text/plain", "copied in another origin's frame"); e.preventDefault(); }, { once: true }); document.execCommand("copy"); };</script>`,
@@ -1087,9 +1173,109 @@ if (fs.existsSync("/srv/cert.pem")) require("https").createServer({ key: fs.read
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
         "-c:a", "libopus", "-f", "webm", join(dir, "stream-a.webm")]);
     writeFileSync(join(dir, "part.m4s"), fragmented.subarray(split));
+    // The same stream encrypted, for a Clear Key player (eme.html): its key
+    // and key ID eme.html's.
+    writeFileSync(join(dir, "enc.mp4"), cenc(fragmented, "76a6c65c5ea762046bd749a2e632ccbb", "a7e61c373e219033c21091fa607bf3b8"));
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
     writeFileSync(join(dir, "favicon.ico"), png(16, 16, [30, 160, 60]));  // (a PNG, as many sites' are)
     writeFileSync(join(dir, "font.ttf"), systemFont());
+}
+
+// (ffmpeg 7.1 writes no senc, saiz or saio in an encrypted fragment's
+// traf, so a browser can't decrypt its CENC: done here.)
+// cenc encrypts a clear fragmented MP4 (one AVC track) with CENC, AES-CTR:
+// its sample entry made encv (sinf: frma, schm cenc, tenc with kid), a
+// common-system pssh in its moov; each sample's NAL units' payloads
+// encrypted (their lengths and headers clear), each traf given its
+// saiz, saio and senc.
+function cenc(clear, keyHex, kidHex) {
+    const key = Buffer.from(keyHex, "hex"), kid = Buffer.from(kidHex, "hex");
+    const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n >>> 0); return b; };
+    const box = (type, ...parts) => { const body = Buffer.concat(parts); return Buffer.concat([u32(8 + body.length), Buffer.from(type, "ascii"), body]); };
+    const full = (type, version, flags, ...parts) => box(type, u32((version << 24) | flags), ...parts);
+    const kids = (buf) => {
+        const out = [];
+        for (let o = 0; o + 8 <= buf.length;) {
+            const size = buf.readUInt32BE(o);
+            out.push({ type: buf.toString("ascii", o + 4, o + 8), data: buf.subarray(o + 8, o + size) });
+            o += size;
+        }
+        return out;
+    };
+    const pssh = full("pssh", 1, 0, Buffer.from("1077efecc0b24d02ace33c1e52e2fb4b", "hex"), u32(1), kid, u32(0));
+    const sinf = box("sinf", box("frma", Buffer.from("avc1")), full("schm", 0, 0, Buffer.from("cenc"), u32(0x10000)),
+        box("schi", full("tenc", 0, 0, Buffer.from([0, 0, 1, 8]), kid)));
+    const containers = new Set(["moov", "trak", "mdia", "minf", "stbl"]);
+    const init = (type, data) => {
+        if (containers.has(type)) return box(type, ...kids(data).map((c) => init(c.type, c.data)), ...(type === "moov" ? [pssh] : []));
+        if (type === "stsd") return box("stsd", data.subarray(0, 8), ...kids(data.subarray(8)).map((c) => c.type === "avc1" ? box("encv", c.data, sinf) : box(c.type, c.data)));
+        return box(type, data);
+    };
+    const out = [];
+    let iv = 1n;
+    const top = kids(clear);
+    for (let i = 0; i < top.length; i++) {
+        const { type, data } = top[i];
+        if (type === "moov") { out.push(init(type, data)); continue; }
+        if (type !== "moof") { if (type !== "mdat") out.push(box(type, data)); continue; }
+        const mdat = top[i + 1];
+        if (mdat?.type !== "mdat") throw new Error("a moof without its mdat");
+        i++;
+        const [mfhd, traf] = [kids(data).find((c) => c.type === "mfhd"), kids(data).find((c) => c.type === "traf")];
+        const parts = kids(traf.data);
+        const tfhd = parts.find((c) => c.type === "tfhd").data, trun = parts.find((c) => c.type === "trun").data;
+        const tf = tfhd.readUInt32BE(0) & 0xffffff;
+        let o = 8, defaultSize = 0;
+        if (tf & 0x1) o += 8;
+        if (tf & 0x2) o += 4;
+        if (tf & 0x8) o += 4;
+        if (tf & 0x10) defaultSize = tfhd.readUInt32BE(o);
+        const rf = trun.readUInt32BE(0) & 0xffffff, count = trun.readUInt32BE(4);
+        if (!(rf & 0x1)) throw new Error("a trun without its data offset");
+        let at = 12 + (rf & 0x4 ? 4 : 0);
+        const sizes = [];
+        for (let s = 0; s < count; s++) {
+            if (rf & 0x100) at += 4;
+            sizes.push(rf & 0x200 ? trun.readUInt32BE(at) : defaultSize);
+            if (rf & 0x200) at += 4;
+            if (rf & 0x400) at += 4;
+            if (rf & 0x800) at += 4;
+        }
+        const body = Buffer.from(mdat.data), aux = [];
+        let p = 0;
+        for (const size of sizes) {
+            const ivBytes = Buffer.alloc(8);
+            ivBytes.writeBigUInt64BE(iv++);
+            const cipher = createCipheriv("aes-128-ctr", key, Buffer.concat([ivBytes, Buffer.alloc(8)]));
+            const subs = [];
+            for (let n = p; n < p + size;) {
+                const len = body.readUInt32BE(n), clearBytes = 5, prot = len - 1;
+                const enc = cipher.update(body.subarray(n + clearBytes, n + 4 + len));
+                enc.copy(body, n + clearBytes);
+                subs.push([clearBytes, prot]);
+                n += 4 + len;
+            }
+            p += size;
+            const entry = Buffer.alloc(8 + 2 + subs.length * 6);
+            ivBytes.copy(entry, 0);
+            entry.writeUInt16BE(subs.length, 8);
+            subs.forEach(([c, e], k) => { entry.writeUInt16BE(c, 10 + k * 6); entry.writeUInt32BE(e, 12 + k * 6); });
+            aux.push(entry);
+        }
+        const saiz = full("saiz", 0, 0, Buffer.from([0]), u32(count), Buffer.from(aux.map((a) => a.length)));
+        const senc = full("senc", 0, 0x2, u32(count), ...aux);
+        const build = (saioOffset, dataOffset) => {
+            const t = Buffer.from(trun);
+            t.writeInt32BE(dataOffset, 8);
+            const others = parts.filter((c) => c.type !== "trun").map((c) => box(c.type, c.data));
+            return box("moof", box("mfhd", mfhd.data), box("traf", ...others, box("trun", t), saiz, full("saio", 0, 0, u32(1), u32(saioOffset)), senc));
+        };
+        const first = build(0, 0);
+        const sencAt = first.indexOf(Buffer.from("senc")) - 4;
+        const moof = build(sencAt + 16, first.length + 8);
+        out.push(moof, box("mdat", body));
+    }
+    return Buffer.concat(out);
 }
 
 // --- The check --------------------------------------------------------
@@ -3728,10 +3914,14 @@ async function check(base, port, site, adSite) {
             await frameWait(`(() => { const b = ${box}; return !!b && !/nothing to play|own player/.test(b.textContent || ""); })()`, `the ${kind} origin's frame's stream known to its box`, 30000);
             await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
             const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
-            await waitFor(`!!${play} && /Paused/.test(document.getElementById("go_menu_media")?.innerText || "")`, "Play offered in the menu, the stream ready", 30000).catch(async (err) => {
+            // Started by its page's own play() (passed on: goframestreams.go's
+            // plays, or its page's agent's), or, autoplay paused by a step
+            // before, by the menu's Play.
+            const going = `[...document.querySelectorAll("video")].some((v) => v.src.startsWith("blob:") && (!v.paused || v.ended) && v.currentTime > 0.3)`;
+            await waitFor(`${going} || (!!${play} && /Paused/.test(document.getElementById("go_menu_media")?.innerText || ""))`, "the stream playing, or Play offered in the menu, the stream ready", 30000).catch(async (err) => {
                 throw new Error(`${err.message}: the menu: ${await ev(`document.getElementById("go_menu_media")?.innerText.replaceAll("\\n", " | ")`)}`);
             });
-            await ev(`${play}.click()`);
+            if (!(await ev(going))) await ev(`${play}?.click()`);
             // (Its clip is 3 s: played, or played to its end.)
             await waitFor(`(() => { const v = document.querySelector("video"); return !!v && v.src.startsWith("blob:") && (!v.paused || v.ended) && v.currentTime > 0.3; })()`, `the ${kind} origin's frame's stream playing under its box`, 30000).catch(async (err) => {
                 throw new Error(`${err.message}: ${await ev(`JSON.stringify([...document.querySelectorAll("video")].map((v) => ({ src: v.src.slice(0, 40), rs: v.readyState, t: v.currentTime, p: v.paused, e: v.ended })))`)}; the menu: ${await ev(`document.getElementById("go_menu_media")?.innerText.replaceAll("\\n", " | ")`)}`);
@@ -3754,8 +3944,54 @@ async function check(base, port, site, adSite) {
             });
             await ev(`${play}.click()`);
             await waitFor(`(() => { const v = document.querySelector("video"); return !!v && v.src.startsWith("blob:") && (!v.paused || v.ended) && v.currentTime > 0.3 && v.duration > 1; })()`, `the ${kind}'s Blob video playing under its box`, 30000);
+            // Saved from the menu: its file, as the page had it.
+            if (process.env.GO_NO_FS !== "1" && kind === "page") {
+                await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+                const save = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Save /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
+                await waitFor(`!!${save}`, "Save offered for the Blob's file", 15000);
+                await ev(`${save}.click()`);
+                const said = `[...document.querySelectorAll("#go_menu_media li .note")].map((n) => n.textContent).join(" ")`;
+                await waitFor(`/Saved .+ into Downloads/.test(${said})`, "its file saved", 30000).catch(async (err) => { throw new Error(`${err.message}: ${await ev(said)}`); });
+                const name = (await ev(said)).match(/Saved (.+?) into Downloads/)[1];
+                if (!/^stream.*\.mp4$/.test(name)) throw new Error(`saved as ${name}`);
+                if (process.env.GO_DOWNLOADS) {
+                    const want = Buffer.from(await (await fetch(site + "clip.mp4")).arrayBuffer());
+                    if (!readFileSync(join(process.env.GO_DOWNLOADS, name)).equals(want)) throw new Error(`${name} isn't the page's file`);
+                }
+            }
             await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         }
+    });
+
+    if (process.env.GO_NO_FS !== "1") await step("files the page makes to be downloaded (a link with download to a blob: or data: address): saved into Downloads after a press, asked first long after one", async () => {
+        await goTo(site + "export.html", "Export");
+        await frameWait(`!!document.getElementById("later")`, "its buttons");
+        const notice = `document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p").textContent`;
+        const saved = async (re, what) => {
+            await waitFor(`${re}.test(${notice})`, what, 30000).catch(async (err) => { throw new Error(`${err.message}: the notice: ${await ev(notice)}`); });
+            return (await ev(notice)).match(/Saved (.+?) into Downloads/)[1];
+        };
+        const holds = (name, want) => {
+            if (process.env.GO_DOWNLOADS && !readFileSync(join(process.env.GO_DOWNLOADS, name)).equals(Buffer.from(want))) throw new Error(`${name} isn't what the page made`);
+        };
+        const csv = "name,count\nalpha,1\nbeta,2\n";
+        // Its button's CSV (a link made, clicked, its address let go).
+        await frameClick("#csv");
+        const first = await saved(/Saved report.*\.csv into Downloads/, "the CSV saved");
+        holds(first, csv);
+        // A picture's link, clicked: saved, the page not left.
+        await ev(`document.getElementById("go_notice").hidden = true`);
+        await frameClick("#png");
+        holds(await saved(/Saved dot.*\.png into Downloads/, "the picture saved"), png(2, 2, [10, 200, 90]));
+        if (!(await ev(`document.title.startsWith("Export")`))) throw new Error("the page was left for its download");
+        // Made long after its press: asked first, saved once allowed.
+        await ev(`document.getElementById("go_notice").hidden = true`);
+        await frameClick("#later");
+        await waitFor(`/wants to save report\.csv/.test(${notice})`, "asked first", 20000).catch(async (err) => { throw new Error(`${err.message}: the notice: ${await ev(notice)}`); });
+        await ev(`document.querySelector("#go_notice .primary").click()`);
+        const later = await saved(/Saved report.*\.csv into Downloads/, "saved once allowed");
+        if (later === first) throw new Error("saved over the first");
+        holds(later, csv);
     });
 
     await step("a scrolling video feed releases old players and honors the page's dimensions", async () => {
@@ -4447,6 +4683,155 @@ async function check(base, port, site, adSite) {
         await setting("notifications-block");
         await perm("load granted now denied query denied", "blocked in Site controls, the page told");
         await setting("notifications-default");
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's encrypted media (EME, Clear Key): its keys and session the person's browser's, its license the page's, its stream played; and an embedded page's, of its origin and of another, at once, each its own; none offered to save", async () => {
+        const secureAt = async (base, page, title) => {
+            await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(base.replace(/^http:/, "https:"))} + ${JSON.stringify(page)}; i.form.requestSubmit(); })()`);
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)}) || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+            if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)})`, "the secure page", 30000);
+        };
+        const log = () => frame(`document.getElementById("log")?.textContent ?? ""`);
+        const played = `[...document.querySelectorAll("video")].some((v) => v.mediaKeys && v.currentTime > 0.5 && !v.error)`;
+        // Autoplay on (a step before may have paused it, which holds back a
+        // page's play()): each page's own play() starts its player.
+        const autoplayWas = await ev(`document.getElementById("go_menu_autoplay").getAttribute("aria-checked")`);
+        if (autoplayWas !== "true") await ev(`document.getElementById("go_menu_autoplay").click()`);
+        await goTo(site + "index.html", "Fixture");
+        await secureAt(site, "eme.html", "EME");
+        await frameWait(`/key usable/.test(document.getElementById("log")?.textContent ?? "")`, "its key usable", 30000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await log()}`); });
+        if (!/^access org\.w3\.clearkey;keys;.*encrypted cenc;.*message;.*updated;/.test(await log())) throw new Error(`the page's EME: ${await log()}`);
+        const players = () => ev(`JSON.stringify([...document.querySelectorAll("video")].map((v) => [!!v.mediaKeys, Math.round(v.currentTime * 10) / 10, v.error?.message ?? null, v.readyState]))`);
+        // None offered to save (their DRM's), in the menu's list of them.
+        const noSave = async (count) => {
+            await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+            try {
+                await waitFor(`document.querySelectorAll("#go_menu_media li").length >= ${count}`, "the players in the menu", 15000);
+                const saves = await ev(`JSON.stringify([...document.querySelectorAll("#go_menu_media li .acts button")].map((b) => b.getAttribute("aria-label") || "").filter((l) => /^(Download|Save)/.test(l)))`);
+                if (saves !== "[]") throw new Error(`encrypted streams offered to save: ${saves}`);
+            } finally {
+                await ev(`document.getElementById("go_menu_panel").hidden || document.getElementById("go_menu").click()`);
+            }
+        };
+        await waitFor(played, "its stream played by its own play(), with the person's browser's keys", 30000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await players()}; the page: ${await log()}`); });
+        // In embedded pages: one of its origin (read by its agent), one of
+        // another (https, its certificate excepted as the page's is), with
+        // the page's own player, all at once.
+        await goTo(site + "index.html", "Fixture");
+        await secureAt(adSite, "index.html", "Fixture");
+        await secureAt(site, "emeframe.html?other=" + encodeURIComponent(adSite.replace(/^http:/, "https:")), "EME frames");
+        const inner = (id) => frame(`document.getElementById(${JSON.stringify(id)})?.shadowRoot?.querySelector("#log")?.textContent ?? ""`);
+        const logs = async () => `the page: ${await log()}; its origin's frame: ${await inner("same")}; another's: ${await inner("other")}`;
+        const usable = (text) => /^access org\.w3\.clearkey;keys;.*encrypted cenc;.*message;.*updated;.*key usable;/.test(text);
+        await frameWait(`["same", "other"].every((id) => /key usable/.test(document.getElementById(id)?.shadowRoot?.querySelector("#log")?.textContent ?? "")) && /key usable/.test(document.getElementById("log")?.textContent ?? "")`, "each player's key usable", 45000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await logs()}; the players: ${await players()}`); });
+        for (const text of [await log(), await inner("same"), await inner("other")]) if (!usable(text)) throw new Error(`a player's EME: ${await logs()}`);
+        // Each started by its page's own play() (an embedded page's too:
+        // goframestreams.go's plays, or its page's agent's), with its own keys.
+        await waitFor(`[...document.querySelectorAll("video")].filter((v) => v.mediaKeys && v.currentTime > 0.5 && !v.error).length >= 3`, "the three played, each with its keys", 30000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await players()}; ${await logs()}`); });
+        if (await ev(`new Set([...document.querySelectorAll("video")].filter((v) => v.mediaKeys).map((v) => v.mediaKeys)).size < 3`)) throw new Error("players share their keys");
+        await noSave(3);
+        if (autoplayWas !== "true") await ev(`document.getElementById("go_menu_autoplay").click()`);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's location: once, and followed (watchPosition) as it changes, the person told while it is; stopped by the page (clearWatch), or by the person", async () => {
+        await cdp("Browser.grantPermissions", { origin, permissions: ["geolocation"] });
+        const at = (latitude) => cdp("Emulation.setGeolocationOverride", { latitude, longitude: 103.8, accuracy: 10 });
+        await at(1.5);
+        await goTo(site + "index.html", "Fixture");
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:") + "where.html")}; i.form.requestSubmit(); })()`);
+        await waitFor(`document.title.startsWith("Where") || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+        if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+        await waitFor(`document.title.startsWith("Where")`, "the secure page", 30000);
+        await frameWait(`!!document.getElementById("follow")`, "its buttons");
+        const log = () => frame(`document.getElementById("log").textContent`);
+        const logged = (re, what) => frameWait(`${re}.test(document.getElementById("log")?.textContent ?? "")`, what, 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await log()}`); });
+        const asked = async (allow) => {
+            await waitFor(`!document.getElementById("go_device").hidden`, "the person asked", 15000);
+            await ev(`document.querySelector("#go_device ${allow ? ".allow" : ".refuse"}").click()`);
+        };
+        // Once.
+        await frameClick("#once");
+        await asked(true);
+        await logged(/once 1\.5;/, "its position, once");
+        // Followed: asked, then each position as it changes, the person told.
+        await frameClick("#follow");
+        await waitFor(`/follow your location/.test(document.getElementById("go_device_text").textContent)`, "asked to follow", 15000);
+        await asked(true);
+        await logged(/pos 1\.5;/, "its first position");
+        await waitFor(`!document.getElementById("go_location").hidden && /is following your location/.test(document.getElementById("go_location").textContent)`, "the person told it's followed", 10000);
+        await at(2.5);
+        await logged(/pos 2\.5;/, "a position as it changed");
+        // Cleared by the page: not followed, the person's bar gone.
+        await frameClick("#stop");
+        await logged(/cleared;/, "cleared");
+        await waitFor(`document.getElementById("go_location").hidden`, "the bar gone, the page having stopped it", 15000);
+        await at(3.5);
+        await sleep(2000);
+        if (/pos 3\.5/.test(await log())) throw new Error(`followed after the page cleared it: ${await log()}`);
+        // Followed again, stopped by the person: the page told (its error).
+        await frameClick("#follow");
+        await asked(true);
+        await logged(/pos 3\.5;/, "followed again");
+        await waitFor(`!document.getElementById("go_location").hidden`, "the bar again", 10000);
+        await ev(`document.querySelector("#go_location .stop").click()`);
+        await logged(/error 1;/, "the page told the person stopped it");
+        await waitFor(`document.getElementById("go_location").hidden`, "the bar gone", 10000);
+        await at(4.5);
+        await sleep(2000);
+        if (/pos 4\.5/.test(await log())) throw new Error(`followed after the person stopped it: ${await log()}`);
+        await cdp("Emulation.clearGeolocationOverride");
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("files the page shares (navigator.share({ files })): asked once they've come, given to this browser's share sheet as the page made them; a link too", async () => {
+        // This browser's share sheet stood in for (headless, it has none),
+        // there as /go loads: its capabilities are told as a tab connects.
+        const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+            if (window !== top) return;
+            navigator.canShare = (d) => (d?.files ?? []).every((f) => f instanceof File);
+            navigator.share = async (d) => {
+                const files = await Promise.all((d.files ?? []).map(async (f) => ({ name: f.name, type: f.type, size: f.size, bytes: Array.from(new Uint8Array(await f.arrayBuffer())) })));
+                window.__shared = JSON.stringify({ title: d.title, url: d.url, files });
+            };
+        })()` });
+        const reload = async () => {
+            await ev(`(() => { window.__leaving = true; location.reload(); })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && document.getElementById("go_progress")?.hidden`, "/go again", 30000);
+        };
+        try {
+            await reload();
+            await goTo(site + "index.html", "Fixture");
+            await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:") + "share.html")}; i.form.requestSubmit(); })()`);
+            await waitFor(`document.title.startsWith("Share") || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+            if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+            await waitFor(`document.title.startsWith("Share")`, "the secure page", 30000);
+            await frameWait(`/canShare true;/.test(document.getElementById("log")?.textContent ?? "")`, "files said shareable", 15000);
+            await frameClick("#share");
+            await waitFor(`!document.getElementById("go_device").hidden && /share sheet with 2 files/.test(document.getElementById("go_device_text").textContent)`, "asked, its files come", 30000)
+                .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`document.getElementById("go_device_text").textContent`)}; the page: ${await frame(`document.getElementById("log").textContent`)}`); });
+            await ev(`document.querySelector("#go_device .allow").click()`);
+            await frameWait(`/shared;/.test(document.getElementById("log")?.textContent ?? "")`, "the page told it's shared", 15000);
+            const shared = JSON.parse(await ev(`window.__shared`));
+            const want = { title: "Notes", files: [{ name: "note.txt", type: "text/plain", size: 19, bytes: Array.from(Buffer.from("hello from the page")) }, { name: "data.bin", type: "application/octet-stream", size: 5, bytes: [1, 2, 3, 4, 5] }] };
+            if (JSON.stringify(shared) !== JSON.stringify(want)) throw new Error(`shared ${JSON.stringify(shared)}`);
+            // A link, as before.
+            await frameClick("#link");
+            await waitFor(`!document.getElementById("go_device").hidden`, "asked to share a link", 15000);
+            await ev(`document.querySelector("#go_device .allow").click()`);
+            await frameWait(`/shared link;/.test(document.getElementById("log")?.textContent ?? "")`, "the link shared", 15000);
+            if (JSON.parse(await ev(`window.__shared`)).url !== "https://example.com/") throw new Error(`shared ${await ev(`window.__shared`)}`);
+        } finally {
+            await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+            await reload().catch(() => {});
+        }
         await goTo(site + "index.html", "Fixture");
     });
 
