@@ -4326,31 +4326,33 @@ async function check(base, port, site, adSite) {
         await waitFor(`document.querySelectorAll("#frames iframe").length === ${before + 1}`, "a private tab");
         const p1 = before;
         await connected(p1, "the private tab, connected");
-        const marked = await ev(`(() => { const d = ${tabDoc(p1)}; return document.querySelectorAll(".tab")[${p1}].classList.contains("private") && d.documentElement.classList.contains("go-private") && d.getElementById("go_back").classList.contains("private") && /^Private tab/.test(d.querySelector("#go_start h1").textContent); })()`);
+        const marked = await ev(`(() => { const d = ${tabDoc(p1)}; return document.querySelectorAll(".tab")[${p1}].classList.contains("private") && d.documentElement.classList.contains("go-private") && /^Private tab/.test(d.querySelector("#go_start h1").textContent); })()`);
         if (!marked) throw new Error("the private tab isn't marked as one");
-        // Full screen: Back's own arrow, not the private mark (the bar's
-        // colour says so); left, the mark again.
-        const backIs = `(() => { const b = ${tabDoc(p1)}.getElementById("go_back"); return (b.classList.contains("private") ? "private " : "") + b.querySelector("path").getAttribute("d"); })()`;
+        // Its bar: Back's own arrow, violet (its disabled tint, with nothing
+        // to go back to), the address field tinted, its empty text saying
+        // so; never a glyph in Back's place: wide, full screen, or narrow.
+        // A normal tab's: the arrow, not tinted.
+        const bar = (n) => ev(`(() => { const d = ${tabDoc(n)}, a = d.getElementById("go_url"), b = d.getElementById("go_back"); return JSON.stringify({ back: b.querySelector("path").getAttribute("d"), color: getComputedStyle(b).color, field: getComputedStyle(a).borderColor, placeholder: a.placeholder }); })()`);
+        const privateBar = async (where) => {
+            const got = await bar(p1), n = JSON.parse(got);
+            if (n.back !== "M15 5l-7 7 7 7" || !["rgb(196, 181, 253)", "rgb(139, 124, 184)"].includes(n.color) || n.field !== "rgb(139, 111, 214)" || n.placeholder !== "Private · address or search") throw new Error(`a private tab's bar, ${where}: ${got}`);
+        };
+        await privateBar("wide");
+        const normal = JSON.parse(await bar(0));
+        if (normal.back !== "M15 5l-7 7 7 7" || ["rgb(196, 181, 253)", "rgb(139, 124, 184)"].includes(normal.color) || normal.field === "rgb(139, 111, 214)" || /Private/.test(normal.placeholder)) throw new Error(`a normal tab's bar: ${JSON.stringify(normal)}`);
         await ev(`(() => { const d = ${tabDoc(p1)}; d.getElementById("go_menu").click(); d.getElementById("go_menu_fullscreen").click(); })()`);
         await waitFor(`${tabDoc(p1)}.documentElement.classList.contains("go-fullscreen")`, "the private tab full screen", 10000);
-        if ((await ev(backIs)) !== "M15 5l-7 7 7 7") throw new Error(`Back, full screen: ${await ev(backIs)}`);
+        if ((await ev(`${tabDoc(p1)}.querySelector("#go_back path").getAttribute("d")`)) !== "M15 5l-7 7 7 7") throw new Error("Back, full screen, isn't its arrow");
         await ev(`${tabDoc(p1)}.getElementById("go_exit_fullscreen").click()`);
         await waitFor(`!${tabDoc(p1)}.documentElement.classList.contains("go-fullscreen")`, "the private tab out of full screen", 10000);
-        if (!/^private /.test(await ev(backIs))) throw new Error(`Back, out of full screen: ${await ev(backIs)}`);
-        // A phone's bar (narrow): Back's own arrow, tinted (its disabled tint,
-        // with nothing to go back to), and the address
-        // field tinted, its empty text saying so; wide again, the mark.
+        await privateBar("out of full screen");
         await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
         try {
-            await waitFor(`${tabDoc(p1)}.documentElement.classList.contains("go-private-compact")`, "the private tab's narrow bar", 10000);
-            const narrow = await ev(`(() => { const d = ${tabDoc(p1)}, a = d.getElementById("go_url"); return JSON.stringify({ back: ${backIs}, color: getComputedStyle(d.getElementById("go_back")).color, field: getComputedStyle(a).borderColor, placeholder: a.placeholder }); })()`);
-            const n = JSON.parse(narrow);
-            if (n.back !== "M15 5l-7 7 7 7" || !["rgb(196, 181, 253)", "rgb(139, 124, 184)"].includes(n.color) || n.field !== "rgb(139, 111, 214)" || n.placeholder !== "Private · address or search") throw new Error(`a private tab's narrow bar: ${narrow}`);
+            await sleep(500);
+            await privateBar("narrow");
         } finally {
             await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
         }
-        await waitFor(`!${tabDoc(p1)}.documentElement.classList.contains("go-private-compact")`, "the private tab's wide bar again", 10000);
-        if (!/^private /.test(await ev(backIs))) throw new Error(`Back, wide again: ${await ev(backIs)}`);
         if ((await sent(p1)) !== "nothing") throw new Error("a private tab was given the account's cookie");
         if ((await ev("document.title")) !== "Private – Browser") throw new Error(`the page's title names the private tab's page: ${await ev("document.title")}`);
         // Its own sign-in: kept for it, and for another private tab (made
@@ -4404,6 +4406,65 @@ async function check(base, port, site, adSite) {
         // (The account's cookie forgotten: the steps after's.)
         await ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-cookies-forget", name: ${JSON.stringify(host)} }); t.close(); })`);
         await ev(`(() => { window.__leaving = true; location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
+        await waitFor(`!window.__leaving && document.readyState === "complete" && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "a tab on its own again, connected", 30000);
+    });
+
+    await step("starting tab private (Settings' Starting tab): the browser's first tab private; New tab still a normal tab, New private tab (the strip's and the menu's) a private one; a normal tab's window normal", async () => {
+        const tabDoc = (n) => `document.querySelectorAll("#frames iframe")[${n}]?.contentDocument`;
+        const inTab = (n, expr) => ev(`((document) => document ? (${expr}) : null)(${tabDoc(n)})`);
+        const connected = (n, what) => waitFor(`((d) => d?.readyState === "complete" && !!d.getElementById("go_url") && d.getElementById("go_progress")?.hidden)(${tabDoc(n)})`, what, 30000);
+        const kind = (n) => ev(`(() => { const strip = document.querySelectorAll(".tab")[${n}].classList.contains("private"), inTab = ${tabDoc(n)}.documentElement.classList.contains("go-private"); return strip === inTab ? (strip ? "private" : "normal") : "mixed"; })()`);
+        const tabs = (n, what) => waitFor(`document.querySelectorAll("#frames iframe").length === ${n}`, what, 30000);
+        const setting = (on) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", setting: ${JSON.stringify(on ? "tabs-private" : "tabs-normal")} }); t.close(); return t.reply.privateDefault; })`);
+        try {
+            if ((await setting(true)) !== true) throw new Error("the starting tab not said private");
+            // The browser opened (no tabs kept): its first tab private.
+            await ev(`(() => { window.__leaving = true; sessionStorage.clear(); location.href = ${JSON.stringify(new URL("go/", base).href)}; })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && document.querySelectorAll("#frames iframe").length === 1`, "the tabs page", 30000);
+            await connected(0, "its first tab, connected");
+            if ((await kind(0)) !== "private") throw new Error(`the first tab is ${await kind(0)}`);
+            // Each button its own kind, whatever the browser started in.
+            const labels = await ev(`document.getElementById("new").title + " | " + document.getElementById("new_private").getAttribute("aria-label")`);
+            if (!/^New tab \| New private tab$/.test(labels)) throw new Error(`the strip's buttons: ${labels}`);
+            await ev(`document.getElementById("new").click()`);
+            await tabs(2, "New tab's tab");
+            await connected(1, "New tab's tab, connected");
+            if ((await kind(1)) !== "normal") throw new Error(`New tab opened a ${await kind(1)} tab`);
+            await ev(`document.getElementById("new_private").click()`);
+            await tabs(3, "New private tab's tab");
+            await connected(2, "New private tab's tab, connected");
+            if ((await kind(2)) !== "private") throw new Error(`New private tab opened a ${await kind(2)} tab`);
+            await inTab(1, `(() => { document.getElementById("go_menu").click(); document.getElementById("go_menu_private").click(); return true; })()`);
+            await tabs(4, "the menu's New private tab");
+            await connected(3, "the menu's tab, connected");
+            if ((await kind(3)) !== "private") throw new Error(`the menu's New private tab opened a ${await kind(3)} tab`);
+            await ev(`document.querySelectorAll(".tab .close")[3].click()`);
+            await tabs(3, "that tab closed");
+            // A window a normal tab's page opens: normal, the starting tab
+            // private or not.
+            await ev(`document.querySelectorAll(".tab")[1].click()`);
+            await inTab(1, `(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site + "opener.html")}; i.form.requestSubmit(); return true; })()`);
+            await waitFor(`/^Opener/.test(document.querySelectorAll(".tab .title")[1]?.textContent || "")`, "the opener", 30000);
+            await waitFor(`${tabDoc(1)}.getElementById("go_view").getAttribute("aria-busy") !== "true"`, "the opener shown", 30000);
+            await sleep(1500);
+            const at = await ev(`(() => { const f = document.querySelectorAll("#frames iframe")[1]; const r = f.getBoundingClientRect(), v = f.contentDocument.getElementById("go_view").getBoundingClientRect(); return { x: r.x + v.x + v.width / 2, y: r.y + v.y + v.height / 2 }; })()`);
+            for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+            await waitFor(`document.querySelectorAll("#frames iframe").length === 4 || !${tabDoc(1)}.getElementById("go_popup").hidden`, "the window opened, or asked about", 30000);
+            if ((await ev(`document.querySelectorAll("#frames iframe").length`)) === 3) await inTab(1, `(document.querySelector("#go_popup .open").click(), true)`);
+            await waitFor(`document.querySelectorAll("#frames iframe").length === 4 && /^Second/.test(document.querySelectorAll(".tab .title")[3]?.textContent || "")`, "the opened window, in a tab of its own", 30000);
+            await connected(3, "the opened window, connected");
+            if ((await kind(3)) !== "normal") throw new Error(`a window a normal tab opened is ${await kind(3)}`);
+            // Settings shows it (a tab's), and sets it back.
+            await inTab(1, `(() => { document.getElementById("go_menu").click(); document.getElementById("go_menu_settings").click(); return true; })()`);
+            const settingsDoc = `${tabDoc(1)}.querySelector("#go_settings iframe")?.contentDocument`;
+            await waitFor(`((d) => { const s = d?.getElementById("tabs_default"); return !!s && !s.disabled && s.value === "private"; })(${settingsDoc})`, "Settings' Starting tab, private", 30000);
+            await ev(`(() => { const s = (${settingsDoc}).getElementById("tabs_default"); s.value = "normal"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+            await waitFor(`/starts in a normal tab/.test((${settingsDoc}).getElementById("done").textContent)`, "Settings saying it's normal again", 15000);
+            if ((await setting(false)) !== false) throw new Error("not normal again");
+        } finally {
+            await setting(false).catch(() => {});
+        }
+        await ev(`(() => { window.__leaving = true; sessionStorage.clear(); location.href = ${JSON.stringify(new URL("go/tab", base).href)}; })()`);
         await waitFor(`!window.__leaving && document.readyState === "complete" && !!document.getElementById("go_url") && document.getElementById("go_progress").hidden`, "a tab on its own again, connected", 30000);
     });
 

@@ -47,6 +47,10 @@ type goSiteSettings struct {
 	// Settings). An id from goSearchEngines, or "custom" (searchURL: an
 	// address with %s for the words, goSearchTemplate); default duckduckgo.
 	searchEngine, searchURL string
+	// Starting tab private (Settings): the first tab /go opens is a private
+	// one (goincognito.go; go-tabs.js). New tab and New private tab open
+	// their own kinds, and a window a page opens is its tab's, either way.
+	privateDefault bool
 	// DNS over HTTPS (godoh.go; Settings): "" (off), a goDoHPresets name,
 	// or "custom" (dohURL).
 	doh, dohURL string
@@ -80,10 +84,12 @@ type goSiteSettingsFile struct {
 	ThemeDefault string            `json:"themeDefault,omitempty"`
 	SearchEngine string            `json:"searchEngine,omitempty"`
 	SearchURL    string            `json:"searchURL,omitempty"`
-	DoH          string            `json:"doh,omitempty"`
-	DoHURL       string            `json:"dohURL,omitempty"`
-	Hosts        []goHostRecord    `json:"hosts,omitempty"`
-	Keep         []string          `json:"keep,omitempty"`
+	// The first tab private.
+	PrivateDefault bool           `json:"privateDefault,omitempty"`
+	DoH            string         `json:"doh,omitempty"`
+	DoHURL         string         `json:"dohURL,omitempty"`
+	Hosts          []goHostRecord `json:"hosts,omitempty"`
+	Keep           []string       `json:"keep,omitempty"`
 	// Notifications allowed or blocked, by site.
 	Notifications map[string]string `json:"notifications,omitempty"`
 }
@@ -182,6 +188,7 @@ func newGoSiteSettings(file string) *goSiteSettings {
 	if goSearchEngines[f.SearchEngine] {
 		s.searchEngine = f.SearchEngine
 	}
+	s.privateDefault = f.PrivateDefault
 	if t, err := goSearchTemplate(f.SearchURL); err == nil {
 		s.searchURL = t
 		if f.SearchEngine == "custom" {
@@ -335,7 +342,7 @@ func (s *goSiteSettings) save() {
 		return
 	}
 	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts,
-		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep,
+		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, PrivateDefault: s.privateDefault, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep,
 		Notifications: s.notifications}
 	if s.noReferer {
 		no := false
@@ -535,6 +542,8 @@ func (s *goSiteSettings) set(site, setting string) error {
 			s.themeDefault = strings.TrimPrefix(setting, "theme-")
 		case strings.HasPrefix(setting, "search-") && goSearchEngines[strings.TrimPrefix(setting, "search-")]:
 			s.searchEngine = strings.TrimPrefix(setting, "search-")
+		case setting == "tabs-private" || setting == "tabs-normal":
+			s.privateDefault = setting == "tabs-private"
 		default:
 			return errors.New("That isn't a browser-wide setting.")
 		}
@@ -655,7 +664,7 @@ func (s *goSiteSettings) report() map[string]any {
 	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": maps.Clone(s.popups), "referer": !s.noReferer,
 		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
 		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
-		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL,
+		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL, "privateDefault": s.privateDefault,
 		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...), "keep": slices.Clone(s.keep),
 		"notifications": maps.Clone(s.notifications)}
 }

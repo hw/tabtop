@@ -12,6 +12,7 @@
     <p id="done" role="status" aria-live="polite"></p>
     <!-- (Buttons, not links: a fragment would be an entry in the frame's history.) -->
     <nav id="jump" aria-label="Sections">
+        <button type="button" data-to="sec_tabs">Tabs</button>
         <button type="button" data-to="sec_search">Search</button>
         <button type="button" data-to="sec_network">Network</button>
         <button type="button" data-to="sec_ads">Ad blocking</button>
@@ -20,6 +21,21 @@
     </nav>
 
     <section id="browser_settings" aria-label="Settings">
+        <h2 id="sec_tabs" class="section-head" tabindex="-1">Tabs</h2>
+        <div class="card" id="tabs_card">
+            <h3>Starting tab</h3>
+            <div class="question">
+                <label for="tabs_default">Start the browser in<span class="hint">The tab it opens with. New tab still opens a normal tab and New private tab a private one; a window a page opens is the same kind as its tab.</span></label>
+                <span class="select"><select id="tabs_default" disabled>
+                    <option value="normal">Normal tabs</option>
+                    <option value="private">Private tabs</option>
+                </select></span>
+            </div>
+            <details class="more"><summary>More</summary>
+                <p class="hint">A private tab's sites' cookies and data are kept apart from your other tabs', in memory only, and forgotten when the last private tab closes. No recent sites or page titles are kept on this device.</p>
+            </details>
+        </div>
+
         <h2 id="sec_search" class="section-head" tabindex="-1">Search</h2>
         <div class="card" id="search_engine_card">
             <h3>Search engine</h3>

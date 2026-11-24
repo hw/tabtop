@@ -15,6 +15,7 @@ setLoginTitle("Settings");
 
 let ads;
 let searchEngine = "duckduckgo", searchURL = "", searchPicked = null;
+let privateDefault = null;  // the browser starts in a private tab (null: not read yet)
 // DNS over HTTPS (godoh.go): "off", "cloudflare", "quad9" or "custom" (dohURL);
 // dohStatus: when it last answered, or why it didn't ({ok, error, at}).
 let doh = "off", dohURL = "", dohPicked = null, dohStatus = null;
@@ -26,6 +27,7 @@ const state = runner(render);
 const run = state.run;
 
 function render() {
+    renderTabs();
     renderSearch();
     renderDoH();
     renderHosts();
@@ -43,6 +45,22 @@ for (const b of document.querySelectorAll("#jump button")) {
         to.focus({ preventScroll: true });
     });
 }
+
+// --- Tabs --------------------------------------------------------------------
+
+function renderTabs() {
+    if (privateDefault !== null) $("tabs_default").value = privateDefault ? "private" : "normal";
+    $("tabs_default").disabled = state.busy || privateDefault === null;
+}
+// setTabs saves which kind of tab the browser starts in (its next start:
+// go-tabs.js reads it as it opens).
+function setTabs(on) {
+    return run(async () => {
+        const reply = await ask({ type: "go-settings-set", setting: on ? "tabs-private" : "tabs-normal" });
+        privateDefault = reply.privateDefault === true;
+    }, on ? "The browser starts in a private tab." : "The browser starts in a normal tab.");
+}
+$("tabs_default").addEventListener("change", () => setTabs($("tabs_default").value === "private"));
 
 // --- Search ------------------------------------------------------------------
 
@@ -485,6 +503,7 @@ function renderBackup() {
 function exported() {
     return {
         tabtop: "go-settings", version: 1,
+        privateDefault: !!privateDefault,
         searchEngine, searchURL: searchEngine === "custom" ? searchURL : undefined,
         doh, dohURL: doh === "custom" ? dohURL : undefined,
         hosts,
@@ -525,6 +544,10 @@ $("settings_file").addEventListener("change", async () => {
     };
     await run(async () => {
         say("Importing settings…");
+        if (typeof data.privateDefault === "boolean") await part("starting tab", async () => {
+            const r = await ask({ type: "go-settings-set", setting: data.privateDefault ? "tabs-private" : "tabs-normal" });
+            privateDefault = r.privateDefault === true;
+        });
         if (typeof data.searchEngine === "string") await part("search engine", async () => {
             if (data.searchEngine === "custom") {
                 const why = searchTemplateProblem(data.searchURL);
@@ -605,6 +628,7 @@ async function load() {
         if (dohURL && !$("doh_url").value) $("doh_url").value = dohURL;
     }
     dohStatus = settings?.dohStatus ?? null;
+    privateDefault = settings?.privateDefault === true;
     hosts = Array.isArray(settings?.hosts) ? settings.hosts : [];
 }
 run(load);

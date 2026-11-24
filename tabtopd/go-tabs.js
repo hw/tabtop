@@ -12,6 +12,10 @@
 // its title in the device's history). Which tabs are is said to each by
 // sessionStorage (tabtop-go-private:N), never in its frame's address.
 //
+// The first tab, as this page opens with none kept, is normal or private
+// as Settings says (Starting tab: privateDefault, from the server: gosites.go).
+// New tab always opens a normal tab, New private tab a private one.
+//
 // A window a page opens comes here (go.js's "popup") and opens in a tab of
 // its own (private, if the page's was), or, with as many tabs as may be, in
 // the one that opened it. An
@@ -19,6 +23,7 @@
 // own, or the history: it's handed over by message.
 
 import { session } from "../tabtop/tunnel.js";
+import { call } from "../tabtop/requests.js";
 import { nameTab } from "../tabtop/nav.js";
 
 const MAX_TABS = 6;  // the server's engines for a session (maxGoPerSession)
@@ -177,6 +182,17 @@ function counted() {
     $("new").title = full ? `At most ${MAX_TABS} tabs` : "New tab";
     $("new_private").title = full ? `At most ${MAX_TABS} tabs` : "New private tab: sites' cookies and data forgotten when the last private tab closes";
 }
+// privateDefault is whether the first tab is private (Settings' Starting tab),
+// as the server says: false if it can't be asked.
+async function privateDefault() {
+    try {
+        const t = await call({ type: "go-settings" });
+        t.close();
+        return t.reply?.privateDefault === true;
+    } catch {
+        return false;
+    }
+}
 compact.addEventListener("change", () => {
     document.body.classList.toggle("compact", compact.matches);
     counted();
@@ -313,7 +329,8 @@ const ids = Array.isArray(kept?.ids) ? kept.ids.filter((id) => Number.isSafeInte
 next = Number.isSafeInteger(kept?.next) ? kept.next : 1;
 const privateIds = new Set(Array.isArray(kept?.private) ? kept.private : []);
 for (const id of ids) open({ id, show: false, private: privateIds.has(id) });
-if (!tabs.length) open();
+// (The first tab's kind, as Settings says: read before it's made.)
+if (!tabs.length) open({ private: await privateDefault() });
 showTab(tabOf(kept?.shown) ?? tabs[0]);
 if (linked) {
     let typed = linked;

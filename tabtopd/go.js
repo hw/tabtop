@@ -187,18 +187,13 @@ const ICONS = {
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
-// A private tab's Back wears its mark (go.html's bar has no room for
-// another): still Back, said so by its name. Full screen, it's Back's own
-// arrow (showScreenMode): the bar's colour still says private. Compact (a
-// phone's bar, tight), Back's own arrow too, tinted violet, and the address
-// field (go-private-compact, go.html) and its empty text say so instead.
+// A private tab says so in its bar (go-private, go.html): its edge, Back's
+// arrow and the address field tinted violet, the field's empty text
+// "Private", never a glyph in Back's place (the tabs' strip marks it too,
+// on a wide screen). Back is Back's own arrow, said private by its name.
 function showBack() {
-    const compact = privateTab && compactView.matches;
-    const marked = privateTab && !screenMode && !compact;
-    back.innerHTML = icon(marked ? "private" : "back");
-    back.classList.toggle("private", marked);
-    document.documentElement.classList.toggle("go-private-compact", compact);
-    address.placeholder = compact ? "Private · address or search" : "Address, or words to search for";
+    back.innerHTML = icon("back");
+    address.placeholder = privateTab ? "Private · address or search" : "Address, or words to search for";
 }
 if (privateTab) {
     back.title = "Back (Alt+←): a private tab";
