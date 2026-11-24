@@ -189,11 +189,16 @@ const ICONS = {
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 // A private tab's Back wears its mark (go.html's bar has no room for
 // another): still Back, said so by its name. Full screen, it's Back's own
-// arrow (showScreenMode): the bar's colour still says private.
+// arrow (showScreenMode): the bar's colour still says private. Compact (a
+// phone's bar, tight), Back's own arrow too, tinted violet, and the address
+// field (go-private-compact, go.html) and its empty text say so instead.
 function showBack() {
-    const marked = privateTab && !screenMode;
+    const compact = privateTab && compactView.matches;
+    const marked = privateTab && !screenMode && !compact;
     back.innerHTML = icon(marked ? "private" : "back");
     back.classList.toggle("private", marked);
+    document.documentElement.classList.toggle("go-private-compact", compact);
+    address.placeholder = compact ? "Private · address or search" : "Address, or words to search for";
 }
 if (privateTab) {
     back.title = "Back (Alt+←): a private tab";
@@ -215,23 +220,27 @@ const desktopKey = "tabtop-go-desktop" + (tabId ? ":" + tabId : "");
 // mobile, another's desktop: phoneView, as the server's goPhone has it).
 let otherOn = false;
 try { otherOn = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
-const phoneView = () => navigator.maxTouchPoints > 0 && Math.min(Math.round(window.innerWidth), Math.round(window.innerHeight)) < 600;
-// Its glyph and name are the pages sites are asked for: a phone, Mobile; a
-// screen, Desktop. Not pressed, this device's own; pressed (highlighted),
-// switched to the other.
+// compactView: /go laid out for a phone (one Back, no tabs: the tabs'
+// page's compact too), a touch screen's or a window 600 pixels wide at
+// most; given mobile pages, as the server's goMobile has it.
+const compactView = matchMedia("(pointer: coarse), (max-width: 600px)");
+const phoneView = () => compactView.matches;
+// Its glyph and name are the other pages than this device's own, which it
+// switches to: a phone's (compact), Desktop; a computer's, Mobile. Pressed
+// (highlighted), switched to them; not, this device's own.
 function showDesktop() {
-    const mobile = phoneView() !== otherOn;
+    const other = phoneView() ? "desktop" : "mobile", name = other === "desktop" ? "Desktop" : "Mobile";
     desktop.querySelector("svg")?.remove();
-    desktop.insertAdjacentHTML("afterbegin", iconSVG(mobile ? "mobile" : "desktop"));
-    desktop.dataset.glyph = mobile ? "mobile" : "desktop";
-    desktop.querySelector(".caption").textContent = mobile ? "Mobile" : "Desktop";
+    desktop.insertAdjacentHTML("afterbegin", iconSVG(other));
+    desktop.dataset.glyph = other;
+    desktop.querySelector(".caption").textContent = name;
     desktop.setAttribute("aria-pressed", String(otherOn));
-    desktop.title = `${mobile ? "Mobile" : "Desktop"} pages: sites are asked for theirs (press for their ${mobile ? "desktop" : "mobile"} pages)`;
+    desktop.title = otherOn ? `${name} pages: sites are asked for theirs (press for this device's own)` : `Ask sites for their ${other} pages`;
 }
 showDesktop();
-// (A window resized from a phone's size to another's, or back: its pages
-// and so its name change with it, as the server's do.)
-addEventListener("resize", showDesktop);
+// (A window resized narrow, or wide again: its pages and so its name change
+// with it, as the server's do; and Back with it, showBack.)
+compactView.addEventListener("change", () => { showDesktop(); showBack(); });
 const menuForward = $("go_menu_forward");
 menuForward.insertAdjacentHTML("afterbegin", icon("forward"));
 menuForward.addEventListener("click", () => { openMenu(false); menu.focus(); goBy(1); });
@@ -1423,7 +1432,7 @@ function view() {
         sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
         // Touch, if this device has it: the page offers what it offers to
         // touch screens, and takes the touches given it.
-        touch: navigator.maxTouchPoints > 0, other: otherOn,
+        touch: navigator.maxTouchPoints > 0, compact: compactView.matches, other: otherOn,
         // Which way up the device is held: the page's screen.orientation and
         // (orientation: …) media queries follow it. Where the device doesn't
         // say, the window's shape.

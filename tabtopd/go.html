@@ -24,6 +24,12 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_bar #go_back.private { color: #d4c4fb; }
 #go_bar #go_back.private svg { width: 20px; height: 20px; }
 #go_bar #go_back.private:disabled { color: #9d8cc4; }
+/* Compact (a phone's bar, tight: go.js showBack): Back's own arrow, violet,
+   and the address field tinted, not a glyph of its own. */
+.go-private-compact #go_bar #go_back { color: #c4b5fd; }
+.go-private-compact #go_bar #go_back:disabled { color: #8b7cb8; }
+.go-private-compact #go_address input { background: #2a2338; border-color: #8b6fd6; }
+.go-private-compact #go_address input::placeholder { color: #a99bd0; }
 #go_menu_panel .item#go_menu_private[hidden] { display: none; }
 #go_bar button:hover:not(:disabled) { background: #3a3a3c; }
 #go_bar button:disabled { color: #6c6c70; cursor: default; }

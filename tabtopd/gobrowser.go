@@ -595,6 +595,10 @@ type goView struct {
 	SH int `json:"sh"`
 	// The person's device has touch: the page is told so, and given it.
 	Touch bool `json:"touch"`
+	// Compact: the person's /go is laid out for a phone (go.js's
+	// compactView: a touch screen, or a window 600 pixels wide at most),
+	// so it's given mobile pages (goMobile).
+	Compact bool `json:"compact"`
 	// Other: the person's switched to the other pages (the menu's Mobile
 	// or Desktop, go.js): a phone's desktop ones, another's mobile ones.
 	Other bool `json:"other"`

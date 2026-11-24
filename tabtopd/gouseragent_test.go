@@ -28,27 +28,11 @@ func TestGoPhoneProfile(t *testing.T) {
 	}
 }
 
-func TestGoPhone(t *testing.T) {
-	for _, c := range []struct {
-		v    goView
-		want bool
-	}{
-		{goView{Touch: true, SW: 390, SH: 844}, true},
-		{goView{Touch: true, SW: 844, SH: 390}, true},   // turned
-		{goView{Touch: true, SW: 820, SH: 1180}, false}, // a tablet
-		{goView{Touch: false, SW: 390, SH: 844}, false}, // a narrow window, no touch
-		{goView{Touch: true}, false},
-	} {
-		if got := goPhone(c.v); got != c.want {
-			t.Errorf("%+v: %v", c.v, got)
-		}
-	}
-}
-
-// TestGoMobile: a phone's given mobile pages, another view desktop ones;
-// each the other's once the person's switched (Other).
+// TestGoMobile: a compact view (a touch screen's, a narrow window's) is
+// given mobile pages, another desktop ones; each the other's once the
+// person's switched (Other).
 func TestGoMobile(t *testing.T) {
-	phone := goView{Touch: true, SW: 390, SH: 844}
+	phone := goView{Touch: true, Compact: true, SW: 390, SH: 844}
 	computer := goView{SW: 1280, SH: 800}
 	for _, c := range []struct {
 		v    goView

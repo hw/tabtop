@@ -2205,16 +2205,16 @@ async function check(base, port, site, adSite) {
             await ev(`document.getElementById("go_exit_fullscreen").click()`);
             await waitFor(`getComputedStyle(document.getElementById("go_bar")).display !== "none" && document.getElementById("go_menu_fullscreen").getAttribute("aria-pressed") === "false"`, "exiting full screen restores the toolbar");
             const toggleDesktop = () => ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_desktop").click();`);
-            // Its glyph and name the pages it's given, pressed once switched
-            // from the phone's own: Mobile; then Desktop, pressed.
+            // Its glyph and name the other pages, which it switches to: on a
+            // phone, Desktop; pressed (highlighted) once switched to them.
             const glyph = () => ev(`(() => { const b = document.getElementById("go_menu_desktop"); return b.querySelector(".caption").textContent === (b.dataset.glyph === "mobile" ? "Mobile" : "Desktop") ? b.dataset.glyph + (b.getAttribute("aria-pressed") === "true" ? " pressed" : "") : "a caption not its mode's"; })()`);
-            if ((await glyph()) !== "mobile") throw new Error(`a phone's mobile pages shown as ${await glyph()}`);
+            if ((await glyph()) !== "desktop") throw new Error(`a phone's mobile pages shown as ${await glyph()}`);
             await toggleDesktop();
             await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "Desktop sends desktop headers on a phone");
             if ((await glyph()) !== "desktop pressed") throw new Error(`a phone's desktop pages shown as ${await glyph()}`);
             await toggleDesktop();
             await frameWait(`document.getElementById("m")?.textContent === "?1" && /Android/.test(document.getElementById("ua")?.textContent)`, "unchecking Desktop restores the mobile profile");
-            if ((await glyph()) !== "mobile") throw new Error(`a phone's mobile pages again shown as ${await glyph()}`);
+            if ((await glyph()) !== "desktop") throw new Error(`a phone's mobile pages again shown as ${await glyph()}`);
             // A cookie on the site, and its video played: fetched with it,
             // as the page's own browser would.
             await goTo(site + "cookie?set", "Cookie");
@@ -2233,19 +2233,33 @@ async function check(base, port, site, adSite) {
         }
     });
 
-    await step("a computer is given desktop pages, and mobile ones once switched to Mobile (pressed), then desktop again", async () => {
+    await step("a computer is given desktop pages, offered Mobile, and mobile ones once it's pressed, then desktop again; a narrow window, mobile ones, offered Desktop", async () => {
         await sleep(1000);  // (the view, a computer's again)
         const toggle = () => ev(`document.getElementById("go_menu").click(); document.getElementById("go_menu_desktop").click();`);
         const shown = () => ev(`(() => { const b = document.getElementById("go_menu_desktop"); return b.querySelector(".caption").textContent + (b.getAttribute("aria-pressed") === "true" ? " pressed" : ""); })()`);
         await goTo(site + "ua", "UA");
         await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "a computer's desktop headers");
-        if ((await shown()) !== "Desktop") throw new Error(`a computer's desktop pages shown as ${await shown()}`);
+        if ((await shown()) !== "Mobile") throw new Error(`a computer's desktop pages shown as ${await shown()}`);
         await toggle();
         await frameWait(`document.getElementById("m")?.textContent === "?1" && /Android/.test(document.getElementById("ua")?.textContent)`, "Mobile sends mobile headers on a computer");
         if ((await shown()) !== "Mobile pressed") throw new Error(`a computer's mobile pages shown as ${await shown()}`);
         await toggle();
         await frameWait(`document.getElementById("m")?.textContent === "?0" && !/Android|Mobile/.test(document.getElementById("ua")?.textContent)`, "its desktop headers again");
-        if ((await shown()) !== "Desktop") throw new Error(`a computer's desktop pages again shown as ${await shown()}`);
+        if ((await shown()) !== "Mobile") throw new Error(`a computer's desktop pages again shown as ${await shown()}`);
+        // A narrow window (no touch): laid out as a phone's, and given mobile
+        // pages; offered Desktop, not pressed.
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 500, height: 800, deviceScaleFactor: 1, mobile: false });
+        try {
+            await sleep(1000);  // (the view, a narrow one)
+            await goTo(site + "ua", "UA");
+            await frameWait(`document.getElementById("m")?.textContent === "?1" && /Android/.test(document.getElementById("ua")?.textContent)`, "a narrow window's mobile headers");
+            if ((await shown()) !== "Desktop") throw new Error(`a narrow window's mobile pages shown as ${await shown()}`);
+        } finally {
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
+        await sleep(1000);
+        await goTo(site + "ua", "UA");
+        await frameWait(`document.getElementById("m")?.textContent === "?0"`, "desktop headers, wide again");
     });
 
     await step("a font is fetched as a browser would: the one source it takes, for a face its text uses", async () => {
@@ -4312,6 +4326,20 @@ async function check(base, port, site, adSite) {
         await ev(`${tabDoc(p1)}.getElementById("go_exit_fullscreen").click()`);
         await waitFor(`!${tabDoc(p1)}.documentElement.classList.contains("go-fullscreen")`, "the private tab out of full screen", 10000);
         if (!/^private /.test(await ev(backIs))) throw new Error(`Back, out of full screen: ${await ev(backIs)}`);
+        // A phone's bar (narrow): Back's own arrow, tinted (its disabled tint,
+        // with nothing to go back to), and the address
+        // field tinted, its empty text saying so; wide again, the mark.
+        await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+        try {
+            await waitFor(`${tabDoc(p1)}.documentElement.classList.contains("go-private-compact")`, "the private tab's narrow bar", 10000);
+            const narrow = await ev(`(() => { const d = ${tabDoc(p1)}, a = d.getElementById("go_url"); return JSON.stringify({ back: ${backIs}, color: getComputedStyle(d.getElementById("go_back")).color, field: getComputedStyle(a).borderColor, placeholder: a.placeholder }); })()`);
+            const n = JSON.parse(narrow);
+            if (n.back !== "M15 5l-7 7 7 7" || !["rgb(196, 181, 253)", "rgb(139, 124, 184)"].includes(n.color) || n.field !== "rgb(139, 111, 214)" || n.placeholder !== "Private · address or search") throw new Error(`a private tab's narrow bar: ${narrow}`);
+        } finally {
+            await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        }
+        await waitFor(`!${tabDoc(p1)}.documentElement.classList.contains("go-private-compact")`, "the private tab's wide bar again", 10000);
+        if (!/^private /.test(await ev(backIs))) throw new Error(`Back, wide again: ${await ev(backIs)}`);
         if ((await sent(p1)) !== "nothing") throw new Error("a private tab was given the account's cookie");
         if ((await ev("document.title")) !== "Private – Browser") throw new Error(`the page's title names the private tab's page: ${await ev("document.title")}`);
         // Its own sign-in: kept for it, and for another private tab (made
