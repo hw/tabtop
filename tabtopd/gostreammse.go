@@ -39,7 +39,7 @@ const (
 )
 
 const (
-	mseStageLimit     = 512 << 20
+	mseStageLimit     = 1 << 30 // a saved stream (one buffered stream's Save) at most
 	mseChunk          = 256 << 10
 	mseKindInit       = 1
 	mseKindPart       = 2

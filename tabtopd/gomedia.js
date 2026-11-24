@@ -603,6 +603,10 @@
         if (!this.paused) return pause.call(this);
         if (!wanted) return;
         this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { composed: true }));
-        setTimeout(() => this.dispatchEvent(new Event("pause")), 0);
+        // (Not if the page's played it again since: its play's event, fired
+        // at once, came first, and a pause after it would stop the person's
+        // player the page wants playing. YouTube's Shorts stops a reel, then
+        // plays it, within a task.)
+        setTimeout(() => { if (!asked.has(this)) this.dispatchEvent(new Event("pause")); }, 0);
     };
 })();

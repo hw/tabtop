@@ -1004,6 +1004,7 @@ try {
 <button type="button" id="pause">Pause</button>
 <button type="button" id="quick">Play and pause</button>
 <button type="button" id="idle">Pause again</button>
+<button type="button" id="again">Stop and play</button>
 <pre id="out"></pre><p id="count">0</p>
 <script>
 const streamed = document.getElementById("streamed"), source = new MediaSource(), out = document.getElementById("out");
@@ -1018,6 +1019,8 @@ source.onsourceopen = async () => {
     buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
 };
 document.getElementById("quick").onclick = () => { streamed.play().catch(() => {}); streamed.pause(); };
+// (Shorts' "stopVideo" then "playVideo", within a task.)
+document.getElementById("again").onclick = () => { streamed.play().catch(() => {}); streamed.pause(); streamed.play().catch(() => {}); };
 streamed.src = URL.createObjectURL(source);
 document.getElementById("pause").onclick = () => streamed.pause();
 </script>`,
@@ -3953,7 +3956,7 @@ async function check(base, port, site, adSite) {
         if (out !== "made managed true") throw new Error(`dash.js's choice of MediaSource: ${out}`);
     });
 
-    await step("a MediaSource video the page pauses stops here too (as YouTube Shorts' pause)", async () => {
+    await step("a MediaSource video the page pauses stops here too (as YouTube Shorts' pause); paused and played again at once, it plays", async () => {
         await goTo(site + "mse-pause.html", "MSE pause");
         // Its player's made but stays paused till it's played (the page's
         // play() of a stream its own player feeds doesn't start it): played
@@ -3981,6 +3984,14 @@ async function check(base, port, site, adSite) {
         await frameClick("#idle");
         await sleep(500);
         if ((await frame(`document.getElementById("count").textContent`)) !== "2") throw new Error("pause() on a paused video fired pause");
+        // Played, paused and played again at once (Shorts stopping a reel
+        // and playing it): it plays, the page told so; the pause a moment
+        // later, of the pause() played over, isn't said.
+        await frameClick("#again");
+        await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused; })()`, "its player playing, played again after its pause", 15000);
+        await sleep(1500);
+        if (await ev(`document.querySelector("video").paused`)) throw new Error("the player was paused by the pause() the page played over");
+        if ((await frame(`document.getElementById("out").textContent`)) !== "play playing") throw new Error(`the page told ${await frame(`document.getElementById("out").textContent`)}`);
     });
 
     await step("a video attached as HLS.js does (empty source, then ManagedMediaSource) plays under its box, not as nothing to play", async () => {
