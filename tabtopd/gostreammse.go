@@ -5,6 +5,7 @@ package main
 // finalizes into Downloads as Save stream remuxes HLS/DASH (gosavestream.go).
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Eyevinn/mp4ff/bits"
 	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/coder/websocket"
 )
@@ -37,13 +39,14 @@ const (
 )
 
 const (
-	mseStageLimit     = 512 << 20
+	mseStageLimit     = 1 << 30 // a saved stream (one buffered stream's Save) at most
 	mseChunk          = 256 << 10
 	mseKindInit       = 1
 	mseKindPart       = 2
 	mseKindProgress   = 3
 	mseKindTimedPart  = 4
 	mseKindWindowPart = 5
+	mseKindKey        = 6 // a Clear Key stream's key: {"kid":"hex","key":"hex"}, not staged
 )
 
 // mseStageKept is how long a stage is kept with nothing spilled to it: a
@@ -61,13 +64,16 @@ type mseStage struct {
 	mu          sync.Mutex
 	bytes       int64
 	progressive string // relative path of progressive file, or ""
+	name        string // what it's saved as, said by the viewer (a page's download's, a Blob's), or ""
 	tracks      map[int]*mseStageTrack
-	done        bool          // forgotten, or taken for saving
-	abort       chan struct{} // closed as it's done
-	idle        *time.Timer   // forgets it after mseStageKept with nothing spilled
+	keys        map[string]string // a Clear Key stream's keys: key ID in hex, key in hex
+	done        bool              // forgotten, or taken for saving
+	abort       chan struct{}     // closed as it's done
+	idle        *time.Timer       // forgets it after mseStageKept with nothing spilled
 }
 
 type mseStageTrack struct {
+	webm     bool // a WebM stream's (gowebm.go), not an MP4's
 	header   *mp4.InitSegment
 	needSync map[uint32]bool
 	init     string   // relative path
@@ -247,6 +253,31 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 	if track < 0 || track > 7 {
 		return errors.New("invalid stream track")
 	}
+	if kind == mseKindKey {
+		// A Clear Key stream's key (mse-capture.js): kept for the save
+		// (stageTrackInit), not staged; a renewal replaces its key ID's.
+		var k struct{ Kid, Key string }
+		if json.Unmarshal(data, &k) != nil {
+			return errors.New("invalid stream key")
+		}
+		if kid, err := hex.DecodeString(k.Kid); err != nil || len(kid) != 16 {
+			return errors.New("invalid stream key ID")
+		}
+		if key, err := hex.DecodeString(k.Key); err != nil || (len(key) != 16 && len(key) != 32) {
+			return errors.New("invalid stream key")
+		}
+		if len(s.keys) >= 8 && s.keys[k.Kid] == "" {
+			return errors.New("too many keys for the buffered stream")
+		}
+		if s.keys == nil {
+			s.keys = map[string]string{}
+		}
+		s.keys[k.Kid] = k.Key
+		if s.idle != nil {
+			s.idle.Reset(mseStageKept)
+		}
+		return nil
+	}
 	var offset, windowStart float64
 	windowEnd := math.Inf(1)
 	if kind == mseKindWindowPart {
@@ -277,7 +308,12 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 	if len(data) == 0 || int64(len(data)) > segmentLimit {
 		return errors.New("invalid stream segment")
 	}
-	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.init != "" && (windowStart > 0 || !math.IsInf(windowEnd, 1) || offset < 0 || len(tr.needSync) > 0) {
+	// A WebM stream's part at an offset or within a window: not saved
+	// (gowebm.go takes its blocks' times as they are).
+	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.webm && (offset != 0 || windowStart > 0 || !math.IsInf(windowEnd, 1)) {
+		return errors.New("a WebM stream appended at an offset can't be saved")
+	}
+	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.init != "" && !tr.webm && (windowStart > 0 || !math.IsInf(windowEnd, 1) || offset < 0 || len(tr.needSync) > 0) {
 		if tr.header == nil {
 			init, err := store.root.ReadFile(tr.init)
 			if err != nil {
@@ -285,6 +321,9 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 			}
 			tr.header, err = decodeStreamInit(init)
 			if err != nil {
+				if errors.Is(err, errStreamEncrypted) {
+					return errors.New("an encrypted stream appended in a seek window can't be saved")
+				}
 				return err
 			}
 			tr.needSync = make(map[uint32]bool)
@@ -353,6 +392,7 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 			return err
 		}
 		tr.init = name
+		tr.webm = isWebM(data)
 	case mseKindPart:
 		if s.progressive != "" {
 			return errors.New("invalid buffered stream")
@@ -381,7 +421,10 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 // order. (They're read as the save writes them, not into memory.)
 func (s *mseStage) inputLocked() (mseSaveInput, error) {
 	if s.progressive != "" {
-		return mseSaveInput{progressive: s.progressive}, nil
+		if len(s.keys) > 0 {
+			return mseSaveInput{}, errors.New("an encrypted whole file can't be saved")
+		}
+		return mseSaveInput{progressive: s.progressive, name: s.name}, nil
 	}
 	if len(s.tracks) == 0 {
 		return mseSaveInput{}, errors.New("buffered stream has no media tracks")
@@ -402,14 +445,28 @@ func (s *mseStage) inputLocked() (mseSaveInput, error) {
 	if len(tracks) == 0 {
 		return mseSaveInput{}, errors.New("buffered stream has no media segments yet")
 	}
-	return mseSaveInput{tracks: tracks}, nil
+	in := mseSaveInput{tracks: tracks}
+	if len(s.keys) > 0 {
+		in.keys = make(map[string][]byte, len(s.keys))
+		for kid, key := range s.keys {
+			b, err := hex.DecodeString(key)
+			if err != nil {
+				return mseSaveInput{}, err
+			}
+			in.keys[kid] = b
+		}
+	}
+	return in, nil
 }
 
 // mseSaveInput is a stage's files, to be saved: a progressive MP4's, or
-// each track's init and parts.
+// each track's init and parts. keys is a Clear Key stream's (key ID in
+// hex): its tracks are staged encrypted, decrypted as they're saved.
 type mseSaveInput struct {
 	progressive string
+	name        string // the progressive file's name, if said
 	tracks      []mseTrackFiles
+	keys        map[string][]byte
 }
 
 type mseTrackFiles struct {
@@ -563,19 +620,64 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 	}()
 	var name string
 	if in.progressive != "" {
-		name, err = m.saveProgressiveMSE(ctx, j, store, in.progressive, up)
+		name, err = m.saveProgressiveMSE(ctx, j, store, in.progressive, in.name, up)
 	} else {
 		tracks := make([]streamTrack, 0, len(in.tracks))
+		var webm []webmInput
 		for _, tr := range in.tracks {
 			init, err := store.root.ReadFile(tr.init)
 			if err != nil {
 				return err
 			}
 			parts := tr.parts
-			tracks = append(tracks, streamTrack{initData: init, partCount: len(parts), offsets: tr.offsets,
-				partAt: func(i int) ([]byte, error) { return store.root.ReadFile(parts[i]) }})
+			partAt := func(i int) ([]byte, error) { return store.root.ReadFile(parts[i]) }
+			if isWebM(init) {
+				if len(in.keys) > 0 {
+					return errors.New("an encrypted WebM stream can't be saved")
+				}
+				webm = append(webm, webmInput{init: init, partCount: len(parts), partAt: partAt})
+				continue
+			}
+			// A Clear Key stream's (its keys came as it played): its init
+			// and parts are staged encrypted, decrypted as they're read,
+			// so what's remuxed, and saved, is clear.
+			clearInit, di, err := stageTrackInit(init, in.keys)
+			if err != nil {
+				return err
+			}
+			if di != nil {
+				keys, info := in.keys, *di
+				partAt = func(i int) ([]byte, error) {
+					data, err := store.root.ReadFile(parts[i])
+					if err != nil {
+						return nil, err
+					}
+					return decryptStageFragment(data, info, keys)
+				}
+			}
+			tracks = append(tracks, streamTrack{initData: clearInit, partCount: len(parts), offsets: tr.offsets, partAt: partAt})
 		}
-		name, err = m.writeStreamTracks(ctx, j, tracks, nil, up, "stream.mp4")
+		switch {
+		case len(webm) > 0 && len(tracks) > 0:
+			err = errors.New("the buffered stream's tracks are of different formats, and can't be saved together")
+		case len(webm) > 0:
+			name = "stream.webm"
+			j.set(func(j *fetchJob) { j.name, j.parts = name, 1 })
+			err = writeWebM(ctx, webm, up, func(n int64) error {
+				j.set(func(j *fetchJob) { j.total = n })
+				if free, _, ok := m.files.uploadRoom(up.f); ok && free < n+fetchSpare {
+					return errors.New("insufficient disk space for stream")
+				}
+				return nil
+			}, func(n int64) {
+				j.set(func(j *fetchJob) { j.got += n })
+			})
+			if err == nil {
+				j.set(func(j *fetchJob) { j.partsDone = 1 })
+			}
+		default:
+			name, err = m.writeStreamTracks(ctx, j, tracks, nil, up, "stream.mp4")
+		}
 	}
 	if err != nil {
 		return err
@@ -601,13 +703,101 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 	return nil
 }
 
-func (m *fetchManager) saveProgressiveMSE(ctx context.Context, j *fetchJob, store *downloadStore, file string, up *upload) (string, error) {
-	name := "stream.mp4"
+// stageTrackInit decodes a stage track's MP4 init for saving. With a Clear
+// Key stream's keys, an encrypted one is decrypted: returned is its clear
+// init (re-encoded: the parsed one was decrypted in place) and what its
+// fragments' decryptStageFragment takes. Without keys, an encrypted one is
+// refused (errStreamEncrypted), as any stream's is.
+func stageTrackInit(init []byte, keys map[string][]byte) (clear []byte, di *mp4.DecryptInfo, err error) {
+	parsed, di, err := decodeInitSegment(init, keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	if di == nil {
+		return init, nil, nil
+	}
+	var buf bytes.Buffer
+	if err := parsed.Encode(&buf); err != nil {
+		return nil, nil, err
+	}
+	return buf.Bytes(), di, nil
+}
+
+// decryptStageFragment decrypts a staged fragment (a moof and its mdat)
+// with a Clear Key stream's keys: its senc and pssh go, its samples are
+// clear, and it's the same length less them; what's before the moof (a
+// styp, a sidx) and after the mdat (an emsg, a free) is kept as it is.
+func decryptStageFragment(data []byte, di mp4.DecryptInfo, keys map[string][]byte) (clear []byte, err error) {
+	defer func() {
+		if recover() != nil {
+			clear, err = nil, errors.New("invalid encrypted MP4 fragment")
+		}
+	}()
+	// (One moof and its mdat a part: mse-capture.js spills them as they
+	// complete. Another's boxes are kept.)
+	at, moof := 0, -1
+	for at+8 <= len(data) {
+		n := int(binary.BigEndian.Uint32(data[at:]))
+		header := 8
+		if n == 1 {
+			if at+16 > len(data) {
+				break
+			}
+			n = int(binary.BigEndian.Uint64(data[at+8:]))
+			header = 16
+		} else if n == 0 {
+			n = len(data) - at
+		}
+		if n < header || at+n > len(data) {
+			break
+		}
+		if string(data[at+4:at+8]) == "moof" {
+			moof = at
+			break
+		}
+		at += n
+	}
+	if moof < 0 {
+		return nil, errors.New("invalid encrypted MP4 fragment")
+	}
+	file, err := mp4.DecodeFileSR(bits.NewFixedSliceReader(data[moof:]))
+	if err != nil {
+		return nil, err
+	}
+	var frags []*mp4.Fragment
+	for _, seg := range file.Segments {
+		frags = append(frags, seg.Fragments...)
+	}
+	if len(frags) == 0 {
+		return nil, errors.New("invalid encrypted MP4 fragment")
+	}
+	var out bytes.Buffer
+	out.Write(data[:moof])
+	for _, frag := range frags {
+		if err := mp4.DecryptFragmentWithKeys(frag, di, nil, keys, true); err != nil {
+			return nil, err
+		}
+		if err := frag.Encode(&out); err != nil {
+			return nil, err
+		}
+	}
+	return out.Bytes(), nil
+}
+
+func (m *fetchManager) saveProgressiveMSE(ctx context.Context, j *fetchJob, store *downloadStore, file, name string, up *upload) (string, error) {
 	f, err := store.root.Open(file)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+	if name == "" {
+		head := make([]byte, 16)
+		n, _ := io.ReadFull(f, head)
+		name = goMediaFileName(head[:n])
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return "", err
+		}
+	}
 	st, err := f.Stat()
 	if err != nil {
 		return "", err
@@ -648,6 +838,28 @@ func (m *fetchManager) saveProgressiveMSE(ctx context.Context, j *fetchJob, stor
 }
 
 var errMSEText = errors.New("mse text")
+
+// goMediaFileName is a whole media file's name, by what its first bytes
+// say it is (a Blob's played, saved: its name unsaid).
+func goMediaFileName(head []byte) string {
+	switch {
+	case len(head) >= 12 && string(head[4:8]) == "ftyp" && (string(head[8:12]) == "M4A " || string(head[8:12]) == "M4B "):
+		return "audio.m4a"
+	case len(head) >= 8 && string(head[4:8]) == "ftyp":
+		return "stream.mp4"
+	case isWebM(head):
+		return "stream.webm"
+	case bytes.HasPrefix(head, []byte("OggS")):
+		return "audio.ogg"
+	case bytes.HasPrefix(head, []byte("fLaC")):
+		return "audio.flac"
+	case len(head) >= 12 && string(head[:4]) == "RIFF" && string(head[8:12]) == "WAVE":
+		return "audio.wav"
+	case bytes.HasPrefix(head, []byte("ID3")), len(head) >= 2 && head[0] == 0xFF && head[1]&0xE0 == 0xE0:
+		return "audio.mp3"
+	}
+	return "media.bin"
+}
 
 // serveMSEStage accepts spilled frames until finalize or cancel. It waits
 // for the next frame as long as the stage is kept (mseStageKept since the
@@ -694,6 +906,8 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 			var msg struct {
 				Cancel   bool `json:"cancel"`
 				Finalize bool `json:"finalize"`
+				// Its name (a whole file's: a page's download, a Blob's).
+				Name string `json:"name"`
 			}
 			if json.Unmarshal(p, &msg) != nil || !msg.Cancel && !msg.Finalize {
 				r.fail("invalid stream message")
@@ -704,6 +918,11 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 				m.forgetMSEStage(stage.id)
 				r.fail("cancelled")
 				return
+			}
+			if n := cleanFetchName(msg.Name); n != "" {
+				stage.mu.Lock()
+				stage.name = n
+				stage.mu.Unlock()
 			}
 			if m.finishMSEStage(t, stage, r, by, ip, who, from, userAgent) {
 				return

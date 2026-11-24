@@ -90,9 +90,13 @@ func goFetchMedia(ctx context.Context, session string, req tunnelRequest, client
 
 // goMediaKey is what a download of u is kept by: its login's session, and
 // a tab's own, if the tab has certificate exceptions (its downloads are
-// made with them: gocert.go, not another tab's to have).
+// made with them: gocert.go, not another tab's to have); and whether it's
+// for a private tab, whose cookies aren't the others' (goincognito.go).
 func goMediaKey(session, u string, from *goFrom) string {
 	key := session + "\x00" + u
+	if from != nil && from.private {
+		key += "\x00private"
+	}
 	if from != nil && from.certs.any() {
 		key += fmt.Sprintf("\x00%p", from.certs)
 	}

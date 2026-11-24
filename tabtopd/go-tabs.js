@@ -6,12 +6,24 @@
 // here say which tab and page), and the tabs to open again after a reload
 // (sessionStorage: this browser tab's own).
 //
+// A tab may be private (goincognito.go): its sites' cookies and storage
+// kept apart on the server, in memory, and forgotten with the session's
+// last private tab; nothing of it kept on this device (its recent sites,
+// its title in the device's history). Which tabs are is said to each by
+// sessionStorage (tabtop-go-private:N), never in its frame's address.
+//
+// The first tab, as this page opens with none kept, is normal or private
+// as Settings says (Starting tab: privateDefault, from the server: gosites.go).
+// New tab always opens a normal tab, New private tab a private one.
+//
 // A window a page opens comes here (go.js's "popup") and opens in a tab of
-// its own, or, with as many tabs as may be, in the one that opened it. An
+// its own (private, if the page's was), or, with as many tabs as may be, in
+// the one that opened it. An
 // address never goes into a frame's address (go/tab?id=N only), the tab's
 // own, or the history: it's handed over by message.
 
 import { session } from "../tabtop/tunnel.js";
+import { call } from "../tabtop/requests.js";
 import { nameTab } from "../tabtop/nav.js";
 
 const MAX_TABS = 6;  // the server's engines for a session (maxGoPerSession)
@@ -23,7 +35,7 @@ const $ = (id) => document.getElementById(id);
 const strip = $("tabs"), frames = $("frames"), overview = $("overview");
 const compact = matchMedia("(pointer: coarse), (max-width: 600px)");
 
-let tabs = [];    // {id, title, loading, at, frame, el}
+let tabs = [];    // {id, title, loading, at, private, frame, el}
 let shown = null; // the tab shown
 let next = 1;
 
@@ -34,20 +46,28 @@ function tell(t, m) {
 
 function keep() {
     try {
-        sessionStorage.setItem(KEPT, JSON.stringify({ ids: tabs.map((t) => t.id), shown: shown?.id ?? null, next }));
+        sessionStorage.setItem(KEPT, JSON.stringify({ ids: tabs.map((t) => t.id), private: tabs.filter((t) => t.private).map((t) => t.id), shown: shown?.id ?? null, next }));
     } catch { /* not kept */ }
 }
 
 // open makes a tab: a frame of go/tab with its number, told what to load
-// (a window a page opened) once it's there.
-function open({ id = next++, url = "", show = true } = {}) {
+// (a window a page opened) once it's there; private, told so before it
+// starts.
+function open({ id = next++, url = "", show = true, private: priv = false } = {}) {
     if (tabs.length >= MAX_TABS) return null;
     next = Math.max(next, id + 1);
+    try {
+        if (priv) sessionStorage.setItem(`tabtop-go-private:${id}`, "1");
+        else sessionStorage.removeItem(`tabtop-go-private:${id}`);
+    } catch {
+        if (priv) return null;  // it couldn't be told: not opened as a tab that isn't
+    }
     const frame = document.createElement("iframe");
-    frame.title = "New tab";
-    frame.allow = "autoplay; fullscreen; clipboard-write";
+    const title = priv ? "Private tab" : "New tab";
+    frame.title = title;
+    frame.allow = "autoplay; fullscreen; clipboard-write; clipboard-read; geolocation; web-share; picture-in-picture";
     frame.hidden = true;
-    const t = { id, title: "New tab", loading: false, at: -1, frame };
+    const t = { id, title, loading: false, at: -1, private: priv, frame };
     frame.addEventListener("load", () => {
         tell(t, { type: "count", count: tabs.length, compact: compact.matches });
         if (url) tell(t, { type: "open", url });
@@ -79,6 +99,7 @@ function close(t) {
         sessionStorage.removeItem(`tabtop-go-history:${t.id}`);
         sessionStorage.removeItem(`tabtop-go-resume:${t.id}`);
         sessionStorage.removeItem(`tabtop-go-desktop:${t.id}`);
+        sessionStorage.removeItem(`tabtop-go-private:${t.id}`);
     } catch { /* none */ }
     if (!tabs.length) open();
     else if (shown === t) showTab(tabs[Math.min(i, tabs.length - 1)]);
@@ -94,18 +115,34 @@ function showTab(t) {
         x.el.setAttribute("aria-selected", String(x === t));
         x.el.tabIndex = x === t ? 0 : -1;
     }
-    document.title = `${t.title} – Browser`;
+    document.title = docTitle(t);
     t.el.scrollIntoView({ block: "nearest", inline: "nearest" });
     tell(t, { type: "focus" });
     t.frame.focus();
     keep();
 }
 
+// docTitle is this page's title for the tab shown: a private tab's page
+// isn't named, as the device's history keeps the title.
+const docTitle = (t) => t.private ? "Private – Browser" : `${t.title} – Browser`;
+
+// The mark of a private tab: a hat and glasses, incognito (drawn, not a
+// character; go.js's the same).
+const PRIVATE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 11h18"/><path d="M6 11l1.6-6.3a1 1 0 0 1 1.3-.7L12 5.2l3.1-1.2a1 1 0 0 1 1.3.7L18 11"/><circle cx="7.5" cy="16.5" r="3"/><circle cx="16.5" cy="16.5" r="3"/><path d="M10.5 16.5c1-.8 2-.8 3 0"/></svg>';
+
 function drawTab(t) {
     const el = document.createElement("div");
     el.className = "tab";
+    el.classList.toggle("private", t.private);
     el.setAttribute("role", "tab");
     const title = Object.assign(document.createElement("span"), { className: "title", textContent: t.title });
+    if (t.private) {
+        const mark = Object.assign(document.createElement("span"), { className: "mark", innerHTML: PRIVATE_ICON, title: "Private tab" });
+        mark.setAttribute("role", "img");
+        mark.setAttribute("aria-label", "Private");
+        el.append(mark);
+    }
     const x = Object.assign(document.createElement("button"), { type: "button", className: "close", textContent: "✕", tabIndex: -1 });
     x.setAttribute("aria-label", "Close tab");
     x.addEventListener("click", (e) => { e.stopPropagation(); close(t); });
@@ -129,10 +166,10 @@ function drawTab(t) {
 
 function titled(t) {
     t.titleEl.textContent = t.title;
-    t.el.title = t.title;
+    t.el.title = t.private ? `${t.title} (private)` : t.title;
     t.el.classList.toggle("loading", t.loading);
     t.frame.title = t.title;
-    if (shown === t) document.title = `${t.title} – Browser`;
+    if (shown === t) document.title = docTitle(t);
     drawOverview();
 }
 
@@ -140,8 +177,21 @@ function titled(t) {
 // a phone), and the new tab buttons whether there's room for one.
 function counted() {
     for (const t of tabs) tell(t, { type: "count", count: tabs.length, compact: compact.matches });
-    $("new").disabled = overview.querySelector(".new").disabled = tabs.length >= MAX_TABS;
-    $("new").title = tabs.length >= MAX_TABS ? `At most ${MAX_TABS} tabs` : "New tab";
+    const full = tabs.length >= MAX_TABS;
+    $("new").disabled = $("new_private").disabled = overview.querySelector(".new").disabled = overview.querySelector(".new-private").disabled = full;
+    $("new").title = full ? `At most ${MAX_TABS} tabs` : "New tab";
+    $("new_private").title = full ? `At most ${MAX_TABS} tabs` : "New private tab: sites' cookies and data forgotten when the last private tab closes";
+}
+// privateDefault is whether the first tab is private (Settings' Starting tab),
+// as the server says: false if it can't be asked.
+async function privateDefault() {
+    try {
+        const t = await call({ type: "go-settings" });
+        t.close();
+        return t.reply?.privateDefault === true;
+    } catch {
+        return false;
+    }
 }
 compact.addEventListener("change", () => {
     document.body.classList.toggle("compact", compact.matches);
@@ -156,7 +206,12 @@ function drawOverview() {
     overview.querySelector("ul").replaceChildren(...tabs.map((t) => {
         const li = document.createElement("li");
         li.classList.toggle("shown", t === shown);
+        li.classList.toggle("private", t.private);
         const pick = Object.assign(document.createElement("button"), { type: "button", className: "pick", textContent: t.title });
+        if (t.private) {
+            pick.insertAdjacentHTML("afterbegin", PRIVATE_ICON);
+            pick.setAttribute("aria-label", `${t.title} (private)`);
+        }
         pick.addEventListener("click", () => { showTab(t); overview.hidden = true; });
         const x = Object.assign(document.createElement("button"), { type: "button", className: "close", textContent: "✕" });
         x.setAttribute("aria-label", `Close ${t.title}`);
@@ -178,6 +233,12 @@ overview.querySelector(".new").addEventListener("click", () => {
     overview.hidden = true;
     open();
 });
+overview.querySelector(".new-private").addEventListener("click", () => {
+    overview.hidden = true;
+    open({ private: true });
+});
+$("new_private").innerHTML = PRIVATE_ICON;
+$("new_private").addEventListener("click", () => open({ private: true }));
 overview.addEventListener("keydown", (e) => { if (e.key === "Escape") overview.querySelector(".done").click(); });
 $("new").addEventListener("click", () => open());
 
@@ -225,7 +286,11 @@ window.addEventListener("message", (e) => {
             break;
         case "popup":
             if (typeof m.url !== "string" || !/^https?:\/\//i.test(m.url) || m.url.length > 8192) break;
-            if (!open({ url: m.url })) tell(t, { type: "open", url: m.url });  // no room: in the tab that opened it
+            if (!open({ url: m.url, private: t.private })) tell(t, { type: "open", url: m.url });  // no room: in the tab that opened it
+            break;
+        case "new-tab":
+            // From the tab's menu: a tab, private or not, shown.
+            open({ private: m.private === true });
             break;
         case "show":
             if (m.fullscreen) tell(t, { type: "window-list", tabs: tabs.map((x) => ({ id: x.id, title: x.title, current: x === shown })) });
@@ -262,8 +327,10 @@ let kept = null;
 try { kept = JSON.parse(sessionStorage.getItem(KEPT) || "null"); } catch { /* none */ }
 const ids = Array.isArray(kept?.ids) ? kept.ids.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, MAX_TABS) : [];
 next = Number.isSafeInteger(kept?.next) ? kept.next : 1;
-for (const id of ids) open({ id, show: false });
-if (!tabs.length) open();
+const privateIds = new Set(Array.isArray(kept?.private) ? kept.private : []);
+for (const id of ids) open({ id, show: false, private: privateIds.has(id) });
+// (The first tab's kind, as Settings says: read before it's made.)
+if (!tabs.length) open({ private: await privateDefault() });
 showTab(tabOf(kept?.shown) ?? tabs[0]);
 if (linked) {
     let typed = linked;

@@ -7,3 +7,6 @@
 
 # Bootstrap client pack build cache
 /scripts/bootstrap/.client-build/
+
+# Serena (coding agent) project state.
+/.serena/

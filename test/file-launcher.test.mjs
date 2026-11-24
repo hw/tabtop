@@ -4,6 +4,7 @@
 // complete: every module it imports is in it, and the desktop's stylesheet.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import { buildFileLauncherHTML } from "../scripts/bootstrap/file-launcher.mjs";
@@ -62,14 +63,19 @@ test("the pack's client is complete: its pages, their imports, workers and files
 });
 
 test("the pack's TabTop scripts are tabtopd's as they are now (rebuild it: node scripts/bootstrap/build-full-client.mjs)", () => {
-    const { files } = JSON.parse(readFileSync(new URL("../tabtopd/bootstrap.client.json", import.meta.url), "utf8"));
+    // (A file minified, by the SHA-256 of what it was: see the build's
+    // minified; one that isn't, by its text.)
+    const { files, minified = {} } = JSON.parse(readFileSync(new URL("../tabtopd/bootstrap.client.json", import.meta.url), "utf8"));
     const stale = [];
     for (const [path, body] of Object.entries(files)) {
-        const own = path === "tty/tty.js" ? "tty.js" : path.startsWith("tabtop/") && !path.startsWith("tabtop/noble/") && path.endsWith(".js") ? path.slice(7) : null;
+        const own = path === "tty/tty.js" ? "tty.js" : path.startsWith("go/") && path.endsWith(".js") ? path.slice(3)
+            : path === "go/index.html" ? "go.html"
+            : path.startsWith("tabtop/") && !path.startsWith("tabtop/noble/") && path.endsWith(".js") ? path.slice(7) : null;
         if (!own || path === "tabtop/desktop.css") continue;
+        const off = /hex-view|disasm-worker/.test(own);
         const source = readFileSync(new URL(`../tabtopd/${own}`, import.meta.url), "utf8")
-            .replace("const DISASM_OFF = [];", /DISASM_OFF/.test(body) && /hex-view|disasm-worker/.test(own) ? 'const DISASM_OFF = ["x86", "capstone", "arm64", "riscv", "mips"];' : "const DISASM_OFF = [];");
-        if (source !== body) stale.push(path);
+            .replace("const DISASM_OFF = [];", off ? 'const DISASM_OFF = ["x86", "capstone", "arm64", "riscv", "mips"];' : "const DISASM_OFF = [];");
+        if (Object.hasOwn(minified, path) ? createHash("sha256").update(source).digest("hex") !== minified[path] : source !== body) stale.push(path);
     }
     assert.deepEqual(stale, []);
 });

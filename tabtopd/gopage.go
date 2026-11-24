@@ -12,7 +12,7 @@ import (
 
 const goPrefix = "/go/"
 
-//go:embed go.html go.js go-media.js go-eme.js mse-capture.js mse-stages.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-settings-parse.js go-pages.js go-pages.css
+//go:embed go.html go.js go-device.js go-media.js go-eme.js mse-capture.js mse-stages.js go-cookies.js go-tabs.html go-tabs.js go-sites.html go-sites.js go-settings.html go-settings.js go-settings-parse.js go-pages.js go-pages.css
 var goFiles embed.FS
 
 const (
@@ -45,11 +45,12 @@ const (
 	// above it.
 	goFrameCSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob: data:; font-src blob: data:; " +
 		"media-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; " +
-		"manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+		"manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts allow-pointer-lock"
 
 	// goFrameSandbox is the sandbox the /go page gives the frame (go.js);
-	// a test holds the two together.
-	goFrameSandbox = "allow-scripts"
+	// a test holds the two together. (Its pointer locked for a page that
+	// asks: gopointerlock.go. It runs none of the page's scripts.)
+	goFrameSandbox = "allow-scripts allow-pointer-lock"
 )
 
 // goFrameHTML is the frame's page: the CSS parser, the WebGL it replays
@@ -109,7 +110,7 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		html, _ := goFiles.ReadFile("go-" + page + ".html")
 		w.Write(html)
-	case "go.js", "go-media.js", "go-eme.js", "mse-capture.js", "mse-stages.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-settings-parse.js", "go-pages.js":
+	case "go.js", "go-device.js", "go-media.js", "go-eme.js", "mse-capture.js", "mse-stages.js", "go-cookies.js", "go-tabs.js", "go-sites.js", "go-settings.js", "go-settings-parse.js", "go-pages.js":
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		js, _ := goFiles.ReadFile(strings.TrimPrefix(r.URL.Path, goPrefix))
 		w.Write(js)

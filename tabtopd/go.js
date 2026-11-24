@@ -26,6 +26,7 @@ import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js"
 import { reconnect, reconnected } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { call, collect, setLoginTitle } from "../tabtop/requests.js";
+import { viewerCapabilities, viewerDevices, sendPasteImage } from "./go-device.js";
 import { goMedia } from "./go-media.js";
 import { mseStageKeeper } from "./mse-stages.js";
 
@@ -103,6 +104,16 @@ const inTabs = (() => {
 function toTabs(m) {
     if (inTabs) parent.postMessage({ ...m, goTab: tabId }, location.origin);
 }
+// A private tab (goincognito.go), as the tabs' page said before it began
+// (sessionStorage, never this frame's address): its sites' cookies and
+// storage the server's private tabs' own, forgotten with the last of them;
+// asked so at every connection, so a new tab made for it (a restart, a
+// token gone) is private too. Nothing of it kept on this device: no recent
+// sites, no page title in the device's history, no pop-up answer kept.
+const privateTab = (() => {
+    try { return !!tabId && sessionStorage.getItem(`tabtop-go-private:${tabId}`) === "1"; } catch { return false; }
+})();
+document.documentElement.classList.toggle("go-private", privateTab);
 const windowList = document.getElementById("go_window_list"), windowListRows = windowList.querySelector("ul");
 function hideWindowList() { windowList.hidden = true; }
 function showWindowList(tabs) {
@@ -170,11 +181,24 @@ const ICONS = {
     sites: '<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="13.5" r="1"/><circle cx="10.5" cy="15" r="1"/>',
     controls: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
     shield: '<path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/>',
+    // A private tab's: a hat and glasses, incognito.
+    private: '<path d="M3 11h18"/><path d="M6 11l1.6-6.3a1 1 0 0 1 1.3-.7L12 5.2l3.1-1.2a1 1 0 0 1 1.3.7L18 11"/><circle cx="7.5" cy="16.5" r="3"/><circle cx="16.5" cy="16.5" r="3"/><path d="M10.5 16.5c1-.8 2-.8 3 0"/>',
     // A gear (Feather's, MIT).
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
-back.innerHTML = icon("back");
+// A private tab says so in its bar (go-private, go.html): its edge, Back's
+// arrow and the address field tinted violet, the field's empty text
+// "Private", never a glyph in Back's place (the tabs' strip marks it too,
+// on a wide screen). Back is Back's own arrow, said private by its name.
+function showBack() {
+    back.innerHTML = icon("back");
+    address.placeholder = privateTab ? "Private · address or search" : "Address, or words to search for";
+}
+if (privateTab) {
+    back.title = "Back (Alt+←): a private tab";
+    back.setAttribute("aria-label", "Back (private tab)");
+}
 forward.innerHTML = icon("forward");
 $("go_clear").innerHTML = icon("clear");
 
@@ -183,22 +207,43 @@ $("go_clear").innerHTML = icon("clear");
 // the menu to leave the page the room).
 const menu = $("go_menu"), menuPanel = $("go_menu_panel");
 // The menu's first row (go.html): Forward (on a phone, whose bar has no
-// room for it), Desktop, Full screen, Hide browser; each a glyph over its
-// name.
+// room for it), Mobile or Desktop, Full screen, Hide browser; each a glyph
+// over its name.
 const desktop = $("go_menu_desktop");
-desktop.insertAdjacentHTML("afterbegin", iconSVG("desktop"));
 const desktopKey = "tabtop-go-desktop" + (tabId ? ":" + tabId : "");
-let desktopOn = false;
-try { desktopOn = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
-desktop.setAttribute("aria-pressed", String(desktopOn));
+// otherOn: switched to the other pages than this device's (a phone's are
+// mobile, another's desktop: phoneView, as the server's goPhone has it).
+let otherOn = false;
+try { otherOn = sessionStorage.getItem(desktopKey) === "1"; } catch { /* default */ }
+// compactView: /go laid out for a phone (one Back, no tabs: the tabs'
+// page's compact too), a touch screen's or a window 600 pixels wide at
+// most; given mobile pages, as the server's goMobile has it.
+const compactView = matchMedia("(pointer: coarse), (max-width: 600px)");
+const phoneView = () => compactView.matches;
+// Its glyph and name are the other pages than this device's own, which it
+// switches to: a phone's (compact), Desktop; a computer's, Mobile. Pressed
+// (highlighted), switched to them; not, this device's own.
+function showDesktop() {
+    const other = phoneView() ? "desktop" : "mobile", name = other === "desktop" ? "Desktop" : "Mobile";
+    desktop.querySelector("svg")?.remove();
+    desktop.insertAdjacentHTML("afterbegin", iconSVG(other));
+    desktop.dataset.glyph = other;
+    desktop.querySelector(".caption").textContent = name;
+    desktop.setAttribute("aria-pressed", String(otherOn));
+    desktop.title = otherOn ? `${name} pages: sites are asked for theirs (press for this device's own)` : `Ask sites for their ${other} pages`;
+}
+showDesktop();
+// (A window resized narrow, or wide again: its pages and so its name change
+// with it, as the server's do; and Back with it, showBack.)
+compactView.addEventListener("change", () => { showDesktop(); showBack(); });
 const menuForward = $("go_menu_forward");
 menuForward.insertAdjacentHTML("afterbegin", icon("forward"));
 menuForward.addEventListener("click", () => { openMenu(false); menu.focus(); goBy(1); });
 desktop.addEventListener("click", () => {
-    desktopOn = !desktopOn;
-    desktop.setAttribute("aria-pressed", String(desktopOn));
+    otherOn = !otherOn;
+    showDesktop();
     try {
-        if (desktopOn) sessionStorage.setItem(desktopKey, "1");
+        if (otherOn) sessionStorage.setItem(desktopKey, "1");
         else sessionStorage.removeItem(desktopKey);
     } catch { /* this page only */ }
     openMenu(false);
@@ -214,6 +259,10 @@ fullScreen.insertAdjacentHTML("afterbegin", icon("fullscreen"));
 exitFullScreen.innerHTML = icon("exitFullscreen");
 const fullScreenRoot = document.documentElement;
 let screenMode = "", nativeFullScreen = false, nativeRequest;
+showBack();
+// The page asked for fullscreen (gofullscreen.go): shown so for it, and
+// its leaving told to it.
+let pageFullScreen = false;
 let tabsCompact = false, tabsCount = 1;
 function updateTabsButton() {
     const tabs = $("go_tabs");
@@ -223,7 +272,12 @@ function updateTabsButton() {
 }
 
 function showScreenMode(mode) {
+    if (pageFullScreen && mode !== "full") {
+        pageFullScreen = false;
+        ws?.send(JSON.stringify({ op: "fullscreen-exit" }));
+    }
     screenMode = mode;
+    showBack();
     const immersive = mode === "full";
     hideBrowser.setAttribute("aria-pressed", String(mode === "browser"));
     fullScreen.setAttribute("aria-pressed", String(immersive));
@@ -274,6 +328,21 @@ document.addEventListener("fullscreenchange", () => {
 
 menu.innerHTML = icon("menu");
 $("go_menu_settings").innerHTML = `${icon("settings")}<span class="label">Settings</span>`;
+// New private tab, in the menu (the tabs' strip, which has one too, isn't
+// on a phone): the tabs' page makes it.
+const newPrivate = $("go_menu_private");
+newPrivate.innerHTML = `${icon("private")}<span class="label">New private tab</span>`;
+newPrivate.hidden = !inTabs;
+newPrivate.addEventListener("click", () => {
+    openMenu(false);
+    toTabs({ type: "new-tab", private: true });
+});
+if (privateTab) {
+    const startText = start.querySelectorAll("p");
+    start.querySelector("h1").textContent = "Private tab";
+    startText[0].textContent = "Sites’ cookies and data from private tabs are kept apart from your other tabs’, on the server, in memory only, and forgotten when the last private tab closes (if this page is closed or loses its connection instead, its private tabs end 5 minutes later, or once their downloads finish). The shared cache isn’t used, and no recent sites or page titles are kept on this device.";
+    startText[1].textContent = "Downloads are still saved, site settings still apply, and sites still see the server’s address.";
+}
 // Open Site controls (go/sites) or Settings (go/settings) in a fresh
 // lightbox frame so it leaves the browser's back and forward history alone.
 const settingsBox = $("go_settings");
@@ -289,6 +358,11 @@ function closeSettings() {
 }
 function openSettings(page) {
     openMenu(false);
+    // (The offline client hasn't these pages: they're the server's.)
+    if (globalThis.tabtopOffline) {
+        note("Site controls and Settings aren't in the offline client: open the browser from the server for them.");
+        return;
+    }
     settingsFrame?.remove();
     settingsUnsaved = false;
     const there = new URL(page, location.href);
@@ -477,6 +551,7 @@ const mediaHelp = {
     // manifest): spilled to the server while it plays, remuxed on Save.
     saveMSE: filesOn ? (stream, say, opts) => saveMSECapture(stream, say, opts) : null,
     spillMSE: filesOn ? (stream, ev) => spillMSECapture(stream, ev) : null,
+    downloaded: (stream, name) => pageDownload(stream, name),
     abortMSE: filesOn ? (stream) => abortMSECapture(stream) : null,
 };
 
@@ -549,10 +624,11 @@ async function refreshMediaPolicy() {
 const menuSaves = new Map();  // a player's key -> { text, fraction, cancel, view }
 function newMedia() {
     menuSaves.clear();  // (another page's players)
-    const m = goMedia(frame, { ...mediaHelp, emeReply(message, id) {
+    // (An embedded page's (doc: its world) to that page's world.)
+    const m = goMedia(frame, { ...mediaHelp, private: privateTab, emeReply(message, id, doc) {
         if (m !== media || ws?.readyState !== TunnelSocket.OPEN) return;
         const value = JSON.stringify(message);
-        if (value.length <= 49152) ws.send(JSON.stringify({ op: "event", kind: "eme-reply", id, gen: shown, value }));
+        if (value.length <= 49152) ws.send(JSON.stringify({ op: "event", kind: "eme-reply", id, gen: shown, value, ...(doc ? { fdoc: doc } : {}) }));
     } });
     m.autoplay(shouldAutoplay());
     return m;
@@ -726,8 +802,13 @@ function mediaMenu() {
     menu.classList.toggle("has-media", players.length > 0);
     menu.setAttribute("aria-label", players.length ? `Menu (${players.length} playing or loading on this page)` : "Menu");
     section.hidden = !players.length && !streams.length;
-    const videos = players.every((p) => p.kind === "video");
-    section.querySelector("h2").textContent = videos ? "Videos on this page" : "Videos and sounds on this page";
+    // No video among them (sounds only, or the page's streams): no heading
+    // shown, only named to a screen reader.
+    const anyVideo = players.some((p) => p.kind === "video"), anySound = players.some((p) => p.kind !== "video");
+    const heading = section.querySelector("h2");
+    heading.textContent = anyVideo ? (anySound ? "Videos and sounds on this page" : "Videos on this page")
+        : anySound ? "Sounds on this page" : "Streams on this page";
+    heading.classList.toggle("unseen", !anyVideo);
     // Drawn again only as what's shown changes: a row replaced as it's
     // pressed takes no click, and a focus moves.
     const drawn = JSON.stringify([autoplayOverride, siteMedia, players.map(({ key, state, short, src, skippable, playing, ready, watching, saveable }) => [key, state, short, src, skippable, playing, ready, watching, saveable]),
@@ -770,13 +851,17 @@ function mediaMenu() {
             ? glyph("hide", `Hide ${which} from the page`, () => media?.hide(p.key))
             : glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block videos from its host`, () => media?.skip(p.key), { disabled: !p.skippable });
         if (!endedVideo) holdToBlock(skip, p);
-        const acts = [
-            ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
-            ...(p.saveable ? [saveGlyph(p, which, note)].filter(Boolean) : []),
-            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
-            skip,
-        ];
-        for (const [j, b] of acts.entries()) b.dataset.act = String(j);
+        // Download first, left of Watch (the player): Download … Watch …
+        // Play/Pause … Skip. Each named, so the focus keeps to its act as
+        // others come and go.
+        const save = p.saveable ? saveGlyph(p, which, note) : null;
+        if (save) save.dataset.act = "save";
+        const watch = p.kind === "video" ? glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching }) : null;
+        if (watch) watch.dataset.act = "watch";
+        const play = glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready });
+        play.dataset.act = "play";
+        skip.dataset.act = "skip";
+        const acts = [save, watch, play, skip].filter(Boolean);
         const buttons = Object.assign(document.createElement("div"), { className: "acts" });
         buttons.append(...acts);
         li.append(about, buttons);
@@ -796,7 +881,7 @@ function mediaMenu() {
         note.setAttribute("aria-live", "polite");
         about.append(Object.assign(document.createElement("div"), { className: "state", textContent: "Stream" }), where, note);
         const save = saveGlyph({ key: li.dataset.key }, label, note, { stream: true, label: "", save: (say, opts) => saveFile(url, say, true, undefined, opts) });
-        save.dataset.act = "0";
+        save.dataset.act = "save";
         const buttons = Object.assign(document.createElement("div"), { className: "acts" });
         buttons.append(save);
         li.append(about, buttons);
@@ -809,9 +894,13 @@ function mediaMenu() {
 }
 frame.id = "go_view";
 frame.title = "Page";
-frame.setAttribute("sandbox", "allow-scripts");
+// (And its pointer locked, for a page that asks: gopointerlock.go.)
+frame.setAttribute("sandbox", "allow-scripts allow-pointer-lock");
 frame.setAttribute("referrerpolicy", "no-referrer");
 const frameURL = new URL("../tabtop/go-frame.html", import.meta.url).href;
+// The offline client (see nav.js) builds the frame itself, from its own
+// files (srcdoc): none from the server.
+const offlineFrame = globalThis.tabtopOffline?.frameHTML?.("go-frame.html") ?? null;
 // A token for the frame's document alone: sent once it's loaded, and
 // required on every message from it after, so another document in the
 // frame (were one ever loaded there) is ignored.
@@ -826,7 +915,8 @@ function resetFrame() {
     frameIsReady = new Promise((resolve) => (frameReady = resolve));
     loads = 0;
     greeted = false;
-    frame.src = frameURL;
+    if (offlineFrame) frame.srcdoc = offlineFrame;
+    else frame.src = frameURL;
     if (lastRender) toFrame(lastRender);
 }
 // The frame's document should never change but by resetFrame: its policy
@@ -932,6 +1022,159 @@ function warn(message, { retry = null, error = true, label = "Try again", edit =
 notice.querySelector(".dismiss").addEventListener("click", () => { notice.hidden = true; });
 notice.querySelector(".edit").addEventListener("click", () => { notice.hidden = true; address.focus(); address.select(); });
 
+// --- The page's clipboard (goclipboard.go) -------------------------------
+//
+// What it copies is put on this browser's clipboard, at once if the
+// person's press still counts here (it's this page's too: an embedded
+// page's activation is its parents'), else from a notice. What it asks to
+// read is asked of the person, each time, never remembered.
+// A picture (a PNG, base64) is put there with its text, if it had any.
+async function copyOut(text, image) {
+    const put = () => {
+        if (typeof image !== "string") return navigator.clipboard.writeText(text);
+        const items = { "image/png": new Blob([Uint8Array.from(atob(image), (c) => c.charCodeAt(0))], { type: "image/png" }) };
+        if (typeof text === "string" && text) items["text/plain"] = new Blob([text], { type: "text/plain" });
+        return navigator.clipboard.write([new ClipboardItem(items)]);
+    };
+    try {
+        await put();
+    } catch {
+        warn(typeof image === "string" ? "The page copied a picture." : "The page copied text.", {
+            error: false, label: "Copy",
+            retry: () => put().then(() => note("Copied."), (err) => warn(`It wasn’t copied: ${err.message}`)),
+        });
+    }
+}
+const deviceContext = () => ({ socket: ws, gen });
+const devices = viewerDevices($("go_device"), deviceContext, node => media.videoForNode(node), (stream, type) => media.sharedFile(stream, type));
+const pasteBox = $("go_paste");
+let pasteAsks = [];
+function askPaste(m) {
+    if (pasteAsks.length >= 4) return answerPaste(m, false);
+    pasteAsks.push(m);
+    if (pasteAsks.length === 1) showPasteAsk();
+}
+function showPasteAsk() {
+    const m = pasteAsks[0];
+    if (!m) {
+        pasteBox.hidden = true;
+        return;
+    }
+    const site = typeof m.site === "string" && m.site ? m.site : "This page";
+    const within = typeof m.within === "string" && m.within ? ` (in a frame of ${m.within})` : "";
+    $("go_paste_text").textContent = `${site}${within} wants to see what you copied (your clipboard’s ${m.images ? "text and pictures" : "text"}).`;
+    pasteBox.hidden = false;
+    pasteBox.querySelector(".allow").focus();
+}
+// A read of its items (m.images) is given its picture too (a PNG, 8 MiB at
+// most), sent in parts before the answer.
+async function answerPaste(m, allow) {
+    let value = "", image = null;
+    if (allow) {
+        try {
+            if (m.images) {
+                const items = await navigator.clipboard.read();
+                const item = items.find((i) => i.types.includes("image/png")) ?? items[0];
+                if (item?.types.includes("image/png")) image = new Uint8Array(await (await item.getType("image/png")).arrayBuffer());
+                const text = items.find((i) => i.types.includes("text/plain"));
+                if (text) value = await (await text.getType("text/plain")).text();
+            } else {
+                value = await navigator.clipboard.readText();
+            }
+        } catch (err) {
+            allow = false;
+            warn(`Your browser didn’t let the clipboard be read: ${err.message}`);
+        }
+    }
+    if (image && image.length > 8 << 20) {
+        warn("The picture you copied is too large to give the page (8 MiB at most).");
+        image = null;
+    }
+    const socket = ws;
+    if (image) {
+        // (Multiples of three: base64 padding in the last part only.)
+        const part = 24 * 1024;
+        for (let at = 0; at < image.length; at += part) {
+            socket?.send(JSON.stringify({ op: "paste-part", text: m.ask, value: btoa(String.fromCharCode(...image.subarray(at, at + part))) }));
+        }
+    }
+    socket?.send(JSON.stringify({ op: "paste", text: m.ask, accept: allow, value, count: image?.length ?? 0 }));
+}
+function pasteAnswered(allow) {
+    const m = pasteAsks.shift();
+    pasteBox.hidden = true;
+    if (m) answerPaste(m, allow);
+    showPasteAsk();
+}
+pasteBox.querySelector(".allow").addEventListener("click", () => pasteAnswered(true));
+pasteBox.querySelector(".refuse").addEventListener("click", () => pasteAnswered(false));
+pasteBox.addEventListener("keydown", (e) => { if (e.key === "Escape") pasteAnswered(false); });
+
+// --- The page's notifications (gonotify.go) -------------------------------
+//
+// Asked for: asked of the person (the answer kept for the site, in Site
+// controls); shown: as this browser's notification, if it allows them
+// (asked, as the person allows the page's), else as a notice here; what
+// becomes of each told back, for the page's events.
+const notifyBox = $("go_notify_ask");
+let notifyAsking = null;
+function askNotify(m) {
+    notifyAsking = m;
+    $("go_notify_ask_text").textContent = `${typeof m.site === "string" && m.site ? m.site : "This page"} wants to show you notifications.`;
+    notifyBox.hidden = false;
+    notifyBox.querySelector(".allow").focus();
+}
+function notifyAnswered(value) {
+    const m = notifyAsking;
+    notifyAsking = null;
+    notifyBox.hidden = true;
+    if (!m) return;
+    // This browser asked too, as the person allows (their press): so it
+    // can show them.
+    if (value === "allow" && "Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+    ws?.send(JSON.stringify({ op: "notify-permission", text: m.ask, value }));
+}
+notifyBox.querySelector(".allow").addEventListener("click", () => notifyAnswered("allow"));
+notifyBox.querySelector(".refuse").addEventListener("click", () => notifyAnswered("block"));
+notifyBox.querySelector(".later").addEventListener("click", () => notifyAnswered(""));
+notifyBox.addEventListener("keydown", (e) => { if (e.key === "Escape") notifyAnswered(""); });
+const notified = new Map();  // token -> this browser's Notification, or "notice"
+const notifyTell = (token, kind) => ws?.send(JSON.stringify({ op: "notify-event", text: token, kind }));
+function showNotify(m) {
+    const site = typeof m.site === "string" ? m.site : "";
+    const title = typeof m.title === "string" ? m.title : "";
+    const body = typeof m.body === "string" ? m.body : "";
+    if ("Notification" in window && Notification.permission === "granted") {
+        try {
+            // (Its site first, as it's not TabTop's; its tag kept apart
+            // from TabTop's own.)
+            // (Its pictures as the server fetched them: data: pictures only.)
+            const pic = (v) => (typeof v === "string" && v.length <= 1_500_000 && /^data:image\/(png|jpeg|gif|webp|bmp|x-icon);base64,[A-Za-z0-9+/]*={0,2}$/.test(v) ? v : undefined);
+            const n = new Notification(title || site, {
+                body: body ? `${site}\n${body}` : site, tag: m.tag ? `tabtop-go:${site}:${m.tag}` : undefined, renotify: !!(m.tag && m.renotify),
+                silent: !!m.silent, requireInteraction: !!m.requireInteraction, dir: m.dir, lang: m.lang || undefined,
+                icon: pic(m.icon), image: pic(m.image), badge: pic(m.badge),
+            });
+            n.onshow = () => notifyTell(m.ask, "show");
+            n.onclick = () => { window.focus(); notifyTell(m.ask, "click"); };
+            n.onclose = () => { notified.delete(m.ask); notifyTell(m.ask, "close"); };
+            n.onerror = () => { notified.delete(m.ask); notifyTell(m.ask, "error"); };
+            notified.set(m.ask, n);
+            return;
+        } catch { /* a notice, below */ }
+    }
+    // Here, as a notice: Open its click.
+    notified.set(m.ask, "notice");
+    warn(`${site}: ${title}${body ? ` — ${body}` : ""}`, { error: false, label: "Open", retry: () => notifyTell(m.ask, "click") });
+    notifyTell(m.ask, "show");
+}
+function closeNotify(token) {
+    const n = notified.get(token);
+    notified.delete(token);
+    if (n === "notice") notifyTell(token, "close");
+    else n?.close();
+}
+
 // --- Pop-ups the page wants to open -------------------------------------
 //
 // Asked about one at a time: open it (in a tab of its own) or not, the
@@ -952,8 +1195,8 @@ function showPopupAsk() {
     const site = typeof m.site === "string" && m.site ? m.site : "This page";
     $("go_popup_text").textContent = `${site} wants to open a pop-up: ${hostOf(m.url)}`;
     popupBox.querySelector(".remember span").textContent = m.site ? `Remember for ${m.site}` : "Remember for this site";
-    popupBox.querySelector(".remember").hidden = !m.site;
-    popupBox.querySelector(".remember input").checked = true;
+    popupBox.querySelector(".remember").hidden = !m.site || privateTab;  // (a private tab keeps no answer)
+    popupBox.querySelector(".remember input").checked = !privateTab;
     popupBox.hidden = false;
     popupBox.querySelector(".open").focus();
 }
@@ -1003,7 +1246,8 @@ function update() {
     if (entry && document.activeElement !== address) showSite(entry.url);
     addressButtons();
     frame.title = entry ? entry.title || hostOf(entry.url) : "Page";
-    document.title = entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
+    // (A private tab's page isn't named: the device's history keeps it.)
+    document.title = privateTab ? "Private – Browser" : entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
     if (entry) {
         // Kept in this tab only, so that reloading it carries on (see the
         // start, below): not in the tab's own address (/go/#…), which the
@@ -1055,6 +1299,7 @@ function addressButtons() {
 // recent keeps the site of an address opened, for the start: the site
 // only (not the page), not a search, this device's only.
 function recent(url) {
+    if (privateTab) return;
     let origin;
     try {
         const u = new URL(url);
@@ -1073,7 +1318,7 @@ function recentSites() {
     } catch { return []; }
 }
 function showRecent() {
-    const list = $("go_recent"), sites = recentSites();
+    const list = $("go_recent"), sites = privateTab ? [] : recentSites();
     list.replaceChildren(...sites.map((origin) => {
         const li = document.createElement("li");
         const b = Object.assign(document.createElement("button"), { type: "button", textContent: hostOf(origin).replace(/^www\./, "") });
@@ -1155,6 +1400,7 @@ function load(url, { push = true } = {}) {
         return;
     }
     askedOffline = null;
+    if (maybeSwap(url, true)) return;  // (in a fresh engine: see maybeSwap)
     sentView = view();
     ws.send(JSON.stringify({ op: "navigate", url, view: sentView }));
 }
@@ -1186,7 +1432,7 @@ function view() {
         sw: Math.round(window.innerWidth), sh: Math.round(window.innerHeight),
         // Touch, if this device has it: the page offers what it offers to
         // touch screens, and takes the touches given it.
-        touch: navigator.maxTouchPoints > 0, desktop: desktopOn,
+        touch: navigator.maxTouchPoints > 0, compact: compactView.matches, other: otherOn,
         // Which way up the device is held: the page's screen.orientation and
         // (orientation: …) media queries follow it. Where the device doesn't
         // say, the window's shape.
@@ -1262,6 +1508,55 @@ let heard = true, closing = false;
 // browser tab's, take that page's tab from it.)
 let pageLeft = false;
 window.addEventListener("pagehide", () => { pageLeft = true; });
+
+// The page's screen wake lock (go-wakelock): this browser's own held while
+// the page holds one, taken again as this page is shown again (a browser
+// lets its go as it's hidden); if it can't be held, the page's told
+// (wakelock-lost), its own let go.
+const wake = (() => {
+    let wanted = false, sentinel = null, asking = false;
+    async function hold() {
+        if (!wanted || sentinel || asking || document.visibilityState !== "visible") return;
+        asking = true;
+        try {
+            const s = await navigator.wakeLock.request("screen");
+            asking = false;
+            if (!wanted) return void s.release().catch(() => {});
+            sentinel = s;
+            s.addEventListener("release", () => { if (sentinel === s) sentinel = null; });
+        } catch {
+            asking = false;
+            if (!wanted) return;
+            wanted = false;
+            try { ws?.send(JSON.stringify({ op: "wakelock-lost" })); } catch { /* gone */ }
+        }
+    }
+    document.addEventListener("visibilitychange", () => { void hold(); });
+    return {
+        set(on) {
+            wanted = on;
+            if (on) return void hold();
+            const s = sentinel;
+            sentinel = null;
+            s?.release().catch(() => {});
+        },
+    };
+})();
+window.addEventListener("pagehide", () => wake.set(false));
+
+// The page's vibration (go-vibrate): stopped as its page goes, this one's
+// hidden, or its tab is.
+let vibrating = false;
+function unvibrate() {
+    if (!vibrating) return;
+    vibrating = false;
+    try { navigator.vibrate?.(0); } catch { /* none */ }
+}
+const tabHidden = () => {
+    try { return inTabs && !!window.frameElement?.hidden; } catch { return false; }
+};
+window.addEventListener("pagehide", unvibrate);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") unvibrate(); });
 // (Back from the browser's cache: as it was, but for its connection.)
 window.addEventListener("pageshow", (e) => {
     if (!e.persisted) return;
@@ -1279,7 +1574,7 @@ function connect() {
 function open() {
     return new Promise((resolve) => {
         const resume = resumeToken.get();
-        const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}) }, { title: "Browser" });
+        const s = new TunnelSocket({ type: "go", viewerCaps: viewerCapabilities(), deflate: canInflate, ...(resume ? { resume } : {}), ...(privateTab ? { private: true } : {}) }, { title: "Browser" });
         show("Connecting to TabTop…");
         $("go_progress").hidden = false;
         s.onopen = () => {
@@ -1317,6 +1612,7 @@ function open() {
                     resumeToken.set("");
                     s.close();
                     ws = null;
+                    devices.reset();
                     connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
                 }, 10_000);
             } else if (at >= 0) {
@@ -1331,70 +1627,196 @@ function open() {
         s.onmessage = (e) => {
             inbox = inbox.then(() => take(e.data)).catch(() => {});
         };
-        const take = async (data) => {
-            if (ws !== s) return;
-            heard = true;
-            if (typeof data !== "string") {
-                // Request number 0: a large message, compressed (see
-                // sendLarge in gobrowser.go); any other, a resource's bytes.
-                if (!(data instanceof ArrayBuffer) || data.byteLength < 4 || new DataView(data).getUint32(0) !== 0) {
-                    resData(data);
-                    return;
-                }
-                data = await inflate(data.slice(4));
-                if (ws !== s) return;
-            }
-            let m;
-            try { m = JSON.parse(data); } catch { return; }
-            if (m.type === "go-taken") {
-                // This tab opened in another window (a duplicated browser
-                // tab), which has it now: this one starts its own next.
-                resumeToken.set("");
-                return;
-            }
-            if (m.type === "go-res") {
-                resHeader(m);  // of any page: not a generation's
-                return;
-            }
-            if (m.type === "go-ads") {
-                // Not a generation's either: the server's count is always
-                // the page it's at now's, whatever generation that is yet.
-                if (ws === s && typeof m.count === "number") showAds(m.count);
-                return;
-            }
-            if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
-            gen = m.gen;
-            message(m);
-        };
-        s.onclose = (e) => {
-            resLost(s);
-            if (closing || pageLeft) return;  // closed by the person, or the page left: nothing to come back to
-            const was = ws === s;
-            // One that isn't the page's now (replaced, or never opened to be
-            // it): nothing of the one that is is touched, nor said.
-            if (!was && ws) {
-                resolve(!e.lost);
-                return;
-            }
-            ws = null;
-            loading = rendering = false;
-            closeDialog();
-            update();
-            if (e.login) {
-                forgetSession(s.session);
-                storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
-            } else if (e.lost) {
-                if (was) reconnect(resumeToken.get()
-                    ? "Connection lost. The page carries on on the server for 5 minutes; reconnecting picks it up where it is."
-                    : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
-            } else {
-                show("");
-                warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0, connection: true });
-            }
-            resolve(!e.lost);
-        };
+        const take = receiver(s);
+        s.onclose = (e) => socketClosed(s, e, resolve);
     });
 }
+// receiver is what a connection's messages are taken by (in the order
+// they come: open's inbox), while it's the page's (ws).
+function receiver(s) {
+    return async (data) => {
+        if (ws !== s) return;
+        heard = true;
+        if (typeof data !== "string") {
+            // Request number 0: a large message, compressed (see
+            // sendLarge in gobrowser.go); any other, a resource's bytes.
+            if (!(data instanceof ArrayBuffer) || data.byteLength < 4 || new DataView(data).getUint32(0) !== 0) {
+                resData(data);
+                return;
+            }
+            data = await inflate(data.slice(4));
+            if (ws !== s) return;
+        }
+        let m;
+        try { m = JSON.parse(data); } catch { return; }
+        if (m.type === "go-taken") {
+            // This tab opened in another window (a duplicated browser
+            // tab), which has it now: this one starts its own next.
+            resumeToken.set("");
+            return;
+        }
+        if (m.type === "go-res") {
+            resHeader(m);  // of any page: not a generation's
+            return;
+        }
+        if (m.type === "go-ads") {
+            // Not a generation's either: the server's count is always
+            // the page it's at now's, whatever generation that is yet.
+            if (ws === s && typeof m.count === "number") showAds(m.count);
+            return;
+        }
+        if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
+        if (gen !== m.gen) {
+            devices.reset();
+            unvibrate();
+            wake.set(false);
+            frame.contentWindow?.postMessage({ type: "pointerlock", on: false }, "*");
+            if (chooser) picker.closeFor(chooser);  // (the page that asked is gone)
+        }
+        gen = m.gen;
+        message(m);
+    };
+}
+// socketClosed is a connection closing: the page's, said so and connected
+// again as it should be; another (replaced, or never opened to be it):
+// nothing of the page's touched.
+function socketClosed(s, e, resolve) {
+    resLost(s);
+    if (closing || pageLeft) return;  // closed by the person, or the page left: nothing to come back to
+    const was = ws === s;
+    // One that isn't the page's now (replaced, or never opened to be
+    // it): nothing of the one that is is touched, nor said.
+    if (!was && ws) {
+        resolve(!e.lost);
+        return;
+    }
+    ws = null;
+    devices.reset();
+    loading = rendering = false;
+    closeDialog();
+    update();
+    if (e.login) {
+        forgetSession(s.session);
+        storedSession() ? connect().then((ok) => ok || reconnect("Can't reach the server.", connect)) : location.reload();
+    } else if (e.lost) {
+        if (was) reconnect(resumeToken.get()
+            ? "Connection lost. The page carries on on the server for 5 minutes; reconnecting picks it up where it is."
+            : "Connection lost. Reconnecting will reload this page; unsaved input may be lost.", connect);
+    } else if (engineRestarting) {
+        engineRestarting = false;
+        show("The engine was restarted: loading the page again…");
+        connect().then((ok) => ok || reconnect("Can't reach the server.", connect));
+    } else {
+        show("");
+        warn(`${e.reason || "The browser’s engine was closed."} Reconnecting will reload the page; unsaved input may be lost.`, { retry: () => connect(), label: "Reconnect", edit: at >= 0, connection: true });
+    }
+    resolve(!e.lost);
+}
+
+// --- A fresh engine, the old one past its soft memory limit ----------------
+//
+// The server advises it (go-recycle: gobrowser.go's recycle) as the tab's
+// engine passes a share of its memory limit (goRecycleAt): a page that
+// keeps what it's done with (Moli keeps the DOM elements a page has
+// removed; a feed's, as YouTube's Shorts', grow it by tens of MB a minute)
+// would otherwise be ended mid-page by the watchdog at the limit. At the
+// page's next address (its own, as Shorts goes to its next reel; or one the
+// person goes to), a tab of its own is opened on the server (no resume
+// token: a fresh engine), named the tab it takes over from (whose cookies
+// it's given first: goroute.go), and loads the address while this one's
+// page stays shown here; once its page has come (go-snapshot), it's the
+// tab's: what it sent meanwhile taken, in order, and the old tab closed
+// (its engine ended). Not while something would be cut off (a download or
+// Save, a file going to the page, an ask or dialog open, typing), nor
+// again within SWAP_EVERY; one that doesn't come in WARM_FOR is let go.
+let recycleAdvised = false, lastSwap = -Infinity, warm = null, lastKeyAt = -Infinity, fsStaging = 0;
+const SWAP_EVERY = 5 * 60_000, WARM_FOR = 60_000;
+function swapBusy() {
+    return downloads.size > 0 || fsStaging > 0 || chooser || dropping || pasteAsks.length > 0 || notifyAsking || popupAsks.length > 0 ||
+        !$("go_device").hidden || !certBox.hidden || !!document.querySelector("dialog[open]") || Date.now() - lastKeyAt < 10_000;
+}
+// maybeSwap starts moving the tab to a fresh engine at url, if it's been
+// advised and nothing's in the way (byPerson: the person's going there,
+// not sent to this tab's engine: carried on here if the move doesn't
+// happen); or, one already on its way, has it go to url. True if url's the
+// fresh one's to load.
+function maybeSwap(url, byPerson = false) {
+    if (warm) {
+        warm.url = url;
+        warm.byPerson ||= byPerson;
+        if (warm.opened) warm.s.send(JSON.stringify({ op: "navigate", url, view: view() }));
+        return true;
+    }
+    if (!recycleAdvised || !ws || pageLeft || closing || performance.now() - lastSwap < SWAP_EVERY || swapBusy()) return false;
+    lastSwap = performance.now();
+    const replaces = resumeToken.get();
+    const s = new TunnelSocket({ type: "go", viewerCaps: viewerCapabilities(), deflate: canInflate, ...(privateTab ? { private: true } : {}), ...(replaces ? { replaces } : {}) }, { title: "Browser" });
+    const w = warm = { s, url, byPerson, opened: false, kept: [], timer: 0 };
+    w.timer = setTimeout(() => dropWarm(w), WARM_FOR);
+    s.onopen = () => {
+        if (warm !== w) return;
+        w.opened = true;
+        s.send(JSON.stringify({ op: "navigate", url: w.url, view: view() }));
+    };
+    let inbox = Promise.resolve();
+    s.onmessage = (e) => { inbox = inbox.then(() => warmTake(w, e.data)).catch(() => {}); };
+    s.onclose = () => dropWarm(w);
+    return true;
+}
+// warmTake keeps what the fresh tab sends (decompressed, as the page's
+// connection would take it), till its page has come: then it's the tab's.
+async function warmTake(w, data) {
+    if (warm !== w) return;
+    if (typeof data !== "string" && data instanceof ArrayBuffer && data.byteLength >= 4 && new DataView(data).getUint32(0) === 0) {
+        data = await inflate(data.slice(4));
+        if (warm !== w) return;
+    }
+    w.kept.push(data);
+    if (typeof data !== "string") return;
+    let m;
+    try { m = JSON.parse(data); } catch { return; }
+    if (m.type === "go-snapshot" && !m.again) swapTo(w);
+}
+// swapTo makes the fresh tab the page's: the old one's let go here as its
+// connection closing would (it isn't the page's then: socketClosed leaves
+// it), and closed for good on the server (its engine ended).
+function swapTo(w) {
+    clearTimeout(w.timer);
+    warm = null;
+    recycleAdvised = false;
+    unvibrate();  // (the old page's)
+    wake.set(false);
+    const old = ws;
+    ws = w.s;
+    gen = shown = 0;
+    sentView = view();
+    resumeToken.set(typeof w.s.reply?.resume === "string" && w.s.reply.resume.length <= 64 ? w.s.reply.resume : "");
+    devices.reset();
+    closeDialog();
+    loading = rendering = false;
+    if (old) {
+        resLost(old);
+        try { old.send(JSON.stringify({ op: "close" })); } catch { /* gone */ }
+        old.close();
+    }
+    const take = receiver(w.s);
+    let inbox = Promise.resolve();
+    for (const data of w.kept) inbox = inbox.then(() => take(data)).catch(() => {});
+    w.kept = [];
+    w.s.onmessage = (e) => { inbox = inbox.then(() => take(e.data)).catch(() => {}); };
+    w.s.onclose = (e) => socketClosed(w.s, e, () => {});
+}
+// dropWarm lets a fresh tab go that didn't come (or closed): the page
+// carries on in its own; one the person was going to, there.
+function dropWarm(w) {
+    if (warm !== w) return;
+    warm = null;
+    clearTimeout(w.timer);
+    try { w.s.send(JSON.stringify({ op: "close" })); } catch { /* not open */ }
+    try { w.s.close(); } catch { /* closed */ }
+    if (w.byPerson && ws) ws.send(JSON.stringify({ op: "navigate", url: w.url, view: sentView = view() }));
+}
+window.addEventListener("pagehide", () => { if (warm) dropWarm(warm); });
 
 // The page's streams, as the player's Save stream offers them
 // (gostreams.go; go-media.js): by address, what each is ({height, duration, live}, as far as its manifests
@@ -1535,6 +1957,17 @@ function message(m) {
             update();
             break;
         }
+        case "go-frame-plays":
+            // An embedded page of another origin's players, started or
+            // stopped by it (goframestreams.go): to their boxes' players.
+            if (m.gen === shown && Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20 && Array.isArray(m.plays)) {
+                toFrame({ type: "frame-plays", gen: m.gen, doc: m.doc, plays: m.plays.slice(0, 32) });
+            }
+            break;
+        case "go-streams":
+            // An embedded page's (goframestreams.go).
+            if (m.gen === shown) media.streams(m.streams);
+            break;
         case "go-changes":
             if (m.gen === shown) media.streams(m.streams);
             if (m.gen === shown) {
@@ -1545,8 +1978,13 @@ function message(m) {
             }
             break;
         case "go-eme":
-            // EME requests of a batch of changes let go (read again whole).
-            if (m.gen === shown) media.eme(m.eme);
+            // EME requests of a batch of changes let go (read again whole),
+            // or an embedded page's (doc: its world, goframeeme.go).
+            if (m.gen === shown && (m.doc === undefined || (Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20))) media.eme(m.eme, m.doc ?? 0);
+            break;
+        case "go-eme-gone":
+            // An embedded page's document gone: its keys and sessions too.
+            if (m.gen === shown && Number.isSafeInteger(m.doc) && m.doc > 0) media.emeGone(m.doc);
             break;
         case "go-net":
             // Whether the page being read is still loading: the frame holds
@@ -1562,6 +2000,7 @@ function message(m) {
                 at++;
                 remember();
                 update();
+                maybeSwap(m.url);  // (advised: its next address in a fresh engine)
             }
             break;
         case "go-dialog":
@@ -1594,6 +2033,104 @@ function message(m) {
             break;
         case "go-popup-blocked":
             note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (Site controls: the button at the address’s start).`);
+            break;
+        case "go-file-chooser":
+            if (typeof m.chooser === "string" && m.gen === gen) askFiles(m);
+            break;
+        case "go-pointerlock":
+            // The page's pointer lock: the copy's frame locks it (or lets go).
+            if (m.gen !== gen) break;
+            frame.contentWindow?.postMessage({ type: "pointerlock", on: m.on === true }, "*");
+            break;
+        case "go-orientation":
+            // The page's screen orientation lock (goorientation.go): this
+            // screen locked so, in its fullscreen; its answer the page's.
+            if (m.gen !== gen) break;
+            if (m.unlock) {
+                try { screen.orientation?.unlock?.(); } catch { /* not locked */ }
+                break;
+            }
+            if (typeof m.id === "string" && typeof m.lock === "string") {
+                const id = m.id, answer = (why) => { try { ws?.send(JSON.stringify({ op: "orientation-answer", gen, text: id, value: why })); } catch { /* gone */ } };
+                if (!document.fullscreenElement) answer("SecurityError");
+                else Promise.resolve().then(() => screen.orientation.lock(m.lock)).then(() => answer(""), (e) => answer(typeof e?.name === "string" && e.name ? e.name : "NotSupportedError"));
+            }
+            break;
+        case "go-wakelock":
+            if (m.gen === gen) wake.set(m.on === true);
+            break;
+        case "go-vibrate": {
+            // The page's vibration (govibrate.go), felt here while this tab's
+            // shown; a cancel, at once.
+            if (m.gen !== gen || !Array.isArray(m.pattern)) break;
+            const pattern = m.pattern.slice(0, 99).map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0)));
+            if (!pattern.length) unvibrate();
+            else if (document.visibilityState === "visible" && !tabHidden()) {
+                try { vibrating = navigator.vibrate?.(pattern) === true; } catch { /* not this device's */ }
+            }
+            break;
+        }
+        case "go-fullscreen":
+            // The page's element fullscreen (laid over the engine's window):
+            // the page alone over this screen, as the menu's Full screen.
+            if (m.gen !== gen) break;
+            if (m.on) {
+                if (screenMode !== "full") {
+                    toggleScreenMode("full");
+                    pageFullScreen = true;
+                    frame.focus();  // (the page's keys still its: Esc, f, space)
+                }
+            } else if (pageFullScreen) {
+                pageFullScreen = false;
+                if (screenMode === "full") leaveFullScreen();
+            }
+            break;
+        case "go-paste-image-error":
+            warn("The image could not be pasted into the selected element.");
+            break;
+        case "go-device":
+            if (m.gen === shown) devices.ask(m);
+            break;
+        case "go-fs-read":
+            if (m.gen === shown && typeof m.transfer === "string") stageFSFile(m);
+            break;
+        case "go-copy":
+            // What the page copied (a Copy button's), after the person's
+            // press there (goclipboard.go): on their clipboard.
+            if ((typeof m.text === "string" || typeof m.image === "string") && m.gen === gen) copyOut(typeof m.text === "string" ? m.text : "", m.image);
+            break;
+        case "go-paste-ask":
+            if (typeof m.ask === "string" && m.gen === gen) askPaste(m);
+            break;
+        case "go-notify-ask":
+            if (typeof m.ask === "string" && m.gen === gen) askNotify(m);
+            break;
+        case "go-notify":
+            if (typeof m.ask === "string" && m.gen === gen) showNotify(m);
+            break;
+        case "go-notify-close":
+            if (typeof m.ask === "string") closeNotify(m.ask);
+            break;
+        case "go-notify-gone":
+            // The page left: its notifications closed, its ask let go.
+            for (const token of [...notified.keys()]) closeNotify(token);
+            if (notifyAsking) notifyAnswered("");
+            break;
+        case "go-recycle":
+            // Its engine's past its soft memory limit: at the next address,
+            // a fresh one (maybeSwap).
+            recycleAdvised = true;
+            break;
+        case "go-restarting":
+            // The engine's being restarted (Settings): this tab connects
+            // again by itself once it's closed (gorestart.go).
+            engineRestarting = true;
+            break;
+        case "go-drop-ready":
+            if (typeof m.token === "string" && m.gen === gen) sendDropped(m.token);
+            break;
+        case "go-file-chooser-refused":
+            if (typeof m.why === "string") warn(m.why, { error: false });
             break;
         case "go-file":
             loading = rendering = false;
@@ -1665,7 +2202,7 @@ async function fetchResource(kind, url) {
     const limit = RESOURCE_LIMITS[kind];
     if (!limit || typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("not allowed");
     if (ws?.readyState === TunnelSocket.OPEN) return viaTab(ws, kind, url, limit);
-    const t = await call({ type: "go-resource", resource: kind, url });
+    const t = await call({ type: "go-resource", resource: kind, url, ...(privateTab ? { private: true } : {}) });
     const { size, mime } = t.reply;
     if (!Number.isSafeInteger(size) || size < 0 || size > limit) {
         t.close();
@@ -1790,6 +2327,18 @@ window.addEventListener("message", (e) => {
             if (typeof m.url === "string" && /^https?:\/\//i.test(m.url)) load(m.url);
             break;
         case "event":
+            // (The person's own press on the page, as a download's said to
+            // follow from it: pageDownload. A press, not a pointer moved
+            // or a field's text changed.)
+            if (["click", "submit"].includes(m.kind) || (m.kind === "key" && m.phase === "down" && !m.repeat) ||
+                (m.kind === "mouse" && m.phase === "down") || (m.kind === "touch" && m.phase === "end")) lastPageInput = Date.now();
+            if (m.kind === "key" || m.kind === "input") lastKeyAt = Date.now();  // (typing, a field's or a key's: not moved to a fresh engine meanwhile)
+            // Esc, while the page's fullscreen: the browser's, leaving it
+            // (the page isn't given it, as browsers don't).
+            if (pageFullScreen && m.kind === "key" && m.key === "Escape") {
+                if (m.phase === "down") leaveFullScreen();
+                break;
+            }
             // Done in the engine, for the document shown only.
             if (ws && m.gen === shown && Number.isSafeInteger(m.id)) {
                 const { kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter } = m;
@@ -1799,7 +2348,7 @@ window.addEventListener("message", (e) => {
                 const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
                     buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
                     location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy), tap: !!m.tap, frame: num(m.frame), fdoc: num(m.fdoc),
-                    route: (Array.isArray(m.route) ? m.route.slice(0, 2) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 2) : []).map(num),
+                    route: (Array.isArray(m.route) ? m.route.slice(0, 3) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 3) : []).map(num),
                     points: (Array.isArray(m.points) ? m.points.slice(0, 10) : []).map((p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
                     items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })),
                     // Rich text: the copy's selection, a key that edits, an edit's kind.
@@ -1811,6 +2360,10 @@ window.addEventListener("message", (e) => {
         case "resync":
             if (ws && m.gen === shown) ws.send(JSON.stringify({ op: "resync", gen: m.gen }));
             break;
+        case "pointerlock-state":
+            // The pointer locked to the copy, or not, or left (gopointerlock.go).
+            if (ws && m.gen === shown && ["on", "off", "error"].includes(m.state)) ws.send(JSON.stringify({ op: "pointerlock", gen: m.gen, value: m.state }));
+            break;
         case "media":
             // A player for a box in the copy (go-media.js).
             if (m.gen === shown && Number.isSafeInteger(m.key)) {
@@ -1820,8 +2373,13 @@ window.addEventListener("message", (e) => {
                 });
             }
             break;
+        case "paste-image":
+            if (m.gen === shown && m.gen === gen) sendPasteImage(m, deviceContext, warn).catch(() => warn("The image could not be pasted."));
+            break;
         case "drop-files":
-            if (m.gen === shown) warn("Files can’t be dropped into the remote browser: it doesn’t take files from this device.", { error: false });
+            if (m.gen !== shown) break;
+            if (m.nowhere || !Array.isArray(m.files)) warn("Nothing’s there to take the files: drop them on the page.", { error: false });
+            else dropFiles(m);
             break;
         case "media-play":
             // The page started or stopped its player (a feed's next video).
@@ -1944,6 +2502,284 @@ function offerFile(url, mime) {
     if (!filesOn) return;
     const what = `This is a file from ${hostOf(url)} (${mime || "unknown type"}), not a page.`;
     warn(`${what} Save it into Downloads?`, { error: false, retry: () => saveFile(url), label: "Save into Downloads" });
+}
+
+// --- A page's file input --------------------------------------------------
+//
+// The page's file chooser, opened (its field pressed, or a button that
+// opens it): the person's own, here, its files sent to the server, then
+// put in the page's field (gouploads.go). Opened at once if this browser
+// still counts the press that opened it, else from the notice's button.
+const fileInput = document.createElement("input");
+fileInput.type = "file";
+fileInput.id = "go_file_input";
+fileInput.hidden = true;
+document.body.append(fileInput);
+let chooser = null;  // the server's, waiting: {token}
+function askFiles(m) {
+    if (chooser) answerFiles(chooser, 0);
+    chooser = { token: m.chooser, multiple: !!m.multiple };
+    fileInput.multiple = !!m.multiple;
+    fileInput.accept = typeof m.accept === "string" ? m.accept : "";
+    fileInput.value = "";
+    fileInput.dataset.chooser = m.chooser;
+    const what = m.multiple ? "files" : "a file";
+    // With Files: this device's, or TabTop's own (picker).
+    if (filesOn) return picker.ask(chooser, what);
+    const pick = () => { try { fileInput.showPicker(); } catch { fileInput.click(); } };
+    let opened = false;
+    if (navigator.userActivation?.isActive) {
+        try {
+            fileInput.showPicker();
+            opened = true;
+        } catch { /* not now: from the notice */ }
+    }
+    if (!opened) warn(`The page asks for ${what}.`, { error: false, retry: pick, label: `Choose ${what}` });
+}
+function answerFiles(c, count) {
+    if (chooser === c) {
+        chooser = null;
+        delete fileInput.dataset.chooser;
+    }
+    picker.closeFor(c);
+    ws?.send(JSON.stringify({ op: "files", text: c.token, count }));
+}
+// The page's file chooser, with Files on: this device's files (its own
+// chooser, opened from This device's press), or TabTop's own, chosen here
+// and copied by the server into what the page's given (go-upload-files:
+// read as this session may read them; nothing sent from this device).
+const picker = (() => {
+    const box = $("go_pick"), text = $("go_pick_text"), files = box.querySelector(".files");
+    const where = files.querySelector(".where"), list = files.querySelector("ul");
+    const [cancelB, filesB, deviceB, giveB] = ["cancel", "files-go", "device", "give"].map((c) => box.querySelector("." + c));
+    let c = null, dir = "", listing = 0;
+    const chosen = new Map();  // path -> its name
+    const size = (n) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : n < 1 << 30 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${(n / (1 << 30)).toFixed(1)} GB`);
+    function close() {
+        box.hidden = true;
+        c = null;
+        chosen.clear();
+        listing++;
+    }
+    function ask(ch, what) {
+        c = ch;
+        chosen.clear();
+        dir = "";
+        text.textContent = `The page asks for ${what}.`;
+        files.hidden = giveB.hidden = true;
+        filesB.hidden = deviceB.hidden = false;
+        box.hidden = false;
+        deviceB.focus();
+    }
+    function given() {
+        giveB.disabled = !chosen.size;
+        giveB.textContent = chosen.size > 1 ? `Give ${chosen.size} files to the page` : "Give to the page";
+    }
+    async function listDir(d) {
+        const me = ++listing;
+        dir = d;
+        list.replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Loading…" }));
+        let reply;
+        try {
+            const t = await call({ type: "list", path: d });
+            t.close();
+            reply = t.reply;
+        } catch (err) {
+            if (me === listing) list.replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: err.message }));
+            return;
+        }
+        if (me !== listing) return;
+        // Where: Files, then each folder down, each a way back up.
+        const parts = d ? d.split("/") : [];
+        where.replaceChildren(...[["Files", ""], ...parts.map((p, i) => [p, parts.slice(0, i + 1).join("/")])].flatMap(([name, to], i) => {
+            const b = Object.assign(document.createElement("button"), { type: "button", textContent: name });
+            b.onclick = () => listDir(to);
+            return i ? [Object.assign(document.createElement("span"), { textContent: "/" }), b] : [b];
+        }));
+        const entries = [...(reply.entries ?? [])].sort((a, b) => (b.dir - a.dir) || String(a.name).localeCompare(String(b.name)));
+        const items = entries.map((e) => {
+            const li = document.createElement("li"), path = d ? `${d}/${e.name}` : e.name;
+            if (e.dir) {
+                const b = Object.assign(document.createElement("button"), { type: "button", className: "folder", textContent: `${e.name}/` });
+                b.onclick = () => listDir(path);
+                li.append(b);
+                return li;
+            }
+            const label = document.createElement("label");
+            const box_ = Object.assign(document.createElement("input"), { type: c?.multiple ? "checkbox" : "radio", name: "go_pick_file", checked: chosen.has(path) });
+            box_.onchange = () => {
+                if (!c?.multiple) chosen.clear();
+                if (box_.checked) chosen.set(path, e.name);
+                else chosen.delete(path);
+                given();
+            };
+            label.append(box_, document.createTextNode(e.name));
+            li.append(label, Object.assign(document.createElement("span"), { className: "size", textContent: size(Number(e.bytes ?? e.size) || 0) }));
+            return li;
+        });
+        list.replaceChildren(...(items.length ? items : [Object.assign(document.createElement("li"), { className: "empty", textContent: "This folder is empty." })]));
+    }
+    cancelB.addEventListener("click", () => {
+        const ch = c;
+        close();
+        if (ch && chooser === ch) answerFiles(ch, 0);
+    });
+    deviceB.addEventListener("click", () => {
+        close();
+        try { fileInput.showPicker(); } catch { fileInput.click(); }
+    });
+    filesB.addEventListener("click", () => {
+        filesB.hidden = deviceB.hidden = true;
+        files.hidden = giveB.hidden = false;
+        given();
+        void listDir("");
+    });
+    giveB.addEventListener("click", async () => {
+        const ch = c;
+        if (!ch || chooser !== ch || !chosen.size) return;
+        const items = [...chosen];
+        close();
+        ch.sending = true;
+        try {
+            for (const [i, [path]] of items.entries()) {
+                show(`Giving ${items.length === 1 ? items[0][1] : `${items.length} files`} to the page… ${i + 1}/${items.length}`);
+                const t = await call({ type: "go-upload-files", go_tab: resumeToken.get(), chooser: ch.token, path });
+                t.close();
+            }
+            show("");
+            if (chooser !== ch) {  // the page asked again meanwhile
+                warn("The page asked for files again before these were given to it: they weren't.", { error: false });
+                return;
+            }
+            answerFiles(ch, items.length);
+            frame.contentWindow?.postMessage({ type: "files-chosen", files: items.map(([, name]) => ({ name, type: "" })) }, "*");
+        } catch (err) {
+            show("");
+            if (chooser === ch) answerFiles(ch, 0);
+            warn(`The files weren't given to the page: ${err.message}`);
+        }
+    });
+    box.addEventListener("keydown", (e) => { if (e.key === "Escape") cancelB.click(); });
+    return { ask, closeFor(ch) { if (c === ch) close(); } };
+})();
+
+// (Not once files chosen are being sent: Chrome can say its chooser was
+// cancelled after it's given the files, measured, which would undo them.)
+fileInput.addEventListener("cancel", () => { if (chooser && !chooser.sending) answerFiles(chooser, 0); });
+fileInput.addEventListener("change", async () => {
+    const c = chooser;
+    if (!c || c.sending || fileInput.dataset.chooser !== c.token) return;
+    const files = [...fileInput.files];
+    if (!files.length) return answerFiles(c, 0);
+    c.sending = true;
+    notice.hidden = true;
+    const total = files.reduce((n, f) => n + f.size, 0);
+    let before = 0;
+    try {
+        for (const file of files) {
+            await sendFile(file, c, (n) => show(`Sending ${files.length === 1 ? file.name : `${files.length} files`} to the page… ${total ? Math.floor((before + n) / total * 100) : 100}%`));
+            before += file.size;
+        }
+        show("");
+        if (chooser !== c) {  // the page asked again meanwhile
+            warn("The page asked for files again before these were given to it: they weren't.", { error: false });
+            return;
+        }
+        answerFiles(c, files.length);
+        // The page's field, as it is here: its files' names shown. (Not the
+        // files: given to a field there, files from this device have
+        // Chrome end that frame, measured.)
+        frame.contentWindow?.postMessage({ type: "files-chosen", files: files.map((f) => ({ name: f.name, type: f.type })) }, "*");
+    } catch (err) {
+        show("");
+        if (chooser === c) answerFiles(c, 0);
+        warn(`The files weren't sent to the page: ${err.message}`);
+    }
+});
+// Files dropped on the page (the copy says which, and where): asked for a
+// token, sent with it, then dropped there by the server, each a drop of
+// its own (gouploads.go). One drop's at a time.
+let dropping = null;  // {files, at, gen}
+let engineRestarting = false;  // told so: connected again once it's closed
+function dropFiles(m) {
+    const files = m.files.filter((f) => f instanceof File);
+    if (!files.length) return;
+    if (dropping) return warn("The files dropped before are still being sent.", { error: false });
+    if (files.length > 32) return warn("At most 32 files can be dropped on a page at once.", { error: false });
+    const num = (v) => (Number.isSafeInteger(v) ? v : 0);
+    const path = (a) => (Array.isArray(a) ? a.slice(0, 3).map(num) : []);
+    const d = dropping = { files, gen: m.gen, at: { id: m.id, fx: m.fx, fy: m.fy, shift: !!m.shift, ctrl: !!m.ctrl, alt: !!m.alt, meta: !!m.meta,
+        // (An embedded page's element: by the path to it.)
+        frame: num(m.frame), fdoc: num(m.fdoc), route: path(m.route), docs: path(m.docs) } };
+    ws?.send(JSON.stringify({ op: "drop-files", gen: m.gen, count: files.length }));
+    // No token (the page went on, say): another drop isn't held up by it.
+    setTimeout(() => { if (dropping === d && !d.sending) dropping = null; }, 15000);
+}
+async function sendDropped(token) {
+    const d = dropping;
+    if (!d || d.sending) return;
+    d.sending = true;
+    const c = { token };
+    const total = d.files.reduce((n, f) => n + f.size, 0);
+    let before = 0;
+    try {
+        for (const file of d.files) {
+            await sendFile(file, c, (n) => show(`Sending ${d.files.length === 1 ? file.name : `${d.files.length} files`} to the page… ${total ? Math.floor((before + n) / total * 100) : 100}%`));
+            before += file.size;
+        }
+        show("");
+        ws?.send(JSON.stringify({ op: "dropped", gen: d.gen, text: token, count: d.files.length, ...d.at }));
+    } catch (err) {
+        show("");
+        ws?.send(JSON.stringify({ op: "dropped", gen: d.gen, text: token, count: 0 }));
+        warn(`The files weren't dropped on the page: ${err.message}`);
+    } finally {
+        dropping = null;
+    }
+}
+// sendFile sends file to the server for chooser c, in chunks, each
+// answered, as an upload into Files is (requests.js).
+async function sendFile(file, c, progress, fsTransfer = false) {
+    const CHUNK = 256 * 1024, WINDOW = 16;
+    const t = await call(fsTransfer
+        ? { type: "go-fs-upload", go_tab: resumeToken.get(), transfer: c.token, size: file.size, modified: file.lastModified }
+                : { type: "go-upload", go_tab: resumeToken.get(), chooser: c.token, name: file.name, size: file.size, modified: file.lastModified });
+    try {
+        const chunks = Math.ceil(file.size / CHUNK);
+        let sent = 0, acked = 0;
+        for (;;) {
+            while (sent < chunks && sent - acked < WINDOW) {
+                t.sendData(new Uint8Array(await file.slice(sent * CHUNK, (sent + 1) * CHUNK).arrayBuffer()));
+                sent++;
+            }
+            const m = await t.next();
+            if (!m) throw new Error(t.closeReason || "the connection was lost");
+            if (m.text !== undefined) {
+                const res = JSON.parse(m.text);
+                if (res.name && acked === chunks) return;
+                throw new Error(res.error || "the server's reply is malformed");
+            }
+            acked++;
+            progress(Math.min(acked * CHUNK, file.size));
+        }
+    } finally {
+        t.close();
+    }
+}
+async function stageFSFile(m) {
+    fsStaging++;
+    try {
+        const file = await devices.fileForRead(m);
+        if (!file || ws !== deviceContext().socket || gen !== m.gen) throw new Error("The selected file handle expired.");
+        await sendFile(file, { token: m.transfer }, n => show(`Staging ${file.name} for the page… ${file.size ? Math.floor(n / file.size * 100) : 100}%`), true);
+        show("");
+    } catch (err) {
+        show("");
+        warn(`The selected file couldn't be staged for the page: ${err.message}`);
+        try { ws?.send(JSON.stringify({ op: "go-fs-cancel", gen: m.gen, text: m.transfer })); } catch { /* connection gone */ }
+    } finally {
+        fsStaging--;
+    }
 }
 // saveFile saves url into Downloads, saying how it goes (say: where, as
 // the player does over the page; else the page's status, and its notice).
@@ -2116,7 +2952,7 @@ async function saveFile(url, say = null, stream = false, job = { id: "", label: 
 // MSE spill staging: completed clear-MP4 pieces go to the server while the
 // stream plays (gostreammse.go); Save finalizes the remux into Downloads.
 const MSE_UPLOAD_CHUNK = 256 * 1024;
-const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4, windowPart: 5 };
+const MSE_KIND = { init: 1, part: 2, progressive: 3, timedPart: 4, windowPart: 5, key: 6 };
 
 async function openMSEStageSession() {
     const t = await call({ type: "fetch", path: "", from_go: true, save_mse: true, mse_stage: true, go_tab: resumeToken.get() });
@@ -2203,6 +3039,29 @@ function abortMSECapture(stream) {
     mseStages.abort(stream);
 }
 
+// A file the page made to be downloaded (a link with download to a blob:
+// or data: address: go-media.js gathers it): saved into Downloads at once
+// if it followed the person's own use of the page (an export button's),
+// else asked first, so a page can't fill Downloads by itself.
+let lastPageInput = 0;
+function pageDownload(stream, name) {
+    const what = name || "a file";
+    if (!filesOn) {
+        warn(`The page made ${what} to download, but Files is off: nowhere to save it.`, { error: false });
+        return;
+    }
+    // Saved at once only as the press's one download (taken: the next
+    // asked of the person, as a page saving many at once is).
+    if (Date.now() - lastPageInput < 10000) {
+        lastPageInput = 0;
+        saveMSECapture(stream);
+        return;
+    }
+    warn(`The page wants to save ${what} (${(stream.fileBlob?.size ?? 0).toLocaleString()} bytes) into Downloads.`, {
+        error: false, label: "Save", retry: () => saveMSECapture(stream),
+    });
+}
+
 const mseSaveKeys = new WeakMap();  // a buffered stream -> its downloads' key
 let mseSaveCount = 0;
 async function saveMSECapture(stream, say = null, { attach = false, detach = false } = {}) {
@@ -2227,11 +3086,13 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         }
         return;
     }
-    if (stream?.element?.mediaKeys) {
+    if (stream?.element?.mediaKeys && !stream?.capture?.armed && !stream?.capture?.keysKnown) {
+        // Encrypted Media whose keys a CDM keeps: its stage let go, its
+        // stream not saved.
         stream.capture?.markEncrypted();
         abortMSECapture(stream);
     }
-    if (stream?.capture?.encrypted) {
+    if (stream?.capture?.encrypted && !stream?.capture?.keysKnown) {
         if (say) say("Not saved: encrypted streams can't be saved");
         else warn("Not saved: encrypted streams can't be saved");
         return;
@@ -2251,7 +3112,8 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         else warn("Not saved: buffered stream has no media segments yet");
         return;
     }
-    const job = { id: "", label: "stream.mp4", url, stream: true, cancelling: false, say };
+    // (A file's: its download's name, or the server's for it, once said.)
+    const job = { id: "", label: stream?.saveName ?? (stream?.file ? "file" : "stream.mp4"), url, stream: true, cancelling: false, say };
     let stage;
     const button = document.createElement("button");
     button.className = "item";
@@ -2288,7 +3150,7 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
             sendCancel();
             throw new Error("cancelled");
         }
-        stage.tunnel.sendText(JSON.stringify({ finalize: true }));
+        stage.tunnel.sendText(JSON.stringify({ finalize: true, ...(stream?.saveName ? { name: stream.saveName } : {}) }));
         finalized = true;
         // The session's the save's once it starts; refused (every fetch
         // going), it goes on, spilled to, to be saved again.

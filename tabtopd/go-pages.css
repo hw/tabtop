@@ -329,3 +329,19 @@ details.more .hint { margin: 6px 0 0; }
     #host_list .addr { overflow-wrap: break-word; }
     .settings-page #jump button { font-size: .8rem; padding-inline: 4px; }
 }
+
+/* Settings' restart (go-settings.html): a passkey, or the password + code,
+   one above the other, the field its own line; one row of buttons. */
+#restart_dialog h3 { margin: 0 0 4px; font-size: 1.1rem; }
+#restart_dialog_note { margin: 0; }
+#restart_dialog .wide { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 16px; }
+#restart_dialog .wide .glyph { display: inline-flex; }
+#restart_dialog .wide svg { width: 18px; height: 18px; }
+#restart_dialog .or { display: flex; align-items: center; gap: 10px; margin: 14px 0 0; color: var(--muted); font-size: .875rem; }
+#restart_dialog .or::before, #restart_dialog .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+#restart_dialog .field { display: block; margin: 14px 0 6px; }
+#restart_dialog input { width: 100%; min-height: 38px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px; background: #202024; }
+#restart_dialog input:disabled { opacity: .55; }
+#restart_code_hint, #restart_error { margin: 6px 0 0; font-size: .875rem; }
+#restart_error { color: #ffb4ab; }
+#restart_dialog .tools { margin-top: 18px; flex-wrap: nowrap; }

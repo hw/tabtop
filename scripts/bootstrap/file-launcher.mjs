@@ -51,7 +51,7 @@ function launcher(tree) {
     // Each page, by the id nav.js has for it, and what the files page has
     // no viewer for here (see preview-model.js's offlineOff).
     // (components, the offline client's own: see components.js.)
-    const PAGES = { desktop: "vnc.html", terminal: "tty/index.html", files: "fs/index.html", components: "components/index.html" };
+    const PAGES = { desktop: "vnc.html", terminal: "tty/index.html", files: "fs/index.html", go: "go/index.html", components: "components/index.html" };
     // (3D, unless the gateway's manifest has three.js: see ASSETS.)
     let OFF = ["model", "pdf", "epub", "markdown", "html"];
     const asked = new URLSearchParams(location.search).get("page");
@@ -264,7 +264,7 @@ return Object.freeze({ base,
     };
     const frames = new Map();
     const prepareFrames = async () => {
-        for (const source of ["md-frame.html", "epub-frame.html", "pdf-frame.html"]) {
+        for (const source of ["md-frame.html", "epub-frame.html", "pdf-frame.html", "go-frame.html"]) {
             const path = "tabtop/" + source, pdf = source === "pdf-frame.html";
             if (!has(path)) continue;
             const first = [...(source !== "md-frame.html" && has("tabtop/glyphs.js") ? [bundle("tabtop/glyphs.js")] : []), framePrelude()].map(scriptText);

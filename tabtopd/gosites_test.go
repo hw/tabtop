@@ -273,3 +273,25 @@ func TestGoSearchCustom(t *testing.T) {
 		t.Fatalf("a bad custom address taken: %v %v", r["searchEngine"], r["searchURL"])
 	}
 }
+
+// TestGoPrivateDefault: new tabs private is a browser-wide setting, kept
+// in the file, reported; normal again, it's off; a site's isn't taken.
+func TestGoPrivateDefault(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sites.json")
+	s := newGoSiteSettings(file)
+	if s.report()["privateDefault"] != false {
+		t.Fatalf("private by default before it's set")
+	}
+	if err := s.set("", "tabs-private"); err != nil {
+		t.Fatal(err)
+	}
+	if again := newGoSiteSettings(file); again.report()["privateDefault"] != true {
+		t.Errorf("not kept in the file")
+	}
+	if err := s.set("example.com", "tabs-private"); err == nil {
+		t.Errorf("a site's new-tabs setting taken")
+	}
+	if err := s.set("", "tabs-normal"); err != nil || s.report()["privateDefault"] != false {
+		t.Errorf("not normal again: %v", err)
+	}
+}

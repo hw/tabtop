@@ -256,7 +256,7 @@ func (g *server) checkCode(ip, browser, code string) error {
 		return errLoginsBusy
 	}
 	if len(code) < e.digits {
-		log.Printf("password and code from %s, for a passkey, too short", ip)
+		log.Printf("password and code from %s (%s), too short", ip, browser)
 		g.activity.failedLogin(ip, browser)
 		return errWrongCode
 	}
@@ -267,7 +267,7 @@ func (g *server) checkCode(ip, browser, code string) error {
 			failed = false
 			return errLoginsBusy
 		}
-		log.Printf("password and code from %s, to add a passkey, wrong", ip)
+		log.Printf("password and code from %s (%s), wrong", ip, browser)
 		g.activity.failedLogin(ip, browser)
 		return errWrongCode
 	}

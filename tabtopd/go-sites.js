@@ -102,16 +102,18 @@ function siteState(name) {
     if (blocked) chips.push(["Blocked", true]);
     const videoHost = !!settings?.videoHosts?.includes(name);
     if (videoHost) chips.push(["Its videos blocked", true]);
-    const popup = override(settings?.popups, name);
-    if (popup !== "default") chips.push([{ ask: "Pop-ups: ask", block: "Pop-ups: blocked", allow: "Pop-ups: allowed" }[popup]]);
     const media = override(settings?.media, name);
     if (media !== "default") chips.push([{ block: "Videos: blocked", allow: "Videos: allowed", "no-autoplay": "No autoplay" }[media]]);
-    const ads = override(settings?.ads, name);
-    if (ads !== "default") chips.push([{ block: "Ads: blocked", allow: "Ads: allowed" }[ads]]);
+    const popup = override(settings?.popups, name);
+    if (popup !== "default") chips.push([{ ask: "Pop-ups: ask", block: "Pop-ups: blocked", allow: "Pop-ups: allowed" }[popup]]);
+    const notifications = override(settings?.notifications, name);
+    if (notifications !== "default") chips.push([{ block: "Notifications: blocked", allow: "Notifications: allowed" }[notifications]]);
     const theme = override(settings?.theme, name);
     if (theme !== "default") chips.push([{ auto: "Dark mode: device", light: "Dark mode: light", dark: "Dark mode: dark" }[theme]]);
+    const ads = override(settings?.ads, name);
+    if (ads !== "default") chips.push([{ block: "Ads: blocked", allow: "Ads: allowed" }[ads]]);
     if (kept(name)) chips.push(["Data kept"]);
-    return { chips, blocked, custom: popup !== "default" || media !== "default" || ads !== "default" || theme !== "default" || videoHost };
+    return { chips, blocked, custom: popup !== "default" || notifications !== "default" || media !== "default" || ads !== "default" || theme !== "default" || videoHost };
 }
 
 let siteFilter = "all";
@@ -122,7 +124,7 @@ function renderSites() {
     const usage = new Map((data?.sites ?? []).map((info) => [info.site, info]));
     const names = new Set([
         ...usage.keys(), ...(settings?.blocked ?? []), ...Object.keys(settings?.media ?? {}),
-        ...Object.keys(settings?.popups ?? {}), ...Object.keys(settings?.ads ?? {}), ...(settings?.videoHosts ?? []),
+        ...Object.keys(settings?.popups ?? {}), ...Object.keys(settings?.notifications ?? {}), ...Object.keys(settings?.ads ?? {}), ...(settings?.videoHosts ?? []),
         ...Object.keys(settings?.theme ?? {}), ...(settings?.keep ?? []),
     ]);
     const hasData = (name) => !!(usage.get(name)?.cookies || usage.get(name)?.storageItems);
@@ -264,10 +266,11 @@ document.addEventListener("click", (event) => {
 });
 
 // savedUnder is whether any setting is kept under name: its block, its
-// pop-ups, videos or ads, its videos blocked by host, or its Keep.
+// videos, pop-ups, notifications, Dark mode or ads, its videos blocked by
+// host, or its Keep.
 function savedUnder(name) {
     return !!(settings?.blocked?.includes(name) || settings?.videoHosts?.includes(name) || kept(name) ||
-        [settings?.popups, settings?.media, settings?.ads, settings?.theme].some((map) => map && Object.hasOwn(map, name)));
+        [settings?.popups, settings?.notifications, settings?.media, settings?.ads, settings?.theme].some((map) => map && Object.hasOwn(map, name)));
 }
 
 // forgetSettings deletes all the settings kept under names (a site's, and
@@ -279,7 +282,7 @@ function forgetSettings(names, label, host = label) {
     const over = host && covering(host, settings?.blocked);
     const parent = over && !names.includes(over) ? ` The block for ${over}, which covers it, stays.` : "";
     const its = names.length > 1 && !host ? "Their" : "Its";
-    if (!confirm(`Delete all saved settings for ${label}? ${its} block, pop-ups, videos and sound, Dark mode, ads, and Keep go back to the browser's defaults. ${its} cookies and site data stay, till they're cleared.${parent}`)) return;
+    if (!confirm(`Delete all saved settings for ${label}? ${its} block, videos and sound, pop-ups, notifications, Dark mode, ads, and Keep go back to the browser's defaults. ${its} cookies and site data stay, till they're cleared.${parent}`)) return;
     return run(async () => {
         for (const name of names) {
             settings = await ask({ type: "go-settings-set", name, setting: "forget" });
@@ -291,11 +294,11 @@ function forgetSettings(names, label, host = label) {
 }
 
 // resetSite puts a site's permissions back to the browser's defaults:
-// pop-ups, videos and sound, ads, and its videos blocked by host. (Its
-// access block, and its data, are their own to change.)
+// videos and sound, pop-ups, notifications, Dark mode, ads, and its videos
+// blocked by host. (Its access block, and its data, are their own to change.)
 function resetSite(site, host = site) {
     return run(async () => {
-        for (const setting of ["popups-default", "videos-default", "ads-default", "theme-default"]) settings = await ask({ type: "go-settings-set", name: site, setting });
+        for (const setting of ["videos-default", "popups-default", "notifications-default", "theme-default", "ads-default"]) settings = await ask({ type: "go-settings-set", name: site, setting });
         if (settings.videoHosts?.includes(host)) settings = await ask({ type: "go-settings-set", name: host, setting: "videos-host-allow" });
         told("media-changed");
         told("theme-changed");
@@ -313,8 +316,9 @@ const settingHost = (h) => String(h ?? "").toLowerCase().replace(/^www\./, "").r
 // What a site's settings are, each: its value here, its default, and how
 // each's said. (Kinds: what go-settings-set takes, popups-…, …)
 const kinds = {
-    popups: { map: "popups", label: (v) => policyLabel[v], def: () => settings.popupDefault ?? "ask", name: "Pop-ups" },
     videos: { map: "media", label: (v) => policyLabel[v], def: () => settings.mediaDefault ?? "allow", name: "Videos and sound" },
+    popups: { map: "popups", label: (v) => policyLabel[v], def: () => settings.popupDefault ?? "ask", name: "Pop-ups" },
+    notifications: { map: "notifications", label: (v) => policyLabel[v], def: () => "ask", name: "Notifications" },
     theme: { map: "theme", label: (v) => themeLabel[v], def: () => settings.themeDefault ?? "auto", name: "Dark mode" },
     ads: { map: "ads", label: (v) => policyLabel[v], def: () => (settings.adblock ? "block" : "allow"), name: "Ads and trackers" },
 };
@@ -375,7 +379,7 @@ function renderSite() {
         undo.disabled = state.busy;
         undo.title = `Back to the default (${k.label(k.def())})`;
         undo.setAttribute("aria-label", `${k.name}: back to the default, ${k.label(k.def())}`);
-        const note = $({ popups: "popup_scope", videos: "video_note", theme: "theme_note", ads: "ads_note" }[kind]);
+        const note = $({ popups: "popup_scope", notifications: "notifications_note", videos: "video_note", theme: "theme_note", ads: "ads_note" }[kind]);
         note.replaceChildren(value === "default" ? "" : Object.assign(document.createElement("span"), { className: "changed-note", textContent: `Changed · default: ${k.label(k.def())}` }));
     }
     // Ads: blocked by site, from the filter lists in Settings (ad blocking,
@@ -589,7 +593,7 @@ async function openSite(name) {
 // Where a change holds only for what loads next (pop-ups, ads, a block),
 // made for the page shown in the browser (Site controls over it): Reload
 // page, by what's said.
-function set(name, setting, done = selected && selected.site !== selected.host && name === selected.site && /^(popups|videos|ads|theme)-/.test(setting)
+function set(name, setting, done = selected && selected.site !== selected.host && name === selected.site && /^(popups|notifications|videos|ads|theme)-/.test(setting)
     ? `Saved for ${selected.site} and its subdomains.` : "Setting saved.") {
     const pageShown = window.parent !== window && current && selected && selected.host === current.host && view !== "all";
     if (pageShown && /^(popups-|ads-|block$|unblock$)/.test(setting) && typeof done === "string") {
@@ -651,6 +655,7 @@ $("access").addEventListener("click", () => {
     set(blocked ?? host, blocked ? "unblock" : "block", blocked ? `Unblocked ${blocked}.` : `Blocked ${host}.`);
 });
 $("popups").addEventListener("change", () => set(selected.site, "popups-" + $("popups").value));
+$("notifications").addEventListener("change", () => set(selected.site, "notifications-" + $("notifications").value));
 $("videos").addEventListener("change", () => set(selected.site, "videos-" + $("videos").value));
 $("ads").addEventListener("change", () => set(selected.site, "ads-" + $("ads").value));
 $("default_popups").addEventListener("change", () => set("", "popups-" + $("default_popups").value));
@@ -794,7 +799,7 @@ $("confirm_reset").addEventListener("close", () => {
     const { unblock } = resetChanges();
     const alsoUnblock = !!unblock && $("reset_unblock").checked;
     run(async () => {
-        for (const setting of ["popups-default", "videos-default", "ads-default", "theme-default"]) settings = await ask({ type: "go-settings-set", name: site, setting });
+        for (const setting of ["videos-default", "popups-default", "notifications-default", "theme-default", "ads-default"]) settings = await ask({ type: "go-settings-set", name: site, setting });
         if (settings.videoHosts?.includes(host)) settings = await ask({ type: "go-settings-set", name: host, setting: "videos-host-allow" });
         if (alsoUnblock) settings = await ask({ type: "go-settings-set", name: unblock, setting: "unblock" });
         told("media-changed");

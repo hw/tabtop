@@ -19,6 +19,10 @@
 # engine binary (it must be present in the image). WEB_BASE_PATH=/tabtop/ serves
 # it all under that path (-base-path, or the image's WEB_BASE_PATH), as
 # behind a proxy.
+#
+# GO_ONLY=text runs only the steps whose names have text in them, and
+# GO_FROM=text the steps from the first that has it to the end (a check
+# resumed where one failed); logging in is run whichever.
 set -euo pipefail
 
 go_image=${GO_IMAGE:-}
@@ -111,7 +115,7 @@ if [[ -n "$go_image" ]]; then
     [[ "${GO_UNSANDBOXED:-}" == 1 ]] && security=(-e WEB_GO_UNSANDBOXED=1)
     docker run -d --name "$box" -p "127.0.0.1:$port:6080" "${security[@]}" \
         -e VNC_USER=tester -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ -e WEB_VNC=0 "${files[@]}" \
-        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e TABTOP_GO_DEBUG=1 -e WEB_GO_ENGINE="${GO_ENGINE:-moli}" "$go_image" >/dev/null
+        -e WEB_GO=1 -e WEB_GO_PRIVATE=1 -e WEB_GO_FETCH_PRIVATE=1 -e WEB_BASE_PATH="$base_path" -e WEB_OFFLINE_CLIENT=1 -e TABTOP_GO_DEBUG=1 -e WEB_GO_ENGINE="${GO_ENGINE:-moli}" "$go_image" >/dev/null
     up "http://127.0.0.1:$port${base_path}go/" "the container's /go" 60
     docker logs "$box" 2>&1 | grep -m1 "remote browser" || true
     watched_pid=$(docker inspect -f '{{.State.Pid}}' "$box")  # the container's, for the memory sampling
@@ -121,15 +125,17 @@ else
     [[ "${GO_NO_FS:-}" == 1 ]] && files=(-disable-fs)
     TABTOP_GO_DEBUG=1 "$work/tabtopd" -listen "127.0.0.1:$port" -users-file "$work/users.oath" -noble-dir "$work/noble" \
         -disable-vnc "${files[@]}" -fetch=true -fetch-private=true \
-        -go -go-engine "$moli" -go-private -base-path "$base_path" > "$work/tabtopd.log" 2>&1 &
+        -go -go-engine "$moli" -go-private -offline-client -base-path "$base_path" > "$work/tabtopd.log" 2>&1 &
     tabtopd_pid=$! watched_pid=$!
     up "http://127.0.0.1:$port${base_path}go/" "tabtopd's /go" 30
     grep -m1 "remote browser" "$work/tabtopd.log" || true
 fi
 
 cport=$(free_port)
+# --password-store=basic: not the desktop's keyring, which, locked or
+# asking, leaves every page Chrome loads waiting for its cookies' key.
 "$chrome" --headless=new --remote-debugging-port="$cport" --user-data-dir="$work/chrome" --no-first-run \
-    --no-default-browser-check about:blank > "$work/chrome.log" 2>&1 &
+    --no-default-browser-check --password-store=basic about:blank > "$work/chrome.log" 2>&1 &
 chrome_pid=$!
 up "http://127.0.0.1:$cport/json/version" Chrome 30 || { echo "--- Chrome's log"; tail -n 30 "$work/chrome.log"; exit 1; }
 
@@ -155,11 +161,25 @@ tree_rss() {
       echo "$peak_engine $peak_tabtopd" > "$work/peak"; sleep 1
   done ) &
 # (GO_LOG: tabtopd's log, with its go-debug lines, run here; not an image's.)
-GO_LOG=$([[ -z "$go_image" ]] && echo "$work/tabtopd.log") node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
+# (GO_DOWNLOADS: where what's saved lands, read to check it; not an image's.)
+GO_DOWNLOADS=$([[ -z "$go_image" ]] && echo "$work/downloads") GO_LOG=$([[ -z "$go_image" ]] && echo "$work/tabtopd.log") node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
 read -r peak_engine peak_tabtopd < "$work/peak" || true
 echo "ok   the most memory used: an engine $((${peak_engine:-0} / 1024)) MiB, tabtopd $((${peak_tabtopd:-0} / 1024)) MiB"
-if [[ "${GO_NO_FS:-}" != 1 ]]; then
+# (Not with only some steps run, GO_ONLY, GO_FROM or GO_PROBE: the files
+# are saved by steps of their own.)
+if [[ "${GO_NO_FS:-}" != 1 && -z "${GO_ONLY:-}${GO_FROM:-}${GO_PROBE:-}" ]]; then
     [[ -n "$go_image" ]] && docker cp -q "$box:/home/tester/Downloads/doc.pdf" "$work/downloads/doc.pdf" 2>/dev/null
     cmp -s "$work/site/doc.pdf" "$work/downloads/doc.pdf" || { echo "FAIL the PDF wasn't saved into Downloads as it is"; exit 1; }
     echo "ok   the PDF is in Downloads, as the site serves it"
+    # The WebM stream saved from its buffers (gowebm.go): its video and its
+    # sound, as long as the page's, played through by ffmpeg with no error.
+    if [[ -z "$go_image" ]]; then
+        webm=$(ls "$work/downloads"/*.webm 2>/dev/null | head -n 1)
+        [[ -n "$webm" ]] || { echo "FAIL no WebM stream was saved into Downloads"; exit 1; }
+        streams=$(ffprobe -v error -show_entries stream=codec_type:format=duration -of csv=p=0 "$webm" | tr '\n' ' ')
+        [[ "$streams" =~ ^video\ audio\ (2\.[89]|3\.[0-2]) ]] || { echo "FAIL the saved WebM has: $streams"; exit 1; }
+        errors=$(ffmpeg -v error -i "$webm" -f null - 2>&1)
+        [[ -z "$errors" ]] || { echo "FAIL the saved WebM doesn't play through: $errors"; exit 1; }
+        echo "ok   the WebM stream saved is one file, its video and sound ($streams)"
+    fi
 fi

@@ -77,7 +77,7 @@
             const s = {
                 id: ++next, callback, root, element: root instanceof Element ? root : null,
                 margin: margin(options?.rootMargin), thresholds: thresholds(options?.threshold),
-                targets: new Set(), queue: [], due: false,
+                targets: new Set(), parked: new Set(), queue: [], due: false,
             };
             state.set(this, s);
             byId.set(s.id, this);
@@ -95,6 +95,7 @@
         }
         unobserve(target) {
             const s = state.get(this);
+            if (s) unpark(s, target);
             if (s?.targets.delete(target)) {
                 targets--;
                 tell(target, { op: "-", o: s.id });
@@ -106,6 +107,7 @@
             for (const t of s.targets) tell(t, { op: "-", o: s.id });
             targets -= s.targets.size;
             s.targets.clear();
+            s.parked.clear();
             s.queue = [];
         }
         takeRecords() {
@@ -250,7 +252,7 @@
     class ResizeObserver {
         constructor(callback) {
             if (typeof callback !== "function") throw new TypeError("ResizeObserver needs a callback function.");
-            const s = { id: ++next, callback, box: true, targets: new Set(), boxOf: new WeakMap(), last: new WeakMap(), queue: [], due: false };
+            const s = { id: ++next, callback, box: true, targets: new Set(), parked: new Set(), boxOf: new WeakMap(), last: new WeakMap(), queue: [], due: false };
             state.set(this, s);
             byId.set(s.id, this);
         }
@@ -267,6 +269,7 @@
         }
         unobserve(target) {
             const s = state.get(this);
+            if (s) unpark(s, target);
             if (s?.targets.delete(target)) {
                 targets--;
                 s.last.delete(target);
@@ -279,6 +282,7 @@
             for (const t of s.targets) tell(t, { op: "-", o: s.id });
             targets -= s.targets.size;
             s.targets.clear();
+            s.parked.clear();
             s.last = new WeakMap();
             s.queue = [];
         }
@@ -354,6 +358,42 @@
             if (q.length) s.callback.call(o, q, o);
         }, 0);
     }, true);
+
+    // A target out of the document a while (three looks, 10 s apart) is
+    // parked: held weakly, not counted (a feed that removes what it showed
+    // without unobserving it, as YouTube's Shorts' reels, would otherwise
+    // have each held here, and, at MAX_TARGETS, nothing more observed), and
+    // observed again, announced, if it's put back. (The agent and its copy
+    // let go of theirs as it's out of the document: goagent.js, go-frame.js.)
+    // Unobserved, or the observer disconnected, it's forgotten.
+    const away = new WeakMap();  // target -> looks it's been out of the document
+    setInterval(() => {
+        for (const o of byId.values()) {
+            const s = state.get(o);
+            if (!s) continue;
+            for (const ref of s.parked) {
+                const t = ref.deref();
+                if (!t) { s.parked.delete(ref); continue; }
+                if (!t.isConnected || targets >= MAX_TARGETS) continue;
+                s.parked.delete(ref);
+                if (s.targets.has(t)) continue;
+                s.targets.add(t);
+                targets++;
+                announce(s.box ? { ...s, box: s.boxOf.get(t) ?? "content-box" } : s, t);
+            }
+            for (const t of [...s.targets]) {
+                if (t.isConnected) { away.delete(t); continue; }
+                const looks = (away.get(t) ?? 0) + 1;
+                if (looks < 3) { away.set(t, looks); continue; }
+                away.delete(t);
+                s.targets.delete(t);
+                targets--;
+                s.parked.add(new WeakRef(t));
+            }
+        }
+    }, 10000);
+    // (Unobserved while parked: not observed again.)
+    const unpark = (s, target) => { for (const ref of s.parked) if (ref.deref() === target) s.parked.delete(ref); };
 
     for (const [name, value] of [["IntersectionObserver", IntersectionObserver], ["IntersectionObserverEntry", IntersectionObserverEntry],
         ["ResizeObserver", ResizeObserver], ["ResizeObserverEntry", ResizeObserverEntry]]) {

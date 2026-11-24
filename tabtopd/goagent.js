@@ -83,6 +83,314 @@
             try { d = JSON.parse(e.detail); } catch { return; }
             if (asked.length < 16 && d && typeof d.kind === "string" && typeof d.message === "string") asked.push({ kind: d.kind, message: d.message.slice(0, 2000) });
         });
+        // What the page copied (the newest), and the reads of the clipboard
+        // it asked for (goclipboard.js): a page's with the next batch, a
+        // frame's world's when asked (copied: its frames are read less
+        // often than they're asked of).
+        const frameWorld = w.__tabtopFrameWorld === true;
+        let copiedText = null, copiedImage = null, pasteAsks = [], pasteReads = [];
+        document.addEventListener("__tabtop_copy", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!d) return;
+            // (A picture: a PNG's base64, 8 MiB at most; its text, if any, with it.)
+            const image = typeof d.image === "string" && d.image.length <= 4 * Math.ceil((8 << 20) / 3) && /^[A-Za-z0-9+/]+=*$/.test(d.image) ? d.image : null;
+            if (image) [copiedText, copiedImage] = [typeof d.text === "string" ? d.text.slice(0, 1 << 20) : null, image];
+            else if (typeof d.text === "string") [copiedText, copiedImage] = [d.text.slice(0, 1 << 20), null];
+        });
+        document.addEventListener("__tabtop_paste_ask", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (pasteAsks.length + pasteReads.length < 4 && d && typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)) (d.images ? pasteReads : pasteAsks).push(d.id);
+        });
+        // Notifications (gonotify.js): permission asked for, those shown,
+        // and closed by the page.
+        let notifyAsks = [], notifyShows = [], notifyCloses = [], notifyPicBytes = 0;
+        const notifyID = (id) => typeof id === "string" && /^[a-z0-9]{1,40}$/.test(id);
+        document.addEventListener("__tabtop_notify_ask", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (notifyAsks.length < 4 && notifyID(d?.id)) notifyAsks.push(d.id);
+        });
+        document.addEventListener("__tabtop_notify", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (notifyShows.length >= 8 || !notifyID(d?.id)) return;
+            const s = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+            // (Its pictures' addresses: 2 MB of them a batch at most, as a
+            // batch past its limit is read again, its notifications lost;
+            // one past that shown without them.)
+            const pic = (v) => {
+                if (typeof v !== "string" || !(/^https?:\/\//.test(v) ? v.length <= 2048 : /^data:image\//.test(v) && v.length <= 1_500_000)) return "";
+                if (notifyPicBytes + v.length > 2_000_000) return "";
+                notifyPicBytes += v.length;
+                return v;
+            };
+            notifyShows.push({ id: d.id, title: s(d.title, 1000), body: s(d.body, 4000), tag: s(d.tag, 256), silent: d.silent === true,
+                requireInteraction: d.requireInteraction === true, renotify: d.renotify === true, dir: s(d.dir, 8), lang: s(d.lang, 64),
+                icon: pic(d.icon), image: pic(d.image), badge: pic(d.badge) });
+        });
+        document.addEventListener("__tabtop_notify_close", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (notifyCloses.length < 32 && notifyID(d?.id)) notifyCloses.push(d.id);
+        });
+        // Fullscreen asked for and left by the page (gofullscreen.js).
+        let fullAsks = [];
+        document.addEventListener("__tabtop_fullscreen", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (fullAsks.length < 4 && d && (d.on === false || (typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)))) fullAsks.push(d.on === false ? { on: false } : { on: true, id: d.id });
+        });
+        // The page's screen wake lock asked for and let go (gowakelock.js).
+        let wakeAsks = [];
+        document.addEventListener("__tabtop_wakelock", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (wakeAsks.length < 16 && d && typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)) wakeAsks.push({ on: d.on === true, id: d.id });
+        });
+        // The page's pointer lock asked for and left (gopointerlock.js): the
+        // element asked for kept, by its ask's id, till it's answered; the
+        // one locked, for the pointer's events while it is.
+        let lockAsks = [], lockFor = new Map(), lockEl = null;
+        document.addEventListener("__tabtop_pointerlock", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!d || lockAsks.length >= 4) return;
+            if (d.on === false) {
+                lockEl = null;
+                lockAsks.push({ on: false });
+                return;
+            }
+            const el = e.composedPath?.()[0] ?? e.target;
+            if (typeof d.id !== "string" || !/^[a-z0-9]{1,40}$/.test(d.id) || !(el instanceof Element)) return;
+            if (lockFor.size >= 8) lockFor.clear();
+            lockFor.set(d.id, el);
+            lockAsks.push({ on: true, id: d.id });
+        }, true);
+        // The page's screen orientation locked or unlocked (goorientation.js).
+        let orientAsks = [];
+        const ORIENT = ["any", "natural", "landscape", "portrait", "portrait-primary", "portrait-secondary", "landscape-primary", "landscape-secondary"];
+        document.addEventListener("__tabtop_orientation", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (orientAsks.length >= 4 || !d) return;
+            if (d.unlock === true) orientAsks.push({ unlock: true });
+            else if (ORIENT.includes(d.lock) && typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)) orientAsks.push({ lock: d.lock, id: d.id });
+        });
+        // The page's vibration (govibrate.js): its latest pattern, each
+        // read. (A frame of another origin's says none: the server's
+        // passed only the page's own.)
+        let vibrateAsk = null;
+        document.addEventListener("__tabtop_vibrate", (e) => {
+            if (typeof e.detail !== "string" || e.detail.length > 2048) return;
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!Array.isArray(d) || d.length > 99) return;
+            vibrateAsk = d.map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0)));
+        });
+        // (A saved file's pieces, fs-write, are many at once: so many each
+        // read, apart from the other asks' 4. One taken is cancelled, so the
+        // page keeps the rest for the next read: godevice.js.)
+        let devices = [], deviceWrites = 0;
+        const goWritesEach = 16;
+        document.addEventListener("__tabtop_device", e => {
+            if (frameWorld || typeof e.detail !== "string" || e.detail.length > 48 << 10) return;
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (d?.kind === "fs-write" ? deviceWrites >= goWritesEach : devices.length - deviceWrites >= 4) return;
+            const el = at(e);
+            if (!d || typeof d.id !== "string" || !/^[a-z0-9]{1,40}$/.test(d.id) || (el !== document && el.ownerDocument !== document)) return;
+            const ask = { id: d.id, kind: d.kind };
+            switch (d.kind) {
+                case "fs-open": case "fs-save":
+                    ask.fs = { handle: "", name: typeof d.name === "string" ? d.name.slice(0, 255) : "",
+                        value: typeof d.value === "string" ? d.value : "",
+                        pickerOptions: d.pickerOptions && typeof d.pickerOptions === "object" ? d.pickerOptions : {} };
+                    break;
+                case "fs-read": case "fs-begin": case "fs-write": case "fs-close": case "fs-abort": case "fs-truncate":
+                    if (typeof d.handle !== "string" || !/^[a-z0-9]{1,40}$/.test(d.handle) || typeof d.value !== "string" || d.value.length > 48 << 10) return;
+                    ask.fs = { handle: d.handle, offset: Number.isSafeInteger(d.offset) && d.offset >= 0 ? d.offset : 0,
+                        size: Number.isSafeInteger(d.size) && d.size >= 0 ? d.size : 0, value: d.value,
+                        fileId: typeof d.fileId === "string" && /^[a-z0-9]{1,40}$/.test(d.fileId) ? d.fileId : "" };
+                    break;
+                case "share":
+                    ask.data = {};
+                    for (const key of ["title", "text", "url"]) {
+                        if (typeof d.data?.[key] === "string") ask.data[key] = d.data[key];
+                    }
+                    // Its files: each relayed as a file stream (gomedia.js), by number.
+                    if (Array.isArray(d.files)) {
+                        if (d.files.length > 10) return;
+                        ask.files = [];
+                        for (const f of d.files) {
+                            if (!Number.isSafeInteger(f?.stream) || f.stream <= 0 || typeof f.name !== "string" || typeof f.type !== "string" || !Number.isSafeInteger(f.size) || f.size < 0) return;
+                            ask.files.push({ stream: f.stream, name: f.name.slice(0, 255), type: f.type.slice(0, 128), size: f.size });
+                        }
+                    }
+                    break;
+                case "location":
+                case "location-watch":
+                    const duration = n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
+                    if (!duration(d.options?.timeout) || !duration(d.options?.maximumAge)) return;
+                    ask.options = { enableHighAccuracy: d.options.enableHighAccuracy === true,
+                        timeout: d.options.timeout, maximumAge: d.options.maximumAge };
+                    break;
+                case "pip":
+                    ask.node = el.localName === "video" ? ids.get(el) : 0;
+                    break;
+                case "pip-exit": case "location-stop": break;
+                default: return;
+            }
+            if (d.kind === "fs-write") deviceWrites++;
+            devices.push(ask);
+            e.preventDefault();
+        });
+        function deviceReply(reply) {
+            document.dispatchEvent(new CustomEvent("__tabtop_device_reply", { detail: JSON.stringify(reply) }));
+        }
+        function fsReadError(id, error) {
+            document.dispatchEvent(new CustomEvent("__tabtop_fs_error", { detail: JSON.stringify({ id, error }) }));
+        }
+        const clipboardOut = () => {
+            const out = {};
+            if (copiedText !== null) out.copy = copiedText;
+            if (copiedImage !== null) out.copyImage = copiedImage;
+            if (pasteAsks.length) out.pasteAsks = pasteAsks;
+            if (pasteReads.length) out.pasteReads = pasteReads;
+            if (fullAsks.length) out.fullscreen = fullAsks;
+            if (vibrateAsk) out.vibrate = vibrateAsk;
+            if (wakeAsks.length) out.wakeLock = wakeAsks;
+            if (orientAsks.length) out.orientation = orientAsks;
+            if (lockAsks.length) out.pointerLock = lockAsks;
+            if (notifyAsks.length || notifyShows.length || notifyCloses.length) out.notify = { asks: notifyAsks, shows: notifyShows, closes: notifyCloses };
+            copiedText = copiedImage = null;
+            pasteAsks = [];
+            pasteReads = [];
+            fullAsks = [];
+            vibrateAsk = null;
+            wakeAsks = [];
+            orientAsks = [];
+            lockAsks = [];
+            notifyAsks = [];
+            notifyShows = [];
+            notifyPicBytes = 0;
+            notifyCloses = [];
+            return out;
+        };
+        const clipEmpty = (out) => out.copy === undefined && out.copyImage === undefined && !out.pasteAsks && !out.pasteReads && !out.fullscreen && !out.vibrate && !out.wakeLock && !out.orientation && !out.pointerLock && !out.notify;
+        // copied is what the page copied and asked to read since it was
+        // last asked, as JSON, or "" (a frame's world's: goframes.go).
+        const clipCopied = () => {
+            const out = clipboardOut();
+            return clipEmpty(out) ? "" : JSON.stringify(out);
+        };
+        // dropIn gives files dropped on this (embedded) page to it, at the
+        // element numbered id, where within it (fractions): they're in the
+        // input numbered input (gouploads.go), which the page's world takes
+        // them from (godrop.js). "taken" if its dragover took them.
+        const dropIn = (json) => {
+            let a;
+            try { a = JSON.parse(json); } catch { return "bad"; }
+            const el = node(a.id);
+            if (!el || el.nodeType !== 1 || typeof a.input !== "string" || !/^__tabtop_drop_[a-z0-9]{1,40}$/.test(a.input)) return "gone";
+            const r = el.getBoundingClientRect();
+            const x = r.left + Math.min(1, Math.max(0, Number(a.fx) || 0)) * r.width, y = r.top + Math.min(1, Math.max(0, Number(a.fy) || 0)) * r.height;
+            const told = new CustomEvent("__tabtop_drop", { bubbles: true, composed: true, cancelable: true,
+                detail: JSON.stringify({ input: a.input, x, y, shift: !!a.shift, ctrl: !!a.ctrl, alt: !!a.alt, meta: !!a.meta }) });
+            const left = el.dispatchEvent(told);
+            document.getElementById(a.input)?.remove();
+            return left ? "left" : "taken";
+        };
+        // pointerLock gives the page the answer to its request ({id, ok}),
+        // or says the lock's left ({exit: true}).
+        const lockAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            if (d?.exit) {
+                lockEl = null;
+                document.dispatchEvent(new CustomEvent("__tabtop_pointerlock_answer", { detail: JSON.stringify({ exit: true }) }));
+                return true;
+            }
+            if (typeof d?.id !== "string") return false;
+            const el = lockFor.get(d.id);
+            lockFor.delete(d.id);
+            if (d.ok && el?.isConnected) lockEl = el;
+            document.dispatchEvent(new CustomEvent("__tabtop_pointerlock_answer", { detail: JSON.stringify({ id: d.id, ok: !!d.ok && !!el?.isConnected }) }));
+            return true;
+        };
+        // orientation gives the page the answer to its lock ({id, ok, error}).
+        const orientAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            if (typeof d?.id !== "string") return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_orientation_answer", { detail: JSON.stringify({ id: d.id, ok: !!d.ok, error: typeof d.error === "string" ? d.error : "" }) }));
+            return true;
+        };
+        // wakeLock gives the page the server's answer to its request
+        // ({id, ok}), or says its lock's lost ({lost: true}).
+        const wakeAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            const detail = d?.lost ? { lost: true } : typeof d?.id === "string" ? { id: d.id, ok: !!d.ok } : null;
+            if (!detail) return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_wakelock_answer", { detail: JSON.stringify(detail) }));
+            return true;
+        };
+        // fullscreen gives the page the server's answer to its request
+        // ({id, ok}), or says the person left it ({exit: true}).
+        const fullAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            const detail = d?.exit ? { exit: true } : typeof d?.id === "string" ? { id: d.id, ok: !!d.ok } : null;
+            if (!detail) return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_fullscreen_answer", { detail: JSON.stringify(detail) }));
+            return true;
+        };
+        // fullscreenHost lays the iframe numbered id (its page of another
+        // origin fullscreen) over this document's window, or lets it go.
+        let fullStyle = null;
+        const fullHost = (id, on) => {
+            const el = byId.get(id)?.deref();
+            if (!(el instanceof Element)) return false;
+            if (!on) {
+                el.removeAttribute("data-tabtop-fullscreen");
+                if (!document.querySelector("[data-tabtop-fullscreen]")) fullStyle?.remove();
+                return true;
+            }
+            if (!fullStyle) {
+                fullStyle = document.createElement("style");
+                fullStyle.setAttribute("data-tabtop", "");
+                fullStyle.textContent = "[data-tabtop-fullscreen] { position: fixed !important; inset: 0 !important; margin: 0 !important; box-sizing: border-box !important; min-width: 0 !important; max-width: none !important; min-height: 0 !important; max-height: none !important; width: 100% !important; height: 100% !important; transform: none !important; z-index: 2147483647 !important; border: 0 !important; }";
+            }
+            (document.head ?? document.documentElement).append(fullStyle);
+            el.setAttribute("data-tabtop-fullscreen", "");
+            return true;
+        };
+        // pasted gives the page what the person pasted for it (text), or
+        // says they didn't (none): {id, text}.
+        const clipPasted = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            if (!d || typeof d.id !== "string") return false;
+            const detail = { id: d.id };
+            if (typeof d.text === "string") detail.text = d.text;
+            if (typeof d.image === "string") detail.image = d.image;
+            document.dispatchEvent(new CustomEvent("__tabtop_pasted", { detail: JSON.stringify(detail) }));
+            return true;
+        };
+        // notified gives the page the server's word on its notifications:
+        // its permission ({ask?, state}), or one's event ({id, type}).
+        const notified = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            let detail;
+            if (["granted", "denied", "default"].includes(d?.state)) detail = notifyID(d.ask) ? { ask: d.ask, state: d.state } : { state: d.state };
+            else if (notifyID(d?.id) && ["show", "click", "close", "error"].includes(d.type)) detail = { id: d.id, type: d.type };
+            else return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_notify_event", { detail: JSON.stringify(detail) }));
+            return true;
+        };
         // Where the page scrolled its elements itself (goobserve.js), for
         // the copy to scroll so: the newest of each, with the next batch.
         let scrollsOut = new Map();  // element -> {x, y} or {into}
@@ -109,14 +417,31 @@
         // Not those said of how the person's player plays (gomedia.js fires
         // them as it's told, within the telling): the page's doing only.
         let tellingPlay = false;
-        for (const type of ["play", "pause", "ended", "emptied"]) {
-            document.addEventListener(type, (e) => {
-                // Trust the event: gomedia.js may still mirror the person's
-                // player as playing when the page has just paused (MSE stub),
-                // and reading paused then would keep the underlaid player on.
-                if (!tellingPlay && e.target instanceof HTMLMediaElement && played.size < 256) played.set(e.target, type === "play");
+        // (And in each frame of this origin the agent reads: frameKids. Its
+        // element is the node this world numbered: sameNode.)
+        const playedIn = new WeakSet();
+        function hearPlays(doc) {
+            if (playedIn.has(doc)) return;
+            playedIn.add(doc);
+            // A play() before this world was made (gomedia.js: said once
+            // it's here, as the page doesn't play it again): played.
+            doc.addEventListener("__tabtop_played_before", (e) => {
+                const el = e.composedPath?.()[0] ?? e.target;
+                if ((el?.localName !== "video" && el?.localName !== "audio") || played.size >= 256) return;
+                played.set(doc === document ? el : sameNode(el), true);
             }, true);
+            for (const type of ["play", "pause", "ended", "emptied"]) {
+                doc.addEventListener(type, (e) => {
+                    // Trust the event: gomedia.js may still mirror the person's
+                    // player as playing when the page has just paused (MSE stub),
+                    // and reading paused then would keep the underlaid player on.
+                    const el = e.target;
+                    if (tellingPlay || (el?.localName !== "video" && el?.localName !== "audio") || played.size >= 256) return;
+                    played.set(doc === document ? el : sameNode(el), type === "play");
+                }, true);
+            }
         }
+        hearPlays(document);
         let lastURL = "";
 
         // The page's observed elements, held by element until it's one the
@@ -195,12 +520,17 @@
         }
         // frameOwner says, of an iframe tabtopd found as a frame's owner,
         // its number if the copy has it (not numbering it: that would make
-        // later batches name a node never sent) and whether its page is
-        // read here (same origin) or must be read in a world of its own.
+        // later batches name a node never sent), whether its page is read
+        // here (same origin) or must be read in a world of its own, and
+        // whether it's shown at all (hidden: it or what it's in displayed
+        // none, as YouTube's sign-in check, an accounts.google.com frame,
+        // is: nothing of it to show, so not read; goframes.go).
         function frameOwner(el) {
             let readable = false;
             try { readable = !!el.contentDocument; } catch { /* another origin's */ }
-            return JSON.stringify({ id: known(el) ? ids.get(el) : 0, readable });
+            let hidden = false;
+            for (let e = el; e && !hidden; e = e.parentElement) hidden = getComputedStyle(e).display === "none";
+            return JSON.stringify({ id: known(el) ? ids.get(el) : 0, readable, hidden });
         }
         function keyTo(id, sel) {
             const el = node(id);
@@ -518,6 +848,7 @@
             }
             pointerAt = el;
         }
+        let lockedDown = 0;  // the locked pointer's buttons pressed (a click on their release)
         function scripted(json) {
             let a;
             try { a = JSON.parse(json); } catch { return "bad"; }
@@ -550,6 +881,41 @@
                     const to = a.back ? order[i <= 0 ? order.length - 1 : i - 1] : order[i < 0 || i === order.length - 1 ? 0 : i + 1];
                     to.focus();
                     return "ok";
+                }
+                case "locked": {
+                    // The pointer, locked (gopointerlock.js): its moves as
+                    // movementX/movementY, its buttons and wheel, on the
+                    // element locked, at its middle (where a locked
+                    // pointer is doesn't move).
+                    const el = lockEl;
+                    if (!el?.isConnected) return "none";
+                    const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+                    const mods = { shiftKey: !!a.shift, ctrlKey: !!a.ctrl, altKey: !!a.alt, metaKey: !!a.meta };
+                    const button = Number(a.button) || 0, buttons = Number(a.buttons) || 0;
+                    const init = mouseInit(x, y, { ...mods, button, buttons, pointerId: 1, pointerType: "mouse", isPrimary: true });
+                    switch (a.phase) {
+                        case "move": {
+                            const moved = { ...init, button: -1, movementX: Math.round(Number(a.dx) || 0), movementY: Math.round(Number(a.dy) || 0) };
+                            el.dispatchEvent(new PointerEvent("pointermove", moved));
+                            el.dispatchEvent(new MouseEvent("mousemove", moved));
+                            return "ok";
+                        }
+                        case "down":
+                            el.dispatchEvent(new PointerEvent("pointerdown", init));
+                            el.dispatchEvent(new MouseEvent("mousedown", { ...init, detail: 1 }));
+                            lockedDown |= 1 << button;
+                            return "ok";
+                        case "up":
+                            el.dispatchEvent(new PointerEvent("pointerup", init));
+                            el.dispatchEvent(new MouseEvent("mouseup", { ...init, detail: 1 }));
+                            if (lockedDown & (1 << button)) el.dispatchEvent(new MouseEvent(button === 0 ? "click" : "auxclick", { ...init, detail: 1 }));
+                            lockedDown &= ~(1 << button);
+                            return "ok";
+                        case "wheel":
+                            el.dispatchEvent(new WheelEvent("wheel", { ...init, deltaX: Number(a.dx) || 0, deltaY: Number(a.dy) || 0, deltaMode: 0 }));
+                            return "ok";
+                    }
+                    return "unknown";
                 }
                 case "pointer": {
                     const el = at(a.x, a.y);
@@ -664,6 +1030,8 @@
                 reservedMedia.delete(n);
                 ids.set(n, i);
                 byId.set(i, new WeakRef(n));
+            } else if (!byId.has(i)) {
+                byId.set(i, new WeakRef(n));  // (let go of out of the document: back in it)
             }
             return i;
         }
@@ -846,6 +1214,7 @@
             // nothing of this world's is handed to the frame's document,
             // whose methods are the page's to replace.
             frameOwners.set(child, el);
+            hearPlays(child);  // its players started and stopped by its page
             // This world's own MutationObserver, never the frame's: in both
             // engines a frame's window here is the page's own, and a page
             // can replace its constructor and be handed this callback (and
@@ -868,7 +1237,28 @@
         // What the copy's src says: the element's own if it has one ("":
         // empty, its <source>s not to be looked at), else its <source>'s,
         // else none (null: the copy looks at its <source>s, as it's sent them).
-        const mediaSrc = (el) => el.hasAttribute("src") ? el.getAttribute("src") : mediaURL(el);
+        // A plain Blob's URL played (gomedia.js relays its bytes as a
+        // stream): the copy's src is the stream's address.
+        const blobStreams = new Map();  // the page's blob: URL -> blob:tabtop-media/N
+        const mediaSrc = (el) => {
+            const url = el.hasAttribute("src") ? el.getAttribute("src") : mediaURL(el);
+            return (url && blobStreams.get(url)) ?? url;
+        };
+        // A video or audio element, by its name (one in a frame of this
+        // origin is of that frame's realm: not an instance of this one's).
+        const isMedia = (n) => n?.nodeType === 1 && (n.localName === "video" || n.localName === "audio");
+        // The media elements seen, to look at again as a Blob's URL is
+        // said to be a stream.
+        const mediaSeen = new Set();  // WeakRef
+        let blobsSaid = false;
+        document.addEventListener("__tabtop_blob", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!d || typeof d.url !== "string" || !/^blob:/i.test(d.url) || d.url.length > 2048 || !Number.isSafeInteger(d.stream) || d.stream < 1) return;
+            if (blobStreams.size >= 64 && !blobStreams.has(d.url)) blobStreams.delete(blobStreams.keys().next().value);
+            blobStreams.set(d.url, "blob:tabtop-media/" + d.stream);
+            blobsSaid = true;
+        });
 
         function ser(n, depth) {
             if (++count > 400000) throw new Error("too many nodes");
@@ -883,10 +1273,11 @@
                 for (let j = 0; j < a.length; j += 2) if (a[j] === k) { a.splice(j, 2); break; }
                 if (v !== null) a.push(k, v);
             };
-            if (n instanceof HTMLMediaElement) {
+            if (isMedia(n)) {
                 const url = mediaSrc(n);
                 set("src", url);
                 mediaURLs.set(n, url);
+                if (mediaSeen.size < 512) mediaSeen.add(new WeakRef(n));
             } else if (name === "input") {
                 if (/^(checkbox|radio)$/i.test(n.type)) set("checked", n.checked ? "" : null);
                 else if (!/^(file|image|submit|reset|button)$/i.test(n.type)) set("value", n.value);
@@ -1237,31 +1628,100 @@
             return JSON.stringify({ url: here(), base: document.baseURI, title: document.title, type: document.contentType, doc, io: ioAll, at });
         }
 
+        // sameNode is the node this world numbered that el is: a frame of
+        // this origin's element, handed over from the page's world, may be
+        // another object here than the one met reading the frame (measured,
+        // Moli 1.1.27: the number it was given not found by it).
+        function sameNode(el) {
+            if (ids.has(el) || el.ownerDocument === document) return el;
+            for (const { child } of frames.values()) {
+                if (!child?.querySelectorAll) continue;
+                for (const m of child.querySelectorAll(el.localName)) if (m === el || m.isSameNode(el)) return m;
+            }
+            return el;
+        }
         let emeNode = 0, emeBatch = [];
         document.addEventListener("__tabtop_eme_element", e => {
             const el = e.relatedTarget;
             emeNode = 0;
-            if (!(el instanceof HTMLMediaElement)) return;
-            emeNode = ids.get(el) ?? reservedMedia.get(el);
+            // (A frame of this origin's element too: of another realm.)
+            if (el?.localName !== "video" && el?.localName !== "audio") return;
+            emeNode = ids.get(sameNode(el)) ?? reservedMedia.get(el);
             if (!emeNode) {
                 emeNode = next++;
                 reservedMedia.set(el, emeNode);
             }
         });
+        // Taken (cancelled, for the page to let it go), 4 a batch: the
+        // rest wait in the page for the next (goeme.js).
         document.addEventListener("__tabtop_eme_command", e => {
             if (typeof e.detail === "string" && e.detail.length <= 49152 && emeBatch.length < 4) {
-                try { emeBatch.push({ ...JSON.parse(e.detail), node: emeNode }); } catch { /* malformed command */ }
+                try {
+                    emeBatch.push({ ...JSON.parse(e.detail), node: emeNode });
+                    e.preventDefault();
+                } catch { /* malformed command */ }
             }
             emeNode = 0;
         });
+        const readEME = () => {
+            emeBatch = [];
+            emeNode = 0;
+            document.dispatchEvent(new Event("__tabtop_read_eme"));
+            return emeBatch;
+        };
 
+        // Each page world's batch (this document's, and its frames' of its
+        // origin, which tell it here: gomedia.js), together.
         let streamBatch = null;
         document.addEventListener("__tabtop_stream", (e) => {
             if (typeof e.detail !== "string" || e.detail.length > (1 << 20)) return;
-            try { streamBatch = JSON.parse(e.detail); } catch { /* malformed batch */ }
+            let got;
+            try { got = JSON.parse(e.detail); } catch { return; /* malformed batch */ }
+            if (!Array.isArray(got)) return;
+            streamBatch = [...(streamBatch ?? []), ...got].slice(0, 256);
         });
+        const readStreams = () => {
+            streamBatch = null;
+            document.dispatchEvent(new Event("__tabtop_read_stream"));
+            return Array.isArray(streamBatch) ? streamBatch : [];
+        };
+        // frameStreams is a frame's world's streams' commands, and its EME
+        // requests, as JSON ({streams, eme}), or "" (its batches of changes
+        // don't carry them: goframestreams.go).
+        const frameStreams = () => {
+            const streams = readStreams(), eme = readEME(), plays = playsOut();
+            return streams.length || eme.length || plays.length ? JSON.stringify({ streams, eme, plays }) : "";
+        };
+        // playsOut is what the page started and stopped since last asked, as
+        // ops ({o: "m", i, v}), of the players this world has numbered.
+        function playsOut() {
+            const out = [];
+            for (const [n, playing] of played) {
+                if (n.isConnected && known(n)) out.push({ o: "m", i: ids.get(n), v: String(playing) });
+            }
+            played = new Map();
+            return out;
+        }
 
+        // sweep lets go of what's kept of nodes out of the document (a feed
+        // replacing what it shows, YouTube's Shorts its reels, holds none):
+        // their numbers' entries, the fields acted on, what's observed of
+        // them, adopted sheets' hosts, rule-only styles. Every 30 s, as
+        // changes are read. A node put back is numbered as it was (id).
+        let swept = performance.now();
+        function sweep() {
+            swept = performance.now();
+            for (const [i, ref] of byId) {
+                const n = ref.deref();
+                if (!n || !n.isConnected) byId.delete(i);
+            }
+            for (const el of watched.keys()) if (!el.isConnected) watched.delete(el);
+            for (const el of ioTargets.keys()) if (!el.isConnected) ioTargets.delete(el);
+            for (const host of adopted.keys()) if (host !== document && !host?.isConnected) adopted.delete(host);
+            for (const el of ruled.keys()) if (!el.isConnected) ruled.delete(el);
+        }
         function changes() {
+            if (performance.now() - swept > 30000) sweep();
             for (const r of observer.takeRecords()) {
                 if (!(r.target instanceof Node)) { foreign = true; continue; }
                 if (r.type === "childList") parents.add(r.target);
@@ -1378,7 +1838,7 @@
             }
             const changedMedia = new Set();
             for (const p of parents) {
-                if (p instanceof HTMLMediaElement) { changedMedia.add(p); continue; }
+                if (isMedia(p)) { changedMedia.add(p); continue; }
                 if (p.localName === "iframe") continue; // its rendered children come from its document
                 if (!p.isConnected || !old(p) || p.nodeType === 1 && dropped.has(p.localName.toLowerCase())) continue;
                 const c = [];
@@ -1400,16 +1860,24 @@
                 ops.push({ o: "c", i: ids.get(p), c });
             }
             for (const [n, names] of attrs) {
-                if (n.localName === "source" && names.has("src") && n.parentElement instanceof HTMLMediaElement) changedMedia.add(n.parentElement);
+                if (n.localName === "source" && names.has("src") && isMedia(n.parentElement)) changedMedia.add(n.parentElement);
                 // A player's children (its sources, tracks) aren't drawn: the
                 // copy has one player for them, told their address above. An
                 // op of theirs would name a node it hasn't, and ask it all again.
-                if (n.parentElement instanceof HTMLMediaElement) continue;
+                if (isMedia(n.parentElement)) continue;
                 if (!n.isConnected || !old(n)) continue;
                 for (const name of names) {
                     if (/^on/i.test(name)) continue;
-                    if (name === "src" && n instanceof HTMLMediaElement) { changedMedia.add(n); continue; }
+                    if (name === "src" && isMedia(n)) { changedMedia.add(n); continue; }
                     ops.push({ o: "a", i: ids.get(n), n: name, v: n.getAttribute(name) });
+                }
+            }
+            if (blobsSaid) {
+                blobsSaid = false;
+                for (const ref of mediaSeen) {
+                    const el = ref.deref();
+                    if (!el) mediaSeen.delete(ref);
+                    else changedMedia.add(el);
                 }
             }
             for (const el of changedMedia) {
@@ -1446,10 +1914,8 @@
                 sheetsAsked = performance.now();
                 window.postMessage({ __tabtop: "sheets" }, "*");  // posted: see the io-sync below
             }
-            for (const [n, playing] of played) {
-                if (n.isConnected && known(n)) ops.push({ o: "m", i: ids.get(n), v: String(playing) });
-            }
-            played = new Map();
+            // (A frame's world's said apart: frameStreams.)
+            if (!frameWorld) ops.push(...playsOut());
             for (const [n, last] of watched) {
                 if (!n.isConnected) { watched.delete(n); continue; }
                 const v = n.type === "checkbox" || n.type === "radio" ? String(n.checked) : n.value;
@@ -1489,17 +1955,18 @@
             ioOut = [];
             const askedNow = asked;
             asked = [];
+            if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_notify"));  // (gonotify.js's, told now)
+            const clip = frameWorld ? {} : clipboardOut();
+            if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_device"));
+            const deviceBatch = devices;
+            devices = [];
+            deviceWrites = 0;
             const scrollsNow = [];
             for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
             scrollsOut = new Map();
-            streamBatch = null;
-            document.dispatchEvent(new Event("__tabtop_read_stream"));
-            const streams = Array.isArray(streamBatch) ? streamBatch : [];
-            emeBatch = [];
-            emeNode = 0;
-            document.dispatchEvent(new Event("__tabtop_read_eme"));
-            const eme = emeBatch;
-            if (!eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
+            const streams = frameWorld ? [] : readStreams();
+            const eme = frameWorld ? [] : readEME();
+            if (!deviceBatch.length && !eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length && clipEmpty(clip)) return "";
             const sel = ops.length ? caret() : null;
             seq++;
             const glGone = [];
@@ -1511,7 +1978,7 @@
                 glAway.add(el);
             }
             const css = cssTaken();
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, devices: deviceBatch, ...clip, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
         }
 
         function watch(el) {
@@ -1532,6 +1999,29 @@
             for (let p = proto; !setter && p; p = Object.getPrototypeOf(p)) setter = Object.getOwnPropertyDescriptor(p, "value")?.set;
             if (setter) setter.call(el, v);
             else el.value = v;
+        }
+
+        function pasteImage(id, data, sel) {
+            const el = node(id);
+            if (!el?.isConnected) return false;
+            const view = el.ownerDocument.defaultView;
+            const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+            const transfer = new view.DataTransfer();
+            transfer.items.add(new view.File([bytes], "image.png", { type: "image/png" }));
+            if (editable(el)) select(sel);
+            const proceed = el.dispatchEvent(new view.ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, composed: true, cancelable: true }));
+            if (!proceed || !editable(el) || plainText(el)) return true;
+            const selection = selectionOf(el), range = rangeOf(selection);
+            if (!range || !el.contains(range.commonAncestorContainer)) return true;
+            if (!el.dispatchEvent(new view.InputEvent("beforeinput", { inputType: "insertFromPaste", dataTransfer: transfer, bubbles: true, cancelable: true }))) return true;
+            const image = el.ownerDocument.createElement("img");
+            image.src = "data:image/png;base64," + data;
+            range.deleteContents();
+            range.insertNode(image);
+            range.setStartAfter(image);
+            selection.setBaseAndExtent(range.startContainer, range.startOffset, range.startContainer, range.startOffset);
+            el.dispatchEvent(new view.InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
+            return true;
         }
 
         function act(json) {
@@ -1659,13 +2149,15 @@
                     // What the person's player found of this element's file
                     // (its size, its length), for the page to be told
                     // (gomedia.js, in its world): numbers only.
-                    if (!(el instanceof HTMLMediaElement)) return "not media";
+                    // (By its name: one in a frame of this origin is of that
+                    // frame's realm, not an instance of this one's.)
+                    if (el?.nodeType !== 1 || (el.localName !== "video" && el.localName !== "audio")) return "not media";
                     let d;
                     try { d = JSON.parse(a.value); } catch { return "bad"; }
                     const num = (v) => (Number.isFinite(v) ? v : 0);
                     const what = d?.play && typeof d.play === "object"
                         ? { play: { t: num(d.play.t), playing: !!d.play.playing, ended: !!d.play.ended } }  // how it plays
-                        : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration) };
+                        : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration), readyState: num(d?.readyState) };
                     if (what.play && Number.isSafeInteger(d.play.stream)) {
                         const ranges = (list) => Array.isArray(list) ? list.slice(0, 16).map((r) => [num(r?.[0]), num(r?.[1])]) : [];
                         Object.assign(what.play, { stream: d.play.stream, buffered: ranges(d.play.buffered),
@@ -1710,13 +2202,16 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot };
+        w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, wakeLock: wakeAnswer, orientation: orientAnswer, pointerLock: lockAnswer, dropIn, frameStreams };
         // What the page observed before this world was made (as it loaded),
         // asked for again: posted, not dispatched. An event from this world
         // handled in the page's, as the page loads, leaves part of it
         // undone in Moli (measured: dbs.com.sg's React never fills in some
         // of its text); a message comes in a task of the page's own.
         window.postMessage({ __tabtop: "io-sync" }, "*");
+        // And which of the page's Blob URLs are streams (gomedia.js): a
+        // frame's page may have played one before its world was made.
+        window.postMessage({ __tabtop: "blobs" }, "*");
     }
     return w.__tabtop.snapshot();
 })()

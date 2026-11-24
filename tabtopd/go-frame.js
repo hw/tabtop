@@ -152,6 +152,16 @@
                 entry.asked = false;
             }
             mediaLater();
+        } else if (m.type === "pointerlock") {
+            pointerLock(m.on === true);
+        } else if (m.type === "files-chosen" && Array.isArray(m.files)) {
+            showChosen(m.files);
+        } else if (m.type === "frame-plays" && doc && m.gen === doc.gen && Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20 && Array.isArray(m.plays)) {
+            // An embedded page of another origin's players, started or
+            // stopped by it: by its world and their nodes (mediaNode).
+            for (const p of m.plays.slice(0, 32)) {
+                if (Number.isSafeInteger(p?.i) && p.i > 0 && p.i < 2 ** 32) playedAt(m.doc * 2 ** 32 + p.i, p.v === true);
+            }
         } else if (m.type === "media-mark") {
             for (const entry of media.values()) entry.box?.classList.toggle("go-media-mark", entry.key === m.key);
         } else if (m.type === "media-state" && Number.isSafeInteger(m.key)) {
@@ -162,16 +172,19 @@
                 setMediaLive(box, m.error === "" && !entry.policyBlocked);
             }
             // The video's own proportions, which its box takes.
-            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20) {
+            if (box && Number.isFinite(m.ratio) && m.ratio > 0.05 && m.ratio < 20 && mediaOf.get(box).size.aspectRatio !== String(m.ratio)) {
                 mediaOf.get(box).size.aspectRatio = String(m.ratio);
                 mediaStyle(box);
             }
             // Its size and length, for the page in the engine, which has no
-            // media of its own (gomedia.js): to the element the box is for.
-            const engineId = box && doc?.ids.get(box);
+            // media of its own (gomedia.js): to the element the box is for,
+            // in the page, or in an embedded page (by its frames' route).
+            const at = box && targetOf(box);
+            const engineId = at?.id;
+            const meta = (value) => send("media-meta", engineId, { value, ...frameFields(at) });
             const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
             if (engineId && m.meta && typeof m.meta === "object") {
-                send("media-meta", engineId, { value: JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration) }) });
+                meta(JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration), readyState: num(m.meta.readyState) }));
             }
             // How it plays, likewise.
             if (engineId && m.play && typeof m.play === "object") {
@@ -182,7 +195,7 @@
                         buffers: Array.isArray(m.play.buffers) ? m.play.buffers.slice(0, 8).map(ranges) : [] });
                     if (Number.isSafeInteger(m.play.ack)) play.ack = m.play.ack;
                 }
-                send("media-meta", engineId, { value: JSON.stringify({ play }) });
+                meta(JSON.stringify({ play }));
             }
         }
     });
@@ -655,6 +668,9 @@
         const child = newDoc({ gen: d.gen, base: frame.b, url: d.base });
         frameRoots.get(el).child = child;  // its nodes, by the frame's own numbers (whereAt)
         child.top = d.top ?? d;  // its boxes are its page's
+        // Whose numbers its nodes are: its own world's (another origin's
+        // page), or, read with its parent, its parent's.
+        child.world = docOf || d.world || 0;
         child.budget = d.budget;
         child.report = d.report;
         // Its adopted stylesheets: its own, read in a world of its own (on
@@ -764,6 +780,10 @@
         ":where([data-go-video], [data-go-audio]) { box-sizing: border-box; padding: 8px; overflow: hidden; background: #111; color: #ccc; font: 13px system-ui, sans-serif; } " +
         "[data-go-video].go-media-live, [data-go-audio].go-media-live { padding: 0 !important; background: transparent !important; background-image: none !important; color: transparent !important; border-color: transparent !important; box-shadow: none !important; } " +
         ":where([data-go-video].go-media-mark, [data-go-audio].go-media-mark) { outline: 3px solid #8ab4f8; outline-offset: -3px; } " +
+        // A player with nothing to play: nothing shown, as a browser shows
+        // none, and pressed through (what's under it is what's pressed; the
+        // engine's own, over it there, is passed over: goagent.js point).
+        "[data-go-video].go-media-empty, [data-go-audio].go-media-empty { background: transparent !important; background-image: none !important; color: transparent !important; border-color: transparent !important; box-shadow: none !important; outline: none !important; pointer-events: none !important; } " +
         "[data-go-wait] { visibility: hidden !important; }";
     let mediaKey = 0;
     const mediaOf = new WeakMap();
@@ -971,12 +991,22 @@
         box.style.setProperty("--tabtop-media-ratio", size.aspectRatio || "initial");
         mediaLater();
     }
+    // A player's attributes that are its own (what it plays and how, its
+    // size): not given its box.
+    const MEDIA_OWN = new Set(["src", "srcset", "poster", "preload", "autoplay", "controls", "controlslist", "muted", "loop", "playsinline",
+        "crossorigin", "width", "height", "disablepictureinpicture", "disableremoteplayback", "type"]);
     function mediaBox(d, n, tag) {
         const box = document.createElement("div");
         box.setAttribute(drawnAs[tag], "");
-        for (const name of ["id", "class", "title", "style"]) {
-            const value = attrOf(n, name);
-            if (value) attribute(d, box, HTML, "div", name, value);
+        // Its attributes, as a change to them later gives them (data-*,
+        // aria-*, its id, class, title and style), through the same filter;
+        // not the player's own (what it plays, how), which the box's player
+        // has, nor its size, set below.
+        const attrs = Array.isArray(n.a) ? n.a : [];
+        for (let i = 0; i + 1 < attrs.length; i += 2) {
+            const name = String(attrs[i]), value = String(attrs[i + 1] ?? "");
+            if (MEDIA_OWN.has(name.toLowerCase())) continue;
+            attribute(d, box, HTML, "div", name, value);
         }
         const dimension = (name) => {
             const value = attrOf(n, name);
@@ -989,7 +1019,7 @@
         const info = {
             // own: it has a src (empty: nothing to play), its <source>s not
             // looked at, as a browser doesn't.
-            tag, node: d.top ? 0 : n.i, key: 0, own: hasAttr(n, "src"), src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
+            tag, node: mediaNode(d, n.i), key: 0, own: hasAttr(n, "src"), src: attrOf(n, "src") || null, poster: tag === "video" ? attrOf(n, "poster") : "",
             muted: hasAttr(n, "muted"), loop: hasAttr(n, "loop"), play: hasAttr(n, "autoplay"),
             size: { width: dimension("width"), height: dimension("height"), aspectRatio: tag === "video" ? (w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9") : "" },
             style: "",
@@ -998,6 +1028,24 @@
         mediaStyle(box);
         mediaSource(d, box, info.own ? info.src ?? "" : firstSource(n.c));
         return box;
+    }
+    // playedAt starts or stops the player numbered node (mediaNode), as its
+    // page did; whether there's one.
+    function playedAt(node, play) {
+        for (const m of media.values()) {
+            if (m.node === node && m.box) return mediaChanged(null, m.box, { o: "m", v: play });
+        }
+        return false;
+    }
+    // mediaNode is a player's number for the person's browser (its EME's,
+    // go-media.js): its node's, in the page or a frame read with it; in an
+    // embedded page of another origin, world × 2³² + its node there (0 if
+    // either is out of bounds).
+    function mediaNode(d, i) {
+        if (!Number.isSafeInteger(i) || i <= 0 || i >= 2 ** 32) return 0;
+        const world = d.world || 0;
+        if (!world) return i;
+        return Number.isSafeInteger(world) && world > 0 && world < 2 ** 20 ? world * 2 ** 32 + i : 0;
     }
     // Its own file, or else its first source's.
     function firstSource(kids) {
@@ -1014,6 +1062,7 @@
         if (!info) return;
         if (info.key) forgetMedia(info.key);  // its player stops (keep, in the page)
         info.key = 0;
+        box.classList.remove("go-media-empty");
         const what = info.tag === "video" ? "video" : "sound";
         if (/^blob:/i.test(src) && !/^blob:tabtop-media\/[1-9]\d*$/.test(src)) {
             // Fed by the page's own player (Media Source): nothing a player
@@ -1029,9 +1078,33 @@
         if (!url) {
             setMediaLive(box, false);
             box.classList.remove("go-media-mark");
-            box.textContent = `A ${what} with nothing to play.`;
+            box.classList.add("go-media-empty");
+            box.textContent = `A ${what} with nothing to play.`;  // (said, not shown)
             mediaLater();
             return;
+        }
+        // A stream's box in an embedded page made again (the page read again
+        // whole, its copy rebuilt): the player it had moved to it, its
+        // buffers kept, as the page's own are (keepRelayedPlayers). A
+        // stream's number is its own (gomedia.js), so the same is the same.
+        if (d.top && /^blob:tabtop-media\//.test(url)) {
+            for (const [k, e] of media) {
+                if (e.src !== url || e.kind !== info.tag || e.box === box || !e.asked) continue;
+                const old = mediaOf.get(e.box);
+                if (old) old.key = 0;
+                const wasLive = e.box.classList.contains("go-media-live");
+                mediaVisibility.unobserve(e.box);
+                mediaSizes.unobserve(e.box);
+                setMediaLive(e.box, false);
+                box.textContent = e.box.textContent;
+                info.key = k;
+                media.set(k, { ...e, top: d.top, box, node: info.node, muted: info.muted, loop: info.loop });
+                setMediaLive(box, wasLive);
+                mediaVisibility.observe(box);
+                mediaSizes.observe(box);
+                mediaLater();
+                return;
+            }
         }
         setMediaLive(box, false);
         box.textContent = `Loading the ${what}…`;
@@ -1703,6 +1776,7 @@
                         if (!was.os.size) d.sized.delete(el);
                     }
                     ioCount--;
+                    if (![...d.io.values()].some((r) => r.ids.has(el))) d.observed?.delete(el);
                 }
                 continue;
             }
@@ -1716,6 +1790,7 @@
                 if (rec.ids.has(el)) continue;
                 rec.ids.set(el, x.i);
                 rec.observer.observe(el);
+                (d.observed ??= new Set()).add(el);
                 const was = (d.sized ??= new Map()).get(el);
                 if (was) {
                     was.os.add(x.o);
@@ -1743,9 +1818,35 @@
             if (rec.ids.has(el)) continue;
             rec.ids.set(el, x.i);
             rec.observer.observe(el);
+            (d.observed ??= new Set()).add(el);
             ioCount++;
         }
     }
+    // What's observed here of what the page took out of its document: let
+    // go of once it's been out of this one a while (three looks, 10 s
+    // apart), as the page's own observers park it (goobserve.js), whose
+    // "-" for it never comes (said on the element, out of the document).
+    // Else a long feed (YouTube's Shorts) has every reel's held, and, at
+    // MAX_IO, nothing more observed. Observed again if the page says so.
+    const ioAway = new WeakMap();
+    setInterval(() => {
+        const d = doc;
+        if (!d?.observed) return;
+        for (const el of d.observed) {
+            if (el.isConnected) { ioAway.delete(el); continue; }
+            const looks = (ioAway.get(el) ?? 0) + 1;
+            if (looks < 3) { ioAway.set(el, looks); continue; }
+            ioAway.delete(el);
+            d.observed.delete(el);
+            for (const rec of d.io.values()) {
+                if (!rec.ids.has(el)) continue;
+                rec.observer.unobserve(el);
+                rec.ids.delete(el);
+                ioCount--;
+            }
+            d.sized?.delete(el);
+        }
+    }, 10000);
     function seen(d, o, entries) {
         const rec = d.io.get(o);
         if (!rec || d !== doc) return;
@@ -1792,6 +1893,7 @@
             if (key === rec.last) continue;
             rec.last = key;
             for (const o of rec.os) ioSeen.push({ o, i: rec.i, z });
+            resizedNow.add(el);
         }
         if (ioTimer || !ioSeen.length) return;
         ioTimer = setTimeout(() => {
@@ -1799,8 +1901,18 @@
             const list = ioSeen;
             ioSeen = [];
             if (doc === d && list.length) tell({ type: "io", gen: d.gen, entries: list });
+            // Where they're scrolled may be told again: the page heard the
+            // last with sizes it's now told aren't these. Shorts works out
+            // its reels' height as its box's scrolled, once it has its
+            // sizes: told where it was before them, then not again (it
+            // hadn't moved), it took the person's first scroll for that,
+            // and put it back. (Once sent: what's sent goes in order; a
+            // scroll told meanwhile went before them.)
+            for (const el of resizedNow) toldAt.delete(el);
+            resizedNow.clear();
         }, 100);
     }
+    const resizedNow = new Set();  // elements whose new sizes are in ioSeen
     let sizedTimer = 0;
     function sizedSoon() {
         if (sizedTimer || !doc?.sized?.size) return;
@@ -1820,12 +1932,23 @@
     // can't go isn't answered again and again.
     let pageScrolled = -Infinity;
     const toldAt = new WeakMap();  // element -> where the engine was last told it is
+    const askedTo = new WeakMap();  // element -> where the page last asked for it ({place, ended: where it went, at})
     const scrollOf = (el) => (el === document.documentElement ? { x: scrollX, y: scrollY } : { x: el.scrollLeft, y: el.scrollTop });
     function tellScrolled(el) {
         const id = doc?.ids.get(el);
         if (!id) return;
         const at = scrollOf(el), x = Math.round(at.x), y = Math.round(at.y);
         if (toldAt.get(el) === x + "," + y) return;
+        // The page asking again, at once, for where it went back from
+        // (Shorts puts its box 16 pixels down, where this one's snapping
+        // puts it back, and asks again as it hears that, till a job of its
+        // own says not to, which hearing it keeps from running): not told
+        // it went back again. (Once, as a browser's is.)
+        const a = askedTo.get(el);
+        if (a && performance.now() - a.at < 2000) {
+            if (a.again && a.ended === x + "," + y) return;
+            a.ended = x + "," + y;
+        }
         toldAt.set(el, x + "," + y);
         send("scroll", id, { sx: x, sy: y });
     }
@@ -1848,8 +1971,11 @@
                 if (top) scrollTo({ left: s.x, top: s.y, behavior: "instant" });
                 else el.scrollTo({ left: s.x, top: s.y, behavior: "instant" });
                 // The engine's page has it where it asked.
-                toldAt.set(top ? document.documentElement : el, Math.round(s.x) + "," + Math.round(s.y));
-                asked.push(top ? document.documentElement : el);
+                const target = top ? document.documentElement : el, place = Math.round(s.x) + "," + Math.round(s.y);
+                toldAt.set(target, place);
+                const was = askedTo.get(target), again = was?.place === place && performance.now() - was.at < 2000;
+                askedTo.set(target, { place, again, ended: again ? was.ended : "", at: performance.now() });
+                asked.push(target);
             }
         }
         // Once it's there (a smooth scroll goes on, and says so itself).
@@ -1859,8 +1985,10 @@
         for (const rec of d?.io.values() ?? []) rec.observer.disconnect();
         d?.io.clear();
         d?.sized?.clear();
+        d?.observed?.clear();
         ioCount = 0;
         ioSeen = [];
+        resizedNow.clear();
     }
 
     // --- Changes -------------------------------------------------------------
@@ -1951,6 +2079,9 @@
                 else if (op.o === "p") canvasFrame(el, typeof op.v === "string" ? op.v : "", typeof op.pe === "string" ? op.pe : "unavailable");
                 continue;
             }
+            // A player in a frame of the page's origin, read with it (its
+            // node the page's agent's, not in the page's copy): its box's.
+            if (op.o === "m" && d === doc && !d.nodes.has(op.i) && playedAt(op.i, op.v === true)) continue;
             const target = d.nodes.get(op.i);
             if (target === undefined) return resync(d);
             if (op.o === "t" && d.styleOf.has(op.i)) {
@@ -2023,6 +2154,8 @@
                     // sent, say), unless it's being typed in here.
                     if (pending.has(target)) break;
                     if (target.type === "checkbox" || target.type === "radio") target.checked = op.v === "true";
+                    // (A file input's: only emptied; a value can't be given one.)
+                    else if (target.type === "file") { if (!op.v && target.value) target.value = ""; }
                     else if ("value" in target && target.value !== op.v) target.value = String(op.v ?? "");
                     break;
             }
@@ -2251,6 +2384,63 @@
         }
         return { id: at.id, ...place(at.node) };
     }
+    // The page's pointer lock (gopointerlock.go): the copy locks the pointer
+    // as the page asked, and says so (or that it couldn't, or that it's
+    // left: Esc, the window left). While it's locked, the pointer's moves
+    // (movementX/movementY, added up, the newest every 50 ms), its buttons
+    // and wheel go as "locked" input, given to the page's locked element;
+    // nothing of it is the copy's own (a press, a click, a link).
+    const tellLock = (state) => { if (doc) tell({ type: "pointerlock-state", gen: doc.gen, state }); };
+    function pointerLock(on) {
+        if (!on) {
+            if (document.pointerLockElement) document.exitPointerLock();
+            return;
+        }
+        if (document.pointerLockElement) return tellLock("on");
+        try {
+            const p = document.documentElement.requestPointerLock();
+            p?.catch?.(() => tellLock("error"));
+        } catch {
+            tellLock("error");
+        }
+    }
+    // (Its wheel kept from scrolling the copy only while it's locked: a
+    // listener that can, there only then; the copy's own is passive.)
+    const lockedWheel = (e) => {
+        if (!document.pointerLockElement) return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        if (!e.isTrusted) return;
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+        send("locked", 0, { phase: "wheel", dx: e.deltaX * unit, dy: e.deltaY * unit, buttons: e.buttons, ...mods(e) });
+    };
+    document.addEventListener("pointerlockchange", () => {
+        const on = !!document.pointerLockElement;
+        if (on) document.addEventListener("wheel", lockedWheel, { capture: true, passive: false });
+        else document.removeEventListener("wheel", lockedWheel, { capture: true });
+        tellLock(on ? "on" : "off");
+    });
+    document.addEventListener("pointerlockerror", () => tellLock("error"));
+    let lockedMove = null, lockedTimer = 0;
+    for (const type of ["mousedown", "mouseup", "mousemove", "click", "dblclick", "auxclick", "contextmenu"]) {
+        document.addEventListener(type, (e) => {
+            if (!document.pointerLockElement) return;
+            e.stopImmediatePropagation();
+            if (type === "contextmenu") e.preventDefault();
+            if (!e.isTrusted) return;
+            if (type === "mousedown" || type === "mouseup") {
+                send("locked", 0, { phase: type === "mousedown" ? "down" : "up", button: e.button, buttons: e.buttons, ...mods(e) });
+            } else if (type === "mousemove") {
+                lockedMove = { phase: "move", dx: (lockedMove?.dx ?? 0) + e.movementX, dy: (lockedMove?.dy ?? 0) + e.movementY, buttons: e.buttons, ...mods(e) };
+                if (!lockedTimer) lockedTimer = setTimeout(() => {
+                    lockedTimer = 0;
+                    if (lockedMove) send("locked", 0, lockedMove);
+                    lockedMove = null;
+                }, 50);
+            }
+        }, true);
+    }
+
     let held = 0;  // buttons pressed here, not yet released
     let pressedAt = null;
     document.addEventListener("mousedown", (e) => {
@@ -2416,7 +2606,9 @@
     // What's dragged in from outside (text, a link, from another window) is
     // given to the engine's page under it, and dropped there: its kinds as
     // it's dragged over (a browser shows no more till the drop), what it
-    // is when dropped. Files aren't (the remote browser takes no files).
+    // is when dropped. Files are sent once dropped (go.js, gouploads.go),
+    // then dropped there with them: not given as they're dragged over (a
+    // drag of no files, there).
     const DRAG_TYPES = ["text/plain", "text/uri-list", "text/html"];
     const MAX_DROP = 32 << 10;  // within a message the server takes (goClientMessage)
     let dragOver = null;
@@ -2428,9 +2620,13 @@
             if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
             const w = where(e);
             if (!w) return;
-            if (w.frame) {  // an embedded page's: not given (its places aren't the iframe's)
-                if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+            if (w.frame) {  // an embedded page's: a drag not given (its places aren't the iframe's); files dropped, given there (gouploads.go)
+                if (e.dataTransfer && ![...(e.dataTransfer.types ?? [])].includes("Files")) e.dataTransfer.dropEffect = "none";
                 if (dragOver) send("drag", 0, { phase: "cancel" });
+                dragOver = null;
+                return;
+            }
+            if ([...(e.dataTransfer?.types ?? [])].includes("Files")) {
                 dragOver = null;
                 return;
             }
@@ -2448,8 +2644,16 @@
         e.preventDefault();  // not opened here
         dragOver = null;
         const dt = e.dataTransfer;
-        if (dt?.files?.length) tell({ type: "drop-files", gen: doc?.gen });
         const w = where(e);
+        if (dt?.files?.length) {
+            // The files, to the page around this, to send (gouploads.go);
+            // where, for them to be dropped there (an embedded page's
+            // element by the path to it, as its other input is).
+            if (w && doc) tell({ type: "drop-files", gen: doc.gen, files: [...dt.files], id: w.id, ...frameFields(w), fx: w.fx, fy: w.fy, ...mods(e) });
+            else tell({ type: "drop-files", gen: doc?.gen, nowhere: true });
+            send("drag", 0, { phase: "cancel" });
+            return;
+        }
         if (!w || w.frame) {
             send("drag", 0, { phase: "cancel" });
             return;
@@ -2475,7 +2679,7 @@
         pointerSoon();
     }, true);
     document.addEventListener("wheel", (e) => {
-        if (!e.isTrusted) return;
+        if (!e.isTrusted || document.pointerLockElement) return;  // (locked: the locked pointer's, lockedWheel)
         const w = where(e);
         if (!w) return;
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
@@ -2601,6 +2805,33 @@
         }, 100);
     }, { capture: true, passive: true });
 
+    // A page's file input: its chooser is the engine's, which the page
+    // gets (the press reached it), and which the person answers from the
+    // page around this (go.js; gouploads.go): never this frame's own. The
+    // field pressed last is kept, to show what's chosen in it.
+    let fileField = null, fileFieldAt = 0;
+    document.addEventListener("click", (e) => {
+        const at = e.composedPath?.()[0] ?? e.target;
+        if (at?.localName === "input" && at.type === "file") {
+            e.preventDefault();
+            fileField = at;
+            fileFieldAt = performance.now();
+        }
+    }, true);
+    function showChosen(files) {
+        const field = fileField;
+        fileField = null;
+        if (!field?.isConnected || performance.now() - fileFieldAt > 600000) return;  // (a button of the page's opened it)
+        // Stand-ins, of nothing: what's shown is their names (the page's
+        // are the engine's).
+        try {
+            const dt = new DataTransfer();
+            for (const f of files.slice(0, 32)) {
+                if (typeof f?.name === "string") dt.items.add(new File([], f.name.slice(0, 255), { type: typeof f.type === "string" ? f.type : "" }));
+            }
+            field.files = dt.files;
+        } catch { /* shown as it was */ }
+    }
     document.addEventListener("click", (e) => {
         if (!e.isTrusted || e.button !== 0) return;
         const link = linkOf(e.target);
@@ -2761,7 +2992,14 @@
     }, true);
     document.addEventListener("paste", (e) => {
         const el = real(e), at = targetOf(el);
-        if (!e.isTrusted || !at || !richText(at.node)) return;
+        if (!e.isTrusted || !at) return;
+        const png = [...(e.clipboardData?.files ?? [])].find(file => file.type === "image/png");
+        if (png) {
+            e.preventDefault();
+            tell({ type: "paste-image", gen: doc.gen, id: at.id, ...frameFields(at), sel: richText(at.node) ? movedTo(el) : undefined, png });
+            return;
+        }
+        if (!richText(at.node)) return;
         e.preventDefault();
         // Its text, and its HTML (styled, as a browser pastes it) if both fit.
         const text = (e.clipboardData?.getData("text/plain") ?? "").slice(0, EDIT_MAX);

@@ -50,10 +50,13 @@ func goPhoneProfile(engineUA string) (ua string, params map[string]any) {
 	}
 }
 
-// goPhone is whether a view is a phone's: a touch screen, its shorter side
-// under 600 pixels (a tablet's, larger, says Chrome on its own platform).
-func goPhone(v goView) bool {
-	return v.Touch && min(v.SW, v.SH) > 0 && min(v.SW, v.SH) < 600
+// goMobile is whether a view's given mobile pages: a compact one's (a touch
+// screen's, or a narrow window's: /go laid out with one Back and no tabs),
+// unless the person's switched (Other) to its desktop ones; another's, if
+// they've switched to its mobile ones. (go.js shows which, by the same
+// rule: the menu's Mobile or Desktop.)
+func goMobile(v goView) bool {
+	return v.Compact != v.Other
 }
 
 // goSessionUAs is what each session's tabs last said they are, for what's

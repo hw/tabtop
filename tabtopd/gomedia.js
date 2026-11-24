@@ -4,7 +4,7 @@
 // page asking a video its size or length gets 0, and its player script
 // lays it out at its guess (YouTube: 16:9, its Shorts being 9:16). The
 // agent (goagent.js) hands what the person's player found, as JSON, in an
-// event on the element, "__tabtop_media" ({w, h, duration}); this has the
+// event on the element, "__tabtop_media" ({w, h, duration, readyState}); this has the
 // element say it, and fires the events a browser's does as it learns it.
 // An engine that has found it itself is left as it is.
 //
@@ -17,6 +17,11 @@
 //
 // It's the page's to see and change, like anything in its world: what it
 // does with that only touches its own copy.
+//
+// Listened for on the window, not the document: a frame's first page of
+// its parent's origin can be given the window its first (about:blank)
+// document had, which this was run in, and its document is another
+// (measured in Moli: a stream in such a frame never opened).
 (() => {
     const SEND = "__tabtop_media";
     const num = (v, max) => (Number.isFinite(v) && v >= 0 && v <= max ? v : 0);
@@ -29,6 +34,9 @@
         const state = plays.get(el);
         return state && state.source === sourceOf(el) ? state : null;
     };
+    const metadata = new WeakMap();
+    const videoFields = ["videoWidth", "videoHeight"];
+    const mediaFields = ["duration", "readyState", "networkState"];
     const native = {};
     for (const name of ["currentTime", "paused", "ended"]) native[name] = Object.getOwnPropertyDescriptor(proto, name);
     const timeOf = (el, p) => {
@@ -37,6 +45,27 @@
         return Number.isFinite(d) && d > 0 ? Math.min(t, d) : t;
     };
     const fire = (el, ...types) => { for (const type of types) el.dispatchEvent(new Event(type)); };
+    // The engine's own player "plays" whatever it's given (Moli 1.1.27,
+    // measured: loadedmetadata, loadeddata, canplay and canplaythrough at
+    // once, readyState 4, for a stream it can't play): for a stream the
+    // person's player plays (the relay's, blob:tabtop-media/), what it has
+    // is that player's to say (the reports below), not the engine's. Its
+    // own events (trusted; these here aren't) aren't the page's, and till
+    // the person's player says, it has nothing: readyState 0, no length,
+    // no size.
+    const relayed = (el) => /^blob:tabtop-media\//.test(sourceOf(el) ?? "");
+    for (const type of ["loadedmetadata", "loadeddata", "canplay", "canplaythrough", "durationchange", "resize"]) {
+        window.addEventListener(type, (e) => {
+            if (e.isTrusted && e.target instanceof HTMLMediaElement && relayed(e.target)) e.stopImmediatePropagation();
+        }, true);
+    }
+    for (const [name, base, none] of [["readyState", proto, 0], ["duration", proto, NaN], ["videoWidth", globalThis.HTMLVideoElement?.prototype, 0], ["videoHeight", globalThis.HTMLVideoElement?.prototype, 0]]) {
+        const was = base && Object.getOwnPropertyDescriptor(base, name);
+        if (!was?.get) continue;
+        try {
+            Object.defineProperty(base, name, { ...was, get: { [name]() { return relayed(this) ? none : was.get.call(this); } }[name] });
+        } catch { /* as it is */ }
+    }
     for (const [name, get, set] of [
         ["currentTime", (el, p) => timeOf(el, p), (el, p, v) => {
             p.t = num(Number(v), 1e7);
@@ -73,7 +102,7 @@
     // at most. The page's play() (stubbed, below) lets it go at once.
     const held = new WeakMap(); // element -> since (ms)
     const hold = (el) => held.set(el, performance.now());
-    document.addEventListener("__tabtop_media_hold", (e) => {
+    window.addEventListener("__tabtop_media_hold", (e) => {
         const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
         if (!(el instanceof HTMLMediaElement)) return;
         e.stopImmediatePropagation();
@@ -121,7 +150,7 @@
         held.delete(this);
         return nativePlay.apply(this, arguments);
     };
-    document.addEventListener(SEND, (e) => {
+    window.addEventListener(SEND, (e) => {
         const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
         if (!(el instanceof HTMLMediaElement)) return;
         let d;
@@ -130,20 +159,42 @@
             played(el, d.play);
             return;
         }
-        plays.delete(el);  // a file of its own: how the last played isn't this one's
+        const source = sourceOf(el);
+        if (!source) return;
+        const readyState = Number.isInteger(d?.readyState) ? num(d.readyState, 4) : 0;
         const w = num(d?.w, 16384), h = num(d?.h, 16384), duration = num(d?.duration, 1e7);
-        if (el instanceof HTMLVideoElement && (!w || !h)) return;
-        // The engine's own, if it has them (and they weren't said here
-        // before, for an earlier file): not ours to say.
-        if (!Object.getOwnPropertyDescriptor(el, "readyState") && el.readyState > 0 && (el.duration > 0 || el.videoWidth > 0)) return;
-        const said = { duration, readyState: 4, networkState: 1 };
-        if (el instanceof HTMLVideoElement) Object.assign(said, { videoWidth: w, videoHeight: h });
-        for (const [name, value] of Object.entries(said)) {
-            try { Object.defineProperty(el, name, { configurable: true, get: () => value }); } catch { /* as it is */ }
+        const previous = metadata.get(el);
+        const was = previous?.source === source ? previous : null;
+        // A native player can report its own state. Use the viewer's
+        // report for a source the engine does not play.
+        if (!was && (!readyState || el.readyState > 0 && (el.duration > 0 || el.videoWidth > 0))) return;
+        const state = { source, duration: readyState ? duration : NaN, readyState, networkState: 1, videoWidth: w, videoHeight: h,
+            loadedData: readyState > 0 && (readyState >= 2 || !!was?.loadedData) };
+        metadata.set(el, state);
+        if (!previous) {
+            const fields = el instanceof HTMLVideoElement ? [...mediaFields, ...videoFields] : mediaFields;
+            for (const name of fields) {
+                const base = videoFields.includes(name) ? HTMLVideoElement.prototype : proto;
+                const get = Object.getOwnPropertyDescriptor(base, name)?.get;
+                try { Object.defineProperty(el, name, { configurable: true, get() {
+                    const current = metadata.get(this);
+                    return current && current.source === sourceOf(this) ? current[name] : get?.call(this);
+                } }); } catch { /* as it is */ }
+            }
         }
-        const events = ["loadedmetadata", "durationchange", "loadeddata", "canplay", "canplaythrough"];
-        if (el instanceof HTMLVideoElement) events.splice(1, 0, "resize");
-        for (const type of events) el.dispatchEvent(new Event(type));
+        const before = was?.readyState || 0;
+        // An init segment can supply metadata before any frames are buffered.
+        if (!readyState && before) {
+            plays.delete(el);
+            fire(el, "emptied");
+        }
+        if (!before && readyState) fire(el, "loadedmetadata");
+        if (readyState && duration !== was?.duration) fire(el, "durationchange");
+        if (el instanceof HTMLVideoElement && (w !== (was?.videoWidth || 0) || h !== (was?.videoHeight || 0))) fire(el, "resize");
+        if (state.loadedData && !was?.loadedData) fire(el, "loadeddata");
+        if (before < 3 && readyState >= 3) fire(el, "canplay");
+        if (before < 4 && readyState >= 4) fire(el, "canplaythrough");
+        if (before >= 3 && readyState > 0 && readyState < 3 && !el.paused) fire(el, "waiting");
     }, true);
 })();
 
@@ -154,7 +205,24 @@
 (() => {
     const prefix = "blob:tabtop-media/";
     const queue = [];
-    let queued = 0, next = 0;
+    // A stream's number, from a random start: an embedded page's streams
+    // go with the page's (goframestreams.go), and one document's can't be
+    // told from another's by number alone.
+    let queued = 0, next = (() => {
+        try { return crypto.getRandomValues(new Uint32Array(1))[0] >>> 2; } catch { return Math.floor(Math.random() * 2 ** 30); }
+    })();
+    // Told on the topmost document of this one's origin it can reach, whose
+    // agent reads it (a frame of the page's origin is read by the page's).
+    const reader = () => {
+        let w = window;
+        try {
+            while (w.parent !== w) {
+                void w.parent.document;
+                w = w.parent;
+            }
+        } catch { /* this origin's topmost */ }
+        return w.document;
+    };
     const limit = 16 << 20;
     const nativeURL = URL.createObjectURL;
     const nativeRevoke = URL.revokeObjectURL;
@@ -174,7 +242,121 @@
         queued += size;
     }
 
-    document.addEventListener("__tabtop_read_stream", () => {
+    let listening = null;
+    const listen = () => {
+        const d = reader();
+        if (listening === d) return;
+        listening = d;
+        d.addEventListener("__tabtop_read_stream", readOut);
+    };
+    // A plain Blob's object URL played by a video or audio element (a site
+    // that fetches its file whole, then plays it from memory): its bytes
+    // relayed as a stream of its own ("file", its parts, "fileend"), the
+    // agent told the stream's address stands for the page's URL, for the
+    // copy's box (go-media.js gathers it, 256 MB at most, and plays it whole).
+    const FILE_MAX = 256 << 20, FILE_AHEAD = 8 << 20, FILE_PART = 49152;
+    const blobs = new Map();        // the page's blob: URL -> its Blob
+    const blobStreams = new Map();  // blob: URL -> its stream's number
+    const pumps = new Set();
+    // relayFile sends a Blob's bytes as a stream of its own (extra: what
+    // the "file" op says besides, a download's name); its number.
+    function relayFile(blob, extra = {}) {
+        const id = ++next;
+        if (blob.size > FILE_MAX || queue.length >= 512) {
+            queue.push({ stream: id, op: "error" });
+        } else {
+            queue.push({ stream: id, op: "file", mime: blob.type, value: blob.size, ...extra });
+            let at = 0, busy = false;
+            const pump = async () => {
+                if (busy) return;
+                busy = true;
+                try {
+                    while (at < blob.size && queued < FILE_AHEAD && queue.length < 480) {
+                        const part = new Uint8Array(await blob.slice(at, at + FILE_PART).arrayBuffer());
+                        if (!part.length) break;
+                        at += part.length;
+                        const data = btoa(String.fromCharCode(...part));
+                        queue.push({ stream: id, op: "chunk", data });
+                        queued += data.length;
+                    }
+                    if (at >= blob.size) {
+                        queue.push({ stream: id, op: "fileend" });
+                        pumps.delete(pump);
+                    }
+                } catch {
+                    queue.push({ stream: id, op: "error" });
+                    pumps.delete(pump);
+                } finally {
+                    busy = false;
+                }
+            };
+            pumps.add(pump);
+            pump();
+        }
+        return id;
+    }
+    function relayBlob(url) {
+        const blob = blobs.get(url);
+        if (!blob) return;
+        let id = blobStreams.get(url);
+        if (!id) {
+            id = relayFile(blob);
+            blobStreams.set(url, id);
+        }
+        try { reader().dispatchEvent(new CustomEvent("__tabtop_blob", { detail: JSON.stringify({ url, stream: id }) })); } catch { /* told nothing */ }
+    }
+    // A file the page makes to be downloaded (an export button's: a link
+    // with download to a blob: or data: address, clicked, or click()'d as
+    // it's made, and its address let go at once): read as it's clicked,
+    // its bytes relayed as a file stream marked a download, with its name,
+    // for the person's browser to save into Downloads (go-media.js, go.js).
+    // The engine downloads nothing itself (its click's default prevented).
+    const isDownload = (a) => a?.localName === "a" && a.hasAttribute?.("download") && /^(?:blob|data):/i.test(a.href ?? "");
+    function download(a) {
+        const said = String(a.getAttribute("download") ?? "").trim();
+        fetch(a.href).then((r) => r.blob()).then((blob) => {
+            relayFile(blob, { download: (said || "download").slice(0, 255) });
+            watch();
+        }, () => { /* not readable: nothing */ });
+    }
+    // A file the page shares (navigator.share({files}): godevice.js asks,
+    // in this world): relayed as a file stream marked shared, with its
+    // name; its number said back.
+    window.addEventListener("__tabtop_share_file", (e) => {
+        const d = e.detail;
+        if (!(d?.file instanceof Blob) || typeof d.name !== "string" || d.stream !== undefined) return;
+        d.stream = relayFile(d.file, { share: d.name.slice(0, 255) });
+        watch();
+    });
+    const nativeClick = globalThis.HTMLAnchorElement?.prototype.click;
+    let clicking = null;
+    if (nativeClick) {
+        Object.defineProperty(HTMLAnchorElement.prototype, "click", { configurable: true, writable: true, enumerable: true, value: function click() {
+            if (!isDownload(this)) return nativeClick.call(this);
+            // Its click event, as a browser's (the page's handlers may
+            // cancel it), then its download.
+            clicking = this;
+            let go = true;
+            try { go = this.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: window })); } finally { clicking = null; }
+            if (go) download(this);
+        } });
+    }
+    window.addEventListener("click", (e) => {
+        if (e.defaultPrevented) return;
+        const a = e.composedPath?.().find(isDownload);
+        if (!a || a === clicking) return;
+        e.preventDefault();
+        download(a);
+    });
+    // The agent, once there, asks which are streams (one in a frame is made
+    // after its page has played one): said again.
+    window.addEventListener("message", (e) => {
+        if (e.data?.__tabtop !== "blobs") return;
+        for (const [url, stream] of blobStreams) {
+            try { reader().dispatchEvent(new CustomEvent("__tabtop_blob", { detail: JSON.stringify({ url, stream }) })); } catch { /* told nothing */ }
+        }
+    });
+    function readOut() {
         const batch = [];
         let size = 0;
         while (queue.length && batch.length < 64 && size < (768 << 10)) {
@@ -183,8 +365,10 @@
             batch.push(command);
         }
         queued -= size;
-        if (batch.length) document.dispatchEvent(new CustomEvent("__tabtop_stream", { detail: JSON.stringify(batch) }));
-    });
+        if (batch.length) reader().dispatchEvent(new CustomEvent("__tabtop_stream", { detail: JSON.stringify(batch) }));
+        for (const pump of pumps) pump();  // a file's next parts, as these go
+    }
+    listen();
 
     const timeRanges = (ranges = []) => ({
         length: ranges.length,
@@ -252,6 +436,7 @@
             enqueue(this, { op: "duration", value: Number.isFinite(value) ? value : null });
         }
         addSourceBuffer(mime) {
+            listen();
             if (!RelaySource.isTypeSupported(mime)) throw new DOMException("Unsupported media type", "NotSupportedError");
             const index = this.nextBuffer++;
             const buffer = new RelayBuffer(this, index);
@@ -319,7 +504,17 @@
         try { globalThis.ManagedMediaSource = RelayManagedSource; } catch { /* read-only native */ }
     }
     URL.createObjectURL = function (value) {
-        if (!(value instanceof RelaySource)) return nativeURL.call(this, value);
+        if (!(value instanceof RelaySource)) {
+            const url = nativeURL.call(this, value);
+            // A Blob that may be played: kept by its URL, relayed if it is.
+            if (value instanceof Blob && !/^(?:image|text|font)\//i.test(value.type) && value.size > 0) {
+                blobs.set(url, value);
+                if (blobs.size > 64) blobs.delete(blobs.keys().next().value);
+                watch();
+            }
+            return url;
+        }
+        watch();
         const url = prefix + value.id;
         positions.set(url, value);
         if (positions.size > 32) positions.delete(positions.keys().next().value);
@@ -327,7 +522,10 @@
     };
     URL.revokeObjectURL = function (url) {
         if (String(url).startsWith(prefix)) positions.delete(String(url));
-        else nativeRevoke.call(this, url);
+        else {
+            blobs.delete(String(url));  // (one relayed goes on: the player has it)
+            nativeRevoke.call(this, url);
+        }
     };
 
     const attached = new WeakMap();
@@ -349,7 +547,7 @@
         }
         return 0;
     };
-    document.addEventListener("__tabtop_media", (e) => {
+    window.addEventListener("__tabtop_media", (e) => {
         const at = (e.composedPath?.()[0] ?? e.target);
         const source = attached.get(at);
         if (!source || sourceURL(at) !== prefix + source.id) return;
@@ -377,6 +575,7 @@
     }, true);
     function attach(el) {
         const url = sourceURL(el);
+        if (url && blobs.has(url)) return relayBlob(url);
         const old = attached.get(el);
         if (old && url === prefix + old.id) return;
         if (old) {
@@ -396,7 +595,7 @@
             source.setStreaming(true);
         }, 0);
     }
-    new MutationObserver((records) => {
+    const observer = new MutationObserver((records) => {
         for (const record of records) {
             if (record.target instanceof HTMLMediaElement) attach(record.target);
             if (record.target.localName === "source" && record.target.parentElement instanceof HTMLMediaElement) attach(record.target.parentElement);
@@ -405,9 +604,18 @@
                 node.querySelectorAll?.("video, audio").forEach(attach);
             }
         }
-    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
+    });
+    // The document now (see above: the window's may have changed since).
+    let watching = null;
+    const watch = () => {
+        if (watching === document) return;
+        watching = document;
+        observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
+        listen();
+    };
+    watch();
 
-    document.addEventListener("error", (e) => {
+    window.addEventListener("error", (e) => {
         if (e.target instanceof HTMLMediaElement && sourceURL(e.target)?.startsWith(prefix)) e.stopImmediatePropagation();
     }, true);
     const load = HTMLMediaElement.prototype.load;
@@ -416,11 +624,25 @@
         if (!sourceURL(this)?.startsWith(prefix)) return load.call(this);
     };
     // asked: played by the page (its play(), here) and not paused since.
+    // askedList is the same, to go through: a play() the agent wasn't there
+    // to hear (the page played its stream before its world was made, as a
+    // player starting at once does) is said again once it's there.
     const asked = new WeakSet();
+    const askedList = new Set();  // WeakRefs of what's asked
+    window.addEventListener("message", (e) => {
+        if (e.data?.__tabtop !== "blobs") return;  // (the agent, once there: see goagent.js)
+        for (const ref of askedList) {
+            const el = ref.deref();
+            if (!el || !asked.has(el)) { askedList.delete(ref); continue; }
+            // (Its own event, not play again: the page's listeners hear nothing.)
+            el.dispatchEvent(new CustomEvent("__tabtop_played_before", { bubbles: true, composed: true }));
+        }
+    });
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
         if (!sourceURL(this)?.startsWith(prefix)) return play.call(this);
         attach(this);
+        if (!asked.has(this)) askedList.add(new WeakRef(this));
         asked.add(this);
         this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { composed: true, detail: "release" }));
         this.dispatchEvent(new Event("play"));
@@ -441,6 +663,10 @@
         if (!this.paused) return pause.call(this);
         if (!wanted) return;
         this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { composed: true }));
-        setTimeout(() => this.dispatchEvent(new Event("pause")), 0);
+        // (Not if the page's played it again since: its play's event, fired
+        // at once, came first, and a pause after it would stop the person's
+        // player the page wants playing. YouTube's Shorts stops a reel, then
+        // plays it, within a task.)
+        setTimeout(() => { if (!asked.has(this)) this.dispatchEvent(new Event("pause")); }, 0);
     };
 })();

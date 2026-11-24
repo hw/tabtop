@@ -145,7 +145,7 @@ func TestOfflineFrames(t *testing.T) {
 	if err := json.Unmarshal(bootstrapClientJSON, &pack); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"tabtop/md-frame.html": mdFrameHTML, "tabtop/epub-frame.html": epubFrameHTML, "tabtop/pdf-frame.html": pdfFrameHTML} {
+	for name, want := range map[string]string{"tabtop/md-frame.html": mdFrameHTML, "tabtop/epub-frame.html": epubFrameHTML, "tabtop/pdf-frame.html": pdfFrameHTML, "tabtop/go-frame.html": goFrameHTML} {
 		var got string
 		if err := json.Unmarshal(pack.Files[name], &got); err != nil || got != want {
 			t.Errorf("the pack's %s isn't the gateway's (rebuild it: node scripts/bootstrap/build-full-client.mjs)", name)

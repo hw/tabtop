@@ -171,20 +171,53 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
     const downloadProgress = Object.assign(document.createElement("div"), { className: "download-progress", hidden: true });
     downloadProgress.setAttribute("role", "progressbar");
     downloadProgress.setAttribute("aria-label", "Video download");
-    let streamPicker;
-    if (streams.length > 1) {
-        streamPicker = Object.assign(document.createElement("select"), { className: "speed stream-picker" });
-        streamPicker.setAttribute("aria-label", "Stream to save from this page");
-        for (const stream of streams) streamPicker.add(new Option(stream.label));
-    }
-    if (streams.length) download = (say, opts) => streams[streamPicker?.selectedIndex ?? 0].save(say, opts);
-    // One stream: what it is on Save (more: in the picker).
-    if (streams.length === 1 && streams[0].label) downloadTitle = `${downloadTitle} · ${streams[0].label}`;
+    // What it offers to save: streams (their labels; a picker's if more
+    // than one, and one's said on its button), else download (a file's).
+    // offer sets it: as it's opened, and as it changes while it's open
+    // (setStreams). A stream may become saveable late: an encrypted one's
+    // as its keys come (go-media.js), so a player opened before then is
+    // offered it after.
+    let streamPicker = null, saved = null;
     let cancelDownload;
-    const saved = download ? button("download", downloadTitle, () => {
-        if (cancelDownload) cancelDownload();
-        else download(updateDownload);
-    }) : null;
+    let saving = download, savingTitle = downloadTitle, offered = false;
+    function offer(list) {
+        // (A download of what was offered before isn't this one's.)
+        if (offered) saving?.(updateDownload, { detach: true });
+        streamPicker?.remove();
+        saved?.remove();
+        streamPicker = saved = null;
+        cancelDownload = undefined;
+        saving = list.length ? (say, opts) => list[streamPicker?.selectedIndex ?? 0].save(say, opts) : download;
+        savingTitle = downloadTitle;
+        if (list.length === 1 && list[0].label) savingTitle = `${downloadTitle} · ${list[0].label}`;
+        if (list.length > 1) {
+            streamPicker = Object.assign(document.createElement("select"), { className: "speed stream-picker" });
+            streamPicker.setAttribute("aria-label", "Stream to save from this page");
+            for (const stream of list) streamPicker.add(new Option(stream.label));
+            // Another stream picked: its download, if one's going on; else
+            // Download, for it (not Cancel, for the one picked before).
+            streamPicker.addEventListener("change", () => {
+                saving(updateDownload, { detach: true });
+                updateDownload("", undefined);
+                saving(updateDownload, { attach: true });
+            });
+        }
+        if (saving) {
+            saved = button("download", savingTitle, () => {
+                if (cancelDownload) cancelDownload();
+                else saving(updateDownload);
+            });
+        }
+        if (offered) {
+            // In its row, where they were: the picker, then its button,
+            // before Skip.
+            for (const control of [streamPicker, saved]) if (control) row.insertBefore(control, skipped ?? turn);
+        }
+        offered = true;
+        // A download of it going on (the player closed and opened again
+        // while it saves): shown, its Cancel too, not offered again.
+        saving?.(updateDownload, { attach: true });
+    }
     // updateDownload shows what the download says: text, and, while it
     // saves, fraction (a number, or null: not known how far) and cancel
     // (none while it's cancelling). Saving, Download's a ring that fills,
@@ -198,7 +231,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         cancelDownload = active && cancel;
         saved.disabled = active && !cancel;
         saved.classList.toggle("saving", active);
-        const label = !active ? downloadTitle : cancel ? `Cancel download${percent !== null ? ` (${percent}%)` : ""}` : "Cancelling download";
+        const label = !active ? savingTitle : cancel ? `Cancel download${percent !== null ? ` (${percent}%)` : ""}` : "Cancelling download";
         saved.title = label;
         saved.setAttribute("aria-label", label);
         if (saved.dataset.icon !== (active ? "saving" : "download")) {
@@ -220,16 +253,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         if (active !== wasActive && text && live) awake();
         wasActive = active;
     }
-    // A download of it going on (the player closed and opened again while
-    // it saves): shown, its Cancel too, not offered again. Another stream
-    // picked: its download, if one's going on; else Download, for it (not
-    // Cancel, for the one picked before).
-    if (download) download(updateDownload, { attach: true });
-    streamPicker?.addEventListener("change", () => {
-        download(updateDownload, { detach: true });
-        updateDownload("", undefined);
-        download(updateDownload, { attach: true });
-    });
+    offer(streams);
     const skipped = skip ? button("skip", "Skip to its end (Shift+N)", () => { skip(); close(); }) : null;
     const turn = button("turn", "Turn it the other way (R)", () => { turned = !turned; turn.setAttribute("aria-pressed", String(turned)); turnScreen(); });
     turn.setAttribute("aria-pressed", "false");
@@ -445,7 +469,7 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
         else media.setAttribute("tabindex", was.tabIndex);
         delete media.dataset.player;
         // What its download says goes to the page now, not to it, gone.
-        download?.(updateDownload, { detach: true });
+        saving?.(updateDownload, { detach: true });
         if (was.parent?.isConnected) was.parent.insertBefore(media, was.next?.parentNode === was.parent ? was.next : null);
         box.remove();
         closed?.();
@@ -457,5 +481,8 @@ export function openPlayer(media, { title = "", skip, download, streams = [], do
     awake();
     box.focus();
     toggleFull();  // (asked as it's opened: the person's click, in the menu)
+    // setStreams is what it offers to save, as that changes while it's
+    // open (offer).
+    close.setStreams = (list = []) => { if (!done) offer(list); };
     return close;
 }

@@ -12,7 +12,7 @@ import (
 // from the page's queue as it was made: asked once), on an https page.
 func TestGoEMEAgain(t *testing.T) {
 	big := `{"seq":9,"ops":["` + strings.Repeat("x", goChangesLimit) + `"],"eme":[{"request":1,"op":"access"},{"request":2,"op":"keys"}]}`
-	eme := goEMEOf(big)
+	eme := goRequestsOf(big).EME
 	if len(eme) != 2 {
 		t.Fatalf("a batch too large: %d EME requests read from it, want 2", len(eme))
 	}

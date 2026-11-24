@@ -109,6 +109,55 @@ var goShadowJS string
 //go:embed godialogs.js
 var goDialogsJS string
 
+// goClipboardJS passes on what the page copies, and asks the person for
+// what it reads of the clipboard (goclipboard.go).
+//
+//go:embed goclipboard.js
+var goClipboardJS string
+
+// goFullscreenJS gives the page fullscreen, asked of the server
+// (gofullscreen.go).
+//
+//go:embed gofullscreen.js
+var goFullscreenJS string
+
+// goDropJS gives an embedded page the files dropped on it (gouploads.go).
+//
+//go:embed godrop.js
+var goDropJS string
+
+// goPointerLockJS gives the page pointer lock, the person's browser's
+// (gopointerlock.go).
+//
+//go:embed gopointerlock.js
+var goPointerLockJS string
+
+// goOrientationJS gives the page screen.orientation.lock, the person's
+// browser's (goorientation.go).
+//
+//go:embed goorientation.js
+var goOrientationJS string
+
+// goWakeLockJS gives the page navigator.wakeLock, held by the person's
+// browser (gowakelock.go).
+//
+//go:embed gowakelock.js
+var goWakeLockJS string
+
+// goPermsJS says what each permission is, as /go gives it (goperms.js).
+//
+//go:embed goperms.js
+var goPermsJS string
+
+// goVibrateJS gives the page navigator.vibrate, felt on the person's
+// device (govibrate.go).
+//
+//go:embed govibrate.js
+var goVibrateJS string
+
+//go:embed godevice.js
+var goDeviceJS string
+
 // goDebug (TABTOP_GO_DEBUG=1) logs what each tab does, for finding out why
 // a page misbehaves: the person's requests by kind, navigations,
 // snapshots and changes, by size. Never addresses typed or values.
@@ -169,6 +218,44 @@ type goBrowser struct {
 	sites     *goSiteSettings
 	popupAsk  int
 	popupAsks map[int]goPopupAsk
+	// Reads of the clipboard the page asked for, waiting for the person,
+	// by token (goclipboard.go).
+	pasteAsks map[string]*goPasteAsk
+	// The page's fullscreen, allowed (gofullscreen.go).
+	fullscreen *goFullscreen
+	// Its notifications (gonotify.go).
+	notifying                     goNotifyTab
+	devicePolicy, devicePolicyURL string
+	viewerCaps                    goViewerCaps
+	device                        *goDevicePending
+	fs                            goFileSystem
+	pip                           *goDevicePending
+	// recycled: the viewer's been advised to move the tab to a fresh engine
+	// (its memory past the soft limit: goRecycleAt), and is again as it
+	// connects again.
+	recycled   bool
+	vibratedAt time.Time       // when the page's vibration was last passed on (govibrate.go)
+	wakeHeld   map[string]bool // the page's wake lock sentinels held, by id (gowakelock.go)
+	// The page's orientation locks asked of the person's browser, and
+	// whether it's locked (goorientation.go).
+	orientAsks   map[string]goOrientLock
+	orientLocked bool
+	pointerLock  *goPointerLock // the page's pointer lock, asked for or held (gopointerlock.go)
+	overSince    time.Time      // since when its engine's been past the soft limit; zero: it isn't
+	imagePaste   *goImagePaste
+	// The script telling pages what the person's browser can do (godevice.go:
+	// the jobs' worker's alone).
+	deviceScript string
+	// A position followed (watchPosition: godevice.go), and when it was
+	// last passed on.
+	locWatch       *goDevicePending
+	locWatchAt     time.Time
+	imagePasteBusy bool
+	// Streams by the document that sent them first, and the frames that
+	// have streamed lately, asked often (goframestreams.go).
+	streamOwners  goStreamOwners
+	streamWorlds  map[int]time.Time
+	streamPolling bool
 	// What it says it is (gouseragent.go): the engine's own, or, on a
 	// phone (phone, set by a job), Chrome on Android's.
 	engineUA  string
@@ -237,6 +324,15 @@ type goBrowser struct {
 	// The closed shadow roots from its HTML, given to the agents
 	// (goclosedroots.go).
 	closed goClosedRoots
+	// File inputs (gouploads.go): the chooser waiting for files, and
+	// what's kept; and when the person last did something in the page,
+	// for a chooser to be theirs.
+	uploads  goUploads
+	inputAt  time.Time
+	inputGen int // the page it was in (a browser's activation goes with its page)
+	// The world it was in: the page's agent's, or an embedded page's of
+	// another origin (whose own input alone it may act on).
+	inputWorld int
 	// What the engine's been told of certificate errors (certIgnore's
 	// alone, under certMu: the jobs and a paused document's request): 0 to
 	// heed them, 1 to ignore them, -1 not known (a call that failed may
@@ -269,6 +365,7 @@ type goBrowser struct {
 	// tab.
 	resources *http.Client
 	session   string
+	private   bool // a private tab's (goincognito.go): its fetches kept apart
 	res       *goResCache
 	serving   int
 	// What's being fetched ahead for the page shown (goprefetch.go).
@@ -423,6 +520,7 @@ type goClientMsg struct {
 	// res of media: the range of it (Length 0: its first byte, to learn
 	// of it), and the file as it was opened.
 	Offset  int64  `json:"offset"`
+	Size    int64  `json:"size"`
 	Length  int64  `json:"length"`
 	IfSize  int64  `json:"if_size"`
 	IfMtime string `json:"if_mtime"`
@@ -542,8 +640,14 @@ type goView struct {
 	SW int `json:"sw"`
 	SH int `json:"sh"`
 	// The person's device has touch: the page is told so, and given it.
-	Touch   bool `json:"touch"`
-	Desktop bool `json:"desktop"`
+	Touch bool `json:"touch"`
+	// Compact: the person's /go is laid out for a phone (go.js's
+	// compactView: a touch screen, or a window 600 pixels wide at most),
+	// so it's given mobile pages (goMobile).
+	Compact bool `json:"compact"`
+	// Other: the person's switched to the other pages (the menu's Mobile
+	// or Desktop, go.js): a phone's desktop ones, another's mobile ones.
+	Other bool `json:"other"`
 	// Which way up the device is held (screen.orientation's type, and its
 	// angle), told the page as its screen's.
 	Orientation string `json:"o"`
@@ -722,12 +826,14 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS + "\n" + goClipboardJS + "\n" + goFullscreenJS + "\n" + goVibrateJS + "\n" + goWakeLockJS + "\n" + goOrientationJS + "\n" + goPointerLockJS + "\n" + goDropJS + "\n" + goPermsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
 		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": source}, nil)
 	}, func(r any) { goDebugf("fetch for data:, observer stand-in: %v", r) })
+	b.notifyRegister() // (the sites' notification answers: gonotify.go)
+	b.deviceRegister() // (what the person's browser can do: godevice.go)
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	b.cdp.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
 	cancel()
@@ -772,6 +878,7 @@ func (b *goBrowser) run() {
 			downloadsDone = nil
 			read(l)
 			if taken {
+				b.releaseDevices()
 				b.resume()
 			}
 			taken = true
@@ -781,6 +888,7 @@ func (b *goBrowser) run() {
 				continue
 			}
 			b.conn.swap(nil)
+			b.releaseDevices()
 			l.release()
 			b.conn.detachedAt(time.Now())
 			detached = time.After(goDetachedFor)
@@ -808,6 +916,20 @@ func (b *goBrowser) run() {
 			case "event":
 				if m.Gen == b.shown && m.Gen == b.gen {
 					b.e.use()
+					// A press, a key, a touch (not a move or a scroll): what a
+					// browser lets a page open a chooser after.
+					if m.Kind == "click" || m.Kind == "key" || m.Kind == "touch" && m.Type != "move" || (m.Kind == "mouse" || m.Kind == "locked") && (m.Type == "down" || m.Type == "up") {
+						b.inputAt, b.inputGen = time.Now(), b.gen
+						// And where: an embedded page of another origin's world,
+						// or the page's (goclipboard.go: what's passed on of a
+						// frame's is its own input's only).
+						b.inputWorld = b.world
+						if m.Frame != 0 {
+							if w, _ := b.frameWorldPath(m.ID, m.Route, m.Docs); w != 0 {
+								b.inputWorld = w
+							}
+						}
+					}
 				}
 			}
 			switch m.Op {
@@ -865,6 +987,40 @@ func (b *goBrowser) run() {
 					continue // for a document that's gone
 				}
 				b.act(m)
+			case "files":
+				b.chooseFiles(m) // a chooser answered (gouploads.go)
+			case "paste":
+				b.paste(m) // a read of the clipboard answered (goclipboard.go)
+			case "paste-part":
+				b.pastePart(m) // and the picture given it, in parts
+			case "notify-permission":
+				b.notifyAnswer(m) // notifications allowed, or not (gonotify.go)
+			case "notify-event":
+				b.notifyEvent(m) // one shown, clicked or closed
+			case "device-answer":
+				b.deviceAnswer(m)
+			case "go-fs-cancel":
+				if m.Gen == b.gen {
+					b.abortFSRead(m.Text)
+				}
+			case "paste-image":
+				b.pasteImage(m)
+			case "pointerlock":
+				if m.Gen == b.gen {
+					b.pointerLockState(m.Value) // the person's browser locked, couldn't, or left it (gopointerlock.go)
+				}
+			case "orientation-answer":
+				if m.Gen == b.gen {
+					b.orientationAnswered(m) // the person's browser locked, or couldn't (goorientation.go)
+				}
+			case "wakelock-lost":
+				b.wakeLockLost() // the person's browser couldn't keep it (gowakelock.go)
+			case "fullscreen-exit":
+				b.fullscreenExit() // the person left it (gofullscreen.go)
+			case "drop-files":
+				b.dropStart(m) // files dropped on the page, to be sent
+			case "dropped":
+				b.dropFiles(m) // and sent: dropped there
 			case "resync":
 				if m.Gen == b.shown && b.loading == 0 {
 					b.readAgain(b.gen)
@@ -929,7 +1085,10 @@ func (b *goBrowser) run() {
 				b.dirty = true
 				b.readChanges()
 			}
-			b.framesSoon() // other origins' frames: once a second
+			b.framesSoon()       // other origins' frames: once a second
+			b.frameStreamsSoon() // and those streaming, as often as the page
+			b.notifySoon()       // notification answers changed (gonotify.go)
+			b.recycleSoon()      // its engine's memory past the soft limit: advised once
 		case <-loadTimeout:
 			// Show what has loaded, slow as the rest is.
 			gen := b.loading
@@ -982,6 +1141,39 @@ func (b *goBrowser) resume() {
 		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": id, "url": a.url, "site": a.site})
 	}
 	b.resendStreams() // Save stream offered again (gostreams.go)
+	b.recycleAgain()
+	b.wakeLockAgain() // (gowakelock.go)
+}
+
+// recycleAgain advises a viewer connecting again, if the tab's been: this
+// one hasn't been.
+func (b *goBrowser) recycleAgain() {
+	if b.recycled {
+		b.send(map[string]any{"type": "go-recycle", "gen": b.gen})
+	}
+}
+
+// recycleSoon advises the viewer, once, that the tab's engine has been past
+// its soft memory limit (goRecycleAt) for goRecycleAfter: it moves the tab
+// to a fresh one.
+func (b *goBrowser) recycleSoon() {
+	if b.recycled || b.e == nil || !b.e.overSoft() {
+		b.overSince = time.Time{}
+		return
+	}
+	if b.overSince.IsZero() {
+		b.overSince = time.Now()
+	}
+	if time.Since(b.overSince) >= goRecycleAfter {
+		b.recycle()
+	}
+}
+
+// recycle advises the viewer to move the tab to a fresh engine.
+func (b *goBrowser) recycle() {
+	b.recycled = true
+	goDebugf("engine past its soft limit (%d MB): its viewer advised to move", b.e.rss.Load()>>20)
+	b.send(map[string]any{"type": "go-recycle", "gen": b.gen})
 }
 
 // goScrollAt is where a page says it's scrolled, within reason.
@@ -1159,7 +1351,7 @@ func (b *goBrowser) setView(v goView) {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		b.applyUA(ctx, goPhone(v) && !v.Desktop)
+		b.applyUA(ctx, goMobile(v))
 		metrics := map[string]any{
 			"width": v.W, "height": v.H, "deviceScaleFactor": v.DPR, "mobile": false,
 			// The screen is the person's window: their own isn't told.
@@ -1239,6 +1431,8 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		return loadTimeout, dialogTimeout
 	}
 	switch ev.Method {
+	case "Page.fileChooserOpened":
+		b.fileChooserOpened(ev) // a file input's (gouploads.go)
 	case "Page.javascriptDialogOpening":
 		var p struct {
 			Type    string `json:"type"`
@@ -1369,6 +1563,12 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			for k, v := range p.Response.Headers {
 				if msg, ok := goRefusals[v]; ok && strings.EqualFold(k, goRefusedHeader) {
 					b.refused, b.refusedWhy = b.gen, msg
+				}
+			}
+			b.devicePolicyURL, b.devicePolicy = p.Response.URL, ""
+			for key, value := range p.Response.Headers {
+				if strings.EqualFold(key, "Permissions-Policy") {
+					b.devicePolicy = value
 				}
 			}
 			// Its type alone: Moli keeps its parameters (charset), as
@@ -1674,14 +1874,19 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 	}, func(r any) { r.(func())() })
 }
 
-// goEMEOf is the EME requests in a batch of changes (raw), whatever else
-// it has.
-func goEMEOf(raw string) []json.RawMessage {
-	var c struct {
-		EME []json.RawMessage `json:"eme"`
+// Requests are drained as a batch is made, even when its DOM changes
+// are too large to use and the viewer needs a fresh snapshot.
+type goPageRequests struct {
+	EME     []json.RawMessage `json:"eme"`
+	Devices []goDeviceAsk     `json:"devices"`
+}
+
+func goRequestsOf(raw string) goPageRequests {
+	var r goPageRequests
+	if json.Unmarshal([]byte(raw), &r) != nil {
+		return goPageRequests{}
 	}
-	json.Unmarshal([]byte(raw), &c)
-	return c.EME
+	return r
 }
 
 // emeAgain sends a batch's EME requests (the page's, taken from its queue
@@ -1696,7 +1901,7 @@ func (b *goBrowser) emeAgain(gen int, eme []json.RawMessage) {
 }
 
 type goChanges struct {
-	EME     []json.RawMessage `json:"eme"`
+	goPageRequests
 	Streams []json.RawMessage `json:"streams"`
 	Seq     int               `json:"seq"`
 	URL     string            `json:"url"`
@@ -1717,6 +1922,8 @@ type goChanges struct {
 	} `json:"asked"`
 	// Where the page scrolled its elements itself (goobserve.js).
 	Scrolls []goScroll `json:"scrolls"`
+	// What it copied, and its reads of the clipboard (goclipboard.go).
+	goClipboardOut
 	// Where rich text's caret is (goagent.js's caret), with what an edit
 	// changed: [anchor, offset, focus, offset].
 	Sel []int `json:"sel"`
@@ -1774,7 +1981,9 @@ func (b *goBrowser) readChanges() {
 			}
 			if err != nil || len(raw) > goChangesLimit {
 				if err == nil {
-					b.emeAgain(gen, goEMEOf(raw))
+					batch := goRequestsOf(raw)
+					b.emeAgain(gen, batch.EME)
+					b.devices(gen, batch.Devices)
 				}
 				b.readAgain(gen) // read it all again
 				return
@@ -1785,6 +1994,7 @@ func (b *goBrowser) readChanges() {
 			var c goChanges
 			if err := json.Unmarshal([]byte(raw), &c); err != nil || c.Seq != b.seq+1 {
 				if err == nil {
+					b.devices(gen, c.Devices)
 					b.emeAgain(gen, c.EME) // (a batch missed before it: this one's let go too)
 				}
 				b.readAgain(gen)
@@ -1824,6 +2034,9 @@ func (b *goBrowser) readChanges() {
 				goDebugf("dialog %s asked, answered by the engine", q.Kind)
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
+			b.devices(gen, c.Devices)
+			b.clipboard(gen, b.world, c.goClipboardOut)
+			c.Streams = b.streamsFrom(gen, b.world, c.Streams) // (its own streams only: goframestreams.go)
 			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(c.EME) > 0 || len(io) > 0 || len(scrolls) > 0 {
 				if b.glStreams == nil {
 					b.glStreams = make(map[int]*goGLStream)
@@ -2014,6 +2227,10 @@ func goCleanOps(raw []json.RawMessage, seen *goSeen) []any {
 
 // act does what the person did, in the page, then reads what it changed.
 func (b *goBrowser) act(m goClientMsg) {
+	if m.Kind == "eme-reply" && m.FDoc != 0 {
+		b.emeInFrame(m) // an embedded page's EME answered (goframeeme.go)
+		return
+	}
 	if m.Frame != 0 {
 		// In an embedded page: by its own agent, as the engine's input
 		// can't be aimed there (goinput.go).
@@ -2023,7 +2240,7 @@ func (b *goBrowser) act(m goClientMsg) {
 		case m.Kind == "key" && m.Type == "up":
 			// A key's press is done by script, all of it (keydown,
 			// keypress, keyup; Enter sending its form): its release is in it.
-		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus", m.Kind == "edit":
+		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus", m.Kind == "edit", m.Kind == "media-meta":
 			if len(m.Value)+len(m.HTML) <= maxGoURL*8 {
 				b.actInFrame(m)
 			}
@@ -2031,6 +2248,9 @@ func (b *goBrowser) act(m goClientMsg) {
 		return
 	}
 	switch {
+	case m.Kind == "locked":
+		b.lockedInput(m) // the pointer, locked (gopointerlock.go)
+		return
 	case m.Kind == "mouse":
 		b.pointer(m) // real input (goinput.go)
 		return

@@ -307,12 +307,12 @@ func (g *server) routeGoResource(c *tunnelCall) {
 		defer mine()
 		// With no tab to ask, the cookies kept for the media's site that
 		// any page may send it (SameSite=None).
-		serveGoMedia(c.t, c.session, c.req, c.r, g.goResources, goResourceSlots, goSessionUA(c.session), g.goFromNoTab())
+		serveGoMedia(c.t, c.session, c.req, c.r, g.goResources, goResourceSlots, goSessionUA(c.session), g.goFromNoTab(c.req.Private))
 		return
 	}
 	w := newChunkWriter(c.t)
 	defer w.stop()
-	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL, goSessionUA(c.session), g.goFromNoTab())
+	f := goFetchResource(w.ctx, g.goResources, c.session, c.req.Resource, c.req.URL, goSessionUA(c.session), g.goFromNoTab(c.req.Private))
 	if f.err != nil {
 		if w.ctx.Err() == nil {
 			c.r.fail(f.err.Error())

@@ -31,6 +31,8 @@ const icons = {
     "scan-document": '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M7 6h7l3 3v9H7zM10 12h4m-4 3h4"/>',
     "invert-selection": '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="2 2"/><path d="M12 4h8v16H4v-8h8z" fill="currentColor" opacity=".4"/><path d="M6 6h6v6H6z"/>',
     desktop: '<rect x="2.5" y="4" width="20" height="13.5" rx="1.5"/><path d="M8.5 21h8m-4-3.5v3.5"/>',
+    // A phone (the remote browser's mobile pages; desktop's, the screen).
+    mobile: '<rect x="7" y="2.5" width="11" height="20" rx="2"/><path d="M11 19h3"/>',
     terminal: '<rect x="3" y="5" width="19" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5m5 1h5"/>',
     files: '<path d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2.5h9a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-16a1.5 1.5 0 0 1-1.5-1.5z"/>',
     // The remote browser: a globe.

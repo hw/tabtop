@@ -189,6 +189,7 @@ func (c *goConn) CloseRead(ctx context.Context) context.Context { return ctx }
 // goTab is a tab, by its token: its session's, and its browser's.
 type goTab struct {
 	token, session string
+	private        bool // a private tab (goincognito.go)
 	b              *goBrowser
 	ended          chan struct{} // closed as it ends
 }
@@ -258,6 +259,18 @@ func (ts *goTabs) ofSession(session string) []*goTab {
 		if t.session == session {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// browsers is every tab's browser, private ones too (which the account's
+// jar doesn't list: goincognito.go).
+func (ts *goTabs) browsers() []*goBrowser {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	out := make([]*goBrowser, 0, len(ts.by))
+	for _, t := range ts.by {
+		out = append(out, t.b)
 	}
 	return out
 }

@@ -45,6 +45,8 @@ type tunnelRequest struct {
 	// Copy: a transfer copies, leaving what's at Path, rather than moves.
 	Copy bool `json:"copy,omitempty"`
 
+	ViewerCaps goViewerCaps `json:"viewerCaps,omitzero"` // APIs available on the /go viewer
+
 	// --- Files ---
 	Path string `json:"path,omitempty"`
 	Name string `json:"name,omitempty"` // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle; go-cookies-forget, go-settings, go-site-data(-delete): the site
@@ -76,9 +78,26 @@ type tunnelRequest struct {
 	// go: the token of a tab to take back, kept while its connection was
 	// lost (goresume.go)
 	Resume string `json:"resume,omitempty"`
+	// go: a private tab (goincognito.go), whose sites' cookies and storage
+	// are kept apart, in memory, and forgotten with the session's last
+	// private tab; go-resource: asked for by one, so sent none of the
+	// account's cookies. (Not WEB_GO_PRIVATE's private networks.)
+	Private bool `json:"private,omitempty"`
+	// go: the token of the tab this new one takes over from (its engine
+	// past its soft memory limit: go.js moves it to a fresh one): its
+	// cookies taken in first, for the new one's engine.
+	Replaces string `json:"replaces,omitempty"`
 	// GoTab is the active /go tab token, used only for downloads initiated
 	// by that tab so the server can apply the tab's site cookies and headers.
 	GoTab string `json:"go_tab,omitempty"`
+	// go-upload: the chooser a file's for (gouploads.go), and its time
+	// (milliseconds since 1970, as a File's lastModified).
+	Chooser  string `json:"chooser,omitempty"`
+	Transfer string `json:"transfer,omitempty"`
+	Modified int64  `json:"modified,omitempty"`
+	// go-restart: the person's say-so, a passkey's (else Code, the
+	// password + code).
+	Assertion *passkeyAssertion `json:"assertion,omitempty"`
 	// upload with Replace, and the edits below: only if the file there is
 	// still as the page read it, with this version (see fileVersion) and
 	// IfSize (see changed); reads: only of the file as it was, if given
