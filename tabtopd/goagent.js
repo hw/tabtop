@@ -83,6 +83,165 @@
             try { d = JSON.parse(e.detail); } catch { return; }
             if (asked.length < 16 && d && typeof d.kind === "string" && typeof d.message === "string") asked.push({ kind: d.kind, message: d.message.slice(0, 2000) });
         });
+        // What the page copied (the newest), and the reads of the clipboard
+        // it asked for (goclipboard.js): a page's with the next batch, a
+        // frame's world's when asked (copied: its frames are read less
+        // often than they're asked of).
+        const frameWorld = w.__tabtopFrameWorld === true;
+        let copiedText = null, copiedImage = null, pasteAsks = [], pasteReads = [];
+        document.addEventListener("__tabtop_copy", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!d) return;
+            // (A picture: a PNG's base64, 8 MiB at most; its text, if any, with it.)
+            const image = typeof d.image === "string" && d.image.length <= 4 * Math.ceil((8 << 20) / 3) && /^[A-Za-z0-9+/]+=*$/.test(d.image) ? d.image : null;
+            if (image) [copiedText, copiedImage] = [typeof d.text === "string" ? d.text.slice(0, 1 << 20) : null, image];
+            else if (typeof d.text === "string") [copiedText, copiedImage] = [d.text.slice(0, 1 << 20), null];
+        });
+        document.addEventListener("__tabtop_paste_ask", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (pasteAsks.length + pasteReads.length < 4 && d && typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)) (d.images ? pasteReads : pasteAsks).push(d.id);
+        });
+        // Notifications (gonotify.js): permission asked for, those shown,
+        // and closed by the page.
+        let notifyAsks = [], notifyShows = [], notifyCloses = [];
+        const notifyID = (id) => typeof id === "string" && /^[a-z0-9]{1,40}$/.test(id);
+        document.addEventListener("__tabtop_notify_ask", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (notifyAsks.length < 4 && notifyID(d?.id)) notifyAsks.push(d.id);
+        });
+        document.addEventListener("__tabtop_notify", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (notifyShows.length >= 8 || !notifyID(d?.id)) return;
+            const s = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+            notifyShows.push({ id: d.id, title: s(d.title, 1000), body: s(d.body, 4000), tag: s(d.tag, 256), silent: d.silent === true,
+                requireInteraction: d.requireInteraction === true, renotify: d.renotify === true, dir: s(d.dir, 8), lang: s(d.lang, 64) });
+        });
+        document.addEventListener("__tabtop_notify_close", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (notifyCloses.length < 32 && notifyID(d?.id)) notifyCloses.push(d.id);
+        });
+        // Fullscreen asked for and left by the page (gofullscreen.js).
+        let fullAsks = [];
+        document.addEventListener("__tabtop_fullscreen", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (fullAsks.length < 4 && d && (d.on === false || (typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)))) fullAsks.push(d.on === false ? { on: false } : { on: true, id: d.id });
+        });
+        let devices = [];
+        document.addEventListener("__tabtop_device", e => {
+            if (frameWorld || devices.length >= 4 || typeof e.detail !== "string" || e.detail.length > 10000) return;
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            const el = at(e);
+            if (!d || typeof d.id !== "string" || !/^[a-z0-9]{1,40}$/.test(d.id) || (el !== document && el.ownerDocument !== document)) return;
+            const ask = { id: d.id, kind: d.kind };
+            switch (d.kind) {
+                case "share":
+                    ask.data = {};
+                    for (const key of ["title", "text", "url"]) {
+                        if (typeof d.data?.[key] === "string") ask.data[key] = d.data[key];
+                    }
+                    break;
+                case "location":
+                    const duration = n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
+                    if (!duration(d.options?.timeout) || !duration(d.options?.maximumAge)) return;
+                    ask.options = { enableHighAccuracy: d.options.enableHighAccuracy === true,
+                        timeout: d.options.timeout, maximumAge: d.options.maximumAge };
+                    break;
+                case "pip":
+                    ask.node = el.localName === "video" ? ids.get(el) : 0;
+                    break;
+                case "pip-exit": break;
+                default: return;
+            }
+            devices.push(ask);
+        });
+        function deviceReply(reply) {
+            document.dispatchEvent(new CustomEvent("__tabtop_device_reply", { detail: JSON.stringify(reply) }));
+        }
+        const clipboardOut = () => {
+            const out = {};
+            if (copiedText !== null) out.copy = copiedText;
+            if (copiedImage !== null) out.copyImage = copiedImage;
+            if (pasteAsks.length) out.pasteAsks = pasteAsks;
+            if (pasteReads.length) out.pasteReads = pasteReads;
+            if (fullAsks.length) out.fullscreen = fullAsks;
+            if (notifyAsks.length || notifyShows.length || notifyCloses.length) out.notify = { asks: notifyAsks, shows: notifyShows, closes: notifyCloses };
+            copiedText = copiedImage = null;
+            pasteAsks = [];
+            pasteReads = [];
+            fullAsks = [];
+            notifyAsks = [];
+            notifyShows = [];
+            notifyCloses = [];
+            return out;
+        };
+        const clipEmpty = (out) => out.copy === undefined && out.copyImage === undefined && !out.pasteAsks && !out.pasteReads && !out.fullscreen && !out.notify;
+        // copied is what the page copied and asked to read since it was
+        // last asked, as JSON, or "" (a frame's world's: goframes.go).
+        const clipCopied = () => {
+            const out = clipboardOut();
+            return clipEmpty(out) ? "" : JSON.stringify(out);
+        };
+        // fullscreen gives the page the server's answer to its request
+        // ({id, ok}), or says the person left it ({exit: true}).
+        const fullAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            const detail = d?.exit ? { exit: true } : typeof d?.id === "string" ? { id: d.id, ok: !!d.ok } : null;
+            if (!detail) return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_fullscreen_answer", { detail: JSON.stringify(detail) }));
+            return true;
+        };
+        // fullscreenHost lays the iframe numbered id (its page of another
+        // origin fullscreen) over this document's window, or lets it go.
+        let fullStyle = null;
+        const fullHost = (id, on) => {
+            const el = byId.get(id)?.deref();
+            if (!(el instanceof Element)) return false;
+            if (!on) {
+                el.removeAttribute("data-tabtop-fullscreen");
+                if (!document.querySelector("[data-tabtop-fullscreen]")) fullStyle?.remove();
+                return true;
+            }
+            if (!fullStyle) {
+                fullStyle = document.createElement("style");
+                fullStyle.setAttribute("data-tabtop", "");
+                fullStyle.textContent = "[data-tabtop-fullscreen] { position: fixed !important; inset: 0 !important; margin: 0 !important; box-sizing: border-box !important; min-width: 0 !important; max-width: none !important; min-height: 0 !important; max-height: none !important; width: 100% !important; height: 100% !important; transform: none !important; z-index: 2147483647 !important; border: 0 !important; }";
+            }
+            (document.head ?? document.documentElement).append(fullStyle);
+            el.setAttribute("data-tabtop-fullscreen", "");
+            return true;
+        };
+        // pasted gives the page what the person pasted for it (text), or
+        // says they didn't (none): {id, text}.
+        const clipPasted = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            if (!d || typeof d.id !== "string") return false;
+            const detail = { id: d.id };
+            if (typeof d.text === "string") detail.text = d.text;
+            if (typeof d.image === "string") detail.image = d.image;
+            document.dispatchEvent(new CustomEvent("__tabtop_pasted", { detail: JSON.stringify(detail) }));
+            return true;
+        };
+        // notified gives the page the server's word on its notifications:
+        // its permission ({ask?, state}), or one's event ({id, type}).
+        const notified = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            let detail;
+            if (["granted", "denied", "default"].includes(d?.state)) detail = notifyID(d.ask) ? { ask: d.ask, state: d.state } : { state: d.state };
+            else if (notifyID(d?.id) && ["show", "click", "close", "error"].includes(d.type)) detail = { id: d.id, type: d.type };
+            else return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_notify_event", { detail: JSON.stringify(detail) }));
+            return true;
+        };
         // Where the page scrolled its elements itself (goobserve.js), for
         // the copy to scroll so: the newest of each, with the next batch.
         let scrollsOut = new Map();  // element -> {x, y} or {into}
@@ -868,7 +1027,28 @@
         // What the copy's src says: the element's own if it has one ("":
         // empty, its <source>s not to be looked at), else its <source>'s,
         // else none (null: the copy looks at its <source>s, as it's sent them).
-        const mediaSrc = (el) => el.hasAttribute("src") ? el.getAttribute("src") : mediaURL(el);
+        // A plain Blob's URL played (gomedia.js relays its bytes as a
+        // stream): the copy's src is the stream's address.
+        const blobStreams = new Map();  // the page's blob: URL -> blob:tabtop-media/N
+        const mediaSrc = (el) => {
+            const url = el.hasAttribute("src") ? el.getAttribute("src") : mediaURL(el);
+            return (url && blobStreams.get(url)) ?? url;
+        };
+        // A video or audio element, by its name (one in a frame of this
+        // origin is of that frame's realm: not an instance of this one's).
+        const isMedia = (n) => n?.nodeType === 1 && (n.localName === "video" || n.localName === "audio");
+        // The media elements seen, to look at again as a Blob's URL is
+        // said to be a stream.
+        const mediaSeen = new Set();  // WeakRef
+        let blobsSaid = false;
+        document.addEventListener("__tabtop_blob", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!d || typeof d.url !== "string" || !/^blob:/i.test(d.url) || d.url.length > 2048 || !Number.isSafeInteger(d.stream) || d.stream < 1) return;
+            if (blobStreams.size >= 64 && !blobStreams.has(d.url)) blobStreams.delete(blobStreams.keys().next().value);
+            blobStreams.set(d.url, "blob:tabtop-media/" + d.stream);
+            blobsSaid = true;
+        });
 
         function ser(n, depth) {
             if (++count > 400000) throw new Error("too many nodes");
@@ -883,10 +1063,11 @@
                 for (let j = 0; j < a.length; j += 2) if (a[j] === k) { a.splice(j, 2); break; }
                 if (v !== null) a.push(k, v);
             };
-            if (n instanceof HTMLMediaElement) {
+            if (isMedia(n)) {
                 const url = mediaSrc(n);
                 set("src", url);
                 mediaURLs.set(n, url);
+                if (mediaSeen.size < 512) mediaSeen.add(new WeakRef(n));
             } else if (name === "input") {
                 if (/^(checkbox|radio)$/i.test(n.type)) set("checked", n.checked ? "" : null);
                 else if (!/^(file|image|submit|reset|button)$/i.test(n.type)) set("value", n.value);
@@ -1255,11 +1436,27 @@
             emeNode = 0;
         });
 
+        // Each page world's batch (this document's, and its frames' of its
+        // origin, which tell it here: gomedia.js), together.
         let streamBatch = null;
         document.addEventListener("__tabtop_stream", (e) => {
             if (typeof e.detail !== "string" || e.detail.length > (1 << 20)) return;
-            try { streamBatch = JSON.parse(e.detail); } catch { /* malformed batch */ }
+            let got;
+            try { got = JSON.parse(e.detail); } catch { return; /* malformed batch */ }
+            if (!Array.isArray(got)) return;
+            streamBatch = [...(streamBatch ?? []), ...got].slice(0, 256);
         });
+        const readStreams = () => {
+            streamBatch = null;
+            document.dispatchEvent(new Event("__tabtop_read_stream"));
+            return Array.isArray(streamBatch) ? streamBatch : [];
+        };
+        // frameStreams is a frame's world's streams' commands, as JSON, or
+        // "" (its batches of changes don't carry them: goframestreams.go).
+        const frameStreams = () => {
+            const list = readStreams();
+            return list.length ? JSON.stringify(list) : "";
+        };
 
         function changes() {
             for (const r of observer.takeRecords()) {
@@ -1378,7 +1575,7 @@
             }
             const changedMedia = new Set();
             for (const p of parents) {
-                if (p instanceof HTMLMediaElement) { changedMedia.add(p); continue; }
+                if (isMedia(p)) { changedMedia.add(p); continue; }
                 if (p.localName === "iframe") continue; // its rendered children come from its document
                 if (!p.isConnected || !old(p) || p.nodeType === 1 && dropped.has(p.localName.toLowerCase())) continue;
                 const c = [];
@@ -1400,16 +1597,24 @@
                 ops.push({ o: "c", i: ids.get(p), c });
             }
             for (const [n, names] of attrs) {
-                if (n.localName === "source" && names.has("src") && n.parentElement instanceof HTMLMediaElement) changedMedia.add(n.parentElement);
+                if (n.localName === "source" && names.has("src") && isMedia(n.parentElement)) changedMedia.add(n.parentElement);
                 // A player's children (its sources, tracks) aren't drawn: the
                 // copy has one player for them, told their address above. An
                 // op of theirs would name a node it hasn't, and ask it all again.
-                if (n.parentElement instanceof HTMLMediaElement) continue;
+                if (isMedia(n.parentElement)) continue;
                 if (!n.isConnected || !old(n)) continue;
                 for (const name of names) {
                     if (/^on/i.test(name)) continue;
-                    if (name === "src" && n instanceof HTMLMediaElement) { changedMedia.add(n); continue; }
+                    if (name === "src" && isMedia(n)) { changedMedia.add(n); continue; }
                     ops.push({ o: "a", i: ids.get(n), n: name, v: n.getAttribute(name) });
+                }
+            }
+            if (blobsSaid) {
+                blobsSaid = false;
+                for (const ref of mediaSeen) {
+                    const el = ref.deref();
+                    if (!el) mediaSeen.delete(ref);
+                    else changedMedia.add(el);
                 }
             }
             for (const el of changedMedia) {
@@ -1489,17 +1694,20 @@
             ioOut = [];
             const askedNow = asked;
             asked = [];
+            if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_notify"));  // (gonotify.js's, told now)
+            const clip = frameWorld ? {} : clipboardOut();
+            if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_device"));
+            const deviceBatch = devices;
+            devices = [];
             const scrollsNow = [];
             for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
             scrollsOut = new Map();
-            streamBatch = null;
-            document.dispatchEvent(new Event("__tabtop_read_stream"));
-            const streams = Array.isArray(streamBatch) ? streamBatch : [];
+            const streams = frameWorld ? [] : readStreams();
             emeBatch = [];
             emeNode = 0;
             document.dispatchEvent(new Event("__tabtop_read_eme"));
             const eme = emeBatch;
-            if (!eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length) return "";
+            if (!deviceBatch.length && !eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length && clipEmpty(clip)) return "";
             const sel = ops.length ? caret() : null;
             seq++;
             const glGone = [];
@@ -1511,7 +1719,7 @@
                 glAway.add(el);
             }
             const css = cssTaken();
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, devices: deviceBatch, ...clip, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
         }
 
         function watch(el) {
@@ -1532,6 +1740,29 @@
             for (let p = proto; !setter && p; p = Object.getPrototypeOf(p)) setter = Object.getOwnPropertyDescriptor(p, "value")?.set;
             if (setter) setter.call(el, v);
             else el.value = v;
+        }
+
+        function pasteImage(id, data, sel) {
+            const el = node(id);
+            if (!el?.isConnected) return false;
+            const view = el.ownerDocument.defaultView;
+            const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+            const transfer = new view.DataTransfer();
+            transfer.items.add(new view.File([bytes], "image.png", { type: "image/png" }));
+            if (editable(el)) select(sel);
+            const proceed = el.dispatchEvent(new view.ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, composed: true, cancelable: true }));
+            if (!proceed || !editable(el) || plainText(el)) return true;
+            const selection = selectionOf(el), range = rangeOf(selection);
+            if (!range || !el.contains(range.commonAncestorContainer)) return true;
+            if (!el.dispatchEvent(new view.InputEvent("beforeinput", { inputType: "insertFromPaste", dataTransfer: transfer, bubbles: true, cancelable: true }))) return true;
+            const image = el.ownerDocument.createElement("img");
+            image.src = "data:image/png;base64," + data;
+            range.deleteContents();
+            range.insertNode(image);
+            range.setStartAfter(image);
+            selection.setBaseAndExtent(range.startContainer, range.startOffset, range.startContainer, range.startOffset);
+            el.dispatchEvent(new view.InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
+            return true;
         }
 
         function act(json) {
@@ -1659,7 +1890,9 @@
                     // What the person's player found of this element's file
                     // (its size, its length), for the page to be told
                     // (gomedia.js, in its world): numbers only.
-                    if (!(el instanceof HTMLMediaElement)) return "not media";
+                    // (By its name: one in a frame of this origin is of that
+                    // frame's realm, not an instance of this one's.)
+                    if (el?.nodeType !== 1 || (el.localName !== "video" && el.localName !== "audio")) return "not media";
                     let d;
                     try { d = JSON.parse(a.value); } catch { return "bad"; }
                     const num = (v) => (Number.isFinite(v) ? v : 0);
@@ -1710,13 +1943,16 @@
             return "unknown";
         }
 
-        w.__tabtop = { snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot };
+        w.__tabtop = { deviceReply, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, frameStreams };
         // What the page observed before this world was made (as it loaded),
         // asked for again: posted, not dispatched. An event from this world
         // handled in the page's, as the page loads, leaves part of it
         // undone in Moli (measured: dbs.com.sg's React never fills in some
         // of its text); a message comes in a task of the page's own.
         window.postMessage({ __tabtop: "io-sync" }, "*");
+        // And which of the page's Blob URLs are streams (gomedia.js): a
+        // frame's page may have played one before its world was made.
+        window.postMessage({ __tabtop: "blobs" }, "*");
     }
     return w.__tabtop.snapshot();
 })()

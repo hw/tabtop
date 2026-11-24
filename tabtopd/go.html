@@ -93,6 +93,9 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 @media (prefers-reduced-motion: reduce) { #go_menu_media .glyph.saving .ring { animation: none; } }
 #go_menu_media .head { display: flex; align-items: center; gap: 8px; }
 #go_menu_media .head h2 { flex: 1; }
+/* No video among them: the heading not shown (Autoplay kept at the right),
+   still read to a screen reader. */
+#go_menu_media .head h2.unseen { color: transparent; user-select: none; }
 #go_menu_media .acts { flex: 0 0 auto; display: flex; gap: 2px; }
 #go_menu_media .glyph { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; min-height: 0; padding: 0;
     border: 0; border-radius: 50%; background: none; color: #e8e8ea; cursor: pointer; }
@@ -203,14 +206,14 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_cert button.go { color: #ff9f9f; border-color: #8e3b3b; }
 #go_cert .note { color: #a8a8ad; font-size: 13px; margin-top: 12px; }
 /* A pop-up the page wants to open: asked (gosites.go). */
-#go_popup { position: absolute; top: calc(var(--bar-total) + 10px); right: calc(12px + var(--safe-right)); width: min(24rem, calc(100% - 24px)); box-sizing: border-box;
+#go_popup, #go_paste, #go_notify_ask, #go_device { position: absolute; top: calc(var(--bar-total) + 10px); right: calc(12px + var(--safe-right)); width: min(24rem, calc(100% - 24px)); box-sizing: border-box;
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 6; }
-#go_popup[hidden] { display: none; }
-#go_popup p { margin: 0 0 10px; overflow-wrap: anywhere; }
+#go_popup[hidden], #go_paste[hidden], #go_notify_ask[hidden], #go_device[hidden] { display: none; }
+#go_popup p, #go_paste p, #go_notify_ask p, #go_device p { margin: 0 0 10px; overflow-wrap: anywhere; }
 #go_popup .remember { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; color: #b8b8bd; }
-#go_popup .actions { display: flex; gap: 8px; justify-content: flex-end; }
-#go_popup button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
-#go_popup button.open { background: #2f5ea8; border-color: #2f5ea8; }
+#go_popup .actions, #go_paste .actions, #go_notify_ask .actions, #go_device .actions { display: flex; gap: 8px; justify-content: flex-end; }
+#go_popup button, #go_paste button, #go_notify_ask button, #go_device button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
+#go_popup button.open, #go_paste button.allow, #go_notify_ask button.allow, #go_device button.allow { background: #2f5ea8; border-color: #2f5ea8; }
 #go_notice.error { border-color: #d96b6b; }
 #go_notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
 #go_notice button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
@@ -258,7 +261,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .go-fullscreen #go_bar { display: none; }
 .go-fullscreen #go_view { margin-top: var(--safe-top); height: calc(100% - var(--safe-top) - var(--safe-bottom)); }
 .go-fullscreen #go_start { margin-top: var(--safe-top); }
-.go-fullscreen #go_popup { top: calc(60px + var(--safe-top)); }
+.go-fullscreen #go_popup, .go-fullscreen #go_paste, .go-fullscreen #go_notify_ask, .go-fullscreen #go_device { top: calc(60px + var(--safe-top)); }
 #go_exit_fullscreen { position: fixed; top: calc(8px + var(--safe-top)); right: calc(8px + var(--safe-right));
     z-index: 6; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
     border: 1px solid #72727a; border-radius: 50%; background: #242428ee; color: #fff; cursor: pointer; }
@@ -282,7 +285,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     #go_bar button { min-width: 44px; height: 44px; }
     #go_bar #go_address button { min-width: 44px; }
     #go_address input { height: 44px; padding-right: 44px; font-size: 16px; }
-    #go_notice button, #go_dialog button, #tabtop_login_summary button, #go_popup button { min-height: 44px; }
+    #go_notice button, #go_dialog button, #tabtop_login_summary button, #go_popup button, #go_paste button, #go_notify_ask button, #go_device button { min-height: 44px; }
     #go_menu_panel .item, #go_menu_panel .tabtop-nav > * { min-height: 44px; }
     #go_menu_media .glyph { width: 44px; height: 44px; }
     #go_recent button { min-height: 44px; }
@@ -334,6 +337,12 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 <div id="go_popup" role="alertdialog" aria-labelledby="go_popup_text" hidden><p id="go_popup_text"></p>
     <label class="remember"><input type="checkbox" checked> <span>Remember for this site</span></label>
     <div class="actions"><button type="button" class="open">Open</button><button type="button" class="refuse">Don’t open</button></div></div>
+<div id="go_paste" role="alertdialog" aria-labelledby="go_paste_text" hidden><p id="go_paste_text"></p>
+    <div class="actions"><button type="button" class="allow">Paste</button><button type="button" class="refuse">Don’t allow</button></div></div>
+<div id="go_notify_ask" role="alertdialog" aria-labelledby="go_notify_ask_text" hidden><p id="go_notify_ask_text"></p>
+    <div class="actions"><button type="button" class="later">Not now</button><button type="button" class="refuse">Block</button><button type="button" class="allow">Allow</button></div></div>
+<div id="go_device" role="alertdialog" aria-labelledby="go_device_text" hidden><p id="go_device_text"></p>
+    <div class="actions"><button type="button" class="allow"></button><button type="button" class="refuse">Cancel</button></div></div>
 <div id="go_status" role="status" aria-live="polite"></div>
 <section id="go_cert" role="alertdialog" aria-labelledby="go_cert_title" aria-describedby="go_cert_reason" hidden>
     <div class="box">

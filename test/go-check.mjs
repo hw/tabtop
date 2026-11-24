@@ -113,6 +113,91 @@ streamed.load();
 <script>setTimeout(() => { document.getElementById("embedded-text").textContent = "updated content"; }, 1500);</script>`,
         "certlink.html": `<!doctype html><title>Cert link</title><a id="to">to the site</a><script>document.getElementById("to").href = new URLSearchParams(location.search).get("to");</script>`,
         "second.html": `<!doctype html><title>Second</title><p id="p">second page</p><a id="back" href="index.html">back</a>`,
+        // The page's clipboard (goclipboard.js): copies that change nothing
+        // in the page (so only the copy is said), one long after its press,
+        // one in another origin's frame (on http: https's would be mixed),
+        // and a read.
+        "clipboard.html": `<!doctype html><title>Clipboard</title>
+<textarea id="src">copied by execCommand</textarea>
+<button id="exec">Copy</button> <button id="handler">Copy by a handler</button> <button id="write">Copy by writeText</button> <button id="late">Copy later</button> <button id="read">Read</button>
+<p id="got">nothing read</p><iframe id="x" width="300" height="80"></iframe>
+<script>
+const $ = (id) => document.getElementById(id);
+if (location.protocol === "http:") $("x").src = "http://[::ffff:" + location.hostname + "]/copyframe.html";
+const byHandler = (text) => { document.addEventListener("copy", (e) => { e.clipboardData.setData("text/plain", text); e.preventDefault(); }, { once: true }); document.execCommand("copy"); };
+$("exec").onclick = () => { $("src").select(); document.execCommand("copy"); };
+$("handler").onclick = () => byHandler("set by a copy handler");
+$("write").onclick = () => navigator.clipboard.writeText("copied by writeText");
+$("late").onclick = () => setTimeout(() => byHandler("copied too late"), 6500);
+$("read").onclick = () => navigator.clipboard.readText().then((t) => { $("got").textContent = "read: " + t; }, (e) => { $("got").textContent = "refused: " + e.name; });
+</script>`,
+        // The page's fullscreen (gofullscreen.js): its player made so, left
+        // by it or by the person; one asked for long after its press; one
+        // in another origin's frame.
+        "fullscreen.html": `<!doctype html><title>Fullscreen</title><style>body { margin: 8px }</style>
+<div id="player" style="width:320px;height:180px;background:#246"><button id="fs">Full</button> <button id="exit">Exit</button></div>
+<p id="change">none</p><p id="result">-</p><button id="late">Later</button> <iframe id="x" width="300" height="80"></iframe>
+<script>
+const $ = (id) => document.getElementById(id);
+if (new URLSearchParams(location.search).has("frame")) $("x").src = "http://[::ffff:" + location.hostname + "]/fullframe.html";
+document.addEventListener("fullscreenchange", () => { $("change").textContent = "change " + (document.fullscreenElement?.id ?? "none"); });
+$("fs").onclick = () => $("player").requestFullscreen().then(() => { $("result").textContent = "full " + document.fullscreenEnabled; }, (e) => { $("result").textContent = "refused " + e.message; });
+$("exit").onclick = () => document.exitFullscreen();
+$("late").onclick = () => setTimeout(() => $("player").requestFullscreen().catch((e) => { $("result").textContent = "late refused " + e.message; }), 6500);
+</script>`,
+        "fullframe.html": `<!doctype html><style>body { margin: 0 }</style><div id="inner" style="width:100%;height:60px;background:#642"><button id="b">Full here</button></div><p id="s">none</p>
+<script>document.getElementById("b").onclick = () => document.getElementById("inner").requestFullscreen().then(() => { document.getElementById("s").textContent = "full"; }, (e) => { document.getElementById("s").textContent = "refused " + e.message; });
+document.addEventListener("fullscreenchange", () => { document.getElementById("s").textContent = "change " + (document.fullscreenElement?.id ?? "none"); });</script>`,
+        // Pictures copied and read (goclipboard.js): a canvas's, made a
+        // Blob by toBlob (which the engine lacks), with its text; and what's
+        // read, its picture's size and its text.
+        "clipimage.html": `<!doctype html><title>Clip image</title>
+<canvas id="c" width="8" height="6"></canvas> <button id="copyimg">Copy picture</button> <button id="readimg">Read</button> <button id="copybig">Copy a big one</button> <button id="copyhuge">Copy one too big</button> <p id="got">nothing</p>
+<script>
+const $ = (id) => document.getElementById(id);
+const got = (t) => { $("got").textContent = t; };
+const g = $("c").getContext("2d");
+g.fillStyle = "#f00"; g.fillRect(0, 0, 4, 6); g.fillStyle = "#00f"; g.fillRect(4, 0, 4, 6);
+$("copyimg").onclick = () => $("c").toBlob((b) => navigator.clipboard.write([new ClipboardItem({ "image/png": b, "text/plain": new Blob(["a picture"], { type: "text/plain" }) })])
+    .then(() => got("written"), (e) => got("write refused " + e.name)));
+// Noise (a PNG as large as its pixels' colours, 3 bytes each): 1200x900,
+// about 3.3 MB; 2000x1500, about 9 MB, past 8 MiB.
+const noise = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; const g = c.getContext("2d"), d = g.createImageData(w, h);
+    for (let i = 0; i < d.data.length; i += 65536) crypto.getRandomValues(d.data.subarray(i, i + 65536));
+    for (let i = 3; i < d.data.length; i += 4) d.data[i] = 255;
+    g.putImageData(d, 0, 0); return c; };
+const copyNoise = (w, h) => noise(w, h).toBlob((b) => { got("made " + b.size); navigator.clipboard.write([new ClipboardItem({ "image/png": b })]).then(() => got("written " + b.size), (e) => got("write refused " + e.name)); });
+$("copybig").onclick = () => copyNoise(1200, 900);
+$("copyhuge").onclick = () => copyNoise(2000, 1500);
+const size = (blob) => new Promise((resolve) => { const r = new FileReader(); r.onload = () => { const i = new Image(); i.onload = () => resolve(i.naturalWidth + "x" + i.naturalHeight); i.onerror = () => resolve("undecoded"); i.src = r.result; }; r.readAsDataURL(blob); });
+$("readimg").onclick = () => navigator.clipboard.read().then(async (items) => {
+    const it = items[0], out = [it ? it.types.join(",") : "none"];
+    if (it?.types.includes("image/png")) out.push(await size(await it.getType("image/png")));
+    if (it?.types.includes("text/plain")) out.push(await (await it.getType("text/plain")).text());
+    got("read " + out.join(" "));
+}, (e) => got("refused " + e.name));
+</script>`,
+        // The page's notifications (gonotify.js): its permission as it
+        // loads (its first script's), asked for, one shown (its icon on
+        // another site, never fetched), clicked and closed.
+        "notify.html": `<!doctype html><title>Notify</title><script>const atLoad = Notification.permission;</script>
+<p id="perm"></p><p id="log"></p><p id="early"></p><button id="ask">Ask</button> <button id="show">Show</button> <button id="close">Close</button> <button id="late">Later</button>
+<script>
+// As it loads, before the agent's there: asked, and (allowed) one shown.
+Notification.requestPermission().then((s) => { document.getElementById("early").textContent += "load-ask " + s + ";"; });
+if (atLoad === "granted") { const n0 = new Notification("At load"); n0.onshow = () => { document.getElementById("early").textContent += "load-show;"; }; n0.onerror = () => { document.getElementById("early").textContent += "load-error;"; }; }
+const $ = (id) => document.getElementById(id);
+const log = (t) => { $("log").textContent += t + ";"; };
+const perm = async () => { const q = await navigator.permissions.query({ name: "notifications" }); $("perm").textContent = "load " + atLoad + " now " + Notification.permission + " query " + q.state; };
+perm(); setInterval(perm, 500);
+let n;
+$("ask").onclick = () => Notification.requestPermission().then((s) => log("asked " + s));
+$("show").onclick = () => { n = new Notification("Hello", { body: "from the page", tag: "t1", icon: "https://example.com/icon.png" }); n.onshow = () => log("show"); n.onclick = () => log("click"); n.onclose = () => log("close"); n.onerror = () => log("error"); };
+$("close").onclick = () => n.close();
+$("late").onclick = () => setTimeout(() => Notification.requestPermission().then((s) => log("late " + s)), 6500);
+</script>`,
+        "copyframe.html": `<!doctype html><button id="b" style="width:100%;height:60px">Copy here</button>
+<script>document.getElementById("b").onclick = () => { document.addEventListener("copy", (e) => { e.clipboardData.setData("text/plain", "copied in another origin's frame"); e.preventDefault(); }, { once: true }); document.execCommand("copy"); };</script>`,
         // WebGL drawn in the engine, replayed in the copy (gogl.js): a still
         // WebGL1 and WebGL2 square on red; one that, clicked, changes colour,
         // each tick drawn 50 times over so its log passes the 4,096-call cap
@@ -737,6 +822,32 @@ ${Array.from({ length: 3000 }, (_, i) => `<p class="row">row ${i} of a page larg
         "stream-save.html": `<!doctype html><title>Save stream</title>${streamedVideo}<script>fetch(location.search ? "cancel.m3u8" : "movie.m3u8").then(r => r.text())</script>`,
         // Media Source only (no HLS/DASH manifest): Save uses the buffered MSE capture.
         "mse-save.html": `<!doctype html><title>MSE save</title>${streamedVideo}`,
+        // A WebM stream, its video and its sound in SourceBuffers of their own.
+        "mse-webm.html": `<!doctype html><title>MSE WebM</title><video id="streamed" muted width="320" height="180"></video><script>
+const streamed = document.getElementById("streamed"), source = new MediaSource();
+source.onsourceopen = async () => {
+    const feed = async (mime, file) => {
+        const buffer = source.addSourceBuffer(mime);
+        const data = await (await fetch(file)).arrayBuffer();
+        await new Promise((done) => { buffer.addEventListener("updateend", done, { once: true }); buffer.appendBuffer(data); });
+    };
+    await Promise.all([feed('video/webm; codecs="vp8"', "stream-v.webm"), feed('audio/webm; codecs="opus"', "stream-a.webm")]);
+    source.endOfStream();
+    streamed.play().catch(() => {});
+};
+streamed.src = URL.createObjectURL(source);
+</script>`,
+        // A video fetched whole and played from a plain Blob's URL (gomedia.js
+        // relays its bytes); in a frame of another origin too (?frame).
+        "blob-video.html": `<!doctype html><title>Blob video</title><video id="v" muted width="320" height="180"></video><iframe id="x" width="360" height="220"></iframe>
+<script>
+if (location.search === "?frame") { document.getElementById("v").remove(); document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/blob-video.html"; }
+else { document.getElementById("x").remove(); fetch("clip.mp4").then((r) => r.blob()).then((b) => { document.getElementById("v").src = URL.createObjectURL(b); }); }
+</script>`,
+        // A MediaSource stream in an embedded page: of this origin (?same),
+        // or another's (goframestreams.go).
+        "mse-frame.html": `<!doctype html><title>MSE frame</title><p>a stream in a frame:</p><iframe id="x" width="360" height="220"></iframe>
+<script>document.getElementById("x").src = (location.search === "?same" ? "" : "http://[::ffff:" + location.hostname + "]/") + "mse-save.html";</script>`,
         // HLS.js-style attach (empty source, then MediaSource on a <source>): must
         // play under the copy, not stay on "nothing to play".
         "mse-hls-like.html": `<!doctype html><title>MSE HLS-like</title>${hlsLikeVideo}`,
@@ -970,6 +1081,11 @@ if (fs.existsSync("/srv/cert.pem")) require("https").createServer({ key: fs.read
     let split = 0;
     while (split < fragmented.length && fragmented.toString("ascii", split + 4, split + 8) !== "moof") split += fragmented.readUInt32BE(split);
     writeFileSync(join(dir, "init.mp4"), fragmented.subarray(0, split));
+    // A WebM stream's video and sound, each a SourceBuffer's (mse-webm.html).
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "3",
+        "-c:v", "libvpx", "-g", "12", "-b:v", "300k", "-f", "webm", join(dir, "stream-v.webm")]);
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+        "-c:a", "libopus", "-f", "webm", join(dir, "stream-a.webm")]);
     writeFileSync(join(dir, "part.m4s"), fragmented.subarray(split));
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
     writeFileSync(join(dir, "favicon.ico"), png(16, 16, [30, 160, 60]));  // (a PNG, as many sites' are)
@@ -989,7 +1105,14 @@ async function totp() {
     return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, "0");
 }
 
+// GO_ONLY runs only the steps whose names have its text in them; GO_FROM,
+// those from the first that has it on (a check resumed where one failed).
+// Logging in is run whichever.
+let stepsReached = false;
 async function step(name, f) {
+    const only = process.env.GO_ONLY, from = process.env.GO_FROM;
+    if (from && name.includes(from)) stepsReached = true;
+    if (name !== "log in on /go" && ((only && !name.includes(only)) || (from && !stepsReached))) return;
     const t = Date.now();
     try {
         const note = await f();
@@ -2556,6 +2679,17 @@ async function check(base, port, site, adSite) {
         await ev(`document.querySelector(${JSON.stringify(save)}).click()`);
         await waitFor(`/^Saved .* into Downloads\\.$/.test(document.querySelector("#video_player .note")?.textContent ?? "")`, "the buffered MSE stream in Downloads", 30000);
         await unwatch();
+        // A WebM one, its video and sound in buffers of their own: one WebM.
+        await goTo(site + "mse-webm.html", "MSE WebM");
+        await sleep(1500);
+        await watch();
+        await waitFor(`!!document.querySelector(${JSON.stringify(save)})`, "Save buffered WebM stream", 30000);
+        await ev(`document.querySelector(${JSON.stringify(save)}).click()`);
+        await waitFor(`/^Saved .*\\.webm into Downloads\\.$/.test(document.querySelector("#video_player .note")?.textContent ?? "")`, "the buffered WebM stream in Downloads", 30000).catch(async (err) => {
+            throw new Error(`${err.message}: the player says ${JSON.stringify(await ev(`document.querySelector("#video_player .note")?.textContent`))}`);
+        });
+        await unwatch();
+        // (Its file checked by ffprobe, as it's saved: go-check.sh.)
     });
 
     if (process.env.GO_NO_FS !== "1") await step("after the page moves to its next video (pushState), the menu doesn't offer to save the last one's stream", async () => {
@@ -2576,6 +2710,9 @@ async function check(base, port, site, adSite) {
         await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
         try {
             await waitFor(`[...document.querySelectorAll("#go_menu_media li")].some((li) => li.querySelector(".state")?.textContent === "Stream" && /^Save the stream of 0:03/.test(li.querySelector(".acts button")?.getAttribute("aria-label") || ""))`, "the stream's row, with Save", 15000);
+            // No video in the list: its heading not shown (read to a screen reader).
+            const head = await ev(`(() => { const h = document.getElementById("go_menu_media_h"); return { text: h.textContent, unseen: h.classList.contains("unseen"), color: getComputedStyle(h).color }; })()`);
+            if (!head.unseen || head.color !== "rgba(0, 0, 0, 0)" || head.text !== "Streams on this page") throw new Error(`the heading with no video: ${JSON.stringify(head)}`);
         } finally {
             await ev(`document.getElementById("go_menu_panel").hidden || document.getElementById("go_menu").click()`);
         }
@@ -2923,8 +3060,11 @@ async function check(base, port, site, adSite) {
     await step("a video plays in a player under the copy, its file read through the server", async () => {
         await goTo(site + "video.html", "Video");
         await frameWait(`document.querySelector("#clip[data-go-video]")?.classList.contains("go-media-live")`, "the clip's box, its player made");
+        // A plain Blob that isn't media (relayed, gomedia.js): its player says
+        // it can't play it; an element with no file, that it has none.
+        await frameWait(`!/^Loading|^$/.test(document.getElementById("streamed")?.textContent ?? "")`, "the Blob's box said what came of it", 15000).catch(() => {});
         const notes = await frame(`[document.getElementById("streamed").textContent, document.getElementById("silent").textContent]`);
-        if (!/own player/.test(notes[0]) || !/nothing to play/.test(notes[1])) throw new Error(`the other boxes say ${JSON.stringify(notes)}`);
+        if (!/DEMUXER|decode|open|play/i.test(notes[0]) || /own player/.test(notes[0]) || !/nothing to play/.test(notes[1])) throw new Error(`the other boxes say ${JSON.stringify(notes)}`);
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1 && Math.abs(v.duration - 5) < 0.5)`, "the player's clip, 5 s", 30000);
         await ev(`document.querySelector("video").play()`);
         await waitFor(`document.querySelector("video").currentTime > 0.5`, "the clip playing", 30000);
@@ -2995,11 +3135,12 @@ async function check(base, port, site, adSite) {
         await goTo(site + "video.html", "Video");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1)`, "the player", 30000);
         await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
-        // Download sits left of Play/Pause (Watch … Download … Play/Pause … Skip).
+        // Download sits left of Watch, the player (Download … Watch … Play/Pause … Skip).
+        await waitFor(`!!document.querySelector("#go_menu_media li .acts button")`, "the video in the menu", 15000);
         const order = await ev(`(() => {
-            const labels = [...document.querySelectorAll("#go_menu_media li .acts button")].map((b) => b.getAttribute("aria-label") || "");
+            const labels = [...document.querySelector("#go_menu_media li .acts").children].map((b) => b.getAttribute("aria-label") || "");
             const i = (re) => labels.findIndex((l) => re.test(l));
-            return { labels: labels.map((l) => l.split(" ")[0]), download: i(/^Download /), play: i(/^(Play|Pause) /) };
+            return { labels: labels.map((l) => l.split(" ")[0]), download: i(/^Download /), watch: i(/^Watch /), play: i(/^(Play|Pause) /), skip: i(/^(Skip|Hide) /) };
         })()`);
         // With Files off there's nowhere to save it: no Download.
         if (process.env.GO_NO_FS === "1") {
@@ -3007,8 +3148,8 @@ async function check(base, port, site, adSite) {
             await ev(`document.getElementById("go_menu").click()`);
             return "no Download, Files off";
         }
-        if (order.download < 0 || order.play < 0 || order.download >= order.play) {
-            throw new Error(`menu acts order (want Download left of Play/Pause): ${JSON.stringify(order)}`);
+        if (order.download !== 0 || order.watch !== 1 || order.play !== 2 || order.skip !== 3) {
+            throw new Error(`menu acts order (want Download, Watch, Play/Pause, Skip): ${JSON.stringify(order)}`);
         }
         const save = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Download video/.test(b.getAttribute("aria-label")) || /^Cancel/.test(b.getAttribute("aria-label")) || b.classList.contains("saving"))`;
         await waitFor(`!!${save}`, "the clip's Save in the menu");
@@ -3037,6 +3178,8 @@ async function check(base, port, site, adSite) {
         await ev(`document.getElementById("go_menu").click()`);
         const row = await ev(`(() => { const li = document.querySelector("#go_menu_media li"); return li && { state: li.querySelector(".state").textContent, where: li.querySelector(".where").textContent, title: li.querySelector(".where").title, label: li.querySelector("button").getAttribute("aria-label") }; })()`);
         if (!row || !row.where.endsWith("/clip.mp4?…") || !row.title.endsWith("/clip.mp4?slow") || !row.label.includes("/clip.mp4?slow") || !/Asking|Loading|Buffering/.test(row.state)) throw new Error(`the menu lists ${JSON.stringify(row)}`);
+        const head = await ev(`(() => { const h = document.getElementById("go_menu_media_h"); return { text: h.textContent, unseen: h.classList.contains("unseen") }; })()`);
+        if (head.unseen || head.text !== "Videos on this page") throw new Error(`the heading with a video: ${JSON.stringify(head)}`);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
         await waitFor(`!document.querySelector(".go-media-loading") && document.querySelector("video")?.readyState >= 2`, "the video ready, the loading box gone", 60000);
     });
@@ -3157,10 +3300,10 @@ async function check(base, port, site, adSite) {
         }
         // The player: the video taken into it, full screen, kept to its
         // proportions; its speed and back 10 s; closed, given back.
-        // Watch stays first in the acts row: the first video's, pressed once
-        // it's offered (any's offered, the first's could still be loading).
-        await waitFor(`(() => { const b = document.querySelector("#go_menu_media li .acts button:nth-child(1)"); return /^Watch /.test(b?.getAttribute("aria-label") || "") && !b.disabled; })()`, "Watch offered for the first video");
-        await press("#go_menu_media li .acts button:nth-child(1)");
+        // The first video's Watch (after its Download, with Files on), pressed
+        // once it's offered (any's offered, the first's could still be loading).
+        await waitFor(`(() => { const b = document.querySelector("#go_menu_media li .acts button[data-act=watch]"); return /^Watch /.test(b?.getAttribute("aria-label") || "") && !b.disabled; })()`, "Watch offered for the first video");
+        await press("#go_menu_media li .acts button[data-act=watch]");
         await waitFor(`!!document.querySelector("#video_player .stage video") && document.fullscreenElement?.id === "video_player"`, "the video in the player, full screen", 10000);
         const shape = await ev(`(() => { const v = document.querySelector("#video_player video"); return { fit: getComputedStyle(v).objectFit, controls: v.controls }; })()`);
         if (shape.fit !== "contain" || shape.controls) throw new Error(`in the player: ${JSON.stringify(shape)}`);
@@ -3576,6 +3719,43 @@ async function check(base, port, site, adSite) {
         await ev(`${play}.click()`);
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3 && getComputedStyle(v).display !== "none"; })()`, "the stream playing under its box", 30000);
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+    });
+
+    await step("a MediaSource stream in an embedded page, of this origin and another's, plays under its box; the page told how it plays", async () => {
+        for (const kind of ["same", "other"]) {
+            await goTo(site + "mse-frame.html" + (kind === "same" ? "?same" : ""), "MSE frame");
+            const box = `document.getElementById("x")?.shadowRoot?.querySelector("[data-go-video]")`;
+            await frameWait(`(() => { const b = ${box}; return !!b && !/nothing to play|own player/.test(b.textContent || ""); })()`, `the ${kind} origin's frame's stream known to its box`, 30000);
+            await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+            const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
+            await waitFor(`!!${play} && /Paused/.test(document.getElementById("go_menu_media")?.innerText || "")`, "Play offered in the menu, the stream ready", 30000).catch(async (err) => {
+                throw new Error(`${err.message}: the menu: ${await ev(`document.getElementById("go_menu_media")?.innerText.replaceAll("\\n", " | ")`)}`);
+            });
+            await ev(`${play}.click()`);
+            // (Its clip is 3 s: played, or played to its end.)
+            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && v.src.startsWith("blob:") && (!v.paused || v.ended) && v.currentTime > 0.3; })()`, `the ${kind} origin's frame's stream playing under its box`, 30000).catch(async (err) => {
+                throw new Error(`${err.message}: ${await ev(`JSON.stringify([...document.querySelectorAll("video")].map((v) => ({ src: v.src.slice(0, 40), rs: v.readyState, t: v.currentTime, p: v.paused, e: v.ended })))`)}; the menu: ${await ev(`document.getElementById("go_menu_media")?.innerText.replaceAll("\\n", " | ")`)}`);
+            });
+            await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+        }
+    });
+
+    await step("a video played from a plain Blob's URL plays under its box, in the page and in another origin's frame", async () => {
+        for (const kind of ["page", "frame"]) {
+            await goTo(site + "blob-video.html" + (kind === "frame" ? "?frame" : ""), "Blob video");
+            const box = kind === "frame" ? `document.getElementById("x")?.shadowRoot?.querySelector("[data-go-video]")` : `document.querySelector("[data-go-video]")`;
+            await frameWait(`(() => { const b = ${box}; return !!b && !/nothing to play|own player/.test(b.textContent || ""); })()`, `the ${kind}'s Blob video known to its box`, 30000).catch(async (err) => {
+                throw new Error(`${err.message}: its box says ${JSON.stringify(await frame(`${box}?.textContent ?? "none"`))}`);
+            });
+            await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+            const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
+            await waitFor(`!!${play} && /Paused/.test(document.getElementById("go_menu_media")?.innerText || "")`, `the ${kind}'s Blob video ready, Play offered`, 30000).catch(async (err) => {
+                throw new Error(`${err.message}: the menu: ${await ev(`document.getElementById("go_menu_media")?.innerText.replaceAll("\\n", " | ")`)}`);
+            });
+            await ev(`${play}.click()`);
+            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && v.src.startsWith("blob:") && (!v.paused || v.ended) && v.currentTime > 0.3 && v.duration > 1; })()`, `the ${kind}'s Blob video playing under its box`, 30000);
+            await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+        }
     });
 
     await step("a scrolling video feed releases old players and honors the page's dimensions", async () => {
@@ -4097,6 +4277,227 @@ async function check(base, port, site, adSite) {
         } finally {
             await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
         }
+    });
+
+    await step("the page's clipboard: a copy after a press (execCommand, a copy handler, writeText, in another origin's frame) on the person's clipboard, not one long after; a read asked of the person, pasted or refused", async () => {
+        // This browser's own clipboard, read here: allowed, and the page
+        // focused as a person's is (headless, it's not).
+        await cdp("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+        await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+        const clip = () => ev(`navigator.clipboard.readText()`);
+        const set = (t) => ev(`navigator.clipboard.writeText(${JSON.stringify(t)})`);
+        const noticed = () => ev(`document.getElementById("go_notice").hidden ? "none" : document.querySelector("#go_notice p").textContent`);
+        const holds = (text, what) => waitFor(`navigator.clipboard.readText().then((t) => t === ${JSON.stringify(text)})`, what, 15000).catch(async (err) => {
+            throw new Error(`${err.message} (the clipboard has ${JSON.stringify(await clip())}; the notice: ${await noticed()})`);
+        });
+        const copied = async (sel, text, what) => {
+            await set("before");
+            await frameClick(sel);
+            await holds(text, what);
+        };
+        await goTo(site + "clipboard.html", "Clipboard");
+        await frameWait(`!!document.getElementById("read")`, "the page's buttons");
+        await copied("#exec", "copied by execCommand", "a textarea's text copied by execCommand");
+        await copied("#handler", "set by a copy handler", "a copy handler's text");
+        // A copy 6.5 s after its press: not the person's doing, not put there.
+        await set("before");
+        await frameClick("#late");
+        await sleep(8000);
+        if ((await clip()) !== "before") throw new Error(`a copy long after the press was put on the clipboard: ${JSON.stringify(await clip())}`);
+        // In another origin's frame.
+        const inner = (expr) => frame(`(() => { const root = document.getElementById("x")?.shadowRoot; return root ? (${expr})(root) : null; })()`);
+        await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`, "the embedded page's copy", 20000);
+        await set("before");
+        const p = JSON.parse(await inner(`(root) => { const b = root.querySelector("#b").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); }`));
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + p.x, y: f.y + p.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await holds("copied in another origin's frame", "a copy in another origin's frame");
+        // navigator.clipboard is a secure page's only: the site's https
+        // (its certificate excepted, as the steps before may have).
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:") + "clipboard.html")}; i.form.requestSubmit(); })()`);
+        await waitFor(`document.title.startsWith("Clipboard") || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+        if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+        await waitFor(`document.title.startsWith("Clipboard")`, "the secure page", 30000);
+        await frameWait(`!!document.getElementById("read")`, "its buttons");
+        await copied("#write", "copied by writeText", "navigator.clipboard.writeText's text");
+        // Its read: asked of the person; allowed, given what's on the clipboard.
+        await set("for the page");
+        await frameClick("#read");
+        await waitFor(`!document.getElementById("go_paste").hidden`, "the person asked", 15000);
+        if (!/wants to see what you copied/.test(await ev(`document.getElementById("go_paste_text").textContent`))) throw new Error("the question doesn't say what's asked");
+        await ev(`document.querySelector("#go_paste .allow").click()`);
+        await frameWait(`document.getElementById("got")?.textContent === "read: for the page"`, "the clipboard's text given to the page", 15000);
+        // Refused: the page told so.
+        await frameClick("#read");
+        await waitFor(`!document.getElementById("go_paste").hidden`, "asked again (nothing remembered)", 15000);
+        await ev(`document.querySelector("#go_paste .refuse").click()`);
+        await frameWait(`document.getElementById("got")?.textContent === "refused: NotAllowedError"`, "the page told it was refused", 15000);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's clipboard pictures (written with its text, read when allowed), and its notifications (asked after a press, allowed and kept, shown, clicked, closed; as a notice where this browser shows none)", async () => {
+        // (As the step before: this browser's clipboard allowed, the page
+        // focused as a person's is; so it runs alone too, GO_ONLY.)
+        await cdp("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+        await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+        const secure = async (page, title) => {
+            await goTo(site + "index.html", "Fixture");
+            await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:"))} + ${JSON.stringify(page)}; i.form.requestSubmit(); })()`);
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)}) || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+            if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)})`, "the secure page", 30000);
+        };
+        // A picture copied: on this browser's clipboard as the page drew it
+        // (red, then blue), with its text.
+        await secure("clipimage.html", "Clip image");
+        await frameWait(`!!document.getElementById("readimg")`, "the page's buttons");
+        await ev(`navigator.clipboard.writeText("before")`);
+        await frameClick("#copyimg");
+        const onClip = `navigator.clipboard.read().then(async (items) => {
+            const it = items.find((i) => i.types.includes("image/png"));
+            if (!it) return "no picture: " + items.map((i) => i.types.join(",")).join(" ");
+            const bmp = await createImageBitmap(await it.getType("image/png"));
+            const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext("2d");
+            g.drawImage(bmp, 0, 0);
+            const px = (x) => Array.from(g.getImageData(x, 2, 1, 1).data).join(",");
+            const text = it.types.includes("text/plain") ? await (await it.getType("text/plain")).text() : "";
+            return bmp.width + "x" + bmp.height + " " + px(1) + " " + px(6) + " " + text;
+        })`;
+        await waitFor(`${onClip}.then((s) => s === "8x6 255,0,0,255 0,0,255,255 a picture")`, "the picture on the clipboard, with its text", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(onClip)}; the page: ${await frame(`document.getElementById("got").textContent`)}`); });
+        // A big one (noise, about 3 MB): on the clipboard whole; one past
+        // 8 MiB refused in the page.
+        await frameClick("#copybig");
+        await waitFor(`navigator.clipboard.read().then(async (items) => { const it = items.find((i) => i.types.includes("image/png")); if (!it) return false; const b = await createImageBitmap(await it.getType("image/png")); return b.width === 1200 && b.height === 900; })`, "a 3 MB picture on the clipboard", 60000)
+            .catch(async (err) => { throw new Error(`${err.message}: the page: ${await frame(`document.getElementById("got").textContent`)}`); });
+        const big = Number((await frame(`document.getElementById("got").textContent`)).replace(/^\D+/, ""));
+        if (!(big > 3 << 20)) throw new Error(`the big picture was ${big} bytes`);
+        await frameClick("#copyhuge");
+        await frameWait(`document.getElementById("got")?.textContent === "write refused DataError"`, "one past 8 MiB refused", 60000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("got").textContent`)}`); });
+        // Read, allowed: the page given this browser's picture and text.
+        await ev(`(async () => { const c = new OffscreenCanvas(5, 7); const g = c.getContext("2d"); g.fillStyle = "#0a0"; g.fillRect(0, 0, 5, 7);
+            await navigator.clipboard.write([new ClipboardItem({ "image/png": await c.convertToBlob({ type: "image/png" }), "text/plain": new Blob(["with text"], { type: "text/plain" }) })]); })()`);
+        await frameClick("#readimg");
+        await waitFor(`!document.getElementById("go_paste").hidden`, "the person asked", 15000);
+        if (!/text and pictures/.test(await ev(`document.getElementById("go_paste_text").textContent`))) throw new Error("the question doesn't say pictures are asked for");
+        await ev(`document.querySelector("#go_paste .allow").click()`);
+        await frameWait(`document.getElementById("got")?.textContent === "read image/png,text/plain 5x7 with text"`, "the picture and its text given to the page", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("got").textContent`)}`); });
+
+        // Notifications: this browser's stood in for (recorded, its click
+        // and close done here).
+        const host = new URL(site).hostname;
+        const setting = (s) => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings-set", name: ${JSON.stringify(host)}, setting: ${JSON.stringify(s)} }); t.close(); })`);
+        await setting("notifications-default");
+        await secure("notify.html", "Notify");
+        const log = () => frame(`document.getElementById("log").textContent`);
+        const perm = (text, what) => frameWait(`document.getElementById("perm")?.textContent === ${JSON.stringify(text)}`, what, 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("perm").textContent`)}`); });
+        await perm("load default now default query prompt", "not yet asked");
+        // Asked as it loaded (no press): answered, still to ask, not left waiting.
+        await frameWait(`document.getElementById("early")?.textContent === "load-ask default;"`, "the ask made as it loaded answered", 15000);
+        // Shown, not allowed: its error.
+        await frameClick("#show");
+        await frameWait(`document.getElementById("log").textContent === "error;"`, "an error, not allowed", 15000);
+        // Asked long after a press: not asked, still to ask.
+        await frameClick("#late");
+        await frameWait(`document.getElementById("log").textContent.includes("late default")`, "a late ask, not asked", 20000);
+        if (!(await ev(`document.getElementById("go_notify_ask").hidden`))) throw new Error("asked long after the press");
+        // Asked after a press: allowed.
+        await frameClick("#ask");
+        await waitFor(`!document.getElementById("go_notify_ask").hidden`, "the person asked", 15000);
+        const asked = await ev(`document.getElementById("go_notify_ask_text").textContent`);
+        if (!asked.includes("wants to show you notifications") || !asked.includes(host)) throw new Error(`asked: ${asked}`);
+        await ev(`document.querySelector("#go_notify_ask .allow").click()`);
+        await frameWait(`document.getElementById("log").textContent.includes("asked granted")`, "the page told it's allowed", 15000);
+        await perm("load default now granted query granted", "granted, and the permissions query says so");
+        // This browser's notifications stood in for: recorded, their click
+        // and close done here.
+        await ev(`window.__notes = []; window.Notification = class { static permission = "granted"; static requestPermission() { return Promise.resolve(this.permission); }
+            constructor(title, o) { this.title = title; this.o = o; window.__notes.push(this); setTimeout(() => this.onshow?.(), 0); }
+            close() { this.closed = true; setTimeout(() => this.onclose?.(), 0); } };`);
+        // Kept: loaded again, granted from its first script; the one it
+        // showed as it loaded, shown.
+        await secure("notify.html", "Notify");
+        await perm("load granted now granted query granted", "granted as it loads");
+        await frameWait(`document.getElementById("early")?.textContent.includes("load-show;")`, "the one shown as it loaded, shown", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("early").textContent`)}`); });
+        if (!(await ev(`__notes.some((n) => n.title === "At load")`))) throw new Error("the one shown as it loaded isn't in this browser");
+        // Shown: in this browser, its site first; its icon not fetched.
+        await frameClick("#show");
+        await waitFor(`window.__notes.some((n) => n.title === "Hello")`, "shown in this browser", 15000);
+        const hello = `__notes.find((n) => n.title === "Hello")`;
+        const shown = await ev(`JSON.stringify({ body: ${hello}.o.body, tag: ${hello}.o.tag, icon: ${hello}.o.icon ?? null })`);
+        const s0 = JSON.parse(shown);
+        if (s0.body !== host + "\nfrom the page" || s0.icon || !s0.tag?.endsWith(":t1")) throw new Error(`shown as ${shown}`);
+        await frameWait(`document.getElementById("log").textContent.endsWith("show;")`, "the page told it's shown", 15000);
+        await ev(`${hello}.onclick()`);
+        await frameWait(`document.getElementById("log").textContent.endsWith("click;")`, "the page told it's clicked", 15000);
+        await frameClick("#close");
+        await waitFor(`${hello}.closed === true`, "closed in this browser by the page", 15000);
+        await frameWait(`document.getElementById("log").textContent.endsWith("close;")`, "the page told it's closed", 15000);
+        // This browser showing none: a notice here, Open its click.
+        await ev(`Notification.permission = "denied"`);
+        await frameClick("#show");
+        await waitFor(`!document.getElementById("go_notice").hidden && document.querySelector("#go_notice p").textContent.includes("Hello — from the page")`, "a notice", 15000);
+        await ev(`document.querySelector("#go_notice .primary").click()`);
+        await frameWait(`document.getElementById("log").textContent.endsWith("click;")`, "the notice's Open, the page's click", 15000);
+        // Its setting changed in Site controls: the page told at once.
+        await setting("notifications-block");
+        await perm("load granted now denied query denied", "blocked in Site controls, the page told");
+        await setting("notifications-default");
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's fullscreen: its element over the window and the page alone over the screen after a press; left by Esc, the page or the menu, the page told; not long after a press; in another origin's frame", async () => {
+        const full = () => ev(`document.documentElement.classList.contains("go-fullscreen")`);
+        // The copy's element over the frame's whole window (the engine's,
+        // at the frame's size, as it's laid out).
+        const covers = (sel) => `(() => { const r = document.querySelector(${JSON.stringify(sel)})?.getBoundingClientRect(); return !!r && r.left <= 0.5 && r.top <= 0.5 && r.width >= innerWidth - 1 && r.height >= innerHeight - 1; })()`;
+        await goTo(site + "fullscreen.html", "Fullscreen");
+        await frameWait(`!!document.getElementById("fs")`, "the page's buttons");
+        // Asked for after a press: allowed.
+        await frameClick("#fs");
+        await frameWait(`document.getElementById("result")?.textContent === "full true" && document.getElementById("change")?.textContent === "change player"`, "the page told it's fullscreen", 15000);
+        await waitFor(`document.documentElement.classList.contains("go-fullscreen")`, "the page alone over the screen", 10000);
+        await frameWait(covers("#player"), "its player over the whole window", 15000);
+        // Esc: left, the page told, the screen back.
+        await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await frameWait(`document.getElementById("change")?.textContent === "change none"`, "the page told Esc left it", 15000);
+        await waitFor(`!document.documentElement.classList.contains("go-fullscreen")`, "the screen back", 10000);
+        // Left by the page itself.
+        await frameClick("#fs");
+        await frameWait(`document.getElementById("change")?.textContent === "change player"`, "fullscreen again", 15000);
+        await waitFor(`document.documentElement.classList.contains("go-fullscreen")`, "the page alone again", 10000);
+        await frameClick("#exit");
+        await frameWait(`document.getElementById("change")?.textContent === "change none"`, "left by the page", 15000);
+        await waitFor(`!document.documentElement.classList.contains("go-fullscreen")`, "the screen back, the page having left it", 10000);
+        // Left from the menu's exit.
+        await frameClick("#fs");
+        await waitFor(`document.documentElement.classList.contains("go-fullscreen")`, "the page alone a third time", 15000);
+        await ev(`document.getElementById("go_exit_fullscreen").click()`);
+        await frameWait(`document.getElementById("change")?.textContent === "change none"`, "the page told the person left it", 15000);
+        // Long after its press: refused.
+        await frameClick("#late");
+        await frameWait(`/^late refused/.test(document.getElementById("result")?.textContent)`, "a fullscreen long after the press refused", 20000);
+        if (await full()) throw new Error("a fullscreen long after the press was shown");
+        // In another origin's frame: its element over its window, its
+        // iframe over the page's.
+        await goTo(site + "fullscreen.html?frame", "Fullscreen");
+        const inner = (expr) => frame(`(() => { const root = document.getElementById("x")?.shadowRoot; return root ? (${expr})(root) : null; })()`);
+        await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`, "the embedded page's copy", 20000);
+        const p = JSON.parse(await inner(`(root) => { const b = root.querySelector("#b").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); }`));
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + p.x, y: f.y + p.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await waitFor(`document.documentElement.classList.contains("go-fullscreen")`, "the page alone, for its frame's element", 15000);
+        await frameWait(covers("#x"), "the frame over the page's whole window", 15000);
+        await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#s")?.textContent === "full"`, "the frame's page told (its promise kept)", 15000);
+        await ev(`document.getElementById("go_exit_fullscreen").click()`);
+        await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#s")?.textContent === "change none"`, "the frame's page told it was left", 15000);
+        await frameWait(`!(${covers("#x")})`, "the frame back in its place", 15000);
+        await goTo(site + "index.html", "Fixture");
     });
 
     await step("no request left this browser except to TabTop", async () => {

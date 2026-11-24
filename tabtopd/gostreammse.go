@@ -68,6 +68,7 @@ type mseStage struct {
 }
 
 type mseStageTrack struct {
+	webm     bool // a WebM stream's (gowebm.go), not an MP4's
 	header   *mp4.InitSegment
 	needSync map[uint32]bool
 	init     string   // relative path
@@ -277,7 +278,12 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 	if len(data) == 0 || int64(len(data)) > segmentLimit {
 		return errors.New("invalid stream segment")
 	}
-	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.init != "" && (windowStart > 0 || !math.IsInf(windowEnd, 1) || offset < 0 || len(tr.needSync) > 0) {
+	// A WebM stream's part at an offset or within a window: not saved
+	// (gowebm.go takes its blocks' times as they are).
+	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.webm && (offset != 0 || windowStart > 0 || !math.IsInf(windowEnd, 1)) {
+		return errors.New("a WebM stream appended at an offset can't be saved")
+	}
+	if tr := s.tracks[track]; kind == mseKindPart && tr != nil && tr.init != "" && !tr.webm && (windowStart > 0 || !math.IsInf(windowEnd, 1) || offset < 0 || len(tr.needSync) > 0) {
 		if tr.header == nil {
 			init, err := store.root.ReadFile(tr.init)
 			if err != nil {
@@ -353,6 +359,7 @@ func (s *mseStage) appendFrame(store *downloadStore, track int, kind byte, data 
 			return err
 		}
 		tr.init = name
+		tr.webm = isWebM(data)
 	case mseKindPart:
 		if s.progressive != "" {
 			return errors.New("invalid buffered stream")
@@ -566,16 +573,41 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 		name, err = m.saveProgressiveMSE(ctx, j, store, in.progressive, up)
 	} else {
 		tracks := make([]streamTrack, 0, len(in.tracks))
+		var webm []webmInput
 		for _, tr := range in.tracks {
 			init, err := store.root.ReadFile(tr.init)
 			if err != nil {
 				return err
 			}
 			parts := tr.parts
-			tracks = append(tracks, streamTrack{initData: init, partCount: len(parts), offsets: tr.offsets,
-				partAt: func(i int) ([]byte, error) { return store.root.ReadFile(parts[i]) }})
+			partAt := func(i int) ([]byte, error) { return store.root.ReadFile(parts[i]) }
+			if isWebM(init) {
+				webm = append(webm, webmInput{init: init, partCount: len(parts), partAt: partAt})
+				continue
+			}
+			tracks = append(tracks, streamTrack{initData: init, partCount: len(parts), offsets: tr.offsets, partAt: partAt})
 		}
-		name, err = m.writeStreamTracks(ctx, j, tracks, nil, up, "stream.mp4")
+		switch {
+		case len(webm) > 0 && len(tracks) > 0:
+			err = errors.New("the buffered stream's tracks are of different formats, and can't be saved together")
+		case len(webm) > 0:
+			name = "stream.webm"
+			j.set(func(j *fetchJob) { j.name, j.parts = name, 1 })
+			err = writeWebM(ctx, webm, up, func(n int64) error {
+				j.set(func(j *fetchJob) { j.total = n })
+				if free, _, ok := m.files.uploadRoom(up.f); ok && free < n+fetchSpare {
+					return errors.New("insufficient disk space for stream")
+				}
+				return nil
+			}, func(n int64) {
+				j.set(func(j *fetchJob) { j.got += n })
+			})
+			if err == nil {
+				j.set(func(j *fetchJob) { j.partsDone = 1 })
+			}
+		default:
+			name, err = m.writeStreamTracks(ctx, j, tracks, nil, up, "stream.mp4")
+		}
 	}
 	if err != nil {
 		return err

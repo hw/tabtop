@@ -58,6 +58,11 @@ type goSiteSettings struct {
 	// saved too, so a sign-in lasts a restart (gocookies.go, gostorage.go).
 	// Cleared by name, they're cleared.
 	keep []string
+	// Notifications: site -> "allow" or "block" (a page's
+	// Notification.requestPermission answered; unsaid: asked), and how
+	// many times they've changed (gonotify.go: a tab's pages told anew).
+	notifications map[string]string
+	notifyVer     int
 }
 
 type goSiteSettingsFile struct {
@@ -79,6 +84,8 @@ type goSiteSettingsFile struct {
 	DoHURL       string            `json:"dohURL,omitempty"`
 	Hosts        []goHostRecord    `json:"hosts,omitempty"`
 	Keep         []string          `json:"keep,omitempty"`
+	// Notifications allowed or blocked, by site.
+	Notifications map[string]string `json:"notifications,omitempty"`
 }
 
 // goSearchEngines are the address bar's search engines (Settings; go.js
@@ -99,7 +106,7 @@ var goBlockedHost = func(string) bool { return false }
 
 func newGoSiteSettings(file string) *goSiteSettings {
 	s := &goSiteSettings{file: file, popups: map[string]string{}, media: map[string]string{}, ads: map[string]string{}, popupDefault: "ask", mediaDefault: "allow",
-		theme: map[string]string{}, themeDefault: "auto", searchEngine: "duckduckgo"}
+		theme: map[string]string{}, themeDefault: "auto", searchEngine: "duckduckgo", notifications: map[string]string{}}
 	if file == "" {
 		return s
 	}
@@ -161,6 +168,11 @@ func newGoSiteSettings(file string) *goSiteSettings {
 	}
 	if t := themeStored(f.ThemeDefault); themePolicy(t) {
 		s.themeDefault = t
+	}
+	for site, v := range f.Notifications {
+		if site = goSettingHost(site); site != "" && (v == "allow" || v == "block") && len(s.notifications) < maxGoSiteSettings {
+			s.notifications[goSite(site)] = v
+		}
 	}
 	for site, v := range f.Theme {
 		if site = goSettingHost(site); site != "" && themePolicy(themeStored(v)) && len(s.theme) < maxGoSiteSettings {
@@ -323,7 +335,8 @@ func (s *goSiteSettings) save() {
 		return
 	}
 	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts,
-		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep}
+		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep,
+		Notifications: s.notifications}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -394,6 +407,29 @@ func themeStored(value string) string {
 		return "dark"
 	}
 	return value
+}
+
+// notificationsAll is every site's notification setting ("allow" or
+// "block"), and the settings' version (notifyVer).
+func (s *goSiteSettings) notificationsAll() (map[string]string, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.notifications), s.notifyVer
+}
+
+// notificationsVer is how many times the notification settings have changed.
+func (s *goSiteSettings) notificationsVer() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notifyVer
+}
+
+// notificationsFor is a page of host's notification setting: its site's
+// "allow" or "block", or "" (ask).
+func (s *goSiteSettings) notificationsFor(host string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notifications[goSite(strings.Trim(host, "[]"))]
 }
 
 // themeFor is Dark mode for a page of host: its site's, or the default.
@@ -511,7 +547,7 @@ func (s *goSiteSettings) set(site, setting string) error {
 	}
 	// The whole site's (m.youtube.com: youtube.com); a video host's, its
 	// own host (cdn.example.com, as its videos' addresses name it).
-	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") || strings.HasPrefix(setting, "theme-") || setting == "keep" || setting == "keep-off") && !strings.HasPrefix(setting, "videos-host-") {
+	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") || strings.HasPrefix(setting, "theme-") || strings.HasPrefix(setting, "notifications-") || setting == "keep" || setting == "keep-off") && !strings.HasPrefix(setting, "videos-host-") {
 		h = goSite(h)
 	}
 	switch setting {
@@ -565,6 +601,15 @@ func (s *goSiteSettings) set(site, setting string) error {
 		s.theme[h] = strings.TrimPrefix(setting, "theme-")
 	case "theme-default":
 		delete(s.theme, h)
+	case "notifications-allow", "notifications-block":
+		if _, ok := s.notifications[h]; !ok && len(s.notifications) >= maxGoSiteSettings {
+			return errors.New("Too many sites have notification settings.")
+		}
+		s.notifications[h] = strings.TrimPrefix(setting, "notifications-")
+		s.notifyVer++
+	case "notifications-default":
+		delete(s.notifications, h)
+		s.notifyVer++
 	case "keep":
 		if !slices.Contains(s.keep, h) {
 			if len(s.keep) >= maxGoSiteSettings {
@@ -584,6 +629,10 @@ func (s *goSiteSettings) set(site, setting string) error {
 		delete(s.media, h)
 		delete(s.ads, h)
 		delete(s.theme, h)
+		if _, ok := s.notifications[h]; ok {
+			delete(s.notifications, h)
+			s.notifyVer++
+		}
 		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
 		s.keep = slices.DeleteFunc(s.keep, func(k string) bool { return k == h })
 	default:
@@ -607,7 +656,8 @@ func (s *goSiteSettings) report() map[string]any {
 		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
 		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
 		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL,
-		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...), "keep": slices.Clone(s.keep)}
+		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...), "keep": slices.Clone(s.keep),
+		"notifications": maps.Clone(s.notifications)}
 }
 
 // routeGoSettings answers the settings page: what's set.

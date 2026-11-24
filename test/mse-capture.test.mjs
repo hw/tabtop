@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createCapture, mp4Encrypted, splitMp4, MSE_CAPTURE_LIMIT, MSE_SPILL_SOFT } from "../tabtopd/mse-capture.js";
+import { createCapture, mp4Encrypted, splitMp4, webmClusters, webmInit, MSE_CAPTURE_LIMIT, MSE_SPILL_SOFT } from "../tabtopd/mse-capture.js";
 
 function box(type, body = new Uint8Array(0)) {
     const out = new Uint8Array(8 + body.length);
@@ -74,7 +74,7 @@ test("createCapture spills progressive bytes", async () => {
     assert.equal(cap.bytes, 0);
 });
 
-test("createCapture refuses encrypted and webm", async () => {
+test("createCapture refuses encrypted, and a WebM track that isn't WebM", async () => {
     const enc = createCapture({ spill: async () => {} });
     enc.append(0, box("encv"));
     assert.equal(enc.saveable(), false);
@@ -173,4 +173,75 @@ test("mp4Encrypted finds an encrypted sample entry in stsd (no pssh, no senc)", 
     assert.equal(mp4Encrypted(concat(box("ftyp"), moov)), true);
     const clear = box("moov", box("trak", box("mdia", box("minf", box("stbl", box("stsd", concat(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]), box("avc1", new Uint8Array(78)))))))));
     assert.equal(mp4Encrypted(concat(box("ftyp"), clear)), false);
+});
+
+// An EBML element: its ID's bytes, its payload (a size of one byte, or
+// unknown: all ones).
+function el(id, payload = new Uint8Array(0), unknown = false) {
+    const idBytes = [];
+    for (let v = id; v; v = Math.floor(v / 256)) idBytes.unshift(v & 0xff);
+    const size = unknown ? [0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff] : [0x40 | (payload.length >> 8), payload.length & 0xff];
+    return concat(Uint8Array.from(idBytes), Uint8Array.from(size), payload);
+}
+const webmHead = (extra = new Uint8Array(0)) => concat(
+    el(0x1A45DFA3, el(0x4282, new TextEncoder().encode("webm"))),
+    // The Segment's start (its size unknown, as a live stream's), Info, Tracks.
+    Uint8Array.of(0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff),
+    el(0x1549A966, el(0x2AD7B1, Uint8Array.of(0x0f, 0x42, 0x40))),
+    el(0x1654AE6B, el(0xAE, concat(el(0xD7, Uint8Array.of(1)), el(0x83, Uint8Array.of(1)), extra))));
+const cluster = (t, unknown = false) => el(0x1F43B675, concat(el(0xE7, Uint8Array.of(t)), el(0xA3, Uint8Array.of(0x81, 0, 0, 0x80, 1, 2, 3))), unknown);
+
+test("webmInit and webmClusters split a WebM stream: its init, then clusters, known in size or not", () => {
+    const head = webmHead();
+    assert.deepEqual(webmInit(head), { end: head.length });
+    assert.deepEqual(webmInit(head.subarray(0, head.length - 2)), {});
+    const known = cluster(0), unknown = cluster(1, true);
+    const data = concat(known, unknown, cluster(2));
+    const split = webmClusters(data, false);
+    assert.deepEqual(split.ranges, [[0, known.length], [known.length, known.length + unknown.length], [known.length + unknown.length, data.length]]);
+    // An unknown-sized one last: only at the end (forced).
+    const tail = concat(known, unknown);
+    assert.equal(webmClusters(tail, false).ranges.length, 1);
+    assert.equal(webmClusters(tail, true).ranges.length, 2);
+    // Another init: said where.
+    const again = concat(known, head);
+    assert.equal(webmClusters(again, false).newInit, known.length);
+    assert.deepEqual(webmInit(webmHead(el(0x6D80, el(0x6240, el(0x5035))))), { encrypted: true });
+    assert.deepEqual(webmInit(webmHead(el(0x6D80, el(0x6240, el(0x5034))))), { encoded: true });
+});
+
+test("createCapture spills a WebM stream's init and clusters, and saves it", async () => {
+    const spilled = [];
+    const cap = createCapture({ spill: async (ev) => { spilled.push({ kind: ev.kind, n: ev.bytes.length }); } });
+    cap.add(0, 'video/webm; codecs="vp8"');
+    const head = webmHead();
+    cap.append(0, head);
+    cap.append(0, cluster(0));
+    cap.append(0, cluster(1, true));
+    // The same init again (a seek, the player starting over): let go.
+    cap.append(0, head);
+    cap.append(0, cluster(2));
+    await cap.flush();
+    assert.equal(cap.saveable(), true);
+    assert.deepEqual(spilled.map((s) => s.kind), ["init", "part", "part", "part"]);
+    assert.equal(spilled[0].n, head.length);
+    await cap.seal();
+});
+
+test("createCapture doesn't save an encrypted WebM stream, nor one appended at an offset", async () => {
+    const enc = createCapture({ spill: async () => {} });
+    enc.add(0, 'video/webm; codecs="vp9"');
+    enc.append(0, concat(webmHead(el(0x6D80, el(0x6240, el(0x5035)))), cluster(0)));
+    await enc.flush();
+    assert.equal(enc.encrypted, true);
+    assert.equal(enc.saveable(), false);
+
+    const offset = createCapture({ spill: async () => {} });
+    offset.add(0, 'audio/webm; codecs="opus"');
+    offset.append(0, webmHead());
+    offset.append(0, cluster(0), 10);
+    offset.append(0, cluster(1), 10);
+    await offset.flush();
+    assert.equal(offset.saveable(), false);
+    await assert.rejects(offset.seal(), /missed/);
 });

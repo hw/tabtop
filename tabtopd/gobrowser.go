@@ -109,6 +109,21 @@ var goShadowJS string
 //go:embed godialogs.js
 var goDialogsJS string
 
+// goClipboardJS passes on what the page copies, and asks the person for
+// what it reads of the clipboard (goclipboard.go).
+//
+//go:embed goclipboard.js
+var goClipboardJS string
+
+// goFullscreenJS gives the page fullscreen, asked of the server
+// (gofullscreen.go).
+//
+//go:embed gofullscreen.js
+var goFullscreenJS string
+
+//go:embed godevice.js
+var goDeviceJS string
+
 // goDebug (TABTOP_GO_DEBUG=1) logs what each tab does, for finding out why
 // a page misbehaves: the person's requests by kind, navigations,
 // snapshots and changes, by size. Never addresses typed or values.
@@ -169,6 +184,24 @@ type goBrowser struct {
 	sites     *goSiteSettings
 	popupAsk  int
 	popupAsks map[int]goPopupAsk
+	// Reads of the clipboard the page asked for, waiting for the person,
+	// by token (goclipboard.go).
+	pasteAsks map[string]*goPasteAsk
+	// The page's fullscreen, allowed (gofullscreen.go).
+	fullscreen *goFullscreen
+	// Its notifications (gonotify.go).
+	notifying                     goNotifyTab
+	devicePolicy, devicePolicyURL string
+	viewerCaps                    goViewerCaps
+	device                        *goDevicePending
+	pip                           *goDevicePending
+	imagePaste                    *goImagePaste
+	imagePasteBusy                bool
+	// Streams by the document that sent them first, and the frames that
+	// have streamed lately, asked often (goframestreams.go).
+	streamOwners  goStreamOwners
+	streamWorlds  map[int]time.Time
+	streamPolling bool
 	// What it says it is (gouseragent.go): the engine's own, or, on a
 	// phone (phone, set by a job), Chrome on Android's.
 	engineUA  string
@@ -243,6 +276,9 @@ type goBrowser struct {
 	uploads  goUploads
 	inputAt  time.Time
 	inputGen int // the page it was in (a browser's activation goes with its page)
+	// The world it was in: the page's agent's, or an embedded page's of
+	// another origin (whose own input alone it may act on).
+	inputWorld int
 	// What the engine's been told of certificate errors (certIgnore's
 	// alone, under certMu: the jobs and a paused document's request): 0 to
 	// heed them, 1 to ignore them, -1 not known (a call that failed may
@@ -729,12 +765,15 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS + "\n" + goClipboardJS + "\n" + goFullscreenJS
+		caps, _ := json.Marshal(b.viewerCaps)
+		source += "\n;" + goDeviceJS + "(" + string(caps) + ");"
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
 		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": source}, nil)
 	}, func(r any) { goDebugf("fetch for data:, observer stand-in: %v", r) })
+	b.notifyRegister() // (the sites' notification answers: gonotify.go)
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 	b.cdp.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
 	cancel()
@@ -779,6 +818,7 @@ func (b *goBrowser) run() {
 			downloadsDone = nil
 			read(l)
 			if taken {
+				b.releaseDevices()
 				b.resume()
 			}
 			taken = true
@@ -788,6 +828,7 @@ func (b *goBrowser) run() {
 				continue
 			}
 			b.conn.swap(nil)
+			b.releaseDevices()
 			l.release()
 			b.conn.detachedAt(time.Now())
 			detached = time.After(goDetachedFor)
@@ -819,6 +860,15 @@ func (b *goBrowser) run() {
 					// browser lets a page open a chooser after.
 					if m.Kind == "click" || m.Kind == "key" || m.Kind == "touch" && m.Type != "move" || m.Kind == "mouse" && (m.Type == "down" || m.Type == "up") {
 						b.inputAt, b.inputGen = time.Now(), b.gen
+						// And where: an embedded page of another origin's world,
+						// or the page's (goclipboard.go: what's passed on of a
+						// frame's is its own input's only).
+						b.inputWorld = b.world
+						if m.Frame != 0 {
+							if w, _ := b.frameWorldPath(m.ID, m.Route, m.Docs); w != 0 {
+								b.inputWorld = w
+							}
+						}
 					}
 				}
 			}
@@ -879,6 +929,20 @@ func (b *goBrowser) run() {
 				b.act(m)
 			case "files":
 				b.chooseFiles(m) // a chooser answered (gouploads.go)
+			case "paste":
+				b.paste(m) // a read of the clipboard answered (goclipboard.go)
+			case "paste-part":
+				b.pastePart(m) // and the picture given it, in parts
+			case "notify-permission":
+				b.notifyAnswer(m) // notifications allowed, or not (gonotify.go)
+			case "notify-event":
+				b.notifyEvent(m) // one shown, clicked or closed
+			case "device-answer":
+				b.deviceAnswer(m)
+			case "paste-image":
+				b.pasteImage(m)
+			case "fullscreen-exit":
+				b.fullscreenExit() // the person left it (gofullscreen.go)
 			case "drop-files":
 				b.dropStart(m) // files dropped on the page, to be sent
 			case "dropped":
@@ -947,7 +1011,9 @@ func (b *goBrowser) run() {
 				b.dirty = true
 				b.readChanges()
 			}
-			b.framesSoon() // other origins' frames: once a second
+			b.framesSoon()       // other origins' frames: once a second
+			b.frameStreamsSoon() // and those streaming, as often as the page
+			b.notifySoon()       // notification answers changed (gonotify.go)
 		case <-loadTimeout:
 			// Show what has loaded, slow as the rest is.
 			gen := b.loading
@@ -1391,6 +1457,12 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 					b.refused, b.refusedWhy = b.gen, msg
 				}
 			}
+			b.devicePolicyURL, b.devicePolicy = p.Response.URL, ""
+			for key, value := range p.Response.Headers {
+				if strings.EqualFold(key, "Permissions-Policy") {
+					b.devicePolicy = value
+				}
+			}
 			// Its type alone: Moli keeps its parameters (charset), as
 			// Chrome doesn't.
 			media, _, _ := strings.Cut(p.Response.MimeType, ";")
@@ -1694,14 +1766,19 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 	}, func(r any) { r.(func())() })
 }
 
-// goEMEOf is the EME requests in a batch of changes (raw), whatever else
-// it has.
-func goEMEOf(raw string) []json.RawMessage {
-	var c struct {
-		EME []json.RawMessage `json:"eme"`
+// Requests are drained as a batch is made, even when its DOM changes
+// are too large to use and the viewer needs a fresh snapshot.
+type goPageRequests struct {
+	EME     []json.RawMessage `json:"eme"`
+	Devices []goDeviceAsk     `json:"devices"`
+}
+
+func goRequestsOf(raw string) goPageRequests {
+	var r goPageRequests
+	if json.Unmarshal([]byte(raw), &r) != nil {
+		return goPageRequests{}
 	}
-	json.Unmarshal([]byte(raw), &c)
-	return c.EME
+	return r
 }
 
 // emeAgain sends a batch's EME requests (the page's, taken from its queue
@@ -1716,7 +1793,7 @@ func (b *goBrowser) emeAgain(gen int, eme []json.RawMessage) {
 }
 
 type goChanges struct {
-	EME     []json.RawMessage `json:"eme"`
+	goPageRequests
 	Streams []json.RawMessage `json:"streams"`
 	Seq     int               `json:"seq"`
 	URL     string            `json:"url"`
@@ -1737,6 +1814,8 @@ type goChanges struct {
 	} `json:"asked"`
 	// Where the page scrolled its elements itself (goobserve.js).
 	Scrolls []goScroll `json:"scrolls"`
+	// What it copied, and its reads of the clipboard (goclipboard.go).
+	goClipboardOut
 	// Where rich text's caret is (goagent.js's caret), with what an edit
 	// changed: [anchor, offset, focus, offset].
 	Sel []int `json:"sel"`
@@ -1794,7 +1873,9 @@ func (b *goBrowser) readChanges() {
 			}
 			if err != nil || len(raw) > goChangesLimit {
 				if err == nil {
-					b.emeAgain(gen, goEMEOf(raw))
+					batch := goRequestsOf(raw)
+					b.emeAgain(gen, batch.EME)
+					b.devices(gen, batch.Devices)
 				}
 				b.readAgain(gen) // read it all again
 				return
@@ -1805,6 +1886,7 @@ func (b *goBrowser) readChanges() {
 			var c goChanges
 			if err := json.Unmarshal([]byte(raw), &c); err != nil || c.Seq != b.seq+1 {
 				if err == nil {
+					b.devices(gen, c.Devices)
 					b.emeAgain(gen, c.EME) // (a batch missed before it: this one's let go too)
 				}
 				b.readAgain(gen)
@@ -1844,6 +1926,9 @@ func (b *goBrowser) readChanges() {
 				goDebugf("dialog %s asked, answered by the engine", q.Kind)
 				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
 			}
+			b.devices(gen, c.Devices)
+			b.clipboard(gen, b.world, c.goClipboardOut)
+			c.Streams = b.streamsFrom(gen, b.world, c.Streams) // (its own streams only: goframestreams.go)
 			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(c.EME) > 0 || len(io) > 0 || len(scrolls) > 0 {
 				if b.glStreams == nil {
 					b.glStreams = make(map[int]*goGLStream)
@@ -2043,7 +2128,7 @@ func (b *goBrowser) act(m goClientMsg) {
 		case m.Kind == "key" && m.Type == "up":
 			// A key's press is done by script, all of it (keydown,
 			// keypress, keyup; Enter sending its form): its release is in it.
-		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus", m.Kind == "edit":
+		case m.Kind == "click", m.Kind == "input", m.Kind == "change", m.Kind == "key", m.Kind == "submit", m.Kind == "focus", m.Kind == "edit", m.Kind == "media-meta":
 			if len(m.Value)+len(m.HTML) <= maxGoURL*8 {
 				b.actInFrame(m)
 			}

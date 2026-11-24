@@ -96,6 +96,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
 
     function releaseStream(stream) {
         abortMSE?.(stream);
+        if (stream.file && !stream.url) fileBytes -= stream.file.size;
+        if (stream.file) stream.file.parts = [];
         streamBytes -= stream.bytes;
         stream.bytes = 0;
         stream.queue.length = 0;
@@ -207,6 +209,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 streams.set(id, stream);
             }
             if (stream.closed) continue;
+            // A plain Blob the page plays (gomedia.js): its parts, gathered,
+            // played whole once they've all come.
+            if (raw.op === "file" || raw.op === "chunk" || raw.op === "fileend") {
+                fileCommand(stream, raw);
+                continue;
+            }
             // Keep only fields used by the relay. The remote page controls
             // these commands and can never supply a URL to this player.
             const command = { op: typeof raw.op === "string" ? raw.op.slice(0, 16) : "",
@@ -232,6 +240,53 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     }
 
+    const FILE_MAX = 256 << 20;  // a plain Blob's bytes, played whole (gomedia.js's)
+    let fileBytes = 0;
+    function fileCommand(stream, raw) {
+        try {
+            if (raw.op === "file") {
+                if (stream.file) throw new Error("Invalid media stream operation.");
+                // Its player made already, for a stream (its box came first:
+                // an embedded page's, read apart): made one for a file.
+                if (stream.source) {
+                    if (stream.buffers.length) throw new Error("Invalid media stream operation.");
+                    URL.revokeObjectURL(stream.url);
+                    stream.url = null;
+                    stream.source = null;
+                    stream.capture = null;
+                }
+                const mime = typeof raw.mime === "string" && /^(?:audio|video|application)\/[\w.+-]{1,64}(?:;[^<>]{0,128})?$/i.test(raw.mime) ? raw.mime : "";
+                stream.file = { parts: [], size: 0, mime, total: Number.isSafeInteger(raw.value) && raw.value > 0 ? raw.value : 0, done: false };
+                return;
+            }
+            const file = stream.file;
+            if (!file || file.done) throw new Error("Invalid media stream operation.");
+            if (raw.op === "chunk") {
+                if (typeof raw.data !== "string" || raw.data.length > 65536) throw new Error("Invalid media stream operation.");
+                const bytes = Uint8Array.from(atob(raw.data), (c) => c.charCodeAt(0));
+                if (file.size + bytes.length > FILE_MAX || fileBytes + bytes.length > FILE_MAX * 2) throw new Error("The site's media file is too large to play here.");
+                file.parts.push(bytes);
+                file.size += bytes.length;
+                fileBytes += bytes.length;
+                stream.arrived?.(bytes.length);
+                return;
+            }
+            file.done = true;
+            fileReady(stream);
+        } catch (error) {
+            failStream(stream, error.message);
+        }
+    }
+    // fileReady gives a file stream's player its file, once both are there.
+    function fileReady(stream) {
+        const file = stream.file;
+        if (!file?.done || !stream.element || stream.url || stream.closed) return;
+        stream.url = URL.createObjectURL(new Blob(file.parts, file.mime ? { type: file.mime } : {}));
+        fileBytes -= file.size;
+        file.parts = [];
+        stream.element.src = stream.url;
+    }
+
     function newStream() {
         const stream = { queue: [], buffers: [], bytes: 0, began: performance.now() };
         stream.capture = makeCapture(stream);
@@ -246,7 +301,22 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             stream = newStream();
             streams.set(id, stream);
         }
-        if (stream.closed || stream.source) throw new Error(stream.error || "The media stream is no longer available.");
+        if (stream.closed || stream.source || stream.element) throw new Error(stream.error || "The media stream is no longer available.");
+        if (stream.file) {
+            // A plain Blob's: its file, once it's all come.
+            const element = eme.player(entry.node, kind);
+            eme.opened(entry.node, element);
+            element.controls = false;
+            if (kind === "video") element.playsInline = true;
+            stream.key = key;
+            stream.element = element;
+            entry.stream = stream;
+            element.addEventListener("error", () => {
+                if (!stream.closed) failStream(stream, element.error?.message || "The media file could not be decoded.");
+            }, { signal: entry.controller.signal });
+            fileReady(stream);
+            return element;
+        }
         stream.capture ||= makeCapture(stream);
         const element = eme.player(entry.node, kind);
         eme.opened(entry.node, element);
@@ -636,6 +706,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     }
 
     return {
+        videoForNode(node) {
+            for (const player of players.values()) {
+                if (player.node === node && player.element instanceof HTMLVideoElement) return player.element;
+            }
+            return null;
+        },
         streams: receiveStreams,
         eme: eme.receive,
         // open makes a player for the box key, of kind, playing src (an
@@ -718,7 +794,8 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                     const state = entry.skipped
                         ? { t: Number.isFinite(media.duration) ? media.duration : 0, playing: false, ended: true }
                         : { t: Number.isFinite(media.currentTime) ? media.currentTime : 0, playing: !media.paused && !media.ended, ended: media.ended };
-                    if (entry.stream) {
+                    // (A plain Blob's file, played whole: no buffers to say.)
+                    if (entry.stream?.source) {
                         const ranges = (list) => Array.from({ length: Math.min(list.length, 16) }, (_, i) => [list.start(i), list.end(i)]);
                         state.stream = streamId;
                         if (Number.isSafeInteger(ack)) state.ack = ack;

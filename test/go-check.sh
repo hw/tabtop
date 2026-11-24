@@ -19,6 +19,10 @@
 # engine binary (it must be present in the image). WEB_BASE_PATH=/tabtop/ serves
 # it all under that path (-base-path, or the image's WEB_BASE_PATH), as
 # behind a proxy.
+#
+# GO_ONLY=text runs only the steps whose names have text in them, and
+# GO_FROM=text the steps from the first that has it to the end (a check
+# resumed where one failed); logging in is run whichever.
 set -euo pipefail
 
 go_image=${GO_IMAGE:-}
@@ -160,8 +164,21 @@ tree_rss() {
 GO_LOG=$([[ -z "$go_image" ]] && echo "$work/tabtopd.log") node "$here/go-check.mjs" check "http://127.0.0.1:$port$base_path" "$cport" "http://$site_ip/" "http://$ads_ip/"
 read -r peak_engine peak_tabtopd < "$work/peak" || true
 echo "ok   the most memory used: an engine $((${peak_engine:-0} / 1024)) MiB, tabtopd $((${peak_tabtopd:-0} / 1024)) MiB"
-if [[ "${GO_NO_FS:-}" != 1 ]]; then
+# (Not with only some steps run, GO_ONLY, GO_FROM or GO_PROBE: the files
+# are saved by steps of their own.)
+if [[ "${GO_NO_FS:-}" != 1 && -z "${GO_ONLY:-}${GO_FROM:-}${GO_PROBE:-}" ]]; then
     [[ -n "$go_image" ]] && docker cp -q "$box:/home/tester/Downloads/doc.pdf" "$work/downloads/doc.pdf" 2>/dev/null
     cmp -s "$work/site/doc.pdf" "$work/downloads/doc.pdf" || { echo "FAIL the PDF wasn't saved into Downloads as it is"; exit 1; }
     echo "ok   the PDF is in Downloads, as the site serves it"
+    # The WebM stream saved from its buffers (gowebm.go): its video and its
+    # sound, as long as the page's, played through by ffmpeg with no error.
+    if [[ -z "$go_image" ]]; then
+        webm=$(ls "$work/downloads"/*.webm 2>/dev/null | head -n 1)
+        [[ -n "$webm" ]] || { echo "FAIL no WebM stream was saved into Downloads"; exit 1; }
+        streams=$(ffprobe -v error -show_entries stream=codec_type:format=duration -of csv=p=0 "$webm" | tr '\n' ' ')
+        [[ "$streams" =~ ^video\ audio\ (2\.[89]|3\.[0-2]) ]] || { echo "FAIL the saved WebM has: $streams"; exit 1; }
+        errors=$(ffmpeg -v error -i "$webm" -f null - 2>&1)
+        [[ -z "$errors" ]] || { echo "FAIL the saved WebM doesn't play through: $errors"; exit 1; }
+        echo "ok   the WebM stream saved is one file, its video and sound ($streams)"
+    fi
 fi

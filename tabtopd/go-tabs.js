@@ -60,7 +60,7 @@ function open({ id = next++, url = "", show = true, private: priv = false } = {}
     const frame = document.createElement("iframe");
     const title = priv ? "Private tab" : "New tab";
     frame.title = title;
-    frame.allow = "autoplay; fullscreen; clipboard-write";
+    frame.allow = "autoplay; fullscreen; clipboard-write; clipboard-read; geolocation; web-share; picture-in-picture";
     frame.hidden = true;
     const t = { id, title, loading: false, at: -1, private: priv, frame };
     frame.addEventListener("load", () => {

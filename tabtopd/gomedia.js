@@ -17,6 +17,11 @@
 //
 // It's the page's to see and change, like anything in its world: what it
 // does with that only touches its own copy.
+//
+// Listened for on the window, not the document: a frame's first page of
+// its parent's origin can be given the window its first (about:blank)
+// document had, which this was run in, and its document is another
+// (measured in Moli: a stream in such a frame never opened).
 (() => {
     const SEND = "__tabtop_media";
     const num = (v, max) => (Number.isFinite(v) && v >= 0 && v <= max ? v : 0);
@@ -73,7 +78,7 @@
     // at most. The page's play() (stubbed, below) lets it go at once.
     const held = new WeakMap(); // element -> since (ms)
     const hold = (el) => held.set(el, performance.now());
-    document.addEventListener("__tabtop_media_hold", (e) => {
+    window.addEventListener("__tabtop_media_hold", (e) => {
         const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
         if (!(el instanceof HTMLMediaElement)) return;
         e.stopImmediatePropagation();
@@ -121,7 +126,7 @@
         held.delete(this);
         return nativePlay.apply(this, arguments);
     };
-    document.addEventListener(SEND, (e) => {
+    window.addEventListener(SEND, (e) => {
         const el = (e.composedPath?.()[0] ?? e.target);  // (in a shadow root too)
         if (!(el instanceof HTMLMediaElement)) return;
         let d;
@@ -154,7 +159,24 @@
 (() => {
     const prefix = "blob:tabtop-media/";
     const queue = [];
-    let queued = 0, next = 0;
+    // A stream's number, from a random start: an embedded page's streams
+    // go with the page's (goframestreams.go), and one document's can't be
+    // told from another's by number alone.
+    let queued = 0, next = (() => {
+        try { return crypto.getRandomValues(new Uint32Array(1))[0] >>> 2; } catch { return Math.floor(Math.random() * 2 ** 30); }
+    })();
+    // Told on the topmost document of this one's origin it can reach, whose
+    // agent reads it (a frame of the page's origin is read by the page's).
+    const reader = () => {
+        let w = window;
+        try {
+            while (w.parent !== w) {
+                void w.parent.document;
+                w = w.parent;
+            }
+        } catch { /* this origin's topmost */ }
+        return w.document;
+    };
     const limit = 16 << 20;
     const nativeURL = URL.createObjectURL;
     const nativeRevoke = URL.revokeObjectURL;
@@ -174,7 +196,72 @@
         queued += size;
     }
 
-    document.addEventListener("__tabtop_read_stream", () => {
+    let listening = null;
+    const listen = () => {
+        const d = reader();
+        if (listening === d) return;
+        listening = d;
+        d.addEventListener("__tabtop_read_stream", readOut);
+    };
+    // A plain Blob's object URL played by a video or audio element (a site
+    // that fetches its file whole, then plays it from memory): its bytes
+    // relayed as a stream of its own ("file", its parts, "fileend"), the
+    // agent told the stream's address stands for the page's URL, for the
+    // copy's box (go-media.js gathers it, 256 MB at most, and plays it whole).
+    const FILE_MAX = 256 << 20, FILE_AHEAD = 8 << 20, FILE_PART = 49152;
+    const blobs = new Map();        // the page's blob: URL -> its Blob
+    const blobStreams = new Map();  // blob: URL -> its stream's number
+    const pumps = new Set();
+    function relayBlob(url) {
+        const blob = blobs.get(url);
+        if (!blob) return;
+        let id = blobStreams.get(url);
+        if (!id) {
+            id = ++next;
+            blobStreams.set(url, id);
+            if (blob.size > FILE_MAX || queue.length >= 512) {
+                queue.push({ stream: id, op: "error" });
+            } else {
+                queue.push({ stream: id, op: "file", mime: blob.type, value: blob.size });
+                let at = 0, busy = false;
+                const pump = async () => {
+                    if (busy) return;
+                    busy = true;
+                    try {
+                        while (at < blob.size && queued < FILE_AHEAD && queue.length < 480) {
+                            const part = new Uint8Array(await blob.slice(at, at + FILE_PART).arrayBuffer());
+                            if (!part.length) break;
+                            at += part.length;
+                            const data = btoa(String.fromCharCode(...part));
+                            queue.push({ stream: id, op: "chunk", data });
+                            queued += data.length;
+                        }
+                        if (at >= blob.size) {
+                            queue.push({ stream: id, op: "fileend" });
+                            pumps.delete(pump);
+                        }
+                    } catch {
+                        queue.push({ stream: id, op: "error" });
+                        pumps.delete(pump);
+                    } finally {
+                        busy = false;
+                    }
+                };
+                pumps.add(pump);
+                pump();
+            }
+        }
+        try { reader().dispatchEvent(new CustomEvent("__tabtop_blob", { detail: JSON.stringify({ url, stream: id }) })); } catch { /* told nothing */ }
+    }
+    // The agent, once there, asks which are streams (one in a frame is made
+    // after its page has played one): said again.
+    window.addEventListener("message", (e) => {
+        if (e.data?.__tabtop !== "blobs") return;
+        for (const [url, stream] of blobStreams) {
+            try { reader().dispatchEvent(new CustomEvent("__tabtop_blob", { detail: JSON.stringify({ url, stream }) })); } catch { /* told nothing */ }
+        }
+    });
+    function readOut() {
         const batch = [];
         let size = 0;
         while (queue.length && batch.length < 64 && size < (768 << 10)) {
@@ -183,8 +270,10 @@
             batch.push(command);
         }
         queued -= size;
-        if (batch.length) document.dispatchEvent(new CustomEvent("__tabtop_stream", { detail: JSON.stringify(batch) }));
-    });
+        if (batch.length) reader().dispatchEvent(new CustomEvent("__tabtop_stream", { detail: JSON.stringify(batch) }));
+        for (const pump of pumps) pump();  // a file's next parts, as these go
+    }
+    listen();
 
     const timeRanges = (ranges = []) => ({
         length: ranges.length,
@@ -252,6 +341,7 @@
             enqueue(this, { op: "duration", value: Number.isFinite(value) ? value : null });
         }
         addSourceBuffer(mime) {
+            listen();
             if (!RelaySource.isTypeSupported(mime)) throw new DOMException("Unsupported media type", "NotSupportedError");
             const index = this.nextBuffer++;
             const buffer = new RelayBuffer(this, index);
@@ -319,7 +409,17 @@
         try { globalThis.ManagedMediaSource = RelayManagedSource; } catch { /* read-only native */ }
     }
     URL.createObjectURL = function (value) {
-        if (!(value instanceof RelaySource)) return nativeURL.call(this, value);
+        if (!(value instanceof RelaySource)) {
+            const url = nativeURL.call(this, value);
+            // A Blob that may be played: kept by its URL, relayed if it is.
+            if (value instanceof Blob && !/^(?:image|text|font)\//i.test(value.type) && value.size > 0) {
+                blobs.set(url, value);
+                if (blobs.size > 64) blobs.delete(blobs.keys().next().value);
+                watch();
+            }
+            return url;
+        }
+        watch();
         const url = prefix + value.id;
         positions.set(url, value);
         if (positions.size > 32) positions.delete(positions.keys().next().value);
@@ -327,7 +427,10 @@
     };
     URL.revokeObjectURL = function (url) {
         if (String(url).startsWith(prefix)) positions.delete(String(url));
-        else nativeRevoke.call(this, url);
+        else {
+            blobs.delete(String(url));  // (one relayed goes on: the player has it)
+            nativeRevoke.call(this, url);
+        }
     };
 
     const attached = new WeakMap();
@@ -349,7 +452,7 @@
         }
         return 0;
     };
-    document.addEventListener("__tabtop_media", (e) => {
+    window.addEventListener("__tabtop_media", (e) => {
         const at = (e.composedPath?.()[0] ?? e.target);
         const source = attached.get(at);
         if (!source || sourceURL(at) !== prefix + source.id) return;
@@ -377,6 +480,7 @@
     }, true);
     function attach(el) {
         const url = sourceURL(el);
+        if (url && blobs.has(url)) return relayBlob(url);
         const old = attached.get(el);
         if (old && url === prefix + old.id) return;
         if (old) {
@@ -396,7 +500,7 @@
             source.setStreaming(true);
         }, 0);
     }
-    new MutationObserver((records) => {
+    const observer = new MutationObserver((records) => {
         for (const record of records) {
             if (record.target instanceof HTMLMediaElement) attach(record.target);
             if (record.target.localName === "source" && record.target.parentElement instanceof HTMLMediaElement) attach(record.target.parentElement);
@@ -405,9 +509,18 @@
                 node.querySelectorAll?.("video, audio").forEach(attach);
             }
         }
-    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
+    });
+    // The document now (see above: the window's may have changed since).
+    let watching = null;
+    const watch = () => {
+        if (watching === document) return;
+        watching = document;
+        observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
+        listen();
+    };
+    watch();
 
-    document.addEventListener("error", (e) => {
+    window.addEventListener("error", (e) => {
         if (e.target instanceof HTMLMediaElement && sourceURL(e.target)?.startsWith(prefix)) e.stopImmediatePropagation();
     }, true);
     const load = HTMLMediaElement.prototype.load;

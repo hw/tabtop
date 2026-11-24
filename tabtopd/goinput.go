@@ -278,7 +278,7 @@ func (b *goBrowser) frameWorldPath(owner int, route, docs []int) (int, *goChild)
 	if len(route) == 0 {
 		return b.frameWorld(owner)
 	}
-	if len(route) > 2 || route[0] != owner || (len(docs) != 0 && len(docs) != len(route)) {
+	if len(route) > goFramesDepth || route[0] != owner || (len(docs) != 0 && len(docs) != len(route)) {
 		return 0, nil
 	}
 	parent, parentWorld := b.frame, b.world
@@ -350,6 +350,9 @@ func (b *goBrowser) inFrame(owner, fdoc int, route, docs []int, what string, exp
 		b.post(func() {
 			if gen != b.gen {
 				return
+			}
+			if what == "media-meta" {
+				return // the person's player told of, not the page's input: nothing to read again for it
 			}
 			child.due, child.next, b.framesAt = true, time.Time{}, time.Time{} // read again, next round
 			b.afterInput(gen)

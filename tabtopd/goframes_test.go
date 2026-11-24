@@ -99,8 +99,8 @@ setTimeout(() => { location.href = "/next"; }, 4000);
 	tc.c.CloseNow()
 }
 
-// TestGoNestedFramesWithMoli exercises a cross-origin frame inside another
-// cross-origin frame: discovery, incremental rendering, and routed input.
+// TestGoNestedFramesWithMoli exercises three cross-origin iframe levels:
+// discovery, incremental rendering, and routed input into the innermost.
 func TestGoNestedFramesWithMoli(t *testing.T) {
 	moli := os.Getenv("TABTOP_TEST_MOLI")
 	if moli == "" {
@@ -111,20 +111,25 @@ func TestGoNestedFramesWithMoli(t *testing.T) {
 		io.WriteString(w, `<!doctype html><button id=b onclick="document.getElementById('p').textContent='nested clicked'">click nested</button><p id=p>nested ready</p>`)
 	}))
 	defer inner.Close()
-	middle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		io.WriteString(w, `<!doctype html><title>middle</title><iframe id=nested src="`+inner.URL+`/inner"></iframe>`)
+		io.WriteString(w, `<!doctype html><title>mid</title><iframe id=nested src="`+inner.URL+`/inner"></iframe>`)
 	}))
-	defer middle.Close()
+	defer mid.Close()
+	outer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<!doctype html><title>outer</title><iframe id=mid src="`+mid.URL+`/mid"></iframe>`)
+	}))
+	defer outer.Close()
 	top := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		io.WriteString(w, `<!doctype html><title>top</title><iframe id=outer src="`+middle.URL+`/middle"></iframe>`)
+		io.WriteString(w, `<!doctype html><title>top</title><iframe id=outer src="`+outer.URL+`/outer"></iframe>`)
 	}))
 	defer top.Close()
-	goTestPorts(t, portOf(t, top.URL), portOf(t, middle.URL), portOf(t, inner.URL))
+	goTestPorts(t, portOf(t, top.URL), portOf(t, outer.URL), portOf(t, mid.URL), portOf(t, inner.URL))
 	g, url, s := newGoServer(t, moli)
 	t.Logf("engine mode: %s", g.goMode)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	tc := openSession(t, ctx, url, s)
 	if r := tc.request(t, ctx, map[string]any{"type": "go"}); r["ok"] != true {
@@ -151,7 +156,10 @@ func TestGoNestedFramesWithMoli(t *testing.T) {
 		}
 		find(doc)
 	}
-	var nestedOwner, outerWorld, innerWorld, button float64
+	// Nested frame updates are addressed from the outermost iframe (i /
+	// path). Wait until the outer copy has the mid and innermost frames
+	// grafted, with the button in the deepest document.
+	var midOwner, nestedOwner, outerWorld, midWorld, innerWorld, button float64
 	for button == 0 {
 		m := tc.readJSON(t, ctx)
 		if m["type"] != "go-changes" {
@@ -162,40 +170,51 @@ func TestGoNestedFramesWithMoli(t *testing.T) {
 			if op["o"] != "c" || op["i"] != outerOwner {
 				continue
 			}
-			kids := op["c"].([]any)
+			kids, _ := op["c"].([]any)
 			if len(kids) != 1 {
 				continue
 			}
 			doc := kids[0].(map[string]any)
 			normal(doc)
+			if path, _ := op["path"].([]any); len(path) != 0 {
+				// A deeper frame's own update: content is that document.
+				continue
+			}
 			outerWorld, _ = op["f"].(float64)
-			var findNested func(map[string]any)
-			findNested = func(n map[string]any) {
+			var frames []map[string]any
+			var walk func(map[string]any)
+			walk = func(n map[string]any) {
 				if n["n"] == "iframe" && n["f"] != nil {
-					nestedOwner, _ = n["i"].(float64)
-					innerWorld, _ = n["f"].(float64)
-					if children, ok := n["c"].([]any); ok && len(children) != 0 {
-						var findButton func(map[string]any)
-						findButton = func(node map[string]any) {
-							if node["n"] == "button" {
-								button, _ = node["i"].(float64)
-							}
-							for _, k := range node["c"].([]any) {
-								findButton(k.(map[string]any))
-							}
-						}
-						findButton(children[0].(map[string]any))
-					}
+					frames = append(frames, n)
 				}
 				for _, k := range n["c"].([]any) {
-					findNested(k.(map[string]any))
+					walk(k.(map[string]any))
 				}
 			}
-			findNested(doc)
+			walk(doc)
+			if len(frames) < 2 {
+				continue
+			}
+			midOwner, _ = frames[0]["i"].(float64)
+			midWorld, _ = frames[0]["f"].(float64)
+			nestedOwner, _ = frames[1]["i"].(float64)
+			innerWorld, _ = frames[1]["f"].(float64)
+			if children, ok := frames[1]["c"].([]any); ok && len(children) != 0 {
+				var findButton func(map[string]any)
+				findButton = func(node map[string]any) {
+					if node["n"] == "button" {
+						button, _ = node["i"].(float64)
+					}
+					for _, k := range node["c"].([]any) {
+						findButton(k.(map[string]any))
+					}
+				}
+				findButton(children[0].(map[string]any))
+			}
 		}
 	}
-	if outerWorld == 0 || innerWorld == 0 || nestedOwner == 0 {
-		t.Fatalf("missing nested frame identity: owner=%v outer=%v inner=%v", nestedOwner, outerWorld, innerWorld)
+	if outerWorld == 0 || midWorld == 0 || innerWorld == 0 || midOwner == 0 || nestedOwner == 0 {
+		t.Fatalf("missing nested frame identity: mid=%v nested=%v outerW=%v midW=%v innerW=%v", midOwner, nestedOwner, outerWorld, midWorld, innerWorld)
 	}
 	for _, phase := range []string{"down", "up"} {
 		buttons := 1
@@ -203,7 +222,7 @@ func TestGoNestedFramesWithMoli(t *testing.T) {
 			buttons = 0
 		}
 		sendGo(t, ctx, tc, map[string]any{"op": "event", "gen": gen, "kind": "mouse", "id": outerOwner,
-			"frame": button, "fdoc": innerWorld, "route": []int{int(outerOwner), int(nestedOwner)}, "docs": []int{0, int(outerWorld)},
+			"frame": button, "fdoc": innerWorld, "route": []int{int(outerOwner), int(midOwner), int(nestedOwner)}, "docs": []int{0, int(outerWorld), int(midWorld)},
 			"type": phase, "fx": .5, "fy": .5, "button": 0, "buttons": buttons})
 	}
 	for {

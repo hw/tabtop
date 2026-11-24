@@ -169,11 +169,14 @@
                 mediaStyle(box);
             }
             // Its size and length, for the page in the engine, which has no
-            // media of its own (gomedia.js): to the element the box is for.
-            const engineId = box && doc?.ids.get(box);
+            // media of its own (gomedia.js): to the element the box is for,
+            // in the page, or in an embedded page (by its frames' route).
+            const at = box && targetOf(box);
+            const engineId = at?.id;
+            const meta = (value) => send("media-meta", engineId, { value, ...frameFields(at) });
             const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
             if (engineId && m.meta && typeof m.meta === "object") {
-                send("media-meta", engineId, { value: JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration) }) });
+                meta(JSON.stringify({ w: num(m.meta.w), h: num(m.meta.h), duration: num(m.meta.duration) }));
             }
             // How it plays, likewise.
             if (engineId && m.play && typeof m.play === "object") {
@@ -184,7 +187,7 @@
                         buffers: Array.isArray(m.play.buffers) ? m.play.buffers.slice(0, 8).map(ranges) : [] });
                     if (Number.isSafeInteger(m.play.ack)) play.ack = m.play.ack;
                 }
-                send("media-meta", engineId, { value: JSON.stringify({ play }) });
+                meta(JSON.stringify({ play }));
             }
         }
     });
@@ -1034,6 +1037,29 @@
             box.textContent = `A ${what} with nothing to play.`;
             mediaLater();
             return;
+        }
+        // A stream's box in an embedded page made again (the page read again
+        // whole, its copy rebuilt): the player it had moved to it, its
+        // buffers kept, as the page's own are (keepRelayedPlayers). A
+        // stream's number is its own (gomedia.js), so the same is the same.
+        if (d.top && /^blob:tabtop-media\//.test(url)) {
+            for (const [k, e] of media) {
+                if (e.src !== url || e.kind !== info.tag || e.box === box || !e.asked) continue;
+                const old = mediaOf.get(e.box);
+                if (old) old.key = 0;
+                const wasLive = e.box.classList.contains("go-media-live");
+                mediaVisibility.unobserve(e.box);
+                mediaSizes.unobserve(e.box);
+                setMediaLive(e.box, false);
+                box.textContent = e.box.textContent;
+                info.key = k;
+                media.set(k, { ...e, top: d.top, box, node: info.node, muted: info.muted, loop: info.loop });
+                setMediaLive(box, wasLive);
+                mediaVisibility.observe(box);
+                mediaSizes.observe(box);
+                mediaLater();
+                return;
+            }
         }
         setMediaLive(box, false);
         box.textContent = `Loading the ${what}…`;
@@ -2805,7 +2831,14 @@
     }, true);
     document.addEventListener("paste", (e) => {
         const el = real(e), at = targetOf(el);
-        if (!e.isTrusted || !at || !richText(at.node)) return;
+        if (!e.isTrusted || !at) return;
+        const png = [...(e.clipboardData?.files ?? [])].find(file => file.type === "image/png");
+        if (png) {
+            e.preventDefault();
+            tell({ type: "paste-image", gen: doc.gen, id: at.id, ...frameFields(at), sel: richText(at.node) ? movedTo(el) : undefined, png });
+            return;
+        }
+        if (!richText(at.node)) return;
         e.preventDefault();
         // Its text, and its HTML (styled, as a browser pastes it) if both fit.
         const text = (e.clipboardData?.getData("text/plain") ?? "").slice(0, EDIT_MAX);

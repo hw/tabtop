@@ -26,6 +26,7 @@ import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js"
 import { reconnect, reconnected } from "../tabtop/reconnect.js";
 import { warnExpiry } from "../tabtop/expiry.js";
 import { call, collect, setLoginTitle } from "../tabtop/requests.js";
+import { viewerCapabilities, viewerDevices, sendPasteImage } from "./go-device.js";
 import { goMedia } from "./go-media.js";
 import { mseStageKeeper } from "./mse-stages.js";
 
@@ -233,6 +234,9 @@ fullScreen.insertAdjacentHTML("afterbegin", icon("fullscreen"));
 exitFullScreen.innerHTML = icon("exitFullscreen");
 const fullScreenRoot = document.documentElement;
 let screenMode = "", nativeFullScreen = false, nativeRequest;
+// The page asked for fullscreen (gofullscreen.go): shown so for it, and
+// its leaving told to it.
+let pageFullScreen = false;
 let tabsCompact = false, tabsCount = 1;
 function updateTabsButton() {
     const tabs = $("go_tabs");
@@ -242,6 +246,10 @@ function updateTabsButton() {
 }
 
 function showScreenMode(mode) {
+    if (pageFullScreen && mode !== "full") {
+        pageFullScreen = false;
+        ws?.send(JSON.stringify({ op: "fullscreen-exit" }));
+    }
     screenMode = mode;
     const immersive = mode === "full";
     hideBrowser.setAttribute("aria-pressed", String(mode === "browser"));
@@ -760,8 +768,13 @@ function mediaMenu() {
     menu.classList.toggle("has-media", players.length > 0);
     menu.setAttribute("aria-label", players.length ? `Menu (${players.length} playing or loading on this page)` : "Menu");
     section.hidden = !players.length && !streams.length;
-    const videos = players.every((p) => p.kind === "video");
-    section.querySelector("h2").textContent = videos ? "Videos on this page" : "Videos and sounds on this page";
+    // No video among them (sounds only, or the page's streams): no heading
+    // shown, only named to a screen reader.
+    const anyVideo = players.some((p) => p.kind === "video"), anySound = players.some((p) => p.kind !== "video");
+    const heading = section.querySelector("h2");
+    heading.textContent = anyVideo ? (anySound ? "Videos and sounds on this page" : "Videos on this page")
+        : anySound ? "Sounds on this page" : "Streams on this page";
+    heading.classList.toggle("unseen", !anyVideo);
     // Drawn again only as what's shown changes: a row replaced as it's
     // pressed takes no click, and a focus moves.
     const drawn = JSON.stringify([autoplayOverride, siteMedia, players.map(({ key, state, short, src, skippable, playing, ready, watching, saveable }) => [key, state, short, src, skippable, playing, ready, watching, saveable]),
@@ -804,13 +817,17 @@ function mediaMenu() {
             ? glyph("hide", `Hide ${which} from the page`, () => media?.hide(p.key))
             : glyph("skip", `Skip ${which} to its end (Shift+N on it); hold to block videos from its host`, () => media?.skip(p.key), { disabled: !p.skippable });
         if (!endedVideo) holdToBlock(skip, p);
-        const acts = [
-            ...(p.kind === "video" ? [glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching })] : []),
-            ...(p.saveable ? [saveGlyph(p, which, note)].filter(Boolean) : []),
-            glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready }),
-            skip,
-        ];
-        for (const [j, b] of acts.entries()) b.dataset.act = String(j);
+        // Download first, left of Watch (the player): Download … Watch …
+        // Play/Pause … Skip. Each named, so the focus keeps to its act as
+        // others come and go.
+        const save = p.saveable ? saveGlyph(p, which, note) : null;
+        if (save) save.dataset.act = "save";
+        const watch = p.kind === "video" ? glyph("watch", `Watch ${which} in the player: full screen, its speed, back and on`, () => { openMenu(false); media?.watch(p.key); }, { disabled: !p.ready || p.watching }) : null;
+        if (watch) watch.dataset.act = "watch";
+        const play = glyph(p.playing ? "pause" : "play", `${p.playing ? "Pause" : "Play"} ${which}`, () => media?.toggle(p.key), { disabled: !p.ready });
+        play.dataset.act = "play";
+        skip.dataset.act = "skip";
+        const acts = [save, watch, play, skip].filter(Boolean);
         const buttons = Object.assign(document.createElement("div"), { className: "acts" });
         buttons.append(...acts);
         li.append(about, buttons);
@@ -830,7 +847,7 @@ function mediaMenu() {
         note.setAttribute("aria-live", "polite");
         about.append(Object.assign(document.createElement("div"), { className: "state", textContent: "Stream" }), where, note);
         const save = saveGlyph({ key: li.dataset.key }, label, note, { stream: true, label: "", save: (say, opts) => saveFile(url, say, true, undefined, opts) });
-        save.dataset.act = "0";
+        save.dataset.act = "save";
         const buttons = Object.assign(document.createElement("div"), { className: "acts" });
         buttons.append(save);
         li.append(about, buttons);
@@ -965,6 +982,156 @@ function warn(message, { retry = null, error = true, label = "Try again", edit =
 }
 notice.querySelector(".dismiss").addEventListener("click", () => { notice.hidden = true; });
 notice.querySelector(".edit").addEventListener("click", () => { notice.hidden = true; address.focus(); address.select(); });
+
+// --- The page's clipboard (goclipboard.go) -------------------------------
+//
+// What it copies is put on this browser's clipboard, at once if the
+// person's press still counts here (it's this page's too: an embedded
+// page's activation is its parents'), else from a notice. What it asks to
+// read is asked of the person, each time, never remembered.
+// A picture (a PNG, base64) is put there with its text, if it had any.
+async function copyOut(text, image) {
+    const put = () => {
+        if (typeof image !== "string") return navigator.clipboard.writeText(text);
+        const items = { "image/png": new Blob([Uint8Array.from(atob(image), (c) => c.charCodeAt(0))], { type: "image/png" }) };
+        if (typeof text === "string" && text) items["text/plain"] = new Blob([text], { type: "text/plain" });
+        return navigator.clipboard.write([new ClipboardItem(items)]);
+    };
+    try {
+        await put();
+    } catch {
+        warn(typeof image === "string" ? "The page copied a picture." : "The page copied text.", {
+            error: false, label: "Copy",
+            retry: () => put().then(() => note("Copied."), (err) => warn(`It wasn’t copied: ${err.message}`)),
+        });
+    }
+}
+const deviceContext = () => ({ socket: ws, gen });
+const devices = viewerDevices($("go_device"), deviceContext, node => media.videoForNode(node));
+const pasteBox = $("go_paste");
+let pasteAsks = [];
+function askPaste(m) {
+    if (pasteAsks.length >= 4) return answerPaste(m, false);
+    pasteAsks.push(m);
+    if (pasteAsks.length === 1) showPasteAsk();
+}
+function showPasteAsk() {
+    const m = pasteAsks[0];
+    if (!m) {
+        pasteBox.hidden = true;
+        return;
+    }
+    const site = typeof m.site === "string" && m.site ? m.site : "This page";
+    const within = typeof m.within === "string" && m.within ? ` (in a frame of ${m.within})` : "";
+    $("go_paste_text").textContent = `${site}${within} wants to see what you copied (your clipboard’s ${m.images ? "text and pictures" : "text"}).`;
+    pasteBox.hidden = false;
+    pasteBox.querySelector(".allow").focus();
+}
+// A read of its items (m.images) is given its picture too (a PNG, 8 MiB at
+// most), sent in parts before the answer.
+async function answerPaste(m, allow) {
+    let value = "", image = null;
+    if (allow) {
+        try {
+            if (m.images) {
+                const items = await navigator.clipboard.read();
+                const item = items.find((i) => i.types.includes("image/png")) ?? items[0];
+                if (item?.types.includes("image/png")) image = new Uint8Array(await (await item.getType("image/png")).arrayBuffer());
+                const text = items.find((i) => i.types.includes("text/plain"));
+                if (text) value = await (await text.getType("text/plain")).text();
+            } else {
+                value = await navigator.clipboard.readText();
+            }
+        } catch (err) {
+            allow = false;
+            warn(`Your browser didn’t let the clipboard be read: ${err.message}`);
+        }
+    }
+    if (image && image.length > 8 << 20) {
+        warn("The picture you copied is too large to give the page (8 MiB at most).");
+        image = null;
+    }
+    const socket = ws;
+    if (image) {
+        // (Multiples of three: base64 padding in the last part only.)
+        const part = 24 * 1024;
+        for (let at = 0; at < image.length; at += part) {
+            socket?.send(JSON.stringify({ op: "paste-part", text: m.ask, value: btoa(String.fromCharCode(...image.subarray(at, at + part))) }));
+        }
+    }
+    socket?.send(JSON.stringify({ op: "paste", text: m.ask, accept: allow, value, count: image?.length ?? 0 }));
+}
+function pasteAnswered(allow) {
+    const m = pasteAsks.shift();
+    pasteBox.hidden = true;
+    if (m) answerPaste(m, allow);
+    showPasteAsk();
+}
+pasteBox.querySelector(".allow").addEventListener("click", () => pasteAnswered(true));
+pasteBox.querySelector(".refuse").addEventListener("click", () => pasteAnswered(false));
+pasteBox.addEventListener("keydown", (e) => { if (e.key === "Escape") pasteAnswered(false); });
+
+// --- The page's notifications (gonotify.go) -------------------------------
+//
+// Asked for: asked of the person (the answer kept for the site, in Site
+// controls); shown: as this browser's notification, if it allows them
+// (asked, as the person allows the page's), else as a notice here; what
+// becomes of each told back, for the page's events.
+const notifyBox = $("go_notify_ask");
+let notifyAsking = null;
+function askNotify(m) {
+    notifyAsking = m;
+    $("go_notify_ask_text").textContent = `${typeof m.site === "string" && m.site ? m.site : "This page"} wants to show you notifications.`;
+    notifyBox.hidden = false;
+    notifyBox.querySelector(".allow").focus();
+}
+function notifyAnswered(value) {
+    const m = notifyAsking;
+    notifyAsking = null;
+    notifyBox.hidden = true;
+    if (!m) return;
+    // This browser asked too, as the person allows (their press): so it
+    // can show them.
+    if (value === "allow" && "Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+    ws?.send(JSON.stringify({ op: "notify-permission", text: m.ask, value }));
+}
+notifyBox.querySelector(".allow").addEventListener("click", () => notifyAnswered("allow"));
+notifyBox.querySelector(".refuse").addEventListener("click", () => notifyAnswered("block"));
+notifyBox.querySelector(".later").addEventListener("click", () => notifyAnswered(""));
+notifyBox.addEventListener("keydown", (e) => { if (e.key === "Escape") notifyAnswered(""); });
+const notified = new Map();  // token -> this browser's Notification, or "notice"
+const notifyTell = (token, kind) => ws?.send(JSON.stringify({ op: "notify-event", text: token, kind }));
+function showNotify(m) {
+    const site = typeof m.site === "string" ? m.site : "";
+    const title = typeof m.title === "string" ? m.title : "";
+    const body = typeof m.body === "string" ? m.body : "";
+    if ("Notification" in window && Notification.permission === "granted") {
+        try {
+            // (Its site first, as it's not TabTop's; its tag kept apart
+            // from TabTop's own.)
+            const n = new Notification(title || site, {
+                body: body ? `${site}\n${body}` : site, tag: m.tag ? `tabtop-go:${site}:${m.tag}` : undefined, renotify: !!(m.tag && m.renotify),
+                silent: !!m.silent, requireInteraction: !!m.requireInteraction, dir: m.dir, lang: m.lang || undefined,
+            });
+            n.onshow = () => notifyTell(m.ask, "show");
+            n.onclick = () => { window.focus(); notifyTell(m.ask, "click"); };
+            n.onclose = () => { notified.delete(m.ask); notifyTell(m.ask, "close"); };
+            n.onerror = () => { notified.delete(m.ask); notifyTell(m.ask, "error"); };
+            notified.set(m.ask, n);
+            return;
+        } catch { /* a notice, below */ }
+    }
+    // Here, as a notice: Open its click.
+    notified.set(m.ask, "notice");
+    warn(`${site}: ${title}${body ? ` — ${body}` : ""}`, { error: false, label: "Open", retry: () => notifyTell(m.ask, "click") });
+    notifyTell(m.ask, "show");
+}
+function closeNotify(token) {
+    const n = notified.get(token);
+    notified.delete(token);
+    if (n === "notice") notifyTell(token, "close");
+    else n?.close();
+}
 
 // --- Pop-ups the page wants to open -------------------------------------
 //
@@ -1315,7 +1482,7 @@ function connect() {
 function open() {
     return new Promise((resolve) => {
         const resume = resumeToken.get();
-        const s = new TunnelSocket({ type: "go", deflate: canInflate, ...(resume ? { resume } : {}), ...(privateTab ? { private: true } : {}) }, { title: "Browser" });
+        const s = new TunnelSocket({ type: "go", viewerCaps: viewerCapabilities(), deflate: canInflate, ...(resume ? { resume } : {}), ...(privateTab ? { private: true } : {}) }, { title: "Browser" });
         show("Connecting to TabTop…");
         $("go_progress").hidden = false;
         s.onopen = () => {
@@ -1353,6 +1520,7 @@ function open() {
                     resumeToken.set("");
                     s.close();
                     ws = null;
+                    devices.reset();
                     connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
                 }, 10_000);
             } else if (at >= 0) {
@@ -1399,6 +1567,7 @@ function open() {
                 return;
             }
             if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
+            if (gen !== m.gen) devices.reset();
             gen = m.gen;
             message(m);
         };
@@ -1413,6 +1582,7 @@ function open() {
                 return;
             }
             ws = null;
+            devices.reset();
             loading = rendering = false;
             closeDialog();
             update();
@@ -1575,6 +1745,10 @@ function message(m) {
             update();
             break;
         }
+        case "go-streams":
+            // An embedded page's (goframestreams.go).
+            if (m.gen === shown) media.streams(m.streams);
+            break;
         case "go-changes":
             if (m.gen === shown) media.streams(m.streams);
             if (m.gen === shown) {
@@ -1637,6 +1811,49 @@ function message(m) {
             break;
         case "go-file-chooser":
             if (typeof m.chooser === "string" && m.gen === gen) askFiles(m);
+            break;
+        case "go-fullscreen":
+            // The page's element fullscreen (laid over the engine's window):
+            // the page alone over this screen, as the menu's Full screen.
+            if (m.gen !== gen) break;
+            if (m.on) {
+                if (screenMode !== "full") {
+                    toggleScreenMode("full");
+                    pageFullScreen = true;
+                    frame.focus();  // (the page's keys still its: Esc, f, space)
+                }
+            } else if (pageFullScreen) {
+                pageFullScreen = false;
+                if (screenMode === "full") leaveFullScreen();
+            }
+            break;
+        case "go-paste-image-error":
+            warn("The image could not be pasted into the selected element.");
+            break;
+        case "go-device":
+            if (m.gen === shown) devices.ask(m);
+            break;
+        case "go-copy":
+            // What the page copied (a Copy button's), after the person's
+            // press there (goclipboard.go): on their clipboard.
+            if ((typeof m.text === "string" || typeof m.image === "string") && m.gen === gen) copyOut(typeof m.text === "string" ? m.text : "", m.image);
+            break;
+        case "go-paste-ask":
+            if (typeof m.ask === "string" && m.gen === gen) askPaste(m);
+            break;
+        case "go-notify-ask":
+            if (typeof m.ask === "string" && m.gen === gen) askNotify(m);
+            break;
+        case "go-notify":
+            if (typeof m.ask === "string" && m.gen === gen) showNotify(m);
+            break;
+        case "go-notify-close":
+            if (typeof m.ask === "string") closeNotify(m.ask);
+            break;
+        case "go-notify-gone":
+            // The page left: its notifications closed, its ask let go.
+            for (const token of [...notified.keys()]) closeNotify(token);
+            if (notifyAsking) notifyAnswered("");
             break;
         case "go-restarting":
             // The engine's being restarted (Settings): this tab connects
@@ -1844,6 +2061,12 @@ window.addEventListener("message", (e) => {
             if (typeof m.url === "string" && /^https?:\/\//i.test(m.url)) load(m.url);
             break;
         case "event":
+            // Esc, while the page's fullscreen: the browser's, leaving it
+            // (the page isn't given it, as browsers don't).
+            if (pageFullScreen && m.kind === "key" && m.key === "Escape") {
+                if (m.phase === "down") leaveFullScreen();
+                break;
+            }
             // Done in the engine, for the document shown only.
             if (ws && m.gen === shown && Number.isSafeInteger(m.id)) {
                 const { kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter } = m;
@@ -1853,7 +2076,7 @@ window.addEventListener("message", (e) => {
                 const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
                     buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
                     location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy), tap: !!m.tap, frame: num(m.frame), fdoc: num(m.fdoc),
-                    route: (Array.isArray(m.route) ? m.route.slice(0, 2) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 2) : []).map(num),
+                    route: (Array.isArray(m.route) ? m.route.slice(0, 3) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 3) : []).map(num),
                     points: (Array.isArray(m.points) ? m.points.slice(0, 10) : []).map((p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
                     items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })),
                     // Rich text: the copy's selection, a key that edits, an edit's kind.
@@ -1873,6 +2096,9 @@ window.addEventListener("message", (e) => {
                     if (got && owner === media) frame.contentWindow?.postMessage({ type: "media-state", key: m.key, error: got.error ?? "", blocked: got.blocked }, "*");
                 });
             }
+            break;
+        case "paste-image":
+            if (m.gen === shown && m.gen === gen) sendPasteImage(m, deviceContext, warn).catch(() => warn("The image could not be pasted."));
             break;
         case "drop-files":
             if (m.gen !== shown) break;

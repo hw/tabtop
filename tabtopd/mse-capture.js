@@ -1,7 +1,8 @@
 // Capture of clear Media Source (MSE) appends for Save stream: the viewer's
 // relay already has the bytes (go-media.js). Completed fMP4 / progressive
-// pieces spill to the server as they accumulate so local RAM stays small;
-// encrypted or WebM captures are not saved.
+// pieces, and WebM's init and clusters, spill to the server as they
+// accumulate so local RAM stays small; encrypted captures are not saved (nor
+// a WebM one appended at an offset: gowebm.go takes its times as they are).
 
 export const MSE_SPILL_SOFT = 4 << 20;
 export const MSE_CAPTURE_LIMIT = 16 << 20;
@@ -47,6 +48,108 @@ export function mp4Encrypted(data) {
     walk(data);
     return encrypted;
 }
+
+// WebM (EBML). ebml is the element at data[at:]: {id, start, data, end}
+// (end -1: of unknown size), null if its head isn't all there, {bad} if
+// it isn't one.
+const EBML_HEADER = 0x1A45DFA3, WEBM_SEGMENT = 0x18538067, WEBM_CLUSTER = 0x1F43B675, WEBM_TRACKS = 0x1654AE6B;
+const WEBM_TOP = new Set([WEBM_CLUSTER, 0x1C53BB6B, 0x114D9B74, 0x1549A966, WEBM_TRACKS, 0x1254C367, 0x1043A770, 0x1941A469, EBML_HEADER, WEBM_SEGMENT]);
+export function ebml(data, at) {
+    if (at >= data.length) return null;
+    let n = 1;
+    for (let m = 0x80; n <= 4 && !(data[at] & m); m >>= 1) n++;
+    if (n > 4) return { bad: true };
+    const s = at + n;
+    if (s >= data.length) return null;
+    let id = 0;
+    for (let i = at; i < s; i++) id = id * 256 + data[i];
+    let k = 1;
+    for (let m = 0x80; k <= 8 && !(data[s] & m); m >>= 1) k++;
+    if (k > 8) return { bad: true };
+    if (s + k > data.length) return null;
+    let size = data[s] & (0xff >> k), all = size === (0xff >> k);
+    for (let i = s + 1; i < s + k; i++) {
+        size = size * 256 + data[i];
+        all = all && data[i] === 0xff;
+    }
+    return { id, start: at, data: s + k, end: all ? -1 : s + k + size };
+}
+// webmEncoded is whether a WebM init's Tracks has a track encrypted
+// ("encrypted": ContentEncryption) or otherwise encoded ("encoded").
+function webmEncoded(data, from, to) {
+    let encoded = false, encrypted = false;
+    const walk = (a, b, depth) => {
+        for (let at = a; at < b;) {
+            const e = ebml(data, at);
+            if (!e || e.bad || e.end < 0 || e.end > b) return;
+            if (e.id === 0x5035) encrypted = true;   // ContentEncryption
+            if (e.id === 0x6D80) encoded = true;     // ContentEncodings
+            // (TrackEntry, ContentEncodings, ContentEncoding: looked in.)
+            if (depth < 4 && (e.id === 0xAE || e.id === 0x6D80 || e.id === 0x6240)) walk(e.data, e.end, depth + 1);
+            at = e.end;
+        }
+    };
+    walk(from, to, 0);
+    return encrypted ? "encrypted" : encoded ? "encoded" : "";
+}
+// webmInit is where a WebM stream's init ends in data (at its first
+// Cluster, or its end once its Tracks are all there): {end}, {} if it
+// isn't all there yet, {encrypted} or {encoded}.
+export function webmInit(data) {
+    const h = ebml(data, 0);
+    if (!h || h.bad || h.id !== EBML_HEADER || h.end < 0) return {};
+    if (h.end > data.length) return {};
+    const seg = ebml(data, h.end);
+    if (!seg || seg.bad || seg.id !== WEBM_SEGMENT) return {};
+    let tracks = false;
+    for (let at = seg.data; at <= data.length;) {
+        if (at === data.length) return tracks ? { end: at } : {};
+        const e = ebml(data, at);
+        if (!e || e.bad) return {};
+        if (e.id === WEBM_CLUSTER) return tracks ? { end: at } : {};
+        if (e.end < 0 || e.end > data.length) return {};
+        if (e.id === WEBM_TRACKS) {
+            tracks = true;
+            const enc = webmEncoded(data, e.data, e.end);
+            if (enc) return { [enc]: true };
+        }
+        at = e.end;
+    }
+    return {};
+}
+// webmClusters is the clusters complete in data (an unknown-sized one ends
+// at the next top-level element; at data's end, only if force): {ranges,
+// consumeTo, newInit (where another init begins, or -1)}.
+export function webmClusters(data, force) {
+    const ranges = [];
+    let at = 0;
+    while (at < data.length) {
+        const e = ebml(data, at);
+        if (!e || e.bad) break;
+        if (e.id === EBML_HEADER) return { ranges, consumeTo: at, newInit: at };
+        if (e.end >= 0) {
+            if (e.end > data.length) break;
+            if (e.id === WEBM_CLUSTER) ranges.push([at, e.end]);
+            at = e.end;
+            continue;
+        }
+        if (e.id !== WEBM_CLUSTER) break;
+        let end = -1, c = e.data;
+        while (c < data.length) {
+            const k = ebml(data, c);
+            if (!k || k.bad) break;
+            if (WEBM_TOP.has(k.id)) { end = c; break; }
+            if (k.end < 0 || k.end > data.length) break;
+            c = k.end;
+        }
+        if (end < 0 && force && c === data.length) end = c;
+        if (end < 0) break;
+        ranges.push([at, end]);
+        at = end;
+    }
+    return { ranges, consumeTo: at, newInit: -1 };
+}
+const startsWebm = (data) => data.length >= 4 && [WEBM_CLUSTER, EBML_HEADER].includes(((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]) >>> 0);
 
 // splitMp4 turns concatenated fMP4 appends into { progressive } or { init, parts }.
 export function splitMp4(data) {
@@ -130,7 +233,17 @@ export function createCapture({ spill, onRestart } = {}) {
         spillError = null;
         throw error;
     };
-    const unsupported = () => [...tracks.values()].some(t => t.mime && !/^(audio|video)\/mp4(?:\s*;|$)/i.test(t.mime));
+    // Not saved: a track neither MP4 nor WebM, or both kinds together.
+    const unsupported = () => {
+        const kinds = new Set();
+        for (const t of tracks.values()) {
+            if (!t.mime) continue;
+            const kind = /^(audio|video)\/(mp4|webm)(?:\s*;|$)/i.exec(t.mime)?.[2]?.toLowerCase();
+            if (!kind) return true;
+            kinds.add(kind);
+        }
+        return kinds.size > 1;
+    };
     let spilledProgressive = 0, spilledParts = 0, unsaved = false;
     let generation = 0;  // restarts: a spill of an earlier one doesn't count
     let spillChain = Promise.resolve();
@@ -193,8 +306,60 @@ export function createCapture({ spill, onRestart } = {}) {
         full = localHeld() > MSE_CAPTURE_LIMIT;
     };
 
+    // parseWebm moves a WebM track's init, then its complete clusters, from
+    // t.buf into init / parts.
+    const parseWebm = (t, force) => {
+        if (encrypted || !t.buf.length) return;
+        if (!t.spilledInit && !t.init) {
+            const at = webmInit(t.buf);
+            if (at.encrypted) return setEncrypted();
+            if (at.encoded) {
+                incomplete = true;  // (encoded otherwise: not saveable)
+                return;
+            }
+            if (!at.end) return;
+            t.mode = "webm";
+            t.init = t.buf.subarray(0, at.end);
+            t.initCopy = t.init;
+            setBuf(t, t.buf.subarray(at.end));
+            return parseWebm(t, force);
+        }
+        const { ranges, consumeTo, newInit } = webmClusters(t.buf, force);
+        for (const [start, end] of ranges) {
+            const piece = t.buf.subarray(start, end);
+            t.parts.push({ bytes: piece, offset: t.offset, windowStart: t.windowStart, windowEnd: t.windowEnd });
+            t.partsBytes += piece.length;
+            if (t.offset !== 0 || t.windowStart !== 0 || t.windowEnd !== Infinity) incomplete = true;
+        }
+        setBuf(t, t.buf.subarray(consumeTo));
+        if (newInit < 0) return;
+        // Another init (a quality switch): the same again, let go; else,
+        // as an fMP4's, the session begun again from it.
+        const at = webmInit(t.buf);
+        if (at.encrypted) return setEncrypted();
+        if (!at.end) return;
+        const again = t.buf.subarray(0, at.end);
+        if (t.initCopy && again.length === t.initCopy.length && again.every((v, i) => v === t.initCopy[i])) {
+            setBuf(t, t.buf.subarray(at.end));
+            return parseWebm(t, force);
+        }
+        if (sealed) {
+            incomplete = true;
+            return;
+        }
+        t.init = again;
+        t.initCopy = again;
+        t.spilledInit = false;
+        t.parts = [];
+        t.partsBytes = 0;
+        setBuf(t, t.buf.subarray(at.end));
+        restart(t);
+        return parseWebm(t, force);
+    };
+
     // parseTrack moves complete boxes from t.buf into init / parts / progressiveReady.
     const parseTrack = (t, force = false) => {
+        if (/webm/i.test(t.mime)) return parseWebm(t, force);
         if (encrypted || !t.buf.length) return;
         if (mp4Encrypted(t.buf)) {
             setEncrypted();
@@ -331,7 +496,6 @@ export function createCapture({ spill, onRestart } = {}) {
             return true;
         };
         for (const [index, t] of tracks) {
-            if (/webm/i.test(t.mime)) continue;
             parseTrack(t, force);
             if (encrypted) return;
 
@@ -350,7 +514,7 @@ export function createCapture({ spill, onRestart } = {}) {
                 continue;
             }
 
-            if (t.mode !== "fmp4") continue;
+            if (t.mode !== "fmp4" && t.mode !== "webm") continue;
 
             // Spill init as soon as at least one part is ready (or on force).
             if (t.init && !t.spilledInit && (t.parts.length > 0 || spilledParts > 0 || force)) {
@@ -392,7 +556,7 @@ export function createCapture({ spill, onRestart } = {}) {
                 t.progressiveReady = [];
                 t.progressiveBytes = 0;
                 t.buf = new Uint8Array(0);
-            } else if (t.mode === "fmp4" && t !== kept) {
+            } else if ((t.mode === "fmp4" || t.mode === "webm") && t !== kept) {
                 t.spilledInit = false;
                 t.init = t.initCopy;
             }
@@ -462,16 +626,17 @@ export function createCapture({ spill, onRestart } = {}) {
         },
         append(index, bytes, offset = 0, windowStart = 0, windowEnd = Infinity) {
             if (encrypted || !(bytes instanceof Uint8Array) || !bytes.length) return;
-            if (mp4Encrypted(bytes)) {
+            const t = trackOf(index);
+            const webm = /webm/i.test(t.mime);
+            if (!webm && mp4Encrypted(bytes)) {
                 setEncrypted();
                 return;
             }
-            const t = trackOf(index);
-            if (/webm/i.test(t.mime) || t.mode === "lost") return;
+            if (t.mode === "lost") return;
             if (t.offset !== offset || t.windowStart !== windowStart || t.windowEnd !== windowEnd) {
                 // Attribute all complete fragments already buffered to the old offset.
                 parseTrack(t, true);
-                if (t.mode === "fmp4" && t.buf.length) incomplete = true;
+                if ((t.mode === "fmp4" || t.mode === "webm") && t.buf.length) incomplete = true;
                 t.offset = offset;
                 t.windowStart = windowStart;
                 t.windowEnd = windowEnd;
@@ -506,7 +671,7 @@ export function createCapture({ spill, onRestart } = {}) {
                 return;
             }
             if (t.resync) {
-                if (!startsFragment(bytes)) return;
+                if (!(webm ? startsWebm(bytes) : startsFragment(bytes))) return;
                 t.resync = false;
             }
             const next = new Uint8Array(t.buf.length + bytes.length);
@@ -535,10 +700,10 @@ export function createCapture({ spill, onRestart } = {}) {
             if (encrypted || incomplete || unsupported()) return false;
             if (unsaved && (spilledProgressive > 0 || spilledParts > 0)) return true;
             for (const t of tracks.values()) {
-                if (/webm/i.test(t.mime)) return false;
                 if (t.mode === "lost") continue;
                 if (t.mode === "progressive" && t.progressiveBytes > 0) return true;
                 if ((t.spilledInit || t.init) && t.parts.length > 0) return true;
+                if (/webm/i.test(t.mime)) continue;
                 try {
                     if (!t.buf.length) continue;
                     const split = splitMp4(t.buf);

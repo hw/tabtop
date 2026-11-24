@@ -2,9 +2,9 @@ package main
 
 // A page's embedded pages from other origins (see docs/browser-plan.md,
 // section 6). Each is read in an isolated world and matched to its iframe
-// in the parent document. The frame tree is followed through two levels;
-// nested snapshots are attached to their iframe copies, while changes and
-// input carry the owner-ID chain back to the correct frame world.
+// in the parent document. The frame tree is followed through goFramesDepth
+// levels; nested snapshots are attached to their iframe copies, while
+// changes and input carry the owner-ID chain back to the correct frame world.
 //
 // Once a second, while a page is shown: the page's frames are listed
 // (Page.getFrameTree); a new one is matched to its iframe (DOM.getFrameOwner,
@@ -24,6 +24,7 @@ var errGoFrameGone = errors.New("the frame's document went")
 
 const (
 	goFramesMax    = 16              // other origins' frames read for a page
+	goFramesDepth  = 3               // cross-origin iframe nesting discovered
 	goFrameLimit   = 2 << 20         // one frame's document, read
 	goFramesBytes  = 4 << 20         // a tab's frames sent in a second
 	goFramesEvery  = time.Second     // how often frames are looked at
@@ -56,6 +57,8 @@ type goFrameRead struct {
 	world           int
 	doc             []byte // its snapshot, if read
 	changed         bool
+	clip            goClipboardOut // what its page copied, asked to read (goclipboard.go)
+	streams         string         // its streams' commands (goframestreams.go)
 }
 
 type goCDPFrame struct {
@@ -135,6 +138,14 @@ func (b *goBrowser) readFrames(world int, main string, known map[string]goChild)
 					r.doc, r.world, r.changed = b.readFrame(fctx, f.Frame.ID, r.world, c.due || !had)
 					fcancel()
 				}
+				// What it copied, each round, however long it waits to be
+				// read again (a copy's only passed on soon after the press).
+				if r.world != 0 {
+					fctx, fcancel := context.WithTimeout(context.Background(), goFrameTimeout)
+					r.clip = b.frameCopied(fctx, r.world)
+					r.streams = b.frameStreams(fctx, r.world)
+					fcancel()
+				}
 			}
 			out = append(out, r)
 			childWorld := parentWorld
@@ -145,7 +156,7 @@ func (b *goBrowser) readFrames(world int, main string, known map[string]goChild)
 			// owner not found, its read failed), none looked for, as a
 			// context of 0 could be the page's own, where the page could
 			// answer for the agent (goAgentJS's frameOwner).
-			if depth < 2 && childWorld != 0 {
+			if depth < goFramesDepth && childWorld != 0 {
 				walk(f.ChildFrames, f.Frame.ID, childWorld, depth+1)
 			}
 		}
@@ -251,6 +262,21 @@ func (b *goBrowser) readFrame(ctx context.Context, frame string, world int, whol
 	return doc, world, true
 }
 
+// frameCopied is what the page in a frame's world copied, and its reads of
+// the clipboard, since it was last asked.
+func (b *goBrowser) frameCopied(ctx context.Context, world int) goClipboardOut {
+	var r struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	var out goClipboardOut
+	if b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"expression": "globalThis.__tabtop?.copied?.() ?? \"\"", "contextId": world, "returnByValue": true}, &r) == nil && r.Result.Value != "" {
+		json.Unmarshal([]byte(r.Result.Value), &out)
+	}
+	return out
+}
+
 // goFrameDoc is a frame's snapshot, if it's within the limit.
 func goFrameDoc(raw string) []byte {
 	if raw == "" || len(raw) > goFrameLimit {
@@ -276,6 +302,8 @@ func (b *goBrowser) framesRead(reads []goFrameRead) {
 	}
 	for _, r := range reads {
 		seen[r.id] = true
+		b.clipboard(b.gen, r.world, r.clip)
+		b.frameStreamsGot(b.gen, r.world, r.streams)
 		c := b.children[r.id]
 		if c == nil {
 			c = &goChild{due: true}

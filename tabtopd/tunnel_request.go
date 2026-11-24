@@ -45,6 +45,8 @@ type tunnelRequest struct {
 	// Copy: a transfer copies, leaving what's at Path, rather than moves.
 	Copy bool `json:"copy,omitempty"`
 
+	ViewerCaps goViewerCaps `json:"viewerCaps,omitzero"` // APIs available on the /go viewer
+
 	// --- Files ---
 	Path string `json:"path,omitempty"`
 	Name string `json:"name,omitempty"` // upload, mkdir, create: the file's or folder's name, in the folder at Path; rename: the new name; end-session: the session's handle; go-cookies-forget, go-settings, go-site-data(-delete): the site

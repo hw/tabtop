@@ -174,6 +174,7 @@ func (g *server) routeGo(c *tunnelCall) {
 		return
 	}
 	b := newGoBrowser(e, cdp, page, target)
+	b.viewerCaps = c.req.ViewerCaps
 	onAd := b.adCounted
 	e.proxy.onAd.Store(&onAd)    // counted for the page (goadblock.go)
 	e.proxy.certs.Store(b.certs) // its certificate exceptions' guard (gocert.go)
