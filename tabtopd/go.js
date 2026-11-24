@@ -1847,6 +1847,9 @@ function message(m) {
         case "go-device":
             if (m.gen === shown) devices.ask(m);
             break;
+        case "go-fs-read":
+            if (m.gen === shown && typeof m.transfer === "string") stageFSFile(m);
+            break;
         case "go-copy":
             // What the page copied (a Copy button's), after the person's
             // press there (goclipboard.go): on their clipboard.
@@ -2075,9 +2078,11 @@ window.addEventListener("message", (e) => {
             if (typeof m.url === "string" && /^https?:\/\//i.test(m.url)) load(m.url);
             break;
         case "event":
-            // (The person's own use of the page, as a download's said to
-            // follow from it: pageDownload.)
-            if (["click", "key", "mouse", "touch", "submit", "change", "input"].includes(m.kind)) lastPageInput = Date.now();
+            // (The person's own press on the page, as a download's said to
+            // follow from it: pageDownload. A press, not a pointer moved
+            // or a field's text changed.)
+            if (["click", "submit"].includes(m.kind) || (m.kind === "key" && m.phase === "down" && !m.repeat) ||
+                (m.kind === "mouse" && m.phase === "down") || (m.kind === "touch" && m.phase === "end")) lastPageInput = Date.now();
             // Esc, while the page's fullscreen: the browser's, leaving it
             // (the page isn't given it, as browsers don't).
             if (pageFullScreen && m.kind === "key" && m.key === "Escape") {
@@ -2354,9 +2359,11 @@ async function sendDropped(token) {
 }
 // sendFile sends file to the server for chooser c, in chunks, each
 // answered, as an upload into Files is (requests.js).
-async function sendFile(file, c, progress) {
+async function sendFile(file, c, progress, fsTransfer = false) {
     const CHUNK = 256 * 1024, WINDOW = 16;
-    const t = await call({ type: "go-upload", go_tab: resumeToken.get(), chooser: c.token, name: file.name, size: file.size, modified: file.lastModified });
+    const t = await call(fsTransfer
+        ? { type: "go-fs-upload", go_tab: resumeToken.get(), transfer: c.token, size: file.size, modified: file.lastModified }
+                : { type: "go-upload", go_tab: resumeToken.get(), chooser: c.token, name: file.name, size: file.size, modified: file.lastModified });
     try {
         const chunks = Math.ceil(file.size / CHUNK);
         let sent = 0, acked = 0;
@@ -2377,6 +2384,18 @@ async function sendFile(file, c, progress) {
         }
     } finally {
         t.close();
+    }
+}
+async function stageFSFile(m) {
+    try {
+        const file = await devices.fileForRead(m);
+        if (!file || ws !== deviceContext().socket || gen !== m.gen) throw new Error("The selected file handle expired.");
+        await sendFile(file, { token: m.transfer }, n => show(`Staging ${file.name} for the page… ${file.size ? Math.floor(n / file.size * 100) : 100}%`), true);
+        show("");
+    } catch (err) {
+        show("");
+        warn(`The selected file couldn't be staged for the page: ${err.message}`);
+        try { ws?.send(JSON.stringify({ op: "go-fs-cancel", gen: m.gen, text: m.transfer })); } catch { /* connection gone */ }
     }
 }
 // saveFile saves url into Downloads, saying how it goes (say: where, as
@@ -2648,7 +2667,10 @@ function pageDownload(stream, name) {
         warn(`The page made ${what} to download, but Files is off: nowhere to save it.`, { error: false });
         return;
     }
+    // Saved at once only as the press's one download (taken: the next
+    // asked of the person, as a page saving many at once is).
     if (Date.now() - lastPageInput < 10000) {
+        lastPageInput = 0;
         saveMSECapture(stream);
         return;
     }

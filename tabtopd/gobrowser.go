@@ -194,6 +194,7 @@ type goBrowser struct {
 	devicePolicy, devicePolicyURL string
 	viewerCaps                    goViewerCaps
 	device                        *goDevicePending
+	fs                            goFileSystem
 	pip                           *goDevicePending
 	imagePaste                    *goImagePaste
 	// The script telling pages what the person's browser can do (godevice.go:
@@ -473,6 +474,7 @@ type goClientMsg struct {
 	// res of media: the range of it (Length 0: its first byte, to learn
 	// of it), and the file as it was opened.
 	Offset  int64  `json:"offset"`
+	Size    int64  `json:"size"`
 	Length  int64  `json:"length"`
 	IfSize  int64  `json:"if_size"`
 	IfMtime string `json:"if_mtime"`
@@ -945,6 +947,10 @@ func (b *goBrowser) run() {
 				b.notifyEvent(m) // one shown, clicked or closed
 			case "device-answer":
 				b.deviceAnswer(m)
+			case "go-fs-cancel":
+				if m.Gen == b.gen {
+					b.abortFSRead(m.Text)
+				}
 			case "paste-image":
 				b.pasteImage(m)
 			case "fullscreen-exit":

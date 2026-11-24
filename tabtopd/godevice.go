@@ -16,6 +16,7 @@ type goViewerCaps struct {
 	ShareFiles bool `json:"shareFiles"`
 	Location   bool `json:"location"`
 	PiP        bool `json:"pip"`
+	FileSystem bool `json:"fileSystem"`
 }
 
 // goShareFile is a file the page shares (navigator.share({files})): its
@@ -39,6 +40,7 @@ type goDeviceAsk struct {
 	Node    int               `json:"node"`
 	Data    map[string]string `json:"data"`
 	Files   []goShareFile     `json:"files"`
+	FS      *goFSRequest      `json:"fs,omitempty"`
 	Options struct {
 		High    bool   `json:"enableHighAccuracy"`
 		Age     uint32 `json:"maximumAge"`
@@ -97,6 +99,10 @@ func (b *goBrowser) devices(gen int, asks []goDeviceAsk) {
 			valid = valid && b.viewerCaps.PiP && a.Node > 0 && b.recentInput(gen, b.world)
 		case "pip-exit":
 			valid = valid && b.pip != nil && b.pip.gen == gen && b.pip.world == b.world
+		case "fs-open", "fs-save":
+			valid = valid && secure && b.viewerCaps.FileSystem && b.recentInput(gen, b.world) && validGoFSAsk(a.Kind, a.FS)
+		case "fs-read", "fs-begin", "fs-write", "fs-close", "fs-abort", "fs-truncate":
+			valid = valid && secure && b.viewerCaps.FileSystem && validGoFSAsk(a.Kind, a.FS)
 		default:
 			valid = false
 		}
@@ -107,8 +113,15 @@ func (b *goBrowser) devices(gen int, asks []goDeviceAsk) {
 			b.agentCall(b.world, "deviceReply", map[string]any{"id": a.ID, "error": reason})
 			continue
 		}
+		if a.Kind == "fs-read" {
+			b.fsReadRequest(gen, b.world, a.ID, a.FS)
+			continue
+		}
+		if a.Kind == "fs-close" {
+			b.fsWritten(a.FS.Handle)
+		}
 		b.device = &goDevicePending{a.ID, goToken(), a.Kind, gen, b.world, time.Now()}
-		b.send(map[string]any{"type": "go-device", "gen": gen, "ask": b.device.token, "origin": origin, "kind": a.Kind, "node": a.Node, "data": a.Data, "files": a.Files, "options": a.Options})
+		b.send(map[string]any{"type": "go-device", "gen": gen, "ask": b.device.token, "origin": origin, "kind": a.Kind, "node": a.Node, "data": a.Data, "files": a.Files, "options": a.Options, "fs": a.FS})
 	}
 }
 
@@ -163,7 +176,7 @@ func (b *goBrowser) deviceAnswer(m goClientMsg) {
 	switch {
 	case !m.Accept || time.Since(p.at) > goPasteAskFor:
 		switch m.Value {
-		case "AbortError", "TimeoutError", "NotSupportedError", "InvalidStateError", "PositionUnavailableError", "DataError":
+		case "AbortError", "TimeoutError", "NotSupportedError", "InvalidStateError", "PositionUnavailableError", "DataError", "TypeError", "SecurityError", "NotFoundError", "NotReadableError", "QuotaExceededError":
 			reply["error"] = m.Value
 		default:
 			reply["error"] = "NotAllowedError"
@@ -186,6 +199,16 @@ func (b *goBrowser) deviceAnswer(m goClientMsg) {
 	case p.kind == "pip-exit":
 		b.pip = nil
 		reply["left"] = true
+	case strings.HasPrefix(p.kind, "fs-"):
+		fields, why := validateGoFSReply(p.kind, m.Value)
+		if why != "" {
+			reply["error"] = why
+		} else if (p.kind == "fs-open" || p.kind == "fs-save") && !b.rememberFSHandles(p.kind, m.Value, p.gen, p.world) {
+			reply["error"] = "DataError"
+		}
+		for key, value := range fields {
+			reply[key] = value
+		}
 	}
 	b.agentCall(p.world, "deviceReply", reply)
 }
@@ -388,4 +411,5 @@ func (b *goBrowser) releaseDevices() {
 		b.agentCall(w.world, "deviceReply", map[string]any{"watch": true, "ended": true})
 	}
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
+	b.resetFileSystem()
 }

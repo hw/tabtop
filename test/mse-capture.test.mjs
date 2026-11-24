@@ -245,3 +245,106 @@ test("createCapture doesn't save an encrypted WebM stream, nor one appended at a
     assert.equal(offset.saveable(), false);
     await assert.rejects(offset.seal(), /missed/);
 });
+
+// An encrypted stream (EME). A Clear Key player's is spilled encrypted and
+// saved decrypted by the server, once its keys have come; one whose keys a
+// CDM keeps never is. (go-media.js tells the capture: expectKeys, markKeys.)
+const KID = "a7e61c373e219033c21091fa607bf3b8", KEY = "76a6c65c5ea762046bd749a2e632ccbb";
+const encInit = () => {
+    const stsd = box("stsd", concat(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]), box("encv", new Uint8Array(78))));
+    return concat(box("ftyp"), box("moov", box("trak", box("mdia", box("minf", box("stbl", stsd))))));
+};
+const encPart = () => concat(box("moof", box("traf", box("senc"))), box("mdat", Uint8Array.of(1, 2, 3)));
+const keyFrame = (ev) => JSON.parse(new TextDecoder().decode(ev.bytes));
+
+test("a Clear Key player's encrypted stream is spilled as it plays, is saveable once its keys come, and its keys go to each session's stage", async () => {
+    const spilled = [];
+    const cap = createCapture({ spill: async (ev) => { spilled.push(ev); } });
+    cap.append(0, encInit());
+    assert.equal(cap.encrypted, true);
+    assert.equal(cap.armed, false);
+    cap.append(0, encPart());
+    await cap.flush();
+    assert.deepEqual(spilled, [], "nothing spilled to a stage while its player's key system isn't known");
+
+    cap.expectKeys();  // (its player attached Clear Key MediaKeys)
+    assert.equal(cap.armed, true);
+    await cap.flush();
+    assert.deepEqual(spilled.map((ev) => [ev.kind, ev.track]), [["init", 0], ["part", 0]], "what it held is spilled, encrypted: its keys are coming");
+    assert.equal(cap.keysKnown, false);
+    assert.equal(cap.saveable(), false, "not saveable without its keys");
+
+    cap.markKeys({ [KID]: KEY });
+    assert.equal(cap.keysKnown, true);
+    await cap.flush();
+    const key = spilled.filter((ev) => ev.kind === "key");
+    assert.equal(key.length, 1, "its key, once");
+    assert.deepEqual(keyFrame(key[0]), { kid: KID, key: KEY });
+    assert.equal(cap.saveable(), true);
+    await cap.seal();
+    assert.equal(cap.bytes, 0, "all spilled");
+
+    // A save takes the session: spills go on to a new one's, the key first.
+    spilled.length = 0;
+    cap.sessionTaken();
+    cap.append(0, encPart());
+    await cap.flush();
+    assert.deepEqual(spilled.map((ev) => ev.kind), ["key", "init", "part"]);
+});
+
+test("an encrypted stream whose keys a CDM keeps is spilled nothing, and isn't saveable", async () => {
+    const spilled = [];
+    const cap = createCapture({ spill: async (ev) => { spilled.push(ev.kind); } });
+    cap.append(0, encInit());
+    cap.markEncrypted();  // (its element's encrypted event: its player asked for keys)
+    cap.append(0, encPart());
+    await cap.flush();
+    await cap.end();
+    assert.deepEqual(spilled, []);
+    assert.equal(cap.encrypted, true);
+    assert.equal(cap.keysKnown, false);
+    assert.equal(cap.saveable(), false);
+    await assert.rejects(cap.seal(), /without their keys/);
+});
+
+test("with its keys, an encrypted stream still isn't saved as a WebM track, a whole file, or appended in a seek window", async () => {
+    const keys = { [KID]: KEY };
+    const webm = createCapture({ spill: async () => {} });
+    webm.add(0, 'video/webm; codecs="vp9"');
+    webm.expectKeys();
+    webm.markKeys(keys);
+    webm.append(0, concat(webmHead(el(0x6D80, el(0x6240, el(0x5035)))), cluster(0)));
+    await webm.flush();
+    assert.equal(webm.keysKnown, true);
+    assert.equal(webm.saveable(), false);
+    await assert.rejects(webm.seal(), /encrypted WebM stream/);
+
+    // A whole encrypted file (its samples in one mdat, not in fragments
+    // to decrypt).
+    const wholeSpilled = [];
+    const whole = createCapture({ spill: async (ev) => { wholeSpilled.push(ev.kind); } });
+    whole.expectKeys();
+    whole.markKeys(keys);
+    whole.append(0, concat(encInit(), box("mdat", Uint8Array.of(9))));
+    await whole.flush();
+    assert.equal(whole.encrypted, true);
+    assert.equal(whole.saveable(), false);
+    assert.deepEqual(wholeSpilled, [], "nothing of it staged");
+    await assert.rejects(whole.seal(), /whole file/);
+
+    // A player that seeks: what it appends then is within an append window.
+    let letGo = 0;
+    const seeked = createCapture({ spill: async () => {}, onRestart: () => { letGo++; } });
+    seeked.expectKeys();
+    seeked.markKeys(keys);
+    seeked.append(0, encInit());
+    seeked.append(0, encPart());
+    await seeked.flush();
+    assert.equal(seeked.saveable(), true);
+    seeked.append(0, encPart(), 0, 10, 20);
+    await seeked.flush();
+    assert.equal(seeked.saveable(), false);
+    assert.equal(seeked.bytes, 0, "what it held let go");
+    assert.equal(letGo, 1, "its stage let go");
+    await assert.rejects(seeked.seal(), /seek window/);
+});

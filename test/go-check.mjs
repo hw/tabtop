@@ -14,6 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createBrowserHarness, sleep } from "./browser/harness.mjs";
+// The same box walk the viewer's capture tells an encrypted stream by
+// (mse-capture.js): here of the file saved from a Clear Key stream, which
+// mustn't be.
+import { mp4Encrypted } from "../tabtopd/mse-capture.js";
 
 const [mode, ...args] = process.argv.slice(2);
 
@@ -257,7 +261,7 @@ document.getElementById("stop").onclick = () => { navigator.geolocation.clearWat
         // Files the page makes to be downloaded (gomedia.js): a CSV made as
         // its button's pressed (a link made, clicked, let go), a picture's
         // link (data:), and the CSV made long after its press.
-        "export.html": `<!doctype html><title>Export</title><button id="csv">Export CSV</button> <a id="png" download="dot.png" href="data:image/png;base64,${png(2, 2, [10, 200, 90]).toString("base64")}">Download the picture</a> <button id="later">Export later</button><p id="log"></p>
+        "export.html": `<!doctype html><title>Export</title><button id="csv">Export CSV</button> <a id="png" download="dot.png" href="data:image/png;base64,${png(2, 2, [10, 200, 90]).toString("base64")}">Download the picture</a> <button id="later">Export later</button> <button id="two">Export twice</button><p id="log"></p>
 <script>
 const csv = () => {
     const url = URL.createObjectURL(new Blob(["name,count\\nalpha,1\\nbeta,2\\n"], { type: "text/csv" }));
@@ -272,6 +276,7 @@ const csv = () => {
 };
 document.getElementById("csv").onclick = csv;
 document.getElementById("later").onclick = () => setTimeout(csv, 11000);
+document.getElementById("two").onclick = () => { csv(); setTimeout(csv, 1500); };
 </script>`,
         // Files shared (godevice.js: navigator.share({files})), and a link.
         "share.html": `<!doctype html><title>Share</title><button id="share">Share</button> <button id="link">Share a link</button><p id="log"></p>
@@ -281,6 +286,42 @@ const files = () => [new File(["hello from the page"], "note.txt", { type: "text
 log("canShare " + navigator.canShare({ files: files() }));
 document.getElementById("share").onclick = () => navigator.share({ title: "Notes", files: files() }).then(() => log("shared"), (e) => log("failed " + e.name));
 document.getElementById("link").onclick = () => navigator.share({ url: "https://example.com/" }).then(() => log("shared link"), (e) => log("failed " + e.name));
+</script>`,
+        // File System Access (godevice.js, gofs.go): a file opened and read,
+        // and one saved (a string, a Blob at a position, 100 KB in many
+        // pieces, a truncate), then read back from its handle.
+        "fsa.html": `<!doctype html><title>Pickers</title><button id="open">Open</button> <button id="save">Save</button><p id="log"></p>
+<script>
+const log = (t) => { document.getElementById("log").textContent += t + ";"; };
+log("pickers " + (typeof showOpenFilePicker) + " " + (typeof showSaveFilePicker));
+document.getElementById("open").onclick = async () => {
+    try {
+        const [h] = await showOpenFilePicker({ types: [{ description: "Text", accept: { "text/plain": [".txt"] } }] });
+        const f = await h.getFile();
+        log("read " + h.kind + " " + f.name + " " + f.size + " " + (f instanceof File) + " " + JSON.stringify(await f.text()));
+        const again = await h.getFile();
+        log("again " + JSON.stringify(await again.text()));
+    } catch (e) { log("failed " + e.name + " " + e.message); }
+};
+document.getElementById("save").onclick = async () => {
+    try {
+        const h = await showSaveFilePicker({ suggestedName: "out.txt" });
+        const w = await h.createWritable();
+        await w.write("hello ");
+        await w.write({ type: "write", position: 6, data: new Blob(["world"]) });
+        const big = new Uint8Array(100000);
+        for (let i = 0; i < big.length; i++) big[i] = i % 251;
+        await w.write(big);
+        await w.write("TAIL-cut");
+        await w.truncate(11 + big.length + 4);
+        await w.close();
+        const f = await h.getFile();
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        let sum = 0;
+        for (const b of bytes) sum = (sum * 31 + b) >>> 0;
+        log("saved " + h.name + " " + f.size + " " + sum);
+    } catch (e) { log("failed " + e.name + " " + e.message); }
+};
 </script>`,
         "copyframe.html": `<!doctype html><button id="b" style="width:100%;height:60px">Copy here</button>
 <script>document.getElementById("b").onclick = () => { document.addEventListener("copy", (e) => { e.clipboardData.setData("text/plain", "copied in another origin's frame"); e.preventDefault(); }, { once: true }); document.execCommand("copy"); };</script>`,
@@ -1173,9 +1214,14 @@ if (fs.existsSync("/srv/cert.pem")) require("https").createServer({ key: fs.read
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
         "-c:a", "libopus", "-f", "webm", join(dir, "stream-a.webm")]);
     writeFileSync(join(dir, "part.m4s"), fragmented.subarray(split));
-    // The same stream encrypted, for a Clear Key player (eme.html): its key
-    // and key ID eme.html's.
-    writeFileSync(join(dir, "enc.mp4"), cenc(fragmented, "76a6c65c5ea762046bd749a2e632ccbb", "a7e61c373e219033c21091fa607bf3b8"));
+    // A stream encrypted (CENC) for a Clear Key player (eme.html), with the
+    // key and key ID eme.html's: its own clip, 4 s, so the file saved from
+    // it decrypted is told from the clear stream's saves (go-check.sh).
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "4",
+        "-c:v", "libx264", "-profile:v", "baseline", "-level:v", "1.2", "-pix_fmt", "yuv420p",
+        "-movflags", "+empty_moov+frag_keyframe+default_base_moof", join(dir, "enc-clear.mp4")]);
+    writeFileSync(join(dir, "enc.mp4"), cenc(readFileSync(join(dir, "enc-clear.mp4")), "76a6c65c5ea762046bd749a2e632ccbb", "a7e61c373e219033c21091fa607bf3b8"));
+    rmSync(join(dir, "enc-clear.mp4"));
     writeFileSync(join(dir, "pic2.png"), png(8, 8, [30, 30, 200]));
     writeFileSync(join(dir, "favicon.ico"), png(16, 16, [30, 160, 60]));  // (a PNG, as many sites' are)
     writeFileSync(join(dir, "font.ttf"), systemFont());
@@ -3963,7 +4009,7 @@ async function check(base, port, site, adSite) {
         }
     });
 
-    if (process.env.GO_NO_FS !== "1") await step("files the page makes to be downloaded (a link with download to a blob: or data: address): saved into Downloads after a press, asked first long after one", async () => {
+    if (process.env.GO_NO_FS !== "1") await step("files the page makes to be downloaded (a link with download to a blob: or data: address): saved into Downloads after a press (one a press), asked first long after one", async () => {
         await goTo(site + "export.html", "Export");
         await frameWait(`!!document.getElementById("later")`, "its buttons");
         const notice = `document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p").textContent`;
@@ -3992,6 +4038,13 @@ async function check(base, port, site, adSite) {
         const later = await saved(/Saved report.*\.csv into Downloads/, "saved once allowed");
         if (later === first) throw new Error("saved over the first");
         holds(later, csv);
+        // Two made by one press: the first saved, the second asked first
+        // (a press is one download's, not a page's many).
+        await ev(`document.getElementById("go_notice").hidden = true`);
+        await frameClick("#two");
+        const once = await saved(/Saved report.*\.csv into Downloads/, "the press's download saved");
+        await waitFor(`/wants to save report\.csv/.test(${notice})`, "the second asked first", 20000).catch(async (err) => { throw new Error(`${err.message}: the notice: ${await ev(notice)}`); });
+        if ([first, later].includes(once)) throw new Error("saved over an earlier one");
     });
 
     await step("a scrolling video feed releases old players and honors the page's dimensions", async () => {
@@ -4828,6 +4881,79 @@ async function check(base, port, site, adSite) {
             await ev(`document.querySelector("#go_device .allow").click()`);
             await frameWait(`/shared link;/.test(document.getElementById("log")?.textContent ?? "")`, "the link shared", 15000);
             if (JSON.parse(await ev(`window.__shared`)).url !== "https://example.com/") throw new Error(`shared ${await ev(`window.__shared`)}`);
+        } finally {
+            await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+            await reload().catch(() => {});
+        }
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("files opened and saved by the page (showOpenFilePicker, showSaveFilePicker): asked, this browser's pickers given its types, read and written through the engine", async () => {
+        // This browser's pickers stood in for (headless, they'd wait on a
+        // dialog): a file to open, and a destination kept in memory.
+        const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+            if (window !== top) return;
+            window.showOpenFilePicker = async (opts) => {
+                window.__openOpts = JSON.stringify(opts);
+                return [{ kind: "file", name: "notes.txt", getFile: async () => new File(["hello from your device"], "notes.txt", { type: "text/plain", lastModified: 1700000000000 }) }];
+            };
+            window.showSaveFilePicker = async (opts) => {
+                window.__saveOpts = JSON.stringify(opts);
+                let data = new Uint8Array(0);
+                const h = { kind: "file", name: opts.suggestedName, getFile: async () => new File([data], h.name, { type: "text/plain" }),
+                    createWritable: async ({ keepExistingData } = {}) => {
+                        let buf = keepExistingData ? data.slice() : new Uint8Array(0);
+                        return {
+                            write: async (p) => {
+                                const end = p.position + p.data.length;
+                                if (end > buf.length) { const n = new Uint8Array(end); n.set(buf); buf = n; }
+                                buf.set(p.data, p.position);
+                            },
+                            truncate: async (size) => { const n = new Uint8Array(size); n.set(buf.subarray(0, size)); buf = n; },
+                            close: async () => { data = buf; window.__saved = data.length; },
+                            abort: async () => {},
+                        };
+                    } };
+                return h;
+            };
+        })()` });
+        const reload = async () => {
+            await ev(`(() => { window.__leaving = true; location.reload(); })()`);
+            await waitFor(`!window.__leaving && document.readyState === "complete" && document.getElementById("go_progress")?.hidden`, "/go again", 30000);
+        };
+        const log = () => frame(`document.getElementById("log")?.textContent ?? ""`);
+        const logged = (re, what, ms = 30000) => frameWait(`${re}.test(document.getElementById("log")?.textContent ?? "")`, what, ms)
+            .catch(async (err) => { throw new Error(`${err.message}: the page: ${await log()}; asked: ${await ev(`document.getElementById("go_device_text").textContent`)}`); });
+        const allow = async (re) => {
+            await waitFor(`!document.getElementById("go_device").hidden && ${re}.test(document.getElementById("go_device_text").textContent)`, "asked", 20000)
+                .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`document.getElementById("go_device_text").textContent`)}; the page: ${await log()}`); });
+            await ev(`document.querySelector("#go_device .allow").click()`);
+        };
+        try {
+            await reload();
+            await goTo(site + "index.html", "Fixture");
+            await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:") + "fsa.html")}; i.form.requestSubmit(); })()`);
+            await waitFor(`document.title.startsWith("Pickers") || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+            if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+            await waitFor(`document.title.startsWith("Pickers")`, "the secure page", 30000);
+            await logged(/pickers function function;/, "the pickers given the page", 15000);
+            // Opened: the person asked, their picker given the page's types;
+            // the file read by the page (twice: staged once).
+            await frameClick("#open");
+            await allow(/wants to choose files/);
+            await logged(/read file notes\.txt 22 true "hello from your device";again "hello from your device";/, "the file read by the page");
+            const types = JSON.parse(await ev(`window.__openOpts`)).types;
+            if (JSON.stringify(types) !== JSON.stringify([{ description: "Text", accept: { "text/plain": [".txt"] } }])) throw new Error(`the picker given ${JSON.stringify(types)}`);
+            // Saved: written in pieces, cut, then read back from its handle.
+            await frameClick("#save");
+            await allow(/wants to choose where to save/);
+            let sum = 0;
+            const want = Buffer.concat([Buffer.from("hello world"), Buffer.from(Array.from({ length: 100000 }, (_, i) => i % 251)), Buffer.from("TAIL")]);
+            for (const b of want) sum = (sum * 31 + b) >>> 0;
+            const started = Date.now();
+            await logged(new RegExp(`saved out\\.txt ${want.length} ${sum};`), "the file saved and read back", 60000);
+            console.log(`     (saved ${want.length} bytes in ${Date.now() - started} ms)`);
+            if (JSON.parse(await ev(`window.__saveOpts`)).suggestedName !== "out.txt" || (await ev(`window.__saved`)) !== want.length) throw new Error(`saved as ${await ev(`window.__saveOpts`)}, ${await ev(`window.__saved`)} bytes`);
         } finally {
             await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
             await reload().catch(() => {});

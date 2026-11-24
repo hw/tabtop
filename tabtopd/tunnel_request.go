@@ -89,6 +89,7 @@ type tunnelRequest struct {
 	// go-upload: the chooser a file's for (gouploads.go), and its time
 	// (milliseconds since 1970, as a File's lastModified).
 	Chooser  string `json:"chooser,omitempty"`
+	Transfer string `json:"transfer,omitempty"`
 	Modified int64  `json:"modified,omitempty"`
 	// go-restart: the person's say-so, a passkey's (else Code, the
 	// password + code).

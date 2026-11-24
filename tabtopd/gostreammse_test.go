@@ -484,7 +484,7 @@ func TestMSEStageKeyFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A 32-byte key (AES-256) is one too, and a renewal replaces its key ID's.
-	if err := stage.appendFrame(store, 0, mseKindKey, []byte(`{"kid":"76a6c65c5ea762046bd749a2e632ccbb","key":"` + strings.Repeat("ab", 32) + `"}`)); err != nil {
+	if err := stage.appendFrame(store, 0, mseKindKey, []byte(`{"kid":"76a6c65c5ea762046bd749a2e632ccbb","key":"`+strings.Repeat("ab", 32)+`"}`)); err != nil {
 		t.Fatal(err)
 	}
 	in, _, err := m.takeMSEStage(stage)

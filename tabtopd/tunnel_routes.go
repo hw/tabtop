@@ -104,7 +104,8 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// What it keeps of what sites sent: emptied (gocache.go).
 	"go-cache-clear": other((*server).routeGoCacheClear),
 
-	"go-upload": other((*server).routeGoUpload), // a file for a page's file input
+	"go-upload":    other((*server).routeGoUpload),   // a file for a page's file input
+	"go-fs-upload": other((*server).routeGoFSUpload), // a picked file staged for a page's File handle
 
 	"go-restart":           other((*server).routeGoRestart), // every tab's engine, on the password + code or a passkey
 	"go-restart-challenge": other((*server).routeGoRestartChallenge),

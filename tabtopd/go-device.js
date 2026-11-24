@@ -4,12 +4,14 @@ export function viewerCapabilities() {
     let shareFiles = false;
     try { shareFiles = typeof navigator.canShare === "function" && navigator.canShare({ files: [new File(["x"], "x.txt", { type: "text/plain" })] }); } catch { /* none */ }
     return { share: typeof navigator.share === "function", shareFiles, location: !!navigator.geolocation,
-        pip: !!document.pictureInPictureEnabled && typeof HTMLVideoElement.prototype.requestPictureInPicture === "function" };
+        pip: !!document.pictureInPictureEnabled && typeof HTMLVideoElement.prototype.requestPictureInPicture === "function",
+        fileSystem: typeof window.showOpenFilePicker === "function" && typeof window.showSaveFilePicker === "function" };
 }
 
 export function viewerDevices(box, current, getVideo, getFile = async () => null) {
     const text = box.querySelector("p"), allow = box.querySelector(".allow");
     let pending, timer, activePiP, activeWatch;
+    const fsHandles = new Map();
     // A position followed: said while it is (the origin, Stop), as a
     // browser's location icon says it.
     const bar = globalThis.document?.getElementById("go_location") ?? null;
@@ -138,6 +140,51 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
                     if (activePiP && document.pictureInPictureElement === activePiP.video) await document.exitPictureInPicture();
                     finish(r, { accept: true });
                     break;
+                case "fs-open": {
+                    const files = await window.showOpenFilePicker(cleanPickerOptions(r.fs?.pickerOptions, true));
+                    if (!valid(r) || pending !== r) return;
+                    if (files.length > 32) throw new DOMException("At most 32 files can be opened at once", "NotSupportedError");
+                    const entries = [];
+                    for (const handle of files) {
+                        const file = await handle.getFile(), token = randomID();
+                        if (file.size > 512 << 20) throw new DOMException("Selected files are limited to 512 MiB each", "NotSupportedError");
+                        fsHandles.set(token, { handle, origin: r.origin, gen: r.gen });
+                        entries.push({ handle: token, name: file.name, type: file.type, size: file.size, lastModified: file.lastModified });
+                    }
+                    finish(r, { accept: true, value: JSON.stringify({ files: entries }) });
+                    break;
+                }
+                case "fs-save": {
+                    const handle = await window.showSaveFilePicker(cleanPickerOptions({ ...r.fs?.pickerOptions, suggestedName: r.fs?.name }, false));
+                    if (!valid(r) || pending !== r) return;
+                    const file = await handle.getFile();
+                    const token = randomID();
+                    fsHandles.set(token, { handle, writer: null, origin: r.origin, gen: r.gen });
+                    finish(r, { accept: true, value: JSON.stringify({ handle: token, name: handle.name, type: file.type, size: file.size, lastModified: file.lastModified }) });
+                    break;
+                }
+                case "fs-begin": case "fs-write": case "fs-close": case "fs-abort": case "fs-truncate": {
+                    // (A 0 offset or size is left out by the server: 0.)
+                    const fs = r.fs ?? {}, offset = fs.offset ?? 0, size = fs.size ?? 0;
+                    const session = fsHandles.get(fs.handle);
+                    if (!session || session.origin !== r.origin || session.gen !== r.gen) throw new DOMException("File handle expired", "NotAllowedError");
+                    if (r.kind === "fs-begin") {
+                        session.writer = await session.handle.createWritable({ keepExistingData: fs.value === "keep" });
+                        finish(r, { accept: true });
+                    } else if (r.kind === "fs-write") {
+                        if (!session.writer) throw new DOMException("Writable stream is not open", "InvalidStateError");
+                        await session.writer.write({ type: "write", position: offset, data: fromBase64(fs.value) });
+                        finish(r, { accept: true });
+                    } else if (r.kind === "fs-truncate") {
+                        if (!session.writer) throw new DOMException("Writable stream is not open", "InvalidStateError");
+                        await session.writer.truncate(size); finish(r, { accept: true });
+                    } else if (r.kind === "fs-close") {
+                        await session.writer?.close(); session.writer = null; finish(r, { accept: true });
+                    } else {
+                        await session.writer?.abort(); session.writer = null; finish(r, { accept: true });
+                    }
+                    break;
+                }
             }
         } catch (err) {
             const locationErrors = ["", "NotAllowedError", "PositionUnavailableError", "TimeoutError"];
@@ -154,6 +201,8 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
         unwatch();
         clearTimeout(timer);
         pending = null;
+        for (const session of fsHandles.values()) session.writer?.abort().catch(() => {});
+        fsHandles.clear();
         box.hidden = true;
         const video = activePiP?.video;
         if (activePiP) left(activePiP);
@@ -165,12 +214,19 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
         pending = r;
         timer = setTimeout(() => finish(r, { value: "TimeoutError" }), 115000);
         if (r.kind === "pip-exit" || r.kind === "location-stop") return void run(r);
+        if (["fs-begin", "fs-write", "fs-close", "fs-abort", "fs-truncate"].includes(r.kind)) {
+            const session = fsHandles.get(r.fs?.handle);
+            if (session && session.origin === r.origin && session.gen === r.gen) return void run(r);
+            return finish(r, { value: "NotAllowedError" });  // (a handle let go: not asked of the person)
+        }
         if (r.kind === "pip" && !getVideo(r.node)) return finish(r, { value: "InvalidStateError" });
         const labels = {
             share: ["wants to open your share sheet.", "Share"],
             location: ["wants your current location.", "Share location"],
             "location-watch": ["wants to follow your location (until you stop it, or leave the page).", "Share location"],
             pip: ["wants to show its video in picture-in-picture.", "Open video"],
+            "fs-open": ["wants to choose files from your device.", "Choose files"],
+            "fs-save": ["wants to choose where to save a file.", "Choose destination"],
         };
         const label = labels[r.kind];
         if (!label) return finish(r, { value: "NotSupportedError" });
@@ -200,7 +256,12 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
     function cancel() { if (pending) finish(pending, { value: pending.kind === "location" || pending.kind === "location-watch" ? "NotAllowedError" : "AbortError" }); }
     box.querySelector(".refuse").addEventListener("click", cancel);
     box.addEventListener("keydown", e => { if (e.key === "Escape") cancel(); });
-    return { ask, reset };
+    async function fileForRead(m) {
+        const session = fsHandles.get(m.handle);
+        if (!session || session.origin !== m.origin || session.gen !== m.gen) return null;
+        return session.handle.getFile();
+    }
+    return { ask, reset, fileForRead };
 }
 
 export async function sendPasteImage(m, current, warn) {
@@ -218,4 +279,37 @@ export async function sendPasteImage(m, current, warn) {
         send({ type: "chunk", value: btoa(String.fromCharCode(...bytes.subarray(at, at + chunk))) });
     }
     send({ type: "end" });
+}
+
+function randomID() { return Array.from(crypto.getRandomValues(new Uint32Array(3)), n => n.toString(36)).join(""); }
+function toBase64(bytes) {
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+}
+function fromBase64(value) {
+    if (typeof value !== "string" || value.length > 48 << 10 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) throw new DOMException("Invalid file data", "DataError");
+    const s = atob(value), bytes = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+    return bytes;
+}
+function cleanPickerOptions(options = {}, open) {
+    const result = { excludeAcceptAllOption: options.excludeAcceptAllOption === true };
+    if (open) result.multiple = options.multiple === true;
+    if (!open && typeof options.suggestedName === "string" && options.suggestedName) result.suggestedName = options.suggestedName.slice(0, 255);
+    // (No types: none given, or null, as the server passes none on.)
+    if (options.types != null && (!Array.isArray(options.types) || !options.types.length)) throw new DOMException("Invalid file types", "TypeError");
+    if (Array.isArray(options.types)) {
+        if (options.types.length > 16) throw new DOMException("Too many file types", "TypeError");
+        result.types = options.types.map(type => {
+            if (!type || type.description !== undefined && typeof type.description !== "string" || !type.accept || typeof type.accept !== "object") throw new DOMException("Invalid file type", "TypeError");
+            const accept = {};
+            for (const [mime, extensions] of Object.entries(type.accept)) {
+                if (!/^[\w!#$&^_.+-]+\/[\w!#$&^_.+-]+$/.test(mime) || !Array.isArray(extensions) || extensions.length > 32 || extensions.some(ext => typeof ext !== "string" || !/^\.[\w.-]{1,32}$/.test(ext))) throw new DOMException("Invalid file type", "TypeError");
+                accept[mime] = extensions;
+            }
+            return { ...(typeof type.description === "string" ? { description: type.description.slice(0, 128) } : {}), accept };
+        });
+    }
+    return result;
 }

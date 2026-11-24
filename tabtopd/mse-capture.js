@@ -228,7 +228,8 @@ function listBoxes(data) {
 // a progressive stream, whose start is gone with it, isn't saveable any more.
 export function createCapture({ spill, onRestart } = {}) {
     const tracks = new Map();
-    let encrypted = false, armed = false, keysKnown = false, webmEnc = false;
+    let encrypted = false, armed = false, keysKnown = false;
+    let refused = ""; // why it can't be saved, once it can't be at all (refuse)
     let full = false, ended = false, sealed = false;
     let incomplete = false, spillError = null;
     // A Clear Key stream's keys, as they came (its key ID in hex, its key
@@ -238,9 +239,9 @@ export function createCapture({ spill, onRestart } = {}) {
     let keysSent = false;
     // Spilling waits while the stream is encrypted and its keys may still
     // come (a Clear Key player's are given once its page's license has:
-    // expectKeys, markKeys); never, one whose keys a CDM keeps, or a WebM
-    // encrypted one's (neither is saved decrypted).
-    const maySpill = () => !webmEnc && (!encrypted || armed || keysKnown);
+    // expectKeys, markKeys); never, one whose keys a CDM keeps (it isn't
+    // saved: go.js says so at a Save).
+    const maySpill = () => !refused && (!encrypted || armed || keysKnown);
     const checkSpill = () => {
         if (!spillError) return;
         const error = spillError;
@@ -314,14 +315,24 @@ export function createCapture({ spill, onRestart } = {}) {
     // player asked for keys. Not refused by itself: a Clear Key stream's
     // keys are given it (markKeys) and it's saved decrypted; what it holds
     // is spilled once its keys may be known (maySpill), and it's saveable
-    // only once they are. A WebM one can't be decrypted at the save
-    // (gowebm.go takes no encrypted tracks): refused, what's held let go.
+    // only once they are. What can't be saved decrypted however its keys
+    // come is refused (refuse): a WebM track (gowebm.go takes no encrypted
+    // one), a whole file (its samples aren't in fragments to decrypt), or
+    // a fragment in an append window (the window's clipping would leave its
+    // samples' senc wrong).
     const setEncrypted = () => {
         encrypted = true;
+        for (const t of tracks.values()) {
+            if (t.mode === "progressive" || t.mode === "lost") return refuse("an encrypted whole file can't be saved");
+        }
     };
-    const setWebmEncrypted = () => {
-        encrypted = webmEnc = true;
+    // refuse gives up the stream for saving: why is said at a Save, what's
+    // held is let go, and its stage's (nothing more is spilled to it).
+    const refuse = (why) => {
+        if (refused) return;
+        refused = why;
         clearAll();
+        try { onRestart?.(); } catch { /* the session's let go regardless */ }
     };
 
     const setBuf = (t, next) => {
@@ -332,10 +343,13 @@ export function createCapture({ spill, onRestart } = {}) {
     // parseWebm moves a WebM track's init, then its complete clusters, from
     // t.buf into init / parts.
     const parseWebm = (t, force) => {
-        if (webmEnc || !t.buf.length) return;
+        if (refused || !t.buf.length) return;
         if (!t.spilledInit && !t.init) {
             const at = webmInit(t.buf);
-            if (at.encrypted) return setWebmEncrypted();
+            if (at.encrypted) {
+                setEncrypted();
+                return refuse("an encrypted WebM stream can't be saved");
+            }
             if (at.encoded) {
                 incomplete = true;  // (encoded otherwise: not saveable)
                 return;
@@ -359,7 +373,10 @@ export function createCapture({ spill, onRestart } = {}) {
         // Another init (a quality switch): the same again, let go; else,
         // as an fMP4's, the session begun again from it.
         const at = webmInit(t.buf);
-        if (at.encrypted) return setWebmEncrypted();
+        if (at.encrypted) {
+            setEncrypted();
+            return refuse("an encrypted WebM stream can't be saved");
+        }
         if (!at.end) return;
         const again = t.buf.subarray(0, at.end);
         if (t.initCopy && again.length === t.initCopy.length && again.every((v, i) => v === t.initCopy[i])) {
@@ -398,6 +415,7 @@ export function createCapture({ spill, onRestart } = {}) {
             else if (hasMdat) t.mode = "progressive";
             else return;
         }
+        if (t.mode === "progressive" && encrypted) return refuse("an encrypted whole file can't be saved");
 
         if (t.mode === "progressive") {
             const end = boxes[boxes.length - 1].end;
@@ -473,9 +491,6 @@ export function createCapture({ spill, onRestart } = {}) {
             const piece = t.buf.subarray(start, end);
             t.parts.push({ bytes: piece, offset: t.offset, windowStart: t.windowStart, windowEnd: t.windowEnd });
             t.partsBytes += piece.length;
-            // An encrypted fragment in an append window can't be saved: what
-            // the window clips out of it would break its samples' senc.
-            if (encrypted && (t.windowStart > 0 || t.windowEnd !== Infinity)) incomplete = true;
         }
         setBuf(t, t.buf.subarray(consumeTo));
     };
@@ -679,10 +694,15 @@ export function createCapture({ spill, onRestart } = {}) {
             else restart();
         },
         append(index, bytes, offset = 0, windowStart = 0, windowEnd = Infinity) {
-            if (webmEnc || !(bytes instanceof Uint8Array) || !bytes.length) return;
+            if (refused || !(bytes instanceof Uint8Array) || !bytes.length) return;
             const t = trackOf(index);
             const webm = /webm/i.test(t.mime);
             if (!webm && mp4Encrypted(bytes)) setEncrypted();
+            if (refused) return;
+            if (encrypted && (windowStart !== 0 || windowEnd !== Infinity)) {
+                // (Its init's too, appended in one: nothing of it can be.)
+                return refuse("an encrypted stream appended in a seek window can't be saved");
+            }
             if (t.mode === "lost") return;
             if (t.offset !== offset || t.windowStart !== windowStart || t.windowEnd !== windowEnd) {
                 // Attribute all complete fragments already buffered to the old offset.
@@ -737,6 +757,7 @@ export function createCapture({ spill, onRestart } = {}) {
         // seal stops further spills (Save is finalizing the staging tunnel).
         async seal() {
             checkSpill();
+            if (refused) throw new Error(refused);
             if (unsupported()) throw new Error("buffered stream contains an unsupported track format");
             if (encrypted && !keysKnown) throw new Error("encrypted streams can't be saved without their keys");
             if (incomplete) throw new Error("some buffered media was missed");
@@ -749,17 +770,9 @@ export function createCapture({ spill, onRestart } = {}) {
             if (unsupported() || incomplete) throw new Error("buffered tracks changed during save");
         },
         saveable() {
-            if (webmEnc || incomplete || unsupported()) return false;
-            if (encrypted) {
-                // Encrypted: saved decrypted only once its keys came, and
-                // only a fragmented MP4's (a WebM track's, a whole file's or
-                // a lost progressive one's can't be; a windowed one's
-                // refused as it's spilled).
-                if (!keysKnown) return false;
-                for (const t of tracks.values()) {
-                    if (/webm/i.test(t.mime) || t.mode === "progressive" || t.mode === "lost") return false;
-                }
-            }
+            if (refused || incomplete || unsupported()) return false;
+            // Encrypted: saved decrypted, only once its keys came.
+            if (encrypted && !keysKnown) return false;
             if (unsaved && (spilledProgressive > 0 || spilledParts > 0)) return true;
             for (const t of tracks.values()) {
                 if (t.mode === "lost") continue;

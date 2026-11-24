@@ -124,10 +124,24 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (player.node !== node) continue;
             const capture = player.stream?.capture;
             if (!capture) continue;
-            if (Object.keys(keys).length) capture.markKeys?.(keys);
-            else capture.expectKeys?.();
+            if (!Object.keys(keys).length) {
+                capture.expectKeys?.();
+                continue;
+            }
+            capture.markKeys?.(keys);
+            // Saveable as its keys came: offered, where it wasn't before.
+            reoffer(player);
         }
     };
+    // reoffer: a player's stream became saveable since the menu's list or
+    // the player (Watch, go-player.js) last asked (an encrypted stream's,
+    // as its keys came): both asked again, so Save's offered there now.
+    function reoffer(player) {
+        told();
+        if (!player.watching || !player.closeWatch?.setStreams) return;
+        const { mseSave, manifests } = saveChoices(player);
+        player.closeWatch.setStreams(player.stream ? [...manifests, ...mseSave] : []);
+    }
     const players = new Map();  // the frame's box's key -> {element, stopped}
     const ours = new WeakSet();  // players being started by the page (start), not the person
     const abort = new AbortController();
@@ -1117,7 +1131,9 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             player.closeWatch = openPlayer(media, {
                 title: player.stream ? "Streamed by the site's own player" : shortAddress(player.src),
                 skip: () => skip(key),
-                downloadTitle: player.stream && (mseSave.length || manifests.length) ? "Save stream into Downloads" : undefined,
+                // (Said of a stream whenever one's offered to save, after its
+                // keys come too: reoffer.)
+                downloadTitle: player.stream ? "Save stream into Downloads" : undefined,
                 streams: player.stream ? [...manifests, ...mseSave] : undefined,
                 download: !player.stream && download ? (say, opts) => download(player.src, say, opts)
                     : player.stream && mseSave.length === 1 && !manifests.length ? mseSave[0].save : null,

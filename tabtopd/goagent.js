@@ -134,13 +134,24 @@
         });
         let devices = [];
         document.addEventListener("__tabtop_device", e => {
-            if (frameWorld || devices.length >= 4 || typeof e.detail !== "string" || e.detail.length > 10000) return;
+            if (frameWorld || devices.length >= 4 || typeof e.detail !== "string" || e.detail.length > 48 << 10) return;
             let d;
             try { d = JSON.parse(e.detail); } catch { return; }
             const el = at(e);
             if (!d || typeof d.id !== "string" || !/^[a-z0-9]{1,40}$/.test(d.id) || (el !== document && el.ownerDocument !== document)) return;
             const ask = { id: d.id, kind: d.kind };
             switch (d.kind) {
+                case "fs-open": case "fs-save":
+                    ask.fs = { handle: "", name: typeof d.name === "string" ? d.name.slice(0, 255) : "",
+                        value: typeof d.value === "string" ? d.value : "",
+                        pickerOptions: d.pickerOptions && typeof d.pickerOptions === "object" ? d.pickerOptions : {} };
+                    break;
+                case "fs-read": case "fs-begin": case "fs-write": case "fs-close": case "fs-abort": case "fs-truncate":
+                    if (typeof d.handle !== "string" || !/^[a-z0-9]{1,40}$/.test(d.handle) || typeof d.value !== "string" || d.value.length > 48 << 10) return;
+                    ask.fs = { handle: d.handle, offset: Number.isSafeInteger(d.offset) && d.offset >= 0 ? d.offset : 0,
+                        size: Number.isSafeInteger(d.size) && d.size >= 0 ? d.size : 0, value: d.value,
+                        fileId: typeof d.fileId === "string" && /^[a-z0-9]{1,40}$/.test(d.fileId) ? d.fileId : "" };
+                    break;
                 case "share":
                     ask.data = {};
                     for (const key of ["title", "text", "url"]) {
@@ -173,6 +184,9 @@
         });
         function deviceReply(reply) {
             document.dispatchEvent(new CustomEvent("__tabtop_device_reply", { detail: JSON.stringify(reply) }));
+        }
+        function fsReadError(id, error) {
+            document.dispatchEvent(new CustomEvent("__tabtop_fs_error", { detail: JSON.stringify({ id, error }) }));
         }
         const clipboardOut = () => {
             const out = {};
@@ -1994,7 +2008,7 @@
             return "unknown";
         }
 
-        w.__tabtop = { deviceReply, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, frameStreams };
+        w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, frameStreams };
         // What the page observed before this world was made (as it loaded),
         // asked for again: posted, not dispatched. An event from this world
         // handled in the page's, as the page loads, leaves part of it

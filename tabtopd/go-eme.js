@@ -52,11 +52,13 @@ export function encryptedMedia(reply, allowed, onKeys = null) {
             } catch { /* not base64url */ }
         }
     }
-    // noteKeys tells onKeys, for each element the keys are attached to,
-    // those of its key IDs its CDM says are usable ({}, its keys coming,
-    // says only that the stream may expect them).
+    // noteKeys tells onKeys, for each Clear Key element the keys are
+    // attached to, those of its key IDs its CDM says are usable ({}, its
+    // keys coming, says only that the stream may expect them). Another key
+    // system's elements are told nothing: its CDM keeps its keys, and
+    // nothing is staged to be saved.
     function noteKeys(handle) {
-        if (stopped || !onKeys) return;
+        if (stopped || !onKeys || keySystems.get(handle) !== "org.w3.clearkey") return;
         const known = keyData.get(handle);
         if (!known) return;
         const usable = new Set();
