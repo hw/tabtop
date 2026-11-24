@@ -148,7 +148,7 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
                     for (const handle of files) {
                         const file = await handle.getFile(), token = randomID();
                         if (file.size > 512 << 20) throw new DOMException("Selected files are limited to 512 MiB each", "NotSupportedError");
-                        fsHandles.set(token, { handle, origin: r.origin, gen: r.gen });
+                        fsHandles.set(token, { handle, write: false, origin: r.origin, gen: r.gen });  // (opened: read only)
                         entries.push({ handle: token, name: file.name, type: file.type, size: file.size, lastModified: file.lastModified });
                     }
                     finish(r, { accept: true, value: JSON.stringify({ files: entries }) });
@@ -159,21 +159,19 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
                     if (!valid(r) || pending !== r) return;
                     const file = await handle.getFile();
                     const token = randomID();
-                    fsHandles.set(token, { handle, writer: null, origin: r.origin, gen: r.gen });
+                    fsHandles.set(token, { handle, write: true, writer: null, writes: Promise.resolve(), origin: r.origin, gen: r.gen });
                     finish(r, { accept: true, value: JSON.stringify({ handle: token, name: handle.name, type: file.type, size: file.size, lastModified: file.lastModified }) });
                     break;
                 }
-                case "fs-begin": case "fs-write": case "fs-close": case "fs-abort": case "fs-truncate": {
-                    // (A 0 offset or size is left out by the server: 0.)
-                    const fs = r.fs ?? {}, offset = fs.offset ?? 0, size = fs.size ?? 0;
-                    const session = fsHandles.get(fs.handle);
-                    if (!session || session.origin !== r.origin || session.gen !== r.gen) throw new DOMException("File handle expired", "NotAllowedError");
+                case "fs-begin": case "fs-close": case "fs-abort": case "fs-truncate": {
+                    // (A 0 size is left out by the server: 0.)
+                    const fs = r.fs ?? {}, size = fs.size ?? 0;
+                    const session = writable(r);
+                    if (!session) throw new DOMException("File handle expired", "NotAllowedError");
+                    // (After the pieces written before it: fs-write.)
+                    await session.writes;
                     if (r.kind === "fs-begin") {
                         session.writer = await session.handle.createWritable({ keepExistingData: fs.value === "keep" });
-                        finish(r, { accept: true });
-                    } else if (r.kind === "fs-write") {
-                        if (!session.writer) throw new DOMException("Writable stream is not open", "InvalidStateError");
-                        await session.writer.write({ type: "write", position: offset, data: fromBase64(fs.value) });
                         finish(r, { accept: true });
                     } else if (r.kind === "fs-truncate") {
                         if (!session.writer) throw new DOMException("Writable stream is not open", "InvalidStateError");
@@ -208,16 +206,34 @@ export function viewerDevices(box, current, getVideo, getFile = async () => null
         if (activePiP) left(activePiP);
         if (video && document.pictureInPictureElement === video) document.exitPictureInPicture().catch(() => {});
     }
+    // writable is r's save destination (fs-save's: not a file opened to
+    // read), its page's still.
+    function writable(r) {
+        const session = fsHandles.get(r.fs?.handle);
+        return session?.write && session.origin === r.origin && session.gen === r.gen ? session : null;
+    }
+    // A saved file's piece: written after the one before it, answered as
+    // it is, many in flight (the page's, not one at a time; nothing asked).
+    function writePiece(r) {
+        const session = writable(r);
+        if (!session) return send(r, { value: "NotAllowedError" });
+        const run = session.writes.then(async () => {
+            if (!session.writer) throw new DOMException("Writable stream is not open", "InvalidStateError");
+            await session.writer.write({ type: "write", position: r.fs.offset ?? 0, data: fromBase64(r.fs.value) });  // (a 0 offset's left out)
+        });
+        session.writes = run.catch(() => {});
+        run.then(() => send(r, { accept: true }), (err) => send(r, { value: err?.name || "NotAllowedError" }));
+    }
     function ask(m) {
         const r = { ...m, socket: current().socket };
+        if (r.kind === "fs-write") return valid(r) ? writePiece(r) : undefined;
         if (pending || !valid(r)) return send(r, { value: "InvalidStateError" });
         pending = r;
         timer = setTimeout(() => finish(r, { value: "TimeoutError" }), 115000);
         if (r.kind === "pip-exit" || r.kind === "location-stop") return void run(r);
-        if (["fs-begin", "fs-write", "fs-close", "fs-abort", "fs-truncate"].includes(r.kind)) {
-            const session = fsHandles.get(r.fs?.handle);
-            if (session && session.origin === r.origin && session.gen === r.gen) return void run(r);
-            return finish(r, { value: "NotAllowedError" });  // (a handle let go: not asked of the person)
+        if (["fs-begin", "fs-close", "fs-abort", "fs-truncate"].includes(r.kind)) {
+            if (writable(r)) return void run(r);
+            return finish(r, { value: "NotAllowedError" });  // (a handle let go, or read only: not asked of the person)
         }
         if (r.kind === "pip" && !getVideo(r.node)) return finish(r, { value: "InvalidStateError" });
         const labels = {

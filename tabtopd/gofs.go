@@ -35,6 +35,9 @@ type goFSRequest struct {
 }
 
 type goFSHandle struct {
+	// write: a save destination's (fs-save), the only kind written; an
+	// opened file's is read only, as the person chose it to be.
+	write                        bool
 	name, mime, path, enginePath string
 	size, modified               int64
 	gen, world                   int
@@ -59,6 +62,55 @@ type goFileSystem struct {
 	byFile   map[string]*goFSRead   // viewer handle -> active staged read
 	total    int64                  // staged bytes retained for this page
 	reserved int64                  // reads in progress, included in the per-tab budget
+	// writes: a saved file's pieces sent to the person's browser, not yet
+	// answered (by the token it's asked by), so many at once.
+	writes map[string]*goDevicePending
+}
+
+// goFSWritesMax is how many of a page's file pieces (fs-write) may be with
+// the person's browser at once: the page sends 32 (godevice.js).
+const goFSWritesMax = 64
+
+// fsWritable: handle is a save destination of this page's, in world.
+func (b *goBrowser) fsWritable(handle string, gen, world int) bool {
+	b.fs.mu.Lock()
+	defer b.fs.mu.Unlock()
+	h := b.fs.handles[handle]
+	return h != nil && h.write && h.gen == gen && h.world == world
+}
+
+// fsWrite sends a piece of a saved file to the person's browser, without
+// waiting for the one before it to be answered (deviceAnswer: fsWriteAnswer).
+func (b *goBrowser) fsWrite(gen int, origin string, a goDeviceAsk) {
+	if b.fs.writes == nil {
+		b.fs.writes = make(map[string]*goDevicePending)
+	}
+	if len(b.fs.writes) >= goFSWritesMax {
+		b.agentCall(b.world, "deviceReply", map[string]any{"id": a.ID, "error": "InvalidStateError"})
+		return
+	}
+	p := &goDevicePending{a.ID, goToken(), a.Kind, gen, b.world, time.Now()}
+	b.fs.writes[p.token] = p
+	b.send(map[string]any{"type": "go-device", "gen": gen, "ask": p.token, "origin": origin, "kind": a.Kind, "fs": a.FS})
+}
+
+// fsWriteAnswer answers the page's piece the person's browser has written
+// (or failed to); false if m's for none.
+func (b *goBrowser) fsWriteAnswer(m goClientMsg) bool {
+	p := b.fs.writes[m.Text]
+	if p == nil {
+		return false
+	}
+	delete(b.fs.writes, m.Text)
+	if p.gen != b.gen || p.world != b.world {
+		return true
+	}
+	reply := map[string]any{"id": p.id}
+	if !m.Accept {
+		reply["error"] = goDeviceError(m.Value)
+	}
+	b.agentCall(p.world, "deviceReply", reply)
+	return true
 }
 
 func validGoFSAsk(kind string, fs *goFSRequest) bool {
@@ -164,7 +216,7 @@ func (b *goBrowser) rememberFSHandles(kind, value string, gen, world int) bool {
 		b.fs.handles = make(map[string]*goFSHandle)
 	}
 	for _, f := range result.Files {
-		b.fs.handles[f.Handle] = &goFSHandle{name: f.Name, mime: f.Type, size: f.Size, modified: f.LastModified, gen: gen, world: world}
+		b.fs.handles[f.Handle] = &goFSHandle{write: kind == "fs-save", name: f.Name, mime: f.Type, size: f.Size, modified: f.LastModified, gen: gen, world: world}
 	}
 	return true
 }
@@ -464,6 +516,7 @@ func (b *goBrowser) resetFileSystem() {
 		}
 	}
 	b.fs.handles = nil
+	b.fs.writes = nil
 	b.fs.reads = nil
 	b.fs.byFile = nil
 	b.fs.total = 0

@@ -132,11 +132,16 @@
             try { d = JSON.parse(e.detail); } catch { return; }
             if (fullAsks.length < 4 && d && (d.on === false || (typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)))) fullAsks.push(d.on === false ? { on: false } : { on: true, id: d.id });
         });
-        let devices = [];
+        // (A saved file's pieces, fs-write, are many at once: so many each
+        // read, apart from the other asks' 4. One taken is cancelled, so the
+        // page keeps the rest for the next read: godevice.js.)
+        let devices = [], deviceWrites = 0;
+        const goWritesEach = 16;
         document.addEventListener("__tabtop_device", e => {
-            if (frameWorld || devices.length >= 4 || typeof e.detail !== "string" || e.detail.length > 48 << 10) return;
+            if (frameWorld || typeof e.detail !== "string" || e.detail.length > 48 << 10) return;
             let d;
             try { d = JSON.parse(e.detail); } catch { return; }
+            if (d?.kind === "fs-write" ? deviceWrites >= goWritesEach : devices.length - deviceWrites >= 4) return;
             const el = at(e);
             if (!d || typeof d.id !== "string" || !/^[a-z0-9]{1,40}$/.test(d.id) || (el !== document && el.ownerDocument !== document)) return;
             const ask = { id: d.id, kind: d.kind };
@@ -180,7 +185,9 @@
                 case "pip-exit": case "location-stop": break;
                 default: return;
             }
+            if (d.kind === "fs-write") deviceWrites++;
             devices.push(ask);
+            e.preventDefault();
         });
         function deviceReply(reply) {
             document.dispatchEvent(new CustomEvent("__tabtop_device_reply", { detail: JSON.stringify(reply) }));
@@ -1767,6 +1774,7 @@
             if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_device"));
             const deviceBatch = devices;
             devices = [];
+            deviceWrites = 0;
             const scrollsNow = [];
             for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
             scrollsOut = new Map();

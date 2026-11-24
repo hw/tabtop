@@ -52,3 +52,59 @@ func TestGoFSWritten(t *testing.T) {
 	}
 	b.fsWritten("none") // (a handle not kept: nothing)
 }
+
+// TestGoFSWrites: a save destination's pieces go to the person's browser
+// many at once (not the one ask at a time), each answered by its own; an
+// opened file's handle isn't written, nor one of another page's.
+func TestGoFSWrites(t *testing.T) {
+	b, w := goClipTab()
+	b.docURL = "https://www.example.com/page"
+	b.viewerCaps = goViewerCaps{FileSystem: true}
+	b.rememberFSHandles("fs-open", `{"files":[{"handle":"open1","name":"a.txt","size":1}]}`, 1, 1)
+	b.rememberFSHandles("fs-save", `{"handle":"save1","name":"out.txt","size":0}`, 1, 1)
+	b.rememberFSHandles("fs-save", `{"handle":"old1","name":"old.txt","size":0}`, 0, 1)
+	piece := func(id, handle string) goDeviceAsk {
+		return goDeviceAsk{ID: id, Kind: "fs-write", FS: &goFSRequest{Handle: handle, Value: "aGVsbG8="}}
+	}
+	// An opened file's, or an earlier page's: refused, not sent.
+	b.devices(1, []goDeviceAsk{piece("x1", "open1"), piece("x2", "old1"), {ID: "x3", Kind: "fs-begin", FS: &goFSRequest{Handle: "open1"}}})
+	if len(goSentOf(w, "go-device")) != 0 || b.acts.waiting() != 3 || b.device != nil {
+		t.Fatalf("a read-only or stale handle written: %d sent, %d refused", len(goSentOf(w, "go-device")), b.acts.waiting())
+	}
+	// Twenty pieces: sixteen a read taken, all sent at once, the ask slot
+	// left free.
+	var asks []goDeviceAsk
+	for i := range 20 {
+		asks = append(asks, piece("p"+string(rune('a'+i)), "save1"))
+	}
+	b.devices(1, asks)
+	sent := goSentOf(w, "go-device")
+	if len(sent) != 16 || b.device != nil || len(b.fs.writes) != 16 {
+		t.Fatalf("%d sent, %d waiting, ask slot %v", len(sent), len(b.fs.writes), b.device)
+	}
+	// A location ask alongside them still asks.
+	b.viewerCaps.Location = true
+	b.devices(1, []goDeviceAsk{{ID: "loc", Kind: "location"}})
+	if b.device == nil || b.device.kind != "location" {
+		t.Fatalf("an ask held up by the pieces")
+	}
+	// Answered each by its own: written, or the browser's error.
+	before := b.acts.waiting()
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: sent[0]["ask"].(string), Accept: true})
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: sent[1]["ask"].(string), Value: "QuotaExceededError"})
+	b.deviceAnswer(goClientMsg{Gen: 1, Text: sent[1]["ask"].(string), Accept: true}) // (answered already)
+	if b.acts.waiting() != before+2 || len(b.fs.writes) != 14 || b.device == nil {
+		t.Errorf("%d answered, %d waiting, the location ask %v", b.acts.waiting()-before, len(b.fs.writes), b.device)
+	}
+	// So many waiting at most; the page left, none.
+	for i := range goFSWritesMax {
+		b.devices(1, []goDeviceAsk{piece("q"+string(rune('a'+i%26))+string(rune('a'+i/26)), "save1")})
+	}
+	if len(b.fs.writes) != goFSWritesMax {
+		t.Errorf("%d waiting", len(b.fs.writes))
+	}
+	b.resetFileSystem()
+	if len(b.fs.writes) != 0 || b.fsWritable("save1", 1, 1) {
+		t.Errorf("kept as the page's left")
+	}
+}

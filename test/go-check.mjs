@@ -288,8 +288,9 @@ document.getElementById("share").onclick = () => navigator.share({ title: "Notes
 document.getElementById("link").onclick = () => navigator.share({ url: "https://example.com/" }).then(() => log("shared link"), (e) => log("failed " + e.name));
 </script>`,
         // File System Access (godevice.js, gofs.go): a file opened and read,
-        // and one saved (a string, a Blob at a position, 100 KB in many
-        // pieces, a truncate), then read back from its handle.
+        // but not written (read only, as chosen); and one saved (a string, a
+        // Blob at a position, 2 MB in many pieces, a truncate), then read
+        // back from its handle.
         "fsa.html": `<!doctype html><title>Pickers</title><button id="open">Open</button> <button id="save">Save</button><p id="log"></p>
 <script>
 const log = (t) => { document.getElementById("log").textContent += t + ";"; };
@@ -301,6 +302,8 @@ document.getElementById("open").onclick = async () => {
         log("read " + h.kind + " " + f.name + " " + f.size + " " + (f instanceof File) + " " + JSON.stringify(await f.text()));
         const again = await h.getFile();
         log("again " + JSON.stringify(await again.text()));
+        log("may write " + await h.queryPermission({ mode: "readwrite" }));
+        await h.createWritable().then(() => log("written"), (e) => log("not written " + e.name));
     } catch (e) { log("failed " + e.name + " " + e.message); }
 };
 document.getElementById("save").onclick = async () => {
@@ -309,7 +312,7 @@ document.getElementById("save").onclick = async () => {
         const w = await h.createWritable();
         await w.write("hello ");
         await w.write({ type: "write", position: 6, data: new Blob(["world"]) });
-        const big = new Uint8Array(100000);
+        const big = new Uint8Array(2000000);
         for (let i = 0; i < big.length; i++) big[i] = i % 251;
         await w.write(big);
         await w.write("TAIL-cut");
@@ -4902,15 +4905,16 @@ async function check(base, port, site, adSite) {
                 let data = new Uint8Array(0);
                 const h = { kind: "file", name: opts.suggestedName, getFile: async () => new File([data], h.name, { type: "text/plain" }),
                     createWritable: async ({ keepExistingData } = {}) => {
-                        let buf = keepExistingData ? data.slice() : new Uint8Array(0);
+                        let buf = keepExistingData ? data.slice() : new Uint8Array(0), size = buf.length;
                         return {
                             write: async (p) => {
                                 const end = p.position + p.data.length;
-                                if (end > buf.length) { const n = new Uint8Array(end); n.set(buf); buf = n; }
+                                if (end > buf.length) { const n = new Uint8Array(Math.max(end, buf.length * 2)); n.set(buf); buf = n; size = end; }
                                 buf.set(p.data, p.position);
+                                size = Math.max(size, end);
                             },
-                            truncate: async (size) => { const n = new Uint8Array(size); n.set(buf.subarray(0, size)); buf = n; },
-                            close: async () => { data = buf; window.__saved = data.length; },
+                            truncate: async (to) => { const n = new Uint8Array(to); n.set(buf.subarray(0, Math.min(to, size))); buf = n; size = to; },
+                            close: async () => { data = buf.slice(0, size); window.__saved = data.length; },
                             abort: async () => {},
                         };
                     } };
@@ -4941,14 +4945,14 @@ async function check(base, port, site, adSite) {
             // the file read by the page (twice: staged once).
             await frameClick("#open");
             await allow(/wants to choose files/);
-            await logged(/read file notes\.txt 22 true "hello from your device";again "hello from your device";/, "the file read by the page");
+            await logged(/read file notes\.txt 22 true "hello from your device";again "hello from your device";may write prompt;not written NotAllowedError;/, "the file read by the page, not written");
             const types = JSON.parse(await ev(`window.__openOpts`)).types;
             if (JSON.stringify(types) !== JSON.stringify([{ description: "Text", accept: { "text/plain": [".txt"] } }])) throw new Error(`the picker given ${JSON.stringify(types)}`);
             // Saved: written in pieces, cut, then read back from its handle.
             await frameClick("#save");
             await allow(/wants to choose where to save/);
             let sum = 0;
-            const want = Buffer.concat([Buffer.from("hello world"), Buffer.from(Array.from({ length: 100000 }, (_, i) => i % 251)), Buffer.from("TAIL")]);
+            const want = Buffer.concat([Buffer.from("hello world"), Buffer.from(Array.from({ length: 2000000 }, (_, i) => i % 251)), Buffer.from("TAIL")]);
             for (const b of want) sum = (sum * 31 + b) >>> 0;
             const started = Date.now();
             await logged(new RegExp(`saved out\\.txt ${want.length} ${sum};`), "the file saved and read back", 60000);

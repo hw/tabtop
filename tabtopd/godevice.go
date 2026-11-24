@@ -59,8 +59,16 @@ func (b *goBrowser) devices(gen int, asks []goDeviceAsk) {
 		return
 	}
 	origin := goOrigin(b.docURL)
-	for _, a := range asks[:min(len(asks), 4)] {
-		if !goPasteID.MatchString(a.ID) || b.acts.waiting() >= goActsWaiting {
+	// So many asks a read, as the agent sends them (goagent.js): 4, and 16
+	// pieces of saved files.
+	others, writes := 0, 0
+	for _, a := range asks[:min(len(asks), 4+16)] {
+		if a.Kind == "fs-write" {
+			writes++
+		} else {
+			others++
+		}
+		if writes > 16 || others > 4 || !goPasteID.MatchString(a.ID) || b.acts.waiting() >= goActsWaiting {
 			continue
 		}
 		valid := origin != "" && b.deviceAllowed(a.Kind, origin)
@@ -101,10 +109,21 @@ func (b *goBrowser) devices(gen int, asks []goDeviceAsk) {
 			valid = valid && b.pip != nil && b.pip.gen == gen && b.pip.world == b.world
 		case "fs-open", "fs-save":
 			valid = valid && secure && b.viewerCaps.FileSystem && b.recentInput(gen, b.world) && validGoFSAsk(a.Kind, a.FS)
-		case "fs-read", "fs-begin", "fs-write", "fs-close", "fs-abort", "fs-truncate":
+		case "fs-read":
 			valid = valid && secure && b.viewerCaps.FileSystem && validGoFSAsk(a.Kind, a.FS)
+		case "fs-begin", "fs-write", "fs-close", "fs-abort", "fs-truncate":
+			// Only a save destination's written: not a file opened to read.
+			valid = valid && secure && b.viewerCaps.FileSystem && validGoFSAsk(a.Kind, a.FS) && b.fsWritable(a.FS.Handle, gen, b.world)
 		default:
 			valid = false
+		}
+		if a.Kind == "fs-write" && valid {
+			b.fsWrite(gen, origin, a) // (many at once, not the one ask)
+			// The page's next pieces read sooner than the poll's 250 ms.
+			if b.readSoon == nil {
+				b.readSoon = time.After(goChangesEvery)
+			}
+			continue
 		}
 		if b.device != nil && b.device.gen == gen && time.Since(b.device.at) < goPasteAskFor {
 			valid, reason = false, "InvalidStateError"
@@ -167,6 +186,9 @@ func (b *goBrowser) deviceAnswer(m goClientMsg) {
 		}
 		return
 	}
+	if b.fsWriteAnswer(m) {
+		return // a saved file's piece (gofs.go)
+	}
 	p := b.device
 	if p == nil || p.gen != m.Gen || p.token != m.Text || p.world != b.world {
 		return
@@ -175,12 +197,7 @@ func (b *goBrowser) deviceAnswer(m goClientMsg) {
 	reply := map[string]any{"id": p.id}
 	switch {
 	case !m.Accept || time.Since(p.at) > goPasteAskFor:
-		switch m.Value {
-		case "AbortError", "TimeoutError", "NotSupportedError", "InvalidStateError", "PositionUnavailableError", "DataError", "TypeError", "SecurityError", "NotFoundError", "NotReadableError", "QuotaExceededError":
-			reply["error"] = m.Value
-		default:
-			reply["error"] = "NotAllowedError"
-		}
+		reply["error"] = goDeviceError(m.Value)
 	case p.kind == "location" || p.kind == "location-watch":
 		if position, ok := goPositionOf(m.Value); !ok {
 			reply["error"] = "PositionUnavailableError"
@@ -412,4 +429,14 @@ func (b *goBrowser) releaseDevices() {
 	}
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
 	b.resetFileSystem()
+}
+
+// goDeviceError is the error the person's browser said, as the page's
+// DOMException's name: one of those it can say, else NotAllowedError.
+func goDeviceError(name string) string {
+	switch name {
+	case "AbortError", "TimeoutError", "NotSupportedError", "InvalidStateError", "PositionUnavailableError", "DataError", "TypeError", "SecurityError", "NotFoundError", "NotReadableError", "QuotaExceededError":
+		return name
+	}
+	return "NotAllowedError"
 }

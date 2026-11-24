@@ -138,6 +138,41 @@
         fsQueue = result.catch(() => {});
         return result;
     };
+    // A saved file's pieces (fs-write) aren't one request each, waited
+    // for in turn (request's one at a time): up to fsWindow in flight,
+    // each answered by its id, so a save isn't a round trip a piece. Those
+    // the agent didn't take this read (it cancels those it takes) wait
+    // for its next.
+    const fsWindow = 32;
+    const fsWrites = new Map();  // id -> {resolve, reject, timer}
+    let fsWriteQueue = [];  // [{id, detail}], not yet taken by the agent
+    const fsWriteSend = fields => new Promise((resolve, reject) => {
+        const id = randomFSID();
+        const timer = setTimeout(() => {
+            fsWrites.delete(id);
+            fsWriteQueue = fsWriteQueue.filter(q => q.id !== id);
+            reject(error("TimeoutError"));
+        }, 120000);
+        fsWrites.set(id, { resolve, reject, timer });
+        fsWriteQueue.push({ id, detail: JSON.stringify({ id, kind: "fs-write", ...fields }) });
+    });
+    document.addEventListener("__tabtop_read_device", () => {
+        while (fsWriteQueue.length) {
+            const event = new CustomEvent("__tabtop_device", { detail: fsWriteQueue[0].detail, bubbles: true, composed: true, cancelable: true });
+            if (document.dispatchEvent(event)) break;  // (not taken: the agent's had its fill)
+            fsWriteQueue.shift();
+        }
+    });
+    document.addEventListener("__tabtop_device_reply", e => {
+        let r;
+        try { r = JSON.parse(e.detail); } catch { return; }
+        const w = fsWrites.get(r?.id);
+        if (!w) return;
+        fsWrites.delete(r.id);
+        clearTimeout(w.timer);
+        if (r.error) w.reject(error(r.error));
+        else w.resolve(r);
+    });
     const fsB64 = bytes => {
         let binary = "";
         for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -153,8 +188,11 @@
         constructor(meta) { Object.assign(this, meta); }
         get kind() { return "file"; }
         async isSameEntry(other) { return other === this; }
-        async queryPermission() { return "granted"; }
-        async requestPermission() { return "granted"; }
+        // An opened file's handle reads only (as the person chose it to
+        // be); a save destination's writes too. Not raised: there's no
+        // asking the person for more here.
+        async queryPermission(d) { return d?.mode === "readwrite" && !this._write ? "prompt" : "granted"; }
+        async requestPermission(d) { return d?.mode === "readwrite" && !this._write ? "denied" : "granted"; }
         async getFile() {
             const fileId = randomFSID();
             const file = new Promise((resolve, reject) => fsFiles.set(fileId, { resolve, reject }));
@@ -171,24 +209,43 @@
             }
         }
         async createWritable(options = {}) {
+            if (!this._write) throw error("NotAllowedError");
             const remote = this._remote, fileHandle = this;
             await fsCall("fs-begin", { handle: remote, value: options.keepExistingData ? "keep" : "" });
-            let at = options.keepExistingData ? this.size : 0, closed = false;
+            let at = options.keepExistingData ? this.size : 0, closed = false, failed = null;
             if (!options.keepExistingData) fileHandle.size = 0;
-            const ensure = () => { if (closed) throw error("InvalidStateError"); };
+            const ensure = () => { if (failed) throw failed; if (closed) throw error("InvalidStateError"); };
+            // Its pieces sent fsWindow at a time; all answered before the
+            // write is (a failed one fails the writable: later calls too).
             const writeBytes = async (bytes, position) => {
                 const length = bytes.size ?? bytes.length;
-                for (let i = 0; i < length; i += fsChunk) {
+                const flying = new Set();
+                let first = null;
+                for (let i = 0; i < length && !first; i += fsChunk) {
                     const end = Math.min(i + fsChunk, length);
                     const part = bytes instanceof Blob
                         ? new Uint8Array(await bytes.slice(i, end).arrayBuffer())
                         : bytes.subarray(i, end);
-                    await fsCall("fs-write", { handle: remote, offset: position + i, value: fsB64(part) });
+                    const sent = fsWriteSend({ handle: remote, offset: position + i, value: fsB64(part) })
+                        .catch(err => { first ??= err; })
+                        .finally(() => flying.delete(sent));
+                    flying.add(sent);
+                    if (flying.size >= fsWindow) await Promise.race(flying);
                 }
+                await Promise.all(flying);
+                if (first) throw (failed = first);
                 fileHandle.size = Math.max(fileHandle.size, position + length);
                 return length;
             };
-            const write = async data => {
+            // Its calls one after another, as they were made (a write's
+            // position is where the one before it left off).
+            let ops = Promise.resolve();
+            const inTurn = f => (...args) => {
+                const run = ops.then(() => f(...args));
+                ops = run.catch(() => {});
+                return run;
+            };
+            const write = inTurn(async data => {
                     ensure();
                     if (data && typeof data === "object" && !(data instanceof Blob) && !(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
                         switch (data.type) {
@@ -204,14 +261,15 @@
                     }
                     const bytes = data instanceof Blob ? data : await fsBytes(data);
                     at += await writeBytes(bytes, at);
-            };
-            const truncate = async size => { ensure(); if (!Number.isSafeInteger(size) || size < 0) throw error("TypeError"); await fsCall("fs-truncate", { handle: remote, size, value: "" }); at = Math.min(at, size); fileHandle.size = size; };
-            const close = async () => { ensure(); await fsCall("fs-close", { handle: remote, value: "" }); closed = true; };
-            const abort = async () => { ensure(); await fsCall("fs-abort", { handle: remote, value: "" }); closed = true; };
+            });
+            const truncate = inTurn(async size => { ensure(); if (!Number.isSafeInteger(size) || size < 0) throw error("TypeError"); await fsCall("fs-truncate", { handle: remote, size, value: "" }); at = Math.min(at, size); fileHandle.size = size; });
+            const close = inTurn(async () => { ensure(); await fsCall("fs-close", { handle: remote, value: "" }); closed = true; });
+            // (Aborted even once a write's failed: the destination let go.)
+            const abort = inTurn(async () => { if (closed) throw error("InvalidStateError"); await fsCall("fs-abort", { handle: remote, value: "" }); closed = true; });
             const stream = new WritableStream({ write, close, abort });
             Object.defineProperties(stream, {
                 write: { value: write },
-                seek: { value: async position => { ensure(); if (!Number.isSafeInteger(position) || position < 0) throw error("TypeError"); at = position; } },
+                seek: { value: inTurn(async position => { ensure(); if (!Number.isSafeInteger(position) || position < 0) throw error("TypeError"); at = position; }) },
                 truncate: { value: truncate }, close: { value: close }, abort: { value: abort },
             });
             return stream;
@@ -225,7 +283,7 @@
             if (options?.types !== undefined) pickerOptions.types = options.types;
             const result = await fsCall("fs-open", { pickerOptions });
             if (!Array.isArray(result?.files)) throw error("DataError");
-            return result.files.map(meta => new RemoteFileHandle({ ...meta, _remote: meta.handle }));
+            return result.files.map(meta => new RemoteFileHandle({ ...meta, _remote: meta.handle, _write: false }));
         });
         method(window, "showSaveFilePicker", async options => {
             if (options?.id !== undefined && typeof options.id !== "string") throw new TypeError("Invalid picker id");
@@ -234,7 +292,7 @@
             if (options?.types !== undefined) pickerOptions.types = options.types;
             const meta = await fsCall("fs-save", { name: pickerOptions.suggestedName, pickerOptions });
             if (!meta?.handle) throw error("DataError");
-            return new RemoteFileHandle({ ...meta, _remote: meta.handle });
+            return new RemoteFileHandle({ ...meta, _remote: meta.handle, _write: true });
         });
     }
 
