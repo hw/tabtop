@@ -830,6 +830,20 @@ for (const name of ["MutationObserver", "IntersectionObserver", "ResizeObserver"
 }
 setTimeout(() => { document.getElementById("inner").textContent = "inner changed"; }, 800);
 </script>`,
+        // A box the page puts 16 pixels down each time it hears it scrolled
+        // (as Shorts does till a job of its own says not to), where its
+        // snapping puts it back.
+        "snapback.html": `<!doctype html><title>Snap back</title><style>#box { height: 300px; width: 200px; overflow-y: scroll; scroll-snap-type: y mandatory } .reel { height: 300px; scroll-snap-align: start; background: #ddd }</style>
+<div id="box">${Array.from({ length: 5 }, (_, i) => `<div class="reel">reel ${i}</div>`).join("")}</div><p id="heard">0</p>
+<script>
+const box = document.getElementById("box");
+let heard = 0;
+new ResizeObserver(() => { if (!box.dataset.sized) { box.dataset.sized = "1"; box.scrollTop = 16; } }).observe(box);
+box.addEventListener("scroll", () => {
+    document.getElementById("heard").textContent = String(++heard);
+    requestAnimationFrame(() => { box.scrollTop = 16; });
+});
+</script>`,
         "reels.html": `<!doctype html><title>Reels</title><style>#box { height: 300px; width: 200px; overflow-y: scroll; scroll-snap-type: y mandatory } .reel { height: 280px; margin-bottom: 20px; scroll-snap-align: start; background: #ddd }</style>
 <div id="box">${Array.from({ length: 10 }, (_, i) => `<div class="reel">reel ${i}</div>`).join("")}</div><p id="status">not scrolled</p><p id="sized">not sized</p><button id="next">next</button>
 <script>
@@ -4352,6 +4366,12 @@ async function check(base, port, site, adSite) {
         for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + next.x, y: f.y + next.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
         await frameWait(`document.getElementById("box")?.scrollTop === 900`, "the box scrolled by the page, shown");
         await frameWait(`document.getElementById("status")?.textContent === "reel 3"`, "reel 3, scrolled to by the page");
+        // A page that puts it where this one's snapping puts it back from,
+        // each time it hears where it is: told once, not again and again.
+        await goTo(site + "snapback.html", "Snap back");
+        await sleep(4000);
+        const heard = Number(await frame(`document.getElementById("heard").textContent`));
+        if (heard > 4) throw new Error(`the page heard its box scrolled ${heard} times in 4 s: put back and told, again and again`);
     });
 
     await step("rules put into a stylesheet by script, as it loads and after", async () => {

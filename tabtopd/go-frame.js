@@ -1875,6 +1875,7 @@
             if (key === rec.last) continue;
             rec.last = key;
             for (const o of rec.os) ioSeen.push({ o, i: rec.i, z });
+            resizedNow.add(el);
         }
         if (ioTimer || !ioSeen.length) return;
         ioTimer = setTimeout(() => {
@@ -1882,8 +1883,18 @@
             const list = ioSeen;
             ioSeen = [];
             if (doc === d && list.length) tell({ type: "io", gen: d.gen, entries: list });
+            // Where they're scrolled may be told again: the page heard the
+            // last with sizes it's now told aren't these. Shorts works out
+            // its reels' height as its box's scrolled, once it has its
+            // sizes: told where it was before them, then not again (it
+            // hadn't moved), it took the person's first scroll for that,
+            // and put it back. (Once sent: what's sent goes in order; a
+            // scroll told meanwhile went before them.)
+            for (const el of resizedNow) toldAt.delete(el);
+            resizedNow.clear();
         }, 100);
     }
+    const resizedNow = new Set();  // elements whose new sizes are in ioSeen
     let sizedTimer = 0;
     function sizedSoon() {
         if (sizedTimer || !doc?.sized?.size) return;
@@ -1903,12 +1914,23 @@
     // can't go isn't answered again and again.
     let pageScrolled = -Infinity;
     const toldAt = new WeakMap();  // element -> where the engine was last told it is
+    const askedTo = new WeakMap();  // element -> where the page last asked for it ({place, ended: where it went, at})
     const scrollOf = (el) => (el === document.documentElement ? { x: scrollX, y: scrollY } : { x: el.scrollLeft, y: el.scrollTop });
     function tellScrolled(el) {
         const id = doc?.ids.get(el);
         if (!id) return;
         const at = scrollOf(el), x = Math.round(at.x), y = Math.round(at.y);
         if (toldAt.get(el) === x + "," + y) return;
+        // The page asking again, at once, for where it went back from
+        // (Shorts puts its box 16 pixels down, where this one's snapping
+        // puts it back, and asks again as it hears that, till a job of its
+        // own says not to, which hearing it keeps from running): not told
+        // it went back again. (Once, as a browser's is.)
+        const a = askedTo.get(el);
+        if (a && performance.now() - a.at < 2000) {
+            if (a.again && a.ended === x + "," + y) return;
+            a.ended = x + "," + y;
+        }
         toldAt.set(el, x + "," + y);
         send("scroll", id, { sx: x, sy: y });
     }
@@ -1931,8 +1953,11 @@
                 if (top) scrollTo({ left: s.x, top: s.y, behavior: "instant" });
                 else el.scrollTo({ left: s.x, top: s.y, behavior: "instant" });
                 // The engine's page has it where it asked.
-                toldAt.set(top ? document.documentElement : el, Math.round(s.x) + "," + Math.round(s.y));
-                asked.push(top ? document.documentElement : el);
+                const target = top ? document.documentElement : el, place = Math.round(s.x) + "," + Math.round(s.y);
+                toldAt.set(target, place);
+                const was = askedTo.get(target), again = was?.place === place && performance.now() - was.at < 2000;
+                askedTo.set(target, { place, again, ended: again ? was.ended : "", at: performance.now() });
+                asked.push(target);
             }
         }
         // Once it's there (a smooth scroll goes on, and says so itself).
@@ -1945,6 +1970,7 @@
         d?.observed?.clear();
         ioCount = 0;
         ioSeen = [];
+        resizedNow.clear();
     }
 
     // --- Changes -------------------------------------------------------------
