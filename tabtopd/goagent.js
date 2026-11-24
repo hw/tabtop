@@ -305,6 +305,13 @@
         function hearPlays(doc) {
             if (playedIn.has(doc)) return;
             playedIn.add(doc);
+            // A play() before this world was made (gomedia.js: said once
+            // it's here, as the page doesn't play it again): played.
+            doc.addEventListener("__tabtop_played_before", (e) => {
+                const el = e.composedPath?.()[0] ?? e.target;
+                if ((el?.localName !== "video" && el?.localName !== "audio") || played.size >= 256) return;
+                played.set(doc === document ? el : sameNode(el), true);
+            }, true);
             for (const type of ["play", "pause", "ended", "emptied"]) {
                 doc.addEventListener(type, (e) => {
                     // Trust the event: gomedia.js may still mirror the person's
@@ -395,12 +402,17 @@
         }
         // frameOwner says, of an iframe tabtopd found as a frame's owner,
         // its number if the copy has it (not numbering it: that would make
-        // later batches name a node never sent) and whether its page is
-        // read here (same origin) or must be read in a world of its own.
+        // later batches name a node never sent), whether its page is read
+        // here (same origin) or must be read in a world of its own, and
+        // whether it's shown at all (hidden: it or what it's in displayed
+        // none, as YouTube's sign-in check, an accounts.google.com frame,
+        // is: nothing of it to show, so not read; goframes.go).
         function frameOwner(el) {
             let readable = false;
             try { readable = !!el.contentDocument; } catch { /* another origin's */ }
-            return JSON.stringify({ id: known(el) ? ids.get(el) : 0, readable });
+            let hidden = false;
+            for (let e = el; e && !hidden; e = e.parentElement) hidden = getComputedStyle(e).display === "none";
+            return JSON.stringify({ id: known(el) ? ids.get(el) : 0, readable, hidden });
         }
         function keyTo(id, sel) {
             const el = node(id);

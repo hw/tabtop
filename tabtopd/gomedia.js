@@ -578,11 +578,25 @@
         if (!sourceURL(this)?.startsWith(prefix)) return load.call(this);
     };
     // asked: played by the page (its play(), here) and not paused since.
+    // askedList is the same, to go through: a play() the agent wasn't there
+    // to hear (the page played its stream before its world was made, as a
+    // player starting at once does) is said again once it's there.
     const asked = new WeakSet();
+    const askedList = new Set();  // WeakRefs of what's asked
+    window.addEventListener("message", (e) => {
+        if (e.data?.__tabtop !== "blobs") return;  // (the agent, once there: see goagent.js)
+        for (const ref of askedList) {
+            const el = ref.deref();
+            if (!el || !asked.has(el)) { askedList.delete(ref); continue; }
+            // (Its own event, not play again: the page's listeners hear nothing.)
+            el.dispatchEvent(new CustomEvent("__tabtop_played_before", { bubbles: true, composed: true }));
+        }
+    });
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
         if (!sourceURL(this)?.startsWith(prefix)) return play.call(this);
         attach(this);
+        if (!asked.has(this)) askedList.add(new WeakRef(this));
         asked.add(this);
         this.dispatchEvent(new CustomEvent("__tabtop_media_hold", { composed: true, detail: "release" }));
         this.dispatchEvent(new Event("play"));

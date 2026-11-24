@@ -931,6 +931,13 @@ zone.addEventListener("drop", async (e) => {
 // The same server by another name (its address as IPv6): another origin.
 document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xinner.html";
 </script>`,
+        // The page of another origin hidden (displayed none, as YouTube's
+        // sign-in check is), then shown by its button.
+        "xframe-hidden.html": `<!doctype html><title>Hidden frame</title><button id="show">Show it</button><iframe id="x" width="300" height="120" style="display: none"></iframe>
+<script>
+document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/xinner.html";
+document.getElementById("show").onclick = () => { document.getElementById("x").style.display = ""; };
+</script>`,
         "xinner.html": `<!doctype html><style>/* old Internet Explorer's hacks, which match nothing in a document */ * html #b, *:first-child+html #b { display: none }</style><button id="b">press</button> <span id="s">not pressed</span> <button id="tb">tap</button> <span id="ts">not tapped</span>
 <form id="f"><input id="t" name="t"></form><span id="echo">nothing typed</span> <span id="sent">not sent</span>
 <div id="h" style="width:120px;height:20px;background:#ddd">hover me</div><span id="hs">not hovered</span>
@@ -998,6 +1005,21 @@ try {
     const ok = made[1] && typeof made[1].addSourceBuffer === "function" && typeof (made[0] === "managed" ? ManagedMediaSource : MediaSource).isTypeSupported === "function";
     document.getElementById("out").textContent = "made " + made[0] + " " + !!ok;
 } catch (err) { document.getElementById("out").textContent = "failed " + err.name; }
+</script>`,
+        // A stream played at once, by the page's first script, before the
+        // agent's world is made (YouTube's Shorts' player, starting as the
+        // page loads): its play() said once the agent's there.
+        "mse-early.html": `<!doctype html><title>MSE early</title>
+<video id="streamed" muted width="320" height="180"></video>
+<script>
+const streamed = document.getElementById("streamed"), source = new MediaSource();
+streamed.src = URL.createObjectURL(source);
+streamed.play().catch(() => {});
+source.onsourceopen = async () => {
+    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.42c00c"');
+    buffer.onupdateend = () => { buffer.onupdateend = null; source.endOfStream(); };
+    buffer.appendBuffer(await (await fetch("stream.mp4")).arrayBuffer());
+};
 </script>`,
         "mse-pause.html": `<!doctype html><title>MSE pause</title>
 <video id="streamed" muted width="320" height="180"></video>
@@ -1670,9 +1692,10 @@ async function check(base, port, site, adSite) {
         const items = await ev(`[...document.querySelectorAll("#go_menu_panel .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent).join()`);
         // (The other pages are those the server has: Files, Terminal...)
         if (items !== "Settings") throw new Error(`the menu has ${items}`);
-        // Its first row: what's done most, each a glyph over its name (Forward's in the bar here, not a phone's).
+        // Its first row: what's done most, each a glyph over its name (Forward's in the bar here, not a phone's;
+        // a computer's: Mobile, the other pages than its own, offered).
         const actions = await ev(`[...document.querySelectorAll("#go_menu_actions button")].filter((b) => b.getClientRects().length).map((button) => ({ name: button.textContent, top: button.getBoundingClientRect().top, glyph: !!button.querySelector("svg"), under: button.querySelector("svg")?.getBoundingClientRect().bottom <= button.querySelector(".caption").getBoundingClientRect().top }))`);
-        if (actions.map((action) => action.name).join() !== "Desktop,Full screen,Hide browser" ||
+        if (actions.map((action) => action.name).join() !== "Mobile,Full screen,Hide browser" ||
             actions.some((action) => !action.glyph || !action.under) || new Set(actions.map((action) => action.top)).size !== 1) throw new Error(`the menu's first row: ${JSON.stringify(actions)}`);
         if (await ev(`document.getElementById("go_menu_actions").compareDocumentPosition(document.getElementById("go_menu_settings")) & Node.DOCUMENT_POSITION_PRECEDING`)) throw new Error("Settings above the first row");
         // The other pages and logging out: one row, icons only (named for a
@@ -3994,6 +4017,19 @@ async function check(base, port, site, adSite) {
         if ((await frame(`document.getElementById("out").textContent`)) !== "play playing") throw new Error(`the page told ${await frame(`document.getElementById("out").textContent`)}`);
     });
 
+    await step("a MediaSource video the page plays before /go's agent is there (its first script) plays here, with no press", async () => {
+        const toggle = `document.getElementById("go_menu_autoplay")`;
+        const autoplayWas = await ev(`${toggle}.getAttribute("aria-checked") ?? String(${toggle}.checked)`);
+        if (autoplayWas !== "true") await ev(`${toggle}.click()`);
+        try {
+            await goTo(site + "mse-early.html", "MSE early");
+            await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3; })()`, "its stream playing, played before the agent was there", 30000)
+                .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`JSON.stringify([...document.querySelectorAll("video")].map((v) => [v.paused, v.currentTime, v.readyState]))`)}`); });
+        } finally {
+            if (autoplayWas !== "true") await ev(`${toggle}.click()`);
+        }
+    });
+
     await step("a video attached as HLS.js does (empty source, then ManagedMediaSource) plays under its box, not as nothing to play", async () => {
         await goTo(site + "mse-hls-like.html", "MSE HLS-like");
         await frameWait(`document.documentElement.getAttribute("data-mms") === "managed"`, "ManagedMediaSource is our relay");
@@ -4117,6 +4153,16 @@ async function check(base, port, site, adSite) {
                     video.getBoundingClientRect().width > 290 && video.getBoundingClientRect().height === 180;
             })()`, `only clip ${i + 1} retained at the feed dimensions`);
         }
+    });
+
+    await step("an embedded page of another origin that's hidden (displayed none) isn't read till it's shown", async () => {
+        await goTo(site + "xframe-hidden.html", "Hidden frame");
+        await frameWait(`!!document.getElementById("show")`, "its button");
+        const read = `!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`;
+        await sleep(3500);  // (a few of the frames' rounds: once a second)
+        if (await frame(read)) throw new Error("a hidden frame's page was read");
+        await frameClick("#show");
+        await frameWait(read, "its page, read once it's shown", 20000);
     });
 
     await step("a press, typing, Enter, hover and a tap in an embedded page of another origin reach it there", async () => {

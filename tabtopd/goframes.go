@@ -166,7 +166,11 @@ func (b *goBrowser) readFrames(world int, main string, known map[string]goChild)
 }
 
 // frameOwner is the agent's number for frame's iframe, and whether the
-// agent reads its page itself; 0 if the copy doesn't have it yet.
+// agent reads its page itself; 0 if the copy doesn't have it yet, or it
+// isn't shown (displayed none: nothing of it to copy). Such a frame isn't
+// read, its agent not put in it, till it's shown: one that's never shown,
+// as YouTube's sign-in check (accounts.google.com), read nonetheless kept
+// Shorts from starting its first video in Moli.
 func (b *goBrowser) frameOwner(ctx context.Context, world int, frame string) (int, bool) {
 	var owner struct{ BackendNodeID int }
 	if b.cdp.call(ctx, b.page, "DOM.getFrameOwner", map[string]any{"frameId": frame}, &owner) != nil || owner.BackendNodeID == 0 {
@@ -185,8 +189,9 @@ func (b *goBrowser) frameOwner(ctx context.Context, world int, frame string) (in
 	var o struct {
 		ID       int  `json:"id"`
 		Readable bool `json:"readable"`
+		Hidden   bool `json:"hidden"`
 	}
-	if json.Unmarshal([]byte(res.Result.Value), &o) != nil {
+	if json.Unmarshal([]byte(res.Result.Value), &o) != nil || o.Hidden {
 		return 0, false
 	}
 	return o.ID, o.Readable
