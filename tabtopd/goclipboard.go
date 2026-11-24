@@ -75,6 +75,14 @@ type goClipboardOut struct {
 	Fullscreen []goFullscreenAsk `json:"fullscreen"`
 	// And its notifications (gonotify.go).
 	Notify *goNotifyOut `json:"notify"`
+	// And the pattern it last asked to be felt (govibrate.go).
+	Vibrate []float64 `json:"vibrate"`
+	// And its screen wake lock asked for, or let go (gowakelock.go).
+	WakeLock []goWakeAsk `json:"wakeLock"`
+	// And its screen's orientation locked, or unlocked (goorientation.go).
+	Orientation []goOrientAsk `json:"orientation"`
+	// And its pointer lock asked for, or left (gopointerlock.go).
+	PointerLock []goPointerAsk `json:"pointerLock"`
 }
 
 // clipboard passes on what the page in world (of gen) copied and asked to
@@ -86,6 +94,18 @@ func (b *goBrowser) clipboard(gen, world int, out goClipboardOut) {
 	}
 	if out.Notify != nil && gen == b.gen {
 		b.notify(gen, world, *out.Notify, recent)
+	}
+	if out.Vibrate != nil && gen == b.gen {
+		b.vibrate(gen, world, out.Vibrate, recent)
+	}
+	if len(out.WakeLock) > 0 && gen == b.gen {
+		b.wakeLockAsks(gen, world, out.WakeLock, recent)
+	}
+	if len(out.Orientation) > 0 && gen == b.gen {
+		b.orientationAsks(gen, world, out.Orientation)
+	}
+	if len(out.PointerLock) > 0 && gen == b.gen {
+		b.pointerLockAsks(gen, world, out.PointerLock, recent)
 	}
 	if out.Copy == nil && out.CopyImage == nil && len(out.PasteAsks) == 0 && len(out.PasteReads) == 0 {
 		return

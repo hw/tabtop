@@ -88,6 +88,7 @@ func (b *goBrowser) fullscreenLet(tell bool) {
 		return
 	}
 	b.fullscreen = nil
+	b.orientationGone() // (its lock goes with it: goorientation.go)
 	if f.gen != b.gen {
 		return // its page gone, with all that was done in it
 	}
@@ -114,5 +115,6 @@ func (b *goBrowser) fullscreenGone() {
 		return
 	}
 	b.fullscreen = nil
+	b.orientationGone()
 	b.send(map[string]any{"type": "go-fullscreen", "gen": b.gen, "on": false})
 }

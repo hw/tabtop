@@ -152,6 +152,8 @@
                 entry.asked = false;
             }
             mediaLater();
+        } else if (m.type === "pointerlock") {
+            pointerLock(m.on === true);
         } else if (m.type === "files-chosen" && Array.isArray(m.files)) {
             showChosen(m.files);
         } else if (m.type === "frame-plays" && doc && m.gen === doc.gen && Number.isSafeInteger(m.doc) && m.doc > 0 && m.doc < 2 ** 20 && Array.isArray(m.plays)) {
@@ -2366,6 +2368,63 @@
         }
         return { id: at.id, ...place(at.node) };
     }
+    // The page's pointer lock (gopointerlock.go): the copy locks the pointer
+    // as the page asked, and says so (or that it couldn't, or that it's
+    // left: Esc, the window left). While it's locked, the pointer's moves
+    // (movementX/movementY, added up, the newest every 50 ms), its buttons
+    // and wheel go as "locked" input, given to the page's locked element;
+    // nothing of it is the copy's own (a press, a click, a link).
+    const tellLock = (state) => { if (doc) tell({ type: "pointerlock-state", gen: doc.gen, state }); };
+    function pointerLock(on) {
+        if (!on) {
+            if (document.pointerLockElement) document.exitPointerLock();
+            return;
+        }
+        if (document.pointerLockElement) return tellLock("on");
+        try {
+            const p = document.documentElement.requestPointerLock();
+            p?.catch?.(() => tellLock("error"));
+        } catch {
+            tellLock("error");
+        }
+    }
+    // (Its wheel kept from scrolling the copy only while it's locked: a
+    // listener that can, there only then; the copy's own is passive.)
+    const lockedWheel = (e) => {
+        if (!document.pointerLockElement) return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        if (!e.isTrusted) return;
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+        send("locked", 0, { phase: "wheel", dx: e.deltaX * unit, dy: e.deltaY * unit, buttons: e.buttons, ...mods(e) });
+    };
+    document.addEventListener("pointerlockchange", () => {
+        const on = !!document.pointerLockElement;
+        if (on) document.addEventListener("wheel", lockedWheel, { capture: true, passive: false });
+        else document.removeEventListener("wheel", lockedWheel, { capture: true });
+        tellLock(on ? "on" : "off");
+    });
+    document.addEventListener("pointerlockerror", () => tellLock("error"));
+    let lockedMove = null, lockedTimer = 0;
+    for (const type of ["mousedown", "mouseup", "mousemove", "click", "dblclick", "auxclick", "contextmenu"]) {
+        document.addEventListener(type, (e) => {
+            if (!document.pointerLockElement) return;
+            e.stopImmediatePropagation();
+            if (type === "contextmenu") e.preventDefault();
+            if (!e.isTrusted) return;
+            if (type === "mousedown" || type === "mouseup") {
+                send("locked", 0, { phase: type === "mousedown" ? "down" : "up", button: e.button, buttons: e.buttons, ...mods(e) });
+            } else if (type === "mousemove") {
+                lockedMove = { phase: "move", dx: (lockedMove?.dx ?? 0) + e.movementX, dy: (lockedMove?.dy ?? 0) + e.movementY, buttons: e.buttons, ...mods(e) };
+                if (!lockedTimer) lockedTimer = setTimeout(() => {
+                    lockedTimer = 0;
+                    if (lockedMove) send("locked", 0, lockedMove);
+                    lockedMove = null;
+                }, 50);
+            }
+        }, true);
+    }
+
     let held = 0;  // buttons pressed here, not yet released
     let pressedAt = null;
     document.addEventListener("mousedown", (e) => {
@@ -2545,8 +2604,8 @@
             if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
             const w = where(e);
             if (!w) return;
-            if (w.frame) {  // an embedded page's: not given (its places aren't the iframe's)
-                if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+            if (w.frame) {  // an embedded page's: a drag not given (its places aren't the iframe's); files dropped, given there (gouploads.go)
+                if (e.dataTransfer && ![...(e.dataTransfer.types ?? [])].includes("Files")) e.dataTransfer.dropEffect = "none";
                 if (dragOver) send("drag", 0, { phase: "cancel" });
                 dragOver = null;
                 return;
@@ -2572,9 +2631,10 @@
         const w = where(e);
         if (dt?.files?.length) {
             // The files, to the page around this, to send (gouploads.go);
-            // where, for them to be dropped there.
-            if (w && !w.frame && doc) tell({ type: "drop-files", gen: doc.gen, files: [...dt.files], id: w.id, fx: w.fx, fy: w.fy, ...mods(e) });
-            else tell({ type: "drop-files", gen: doc?.gen, frame: true });
+            // where, for them to be dropped there (an embedded page's
+            // element by the path to it, as its other input is).
+            if (w && doc) tell({ type: "drop-files", gen: doc.gen, files: [...dt.files], id: w.id, ...frameFields(w), fx: w.fx, fy: w.fy, ...mods(e) });
+            else tell({ type: "drop-files", gen: doc?.gen, nowhere: true });
             send("drag", 0, { phase: "cancel" });
             return;
         }
@@ -2603,7 +2663,7 @@
         pointerSoon();
     }, true);
     document.addEventListener("wheel", (e) => {
-        if (!e.isTrusted) return;
+        if (!e.isTrusted || document.pointerLockElement) return;  // (locked: the locked pointer's, lockedWheel)
         const w = where(e);
         if (!w) return;
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;

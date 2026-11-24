@@ -96,6 +96,16 @@
     });
     const fields = new WeakMap();
     const str = (v, max) => (v === undefined || v === null ? "" : String(v)).slice(0, max);
+    // A picture's address, as the page reads it back (absolute): an http(s)
+    // one of 2,048 characters at most, or a data: picture of 1.5 MB.
+    const pic = (v) => {
+        if (v === undefined || v === null || v === "") return "";
+        try {
+            const u = new URL(String(v), document.baseURI);
+            if (/^https?:$/.test(u.protocol)) return u.href.length <= 2048 ? u.href : "";
+            return u.protocol === "data:" && u.href.length <= 1_500_000 ? u.href : "";
+        } catch { return ""; }
+    };
 
     class Notification extends EventTarget {
         constructor(title, options = {}) {
@@ -108,7 +118,7 @@
             const id = newID();
             const f = {
                 id, title: str(title, 1000), body: str(options.body, 4000), tag: str(options.tag, 256),
-                icon: str(options.icon, 2048), image: str(options.image, 2048), badge: str(options.badge, 2048),
+                icon: pic(options.icon), image: pic(options.image), badge: pic(options.badge),
                 dir: ["ltr", "rtl"].includes(options.dir) ? options.dir : "auto", lang: str(options.lang, 64),
                 silent: options.silent === undefined || options.silent === null ? null : !!options.silent,
                 requireInteraction: !!options.requireInteraction, renotify: !!options.renotify,
@@ -124,9 +134,10 @@
             }
             listen();
             shown.set(id, this);
-            // (Its icon and image aren't sent: the person's browser fetches
-            // nothing of the page's.)
-            tell("__tabtop_notify", { id, title: f.title, body: f.body, tag: f.tag, silent: !!f.silent, requireInteraction: f.requireInteraction, renotify: f.renotify, dir: f.dir, lang: f.lang });
+            // (Its pictures by address: the server fetches them, as the
+            // page's are; the person's browser fetches nothing of the page's.)
+            tell("__tabtop_notify", { id, title: f.title, body: f.body, tag: f.tag, silent: !!f.silent, requireInteraction: f.requireInteraction, renotify: f.renotify, dir: f.dir, lang: f.lang,
+                icon: f.icon, image: f.image, badge: f.badge });
         }
         close() {
             const f = fields.get(this);

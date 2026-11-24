@@ -15,8 +15,10 @@ package main
 import (
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"maps"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -50,6 +52,11 @@ type goNotifyShow struct {
 	Renotify           bool   `json:"renotify"`
 	Dir                string `json:"dir"`
 	Lang               string `json:"lang"`
+	// Its pictures' addresses (http(s), or data:), fetched here
+	// (notifyPictures).
+	Icon  string `json:"icon"`
+	Image string `json:"image"`
+	Badge string `json:"badge"`
 }
 
 // goNotifyAsk is the permission the page asked for, waiting for the person:
@@ -65,6 +72,7 @@ type goNotifyAsk struct {
 type goNotification struct {
 	gen, world int
 	id         string
+	waiting    bool // its pictures being fetched: not yet sent
 }
 
 // goNotifyTab is a tab's notifications: the ask waiting, those shown, when
@@ -160,17 +168,112 @@ func (b *goBrowser) notify(gen, world int, out goNotifyOut, recent bool) {
 			dir = "auto"
 		}
 		goDebugf("notifications: one shown for %s", site)
-		b.send(map[string]any{"type": "go-notify", "gen": gen, "ask": token, "site": site,
+		m := map[string]any{"type": "go-notify", "gen": gen, "ask": token, "site": site,
 			"title": goCut(s.Title, goNotifyTitle), "body": goCut(s.Body, goNotifyBody), "tag": goCut(s.Tag, 128),
-			"silent": s.Silent, "requireInteraction": s.RequireInteraction, "renotify": s.Renotify, "dir": dir, "lang": goCut(s.Lang, 35)})
+			"silent": s.Silent, "requireInteraction": s.RequireInteraction, "renotify": s.Renotify, "dir": dir, "lang": goCut(s.Lang, 35)}
+		if s.Icon == "" && s.Image == "" && s.Badge == "" {
+			b.send(m)
+			continue
+		}
+		// Its pictures fetched first (as a browser fetches them before it
+		// shows it), goNotifyPicturesWait at most: shown with those come.
+		n.shown[token] = goNotification{gen: gen, world: world, id: s.ID, waiting: true}
+		go b.notifyPictures(token, m, s)
 	}
 	for _, id := range out.Closes {
 		for token, s := range n.shown {
 			if s.id == id && s.world == world && s.gen == gen {
+				if s.waiting {
+					b.notifyClose(token) // (never shown: closed here)
+					continue
+				}
 				b.send(map[string]any{"type": "go-notify-close", "gen": gen, "ask": token})
 			}
 		}
 	}
+}
+
+const (
+	goNotifyIcon         = 256 << 10 // bytes of its icon, at most
+	goNotifyBadge        = 64 << 10  // of its badge
+	goNotifyImage        = 1 << 20   // of its image
+	goNotifyPicturesWait = 3 * time.Second
+)
+
+// notifyPictures fetches a notification's pictures, as the page's are
+// (the tab's cookies, its ad blocking, its cache), each a raster picture
+// (never SVG) within its size, and then shows it, if it's still to be.
+func (b *goBrowser) notifyPictures(token string, m map[string]any, s goNotifyShow) {
+	ctx, cancel := context.WithTimeout(b.ctx, goNotifyPicturesWait)
+	defer cancel()
+	type got struct {
+		key, data string
+	}
+	results := make(chan got, 3)
+	n := 0
+	for _, p := range []struct {
+		key, raw string
+		max      int
+	}{{"icon", s.Icon, goNotifyIcon}, {"image", s.Image, goNotifyImage}, {"badge", s.Badge, goNotifyBadge}} {
+		if p.raw == "" {
+			continue
+		}
+		n++
+		go func() { results <- got{p.key, b.notifyPicture(ctx, p.raw, p.max)} }()
+	}
+	pictures := map[string]string{}
+	for ; n > 0; n-- {
+		if r := <-results; r.data != "" {
+			pictures[r.key] = r.data
+		}
+	}
+	b.post(func() {
+		nt := &b.notifying
+		cur, ok := nt.shown[token]
+		if !ok || !cur.waiting || cur.gen != b.gen {
+			return
+		}
+		cur.waiting = false
+		nt.shown[token] = cur
+		for k, v := range pictures {
+			m[k] = v
+		}
+		goDebugf("notifications: %d of its pictures fetched", len(pictures))
+		b.send(m)
+	})
+}
+
+// notifyPicture is the picture at raw (http(s), or a data: one) as a data:
+// address of its type, or "" if it isn't a raster picture of max bytes at
+// most, or isn't fetched in time.
+func (b *goBrowser) notifyPicture(ctx context.Context, raw string, max int) string {
+	var data []byte
+	if strings.HasPrefix(raw, "data:") {
+		comma := strings.IndexByte(raw, ',')
+		if comma < 0 || !strings.HasSuffix(raw[:comma], ";base64") {
+			return ""
+		}
+		d, err := base64.StdEncoding.DecodeString(raw[comma+1:])
+		if err != nil {
+			return ""
+		}
+		data = d
+	} else {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "http" && u.Scheme != "https" {
+			return ""
+		}
+		f := b.resource(ctx, "image", raw)
+		if f.err != nil {
+			return ""
+		}
+		data = f.data
+	}
+	t := goSniffImage(data)
+	if t == "" || len(data) > max {
+		return ""
+	}
+	return "data:" + t + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // notifyClose lets one shown go: the person's browser told to close it,

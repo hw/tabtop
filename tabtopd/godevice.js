@@ -2,6 +2,9 @@
 // including requests made before the first snapshot of the document.
 (capabilities => {
     if (window !== top) return;
+    // What the person's browser has, for what the page's told of its
+    // permissions (goperms.js).
+    try { Object.defineProperty(window, Symbol.for("tabtop.viewer"), { value: Object.freeze({ ...capabilities }), configurable: true }); } catch { /* not said */ }
     let pending, queued, currentVideo, pipWindow;
     function eventHandler(target, type) {
         if ("on" + type in target) return;

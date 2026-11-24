@@ -214,8 +214,10 @@ func (b *goBrowser) nextRes() {
 func (b *goBrowser) leftPage() {
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
 	b.resetFileSystem()
-	b.fullscreenGone() // (gofullscreen.go)
-	b.notifyGone()     // (gonotify.go)
+	b.fullscreenGone()  // (gofullscreen.go)
+	b.wakeLockGone()    // (gowakelock.go)
+	b.pointerLockGone() // (gopointerlock.go)
+	b.notifyGone()      // (gonotify.go)
 	for _, m := range b.resQueue {
 		b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": "The page was left."})
 	}

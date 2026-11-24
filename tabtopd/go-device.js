@@ -5,7 +5,10 @@ export function viewerCapabilities() {
     try { shareFiles = typeof navigator.canShare === "function" && navigator.canShare({ files: [new File(["x"], "x.txt", { type: "text/plain" })] }); } catch { /* none */ }
     return { share: typeof navigator.share === "function", shareFiles, location: !!navigator.geolocation,
         pip: !!document.pictureInPictureEnabled && typeof HTMLVideoElement.prototype.requestPictureInPicture === "function",
-        fileSystem: typeof window.showOpenFilePicker === "function" && typeof window.showSaveFilePicker === "function" };
+        fileSystem: typeof window.showOpenFilePicker === "function" && typeof window.showSaveFilePicker === "function",
+        wakeLock: typeof navigator.wakeLock?.request === "function",
+        orientation: typeof screen.orientation?.lock === "function",
+        pointerLock: typeof Element.prototype.requestPointerLock === "function" };
 }
 
 export function viewerDevices(box, current, getVideo, getFile = async () => null) {

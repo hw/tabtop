@@ -45,11 +45,12 @@ const (
 	// above it.
 	goFrameCSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob: data:; font-src blob: data:; " +
 		"media-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; " +
-		"manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+		"manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts allow-pointer-lock"
 
 	// goFrameSandbox is the sandbox the /go page gives the frame (go.js);
-	// a test holds the two together.
-	goFrameSandbox = "allow-scripts"
+	// a test holds the two together. (Its pointer locked for a page that
+	// asks: gopointerlock.go. It runs none of the page's scripts.)
+	goFrameSandbox = "allow-scripts allow-pointer-lock"
 )
 
 // goFrameHTML is the frame's page: the CSS parser, the WebGL it replays

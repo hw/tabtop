@@ -105,7 +105,7 @@
         });
         // Notifications (gonotify.js): permission asked for, those shown,
         // and closed by the page.
-        let notifyAsks = [], notifyShows = [], notifyCloses = [];
+        let notifyAsks = [], notifyShows = [], notifyCloses = [], notifyPicBytes = 0;
         const notifyID = (id) => typeof id === "string" && /^[a-z0-9]{1,40}$/.test(id);
         document.addEventListener("__tabtop_notify_ask", (e) => {
             let d;
@@ -117,8 +117,18 @@
             try { d = JSON.parse(e.detail); } catch { return; }
             if (notifyShows.length >= 8 || !notifyID(d?.id)) return;
             const s = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+            // (Its pictures' addresses: 2 MB of them a batch at most, as a
+            // batch past its limit is read again, its notifications lost;
+            // one past that shown without them.)
+            const pic = (v) => {
+                if (typeof v !== "string" || !(/^https?:\/\//.test(v) ? v.length <= 2048 : /^data:image\//.test(v) && v.length <= 1_500_000)) return "";
+                if (notifyPicBytes + v.length > 2_000_000) return "";
+                notifyPicBytes += v.length;
+                return v;
+            };
             notifyShows.push({ id: d.id, title: s(d.title, 1000), body: s(d.body, 4000), tag: s(d.tag, 256), silent: d.silent === true,
-                requireInteraction: d.requireInteraction === true, renotify: d.renotify === true, dir: s(d.dir, 8), lang: s(d.lang, 64) });
+                requireInteraction: d.requireInteraction === true, renotify: d.renotify === true, dir: s(d.dir, 8), lang: s(d.lang, 64),
+                icon: pic(d.icon), image: pic(d.image), badge: pic(d.badge) });
         });
         document.addEventListener("__tabtop_notify_close", (e) => {
             let d;
@@ -131,6 +141,53 @@
             let d;
             try { d = JSON.parse(e.detail); } catch { return; }
             if (fullAsks.length < 4 && d && (d.on === false || (typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)))) fullAsks.push(d.on === false ? { on: false } : { on: true, id: d.id });
+        });
+        // The page's screen wake lock asked for and let go (gowakelock.js).
+        let wakeAsks = [];
+        document.addEventListener("__tabtop_wakelock", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (wakeAsks.length < 16 && d && typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)) wakeAsks.push({ on: d.on === true, id: d.id });
+        });
+        // The page's pointer lock asked for and left (gopointerlock.js): the
+        // element asked for kept, by its ask's id, till it's answered; the
+        // one locked, for the pointer's events while it is.
+        let lockAsks = [], lockFor = new Map(), lockEl = null;
+        document.addEventListener("__tabtop_pointerlock", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!d || lockAsks.length >= 4) return;
+            if (d.on === false) {
+                lockEl = null;
+                lockAsks.push({ on: false });
+                return;
+            }
+            const el = e.composedPath?.()[0] ?? e.target;
+            if (typeof d.id !== "string" || !/^[a-z0-9]{1,40}$/.test(d.id) || !(el instanceof Element)) return;
+            if (lockFor.size >= 8) lockFor.clear();
+            lockFor.set(d.id, el);
+            lockAsks.push({ on: true, id: d.id });
+        }, true);
+        // The page's screen orientation locked or unlocked (goorientation.js).
+        let orientAsks = [];
+        const ORIENT = ["any", "natural", "landscape", "portrait", "portrait-primary", "portrait-secondary", "landscape-primary", "landscape-secondary"];
+        document.addEventListener("__tabtop_orientation", (e) => {
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (orientAsks.length >= 4 || !d) return;
+            if (d.unlock === true) orientAsks.push({ unlock: true });
+            else if (ORIENT.includes(d.lock) && typeof d.id === "string" && /^[a-z0-9]{1,40}$/.test(d.id)) orientAsks.push({ lock: d.lock, id: d.id });
+        });
+        // The page's vibration (govibrate.js): its latest pattern, each
+        // read. (A frame of another origin's says none: the server's
+        // passed only the page's own.)
+        let vibrateAsk = null;
+        document.addEventListener("__tabtop_vibrate", (e) => {
+            if (typeof e.detail !== "string" || e.detail.length > 2048) return;
+            let d;
+            try { d = JSON.parse(e.detail); } catch { return; }
+            if (!Array.isArray(d) || d.length > 99) return;
+            vibrateAsk = d.map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0)));
         });
         // (A saved file's pieces, fs-write, are many at once: so many each
         // read, apart from the other asks' 4. One taken is cancelled, so the
@@ -202,22 +259,83 @@
             if (pasteAsks.length) out.pasteAsks = pasteAsks;
             if (pasteReads.length) out.pasteReads = pasteReads;
             if (fullAsks.length) out.fullscreen = fullAsks;
+            if (vibrateAsk) out.vibrate = vibrateAsk;
+            if (wakeAsks.length) out.wakeLock = wakeAsks;
+            if (orientAsks.length) out.orientation = orientAsks;
+            if (lockAsks.length) out.pointerLock = lockAsks;
             if (notifyAsks.length || notifyShows.length || notifyCloses.length) out.notify = { asks: notifyAsks, shows: notifyShows, closes: notifyCloses };
             copiedText = copiedImage = null;
             pasteAsks = [];
             pasteReads = [];
             fullAsks = [];
+            vibrateAsk = null;
+            wakeAsks = [];
+            orientAsks = [];
+            lockAsks = [];
             notifyAsks = [];
             notifyShows = [];
+            notifyPicBytes = 0;
             notifyCloses = [];
             return out;
         };
-        const clipEmpty = (out) => out.copy === undefined && out.copyImage === undefined && !out.pasteAsks && !out.pasteReads && !out.fullscreen && !out.notify;
+        const clipEmpty = (out) => out.copy === undefined && out.copyImage === undefined && !out.pasteAsks && !out.pasteReads && !out.fullscreen && !out.vibrate && !out.wakeLock && !out.orientation && !out.pointerLock && !out.notify;
         // copied is what the page copied and asked to read since it was
         // last asked, as JSON, or "" (a frame's world's: goframes.go).
         const clipCopied = () => {
             const out = clipboardOut();
             return clipEmpty(out) ? "" : JSON.stringify(out);
+        };
+        // dropIn gives files dropped on this (embedded) page to it, at the
+        // element numbered id, where within it (fractions): they're in the
+        // input numbered input (gouploads.go), which the page's world takes
+        // them from (godrop.js). "taken" if its dragover took them.
+        const dropIn = (json) => {
+            let a;
+            try { a = JSON.parse(json); } catch { return "bad"; }
+            const el = node(a.id);
+            if (!el || el.nodeType !== 1 || typeof a.input !== "string" || !/^__tabtop_drop_[a-z0-9]{1,40}$/.test(a.input)) return "gone";
+            const r = el.getBoundingClientRect();
+            const x = r.left + Math.min(1, Math.max(0, Number(a.fx) || 0)) * r.width, y = r.top + Math.min(1, Math.max(0, Number(a.fy) || 0)) * r.height;
+            const told = new CustomEvent("__tabtop_drop", { bubbles: true, composed: true, cancelable: true,
+                detail: JSON.stringify({ input: a.input, x, y, shift: !!a.shift, ctrl: !!a.ctrl, alt: !!a.alt, meta: !!a.meta }) });
+            const left = el.dispatchEvent(told);
+            document.getElementById(a.input)?.remove();
+            return left ? "left" : "taken";
+        };
+        // pointerLock gives the page the answer to its request ({id, ok}),
+        // or says the lock's left ({exit: true}).
+        const lockAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            if (d?.exit) {
+                lockEl = null;
+                document.dispatchEvent(new CustomEvent("__tabtop_pointerlock_answer", { detail: JSON.stringify({ exit: true }) }));
+                return true;
+            }
+            if (typeof d?.id !== "string") return false;
+            const el = lockFor.get(d.id);
+            lockFor.delete(d.id);
+            if (d.ok && el?.isConnected) lockEl = el;
+            document.dispatchEvent(new CustomEvent("__tabtop_pointerlock_answer", { detail: JSON.stringify({ id: d.id, ok: !!d.ok && !!el?.isConnected }) }));
+            return true;
+        };
+        // orientation gives the page the answer to its lock ({id, ok, error}).
+        const orientAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            if (typeof d?.id !== "string") return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_orientation_answer", { detail: JSON.stringify({ id: d.id, ok: !!d.ok, error: typeof d.error === "string" ? d.error : "" }) }));
+            return true;
+        };
+        // wakeLock gives the page the server's answer to its request
+        // ({id, ok}), or says its lock's lost ({lost: true}).
+        const wakeAnswer = (json) => {
+            let d;
+            try { d = JSON.parse(json); } catch { return false; }
+            const detail = d?.lost ? { lost: true } : typeof d?.id === "string" ? { id: d.id, ok: !!d.ok } : null;
+            if (!detail) return false;
+            document.dispatchEvent(new CustomEvent("__tabtop_wakelock_answer", { detail: JSON.stringify(detail) }));
+            return true;
         };
         // fullscreen gives the page the server's answer to its request
         // ({id, ok}), or says the person left it ({exit: true}).
@@ -730,6 +848,7 @@
             }
             pointerAt = el;
         }
+        let lockedDown = 0;  // the locked pointer's buttons pressed (a click on their release)
         function scripted(json) {
             let a;
             try { a = JSON.parse(json); } catch { return "bad"; }
@@ -762,6 +881,41 @@
                     const to = a.back ? order[i <= 0 ? order.length - 1 : i - 1] : order[i < 0 || i === order.length - 1 ? 0 : i + 1];
                     to.focus();
                     return "ok";
+                }
+                case "locked": {
+                    // The pointer, locked (gopointerlock.js): its moves as
+                    // movementX/movementY, its buttons and wheel, on the
+                    // element locked, at its middle (where a locked
+                    // pointer is doesn't move).
+                    const el = lockEl;
+                    if (!el?.isConnected) return "none";
+                    const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+                    const mods = { shiftKey: !!a.shift, ctrlKey: !!a.ctrl, altKey: !!a.alt, metaKey: !!a.meta };
+                    const button = Number(a.button) || 0, buttons = Number(a.buttons) || 0;
+                    const init = mouseInit(x, y, { ...mods, button, buttons, pointerId: 1, pointerType: "mouse", isPrimary: true });
+                    switch (a.phase) {
+                        case "move": {
+                            const moved = { ...init, button: -1, movementX: Math.round(Number(a.dx) || 0), movementY: Math.round(Number(a.dy) || 0) };
+                            el.dispatchEvent(new PointerEvent("pointermove", moved));
+                            el.dispatchEvent(new MouseEvent("mousemove", moved));
+                            return "ok";
+                        }
+                        case "down":
+                            el.dispatchEvent(new PointerEvent("pointerdown", init));
+                            el.dispatchEvent(new MouseEvent("mousedown", { ...init, detail: 1 }));
+                            lockedDown |= 1 << button;
+                            return "ok";
+                        case "up":
+                            el.dispatchEvent(new PointerEvent("pointerup", init));
+                            el.dispatchEvent(new MouseEvent("mouseup", { ...init, detail: 1 }));
+                            if (lockedDown & (1 << button)) el.dispatchEvent(new MouseEvent(button === 0 ? "click" : "auxclick", { ...init, detail: 1 }));
+                            lockedDown &= ~(1 << button);
+                            return "ok";
+                        case "wheel":
+                            el.dispatchEvent(new WheelEvent("wheel", { ...init, deltaX: Number(a.dx) || 0, deltaY: Number(a.dy) || 0, deltaMode: 0 }));
+                            return "ok";
+                    }
+                    return "unknown";
                 }
                 case "pointer": {
                     const el = at(a.x, a.y);
@@ -2048,7 +2202,7 @@
             return "unknown";
         }
 
-        w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, frameStreams };
+        w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, wakeLock: wakeAnswer, orientation: orientAnswer, pointerLock: lockAnswer, dropIn, frameStreams };
         // What the page observed before this world was made (as it loaded),
         // asked for again: posted, not dispatched. An event from this world
         // handled in the page's, as the page loads, leaves part of it

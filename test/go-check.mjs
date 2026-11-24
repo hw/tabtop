@@ -168,15 +168,77 @@ $("read").onclick = () => navigator.clipboard.readText().then((t) => { $("got").
         // The page's fullscreen (gofullscreen.js): its player made so, left
         // by it or by the person; one asked for long after its press; one
         // in another origin's frame.
+        // A page's pointer lock (gopointerlock.js): a pad that locks it,
+        // adds up its moves, counts its presses; a right press leaves it.
+        "lock.html": `<!doctype html><title>Lock</title><div id="pad" style="width:240px;height:160px;background:#468"></div><button id="late">Later</button>
+<p id="r">-</p><p id="c">0</p><p id="m">0,0</p><p id="k">0</p>
+<script>
+const $ = (id) => document.getElementById(id);
+let mx = 0, my = 0, changes = 0, clicks = 0;
+const lock = () => $("pad").requestPointerLock().then(() => { $("r").textContent = "locked " + (document.pointerLockElement === $("pad")); }, (e) => { $("r").textContent = "refused " + e.name; });
+$("pad").addEventListener("mousedown", (e) => {
+    if (!document.pointerLockElement) return lock();
+    if (e.button === 2) document.exitPointerLock();
+});
+$("pad").addEventListener("mousemove", (e) => { if (document.pointerLockElement) { mx += e.movementX; my += e.movementY; $("m").textContent = mx + "," + my; } });
+$("pad").addEventListener("click", () => { if (document.pointerLockElement) $("k").textContent = String(++clicks); });
+document.addEventListener("pointerlockchange", () => { $("c").textContent = ++changes + " " + (document.pointerLockElement ? "on" : "off"); });
+$("late").onclick = () => setTimeout(lock, 6500);
+</script>`,
+        // A page's screen wake lock (gowakelock.js).
+        "wakelock.html": `<!doctype html><title>Wake lock</title><button id="hold">Hold</button> <button id="release">Release</button> <button id="late">Later</button>
+<p id="r">-</p><p id="e">none</p>
+<script>
+const $ = (id) => document.getElementById(id);
+let s = null, n = 0;
+const hold = () => navigator.wakeLock.request("screen").then((x) => {
+    s = x;
+    $("r").textContent = "held " + x.type + " " + x.released + " " + (x instanceof WakeLockSentinel);
+    x.onrelease = () => { $("e").textContent = "released " + x.released + " " + (++n); };
+}, (e) => { $("r").textContent = "refused " + e.name; });
+$("hold").onclick = hold;
+$("release").onclick = () => s?.release();
+$("late").onclick = () => setTimeout(hold, 6500);
+</script>`,
+        // What a page's told of its permissions (goperms.js).
+        "perms.html": `<!doctype html><title>Perms</title><p id="out">asking</p>
+<script>
+(async () => {
+    const out = {};
+    for (const d of [{ name: "geolocation" }, { name: "notifications" }, { name: "clipboard-read" }, { name: "clipboard-write" }, { name: "camera" }, { name: "microphone" },
+        { name: "screen-wake-lock" }, { name: "pointer-lock" }, { name: "persistent-storage" }, { name: "push" }, { name: "push", userVisibleOnly: true }, { name: "midi" }]) {
+        const key = d.name + (d.userVisibleOnly ? "+uvo" : "");
+        try {
+            const st = await navigator.permissions.query(d);
+            out[key] = st.state + (st instanceof PermissionStatus ? "" : "?");
+        } catch (e) { out[key] = e.name; }
+    }
+    document.getElementById("out").textContent = JSON.stringify(out);
+})();
+</script>`,
+        // A page's vibration (govibrate.js), and another origin's frame's.
+        "vibrate.html": `<!doctype html><title>Vibrate</title><button id="buzz">Buzz</button> <button id="long">Long</button> <button id="stop">Stop</button> <button id="late">Later</button>
+<p id="r">-</p><iframe id="x" width="300" height="80"></iframe>
+<script>
+const $ = (id) => document.getElementById(id);
+if (new URLSearchParams(location.search).has("frame")) $("x").src = "http://[::ffff:" + location.hostname + "]/vibframe.html";
+$("buzz").onclick = () => { $("r").textContent = "buzz " + navigator.vibrate([200, 100, 300]); };
+$("long").onclick = () => { $("r").textContent = "long " + navigator.vibrate(Array(150).fill(20000)); };
+$("stop").onclick = () => { $("r").textContent = "stop " + navigator.vibrate(0); };
+$("late").onclick = () => setTimeout(() => { $("r").textContent = "late " + navigator.vibrate(500); }, 6500);
+</script>`,
+        "vibframe.html": `<!doctype html><style>body { margin: 0 }</style><button id="b">Buzz here</button><p id="s">none</p>
+<script>document.getElementById("b").onclick = () => { document.getElementById("s").textContent = "frame " + navigator.vibrate(300); };</script>`,
         "fullscreen.html": `<!doctype html><title>Fullscreen</title><style>body { margin: 8px }</style>
-<div id="player" style="width:320px;height:180px;background:#246"><button id="fs">Full</button> <button id="exit">Exit</button></div>
-<p id="change">none</p><p id="result">-</p><button id="late">Later</button> <iframe id="x" width="300" height="80"></iframe>
+<div id="player" style="width:320px;height:180px;background:#246"><button id="fs">Full</button> <button id="exit">Exit</button> <button id="lock">Lock</button></div>
+<p id="change">none</p><p id="result">-</p><button id="late">Later</button> <p id="o">-</p> <iframe id="x" width="300" height="80"></iframe>
 <script>
 const $ = (id) => document.getElementById(id);
 if (new URLSearchParams(location.search).has("frame")) $("x").src = "http://[::ffff:" + location.hostname + "]/fullframe.html";
 document.addEventListener("fullscreenchange", () => { $("change").textContent = "change " + (document.fullscreenElement?.id ?? "none"); });
 $("fs").onclick = () => $("player").requestFullscreen().then(() => { $("result").textContent = "full " + document.fullscreenEnabled; }, (e) => { $("result").textContent = "refused " + e.message; });
 $("exit").onclick = () => document.exitFullscreen();
+$("lock").onclick = () => screen.orientation.lock("landscape").then(() => { $("o").textContent = "lock ok"; }, (e) => { $("o").textContent = "lock " + e.name; });
 $("late").onclick = () => setTimeout(() => $("player").requestFullscreen().catch((e) => { $("result").textContent = "late refused " + e.message; }), 6500);
 </script>`,
         "fullframe.html": `<!doctype html><style>body { margin: 0 }</style><div id="inner" style="width:100%;height:60px;background:#642"><button id="b">Full here</button></div><p id="s">none</p>
@@ -215,7 +277,7 @@ $("readimg").onclick = () => navigator.clipboard.read().then(async (items) => {
         // loads (its first script's), asked for, one shown (its icon on
         // another site, never fetched), clicked and closed.
         "notify.html": `<!doctype html><title>Notify</title><script>const atLoad = Notification.permission;</script>
-<p id="perm"></p><p id="log"></p><p id="early"></p><button id="ask">Ask</button> <button id="show">Show</button> <button id="close">Close</button> <button id="late">Later</button>
+<p id="perm"></p><p id="log"></p><p id="early"></p><button id="ask">Ask</button> <button id="show">Show</button> <button id="close">Close</button> <button id="late">Later</button> <button id="svg">SVG</button> <button id="big">Big</button>
 <script>
 // As it loads, before the agent's there: asked, and (allowed) one shown.
 Notification.requestPermission().then((s) => { document.getElementById("early").textContent += "load-ask " + s + ";"; });
@@ -226,7 +288,17 @@ const perm = async () => { const q = await navigator.permissions.query({ name: "
 perm(); setInterval(perm, 500);
 let n;
 $("ask").onclick = () => Notification.requestPermission().then((s) => log("asked " + s));
-$("show").onclick = () => { n = new Notification("Hello", { body: "from the page", tag: "t1", icon: "https://example.com/icon.png" }); n.onshow = () => log("show"); n.onclick = () => log("click"); n.onclose = () => log("close"); n.onerror = () => log("error"); };
+// A picture of about 900 KB (a PNG's start, then noise): given whole, and
+// what the page shows meanwhile too.
+$("big").onclick = () => {
+    let bin = atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==");
+    const r = new Uint8Array(60000);
+    for (let i = 0; i < 15; i++) { crypto.getRandomValues(r); bin += String.fromCharCode(...r); }
+    new Notification("Big", { image: "data:image/png;base64," + btoa(bin) });
+    log("big");
+};
+$("svg").onclick = () => { new Notification("Drawn", { icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=" }); };
+$("show").onclick = () => { n = new Notification("Hello", { body: "from the page", tag: "t1", icon: "pic.png" }); n.onshow = () => log("show"); n.onclick = () => log("click"); n.onclose = () => log("close"); n.onerror = () => log("error"); };
 $("close").onclick = () => n.close();
 $("late").onclick = () => setTimeout(() => Notification.requestPermission().then((s) => log("late " + s)), 6500);
 </script>`,
@@ -963,6 +1035,9 @@ zone.addEventListener("drop", async (e) => {
     document.getElementById("dropped").textContent = got.join(", ");
 });
 </script>`,
+        // The drop zone, embedded in a page of another origin.
+        "filedropframe.html": `<!doctype html><title>File drop frame</title><p>around it</p><iframe id="x" width="460" height="300"></iframe>
+<script>document.getElementById("x").src = "http://[::ffff:" + location.hostname + "]/filedrop.html";</script>`,
         // A page that says when it was loaded: a new number each load.
         "restart.html": `<!doctype html><title>Restart</title><p id="born"></p><script>document.getElementById("born").textContent = String(Math.random()).slice(2);</script>`,
         "fileauto.html": `<!doctype html><title>File auto</title><input type="file" id="auto"><script>setTimeout(() => document.getElementById("auto").click(), 300);</script>`,
@@ -1489,6 +1564,8 @@ async function check(base, port, site, adSite) {
 
     // Every request, from the page and its frames, in-process or not.
     const requests = [];
+    let choosersOpened = 0;  // this browser's own file choosers opened (Page.fileChooserOpened, while they're taken)
+    browser.events.addEventListener("Page.fileChooserOpened", () => { choosersOpened++; });
     // Through a connection of its own to the browser, attached to every
     // page and frame as they come.
     const ws = new WebSocket((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()).webSocketDebuggerUrl);
@@ -2829,7 +2906,7 @@ async function check(base, port, site, adSite) {
         await frameWait(`document.getElementById("p")?.textContent === "pq=posted+value"`, "what was posted");
     });
 
-    await step("a page's file input: its chooser answered here, its files the page's (read, posted); a shown one shows them; none opened without a press", async () => {
+    await step("a page's file input: its chooser answered here, its files the page's (read, posted); a shown one shows them; files from TabTop's Files instead; none opened without a press", async () => {
         // The files, on this machine; this browser's chooser taken (not
         // shown), and the files put in it as a person would pick them.
         const dir = mkdtempSync(join(tmpdir(), "go-check-files-"));
@@ -2853,7 +2930,17 @@ async function check(base, port, site, adSite) {
             await goTo(site + "fileinput.html", "File input");
             await frameWait(`!!document.getElementById("pick")`, "the page");
             // Opened by its button: two files, read and posted by the page.
+            // (With Files on, asked here first: This device… pressed, its
+            // own chooser opened from that press.)
             await frameClick("#pick");
+            if (process.env.GO_NO_FS !== "1") {
+                await waitFor(`!document.getElementById("go_pick").hidden`, "the chooser, asked here", 15000);
+                const before = choosersOpened;
+                const b = await ev(`(() => { const r = document.querySelector("#go_pick .device").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+                for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: b.x, y: b.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+                for (const end = Date.now() + 10000; choosersOpened === before && Date.now() < end;) await sleep(200);
+                if (choosersOpened === before) throw new Error("This device… didn't open this browser's chooser");
+            }
             await pickHere([join(dir, "a.txt"), join(dir, "b.txt")]);
             await pageGets(`document.getElementById("fgot").textContent === "a.txt=first file's text, b.txt=second file's text"`, "the files, read by the page");
             await frameWait(`document.getElementById("fposted").textContent === "both posted"`, "the files, posted to the site", 15000);
@@ -2863,6 +2950,32 @@ async function check(base, port, site, adSite) {
             await pageGets(`document.getElementById("fshown").textContent === "b.txt=second file's text"`, "the shown field's file, read by the page");
             const here = await frame(`(() => { const f = document.getElementById("shown"); return f.files.length + " " + (f.files[0]?.name ?? ""); })()`);
             if (here !== "1 b.txt") throw new Error(`the shown field here holds ${JSON.stringify(here)}`);
+            // From TabTop's own Files (with Files on): chosen here, copied
+            // by the server, read by the page; a path out of Files, or for
+            // no chooser, refused.
+            if (process.env.GO_DOWNLOADS && process.env.GO_NO_FS !== "1") {
+                const pickDir = join(process.env.GO_DOWNLOADS, "go-check-pick");
+                mkdirSync(pickDir, { recursive: true });
+                writeFileSync(join(pickDir, "c.txt"), "from Files");
+                writeFileSync(join(pickDir, "d.txt"), "also from Files");
+                await goTo(site + "fileinput.html", "File input");
+                await frameWait(`!!document.getElementById("pick")`, "the page");
+                await frameClick("#pick");
+                await waitFor(`!document.getElementById("go_pick").hidden`, "the chooser, asked here", 15000);
+                const token = await ev(`document.getElementById("go_file_input").dataset.chooser`);
+                const refused = (path, chooser = token) => ev(`import("../tabtop/requests.js").then(async (m) => { try { const t = await m.call({ type: "go-upload-files", go_tab: sessionStorage.getItem(Object.keys(sessionStorage).find((k) => k.startsWith("tabtop-go-resume"))), chooser: ${JSON.stringify(chooser)}, path: ${JSON.stringify(path)} }); t.close(); return ""; } catch (e) { return e.message || "refused"; } })`);
+                if (!(await refused("../../../etc/passwd"))) throw new Error("a path out of Files was given to the page");
+                if (!(await refused("go-check-pick/c.txt", "notthechooser"))) throw new Error("a file was given to no chooser");
+                await ev(`document.querySelector("#go_pick .files-go").click()`);
+                await waitFor(`[...document.querySelectorAll("#go_pick li .folder")].some((b) => b.textContent === "go-check-pick/")`, "Files' folders, listed", 15000);
+                await ev(`[...document.querySelectorAll("#go_pick li .folder")].find((b) => b.textContent === "go-check-pick/").click()`);
+                await waitFor(`document.querySelectorAll("#go_pick li label input").length === 2`, "the folder's files", 15000);
+                await ev(`for (const i of document.querySelectorAll("#go_pick li label input")) i.click()`);
+                await ev(`document.querySelector("#go_pick .give").click()`);
+                await pageGets(`document.getElementById("fgot").textContent === "c.txt=from Files, d.txt=also from Files"`, "the files from Files, read by the page");
+                if (!(await ev(`document.getElementById("go_pick").hidden`))) throw new Error("the chooser left open");
+                rmSync(pickDir, { recursive: true, force: true });
+            }
             // One a timer opens, no press: nothing asked here.
             await goTo(site + "fileauto.html", "File auto");
             await sleep(2000);
@@ -2874,7 +2987,7 @@ async function check(base, port, site, adSite) {
         await goTo(site + "index.html", "Fixture");
     });
 
-    await step("files dropped on the page: sent, then dropped there, each a drop of its own (Moli gives a drop one file)", async () => {
+    await step("files dropped on the page: sent, then dropped there, each a drop of its own (Moli gives a drop one file); on an embedded page of another origin, given there, in one drop", async () => {
         const dir = mkdtempSync(join(tmpdir(), "go-check-drop-"));
         writeFileSync(join(dir, "a.txt"), "first file's text");
         writeFileSync(join(dir, "b.txt"), "second file's text");
@@ -2891,6 +3004,17 @@ async function check(base, port, site, adSite) {
             await frameWait(`document.getElementById("dropped").textContent === "a.txt=first file's text, b.txt=second file's text"`, "both files, dropped on the page", 30000);
             const types = await frame(`document.getElementById("dtypes").textContent`);
             if (types !== "Files") throw new Error(`the page's drag had ${JSON.stringify(types)}`);
+            // On an embedded page of another origin: given to it there, all
+            // in one drop.
+            await goTo(site + "filedropframe.html", "File drop frame");
+            await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#zone")`, "the embedded page's copy", 20000);
+            const z = JSON.parse(await frame(`(() => { const b = document.getElementById("x").shadowRoot.querySelector("#zone").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); })()`));
+            const inFrame = { x: f.x + z.x, y: f.y + z.y };
+            for (const type of ["dragEnter", "dragOver"]) await cdp("Input.dispatchDragEvent", { type, ...inFrame, data });
+            await sleep(200);
+            await cdp("Input.dispatchDragEvent", { type: "drop", ...inFrame, data });
+            await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#dropped")?.textContent === "a.txt=first file's text, b.txt=second file's text"`, "both files, dropped on the embedded page", 30000)
+                .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("x")?.shadowRoot?.querySelector("#dropped")?.textContent`)}; ${await ev(`document.getElementById("go_notice").hidden ? "" : document.querySelector("#go_notice p")?.textContent`)}`); });
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -5091,19 +5215,31 @@ async function check(base, port, site, adSite) {
         await frameWait(`document.getElementById("early")?.textContent.includes("load-show;")`, "the one shown as it loaded, shown", 15000)
             .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("early").textContent`)}`); });
         if (!(await ev(`__notes.some((n) => n.title === "At load")`))) throw new Error("the one shown as it loaded isn't in this browser");
-        // Shown: in this browser, its site first; its icon not fetched.
+        // Shown: in this browser, its site first; its icon fetched by the
+        // server (the page's own picture), given as a PNG.
         await frameClick("#show");
         await waitFor(`window.__notes.some((n) => n.title === "Hello")`, "shown in this browser", 15000);
         const hello = `__notes.find((n) => n.title === "Hello")`;
-        const shown = await ev(`JSON.stringify({ body: ${hello}.o.body, tag: ${hello}.o.tag, icon: ${hello}.o.icon ?? null })`);
+        const shown = await ev(`JSON.stringify({ body: ${hello}.o.body, tag: ${hello}.o.tag, icon: (${hello}.o.icon ?? "").slice(0, 40) })`);
         const s0 = JSON.parse(shown);
-        if (s0.body !== host + "\nfrom the page" || s0.icon || !s0.tag?.endsWith(":t1")) throw new Error(`shown as ${shown}`);
+        if (s0.body !== host + "\nfrom the page" || !s0.icon.startsWith("data:image/png;base64,") || !s0.tag?.endsWith(":t1")) throw new Error(`shown as ${shown}`);
         await frameWait(`document.getElementById("log").textContent.endsWith("show;")`, "the page told it's shown", 15000);
         await ev(`${hello}.onclick()`);
         await frameWait(`document.getElementById("log").textContent.endsWith("click;")`, "the page told it's clicked", 15000);
         await frameClick("#close");
         await waitFor(`${hello}.closed === true`, "closed in this browser by the page", 15000);
         await frameWait(`document.getElementById("log").textContent.endsWith("close;")`, "the page told it's closed", 15000);
+        // One whose icon is a drawing (SVG): shown, its icon not.
+        await frameClick("#svg");
+        await waitFor(`window.__notes.some((n) => n.title === "Drawn")`, "the one with a drawing shown", 15000);
+        if (await ev(`__notes.find((n) => n.title === "Drawn").o.icon ?? null`)) throw new Error("an SVG icon given");
+        // A large picture (a data: one of about 1.2 MB): given whole, the
+        // page's own change in the same batch shown too.
+        await frameClick("#big");
+        await waitFor(`window.__notes.some((n) => n.title === "Big")`, "the one with a large picture shown", 20000);
+        const bigImage = await ev(`(__notes.find((n) => n.title === "Big").o.image ?? "").length`);
+        if (bigImage < 1_100_000) throw new Error(`the large picture given as ${bigImage} characters`);
+        await frameWait(`document.getElementById("log").textContent.includes("big;")`, "the page's change with it", 15000);
         // This browser showing none: a notice here, Open its click.
         await ev(`Notification.permission = "denied"`);
         await frameClick("#show");
@@ -5375,6 +5511,204 @@ async function check(base, port, site, adSite) {
         await ev(`document.getElementById("go_exit_fullscreen").click()`);
         await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#s")?.textContent === "change none"`, "the frame's page told it was left", 15000);
         await frameWait(`!(${covers("#x")})`, "the frame back in its place", 15000);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's screen wake lock: held here after a press, let go with its sentinel, released as it's lost here, let go as its page goes; not long after a press", async () => {
+        if (!(await ev(`typeof navigator.wakeLock?.request === "function"`))) return "this browser has no wake lock";
+        const secure = async (page, title) => {
+            await goTo(site + "index.html", "Fixture");
+            await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:"))} + ${JSON.stringify(page)}; i.form.requestSubmit(); })()`);
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)}) || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+            if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+            await waitFor(`document.title.startsWith(${JSON.stringify(title)})`, "the secure page", 30000);
+        };
+        // (This browser's own, recorded; failing when told to.)
+        await ev(`(() => { window.__wake = []; window.__wakeFails = false; Object.defineProperty(navigator, "wakeLock", { configurable: true, value: { request: async (type) => {
+            if (window.__wakeFails) { window.__wake.push("refused"); throw new DOMException("no", "NotAllowedError"); }
+            window.__wake.push("request " + type);
+            const t = new EventTarget();
+            t.release = async () => { window.__wake.push("release"); t.dispatchEvent(new Event("release")); };
+            return t;
+        } } }); return true; })()`);
+        const wake = () => ev(`window.__wake.join(",")`);
+        await secure("wakelock.html", "Wake lock");
+        await frameWait(`!!document.getElementById("hold")`, "the page's buttons");
+        await frameClick("#hold");
+        await frameWait(`document.getElementById("r")?.textContent === "held screen false true"`, "the page's sentinel", 15000);
+        await waitFor(`window.__wake.join(",") === "request screen"`, "this browser's held", 10000);
+        await frameClick("#release");
+        await frameWait(`document.getElementById("e")?.textContent === "released true 1"`, "the page's let go");
+        await waitFor(`window.__wake.join(",") === "request screen,release"`, "this browser's let go", 10000);
+        // Not held here: the page's released.
+        await ev(`window.__wakeFails = true`);
+        await frameClick("#hold");
+        await frameWait(`document.getElementById("e")?.textContent === "released true 2"`, "the page's released, as it couldn't be held here", 15000);
+        await ev(`window.__wakeFails = false`);
+        // Held, then the page left: let go.
+        await frameClick("#hold");
+        await waitFor(`window.__wake.filter((w) => w === "request screen").length === 2`, "held again", 10000);
+        await goTo(site + "index.html", "Fixture");
+        await waitFor(`window.__wake.at(-1) === "release"`, "let go as its page went", 10000);
+        // Long after its press: refused.
+        await secure("wakelock.html", "Wake lock");
+        await frameWait(`!!document.getElementById("late")`, "the page's buttons");
+        await frameClick("#late");
+        await frameWait(`document.getElementById("r")?.textContent === "refused NotAllowedError"`, "a wake lock long after the press refused", 20000);
+        await goTo(site + "index.html", "Fixture");
+        return await wake();
+    });
+
+    await step("the page's permissions say what's given here: the location asked for, the clipboard's write granted and read asked for, a wake lock and the pointer's granted, a camera or the like denied; on an http page, what needs a secure one denied", async () => {
+        const read = async () => {
+            await frameWait(`document.getElementById("out")?.textContent.startsWith("{")`, "the page's permissions", 15000);
+            return JSON.parse(await frame(`document.getElementById("out").textContent`));
+        };
+        const want = (got, w, where) => {
+            for (const [k, v] of Object.entries(w)) if (got[k] !== v) throw new Error(`${where}: ${k} is ${got[k]}, not ${v} (${JSON.stringify(got)})`);
+        };
+        await goTo(site + "perms.html", "Perms");
+        want(await read(), { geolocation: "denied", "clipboard-read": "denied", "clipboard-write": "denied", camera: "denied", microphone: "denied", "screen-wake-lock": "denied", "pointer-lock": "granted", midi: "denied", push: "NotSupportedError", "push+uvo": "denied" }, "an http page");
+        await goTo(site + "index.html", "Fixture");
+        await ev(`(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(site.replace(/^http:/, "https:") + "perms.html")}; i.form.requestSubmit(); })()`);
+        await waitFor(`document.title.startsWith("Perms") || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+        if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+        await waitFor(`document.title.startsWith("Perms")`, "the secure page", 30000);
+        const location = await ev(`"geolocation" in navigator`);
+        want(await read(), { geolocation: location ? "prompt" : "denied", notifications: "prompt", "clipboard-read": "prompt", "clipboard-write": "granted", camera: "denied",
+            "screen-wake-lock": "granted", "pointer-lock": "granted", "persistent-storage": "granted", push: "NotSupportedError", "push+uvo": "denied" }, "an https page");
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's pointer lock: locked here after a press, the page told; its moves as movement, its presses and clicks on the locked element; left here (Esc), the page told; left by the page, left here; not long after a press", async () => {
+        // (This browser's own lock stood in for in the copy, as a headless
+        // one may not lock: recorded, its events as a browser's.)
+        const stand = () => frame(`(() => { window.__lock = []; let on = false;
+            Object.defineProperty(document, "pointerLockElement", { configurable: true, get: () => (on ? document.documentElement : null) });
+            Element.prototype.requestPointerLock = function () { window.__lock.push("lock"); on = true; document.dispatchEvent(new Event("pointerlockchange")); return Promise.resolve(); };
+            document.exitPointerLock = () => { window.__lock.push("exit"); on = false; document.dispatchEvent(new Event("pointerlockchange")); };
+            return true; })()`);
+        // First this browser's own lock, as it may be had here (the copy's
+        // sandbox and policy allow it): said which.
+        await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+        await goTo(site + "lock.html", "Lock");
+        await frameWait(`!!document.getElementById("pad")`, "the pad");
+        await frameClick("#pad");
+        let real = "this browser's own lock not had here";
+        for (let end = Date.now() + 6000; Date.now() < end; await sleep(200)) {
+            const r = await frame(`document.getElementById("r").textContent`);
+            if (r === "locked true") {
+                real = "this browser's own lock had here";
+                if ((await frame(`document.pointerLockElement === document.documentElement`)) !== true) throw new Error("the page told it's locked, the copy not");
+                await frame(`document.exitPointerLock()`);
+                await frameWait(`document.getElementById("c")?.textContent === "2 off"`, "the page told its real lock's left", 15000);
+                break;
+            }
+            if (r.startsWith("refused")) break;
+        }
+        await goTo(site + "lock.html", "Lock");
+        await frameWait(`!!document.getElementById("pad")`, "the pad");
+        await stand();
+        await frameClick("#pad");
+        await frameWait(`document.getElementById("r")?.textContent === "locked true"`, "the page told it's locked", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("r").textContent`)}, here ${await frame(`window.__lock.join(",")`)}`); });
+        if ((await frame(`window.__lock.join(",")`)) !== "lock") throw new Error(`here: ${await frame(`window.__lock.join(",")`)}`);
+        // Moves, as movement (the pointer moved by this browser's input).
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        const pad = JSON.parse(await frame(`(() => { const b = document.getElementById("pad").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); })()`));
+        for (let i = 1; i <= 6; i++) {
+            await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: f.x + pad.x + i * 5, y: f.y + pad.y + i * 3 });
+            await sleep(30);
+        }
+        await frameWait(`(() => { const [x, y] = document.getElementById("m").textContent.split(",").map(Number); return x >= 20 && y >= 12; })()`, "its moves as movement", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("m").textContent`)}`); });
+        // A press and release: a click on the locked element.
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + pad.x, y: f.y + pad.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await frameWait(`document.getElementById("k")?.textContent === "1"`, "a click on the locked element", 15000);
+        // Left here (Esc): the page told.
+        await frame(`document.exitPointerLock()`);
+        await frameWait(`document.getElementById("c")?.textContent === "2 off"`, "the page told it's left", 15000);
+        // Locked again; left by the page (a right press): left here.
+        await frameClick("#pad");
+        await frameWait(`document.getElementById("c")?.textContent === "3 on"`, "locked again", 15000);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + pad.x, y: f.y + pad.y, button: "right", buttons: type === "mousePressed" ? 2 : 0, clickCount: 1 });
+        await frameWait(`document.getElementById("c")?.textContent === "4 off"`, "left by the page", 15000);
+        await frameWait(`window.__lock.at(-1) === "exit"`, "left here too", 15000);
+
+        // Long after its press: refused.
+        await frameClick("#late");
+        await frameWait(`document.getElementById("r")?.textContent === "refused NotAllowedError"`, "a lock long after the press refused", 20000);
+        await goTo(site + "index.html", "Fixture");
+        return real;
+    });
+
+    await step("the page's screen orientation lock: refused out of its fullscreen; in it, this screen locked so, the page told; unlocked as its fullscreen's left", async () => {
+        // (This browser's own lock, recorded; its fullscreen as the page's
+        // is here, which a headless browser may not truly have.)
+        await ev(`(() => { window.__orient = []; const o = screen.orientation;
+            Object.defineProperty(o, "lock", { configurable: true, value: async (t) => { window.__orient.push("lock " + t); } });
+            Object.defineProperty(o, "unlock", { configurable: true, value: () => { window.__orient.push("unlock"); } });
+            if (!document.fullscreenElement) Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => document.documentElement.classList.contains("go-fullscreen") ? document.body : null });
+            return true; })()`);
+        await goTo(site + "fullscreen.html", "Fullscreen");
+        await frameWait(`!!document.getElementById("lock")`, "the page's buttons");
+        await frameClick("#lock");
+        await frameWait(`document.getElementById("o")?.textContent === "lock SecurityError"`, "a lock out of fullscreen refused", 15000);
+        await frameClick("#fs");
+        await waitFor(`document.documentElement.classList.contains("go-fullscreen")`, "the page alone over the screen", 15000);
+        await frameClick("#lock");
+        await frameWait(`document.getElementById("o")?.textContent === "lock ok"`, "the lock, the page told", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("o").textContent`)}, this browser ${await ev(`window.__orient.join(",")`)}`); });
+        if ((await ev(`window.__orient.join(",")`)) !== "lock landscape") throw new Error(`this browser: ${await ev(`window.__orient.join(",")`)}`);
+        await frameClick("#exit");
+        await waitFor(`window.__orient.includes("unlock")`, "unlocked as its fullscreen was left", 15000);
+        await ev(`delete document.fullscreenElement`);
+        await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's vibration: felt here after a press (its pattern within reason), cancelled, and as its page goes; not long after a press; not another origin's frame's", async () => {
+        // (This browser's own, recorded.)
+        const felt = () => ev(`window.__felt.slice()`);
+        const record = () => ev(`(() => { window.__felt = []; Object.defineProperty(navigator, "vibrate", { configurable: true, value: (p) => { window.__felt.push(JSON.stringify(p)); return true; } }); return true; })()`);
+        await goTo(site + "vibrate.html", "Vibrate");
+        await frameWait(`!!document.getElementById("buzz")`, "the page's buttons");
+        await record();
+        await frameClick("#buzz");
+        await frameWait(`document.getElementById("r")?.textContent === "buzz true"`, "the page told it's felt");
+        await waitFor(`window.__felt.includes("[200,100,300]")`, "its pattern felt here", 10000);
+        // One too long: 99 entries, 10 s in all.
+        await sleep(400);
+        await frameClick("#long");
+        await waitFor(`window.__felt.length >= 2`, "the long pattern, cut", 10000);
+        const long = JSON.parse((await felt())[1]);
+        if (!long.length || long.length > 99 || long.reduce((a, b) => a + b, 0) > 10000 || long[0] !== 10000) throw new Error(`the long pattern felt as ${JSON.stringify(long)}`);
+        // Cancelled.
+        await frameClick("#stop");
+        await waitFor(`window.__felt.at(-1) === "[]" || window.__felt.at(-1) === "0"`, "the vibration cancelled", 10000);
+        // Long after its press: not felt.
+        const before = (await felt()).length;
+        await frameClick("#late");
+        await frameWait(`document.getElementById("r")?.textContent === "late true"`, "the late one asked", 15000);
+        await sleep(1500);
+        if ((await felt()).length !== before) throw new Error(`felt long after the press: ${JSON.stringify((await felt()).slice(before))}`);
+        // Felt, then the page left: stopped.
+        await sleep(300);
+        await frameClick("#buzz");
+        await waitFor(`window.__felt.filter((p) => p === "[200,100,300]").length === 2`, "felt again", 10000);
+        const left = (await felt()).length;
+        await goTo(site + "index.html", "Fixture");
+        await waitFor(`window.__felt.slice(${left}).includes("0")`, "the vibration stopped as its page went", 10000);
+        // Another origin's frame: false, and nothing felt.
+        await goTo(site + "vibrate.html?frame", "Vibrate");
+        await record();
+        const inner = (expr) => frame(`(() => { const root = document.getElementById("x")?.shadowRoot; return root ? (${expr})(root) : null; })()`);
+        await frameWait(`!!document.getElementById("x")?.shadowRoot?.querySelector("#b")`, "the embedded page's copy", 20000);
+        const p = JSON.parse(await inner(`(root) => { const b = root.querySelector("#b").getBoundingClientRect(); return JSON.stringify({ x: b.x + b.width / 2, y: b.y + b.height / 2 }); }`));
+        const f = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: b.x, y: b.y }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: f.x + p.x, y: f.y + p.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+        await frameWait(`document.getElementById("x")?.shadowRoot?.querySelector("#s")?.textContent === "frame false"`, "another origin's frame told it's not felt", 15000);
+        await sleep(1500);
+        if ((await felt()).some((p) => p !== "0" && p !== "[]")) throw new Error(`another origin's frame's felt: ${JSON.stringify(await felt())}`);
         await goTo(site + "index.html", "Fixture");
     });
 

@@ -17,6 +17,12 @@ type goViewerCaps struct {
 	Location   bool `json:"location"`
 	PiP        bool `json:"pip"`
 	FileSystem bool `json:"fileSystem"`
+	// WakeLock: it can keep its screen on (gowakelock.go).
+	WakeLock bool `json:"wakeLock"`
+	// Orientation: it can lock its screen's orientation (goorientation.go).
+	Orientation bool `json:"orientation"`
+	// PointerLock: it can lock its pointer (gopointerlock.go).
+	PointerLock bool `json:"pointerLock"`
 }
 
 // goShareFile is a file the page shares (navigator.share({files})): its
@@ -429,6 +435,11 @@ func (b *goBrowser) releaseDevices() {
 	}
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
 	b.resetFileSystem()
+	// The person's browser's pointer lock and screen orientation lock went
+	// with it (the page told it's left); its wake lock is taken again by
+	// the next that connects (wakeLockAgain).
+	b.pointerLockLost()
+	b.orientAsks, b.orientLocked = nil, false
 }
 
 // goDeviceError is the error the person's browser said, as the page's

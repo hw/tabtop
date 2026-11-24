@@ -107,8 +107,10 @@ var tunnelRoutes = map[string]tunnelRoute{
 	// limit (only with TABTOP_GO_DEBUG: the checks' own).
 	"go-debug-recycle": other((*server).routeGoDebugRecycle),
 
-	"go-upload":    other((*server).routeGoUpload),   // a file for a page's file input
-	"go-fs-upload": other((*server).routeGoFSUpload), // a picked file staged for a page's File handle
+	"go-upload": other((*server).routeGoUpload), // a file for a page's file input
+	// a file of Files for a page's file input (read as the session may)
+	"go-upload-files": tunnelRoute{files: true, access: readFileRoot, serve: (*server).routeGoUploadFromFiles},
+	"go-fs-upload":    other((*server).routeGoFSUpload), // a picked file staged for a page's File handle
 
 	"go-restart":           other((*server).routeGoRestart), // every tab's engine, on the password + code or a passkey
 	"go-restart-challenge": other((*server).routeGoRestartChallenge),

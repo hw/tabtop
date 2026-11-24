@@ -11,7 +11,7 @@ import (
 func TestTunnelRoutesNeedingFiles(t *testing.T) {
 	want := []string{"roots", "list", "file", "zip", "upload", "mkdir", "create", "rename", "move", "delete", "trash-list", "trash-all", "trash-restore", "trash-delete", "trash-empty", "transfer", "watch", "changes",
 		"zip-preview", "zip-extract", "zip-download", "markdown", "epub", "epub-edit", "cleanup",
-		"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches", "preview-resource", "image-decode", "file-patch", "file-search", "sqlite", "versions", "version-file", "version-restore", "version-delete", "search"}
+		"share", "share-again", "reshare", "reshare-many", "unshare", "fetch", "fetches", "preview-resource", "image-decode", "go-upload-files", "file-patch", "file-search", "sqlite", "versions", "version-file", "version-restore", "version-delete", "search"}
 	var got []string
 	for name, route := range tunnelRoutes {
 		if route.files {

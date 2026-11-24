@@ -894,7 +894,8 @@ function mediaMenu() {
 }
 frame.id = "go_view";
 frame.title = "Page";
-frame.setAttribute("sandbox", "allow-scripts");
+// (And its pointer locked, for a page that asks: gopointerlock.go.)
+frame.setAttribute("sandbox", "allow-scripts allow-pointer-lock");
 frame.setAttribute("referrerpolicy", "no-referrer");
 const frameURL = new URL("../tabtop/go-frame.html", import.meta.url).href;
 // The offline client (see nav.js) builds the frame itself, from its own
@@ -1147,9 +1148,12 @@ function showNotify(m) {
         try {
             // (Its site first, as it's not TabTop's; its tag kept apart
             // from TabTop's own.)
+            // (Its pictures as the server fetched them: data: pictures only.)
+            const pic = (v) => (typeof v === "string" && v.length <= 1_500_000 && /^data:image\/(png|jpeg|gif|webp|bmp|x-icon);base64,[A-Za-z0-9+/]*={0,2}$/.test(v) ? v : undefined);
             const n = new Notification(title || site, {
                 body: body ? `${site}\n${body}` : site, tag: m.tag ? `tabtop-go:${site}:${m.tag}` : undefined, renotify: !!(m.tag && m.renotify),
                 silent: !!m.silent, requireInteraction: !!m.requireInteraction, dir: m.dir, lang: m.lang || undefined,
+                icon: pic(m.icon), image: pic(m.image), badge: pic(m.badge),
             });
             n.onshow = () => notifyTell(m.ask, "show");
             n.onclick = () => { window.focus(); notifyTell(m.ask, "click"); };
@@ -1504,6 +1508,55 @@ let heard = true, closing = false;
 // browser tab's, take that page's tab from it.)
 let pageLeft = false;
 window.addEventListener("pagehide", () => { pageLeft = true; });
+
+// The page's screen wake lock (go-wakelock): this browser's own held while
+// the page holds one, taken again as this page is shown again (a browser
+// lets its go as it's hidden); if it can't be held, the page's told
+// (wakelock-lost), its own let go.
+const wake = (() => {
+    let wanted = false, sentinel = null, asking = false;
+    async function hold() {
+        if (!wanted || sentinel || asking || document.visibilityState !== "visible") return;
+        asking = true;
+        try {
+            const s = await navigator.wakeLock.request("screen");
+            asking = false;
+            if (!wanted) return void s.release().catch(() => {});
+            sentinel = s;
+            s.addEventListener("release", () => { if (sentinel === s) sentinel = null; });
+        } catch {
+            asking = false;
+            if (!wanted) return;
+            wanted = false;
+            try { ws?.send(JSON.stringify({ op: "wakelock-lost" })); } catch { /* gone */ }
+        }
+    }
+    document.addEventListener("visibilitychange", () => { void hold(); });
+    return {
+        set(on) {
+            wanted = on;
+            if (on) return void hold();
+            const s = sentinel;
+            sentinel = null;
+            s?.release().catch(() => {});
+        },
+    };
+})();
+window.addEventListener("pagehide", () => wake.set(false));
+
+// The page's vibration (go-vibrate): stopped as its page goes, this one's
+// hidden, or its tab is.
+let vibrating = false;
+function unvibrate() {
+    if (!vibrating) return;
+    vibrating = false;
+    try { navigator.vibrate?.(0); } catch { /* none */ }
+}
+const tabHidden = () => {
+    try { return inTabs && !!window.frameElement?.hidden; } catch { return false; }
+};
+window.addEventListener("pagehide", unvibrate);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") unvibrate(); });
 // (Back from the browser's cache: as it was, but for its connection.)
 window.addEventListener("pageshow", (e) => {
     if (!e.persisted) return;
@@ -1613,7 +1666,13 @@ function receiver(s) {
             return;
         }
         if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
-        if (gen !== m.gen) devices.reset();
+        if (gen !== m.gen) {
+            devices.reset();
+            unvibrate();
+            wake.set(false);
+            frame.contentWindow?.postMessage({ type: "pointerlock", on: false }, "*");
+            if (chooser) picker.closeFor(chooser);  // (the page that asked is gone)
+        }
         gen = m.gen;
         message(m);
     };
@@ -1725,6 +1784,8 @@ function swapTo(w) {
     clearTimeout(w.timer);
     warm = null;
     recycleAdvised = false;
+    unvibrate();  // (the old page's)
+    wake.set(false);
     const old = ws;
     ws = w.s;
     gen = shown = 0;
@@ -1976,6 +2037,39 @@ function message(m) {
         case "go-file-chooser":
             if (typeof m.chooser === "string" && m.gen === gen) askFiles(m);
             break;
+        case "go-pointerlock":
+            // The page's pointer lock: the copy's frame locks it (or lets go).
+            if (m.gen !== gen) break;
+            frame.contentWindow?.postMessage({ type: "pointerlock", on: m.on === true }, "*");
+            break;
+        case "go-orientation":
+            // The page's screen orientation lock (goorientation.go): this
+            // screen locked so, in its fullscreen; its answer the page's.
+            if (m.gen !== gen) break;
+            if (m.unlock) {
+                try { screen.orientation?.unlock?.(); } catch { /* not locked */ }
+                break;
+            }
+            if (typeof m.id === "string" && typeof m.lock === "string") {
+                const id = m.id, answer = (why) => { try { ws?.send(JSON.stringify({ op: "orientation-answer", gen, text: id, value: why })); } catch { /* gone */ } };
+                if (!document.fullscreenElement) answer("SecurityError");
+                else Promise.resolve().then(() => screen.orientation.lock(m.lock)).then(() => answer(""), (e) => answer(typeof e?.name === "string" && e.name ? e.name : "NotSupportedError"));
+            }
+            break;
+        case "go-wakelock":
+            if (m.gen === gen) wake.set(m.on === true);
+            break;
+        case "go-vibrate": {
+            // The page's vibration (govibrate.go), felt here while this tab's
+            // shown; a cancel, at once.
+            if (m.gen !== gen || !Array.isArray(m.pattern)) break;
+            const pattern = m.pattern.slice(0, 99).map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0)));
+            if (!pattern.length) unvibrate();
+            else if (document.visibilityState === "visible" && !tabHidden()) {
+                try { vibrating = navigator.vibrate?.(pattern) === true; } catch { /* not this device's */ }
+            }
+            break;
+        }
         case "go-fullscreen":
             // The page's element fullscreen (laid over the engine's window):
             // the page alone over this screen, as the menu's Full screen.
@@ -2266,6 +2360,10 @@ window.addEventListener("message", (e) => {
         case "resync":
             if (ws && m.gen === shown) ws.send(JSON.stringify({ op: "resync", gen: m.gen }));
             break;
+        case "pointerlock-state":
+            // The pointer locked to the copy, or not, or left (gopointerlock.go).
+            if (ws && m.gen === shown && ["on", "off", "error"].includes(m.state)) ws.send(JSON.stringify({ op: "pointerlock", gen: m.gen, value: m.state }));
+            break;
         case "media":
             // A player for a box in the copy (go-media.js).
             if (m.gen === shown && Number.isSafeInteger(m.key)) {
@@ -2280,7 +2378,7 @@ window.addEventListener("message", (e) => {
             break;
         case "drop-files":
             if (m.gen !== shown) break;
-            if (m.frame || !Array.isArray(m.files)) warn("Files can’t be dropped into an embedded page here: drop them on the page itself.", { error: false });
+            if (m.nowhere || !Array.isArray(m.files)) warn("Nothing’s there to take the files: drop them on the page.", { error: false });
             else dropFiles(m);
             break;
         case "media-play":
@@ -2420,12 +2518,14 @@ document.body.append(fileInput);
 let chooser = null;  // the server's, waiting: {token}
 function askFiles(m) {
     if (chooser) answerFiles(chooser, 0);
-    chooser = { token: m.chooser };
+    chooser = { token: m.chooser, multiple: !!m.multiple };
     fileInput.multiple = !!m.multiple;
     fileInput.accept = typeof m.accept === "string" ? m.accept : "";
     fileInput.value = "";
     fileInput.dataset.chooser = m.chooser;
     const what = m.multiple ? "files" : "a file";
+    // With Files: this device's, or TabTop's own (picker).
+    if (filesOn) return picker.ask(chooser, what);
     const pick = () => { try { fileInput.showPicker(); } catch { fileInput.click(); } };
     let opened = false;
     if (navigator.userActivation?.isActive) {
@@ -2441,8 +2541,128 @@ function answerFiles(c, count) {
         chooser = null;
         delete fileInput.dataset.chooser;
     }
+    picker.closeFor(c);
     ws?.send(JSON.stringify({ op: "files", text: c.token, count }));
 }
+// The page's file chooser, with Files on: this device's files (its own
+// chooser, opened from This device's press), or TabTop's own, chosen here
+// and copied by the server into what the page's given (go-upload-files:
+// read as this session may read them; nothing sent from this device).
+const picker = (() => {
+    const box = $("go_pick"), text = $("go_pick_text"), files = box.querySelector(".files");
+    const where = files.querySelector(".where"), list = files.querySelector("ul");
+    const [cancelB, filesB, deviceB, giveB] = ["cancel", "files-go", "device", "give"].map((c) => box.querySelector("." + c));
+    let c = null, dir = "", listing = 0;
+    const chosen = new Map();  // path -> its name
+    const size = (n) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : n < 1 << 30 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${(n / (1 << 30)).toFixed(1)} GB`);
+    function close() {
+        box.hidden = true;
+        c = null;
+        chosen.clear();
+        listing++;
+    }
+    function ask(ch, what) {
+        c = ch;
+        chosen.clear();
+        dir = "";
+        text.textContent = `The page asks for ${what}.`;
+        files.hidden = giveB.hidden = true;
+        filesB.hidden = deviceB.hidden = false;
+        box.hidden = false;
+        deviceB.focus();
+    }
+    function given() {
+        giveB.disabled = !chosen.size;
+        giveB.textContent = chosen.size > 1 ? `Give ${chosen.size} files to the page` : "Give to the page";
+    }
+    async function listDir(d) {
+        const me = ++listing;
+        dir = d;
+        list.replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Loading…" }));
+        let reply;
+        try {
+            const t = await call({ type: "list", path: d });
+            t.close();
+            reply = t.reply;
+        } catch (err) {
+            if (me === listing) list.replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: err.message }));
+            return;
+        }
+        if (me !== listing) return;
+        // Where: Files, then each folder down, each a way back up.
+        const parts = d ? d.split("/") : [];
+        where.replaceChildren(...[["Files", ""], ...parts.map((p, i) => [p, parts.slice(0, i + 1).join("/")])].flatMap(([name, to], i) => {
+            const b = Object.assign(document.createElement("button"), { type: "button", textContent: name });
+            b.onclick = () => listDir(to);
+            return i ? [Object.assign(document.createElement("span"), { textContent: "/" }), b] : [b];
+        }));
+        const entries = [...(reply.entries ?? [])].sort((a, b) => (b.dir - a.dir) || String(a.name).localeCompare(String(b.name)));
+        const items = entries.map((e) => {
+            const li = document.createElement("li"), path = d ? `${d}/${e.name}` : e.name;
+            if (e.dir) {
+                const b = Object.assign(document.createElement("button"), { type: "button", className: "folder", textContent: `${e.name}/` });
+                b.onclick = () => listDir(path);
+                li.append(b);
+                return li;
+            }
+            const label = document.createElement("label");
+            const box_ = Object.assign(document.createElement("input"), { type: c?.multiple ? "checkbox" : "radio", name: "go_pick_file", checked: chosen.has(path) });
+            box_.onchange = () => {
+                if (!c?.multiple) chosen.clear();
+                if (box_.checked) chosen.set(path, e.name);
+                else chosen.delete(path);
+                given();
+            };
+            label.append(box_, document.createTextNode(e.name));
+            li.append(label, Object.assign(document.createElement("span"), { className: "size", textContent: size(Number(e.bytes ?? e.size) || 0) }));
+            return li;
+        });
+        list.replaceChildren(...(items.length ? items : [Object.assign(document.createElement("li"), { className: "empty", textContent: "This folder is empty." })]));
+    }
+    cancelB.addEventListener("click", () => {
+        const ch = c;
+        close();
+        if (ch && chooser === ch) answerFiles(ch, 0);
+    });
+    deviceB.addEventListener("click", () => {
+        close();
+        try { fileInput.showPicker(); } catch { fileInput.click(); }
+    });
+    filesB.addEventListener("click", () => {
+        filesB.hidden = deviceB.hidden = true;
+        files.hidden = giveB.hidden = false;
+        given();
+        void listDir("");
+    });
+    giveB.addEventListener("click", async () => {
+        const ch = c;
+        if (!ch || chooser !== ch || !chosen.size) return;
+        const items = [...chosen];
+        close();
+        ch.sending = true;
+        try {
+            for (const [i, [path]] of items.entries()) {
+                show(`Giving ${items.length === 1 ? items[0][1] : `${items.length} files`} to the page… ${i + 1}/${items.length}`);
+                const t = await call({ type: "go-upload-files", go_tab: resumeToken.get(), chooser: ch.token, path });
+                t.close();
+            }
+            show("");
+            if (chooser !== ch) {  // the page asked again meanwhile
+                warn("The page asked for files again before these were given to it: they weren't.", { error: false });
+                return;
+            }
+            answerFiles(ch, items.length);
+            frame.contentWindow?.postMessage({ type: "files-chosen", files: items.map(([, name]) => ({ name, type: "" })) }, "*");
+        } catch (err) {
+            show("");
+            if (chooser === ch) answerFiles(ch, 0);
+            warn(`The files weren't given to the page: ${err.message}`);
+        }
+    });
+    box.addEventListener("keydown", (e) => { if (e.key === "Escape") cancelB.click(); });
+    return { ask, closeFor(ch) { if (c === ch) close(); } };
+})();
+
 // (Not once files chosen are being sent: Chrome can say its chooser was
 // cancelled after it's given the files, measured, which would undo them.)
 fileInput.addEventListener("cancel", () => { if (chooser && !chooser.sending) answerFiles(chooser, 0); });
@@ -2486,7 +2706,11 @@ function dropFiles(m) {
     if (!files.length) return;
     if (dropping) return warn("The files dropped before are still being sent.", { error: false });
     if (files.length > 32) return warn("At most 32 files can be dropped on a page at once.", { error: false });
-    const d = dropping = { files, gen: m.gen, at: { id: m.id, fx: m.fx, fy: m.fy, shift: !!m.shift, ctrl: !!m.ctrl, alt: !!m.alt, meta: !!m.meta } };
+    const num = (v) => (Number.isSafeInteger(v) ? v : 0);
+    const path = (a) => (Array.isArray(a) ? a.slice(0, 3).map(num) : []);
+    const d = dropping = { files, gen: m.gen, at: { id: m.id, fx: m.fx, fy: m.fy, shift: !!m.shift, ctrl: !!m.ctrl, alt: !!m.alt, meta: !!m.meta,
+        // (An embedded page's element: by the path to it.)
+        frame: num(m.frame), fdoc: num(m.fdoc), route: path(m.route), docs: path(m.docs) } };
     ws?.send(JSON.stringify({ op: "drop-files", gen: m.gen, count: files.length }));
     // No token (the page went on, say): another drop isn't held up by it.
     setTimeout(() => { if (dropping === d && !d.sending) dropping = null; }, 15000);

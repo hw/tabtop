@@ -13,8 +13,11 @@ export async function createBrowserHarness({ port, base }) {
     let id = 0;
     const pending = new Map();
     const exceptions = [];
+    // Chrome's events, for a check that waits on one (by its method).
+    const events = new EventTarget();
     ws.onmessage = (e) => {
         const m = JSON.parse(e.data);
+        if (m.method) events.dispatchEvent(new CustomEvent(m.method, { detail: m.params }));
         if (m.id && pending.has(m.id)) {
             pending.get(m.id)(m);
             pending.delete(m.id);
@@ -227,5 +230,5 @@ export async function createBrowserHarness({ port, base }) {
             await ev(`window.open = window.previewRealOpen; delete window.previewRealOpen; delete window.previewOpened;`);
         }
     };
-    return { cdp, ev, waitFor, click, press, type, open, newTab, listed, row, answer, waitForFile, status, setFiles, inFrame, inMarkdownFrame, checkPreviewLink, exceptions, close: () => ws.close() };
+    return { cdp, ev, waitFor, click, press, type, open, newTab, listed, row, answer, waitForFile, status, setFiles, inFrame, inMarkdownFrame, checkPreviewLink, exceptions, events, close: () => ws.close() };
 }

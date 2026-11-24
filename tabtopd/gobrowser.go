@@ -121,6 +121,40 @@ var goClipboardJS string
 //go:embed gofullscreen.js
 var goFullscreenJS string
 
+// goDropJS gives an embedded page the files dropped on it (gouploads.go).
+//
+//go:embed godrop.js
+var goDropJS string
+
+// goPointerLockJS gives the page pointer lock, the person's browser's
+// (gopointerlock.go).
+//
+//go:embed gopointerlock.js
+var goPointerLockJS string
+
+// goOrientationJS gives the page screen.orientation.lock, the person's
+// browser's (goorientation.go).
+//
+//go:embed goorientation.js
+var goOrientationJS string
+
+// goWakeLockJS gives the page navigator.wakeLock, held by the person's
+// browser (gowakelock.go).
+//
+//go:embed gowakelock.js
+var goWakeLockJS string
+
+// goPermsJS says what each permission is, as /go gives it (goperms.js).
+//
+//go:embed goperms.js
+var goPermsJS string
+
+// goVibrateJS gives the page navigator.vibrate, felt on the person's
+// device (govibrate.go).
+//
+//go:embed govibrate.js
+var goVibrateJS string
+
 //go:embed godevice.js
 var goDeviceJS string
 
@@ -200,8 +234,15 @@ type goBrowser struct {
 	// (its memory past the soft limit: goRecycleAt), and is again as it
 	// connects again.
 	recycled   bool
-	overSince  time.Time // since when its engine's been past the soft limit; zero: it isn't
-	imagePaste *goImagePaste
+	vibratedAt time.Time       // when the page's vibration was last passed on (govibrate.go)
+	wakeHeld   map[string]bool // the page's wake lock sentinels held, by id (gowakelock.go)
+	// The page's orientation locks asked of the person's browser, and
+	// whether it's locked (goorientation.go).
+	orientAsks   map[string]goOrientLock
+	orientLocked bool
+	pointerLock  *goPointerLock // the page's pointer lock, asked for or held (gopointerlock.go)
+	overSince    time.Time      // since when its engine's been past the soft limit; zero: it isn't
+	imagePaste   *goImagePaste
 	// The script telling pages what the person's browser can do (godevice.go:
 	// the jobs' worker's alone).
 	deviceScript string
@@ -785,7 +826,7 @@ func (b *goBrowser) run() {
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS + "\n" + goClipboardJS + "\n" + goFullscreenJS
+		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS + "\n" + goClipboardJS + "\n" + goFullscreenJS + "\n" + goVibrateJS + "\n" + goWakeLockJS + "\n" + goOrientationJS + "\n" + goPointerLockJS + "\n" + goDropJS + "\n" + goPermsJS
 		if b.e != nil && b.e.adapter.noDialogs {
 			source += "\n" + goDialogsJS
 		}
@@ -877,7 +918,7 @@ func (b *goBrowser) run() {
 					b.e.use()
 					// A press, a key, a touch (not a move or a scroll): what a
 					// browser lets a page open a chooser after.
-					if m.Kind == "click" || m.Kind == "key" || m.Kind == "touch" && m.Type != "move" || m.Kind == "mouse" && (m.Type == "down" || m.Type == "up") {
+					if m.Kind == "click" || m.Kind == "key" || m.Kind == "touch" && m.Type != "move" || (m.Kind == "mouse" || m.Kind == "locked") && (m.Type == "down" || m.Type == "up") {
 						b.inputAt, b.inputGen = time.Now(), b.gen
 						// And where: an embedded page of another origin's world,
 						// or the page's (goclipboard.go: what's passed on of a
@@ -964,6 +1005,16 @@ func (b *goBrowser) run() {
 				}
 			case "paste-image":
 				b.pasteImage(m)
+			case "pointerlock":
+				if m.Gen == b.gen {
+					b.pointerLockState(m.Value) // the person's browser locked, couldn't, or left it (gopointerlock.go)
+				}
+			case "orientation-answer":
+				if m.Gen == b.gen {
+					b.orientationAnswered(m) // the person's browser locked, or couldn't (goorientation.go)
+				}
+			case "wakelock-lost":
+				b.wakeLockLost() // the person's browser couldn't keep it (gowakelock.go)
 			case "fullscreen-exit":
 				b.fullscreenExit() // the person left it (gofullscreen.go)
 			case "drop-files":
@@ -1091,6 +1142,7 @@ func (b *goBrowser) resume() {
 	}
 	b.resendStreams() // Save stream offered again (gostreams.go)
 	b.recycleAgain()
+	b.wakeLockAgain() // (gowakelock.go)
 }
 
 // recycleAgain advises a viewer connecting again, if the tab's been: this
@@ -2196,6 +2248,9 @@ func (b *goBrowser) act(m goClientMsg) {
 		return
 	}
 	switch {
+	case m.Kind == "locked":
+		b.lockedInput(m) // the pointer, locked (gopointerlock.go)
+		return
 	case m.Kind == "mouse":
 		b.pointer(m) // real input (goinput.go)
 		return

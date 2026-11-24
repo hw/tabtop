@@ -104,7 +104,9 @@ func TestGoPage(t *testing.T) {
 
 // TestGoFrameCSP holds the frame's policy to what keeps a page in: no
 // network origin anywhere, no connections, frames, objects, workers, forms
-// or base, scripts from the site alone, and the sandbox with scripts only.
+// or base, scripts from the site alone, and the sandbox with scripts only
+// (and the pointer's lock, which the frame's own script takes only as the
+// page asks, after the person's input: gopointerlock.go).
 func TestGoFrameCSP(t *testing.T) {
 	directives := map[string]string{}
 	for _, d := range strings.Split(goFrameCSP, ";") {
@@ -116,7 +118,7 @@ func TestGoFrameCSP(t *testing.T) {
 		"img-src": "blob: data:", "font-src": "blob: data:", "media-src": "'none'", "connect-src": "'none'",
 		"frame-src": "'none'", "child-src": "'none'", "worker-src": "'none'", "object-src": "'none'",
 		"manifest-src": "'none'", "base-uri": "'none'", "form-action": "'none'", "frame-ancestors": "'self'",
-		"sandbox": "allow-scripts",
+		"sandbox": "allow-scripts allow-pointer-lock",
 	}
 	for name, value := range want {
 		if directives[name] != value {

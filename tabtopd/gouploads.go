@@ -24,10 +24,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -313,6 +317,10 @@ func (b *goBrowser) dropFiles(m goClientMsg) {
 		b.send(map[string]any{"type": "go-file-chooser-refused", "gen": b.gen, "why": "The page went on before the files were sent: they weren't dropped on it."})
 		return
 	}
+	if m.Frame != 0 {
+		b.dropInFrame(m, paths, gen)
+		return
+	}
 	world := b.world
 	b.movesFirst()
 	b.acts.add(func() {
@@ -335,6 +343,79 @@ func (b *goBrowser) dropFiles(m goClientMsg) {
 			}
 		}
 		b.post(func() { b.afterInput(gen) })
+	})
+}
+
+// dropInFrame drops the files sent for a drop on an embedded page (m.ID its
+// iframe, m.Frame the element there, by the path to it: Route, Docs),
+// which the engine's own drag can't be aimed into: put in a hidden input
+// of that page's (DOM.setFileInputFiles), and given to its page by its
+// world (goagent.js dropIn, godrop.js), all in one drop. Only that page's
+// world, and only if it's still the document they were dropped on.
+func (b *goBrowser) dropInFrame(m goClientMsg, paths []string, gen int) {
+	refuse := func(why string) {
+		b.send(map[string]any{"type": "go-file-chooser-refused", "gen": gen, "why": why})
+	}
+	world, child := b.frameWorldPath(m.ID, m.Route, m.Docs)
+	if world == 0 || child == nil {
+		refuse("The embedded page the files were dropped on is gone: they weren't dropped on it.")
+		return
+	}
+	if !child.same && m.FDoc != world {
+		refuse("The embedded page went on before the files were sent: they weren't dropped on it.")
+		return
+	}
+	if b.acts.waiting() >= goActsWaiting {
+		refuse("The page is busy: the files weren't dropped on it.")
+		return
+	}
+	var id [8]byte
+	rand.Read(id[:])
+	input := "__tabtop_drop_" + hex.EncodeToString(id[:])
+	inputJSON, _ := json.Marshal(input)
+	what, _ := json.Marshal(map[string]any{"input": input, "id": m.Frame, "fx": goClamp(m.FX, 0, 1), "fy": goClamp(m.FY, 0, 1),
+		"shift": m.Shift, "ctrl": m.Ctrl, "alt": m.Alt, "meta": m.Meta})
+	arg, _ := json.Marshal(string(what))
+	b.acts.add(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), goInputWait*time.Duration(2+len(paths)))
+		defer cancel()
+		var made struct {
+			Result struct {
+				ObjectID string `json:"objectId"`
+			} `json:"result"`
+		}
+		err := b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"contextId": world, "returnByValue": false,
+			"expression": `(()=>{const i=document.createElement("input");i.type="file";i.multiple=true;i.hidden=true;i.id=` + string(inputJSON) + `;(document.body||document.documentElement).append(i);return i})()`}, &made)
+		if err == nil && made.Result.ObjectID == "" {
+			err = errors.New("no input made")
+		}
+		if err == nil {
+			err = b.cdp.call(ctx, b.page, "DOM.setFileInputFiles", map[string]any{"objectId": made.Result.ObjectID, "files": paths}, nil)
+		}
+		result := ""
+		if err == nil {
+			var r struct {
+				Result struct {
+					Value string `json:"value"`
+				} `json:"result"`
+			}
+			err = b.cdp.call(ctx, b.page, "Runtime.evaluate", map[string]any{"contextId": world, "returnByValue": true, "expression": "__tabtop.dropIn(" + string(arg) + ")"}, &r)
+			result = r.Result.Value
+		}
+		if made.Result.ObjectID != "" {
+			b.cdp.call(ctx, b.page, "Runtime.releaseObject", map[string]any{"objectId": made.Result.ObjectID}, nil)
+		}
+		goDebugf("frame %d: %d files dropped: %s %v", m.ID, len(paths), result, err)
+		b.post(func() {
+			if gen != b.gen {
+				return
+			}
+			if err != nil || result == "gone" || result == "bad" {
+				refuse("The files couldn't be dropped on the embedded page.")
+			}
+			child.due, child.next, b.framesAt = true, time.Time{}, time.Time{} // read again, next round
+			b.afterInput(gen)
+		})
 	})
 }
 
@@ -422,4 +503,48 @@ func (g *server) routeGoUpload(c *tunnelCall) {
 	}
 	ok = true
 	c.r.finish(map[string]any{"name": filepath.Base(f.path)})
+}
+
+// routeGoUploadFromFiles gives a tab's chooser a file from TabTop's own
+// Files (go-upload-files: GoTab, the tab's token, its session's only;
+// Chooser, the chooser's; Root and Path, the file, read as the session may
+// read it): copied here into the chooser's place, as one sent is kept, not
+// sent from the person's browser again. The same limits as a file sent.
+func (g *server) routeGoUploadFromFiles(c *tunnelCall) {
+	if !g.goOn || g.goMode == goUnavailable {
+		c.r.fail("The remote browser is turned off or unavailable.")
+		return
+	}
+	tab := g.goTabList().find(c.req.GoTab, c.session)
+	if tab == nil {
+		c.r.fail("That tab's gone.")
+		return
+	}
+	item, err := c.files.openFile(c.req.Path)
+	if err != nil {
+		c.r.fail(err.Error())
+		return
+	}
+	defer item.Close()
+	size := item.info.Size()
+	u := &tab.b.uploads
+	f, w, err := u.begin(c.req.Chooser, path.Base(item.name), size)
+	if err != nil {
+		c.r.fail(err.Error())
+		return
+	}
+	ok := false
+	defer func() {
+		w.Close()
+		u.finish(f, ok)
+	}()
+	n, err := io.Copy(w, io.LimitReader(item.file, size+1))
+	if err != nil || n != size || w.Close() != nil {
+		c.r.fail("The file couldn't be kept for the page.")
+		return
+	}
+	at := item.info.ModTime()
+	os.Chtimes(f.path, at, at)
+	ok = true
+	c.r.finish(map[string]any{"name": filepath.Base(f.path), "size": size})
 }

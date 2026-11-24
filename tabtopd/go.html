@@ -208,9 +208,9 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_cert button.go { color: #ff9f9f; border-color: #8e3b3b; }
 #go_cert .note { color: #a8a8ad; font-size: 13px; margin-top: 12px; }
 /* A pop-up the page wants to open: asked (gosites.go). */
-#go_popup, #go_paste, #go_notify_ask, #go_device { position: absolute; top: calc(var(--bar-total) + 10px); right: calc(12px + var(--safe-right)); width: min(24rem, calc(100% - 24px)); box-sizing: border-box;
+#go_popup, #go_paste, #go_notify_ask, #go_device, #go_pick { position: absolute; top: calc(var(--bar-total) + 10px); right: calc(12px + var(--safe-right)); width: min(24rem, calc(100% - 24px)); box-sizing: border-box;
     padding: 12px 16px; color: #e8e8ea; background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 6; }
-#go_popup[hidden], #go_paste[hidden], #go_notify_ask[hidden], #go_device[hidden] { display: none; }
+#go_popup[hidden], #go_paste[hidden], #go_notify_ask[hidden], #go_device[hidden], #go_pick[hidden] { display: none; }
 /* A position followed (watchPosition: go-device.js): said at the foot,
    Stop ending it. */
 #go_location { position: absolute; left: 50%; bottom: calc(12px + var(--safe-bottom, 0px)); transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 10px;
@@ -220,11 +220,23 @@ body { height: 100dvh; display: grid; grid-template-rows: var(--bar-total) minma
 #go_location .what { overflow-wrap: anywhere; }
 #go_location .stop { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 14px; padding: 3px 12px; cursor: pointer; }
 @media (pointer: coarse) { #go_location .stop { min-height: 44px; } }
-#go_popup p, #go_paste p, #go_notify_ask p, #go_device p { margin: 0 0 10px; overflow-wrap: anywhere; }
+#go_popup p, #go_paste p, #go_notify_ask p, #go_device p, #go_pick p { margin: 0 0 10px; overflow-wrap: anywhere; }
 #go_popup .remember { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; color: #b8b8bd; }
-#go_popup .actions, #go_paste .actions, #go_notify_ask .actions, #go_device .actions { display: flex; gap: 8px; justify-content: flex-end; }
-#go_popup button, #go_paste button, #go_notify_ask button, #go_device button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
-#go_popup button.open, #go_paste button.allow, #go_notify_ask button.allow, #go_device button.allow { background: #2f5ea8; border-color: #2f5ea8; }
+#go_popup .actions, #go_paste .actions, #go_notify_ask .actions, #go_device .actions, #go_pick .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+#go_popup button, #go_paste button, #go_notify_ask button, #go_device button, #go_pick button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
+#go_popup button.open, #go_paste button.allow, #go_notify_ask button.allow, #go_device button.allow, #go_pick button.allow { background: #2f5ea8; border-color: #2f5ea8; }
+/* A page's file chooser: this device's files, or TabTop's own (gouploads.go). */
+#go_pick { width: min(28rem, calc(100% - 24px)); }
+#go_pick .where { display: flex; flex-wrap: wrap; gap: 2px 4px; margin: 0 0 8px; color: #b8b8bd; font-size: 13px; }
+#go_pick .where button { padding: 0 4px; border: 0; background: none; color: #8ab4ff; }
+#go_pick ul { list-style: none; margin: 0 0 10px; padding: 0; max-height: min(50vh, 22rem); overflow: auto; border: 1px solid #48484a; border-radius: 4px; }
+#go_pick li { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid #3a3a3c; }
+#go_pick li:last-child { border-bottom: 0; }
+#go_pick li label, #go_pick li .folder { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+#go_pick li .folder { padding: 2px 0; border: 0; background: none; text-align: start; color: #8ab4ff; }
+#go_pick li .size { color: #8e8e93; font-size: 12px; white-space: nowrap; }
+#go_pick .empty { color: #8e8e93; padding: 8px; }
+@media (pointer: coarse) { #go_pick li { min-height: 44px; } #go_pick button { min-height: 44px; } }
 #go_notice.error { border-color: #d96b6b; }
 #go_notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
 #go_notice button { font: inherit; color: inherit; background: #3a3a3c; border: 1px solid #48484a; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
@@ -352,6 +364,9 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
     <div class="actions"><button type="button" class="allow">Paste</button><button type="button" class="refuse">Don’t allow</button></div></div>
 <div id="go_notify_ask" role="alertdialog" aria-labelledby="go_notify_ask_text" hidden><p id="go_notify_ask_text"></p>
     <div class="actions"><button type="button" class="later">Not now</button><button type="button" class="refuse">Block</button><button type="button" class="allow">Allow</button></div></div>
+<div id="go_pick" role="dialog" aria-labelledby="go_pick_text" hidden><p id="go_pick_text"></p>
+    <div class="files" hidden><div class="where"></div><ul></ul></div>
+    <div class="actions"><button type="button" class="cancel">Cancel</button><button type="button" class="files-go">From TabTop Files…</button><button type="button" class="device allow">This device…</button><button type="button" class="give allow" hidden>Give to the page</button></div></div>
 <div id="go_location" role="status" hidden><span class="what"></span><button type="button" class="stop">Stop</button></div>
 <div id="go_device" role="alertdialog" aria-labelledby="go_device_text" hidden><p id="go_device_text"></p>
     <div class="actions"><button type="button" class="allow"></button><button type="button" class="refuse">Cancel</button></div></div>
