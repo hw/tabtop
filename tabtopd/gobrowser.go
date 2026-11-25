@@ -155,6 +155,15 @@ var goPermsJS string
 //go:embed govibrate.js
 var goVibrateJS string
 
+// goPageScripts is what's run in the page's own world in each document,
+// in this order, before the page's own scripts: its fetch patched for
+// data: URLs, its IntersectionObserver stand-in, its players relayed, and
+// the stand-ins for what the engine lacks (each its own file's).
+func goPageScripts() []string {
+	return []string{goFetchJS, goObserveJS, goMediaJS, goCanvasJS, goGLPageJS, goEMEJS, goSheetsJS, goShadowJS,
+		goClipboardJS, goFullscreenJS, goVibrateJS, goWakeLockJS, goOrientationJS, goPointerLockJS, goDropJS, goPermsJS}
+}
+
 //go:embed godevice.js
 var goDeviceJS string
 
@@ -820,18 +829,18 @@ func (b *goBrowser) run() {
 	taken := false // taken by a connection yet (the first, or one back)
 	go b.jobs.run(stop)
 	go b.acts.run(stop)
-	// The page's fetch, patched for data: URLs (gofetch.js), and its
-	// IntersectionObserver stand-in (goobserve.js), in every document from
-	// now on, before its own scripts: queued before any navigation.
+	// The page's own world's scripts (goPageScripts), in every document
+	// from now on, before its own scripts: queued before any navigation.
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
-		source := goFetchJS + "\n" + goObserveJS + "\n" + goMediaJS + "\n" + goCanvasJS + "\n" + goGLPageJS + "\n" + goEMEJS + "\n" + goSheetsJS + "\n" + goShadowJS + "\n" + goClipboardJS + "\n" + goFullscreenJS + "\n" + goVibrateJS + "\n" + goWakeLockJS + "\n" + goOrientationJS + "\n" + goPointerLockJS + "\n" + goDropJS + "\n" + goPermsJS
+		scripts := goPageScripts()
 		if b.e != nil && b.e.adapter.noDialogs {
-			source += "\n" + goDialogsJS
+			scripts = append(scripts, goDialogsJS)
 		}
+		source := strings.Join(scripts, "\n")
 		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": source}, nil)
-	}, func(r any) { goDebugf("fetch for data:, observer stand-in: %v", r) })
+	}, func(r any) { goDebugf("page scripts: %v", r) })
 	b.notifyRegister() // (the sites' notification answers: gonotify.go)
 	b.deviceRegister() // (what the person's browser can do: godevice.go)
 	ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
@@ -1916,10 +1925,7 @@ type goChanges struct {
 	Again bool `json:"again"`
 	// What the page asked by alert, confirm or prompt, with an engine that
 	// answered it itself (godialogs.js).
-	Asked []struct {
-		Kind    string `json:"kind"`
-		Message string `json:"message"`
-	} `json:"asked"`
+	Asked []goAsked `json:"asked"`
 	// Where the page scrolled its elements itself (goobserve.js).
 	Scrolls []goScroll `json:"scrolls"`
 	// What it copied, and its reads of the clipboard (goclipboard.go).
@@ -1929,6 +1935,13 @@ type goChanges struct {
 	Sel []int `json:"sel"`
 	// Adopted stylesheets' texts first said, by number (goagent.js's cssRef).
 	CSS map[string]string `json:"css"`
+}
+
+// goAsked is a dialog the page asked for (alert, confirm or prompt), with
+// what it said.
+type goAsked struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
 }
 
 // goScroll is where the page scrolled one of its elements itself, for the
@@ -2021,59 +2034,73 @@ func (b *goBrowser) readChanges() {
 					b.send(map[string]any{"type": "go-url", "gen": gen, "url": u, "title": goTitleOf(c.Title)})
 				}
 			}
-			for i, q := range c.Asked {
-				if i == 8 || b.quiet == gen {
-					break // a page asking in a loop: the person said no more
-				}
-				if q.Kind != "alert" && q.Kind != "confirm" && q.Kind != "prompt" {
-					continue
-				}
-				if len(q.Message) > 2000 {
-					q.Message = q.Message[:2000] + "…"
-				}
-				goDebugf("dialog %s asked, answered by the engine", q.Kind)
-				b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
-			}
+			b.dialogsAsked(gen, c.Asked)
 			b.devices(gen, c.Devices)
 			b.clipboard(gen, b.world, c.goClipboardOut)
 			c.Streams = b.streamsFrom(gen, b.world, c.Streams) // (its own streams only: goframestreams.go)
-			if io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls); len(c.Ops) > 0 || len(c.Streams) > 0 || len(c.EME) > 0 || len(io) > 0 || len(scrolls) > 0 {
-				if b.glStreams == nil {
-					b.glStreams = make(map[int]*goGLStream)
-				}
-				seen := goSeen{gl: b.glStreams}
-				ops := goCleanOps(c.Ops, &seen)
-				goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
-				changes := map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams}
-				if strings.HasPrefix(b.docURL, "https://") && len(c.EME) <= 4 {
-					changes["eme"] = c.EME
-				}
-				if sel := goSel(c.Sel); sel != nil && len(ops) > 0 {
-					changes["sel"] = sel
-				}
-				if css := goCleanCSS(c.CSS); len(css) > 0 {
-					changes["css"] = css
-				}
-				// What its new classes and ids bring to hide, with them.
-				if hide := b.moreHiding(seen.nodes, seen.attrs); len(hide) > 0 {
-					changes["hide"] = hide
-				}
-				p, _ := json.Marshal(changes)
-				b.sendLarge(p)
-				// A WebGL canvas drawn since the last read is likely being
-				// animated: read again at the least interval, not the poll's.
-				for _, op := range ops {
-					if m, ok := op.(map[string]any); ok && m["o"] == "g" && b.readSoon == nil {
-						b.readSoon = time.After(goChangesEvery)
-						break
-					}
-				}
-			}
+			b.sendChanges(gen, &c)
 			if b.dirty {
 				b.readChanges()
 			}
 		}
 	}, func(r any) { r.(func())() })
+}
+
+// dialogsAsked tells the person of the page's alerts, confirms and
+// prompts, which the engine answered itself (godialogs.js).
+func (b *goBrowser) dialogsAsked(gen int, asked []goAsked) {
+	for i, q := range asked {
+		if i == 8 || b.quiet == gen {
+			break // a page asking in a loop: the person said no more
+		}
+		if q.Kind != "alert" && q.Kind != "confirm" && q.Kind != "prompt" {
+			continue
+		}
+		if len(q.Message) > 2000 {
+			q.Message = q.Message[:2000] + "…"
+		}
+		goDebugf("dialog %s asked, answered by the engine", q.Kind)
+		b.send(map[string]any{"type": "go-dialog-notice", "gen": gen, "kind": q.Kind, "message": q.Message, "url": b.docURL})
+	}
+}
+
+// sendChanges sends the person's browser what changed in the document
+// (c, its streams already the page's own), if anything did.
+func (b *goBrowser) sendChanges(gen int, c *goChanges) {
+	io, scrolls := goCleanIO(c.IO), goCleanScrolls(c.Scrolls)
+	if len(c.Ops) == 0 && len(c.Streams) == 0 && len(c.EME) == 0 && len(io) == 0 && len(scrolls) == 0 {
+		return
+	}
+	if b.glStreams == nil {
+		b.glStreams = make(map[int]*goGLStream)
+	}
+	seen := goSeen{gl: b.glStreams}
+	ops := goCleanOps(c.Ops, &seen)
+	goDebugf("changes gen %d seq %d: %d ops, %d observed, %d scrolled", gen, c.Seq, len(ops), len(io), len(scrolls))
+	changes := map[string]any{"type": "go-changes", "gen": gen, "seq": c.Seq, "title": goTitleOf(c.Title), "ops": ops, "io": io, "scrolls": scrolls, "streams": c.Streams}
+	if strings.HasPrefix(b.docURL, "https://") && len(c.EME) <= 4 {
+		changes["eme"] = c.EME
+	}
+	if sel := goSel(c.Sel); sel != nil && len(ops) > 0 {
+		changes["sel"] = sel
+	}
+	if css := goCleanCSS(c.CSS); len(css) > 0 {
+		changes["css"] = css
+	}
+	// What its new classes and ids bring to hide, with them.
+	if hide := b.moreHiding(seen.nodes, seen.attrs); len(hide) > 0 {
+		changes["hide"] = hide
+	}
+	p, _ := json.Marshal(changes)
+	b.sendLarge(p)
+	// A WebGL canvas drawn since the last read is likely being animated:
+	// read again at the least interval, not the poll's.
+	for _, op := range ops {
+		if m, ok := op.(map[string]any); ok && m["o"] == "g" && b.readSoon == nil {
+			b.readSoon = time.After(goChangesEvery)
+			break
+		}
+	}
 }
 
 // actNow does what the person did in the page, by script (goagent.js's

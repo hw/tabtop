@@ -62,8 +62,10 @@ type goPasteAsk struct {
 
 var goPasteID = regexp.MustCompile(`^[a-z0-9]{1,40}$`)
 
-// goClipboardOut is what an agent says of the clipboard: the page's newest
-// copy, and its reads asked for.
+// goClipboardOut is what an agent says the page asked of the person's
+// browser: the page's newest copy and its reads of the clipboard, and its
+// fullscreen, notifications, vibration and locks (featureAsks; its
+// share, location and files are its devices: godevice.go).
 type goClipboardOut struct {
 	Copy *string `json:"copy"`
 	// A picture copied (a PNG, base64), with Copy its text, if it had any.
@@ -85,27 +87,14 @@ type goClipboardOut struct {
 	PointerLock []goPointerAsk `json:"pointerLock"`
 }
 
-// clipboard passes on what the page in world (of gen) copied and asked to
-// read, if it followed the person's input there.
+// clipboard passes on what the page in world (of gen) asked of the
+// person's browser: its fullscreen, notifications, vibration and locks
+// (featureAsks, each by its own rules), and what it copied and asked to
+// read, if that followed the person's input there.
 func (b *goBrowser) clipboard(gen, world int, out goClipboardOut) {
 	recent := b.recentInput(gen, world)
-	if len(out.Fullscreen) > 0 && gen == b.gen {
-		b.fullscreenAsks(gen, world, out.Fullscreen, recent)
-	}
-	if out.Notify != nil && gen == b.gen {
-		b.notify(gen, world, *out.Notify, recent)
-	}
-	if out.Vibrate != nil && gen == b.gen {
-		b.vibrate(gen, world, out.Vibrate, recent)
-	}
-	if len(out.WakeLock) > 0 && gen == b.gen {
-		b.wakeLockAsks(gen, world, out.WakeLock, recent)
-	}
-	if len(out.Orientation) > 0 && gen == b.gen {
-		b.orientationAsks(gen, world, out.Orientation)
-	}
-	if len(out.PointerLock) > 0 && gen == b.gen {
-		b.pointerLockAsks(gen, world, out.PointerLock, recent)
+	if gen == b.gen {
+		b.featureAsks(gen, world, out, recent)
 	}
 	if out.Copy == nil && out.CopyImage == nil && len(out.PasteAsks) == 0 && len(out.PasteReads) == 0 {
 		return
@@ -117,63 +106,90 @@ func (b *goBrowser) clipboard(gen, world int, out goClipboardOut) {
 		}
 		return
 	}
-	if out.Copy != nil || out.CopyImage != nil {
-		m := map[string]any{"type": "go-copy", "gen": gen}
-		if out.Copy != nil {
-			text := *out.Copy
-			if len(text) > goCopyMax {
-				text = goCut(text, goCopyMax)
-			}
-			m["text"] = text
-		}
-		if out.CopyImage != nil {
-			if png, ok := goPNG(*out.CopyImage); ok {
-				m["image"] = *out.CopyImage
-				goDebugf("clipboard: a %d-byte picture copied", len(png))
-			} else {
-				goDebugf("clipboard: a picture copied that isn't a PNG of %d MiB at most: not passed on", goCopyImageMax>>20)
-			}
-		}
-		if _, text := m["text"]; text || m["image"] != nil {
-			goDebugf("clipboard: %d bytes of text copied", len(goStr(m["text"])))
-			b.send(m)
+	b.copied(gen, out)
+	for _, id := range out.PasteAsks {
+		b.pasteAsk(gen, world, id, false)
+	}
+	for _, id := range out.PasteReads {
+		b.pasteAsk(gen, world, id, true)
+	}
+}
+
+// featureAsks passes on what the page asked of the person's browser other
+// than its clipboard (fullscreen before its orientation: a lock's allowed
+// only in it).
+func (b *goBrowser) featureAsks(gen, world int, out goClipboardOut, recent bool) {
+	if len(out.Fullscreen) > 0 {
+		b.fullscreenAsks(gen, world, out.Fullscreen, recent)
+	}
+	if out.Notify != nil {
+		b.notify(gen, world, *out.Notify, recent)
+	}
+	if out.Vibrate != nil {
+		b.vibrate(gen, world, out.Vibrate, recent)
+	}
+	if len(out.WakeLock) > 0 {
+		b.wakeLockAsks(gen, world, out.WakeLock, recent)
+	}
+	if len(out.Orientation) > 0 {
+		b.orientationAsks(gen, world, out.Orientation)
+	}
+	if len(out.PointerLock) > 0 {
+		b.pointerLockAsks(gen, world, out.PointerLock, recent)
+	}
+}
+
+// copied puts what the page copied (its text, a picture) on the person's
+// clipboard.
+func (b *goBrowser) copied(gen int, out goClipboardOut) {
+	if out.Copy == nil && out.CopyImage == nil {
+		return
+	}
+	m := map[string]any{"type": "go-copy", "gen": gen}
+	if out.Copy != nil {
+		m["text"] = goCut(*out.Copy, goCopyMax)
+	}
+	if out.CopyImage != nil {
+		if png, ok := goPNG(*out.CopyImage); ok {
+			m["image"] = *out.CopyImage
+			goDebugf("clipboard: a %d-byte picture copied", len(png))
+		} else {
+			goDebugf("clipboard: a picture copied that isn't a PNG of %d MiB at most: not passed on", goCopyImageMax>>20)
 		}
 	}
-	reads := make([]bool, 0, len(out.PasteAsks)+len(out.PasteReads))
-	for range out.PasteAsks {
-		reads = append(reads, false)
+	if _, text := m["text"]; text || m["image"] != nil {
+		goDebugf("clipboard: %d bytes of text copied", len(goStr(m["text"])))
+		b.send(m)
 	}
-	for range out.PasteReads {
-		reads = append(reads, true)
+}
+
+// pasteAsk asks the person whether the page's read of the clipboard (its
+// id) is answered: its text, or its items too (images, read()).
+func (b *goBrowser) pasteAsk(gen, world int, id string, images bool) {
+	if !goPasteID.MatchString(id) {
+		return
 	}
-	for i, id := range append(out.PasteAsks, out.PasteReads...) {
-		images := reads[i]
-		if !goPasteID.MatchString(id) {
-			continue
-		}
-		b.pasteAsksDue()
-		if len(b.pasteAsks) >= goPasteAsks {
-			b.pasteRefused(world, id)
-			continue
-		}
-		if b.pasteAsks == nil {
-			b.pasteAsks = map[string]*goPasteAsk{}
-		}
-		token := goToken()
-		b.pasteAsks[token] = &goPasteAsk{gen: gen, world: world, id: id, at: time.Now(), images: images}
-		// Named for the page that asked, and the page it's in if that's
-		// another (an embedded page's).
-		site, top := b.worldSite(world), goPageSite(b.docURL)
-		if site == "" {
-			b.pasteRefused(world, id)
-			delete(b.pasteAsks, token)
-			continue
-		}
-		if site == top {
-			top = ""
-		}
-		b.send(map[string]any{"type": "go-paste-ask", "gen": gen, "ask": token, "site": site, "within": top, "images": images})
+	b.pasteAsksDue()
+	if len(b.pasteAsks) >= goPasteAsks {
+		b.pasteRefused(world, id)
+		return
 	}
+	// Named for the page that asked, and the page it's in if that's
+	// another (an embedded page's).
+	site, top := b.worldSite(world), goPageSite(b.docURL)
+	if site == "" {
+		b.pasteRefused(world, id)
+		return
+	}
+	if site == top {
+		top = ""
+	}
+	if b.pasteAsks == nil {
+		b.pasteAsks = map[string]*goPasteAsk{}
+	}
+	token := goToken()
+	b.pasteAsks[token] = &goPasteAsk{gen: gen, world: world, id: id, at: time.Now(), images: images}
+	b.send(map[string]any{"type": "go-paste-ask", "gen": gen, "ask": token, "site": site, "within": top, "images": images})
 }
 
 // recentInput is whether the person's input in the tab was soon enough
