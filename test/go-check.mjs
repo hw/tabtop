@@ -169,6 +169,25 @@ async function check(base, port, site, adSite) {
         await mouse("mousePressed", p, { button, buttons, clickCount: count });
         await mouse("mouseReleased", p, { button, buttons: 0, clickCount: count });
     }
+    // press is a real click (the person's: full screen needs one) on what
+    // sel finds in the page around the frame (a menu's, a player's), held
+    // hold ms, once it's drawn where it's pressed: a click just after it's
+    // shown over the frame can be routed to the frame, as after a dialog
+    // (see dialogGone; seen in CI, a menu's Watch pressed as it opened).
+    // unseen: where it is, though it isn't what's there (a control hidden,
+    // whose place is pressed).
+    async function press(sel, { hold = 0, unseen = false } = {}) {
+        await dialogGone();
+        const where = `(() => { const e = document.querySelector(${JSON.stringify(sel)}), r = e?.getBoundingClientRect(); if (!r?.width) return null;
+            const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2); return ${unseen} || e.contains(document.elementFromPoint(x, y)) ? { x, y } : null; })()`;
+        let p = null;
+        for (const end = Date.now() + 10000; !(p = await ev(where)); await sleep(100)) {
+            if (Date.now() > end) throw new Error(`timed out waiting for ${sel} shown where it's pressed`);
+        }
+        await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
+        if (hold) await sleep(hold);
+        await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...p, button: "left", buttons: 0, clickCount: 1 });
+    }
     const pageLog = () => frame(`document.getElementById("log").textContent`);
     // WebGL drawn in the engine is replayed in the copy (gogl.js, gocanvasgl.go,
     // go-frame-gl.js): webgl.html's canvases, in the steps that follow in turn.
@@ -215,7 +234,7 @@ async function check(base, port, site, adSite) {
     // the browser, the site and the helpers above (choosersOpened read as
     // it is then, as it counts on).
     const ctx = { adSite, at, base, browser, cdp, clickAt, closeSettings, ev, exceptions, forgetKept, frame, frameClick, frameDrop,
-        frameWait, glAt, goTo, inFrame, leave, mouse, origin, pageLog, pageShown, requests, site, stillNot, submitUrl, viewOrigin, waitFor, get choosersOpened() { return choosersOpened; } };
+        frameWait, glAt, goTo, inFrame, leave, mouse, origin, pageLog, pageShown, press, requests, site, stillNot, submitUrl, viewOrigin, waitFor, get choosersOpened() { return choosersOpened; } };
     await pages(ctx);
     await sites(ctx);
     await input(ctx);
