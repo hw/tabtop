@@ -120,13 +120,15 @@
             });
             return { set: (x) => { v = x; } };
         };
-        const copied = latest("copy"), copiedImage = latest("copyImage");
+        const copied = latest("copy"), copiedImage = latest("copyImage"), copiedHTML = latest("copyHTML");
         const pasteAsks = kept("pasteAsks", 4), pasteReads = kept("pasteReads", 4);
         document.addEventListener("__tabtop_copy", (e) => {
             const d = parsed(e.detail);
             if (!d) return;
-            // (A picture: a PNG's base64, 8 MiB at most; its text, if any, with it.)
+            // (A picture: a PNG's base64, 8 MiB at most; its text, if any,
+            // with it. Its HTML, as its text, with either.)
             const image = typeof d.image === "string" && d.image.length <= 4 * Math.ceil((8 << 20) / 3) && /^[A-Za-z0-9+/]+=*$/.test(d.image) ? d.image : undefined;
+            if (image || typeof d.text === "string") copiedHTML.set(typeof d.html === "string" && d.html ? d.html.slice(0, 1 << 20) : undefined);
             if (image) {
                 copied.set(typeof d.text === "string" ? d.text.slice(0, 1 << 20) : undefined);
                 copiedImage.set(image);
@@ -168,9 +170,11 @@
                 notifyPicBytes += v.length;
                 return v;
             };
+            // (Its vibration: 99 entries at most, each 0 to 10 s.)
+            const vibrate = Array.isArray(d.vibrate) ? d.vibrate.slice(0, 99).map((v) => (Number.isFinite(v) ? Math.min(Math.max(Math.trunc(v), 0), 10_000) : 0)) : [];
             notifyShows.push({ id: d.id, title: s(d.title, 1000), body: s(d.body, 4000), tag: s(d.tag, 256), silent: d.silent === true,
                 requireInteraction: d.requireInteraction === true, renotify: d.renotify === true, dir: s(d.dir, 8), lang: s(d.lang, 64),
-                icon: pic(d.icon), image: pic(d.image), badge: pic(d.badge) });
+                icon: pic(d.icon), image: pic(d.image), badge: pic(d.badge), vibrate });
         });
         document.addEventListener("__tabtop_notify_close", (e) => {
             const d = parsed(e.detail);
@@ -225,6 +229,35 @@
             const d = parsed(e.detail);
             if (!Array.isArray(d) || d.length > 99) return;
             vibrateAsk.set(d.map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0))));
+        });
+        // The page's media session (gomediasession.js): the latest it said
+        // (what's playing, its state, position and handled actions), each
+        // within reason; its artwork's addresses (http(s), or a small data:
+        // picture), 8 at most.
+        const mediaSessionAsk = latest("mediaSession");
+        document.addEventListener("__tabtop_media_session", (e) => {
+            if (typeof e.detail !== "string" || e.detail.length > 64 << 10) return;
+            const d = parsed(e.detail);
+            if (!d || typeof d !== "object") return;
+            const s = (v) => (typeof v === "string" ? v.slice(0, 1000) : "");
+            const n = (v) => (Number.isFinite(v) ? v : 0);
+            const art = (i) => (typeof i?.src === "string" && (/^https?:\/\//.test(i.src) ? i.src.length <= 2048 : /^data:image\//.test(i.src) && i.src.length <= 32 << 10)
+                ? { src: i.src, sizes: s(i.sizes).slice(0, 100), type: s(i.type).slice(0, 100) } : null);
+            const m = d.metadata && typeof d.metadata === "object" ? d.metadata : null;
+            mediaSessionAsk.set({
+                metadata: m ? { title: s(m.title), artist: s(m.artist), album: s(m.album), artwork: (Array.isArray(m.artwork) ? m.artwork : []).map(art).filter(Boolean).slice(0, 8) } : null,
+                state: ["none", "paused", "playing"].includes(d.state) ? d.state : "none",
+                actions: (Array.isArray(d.actions) ? d.actions : []).filter((a) => typeof a === "string" && /^[a-z]{2,30}$/.test(a)).slice(0, 20),
+                position: d.position && typeof d.position === "object" ? { duration: n(d.position.duration), rate: n(d.position.rate), position: n(d.position.position) } : null,
+            });
+        });
+        // The page's app badge (gobadge.js): the latest it set, a count (0
+        // clears it) or a mark.
+        const badgeAsk = latest("badge");
+        document.addEventListener("__tabtop_badge", (e) => {
+            const d = parsed(e.detail);
+            if (d?.flag === true) badgeAsk.set({ flag: true });
+            else if (Number.isSafeInteger(d?.count) && d.count >= 0) badgeAsk.set({ count: d.count });
         });
         // (A saved file's pieces, fs-write, are many at once: so many each
         // read, apart from the other asks' 4. One taken is cancelled, so the
@@ -386,7 +419,18 @@
             const detail = { id: d.id };
             if (typeof d.text === "string") detail.text = d.text;
             if (typeof d.image === "string") detail.image = d.image;
+            if (typeof d.html === "string") detail.html = d.html;
             return answer("__tabtop_pasted", detail);
+        };
+        // mediaAction gives the page the person's media control pressed
+        // (gomediasession.go): its action, and the time it seeks to or by.
+        const mediaAction = (json) => {
+            const d = parsed(json);
+            if (!d || typeof d.action !== "string") return false;
+            const detail = { action: d.action };
+            if (Number.isFinite(d.time)) detail.time = d.time;
+            if (d.fast === true) detail.fast = true;
+            return answer("__tabtop_media_action", detail);
         };
         // notified gives the page the server's word on its notifications:
         // its permission ({ask?, state}), or one's event ({id, type}).
@@ -2265,7 +2309,7 @@
             return "ok";
         }
 
-        w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, wakeLock: wakeAnswer, orientation: orientAnswer, pointerLock: lockAnswer, dropIn, frameStreams };
+        w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, mediaAction, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, wakeLock: wakeAnswer, orientation: orientAnswer, pointerLock: lockAnswer, dropIn, frameStreams };
         // What the page observed before this world was made (as it loaded),
         // asked for again: posted, not dispatched. An event from this world
         // handled in the page's, as the page loads, leaves part of it

@@ -931,6 +931,7 @@
             return;
         }
         box.classList.toggle("go-media-live", on);
+        mediaState(box);
         if (on) punchMediaHole(box);
         else sealMediaHole(box);
     }
@@ -989,8 +990,41 @@
         box.style.setProperty("--tabtop-media-width", size.width || "initial");
         box.style.setProperty("--tabtop-media-height", size.height || "initial");
         box.style.setProperty("--tabtop-media-ratio", size.aspectRatio || "initial");
+        mediaState(box);
         mediaLater();
     }
+    // mediaState shows a box as its player is: clear over a player playing
+    // under it (go-media-live), nothing at all with nothing to play
+    // (go-media-empty), as MEDIA_DEFAULTS says, but inline and !important,
+    // so that no rule of the page's (one for its player's class, say) shows
+    // it again.
+    const MEDIA_CLEAR = { "background-color": "transparent", "background-image": "none", color: "transparent", "border-color": "transparent", "box-shadow": "none" };
+    const MEDIA_STATES = {
+        "go-media-live": { ...MEDIA_CLEAR, padding: "0" },
+        "go-media-empty": { ...MEDIA_CLEAR, outline: "none", "pointer-events": "none" },
+    };
+    function mediaState(box) {
+        const style = mediaOf.get(box)?.style ?? "";
+        const set = new Set();
+        for (const [state, props] of Object.entries(MEDIA_STATES)) {
+            if (!box.classList.contains(state)) continue;
+            for (const [name, value] of Object.entries(props)) {
+                box.style.setProperty(name, value, "important");
+                set.add(name);
+            }
+        }
+        // (A state left: the page's own style for what it set, if any.)
+        const page = document.createElement("div").style;
+        page.cssText = style;
+        for (const props of Object.values(MEDIA_STATES)) {
+            for (const name of Object.keys(props)) {
+                if (!set.has(name)) box.style.setProperty(name, page.getPropertyValue(name), page.getPropertyPriority(name));
+            }
+        }
+    }
+    // pageClasses is a class attribute of the page's for a player's box:
+    // not the box's own states, which only this sets.
+    const pageClasses = (value) => String(value).split(/\s+/).filter((c) => c && !c.startsWith("go-media-")).join(" ");
     // A player's attributes that are its own (what it plays and how, its
     // size): not given its box.
     const MEDIA_OWN = new Set(["src", "srcset", "poster", "preload", "autoplay", "controls", "controlslist", "muted", "loop", "playsinline",
@@ -1006,7 +1040,7 @@
         for (let i = 0; i + 1 < attrs.length; i += 2) {
             const name = String(attrs[i]), value = String(attrs[i + 1] ?? "");
             if (MEDIA_OWN.has(name.toLowerCase())) continue;
-            attribute(d, box, HTML, "div", name, value);
+            attribute(d, box, HTML, "div", name, name.toLowerCase() === "class" ? pageClasses(value) : value);
         }
         const dimension = (name) => {
             const value = attrOf(n, name);
@@ -1062,7 +1096,10 @@
         if (!info) return;
         if (info.key) forgetMedia(info.key);  // its player stops (keep, in the page)
         info.key = 0;
-        box.classList.remove("go-media-empty");
+        if (box.classList.contains("go-media-empty")) {
+            box.classList.remove("go-media-empty");
+            mediaState(box);
+        }
         const what = info.tag === "video" ? "video" : "sound";
         if (/^blob:/i.test(src) && !/^blob:tabtop-media\/[1-9]\d*$/.test(src)) {
             // Fed by the page's own player (Media Source): nothing a player
@@ -1079,6 +1116,7 @@
             setMediaLive(box, false);
             box.classList.remove("go-media-mark");
             box.classList.add("go-media-empty");
+            mediaState(box);
             box.textContent = `A ${what} with nothing to play.`;  // (said, not shown)
             mediaLater();
             return;
@@ -1139,6 +1177,15 @@
         if (op.o !== "a") return false;
         const name = String(op.n).toLowerCase(), v = op.v === null ? null : String(op.v);
         switch (name) {
+            case "class": {
+                // The page's classes, changed (a site's player's are, as it
+                // plays, pauses, loads): the box keeps its own states.
+                const own = [...box.classList].filter((c) => c.startsWith("go-media-"));
+                if (v === null) box.removeAttribute("class");
+                else box.setAttribute("class", pageClasses(v));
+                box.classList.add(...own);
+                return true;
+            }
             case "style":
                 if (v !== null) return false;
                 info.style = "";

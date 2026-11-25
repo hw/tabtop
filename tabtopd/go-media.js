@@ -1112,6 +1112,12 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             }
             told();
         },
+        // chosenAll: the person's own media control pressed (a media key,
+        // the lock screen's: gomediasession.go): the page's players are
+        // the person's to play from then on, autoplay paused or not.
+        chosenAll() {
+            for (const player of players.values()) player.chosen = true;
+        },
         // toggle plays or pauses a player, as the person's doing.
         toggle(key) {
             const player = players.get(key);

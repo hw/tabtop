@@ -71,7 +71,9 @@ var goAskID = regexp.MustCompile(`^[a-z0-9]{1,40}$`)
 type goClipboardOut struct {
 	Copy *string `json:"copy"`
 	// A picture copied (a PNG, base64), with Copy its text, if it had any.
-	CopyImage *string  `json:"copyImage"`
+	CopyImage *string `json:"copyImage"`
+	// What was copied as HTML (rich text), with its text or picture.
+	CopyHTML  *string  `json:"copyHTML"`
 	PasteAsks []string `json:"pasteAsks"`
 	// Reads of the clipboard's items (its picture, and text).
 	PasteReads []string `json:"pasteReads"`
@@ -81,6 +83,10 @@ type goClipboardOut struct {
 	Notify *goNotifyOut `json:"notify"`
 	// And the pattern it last asked to be felt (govibrate.go).
 	Vibrate []float64 `json:"vibrate"`
+	// And the app badge it last set (gobadge.go).
+	Badge *goBadgeAsk `json:"badge"`
+	// And its media session as it last said it (gomediasession.go).
+	MediaSession *goMediaSessionOut `json:"mediaSession"`
 	// And its screen wake lock asked for, or let go (gowakelock.go).
 	WakeLock []goWakeAsk `json:"wakeLock"`
 	// And its screen's orientation locked, or unlocked (goorientation.go).
@@ -98,7 +104,7 @@ func (b *goBrowser) clipboard(gen, world int, out goClipboardOut) {
 	if gen == b.gen {
 		b.featureAsks(gen, world, out, recent)
 	}
-	if out.Copy == nil && out.CopyImage == nil && len(out.PasteAsks) == 0 && len(out.PasteReads) == 0 {
+	if out.Copy == nil && out.CopyImage == nil && out.CopyHTML == nil && len(out.PasteAsks) == 0 && len(out.PasteReads) == 0 {
 		return
 	}
 	if !recent {
@@ -130,6 +136,12 @@ func (b *goBrowser) featureAsks(gen, world int, out goClipboardOut, recent bool)
 	if out.Vibrate != nil {
 		b.vibrate(gen, world, out.Vibrate, recent)
 	}
+	if out.Badge != nil {
+		b.badge(gen, world, *out.Badge)
+	}
+	if out.MediaSession != nil {
+		b.mediaSession(gen, world, *out.MediaSession)
+	}
 	if len(out.WakeLock) > 0 {
 		b.wakeLockAsks(gen, world, out.WakeLock, recent)
 	}
@@ -141,10 +153,10 @@ func (b *goBrowser) featureAsks(gen, world int, out goClipboardOut, recent bool)
 	}
 }
 
-// copied puts what the page copied (its text, a picture) on the person's
-// clipboard.
+// copied puts what the page copied (its text, a picture, its HTML) on the
+// person's clipboard.
 func (b *goBrowser) copied(gen int, out goClipboardOut) {
-	if out.Copy == nil && out.CopyImage == nil {
+	if out.Copy == nil && out.CopyImage == nil && out.CopyHTML == nil {
 		return
 	}
 	m := map[string]any{"type": "go-copy", "gen": gen}
@@ -157,6 +169,12 @@ func (b *goBrowser) copied(gen int, out goClipboardOut) {
 			goDebugf("clipboard: a %d-byte picture copied", len(png))
 		} else {
 			goDebugf("clipboard: a picture copied that isn't a PNG of %d MiB at most: not passed on", goCopyImageMax>>20)
+		}
+	}
+	if out.CopyHTML != nil && *out.CopyHTML != "" {
+		m["html"] = goCut(*out.CopyHTML, goCopyMax)
+		if _, text := m["text"]; !text {
+			m["text"] = ""
 		}
 	}
 	if _, text := m["text"]; text || m["image"] != nil {
@@ -241,6 +259,10 @@ func (b *goBrowser) paste(m goClientMsg) {
 		text = goCut(text, goCopyMax)
 	}
 	answer := map[string]any{"id": a.id, "text": text}
+	// Its HTML, if the clipboard had some (a read of its items only).
+	if a.images && m.HTML != "" {
+		answer["html"] = goCut(m.HTML, goCopyMax)
+	}
 	// Its picture, sent before in parts: given if it's whole (Count, its
 	// bytes) and a PNG.
 	if a.images && m.Count > 0 {

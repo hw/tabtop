@@ -87,6 +87,7 @@ func init() {
 		"orientation-answer": {goOpThisGen, (*goBrowser).orientationAnswered},                                  // locked, or couldn't (goorientation.go)
 		"wakelock-lost":      {goOpThisGen, func(b *goBrowser, m goClientMsg) { b.wakeLockLost() }},            // couldn't keep it (gowakelock.go)
 		"fullscreen-exit":    {goOpThisGen, func(b *goBrowser, m goClientMsg) { b.fullscreenExit() }},          // the person left it (gofullscreen.go)
+		"media-action":       {goOpThisGen, (*goBrowser).mediaAction},                                          // a media control pressed (gomediasession.go)
 		"resync": {goOpAny, func(b *goBrowser, m goClientMsg) {
 			if m.Gen == b.shown && b.loading == 0 {
 				b.readAgain(b.gen)

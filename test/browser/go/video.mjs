@@ -674,9 +674,16 @@ export async function video(ctx) {
 
     await step("a video with nothing to play shows nothing and is pressed through: what's under it is pressed", async () => {
         await goTo(site + "emptyvideo.html", "Empty video");
-        await frameWait(`document.getElementById("v")?.classList.contains("go-media-empty")`, "the empty video's box");
+        // Still nothing once the page has changed its class (a site's
+        // player's is), with a rule of its own that would show it.
+        await frameWait(`document.getElementById("v")?.classList.contains("shown")`, "the empty video's box, its class changed");
         const look = await frame(`(() => { const s = getComputedStyle(document.getElementById("v")); return [s.pointerEvents, s.backgroundColor, s.color].join(" "); })()`);
         if (look !== "none rgba(0, 0, 0, 0) rgba(0, 0, 0, 0)") throw new Error(`the empty box: ${look}`);
+        // A video playing, its class changed too: still clear over its player.
+        await frameWait(`document.getElementById("p")?.classList.contains("shown")`, "the playing video's box, its class changed", 30000);
+        await frameWait(`document.getElementById("p").classList.contains("go-media-live")`, "the playing video's box clear over its player");
+        const live = await frame(`getComputedStyle(document.getElementById("p")).backgroundColor`);
+        if (live !== "rgba(0, 0, 0, 0)") throw new Error(`the playing video's box: ${live}`);
         await frameClick("#under");
         await frameWait(`document.getElementById("r")?.textContent === "button"`, "the button under it pressed", 15000)
             .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("r").textContent`)}`); });
