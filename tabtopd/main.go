@@ -122,6 +122,8 @@ type server struct {
 	goAds *goAdBlock
 	// goEngines counts the remote browser's engines open, by session.
 	goEngines map[string]int
+	// Tests can use shorter detach deadlines on their own server.
+	goDetachAfter time.Duration
 	// The remote browser\'s tabs, by token: kept a while without a connection (goresume.go).
 	goTabs *goTabs
 	// Its sites' localStorage, kept for the account (gostorage.go).

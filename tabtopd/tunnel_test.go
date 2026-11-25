@@ -389,8 +389,10 @@ func newE2EServer(t *testing.T) (*server, *httptest.Server) {
 	return newE2EServerPin(t, "-")
 }
 
+const testContextTimeout = 10 * time.Second
+
 func testCtx(t *testing.T) context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testContextTimeout)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -403,9 +405,23 @@ func failureCount(g *server) int {
 
 func TestTunnelLogin(t *testing.T) {
 	g, srv := newE2EServer(t)
+	// Both the tunnel and liboath use the wall clock. Keep the entire
+	// sequence within one step, with room for the test context's deadline.
+	const period = 30 * time.Second
+	var now time.Time
+	for {
+		now = time.Now()
+		next := now.Truncate(period).Add(period)
+		if next.Sub(now) >= testContextTimeout+time.Second {
+			break
+		}
+		time.Sleep(time.Until(next))
+	}
+	step := now.Unix() / int64(period/time.Second)
+	codeAtStep := func(offset int64) string { return hotp(testKey, step+offset, 6) }
 	ctx := testCtx(t)
 
-	for _, cred := range []string{code(2), code(-2)} {
+	for _, cred := range []string{codeAtStep(2), codeAtStep(-2)} {
 		if _, status := loginAt(t, ctx, wsURL(srv.URL), cred); status != closeLoginFailed {
 			t.Fatalf("code outside the window: status %d", status)
 		}
@@ -415,14 +431,14 @@ func TestTunnelLogin(t *testing.T) {
 	}
 	// The previous, current and next codes all work, each once, in order.
 	for _, offset := range []int64{-1, 0, 1} {
-		s := login(t, ctx, srv.URL, code(offset))
+		s := login(t, ctx, srv.URL, codeAtStep(offset))
 		if secret, ok := g.sessionSecret(s.id); !ok || !bytes.Equal(secret, s.secret) {
 			t.Fatalf("code(%d): session not stored", offset)
 		}
 	}
 	// Used codes are refused, and earlier ones with them.
 	for _, offset := range []int64{1, 0, -1} {
-		if _, status := loginAt(t, ctx, wsURL(srv.URL), code(offset)); status != closeLoginFailed {
+		if _, status := loginAt(t, ctx, wsURL(srv.URL), codeAtStep(offset)); status != closeLoginFailed {
 			t.Errorf("reused code(%d): status %d", offset, status)
 		}
 	}

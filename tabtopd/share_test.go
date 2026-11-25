@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1371,5 +1372,167 @@ func TestUploadLinkPiecesHeld(t *testing.T) {
 	}
 	if res, _ := piece(t, url, id, 10, 100, make([]byte, 10)); res.StatusCode != http.StatusConflict || res.Header.Get("Upload-Offset") != "0" {
 		t.Errorf("carried on after it was given up: %d %q", res.StatusCode, res.Header.Get("Upload-Offset"))
+	}
+}
+
+// TestShareRevokeUnsaved: a revocation that can't be saved is said so to
+// the person (a restart may bring the link back), the link ended for now
+// all the same; its save tried again till it's done, after which a
+// restart doesn't bring it back.
+func TestShareRevokeUnsaved(t *testing.T) {
+	g, srv, s, file := newShareServer(t)
+	os.WriteFile(filepath.Join(g.downloadsDir, "f"), []byte("hello"), 0o644)
+	var fire []func()
+	g.shares.clock.afterFunc = func(_ time.Duration, f func()) lifecycleTimer {
+		fire = append(fire, f)
+		return time.NewTimer(time.Hour)
+	}
+	runTimers := func() {
+		now := fire
+		fire = nil
+		for _, f := range now {
+			f()
+		}
+	}
+	url := makeShare(t, srv, s, "f", 3600, 0)
+	runTimers()
+	if links := newShareStore(file, g.shares.clock).links; len(links) != 1 {
+		t.Fatalf("saved %d links", len(links))
+	}
+	reply := openSession(t, testCtx(t), srv, s).request(t, testCtx(t), tunnelRequest{Type: "sessions"})
+	handle := reply["shares"].([]any)[0].(map[string]any)["handle"].(string)
+
+	syncFile = func(*os.File) error { return errors.New("disk on fire") }
+	defer func() { syncFile = (*os.File).Sync }()
+	r := openSession(t, testCtx(t), srv, s).request(t, testCtx(t), tunnelRequest{Type: "unshare", Name: handle})
+	if msg, _ := r["error"].(string); r["ok"] == true || !strings.Contains(msg, "couldn't save") {
+		t.Fatalf("unshare, unsaved: %v", r)
+	}
+	if res, _ := shareFetch(t, "GET", url); res.StatusCode != 404 {
+		t.Errorf("served after it was revoked, unsaved: %d", res.StatusCode)
+	}
+	// What's done after, revoking nothing (another session ended, logging
+	// out everywhere with no links left), isn't told that one's failure.
+	if n, err := g.revokeShares(func(*shareLink) bool { return true }); n != 0 || err != nil {
+		t.Errorf("a revocation of nothing after it: %d, %v", n, err)
+	}
+	other := login(t, testCtx(t), srv, code(1))
+	if r := openSession(t, testCtx(t), srv, other).request(t, testCtx(t), tunnelRequest{Type: "logout-all"}); r["error"] != nil {
+		t.Errorf("logging out everywhere, no links left: %v", r)
+	}
+	// A restart now would bring it back (so the person's told); tried
+	// again, failing, it's tried again later.
+	if links := newShareStore(file, g.shares.clock).links; len(links) != 1 {
+		t.Errorf("the copy on disk has %d links", len(links))
+	}
+	runTimers()
+	if len(fire) != 1 {
+		t.Fatalf("a failed save not tried again: %d timers", len(fire))
+	}
+	syncFile = (*os.File).Sync
+	runTimers()
+	if links := newShareStore(file, g.shares.clock).links; len(links) != 0 || len(fire) != 0 {
+		t.Errorf("after the save tried again: %d links on disk, %d timers", len(links), len(fire))
+	}
+}
+
+// eofThen is a body that gives data, then, as it ends, does then: a
+// revocation landing after an upload's last bytes, before it's saved.
+type eofThen struct {
+	data []byte
+	then func()
+}
+
+func (e *eofThen) Read(p []byte) (int, error) {
+	if len(e.data) > 0 {
+		n := copy(p, e.data)
+		e.data = e.data[n:]
+		return n, nil
+	}
+	if e.then != nil {
+		e.then()
+		e.then = nil
+	}
+	return 0, io.EOF
+}
+
+// lastThen is a body that does then as it gives its last bytes.
+type lastThen struct {
+	data []byte
+	then func()
+}
+
+func (e *lastThen) Read(p []byte) (int, error) {
+	if len(e.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, e.data)
+	e.data = e.data[n:]
+	if len(e.data) == 0 && e.then != nil {
+		e.then()
+		e.then = nil
+	}
+	return n, nil
+}
+
+// TestUploadLinkRevokedAtEnd: a link revoked (or ended) after an upload's
+// last bytes came but before it's saved: the file isn't saved, whole or in
+// pieces, and the uploader isn't told it was.
+func TestUploadLinkRevokedAtEnd(t *testing.T) {
+	g, srv, s, _ := newShareServer(t)
+	os.MkdirAll(filepath.Join(g.downloadsDir, "in"), 0o755)
+	fs := g.scope(g.defaultRoot())
+	link := func() *shareLink {
+		makeUploadLink(t, srv, s, "in", 5, 1000)
+		g.shares.mu.Lock()
+		defer g.shares.mu.Unlock()
+		for _, l := range g.shares.links {
+			return l
+		}
+		t.Fatal("no link")
+		return nil
+	}
+	revoke := func(l *shareLink) func() {
+		return func() {
+			if _, err := g.revokeShares(func(o *shareLink) bool { return o == l }); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	store, err := fs.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	l := link()
+	got, err := fs.receive(l, store, "127.0.0.1", "whole.txt", &eofThen{[]byte("hello"), revoke(l)}, -1)
+	if err == nil || got != "" {
+		t.Errorf("whole: saved as %q, %v", got, err)
+	}
+
+	// In pieces, its last piece read to its length only (no read after
+	// it, for a revocation to land in): the link ending (its time up) as
+	// the piece's last bytes come, it's not saved either.
+	ended := false
+	g.shares.clock.now = func() time.Time {
+		if ended {
+			return time.Now().Add(2 * time.Hour)
+		}
+		return time.Now()
+	}
+	l = link()
+	req := httptest.NewRequest("PUT", "/x?u=abcdefghijklmnop", &lastThen{[]byte("hello"), func() { ended = true }})
+	req.Header.Set("Content-Range", "bytes 0-4/5")
+	req.ContentLength = 5
+	w := httptest.NewRecorder()
+	fs.receiveChunk(w, req, l, store, "127.0.0.1", "pieces.txt", "abcdefghijklmnop")
+	if w.Code < 400 {
+		t.Errorf("in pieces: %d %s", w.Code, w.Body)
+	}
+
+	left, _ := os.ReadDir(filepath.Join(g.downloadsDir, "in"))
+	for _, e := range left {
+		t.Errorf("left in the folder: %s", e.Name())
 	}
 }
