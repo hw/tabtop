@@ -42,7 +42,7 @@ const (
 	// ghostty-web carries its WebAssembly as a data: URL, which it fetches
 	// and compiles, and styles its elements inline.
 	ttyCSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' data:; " +
-		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'"
+		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
 //go:embed tty.html tty.js
@@ -106,7 +106,7 @@ func (g *server) termAssets() assets { return assets{"ghostty", g.termDir, ttyAs
 func (g *server) ttyFile(w http.ResponseWriter, r *http.Request, name string) {
 	switch {
 	case name == "":
-		w.Header().Set("Content-Security-Policy", ttyCSP)
+		setPageHeaders(w.Header(), ttyCSP)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := ttyFiles.ReadFile("tty.html")
 		for _, font := range []string{ttyFontRegular, ttyFontBold} {
@@ -270,17 +270,11 @@ func (g *server) serveTTY(c msgConn, token, ip string) {
 func (g *server) openTTY(token string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.ttys[token] >= maxTTYs {
-		return false
-	}
-	g.ttys[token]++
-	return true
+	return g.ttys.take(token, noLimit, maxTTYs)
 }
 
 func (g *server) closeTTY(token string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.ttys[token]--; g.ttys[token] <= 0 {
-		delete(g.ttys, token)
-	}
+	g.ttys.give(token)
 }

@@ -76,14 +76,14 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 	switch strings.TrimPrefix(r.URL.Path, goPrefix) {
 	case "":
 		// The tabs (go-tabs.js), each a frame of go/tab.
-		h.Set("Content-Security-Policy", goTabsCSP)
+		setPageHeaders(h, goTabsCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go-tabs.html")
 		w.Write(page)
 	case "tab":
 		// A tab: the page that holds a browsing context's tunnel (go.js),
 		// in the tabs' page, or on its own.
-		h.Set("Content-Security-Policy", goPageCSP)
+		setPageHeaders(h, goPageCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		page, _ := goFiles.ReadFile("go.html")
 		w.Write(page)
@@ -106,7 +106,7 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 		// kept for it (gocookies.go), and the defaults for them all.
 		// Settings: the browser's own, ad blocking (goadblock.go).
 		// Their scripts, the tunnel, nothing else.
-		h.Set("Content-Security-Policy", goCookiesCSP)
+		setPageHeaders(h, goCookiesCSP)
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		html, _ := goFiles.ReadFile("go-" + page + ".html")
 		w.Write(html)
@@ -127,7 +127,6 @@ func (g *server) goPage(w http.ResponseWriter, r *http.Request) {
 func goFrame(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Content-Security-Policy", goFrameCSP)
-	h.Set("Referrer-Policy", "no-referrer")
+	setPageHeaders(h, goFrameCSP)
 	w.Write([]byte(goFrameHTML))
 }

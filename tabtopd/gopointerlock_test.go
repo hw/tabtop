@@ -72,7 +72,7 @@ func TestGoPointerLock(t *testing.T) {
 	b.wakeHeld = map[string]bool{"w": true}
 	b.orientLocked = true
 	waiting = b.acts.waiting()
-	b.releaseDevices()
+	b.connLost()
 	if b.pointerLock != nil || b.acts.waiting() != waiting+1 || b.orientLocked || len(b.wakeHeld) != 1 {
 		t.Errorf("connection lost: lock %+v, told %d, orientation %v, wake %v", b.pointerLock, b.acts.waiting()-waiting, b.orientLocked, b.wakeHeld)
 	}

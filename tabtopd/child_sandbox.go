@@ -1,14 +1,16 @@
-//go:build heif && linux && (amd64 || arm64)
+//go:build linux && (amd64 || arm64)
 
 package main
 
-// The HEIC child's sandbox (see heif.go): once libheif has loaded its
-// plugins, a seccomp filter, on every thread of the child, refuses what
-// decoding a picture from stdin to stdout has no need of: opening files,
-// sockets, running programs, making processes (threads, yes), reaching
-// other processes (signals, their limits, their memory), changing files.
-// A decoder a crafted picture took over can then read and write only what
-// it was given (its stdin, stdout), and touch no process but its own.
+// The preview children's sandbox (see children.go): once a child has
+// opened what it needs (libheif its plugins, SQLite its database), a
+// seccomp filter, on every thread of the child, refuses what reading a
+// file given on stdin and answering on stdout has no need of: opening
+// files, sockets, running programs, making processes (threads, yes),
+// reaching other processes (signals, their limits, their memory),
+// changing files. A child a crafted file took over can then read and
+// write only what it was given (its stdin, stdout, and descriptors
+// passed it), and touch no process but its own.
 import (
 	"errors"
 	"os"
@@ -19,15 +21,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// heifDenied are the system calls refused, as well as heifLegacyDenied
+// childDenied are the system calls refused, as well as childLegacyDenied
 // (the architecture's older forms of them): opening files (and io_uring,
 // which can without openat), sockets, running programs, reaching other
 // processes (ptrace, their memory, their file descriptors, signals),
 // changing files or their metadata, namespaces and mounts, and the
 // kernel's own (modules, BPF, keys). (A list of those refused, not of
-// those allowed: what the Go runtime, glibc and libheif's plugins call
+// those allowed: what the Go runtime, glibc, libheif's plugins and SQLite call
 // varies, and a call missed from an allowlist would stop decoding.)
-var heifDenied = []uintptr{
+var childDenied = []uintptr{
 	unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_NAME_TO_HANDLE_AT,
 	unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN, unix.SYS_ACCEPT4,
@@ -52,23 +54,22 @@ var heifDenied = []uintptr{
 	unix.SYS_SETPGID, unix.SYS_SETSID, unix.SYS_FLOCK, unix.SYS_IOCTL,
 }
 
-// heifNewest is the first call number past those heifDenied was written
+// childNewest is the first call number past those childDenied was written
 // for (kernel 6.12's): newer calls are "not implemented", as on an older
 // kernel, since what they do isn't known here.
-const heifNewest = 463
+const childNewest = 463
 
-// heifFcntlDenied are fcntl's commands refused: those that have the kernel
+// childFcntlDenied are fcntl's commands refused: those that have the kernel
 // signal another process (the server) as a descriptor's ready, or changed.
-var heifFcntlDenied = []uint32{unix.F_SETOWN, unix.F_SETSIG, unix.F_SETOWN_EX, unix.F_SETLEASE, unix.F_NOTIFY}
+var childFcntlDenied = []uint32{unix.F_SETOWN, unix.F_SETSIG, unix.F_SETOWN_EX, unix.F_SETLEASE, unix.F_NOTIFY}
 
-// heifSandbox puts the child in its sandbox, or says why it couldn't (a
-// kernel, or container, that doesn't allow it: the child then doesn't
-// decode; see readHEIFChild).
-func heifSandbox() error {
+// childSandbox puts the child in its sandbox, or says why it couldn't (a
+// kernel, or container, that doesn't allow it; see startPreviewChild).
+func childSandbox() error {
 	// (Both steps on the one thread: no_new_privs is a thread's own.)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	f, err := heifFilter(uint32(os.Getpid()))
+	f, err := childFilter(uint32(os.Getpid()))
 	if err != nil {
 		return err
 	}
@@ -87,16 +88,16 @@ func heifSandbox() error {
 	return nil
 }
 
-// heifFilter is the sandbox's program, for the process pid (the child).
-// Besides the calls refused outright (heifDenied), some are looked into:
+// childFilter is the sandbox's program, for the process pid (the child).
+// Besides the calls refused outright (childDenied), some are looked into:
 //   - tgkill (which Go's runtime signals its own threads with), and
 //     prlimit64, only of the child itself (or, prlimit64, 0: itself);
 //   - clone, only to make a thread (CLONE_THREAD): no new processes;
 //   - clone3, "not implemented" (glibc then makes its threads with clone);
-//   - fcntl, but not its commands that signal (heifFcntlDenied);
+//   - fcntl, but not its commands that signal (childFcntlDenied);
 //   - prctl, but not to clear (or set) its parent-death signal;
-//   - those newer than heifDenied knows of, "not implemented".
-func heifFilter(pid uint32) ([]unix.SockFilter, error) {
+//   - those newer than childDenied knows of, "not implemented".
+func childFilter(pid uint32) ([]unix.SockFilter, error) {
 	const (
 		load = 0x20 // BPF_LD | BPF_W | BPF_ABS
 		jeq  = 0x15 // BPF_JMP | BPF_JEQ | BPF_K
@@ -122,17 +123,17 @@ func heifFilter(pid uint32) ([]unix.SockFilter, error) {
 	label := func(name string) { labels[name] = len(prog) }
 
 	add(load, arch, "", "")
-	add(jeq, heifAuditArch, "", "kill") // another architecture's calls (as x86-64's 32-bit ones): the child ends
+	add(jeq, childAuditArch, "", "kill") // another architecture's calls (as x86-64's 32-bit ones): the child ends
 	add(load, nr, "", "")
 	add(jge, x32, "refuse", "")
-	add(jge, heifNewest, "unimplemented", "")
+	add(jge, childNewest, "unimplemented", "")
 	add(jeq, uint32(unix.SYS_FCNTL), "fcntl", "")
 	add(jeq, uint32(unix.SYS_PRCTL), "prctl", "")
 	add(jeq, uint32(unix.SYS_TGKILL), "self", "")
 	add(jeq, uint32(unix.SYS_PRLIMIT64), "self-or-0", "")
 	add(jeq, uint32(unix.SYS_CLONE), "thread", "")
 	add(jeq, uint32(unix.SYS_CLONE3), "unimplemented", "")
-	for _, call := range append(append([]uintptr{}, heifDenied...), heifLegacyDenied...) {
+	for _, call := range append(append([]uintptr{}, childDenied...), childLegacyDenied...) {
 		add(jeq, uint32(call), "refuse", "")
 	}
 	add(ret, unix.SECCOMP_RET_ALLOW, "", "") // any other call
@@ -152,7 +153,7 @@ func heifFilter(pid uint32) ([]unix.SockFilter, error) {
 	add(jset, unix.CLONE_THREAD, "allow", "refuse")
 	label("fcntl") // its command (the second argument; an int: its low half)
 	add(load, arg1, "", "")
-	for _, c := range heifFcntlDenied {
+	for _, c := range childFcntlDenied {
 		add(jeq, c, "refuse", "")
 	}
 	add(ret, unix.SECCOMP_RET_ALLOW, "", "")

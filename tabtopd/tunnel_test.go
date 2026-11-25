@@ -339,6 +339,19 @@ func (tc *tunnelClient) request(t *testing.T, ctx context.Context, req any) map[
 
 func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	t.Helper()
+	return newE2EServerConfig(t, pin, nil)
+}
+
+// newE2EServerWith is newE2EServer, its config changed by change first (a
+// root's folders, share links on), so newServer sets the server up from
+// it, as it would from flags.
+func newE2EServerWith(t *testing.T, change func(*serverConfig)) (*server, *httptest.Server) {
+	t.Helper()
+	return newE2EServerConfig(t, "-", change)
+}
+
+func newE2EServerConfig(t *testing.T, pin string, change func(*serverConfig)) (*server, *httptest.Server) {
+	t.Helper()
 	g := newUsersFile(t, pin)
 	novnc := t.TempDir()
 	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
@@ -348,6 +361,9 @@ func newE2EServerPin(t *testing.T, pin string) (*server, *httptest.Server) {
 	}
 	c := defaultServerConfig()
 	c.usersFile, c.novncDir, c.downloadsDir, c.termDir, c.nobleDir = g.usersFile, novnc, t.TempDir(), term, fakeNoble(t)
+	if change != nil {
+		change(&c)
+	}
 	var err error
 	g, err = newServer(c)
 	if err != nil {
@@ -382,7 +398,7 @@ func testCtx(t *testing.T) context.Context {
 func failureCount(g *server) int {
 	g.authMu.Lock()
 	defer g.authMu.Unlock()
-	return len(g.failures["127.0.0.1"])
+	return len(g.failures.events["127.0.0.1"])
 }
 
 func TestTunnelLogin(t *testing.T) {
@@ -438,7 +454,7 @@ func TestTunnelLoginLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Close(websocket.StatusNormalClosure, "")
-	eventually(t, "the reservation released", func() bool {
+	waitUntil(t, "the reservation released", func() bool {
 		g.authMu.Lock()
 		defer g.authMu.Unlock()
 		return g.pending["127.0.0.1"] == 0

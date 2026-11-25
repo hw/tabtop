@@ -13,7 +13,6 @@ import (
 	"io"
 	"log"
 	"path"
-	"strings"
 )
 
 // storedExt are extensions of files that are compressed already, which a
@@ -42,17 +41,15 @@ func zipName(label, dir string, names []string) string {
 // with {"name":...}, what to save it as, then the zip in data messages,
 // sent as a file is, then {"done":true,"skipped":n}, n being how many files
 // or folders couldn't be read and were left out.
-func (g *fileService) tunnelZip(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelZip(call *tunnelCall) {
+	t, req, ip, r := call.t, call.req, call.ip, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail("The folder is missing.")
 		return
 	}
 	defer root.Close()
-	dir := strings.Trim(req.Path, "/")
-	if dir == "" {
-		dir = "."
-	}
+	dir := req.dir()
 	if st, err := root.stat(dir); err != nil || !st.IsDir() {
 		r.fail("Not found.")
 		return

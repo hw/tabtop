@@ -13,28 +13,20 @@ import (
 // acquires server.mu, so history and session creation keep a fixed lock order.
 // The zero value is ready for use.
 type authentication struct {
-	authMu        sync.Mutex
-	logins        []loginEvent
-	failures      map[string][]time.Time
-	pending       map[string]int
-	siteFailures  []time.Time
-	nextLogin     time.Time
-	throttling    bool
-	failuresSwept time.Time
+	authMu       sync.Mutex
+	logins       []loginEvent
+	failures     windowCounter // failed logins, by address (limitKey)
+	pending      map[string]int
+	siteFailures []time.Time
+	nextLogin    time.Time
+	throttling   bool
 }
 
 // lockedOutLocked counts logins still awaiting their result as failures,
 // so opening many connections at once can't buy extra guesses. g.authMu must be
 // held.
 func (g *authentication) lockedOutLocked(ip string) bool {
-	now := time.Now()
-	recent := slices.DeleteFunc(g.failures[ip], func(t time.Time) bool { return now.Sub(t) >= failureWindow })
-	if len(recent) == 0 {
-		delete(g.failures, ip)
-	} else {
-		g.failures[ip] = recent
-	}
-	return len(recent)+g.pending[ip] >= maxFailures
+	return len(g.failures.recent(ip, time.Now(), failureWindow))+g.pending[ip] >= maxFailures
 }
 
 // loginWork has a slot for each login being checked. Checking takes CPU
@@ -112,11 +104,8 @@ func (g *authentication) endLogin(ip, browser string, failed bool) {
 	if failed {
 		now := time.Now()
 		g.recordLoginLocked(ip, browser, false)
-		if g.failures == nil {
-			g.failures = map[string][]time.Time{}
-		}
-		g.failures[key] = append(g.failures[key], now)
-		g.sweepFailuresLocked()
+		g.failures.add(key, now, failureWindow, 0) // (no bound: none's forgotten to make room)
+		g.failures.sweep(now, failureWindow, failureWindow)
 		g.siteFailures = append(g.siteFailures, now)
 		if len(g.siteFailures) > maxSiteFailures {
 			g.siteFailures = g.siteFailures[len(g.siteFailures)-maxSiteFailures:]
@@ -154,22 +143,6 @@ func (g *authentication) loginTurn() bool {
 	return true
 }
 
-// sweepFailuresLocked forgets the failures of every IP that has none left
-// in the window, at most once a window, so addresses that fail once and
-// never come back don't pile up. g.authMu must be held.
-func (g *authentication) sweepFailuresLocked() {
-	now := time.Now()
-	if now.Sub(g.failuresSwept) < failureWindow {
-		return
-	}
-	g.failuresSwept = now
-	for ip, times := range g.failures {
-		if len(times) == 0 || now.Sub(times[len(times)-1]) >= failureWindow {
-			delete(g.failures, ip)
-		}
-	}
-}
-
 func (g *authentication) recordLoginLocked(ip, browser string, ok bool) {
 	g.logins = append(g.logins, loginEvent{time.Now(), ip, browser, ok})
 	if len(g.logins) > maxLoginLog {
@@ -194,10 +167,55 @@ func (g *authentication) loginHistory(ip, browser string, record bool) []loginEv
 func (g *authentication) loginState() (lockedOut int, slowed bool) {
 	g.authMu.Lock()
 	defer g.authMu.Unlock()
-	for ip := range g.failures {
+	for ip := range g.failures.events {
 		if g.lockedOutLocked(ip) {
 			lockedOut++
 		}
 	}
 	return lockedOut, g.throttling
+}
+
+// loginAttempt is a login, or a check counted as one (a code or passkey
+// confirming an action): reserved against its address's failed-login
+// limit when begun (beginAttempt), then settled once. Failed (failed,
+// badMessage), it's counted against the address; given up on, passed, or
+// not checked at all (end, deferred by whoever began it), it isn't.
+type loginAttempt struct {
+	g           *server
+	ip, browser string
+	settled     bool
+}
+
+// beginAttempt reserves a login from ip (browser: how it's said in the
+// activity log), or is nil if ip has no tries left for now.
+func (g *server) beginAttempt(ip, browser string) *loginAttempt {
+	if !g.beginLogin(ip) {
+		return nil
+	}
+	return &loginAttempt{g: g, ip: ip, browser: browser}
+}
+
+// failed settles it as a failed login: counted, and said in the activity
+// log.
+func (a *loginAttempt) failed() {
+	if a.settle(true) {
+		a.g.activity.failedLogin(a.ip, a.browser)
+	}
+}
+
+// badMessage settles it as failed for a message that isn't one a browser
+// sends: counted (it could be a guess), but not a login to say was tried.
+func (a *loginAttempt) badMessage() { a.settle(true) }
+
+// end settles it, if it isn't yet, as not failed.
+func (a *loginAttempt) end() { a.settle(false) }
+
+// settle settles it, reporting whether this did (it's settled once).
+func (a *loginAttempt) settle(failed bool) bool {
+	if a.settled {
+		return false
+	}
+	a.settled = true
+	a.g.endLogin(a.ip, a.browser, failed)
+	return true
 }

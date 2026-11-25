@@ -1,6 +1,41 @@
 // Chrome protocol and page interaction helpers shared by all feature groups.
+import { createHmac } from "node:crypto";
 import { existsSync } from "node:fs";
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// totp is the current code for the checks' TOTP secret, waiting first if
+// the current one is about to expire, so it's still good when it arrives,
+// or if it was used already, since a code logs in only once.
+let lastStep = -1;
+export async function totp() {
+    while (30 - (Date.now() / 1000) % 30 < 3 || Math.floor(Date.now() / 30000) === lastStep) {
+        await sleep(500);
+    }
+    lastStep = Math.floor(Date.now() / 30000);
+    const c = Buffer.alloc(8);
+    c.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+    const h = createHmac("sha1", "12345678901234567890").update(c).digest();
+    const o = h[19] & 15;
+    return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, "0");
+}
+
+// siteFetch fetches url from a test site the check runs (its own
+// container): tried again for a while, each try cut short, so a site still
+// starting, or a connection that hangs, says so rather than failing as a
+// bare connect timeout.
+export async function siteFetch(url, ms = 15000) {
+    let last;
+    for (const end = Date.now() + ms; Date.now() < end; await sleep(250)) {
+        try {
+            const reply = await fetch(url, { signal: AbortSignal.timeout(5000) });
+            if (reply.ok) return reply;
+            last = new Error(`HTTP ${reply.status}`);
+        } catch (err) {
+            last = err;
+        }
+    }
+    throw new Error(`the test site didn't answer ${url}: ${last?.message}`);
+}
 
 export async function createBrowserHarness({ port, base }) {
     // The DevTools protocol, on the browser's first page.
@@ -55,15 +90,24 @@ export async function createBrowserHarness({ port, base }) {
         return r.result.value;
     };
     async function waitFor(expr, what, ms = 30000) {
+        let failed;
         for (const end = Date.now() + ms; Date.now() < end; await sleep(200)) {
-            // A navigation can have created its context before its document root.
-            if (await ev(`!!document.documentElement && (${expr})`)) {
-                return;
+            // A navigation can have created its context before its document
+            // root, or destroy it while it's asked: tried again, each try
+            // cut short at what's left of the wait.
+            try {
+                const left = Math.max(1, end - Date.now());
+                if (await Promise.race([ev(`!!document.documentElement && (${expr})`), sleep(left).then(() => false)])) {
+                    return;
+                }
+                failed = undefined;
+            } catch (err) {
+                failed = err;
             }
         }
         // What the transfers panel says, if there's one, often says why.
         const panel = await ev(`document.getElementById("uploads")?.innerText.replaceAll("\\n", " | ") ?? ""`).catch(() => "");
-        throw new Error(`timed out waiting for ${what}${panel ? ` (transfers: ${panel})` : ""}`);
+        throw new Error(`timed out waiting for ${what}${panel ? ` (transfers: ${panel})` : ""}${failed ? ` (last: ${failed.message})` : ""}`);
     }
     async function click(expr) {
         const r = await ev(`(() => { const b = (${expr}).getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2}; })()`);
@@ -91,6 +135,12 @@ export async function createBrowserHarness({ port, base }) {
         const marker = `navigation-${Date.now()}-${Math.random()}`;
         await ev(`window.__browserCheckNavigation = ${JSON.stringify(marker)}`);
         const navigation = await cdp("Page.navigate", { url: base + path });
+        // A load that failed (refused, reset) says so now, not as the wait
+        // for what it would have shown timing out; one that became a
+        // download (ERR_ABORTED) isn't a failure.
+        if (navigation.errorText && navigation.errorText !== "net::ERR_ABORTED") {
+            throw new Error(`${what}: ${base + path} didn't load (${navigation.errorText})`);
+        }
         const documentReady = navigation.loaderId ? `window.__browserCheckNavigation !== ${JSON.stringify(marker)}` : "true";
         await waitFor(`(${documentReady}) && (${ready})`, what);
         await ev(`delete window.__browserCheckNavigation`);

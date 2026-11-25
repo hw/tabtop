@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext } from "node:vm";
 import { repairBounds, mergeRepair } from "../tabtopd/image-inpaint.js";
 
 const worker = readFileSync(new URL("../tabtopd/image-inpaint-worker.js", import.meta.url), "utf8");
+// (The worker loads ort-worker.js first, by importScripts: run here.)
+const ortWorker = readFileSync(new URL("../tabtopd/ort-worker.js", import.meta.url), "utf8");
 test("repair crops include context, stay inside the image, and ignore subtract-only masks", () => {
     assert.deepEqual(repairBounds([{ rect: { x: 40, y: 50, width: 20, height: 10 } }], 200, 150), { x: 8, y: 18, width: 84, height: 74 });
     assert.deepEqual(repairBounds([{ points: [[0, 0], [10, 10]], radius: 10 }], 100, 100), { x: 0, y: 0, width: 52, height: 52 });
@@ -34,7 +36,9 @@ test("MI-GAN uses planar uint8 RGB and binary keep/fill masks, releases tensors,
             return { result: { type: "uint8", dims: [1, 3, 1, 2], data: Uint8Array.of(1, 4, 2, 5, 3, 6), dispose() { disposed++; } } };
         } };
     } } };
-    runInNewContext(worker, { self, ort, URL, importScripts() {} });
+    const context = createContext({ self, ort, URL });
+    context.importScripts = (url) => { if (/ort-worker\.js$/.test(url)) runInContext(ortWorker, context); };
+    runInContext(worker, context);
     const input = { rgba: Uint8ClampedArray.of(10, 20, 30, 128, 40, 50, 60, 255), mask: Uint8Array.of(0, 255), width: 2, height: 1 };
     await self.onmessage({ data: input });
     assert.match(messages[0].error, /offline/);

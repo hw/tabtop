@@ -257,11 +257,7 @@ func TestTunnelUploadResume(t *testing.T) {
 		t.Fatalf("first reply %v", reply)
 	}
 	tc.c.Close(websocket.StatusGoingAway, "") // lost, not cancelled
-	for deadline := time.Now().Add(5 * time.Second); partials() == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the upload cut off wasn't kept")
-		}
-	}
+	waitUntil(t, "the upload cut off kept", func() bool { return partials() != 0 })
 
 	// Not for a file of another size: that starts again, and the one kept
 	// stays.
@@ -302,7 +298,7 @@ func TestTunnelUploadResume(t *testing.T) {
 	// Gone, as after a restart (which forgets those saved, too): it starts
 	// again.
 	g.defaultRoot().transfers.mu.Lock()
-	g.defaultRoot().transfers.done = nil
+	g.defaultRoot().transfers.done = recent[uploadDone]{}
 	g.defaultRoot().transfers.mu.Unlock()
 	if tc, reply := start(10, id, ""); reply["offset"] != 0.0 {
 		t.Errorf("resuming one gone: %v", reply)

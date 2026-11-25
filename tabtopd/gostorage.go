@@ -199,7 +199,7 @@ func goBoolCompare(a, b bool) int {
 	return -1
 }
 
-func goStorageSite(origin string) string { return goSite(strings.Trim(goOriginHost(origin), "[]")) }
+func goStorageSite(origin string) string { return goSite(goOriginHost(origin)) }
 
 // items is a copy of origin's kept items (nil: none).
 func (s *goStorage) items(origin string) map[string]string {

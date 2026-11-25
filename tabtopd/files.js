@@ -44,6 +44,7 @@ import { storeJSON, storedJSON, stored, store } from "./stored.js";
 import { batchEditTogether, batchHeicToJpeg, batchExtractZips,
     editableImages, batchableHeic, batchableZips } from "./files-batch.js";
 import { rememberRecent, isStarred, toggleStar, pinsBar, takePendingOpen, PENDING_EVENT } from "./files-pins.js";
+import { el } from "./preview-dom.js";
 
 // The page draws into its own element, so the login form and summary
 // (see tunnel.js), added to the body, outlive a redraw.
@@ -94,11 +95,6 @@ trashButton.addEventListener("click", () => {
 shares.after(trashButton);
 const { checkSecurity, showSessions, showShares: showShareLinks } = createSessionView({ security, formatTime: timeFormatter.shortTime });
 
-function el(tag, props = {}, ...children) {
-    const e = Object.assign(document.createElement(tag), props);
-    e.append(...children);
-    return e;
-}
 
 // currentDir is the folder shown, or, while the sessions or share links
 // are shown, the last folder, which uploads dropped then go into.

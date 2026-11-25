@@ -301,11 +301,6 @@ export async function sendPasteImage(m, current, warn) {
 }
 
 function randomID() { return Array.from(crypto.getRandomValues(new Uint32Array(3)), n => n.toString(36)).join(""); }
-function toBase64(bytes) {
-    let s = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(s);
-}
 function fromBase64(value) {
     if (typeof value !== "string" || value.length > 48 << 10 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) throw new DOMException("Invalid file data", "DataError");
     const s = atob(value), bytes = new Uint8Array(s.length);

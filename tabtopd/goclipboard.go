@@ -26,9 +26,9 @@ import (
 )
 
 const (
-	goCopyMax     = 1 << 20 // bytes of text copied, or pasted, passed on
-	goPasteAsks   = 4       // reads waiting for the person at once
-	goPasteAskFor = 2 * time.Minute
+	goCopyMax   = 1 << 20 // bytes of text copied, or pasted, passed on
+	goPasteAsks = 4       // reads waiting for the person at once
+	goAskWait   = 2 * time.Minute
 	// A picture copied, or pasted for the page: a PNG of 8 MiB at most (as
 	// a pasted one, godevice.go's goPasteImageMax).
 	goCopyImageMax = goPasteImageMax
@@ -48,19 +48,21 @@ func goPNG(b64 string) ([]byte, bool) {
 	return data, true
 }
 
-// goPasteAsk is a read of the clipboard the page asked for: in which world
-// (the page's agent's, or a frame's), by the page's own id for it.
+// goPasteAsk is a read of the clipboard the page asked for (of the world,
+// the page's agent's or a frame's, its goPending says), by the page's own
+// id for it.
 type goPasteAsk struct {
-	gen, world int
-	id         string
-	at         time.Time
+	id string
 	// A read of its items (read(), not readText()): a picture may be given,
 	// sent in parts (paste-part), base64.
 	images bool
-	image  strings.Builder
+	// Who it's said to be asked by: the page's site, and the page it's in
+	// if that's another's (an embedded page's), for asking again.
+	site, within string
+	image        strings.Builder
 }
 
-var goPasteID = regexp.MustCompile(`^[a-z0-9]{1,40}$`)
+var goAskID = regexp.MustCompile(`^[a-z0-9]{1,40}$`)
 
 // goClipboardOut is what an agent says the page asked of the person's
 // browser: the page's newest copy and its reads of the clipboard, and its
@@ -166,12 +168,7 @@ func (b *goBrowser) copied(gen int, out goClipboardOut) {
 // pasteAsk asks the person whether the page's read of the clipboard (its
 // id) is answered: its text, or its items too (images, read()).
 func (b *goBrowser) pasteAsk(gen, world int, id string, images bool) {
-	if !goPasteID.MatchString(id) {
-		return
-	}
-	b.pasteAsksDue()
-	if len(b.pasteAsks) >= goPasteAsks {
-		b.pasteRefused(world, id)
+	if !goAskID.MatchString(id) {
 		return
 	}
 	// Named for the page that asked, and the page it's in if that's
@@ -184,11 +181,11 @@ func (b *goBrowser) pasteAsk(gen, world int, id string, images bool) {
 	if site == top {
 		top = ""
 	}
-	if b.pasteAsks == nil {
-		b.pasteAsks = map[string]*goPasteAsk{}
-	}
 	token := goToken()
-	b.pasteAsks[token] = &goPasteAsk{gen: gen, world: world, id: id, at: time.Now(), images: images}
+	if !b.pasteAsks.add(token, gen, world, &goPasteAsk{id: id, images: images, site: site, within: top}, goPasteAsks, goAskWait) {
+		b.pasteRefused(world, id)
+		return
+	}
 	b.send(map[string]any{"type": "go-paste-ask", "gen": gen, "ask": token, "site": site, "within": top, "images": images})
 }
 
@@ -217,27 +214,26 @@ func (b *goBrowser) worldSite(world int) string {
 	return ""
 }
 
-// pasteAsksDue lets go of reads asked for long ago (the page's own wait
-// is over: goclipboard.js), or by a page gone.
-func (b *goBrowser) pasteAsksDue() {
-	for token, a := range b.pasteAsks {
-		if a.gen != b.gen || time.Since(a.at) > goPasteAskFor {
-			delete(b.pasteAsks, token)
-		}
+// pasteAsksAgain asks the person again for the page's reads of the
+// clipboard that wait for them, on a connection that took the tab back
+// (connBack).
+func (b *goBrowser) pasteAsksAgain() {
+	b.pasteAsks.due(b.gen, goAskWait)
+	for token, p := range b.pasteAsks.m {
+		b.send(map[string]any{"type": "go-paste-ask", "gen": p.gen, "ask": token, "site": p.v.site, "within": p.v.within, "images": p.v.images})
 	}
 }
 
 // paste answers a read the page asked for (m.Text, the ask's token): with
 // what the person's clipboard had (m.Value), if they allowed it (Accept).
 func (b *goBrowser) paste(m goClientMsg) {
-	b.pasteAsksDue()
-	a, ok := b.pasteAsks[m.Text]
+	p, ok := b.pasteAsks.take(m.Text, b.gen, goAskWait) // (asked long ago, the page's own wait is over: goclipboard.js)
 	if !ok {
 		return
 	}
-	delete(b.pasteAsks, m.Text)
+	a := p.v
 	if !m.Accept {
-		b.pasteRefused(a.world, a.id)
+		b.pasteRefused(p.world, a.id)
 		return
 	}
 	text := m.Value
@@ -256,13 +252,14 @@ func (b *goBrowser) paste(m goClientMsg) {
 		}
 	}
 	goDebugf("clipboard: %d bytes pasted for the page", len(text))
-	b.pasted(a.world, answer)
+	b.pasted(p.world, answer)
 }
 
 // pastePart is a part of the picture the person's browser gives a read
 // (m.Text, the ask's token): base64, in order, up to goCopyImageMax.
 func (b *goBrowser) pastePart(m goClientMsg) {
-	a, ok := b.pasteAsks[m.Text]
+	p, ok := b.pasteAsks.m[m.Text]
+	a := p.v
 	if !ok || !a.images || len(m.Value) == 0 || len(m.Value) > 64<<10 {
 		return
 	}
@@ -281,7 +278,7 @@ func goStr(v any) string {
 }
 
 func (b *goBrowser) pasteRefused(world int, id string) {
-	if goPasteID.MatchString(id) {
+	if goAskID.MatchString(id) {
 		b.pasted(world, map[string]any{"id": id})
 	}
 }

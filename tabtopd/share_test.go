@@ -24,10 +24,8 @@ import (
 // a logged-in session.
 func newShareServer(t *testing.T) (*server, string, testSession, string) {
 	t.Helper()
-	g, srv := newE2EServer(t)
 	file := filepath.Join(t.TempDir(), "conf", "shares.json")
-	g.sharesFile = file
-	g.shares = newShareStore(file, g.clock)
+	g, srv := newE2EServerWith(t, func(c *serverConfig) { c.shareOn, c.sharesFile = true, file })
 	s := login(t, testCtx(t), srv.URL, code(0))
 	return g, srv.URL, s, file
 }
@@ -851,7 +849,7 @@ func TestWriteFileAtomicFailing(t *testing.T) {
 	if b, _ := os.ReadFile(file); string(b) != "good" {
 		t.Errorf("the file holds %q", b)
 	}
-	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(file), ".shares-*")); len(left) > 0 {
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(file), ".tabtop-*")); len(left) > 0 {
 		t.Errorf("left %v", left)
 	}
 }
@@ -990,22 +988,22 @@ func TestShareMissesBounded(t *testing.T) {
 	for i := range 500 {
 		s.lookup(strings.Repeat("A", 22), fmt.Sprintf("198.51.%d.%d", i/250, i%250))
 	}
-	if n := len(s.misses); n != 500 {
+	if n := len(s.misses.events); n != 500 {
 		t.Fatalf("%d addresses counted", n)
 	}
 	now = now.Add(shareMissWindow + time.Second)
 	s.lookup(strings.Repeat("A", 22), "203.0.113.1")
-	if n := len(s.misses); n != 1 {
+	if n := len(s.misses.events); n != 1 {
 		t.Errorf("after the window: %d addresses counted", n)
 	}
 	for i := range maxMissAddresses + 50 {
 		now = now.Add(time.Millisecond)
 		s.lookup(strings.Repeat("A", 22), fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255))
 	}
-	if n := len(s.misses); n > maxMissAddresses {
+	if n := len(s.misses.events); n > maxMissAddresses {
 		t.Errorf("%d addresses counted, past %d", n, maxMissAddresses)
 	}
-	if _, kept := s.misses["203.0.113.1"]; kept {
+	if _, kept := s.misses.events["203.0.113.1"]; kept {
 		t.Error("the oldest wasn't the one forgotten")
 	}
 }
@@ -1048,7 +1046,7 @@ func TestShareDownloadStalls(t *testing.T) {
 	going := func() int {
 		g.shares.mu.Lock()
 		defer g.shares.mu.Unlock()
-		return g.shares.downloadsAll
+		return g.shares.downloads.total
 	}
 	host := strings.TrimPrefix(srv, "http://")
 	path := strings.TrimPrefix(url, srv)
@@ -1062,11 +1060,7 @@ func TestShareDownloadStalls(t *testing.T) {
 		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", path, host)
 		conns = append(conns, c)
 	}
-	for deadline := time.Now().Add(5 * time.Second); going() < maxShareDownloadsPerAddress; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d going, not %d", going(), maxShareDownloadsPerAddress)
-		}
-	}
+	waitUntil(t, fmt.Sprintf("%d downloads going", maxShareDownloadsPerAddress), func() bool { return going() >= maxShareDownloadsPerAddress })
 	// One more from here: refused, while they hold their places.
 	if res, _ := shareFetch(t, "HEAD", url); res.StatusCode != http.StatusOK {
 		t.Errorf("HEAD: %d", res.StatusCode)
@@ -1085,11 +1079,7 @@ func TestShareDownloadStalls(t *testing.T) {
 		t.Errorf("one refused was counted: %d, then %d", counted, n)
 	}
 	// Not read: cut off, and their places given back.
-	for deadline := time.Now().Add(10 * time.Second); going() > 0; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d still going, unread", going())
-		}
-	}
+	waitUntil(t, "the unread downloads ended", func() bool { return going() == 0 })
 }
 
 // TestShareFilesNotLost: a links file or key file that can't be read is
@@ -1339,5 +1329,47 @@ func TestUploadFormPartsCapped(t *testing.T) {
 	lines := strings.Count(out, "\n")
 	if res.StatusCode != http.StatusRequestEntityTooLarge || lines > maxFormParts+1 || !strings.Contains(out, "Only 100 files can be sent at once") {
 		t.Errorf("%d, %d lines: %.200s", res.StatusCode, lines, out)
+	}
+}
+
+// An upload in pieces held while its folder's moved or deleted is held
+// as the files page's are: by each that holds it (two at once: a folder
+// and one in it), no piece taken till the last lets it go; and one whose
+// time ran out while held is given up then, not before.
+func TestUploadLinkPiecesHeld(t *testing.T) {
+	g, srv, s, _ := newShareServer(t)
+	var fire []func()
+	g.shares.clock.afterFunc = func(_ time.Duration, f func()) lifecycleTimer {
+		fire = append(fire, f)
+		return time.NewTimer(time.Hour)
+	}
+	os.MkdirAll(filepath.Join(g.downloadsDir, "in", "sub"), 0o755)
+	url := makeUploadLink(t, srv, s, "in/sub", 1, 1000) + "a.bin"
+	id := "abcdefghijklmnop"
+	if res, _ := piece(t, url, id, 0, 100, make([]byte, 10)); res.StatusCode != 204 {
+		t.Fatalf("first piece: %d", res.StatusCode)
+	}
+	outer, busy := g.holdLinkUploadsUnder(g.defaultRoot().ID, "in", nil)
+	inner, busy2 := g.holdLinkUploadsUnder(g.defaultRoot().ID, "in/sub", nil)
+	if busy || busy2 || len(outer) != 1 || len(inner) != 1 {
+		t.Fatalf("held %v %v, busy %v %v", outer, inner, busy, busy2)
+	}
+	g.releaseLinkUploads(inner, false, nil)
+	if res, _ := piece(t, url, id, 10, 100, make([]byte, 10)); res.StatusCode != http.StatusConflict {
+		t.Errorf("a piece while one still holds it: %d", res.StatusCode)
+	}
+	// Its time up while held: kept till it's let go, then given up.
+	for _, f := range fire {
+		f()
+	}
+	if left, _ := filepath.Glob(filepath.Join(g.downloadsDir, "in", "sub", uploadTempPrefix+"*")); len(left) != 1 {
+		t.Fatalf("given up while held: %v", left)
+	}
+	g.releaseLinkUploads(outer, false, nil)
+	if left, _ := filepath.Glob(filepath.Join(g.downloadsDir, "in", "sub", uploadTempPrefix+"*")); len(left) != 0 {
+		t.Errorf("kept after its time, let go: %v", left)
+	}
+	if res, _ := piece(t, url, id, 10, 100, make([]byte, 10)); res.StatusCode != http.StatusConflict || res.Header.Get("Upload-Offset") != "0" {
+		t.Errorf("carried on after it was given up: %d %q", res.StatusCode, res.Header.Get("Upload-Offset"))
 	}
 }

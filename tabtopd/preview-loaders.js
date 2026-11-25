@@ -21,6 +21,9 @@ const loaders = {
     // Its schema, asked of the server (see sqlite.go); rows come as shown.
     sqlite: async (open) => open({ type: "sqlite" }, (t) => ({ schema: { ...t.reply.answer, wal_mode: !!t.reply.wal_mode }, wal: !!t.reply.wal })),
 };
+// Each kind a file can be (preview-model.js's limits) has its loader: one
+// missing would leave its files unpreviewed, quietly.
+for (const kind of Object.keys(limits)) if (!loaders[kind]) throw new Error(`No loader for ${kind} previews.`);
 const sqliteType = { kind: "sqlite", type: "application/vnd.sqlite3" };
 // What every SQLite database starts with.
 const SQLITE_MAGIC = [..."SQLite format 3\0"].map((c) => c.charCodeAt(0));

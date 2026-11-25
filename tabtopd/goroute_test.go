@@ -157,7 +157,7 @@ func TestGoRouteBrowses(t *testing.T) {
 	expect("go-reload", 5) // its last page failed: nothing shown, loaded again by the page
 	// Closed by the person: its engine killed at once.
 	sendGo(t, ctx, tc, map[string]any{"op": "close"})
-	waitFor(t, "the engine to be uncounted", func() bool {
+	waitUntil(t, "the engine to be uncounted", func() bool {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		return len(g.goEngines) == 0
@@ -176,8 +176,8 @@ func TestGoRouteDetachedEnds(t *testing.T) {
 		t.Fatal(r)
 	}
 	tc.c.CloseNow()
-	waitFor(t, "the tab to end, not taken back", func() bool { return len(goEngineRunDirs(t)) == 0 })
-	waitFor(t, "the engine to be uncounted", func() bool {
+	waitUntil(t, "the tab to end, not taken back", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "the engine to be uncounted", func() bool {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		return len(g.goEngines) == 0
@@ -188,7 +188,7 @@ func TestGoRouteDetachedEnds(t *testing.T) {
 		t.Errorf("a token of a tab gone: %v", r)
 	}
 	sendGo(t, ctx, tc, map[string]any{"op": "close"})
-	waitFor(t, "the new tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "the new tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }
 
 // Downloads hold both the disconnected tab and its otherwise idle login.
@@ -245,7 +245,7 @@ func TestGoRouteDownloadKeepsDetachedTab(t *testing.T) {
 				other.c.CloseNow()
 			}
 			tc.c.CloseNow()
-			waitFor(t, "all connections detached", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sessions[s.id].open) == 0 })
+			waitUntil(t, "all connections detached", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sessions[s.id].open) == 0 })
 			time.Sleep(3 * goTestDetachedFor)
 			if _, ok := g.sessionSecret(s.id); !ok {
 				t.Fatal("idle session expired during download")
@@ -308,7 +308,7 @@ func TestGoRouteTakenElsewhere(t *testing.T) {
 		t.Errorf("%d engines, want the one tab's", len(dirs))
 	}
 	sendGo(t, ctx, second, map[string]any{"op": "close"})
-	waitFor(t, "the tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "the tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }
 
 func TestGoRouteLimitsEngines(t *testing.T) {
@@ -337,7 +337,7 @@ func TestGoRouteEndsWithSession(t *testing.T) {
 	if r := openSession(t, ctx, url, s).request(t, ctx, map[string]any{"type": "logout"}); r["ok"] != true {
 		t.Fatalf("logout: %v", r)
 	}
-	waitFor(t, "logging out to kill the engine", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "logging out to kill the engine", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }
 
 func TestSweepGoRunDirs(t *testing.T) {
@@ -381,17 +381,6 @@ func TestGoURL(t *testing.T) {
 	}
 }
 
-// waitFor waits up to 10 seconds for cond.
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if cond() {
-			return
-		}
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
 // TestGoRouteWithMoli browses a page through the route with the real
 // engine. Set TABTOP_TEST_MOLI to a Moli binary to run it.
 func TestGoRouteWithMoli(t *testing.T) {
@@ -432,7 +421,7 @@ func TestGoRouteWithMoli(t *testing.T) {
 		t.Errorf("a refused address: %v", m)
 	}
 	tc.c.CloseNow()
-	waitFor(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }
 
 // TestGoFetchDataWithMoli has the engine's page fetch a data: URL its own
@@ -487,5 +476,5 @@ Promise.all([text("data:text/plain;base64,aGk="), text("data:text/plain,there%20
 		}
 	}
 	tc.c.CloseNow()
-	waitFor(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "the engine to be killed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }

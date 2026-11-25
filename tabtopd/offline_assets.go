@@ -50,9 +50,15 @@ func (g *server) offlineAssets() map[string]func() ([]byte, error) {
 			out["tabtop/"+as.label+"/"+name] = func() ([]byte, error) { return readAsset(as.dir, name) }
 		}
 	}
-	// highlight.js: its module build, and its classic one (the Markdown
-	// frame's).
-	fromDisk(g.highlightAssets())
+	// The optional bundles (bundles.go): highlight.js (its module build,
+	// and its classic one, the Markdown frame's), three.js and its
+	// decoders, ONNX Runtime and U2NetP (background removal), MobileSAM
+	// (magic select), MI-GAN (inpainting), KaTeX and Mermaid, the
+	// demangler; and pdf.js.
+	for _, b := range assetBundles {
+		fromDisk(g.bundleAssets(b))
+	}
+	fromDisk(g.pdfjsAssets())
 	// Each disassembler that's on: its files, and the scripts of tabtopd's
 	// own it needs (x86's assembler; RISC-V's and MIPS's, which are only
 	// scripts, and what they share).
@@ -73,13 +79,6 @@ func (g *server) offlineAssets() map[string]func() ([]byte, error) {
 				have("tabtop/"+name, data)
 			}
 		}
-	}
-	// three.js and its decoders; ONNX Runtime and U2NetP (background
-	// removal), MobileSAM (magic select) and MI-GAN (inpainting); pdf.js;
-	// KaTeX and Mermaid; the demangler.
-	for _, as := range []assets{g.threeAssets(), g.backgroundAssets(), g.segmentAssets(), g.inpaintAssets(), g.pdfjsAssets(),
-		g.previewAssets(), g.demangleAssets()} {
-		fromDisk(as)
 	}
 	// Kaitai: its catalogue, its schemas, and its compiled parsers (and the
 	// chunks they share), read from the folder each time, as serveKaitai does.

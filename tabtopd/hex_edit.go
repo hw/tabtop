@@ -30,7 +30,6 @@ import (
 	"os"
 	"path"
 	"slices"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -90,20 +89,21 @@ func patchRuns(runs []bytePatch, size int64) ([][]byte, int, error) {
 // the file at req.Path, if it's as the page read it (req.IfMtime,
 // req.IfSize and req.IfBytes); {"mtime", "size"} after. The answer goes once the lock's
 // let go: answering waits on the page closing the tunnel.
-func (g *fileService) tunnelFilePatch(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelFilePatch(call *tunnelCall) {
+	req, session, ip, r := call.req, call.session, call.ip, call.r
 	reply, total, err := g.patchFile(req)
 	if err != nil {
 		r.fail(err.Error())
 		return
 	}
-	g.act(session, "files", ip, "changed %d byte%s in %s", total, plural(total), path.Clean(strings.Trim(req.Path, "/")))
+	g.act(session, "files", ip, "changed %d byte%s in %s", total, plural(total), req.dir())
 	r.finish(reply)
 }
 
 // patchFile writes req.Patches into the file, holding the lock a save
 // replacing it takes, and says how it is after, and how many bytes changed.
 func (g *fileService) patchFile(req tunnelRequest) (map[string]any, int, error) {
-	p := path.Clean(strings.Trim(req.Path, "/"))
+	p := req.dir()
 	if req.IfMtime == "" || p == "." {
 		return nil, 0, errors.New("That's not a change that can be made.")
 	}
@@ -317,7 +317,8 @@ func searchFile(ctx context.Context, f io.ReaderAt, size int64, value, mask []by
 // req.Mask in the file at req.Path, as the page read it, from req.Offset,
 // backwards with req.Backward; {"found": offset or -1, "next": where to
 // carry on from, or -1}.
-func (g *fileService) tunnelFileSearch(req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelFileSearch(call *tunnelCall) {
+	req, r := call.req, call.r
 	value, mask, err := searchPattern(req.Pattern, req.Mask)
 	if err != nil {
 		r.fail(err.Error())

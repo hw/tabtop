@@ -74,7 +74,7 @@ func (b *goBrowser) devices(gen int, asks []goDeviceAsk) {
 		} else {
 			others++
 		}
-		if writes > 16 || others > 4 || !goPasteID.MatchString(a.ID) || b.acts.waiting() >= goActsWaiting {
+		if writes > 16 || others > 4 || !goAskID.MatchString(a.ID) || b.acts.waiting() >= goActsWaiting {
 			continue
 		}
 		valid := origin != "" && b.deviceAllowed(a.Kind, origin)
@@ -131,7 +131,7 @@ func (b *goBrowser) devices(gen int, asks []goDeviceAsk) {
 			}
 			continue
 		}
-		if b.device != nil && b.device.gen == gen && time.Since(b.device.at) < goPasteAskFor {
+		if b.device != nil && b.device.gen == gen && time.Since(b.device.at) < goAskWait {
 			valid, reason = false, "InvalidStateError"
 		}
 		if !valid {
@@ -202,7 +202,7 @@ func (b *goBrowser) deviceAnswer(m goClientMsg) {
 	b.device = nil
 	reply := map[string]any{"id": p.id}
 	switch {
-	case !m.Accept || time.Since(p.at) > goPasteAskFor:
+	case !m.Accept || time.Since(p.at) > goAskWait:
 		reply["error"] = goDeviceError(m.Value)
 	case p.kind == "location" || p.kind == "location-watch":
 		if position, ok := goPositionOf(m.Value); !ok {
@@ -248,7 +248,7 @@ type goImagePaste struct {
 }
 
 func (b *goBrowser) pasteImage(m goClientMsg) {
-	if m.Gen != b.gen || m.Gen != b.shown || b.world == 0 || !goPasteID.MatchString(m.Text) {
+	if m.Gen != b.gen || m.Gen != b.shown || b.world == 0 || !goAskID.MatchString(m.Text) {
 		return
 	}
 	if m.Type == "start" {
@@ -423,7 +423,12 @@ func goLocationError(value string) string {
 	return "PositionUnavailableError"
 }
 
-func (b *goBrowser) releaseDevices() {
+// connLost: the person's browser went (its connection lost), or another
+// took the tab: what that browser held for the page is let go, the page
+// told so; what the page holds itself is kept for the next (connBack).
+// With leftPage (the page gone) and connBack, the only places each
+// feature's part in these is said.
+func (b *goBrowser) connLost() {
 	if p := b.device; p != nil && p.gen == b.gen && p.world == b.world {
 		b.agentCall(p.world, "deviceReply", map[string]any{"id": p.id, "error": "AbortError"})
 	}
@@ -435,11 +440,16 @@ func (b *goBrowser) releaseDevices() {
 	}
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
 	b.resetFileSystem()
-	// The person's browser's pointer lock and screen orientation lock went
-	// with it (the page told it's left); its wake lock is taken again by
-	// the next that connects (wakeLockAgain).
+	// The person's browser's pointer lock, fullscreen and screen
+	// orientation lock went with it (the page told it's left each: a
+	// browser enters fullscreen only after its person's press, so the next
+	// to connect can't be put back in it); its wake lock is taken again by
+	// the next that connects, and what the page asked of the person is
+	// asked of them again there (connBack).
 	b.pointerLockLost()
-	b.orientAsks, b.orientLocked = nil, false
+	b.fullscreenLet(true)
+	b.orientAsks.clear()
+	b.orientLocked = false
 }
 
 // goDeviceError is the error the person's browser said, as the page's

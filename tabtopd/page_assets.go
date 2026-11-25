@@ -27,12 +27,12 @@ const (
 	// connect-src blob: data:: the 3D preview's glTF loader fetches what a
 	// model has (its buffers and pictures) from them; neither reaches out.
 	filesCSP = "default-src 'none'; script-src 'self'; connect-src 'self' blob: data:; style-src 'unsafe-inline'; " +
-		"img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; frame-src 'self'; form-action 'none'; frame-ancestors 'none'"
+		"img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 	// The download service worker fetches nothing itself.
 	downloadSWCSP = "default-src 'none'; script-src 'self'"
 )
 
-//go:embed remote-auth-view.js remote-approve.js image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js model-thumbnails.js model-export.js model-limits.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-decode.js model-decode-worker.js model-info.js model-3mf.js model-gcode.js model-looks.js bgcode.js model-resources.js model-read.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js files-actions.js files-batch.js files-pins.js security-backup.js security-backup-format.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js video-player.js glyphs.js pdf-frame.js epub-frame.js md-frame.js go-frame.js go-frame-gl.js gogl-surface.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
+//go:embed remote-auth-view.js remote-approve.js image-exif.js image-exif-form.js image-exif-view.js fs-context.js image-diff.js image-diff-worker.js image-diff-view.js text-diff.js text-diff-worker.js text-diff-view.js versions-view.js search-view.js thumbnails.js model-thumbnails.js model-export.js model-limits.js image-batch.js image-export.js pdf-image-editor.js image-mask.js image-inpaint.js image-inpaint-worker.js image-draw.js image-place.js image-resize.js image-crop.js image-background-tool.js image-fill.js image-background.js image-background-worker.js image-segment.js image-segment-worker.js third-party/* image-meta.js image-heif.js model-view.js model-worker.js model-decode.js model-decode-worker.js model-info.js model-3mf.js model-gcode.js model-looks.js bgcode.js model-resources.js model-read.js gcode.js image-scan.js image-view.js sqlite-view.js disasm-worker.js x86-asm.js asm-common.js riscv-asm.js mips-asm.js preview-html-links.js preview-css.js preview-html-resources.js preview-resources.js preview-media.js preview-pictures.js kaitai-errors.js format-combobox.js kaitai-view.js kaitai-worker.js exe-info.js hex-view.js hex-disasm.js files-actions.js files-batch.js files-pins.js security-backup.js security-backup-format.js preview-loaders.js preview-renderers.js ranged-file.js file-types.js file-types-worker.js preview-content.js preview-dom.js preview-external.js preview-editor.js preview-frames.js pdf-print.js preview-links.js preview-model.js preview-settings.js preview-view.js stream-worker.js media-source.js media-stream.js video-stream.js video-player.js glyphs.js pdf-frame.js epub-frame.js md-frame.js frame-bridge.js worker-client.js ort-worker.js copied-note.js go-frame.js go-frame-gl.js gogl-surface.js json-view.js table-view.js transfer.js folder-model.js osc.js tunnel.js tunnel-protocol.js tunnel-crypto.js session.js session-state.js stored.js login-ui.js file-format.js sessions-view.js novnc.js files.js download-sw.js drop.js ui.js nav.js requests.js preview.js reconnect.js download.js expiry.js
 var pageFiles embed.FS
 
 // The files of the noble libraries that tunnel.js imports, directly or
@@ -74,14 +74,8 @@ var highlightFiles = []string{
 // preview stage copies the same list.
 var previewFiles = []string{"katex.min.js", "mermaid.min.js"}
 
-func (g *server) previewPath() string {
-	if g.previewDir == "" {
-		return "preview-missing"
-	}
-	return g.preview.path(g.previewAssets())
-}
-
-func (g *server) previewAssets() assets { return assets{"preview", g.previewDir, previewFiles} }
+func (g *server) previewPath() string   { return g.bundlePath(&previewBundle) }
+func (g *server) previewAssets() assets { return g.bundleAssets(&previewBundle) }
 
 // mdFrameCSP is the Markdown preview frame's: scripts only from the site
 // (its own, and the libraries), styles inline (Mermaid puts its own in its
@@ -117,20 +111,14 @@ const frameSandbox = "sandbox allow-scripts allow-popups allow-popups-to-escape-
 // mdFrameHTML is the frame's page.
 var mdFrameHTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n" +
 	"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Markdown</title>\n<style>" +
-	mdFrameCSS + highlightCSS + "</style>\n<main id=\"doc\"></main>\n<script src=\"third-party/css-tree.js\"></script><script src=\"preview-css.js\"></script><script src=\"preview-html-links.js\"></script><script src=\"preview-html-resources.js\"></script><script src=\"md-frame.js\"></script>\n"
+	mdFrameCSS + highlightCSS + "</style>\n<main id=\"doc\"></main>\n<script src=\"third-party/css-tree.js\"></script><script src=\"preview-css.js\"></script><script src=\"preview-html-links.js\"></script><script src=\"preview-html-resources.js\"></script><script src=\"frame-bridge.js\"></script><script src=\"md-frame.js\"></script>\n"
 
 // highlightPath is where they're served, under /tabtop/; preview.js is
 // served with its "./highlight/" imports pointing there. Without
 // -highlight-dir, it's a path that serves nothing, and previews have no
 // colours.
-func (g *server) highlightPath() string {
-	if g.highlightDir == "" {
-		return "highlight-missing"
-	}
-	return g.highlight.path(g.highlightAssets())
-}
-
-func (g *server) highlightAssets() assets { return assets{"highlight", g.highlightDir, highlightFiles} }
+func (g *server) highlightPath() string   { return g.bundlePath(&highlightBundle) }
+func (g *server) highlightAssets() assets { return g.bundleAssets(&highlightBundle) }
 
 // The disassembler the hex view's worker loads (see disasm-worker.js), from
 // -disasm-dir: iced-x86, Capstone.js and fARM64 (ARM64, with its assembler), built for a
@@ -261,27 +249,14 @@ func (g *server) serveDisasm(w http.ResponseWriter, r *http.Request, name string
 // and Rust symbols (see scripts/disasm/demangle): in -disasm-dir too, but a
 // set of its own, as it's no disassembler: it's there whichever of them
 // are turned off, and they are whether or not it's there.
-func (g *server) demangleAssets() assets {
-	return assets{"demangle", g.disasmDir, []string{"demangle.wasm"}}
-}
-
-func (g *server) demanglePath() string {
-	if g.disasmDir == "" {
-		return "demangle-missing"
-	}
-	return g.demangle.path(g.demangleAssets())
-}
+func (g *server) demangleAssets() assets { return g.bundleAssets(&demangleBundle) }
+func (g *server) demanglePath() string   { return g.bundlePath(&demangleBundle) }
 
 // MI-GAN has its own asset set so opening background removal doesn't load it.
 var inpaintFiles = []string{"migan.onnx"}
 
-func (g *server) inpaintAssets() assets { return assets{"inpaint", g.inpaintDir, inpaintFiles} }
-func (g *server) inpaintPath() string {
-	if g.inpaintDir == "" {
-		return "inpaint-missing"
-	}
-	return g.inpaint.path(g.inpaintAssets())
-}
+func (g *server) inpaintAssets() assets { return g.bundleAssets(&inpaintBundle) }
+func (g *server) inpaintPath() string   { return g.bundlePath(&inpaintBundle) }
 
 // modelWorkerCSP is the 3D preview's worker's: its modules (tabtopd's and
 // three.js's, from the site), and nothing else; it's handed what it reads.
@@ -303,39 +278,21 @@ var threeFiles = []string{"three.module.js", "three.core.js", "OrbitControls.js"
 	// The compressed glTF's decoders (model-decode-worker.js loads them).
 	"draco_wasm_wrapper.js", "draco_decoder.wasm", "basis_transcoder.js", "basis_transcoder.wasm", "meshopt_decoder.js", "LICENSE.decoders"}
 
-func (g *server) threeAssets() assets { return assets{"three", g.threeDir, threeFiles} }
-func (g *server) threePath() string {
-	if g.threeDir == "" {
-		return "three-missing"
-	}
-	return g.three.path(g.threeAssets())
-}
+func (g *server) threeAssets() assets { return g.bundleAssets(&threeBundle) }
+func (g *server) threePath() string   { return g.bundlePath(&threeBundle) }
 
 // MobileSAM, for magic select: an encoder run once per picture, and a
 // decoder run for each click or box. It uses background removal's runtime.
 var segmentFiles = []string{"mobile_sam_encoder.onnx", "mobile_sam_decoder.onnx"}
 
-func (g *server) segmentAssets() assets { return assets{"segment", g.segmentDir, segmentFiles} }
-func (g *server) segmentPath() string {
-	if g.segmentDir == "" {
-		return "segment-missing"
-	}
-	return g.segment.path(g.segmentAssets())
-}
+func (g *server) segmentAssets() assets { return g.bundleAssets(&segmentBundle) }
+func (g *server) segmentPath() string   { return g.bundlePath(&segmentBundle) }
 
 // Background removal uses only ONNX Runtime's WASM backend, in a worker.
 var backgroundFiles = []string{"ort.wasm.min.js", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm", "u2netp.onnx"}
 
-func (g *server) backgroundAssets() assets {
-	return assets{"background", g.backgroundDir, backgroundFiles}
-}
-
-func (g *server) backgroundPath() string {
-	if g.backgroundDir == "" {
-		return "background-missing"
-	}
-	return g.background.path(g.backgroundAssets())
-}
+func (g *server) backgroundAssets() assets { return g.bundleAssets(&backgroundBundle) }
+func (g *server) backgroundPath() string   { return g.bundlePath(&backgroundBundle) }
 
 // disasmWorkerCSP is the disassembly worker's: its own scripts, fetching
 // its WebAssembly, and running it; nothing else. The page itself isn't
@@ -414,6 +371,9 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 		js, _ := pageFiles.ReadFile(name)
 		js = bytes.ReplaceAll(js, []byte(`"./background/`), []byte(`"./`+g.backgroundPath()+`/`))
 		w.Write(bytes.ReplaceAll(js, []byte(`"./segment/`), []byte(`"./`+g.segmentPath()+`/`)))
+	case name == "ort-worker.js":
+		js, _ := pageFiles.ReadFile(name)
+		w.Write(bytes.ReplaceAll(js, []byte(`"./background/`), []byte(`"./`+g.backgroundPath()+`/`)))
 	case name == "image-background-worker.js":
 		h.Set("Content-Security-Policy", backgroundWorkerCSP)
 		js, _ := pageFiles.ReadFile(name)
@@ -448,14 +408,8 @@ func (g *server) scripts(w http.ResponseWriter, r *http.Request) {
 	case servedAsIs(name):
 		http.ServeFileFS(w, r, pageFiles, name)
 	case g.noble.serve(w, r, g.nobleAssets(), name):
-	case g.highlightDir != "" && g.highlight.serve(w, r, g.highlightAssets(), name):
-	case g.previewDir != "" && g.preview.serve(w, r, g.previewAssets(), name):
-	case g.inpaintDir != "" && g.inpaint.serve(w, r, g.inpaintAssets(), name):
-	case g.backgroundDir != "" && g.background.serve(w, r, g.backgroundAssets(), name):
-	case g.segmentDir != "" && g.segment.serve(w, r, g.segmentAssets(), name):
-	case g.threeDir != "" && g.three.serve(w, r, g.threeAssets(), name):
+	case g.serveBundle(w, r, name): // (bundles.go)
 	case g.serveDisasm(w, r, name):
-	case g.disasmDir != "" && g.demangle.serve(w, r, g.demangleAssets(), name):
 	case g.servePDFJS(w, r, name):
 	case g.serveKaitai(w, r, name):
 	default:
@@ -496,7 +450,7 @@ func (g *server) filesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", filesCSP)
+	setPageHeaders(w.Header(), filesCSP)
 	w.WriteHeader(http.StatusOK)
 	if err := filesTmpl.Execute(w, map[string]any{"Script": "../tabtop/files.js"}); err != nil {
 		log.Printf("rendering page: %v", err)

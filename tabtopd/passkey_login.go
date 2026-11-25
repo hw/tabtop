@@ -84,37 +84,30 @@ func (g *server) passkeyTunnel(c *websocket.Conn, ip, browser string, hello []by
 	// that isn't added is: checked, counted and answered the same, so
 	// whether the owner has any isn't told to whoever asks. (The
 	// Passkeys section, once logged in, says if their file can't be read.)
-	if !g.beginLogin(ip) {
+	attempt := g.beginAttempt(ip, browser+", with a passkey")
+	if attempt == nil {
 		c.Close(closeLoginRefused, "Too many failed attempts. Try again in a few minutes.")
 		return
 	}
-	settled := false
-	settle := func(failed bool) {
-		if !settled {
-			settled = true
-			g.endLogin(ip, browser+", with a passkey", failed)
-		}
-	}
-	defer settle(false)
+	defer attempt.end()
 	if !g.loginTurn() {
 		c.Close(websocket.StatusTryAgainLater, "Many logins have failed here lately, so they're being slowed down. Try again in a few seconds.")
 		return
 	}
 	var a passkeyAssertion
 	if typ != websocket.MessageText || json.Unmarshal(msg, &a) != nil {
-		settle(true)
+		attempt.badMessage()
 		c.Close(websocket.StatusPolicyViolation, "bad message")
 		return
 	}
 	name, err := g.passkeys.verifyLogin(a, challenge, time.Now())
 	if err != nil {
-		settle(true)
+		attempt.failed()
 		log.Printf("passkey login from %s failed: %v", ip, err)
-		g.activity.failedLogin(ip, browser+", with a passkey")
 		c.Close(closeLoginFailed, errPasskeyUnknown)
 		return
 	}
-	settle(false)
+	attempt.end()
 	log.Printf("login from %s succeeded, with the passkey %q", ip, name)
 	g.activity.add("login", ip, "logged in with the passkey %q%s", name, withBrowser(browser))
 	id, secret, history := g.newSession(ip, browser+", with a passkey")
@@ -239,39 +232,37 @@ func (g *server) routePasskeyRemove(c *tunnelCall) {
 // checkCode checks code, the password + authenticator code, as a login
 // does: limited as logins are, counted as one, the code used up.
 func (g *server) checkCode(ip, browser, code string) error {
-	if !g.beginLogin(ip) {
+	attempt := g.beginAttempt(ip, browser)
+	if attempt == nil {
 		return errTooManyLogins
 	}
-	failed := true
-	defer func() { g.endLogin(ip, browser, failed) }()
+	defer attempt.end()
 	if !g.loginTurn() || !startLoginWork() {
-		failed = false // not checked
-		return errLoginsBusy
+		return errLoginsBusy // not checked
 	}
 	defer endLoginWork()
 	e, err := readOathEntry(g.usersFile)
 	if err != nil {
-		failed = false
 		log.Printf("reading the TOTP users file: %v", err)
 		return errLoginsBusy
 	}
 	if len(code) < e.digits {
 		log.Printf("password and code from %s (%s), too short", ip, browser)
-		g.activity.failedLogin(ip, browser)
+		attempt.failed()
 		return errWrongCode
 	}
 	if err := oathAuthenticate(g.usersFile, e.user, code[:len(code)-e.digits], code[len(code)-e.digits:]); err != nil {
 		if oe, ok := err.(oathError); !ok || !oe.rejected() {
-			// Not the code, but checking it, that failed: not counted.
+			// Not the code, but checking it, that failed: not counted,
+			// as the person can only try again (unlike a login, which
+			// counts it: see loginTunnel).
 			log.Printf("checking TOTP code: %v", err)
-			failed = false
 			return errLoginsBusy
 		}
 		log.Printf("password and code from %s (%s), wrong", ip, browser)
-		g.activity.failedLogin(ip, browser)
+		attempt.failed()
 		return errWrongCode
 	}
-	failed = false
 	return nil
 }
 

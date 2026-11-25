@@ -2,6 +2,7 @@
 # Check independently disabled services in a built image.
 # Usage: bash test/features-check.sh <image>
 set -euo pipefail
+source "$(dirname "$0")/lib.sh"
 image=${1:?usage: $0 <image>}
 name=tabtop-features-check-$$
 cleanup() {
@@ -18,16 +19,13 @@ for settings in '0 0 1' '0 1 0' '1 0 0'; do
         -e WEB_VNC="$vnc" -e WEB_TTY="$tty" -e WEB_FS="$files" \
         -e WEB_AUDIO="$((1 - vnc))" \
         -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
-    for ((i=0;i<30;i++)); do
-        if docker exec "$name" /usr/local/bin/healthcheck >/dev/null 2>&1; then break; fi
-        sleep 1
-    done
-    docker exec "$name" /usr/local/bin/healthcheck
+    wait_healthy "$name" 30
     site="http://$(docker port "$name" 6080/tcp | head -n 1)"
     python3 - "$site" "$vnc" "$tty" "$files" <<'PY'
 import json, re, sys, urllib.error, urllib.request
 site = sys.argv[1]
 enabled = dict(zip(('desktop', 'terminal', 'files'), map(lambda x: x == '1', sys.argv[2:])))
+enabled['go'] = False  # (WEB_GO, off by default)
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args): return None
 client = urllib.request.build_opener(NoRedirect)

@@ -169,12 +169,12 @@ func TestGoClipboardImages(t *testing.T) {
 	if b.acts.waiting() != 1 {
 		t.Fatalf("not answered")
 	}
-	if a := b.pasteAsks[token]; a != nil {
+	if a := b.pasteAsks.m[token].v; a != nil {
 		t.Errorf("kept once answered")
 	}
 	// A readText's ask takes no picture.
 	b.pastePart(goClientMsg{Text: asks[0]["ask"].(string), Value: png})
-	if a := b.pasteAsks[asks[0]["ask"].(string)]; a == nil || a.image.Len() != 0 {
+	if a := b.pasteAsks.m[asks[0]["ask"].(string)].v; a == nil || a.image.Len() != 0 {
 		t.Errorf("a readText given a picture")
 	}
 	if _, ok := goPNG(notPNG); ok {

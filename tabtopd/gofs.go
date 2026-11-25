@@ -123,19 +123,19 @@ func validGoFSAsk(kind string, fs *goFSRequest) bool {
 	case "fs-save":
 		return fs.Handle == "" && len(fs.Name) <= 255 && len(fs.PickerOptions.Types) <= 16 && pickerTypesSize(fs.PickerOptions.Types) <= 8<<10
 	case "fs-read":
-		return goPasteID.MatchString(fs.Handle) && goPasteID.MatchString(fs.FileID) && fs.Value == "" && fs.Size == 0 && fs.Offset == 0
+		return goAskID.MatchString(fs.Handle) && goAskID.MatchString(fs.FileID) && fs.Value == "" && fs.Size == 0 && fs.Offset == 0
 	case "fs-begin":
-		return goPasteID.MatchString(fs.Handle) && (fs.Value == "" || fs.Value == "keep")
+		return goAskID.MatchString(fs.Handle) && (fs.Value == "" || fs.Value == "keep")
 	case "fs-write":
-		if !goPasteID.MatchString(fs.Handle) || fs.Offset < 0 || len(fs.Value) > base64.StdEncoding.EncodedLen(24<<10) {
+		if !goAskID.MatchString(fs.Handle) || fs.Offset < 0 || len(fs.Value) > base64.StdEncoding.EncodedLen(24<<10) {
 			return false
 		}
 		data, err := base64.StdEncoding.Strict().DecodeString(fs.Value)
 		return err == nil && len(data) <= 24<<10
 	case "fs-truncate":
-		return goPasteID.MatchString(fs.Handle) && fs.Size >= 0 && fs.Value == ""
+		return goAskID.MatchString(fs.Handle) && fs.Size >= 0 && fs.Value == ""
 	case "fs-close", "fs-abort":
-		return goPasteID.MatchString(fs.Handle) && fs.Value == ""
+		return goAskID.MatchString(fs.Handle) && fs.Value == ""
 	default:
 		return false
 	}
@@ -169,7 +169,7 @@ func validateGoFSReply(kind, value string) (map[string]any, string) {
 			return nil, "DataError"
 		}
 		for _, f := range result.Files {
-			if !goPasteID.MatchString(f.Handle) || !validFSHandleName(f.Name) || len(f.Type) > 128 || f.Size < 0 || f.Size > goUploadFileMax {
+			if !goAskID.MatchString(f.Handle) || !validFSHandleName(f.Name) || len(f.Type) > 128 || f.Size < 0 || f.Size > goUploadFileMax {
 				return nil, "NotSupportedError"
 			}
 		}
@@ -181,7 +181,7 @@ func validateGoFSReply(kind, value string) (map[string]any, string) {
 			Name   string `json:"name"`
 			Size   int64  `json:"size"`
 		}
-		if len(value) > 2048 || json.Unmarshal([]byte(value), &result) != nil || !goPasteID.MatchString(result.Handle) || !validFSHandleName(result.Name) || result.Size < 0 || result.Size > goUploadFileMax {
+		if len(value) > 2048 || json.Unmarshal([]byte(value), &result) != nil || !goAskID.MatchString(result.Handle) || !validFSHandleName(result.Name) || result.Size < 0 || result.Size > goUploadFileMax {
 			return nil, "DataError"
 		}
 		return map[string]any{"value": value}, ""
@@ -451,7 +451,7 @@ func (b *goBrowser) abortFSRead(token string) {
 }
 
 func (b *goBrowser) deliverFSFile(gen, world int, _ string, fileID, enginePath string) {
-	if !goPasteID.MatchString(fileID) {
+	if !goAskID.MatchString(fileID) {
 		return
 	}
 	b.job(func() any {

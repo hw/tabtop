@@ -3,8 +3,8 @@
 import { glyphs, iconSVG } from "./glyphs.js";
 import { askYes } from "./ui.js";
 import { previewView } from "./preview-view.js";
-import { el, join } from "./preview-dom.js";
-import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize, textModel, limits } from "./preview-model.js";
+import { el, join, maximizeButton, showModal } from "./preview-dom.js";
+import { typeOf, languageOf, formatOf, previewLocation, resolvePath, unknownTextSize, textModel, limits, modelAlternative, toggleView } from "./preview-model.js";
 import { humanBytes } from "./file-format.js";
 import { previewWide, setPreviewWide, THEMES, readingTheme, setReadingTheme, VIEWS, viewShown, setViewShown } from "./preview-settings.js";
 import { loadPreview } from "./preview-loaders.js";
@@ -16,6 +16,7 @@ import { editableText, startEditing, startTableEditing, editBookDetails } from "
 import { openImageDiff } from "./image-diff-view.js";
 import { openVersions } from "./versions-view.js";
 import { revealLine } from "./search-view.js";
+import { externalMenu } from "./preview-external.js";
 export { previewable, previewLocation, resolvePath, previewWebURL } from "./preview-model.js";
 
 // preview shows files[index] of files, [{name, bytes}] in the folder dir,
@@ -56,7 +57,7 @@ export function preview(dir, files, index, download, opts = {}) {
     downloads.setAttribute("role", "menu");
     const showDownloads = (show) => {
         downloads.hidden = !show;
-        if (show) showExternalMenu(false);
+        if (show) external.close();
         more.setAttribute("aria-expanded", String(show));
         if (show) {
             downloads.querySelector("button")?.focus();
@@ -84,82 +85,16 @@ export function preview(dir, files, index, download, opts = {}) {
         }
     });
     const saveGroup = el("span", { className: "download-group" }, save, more, downloads);
-    // Resource permissions belong to this file and start blocked.
-    let externalMode = "none", externalCount = 0;
-    const externalResources = button("", "", "external-resources glyph");
-    const externalMore = button(glyphs.chevronDown, "External resource modes", "external-more");
-    const externalMenu = el("div", { className: "external-menu", hidden: true, role: "menu" });
-    externalMenu.setAttribute("aria-label", "External resources");
-    const externalGroup = el("span", { className: "external-group", hidden: true }, externalResources, externalMore, externalMenu);
-    const externalStates = ["none", "proxy", "direct"];
-    const externalLabels = { none: "No external", proxy: "Proxy", direct: "Direct" };
-    let externalOpener = externalResources;
-    const showExternalMenu = (show, opener = externalOpener) => {
-        externalMenu.hidden = !show;
-        externalOpener = opener;
-        for (const control of [externalResources, externalMore]) control.setAttribute("aria-expanded", String(show));
-        if (show) {
-            showDownloads(false);
-            externalMenu.querySelector('[aria-checked="true"]')?.focus();
-        }
-    };
-    const showExternal = () => {
-        // Shown while there's something external to load, or while a mode
-        // other than the default is on: a book counts chapter by chapter,
-        // and one with none mustn't hide a mode that's still on.
-        externalGroup.hidden = externalResources.hidden = !externalCount && externalMode === "none" || !!editing;
-        if (externalGroup.hidden) showExternalMenu(false);
-        externalResources.dataset.mode = externalMode;
-        externalResources.innerHTML = iconSVG(`external-${externalMode}`);
-        externalResources.title = `External resources: ${externalLabels[externalMode]}`;
-        externalResources.setAttribute("aria-label", externalResources.title);
-        for (const item of externalMenu.querySelectorAll("button")) item.setAttribute("aria-checked", String(item.dataset.mode === externalMode));
-    };
-    const selectExternal = mode => {
-        showExternalMenu(false);
-        externalResources.focus({ preventScroll: true });
-        if (mode === externalMode) return;
-        externalMode = mode;
-        showExternal();
-        const location = frame?.element.previewLocation ?? null;
-        // Remove a Direct frame immediately, cancelling its native requests.
-        frame?.stop();
-        frame?.element.remove();
-        frame = null;
-        draw(shown, "", location);
-    };
-    for (const mode of externalStates) {
-        const item = button("", externalLabels[mode], `external-option external-${mode} glyph`);
-        item.innerHTML = iconSVG(`external-${mode}`);
-        item.append(el("span", { textContent: externalLabels[mode] }));
-        item.dataset.mode = mode;
-        item.setAttribute("role", "menuitemradio");
-        item.setAttribute("aria-checked", String(mode === externalMode));
-        item.tabIndex = -1;
-        item.addEventListener("click", () => selectExternal(mode));
-        externalMenu.append(item);
-    }
-    for (const control of [externalResources, externalMore]) {
-        control.setAttribute("aria-haspopup", "menu");
-        control.setAttribute("aria-expanded", "false");
-        control.addEventListener("click", () => showExternalMenu(externalMenu.hidden, control));
-    }
-    externalResources.hidden = true;
-    externalMenu.addEventListener("keydown", event => {
-        const items = [...externalMenu.querySelectorAll("button")];
-        const at = items.indexOf(document.activeElement);
-        if (event.key === "Escape") {
-            event.preventDefault(); event.stopPropagation();
-            showExternalMenu(false); externalOpener.focus();
-        } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-            event.preventDefault(); event.stopPropagation();
-            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-            items[next]?.focus();
-        } else if (event.key === "Tab") { showExternalMenu(false); externalMore.focus(); }
-    });
-    externalGroup.addEventListener("focusout", event => {
-        if (!externalGroup.contains(event.relatedTarget)) showExternalMenu(false);
-    });
+    // External resources: the menu's, the frame drawn again with another.
+    const external = externalMenu({ button, opened: () => showDownloads(false), hiddenWhile: () => !!editing,
+        changed: () => {
+            const location = frame?.element.previewLocation ?? null;
+            // Remove a Direct frame immediately, cancelling its native requests.
+            frame?.stop();
+            frame?.element.remove();
+            frame = null;
+            draw(shown, "", location);
+        } });
     // Markdown is shown rendered, CSV as a table and JSON as a tree, or
     // each raw, as its text, as last chosen (see VIEWS): two buttons, the
     // one for the way it's shown pressed.
@@ -260,22 +195,11 @@ export function preview(dir, files, index, download, opts = {}) {
     close.innerHTML = iconSVG("close-circle");
     close.setAttribute("aria-label", "Close");
     // The whole window, or the box it starts as: as last chosen.
-    const widen = button("", "", "widen glyph");
-    const showWide = () => {
-        const wide = previewWide();
-        dialog.classList.toggle("wide", wide);
-        widen.textContent = wide ? glyphs.contract : glyphs.expand;
-        widen.title = wide ? "Back to a box" : "Fill the window";
-        widen.setAttribute("aria-label", widen.title);
-        widen.setAttribute("aria-pressed", String(wide));
-    };
-    widen.addEventListener("click", () => {
-        setPreviewWide(!previewWide());
-        showWide();
-    });
+    const widen = maximizeButton(() => dialog, "widen", { get: previewWide, set: setPreviewWide });
+    const showWide = () => widen.update();
     const setMode = async mode => {
         if (mode === "text" && current?.textAvailable === false) return;
-        if (!current || typeOf(current.name) && !current.sqlite && !modelAlternative() || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
+        if (!current || typeOf(current.name) && !current.sqlite && !modelAlternative(current) || mode === current.kind || mode === null && previewMode === null || !(await leaveEditing())) return;
         previewMode = mode;
         if (blob && ["text", "hex"].includes(current.kind) && ["text", "hex"].includes(mode) &&
                 (mode !== "text" || blob.size >= Math.min(current.size, unknownTextSize))) {
@@ -289,12 +213,8 @@ export function preview(dir, files, index, download, opts = {}) {
     const modeToggle = button("", "Show binary view", "preview-mode-toggle glyph");
     modeToggle.addEventListener("click", () => {
         if (!current) return;
-        // A database: its tables, or its bytes.
-        if (current.sqlite) return setMode(current.kind === "sqlite" ? "hex" : "sqlite");
-        // A model: drawn, or as text (G-code, OBJ) or bytes.
-        if (shownAsModel()) return setMode(current.kind === "model" ? modelAlternative() : null);
-        if (typeOf(current.name)) return;
-        setMode(current.kind === "hex" ? "text" : "hex");
+        const view = toggleView(current);  // (preview-model.js)
+        if (!view.hidden) setMode(view.to);
     });
     // Watch: a video into TabTop's player (video-player.js); shown only while
     // a video preview offers it (see mediaView).
@@ -302,13 +222,6 @@ export function preview(dir, files, index, download, opts = {}) {
     watch.innerHTML = iconSVG("watch");
     watch.hidden = true;
     watch.addEventListener("click", () => frame?.element?.watch?.());
-    // modelAlternative is how a 3D model, by its name, is shown other than
-    // drawn: as text (G-code, OBJ) or its bytes; null if it isn't one.
-    const modelAlternative = () => (current && typeOf(current.name)?.kind === "model" ? (textModel(current.name) || current.textFBX ? "text" : "hex") : null);
-    // shownAsModel reports whether what's shown is a model, drawn or the
-    // other way: so the toggle goes between the two (not back to a drawing
-    // it can't be: too big, or a .obj that's a compiler's).
-    const shownAsModel = () => !!modelAlternative() && (current.kind === "model" || current.kind === modelAlternative() && !current.modelUnavailable);
     const previewNotice = el("p", { className: "hint preview-limit", role: "status", hidden: true });
     const body = el("div", { className: "body" });
     const dialog = el("dialog", { className: "preview" },
@@ -316,7 +229,7 @@ export function preview(dir, files, index, download, opts = {}) {
             el("span", { className: "preview-navigation", role: "group", ariaLabel: "Preview navigation" }, prev, next),
             el("span", { className: "preview-edit-actions", role: "group", ariaLabel: "Editing" }, edit, exif, versions, saveStatus, store, done),
             el("span", { className: "preview-appearance", role: "group", ariaLabel: "Appearance" }, theme, view, modeToggle, watch),
-            externalGroup, saveGroup, widen, close), previewNotice, body);
+            external.group, saveGroup, widen, close), previewNotice, body);
     showWide();
 
     // What's shown: counted, so a file that arrives after the next was
@@ -409,10 +322,7 @@ export function preview(dir, files, index, download, opts = {}) {
     // fragment if it's Markdown.
     const display = async (d, fname, fragment = "", location = null) => {
         const me = ++shown;
-        externalMode = "none";
-        externalCount = 0;
-        externalGroup.hidden = externalResources.hidden = true;
-        showExternalMenu(false);
+        external.reset();
         stop();
         const path = join(d, fname);
         // An override belongs to this file (shown again, as another view
@@ -473,21 +383,16 @@ export function preview(dir, files, index, download, opts = {}) {
     let drawing = 0;
     const draw = async (me, fragment = "", location = null) => {
         const mine = ++drawing;
-        externalCount = 0;
-        showExternal();
+        external.found(0);
         const stale = () => me !== shown || mine !== drawing || !!editing;
         const { kind } = current;
         const binary = kind === "hex";
-        // Not offered where there's no other view: a known type, or bytes
-        // that aren't text; but a database has its tables.
-        const model = shownAsModel();
-        const alternative = model && modelAlternative();
-        modeToggle.hidden = current.sqlite || model ? false : !!typeOf(current.name) || (binary && current.textAvailable === false);
-        modeToggle.innerHTML = iconSVG(model ? (kind === "model" ? (alternative === "text" ? "syntax" : "binary") : "preview") : binary ? "preview" : "binary");
-        modeToggle.title = model ? (kind === "model" ? (alternative === "text" ? "Show text view" : "Show binary view") : "Show 3D view")
-            : binary ? (current.sqlite ? "Show tables" : "Show text view") : "Show binary view";
+        const view = toggleView(current);  // (preview-model.js)
+        modeToggle.hidden = view.hidden;
+        modeToggle.innerHTML = iconSVG(view.icon);
+        modeToggle.title = view.title;
         modeToggle.setAttribute("aria-label", modeToggle.title);
-        modeToggle.setAttribute("aria-pressed", String(model ? kind !== "model" : binary));
+        modeToggle.setAttribute("aria-pressed", String(view.pressed));
         previewNotice.hidden = binary || !current.truncated;
         previewNotice.textContent = current.truncated ? `Showing the first ${unknownTextSize / 1e6} MB (${current.previewSize.toLocaleString()} bytes) of ${current.size.toLocaleString()} bytes.` : "";
         const format = kind === "text" ? formatOf(current.name) : "";
@@ -514,7 +419,7 @@ export function preview(dir, files, index, download, opts = {}) {
         const metadataFile = current;
         const shownAs = await renderPreview({ file: current, path: join(current.dir, current.name), blob, url,
             kind: kind === "text" && format && viewShown(format) ? format : kind,
-            fragment, location, open: follow, navigate: remember, signal: rendererAbort.signal, externalMode,
+            fragment, location, open: follow, navigate: remember, signal: rendererAbort.signal, externalMode: external.mode,
             download: () => download(join(metadataFile.dir, metadataFile.name)),
             saveMetadata: readOnlyRoot() ? null : async (next, signal) => {
                 const reply = await uploadFile(new File([next], metadataFile.name, { type: next.type }), () => {}, metadataFile.dir,
@@ -525,7 +430,7 @@ export function preview(dir, files, index, download, opts = {}) {
                     URL.revokeObjectURL(url); blob = next; url = URL.createObjectURL(blob); checkVersions();
                 }
             },
-            externalFound: count => { if (!stale()) { externalCount = count; showExternal(); } } });
+            externalFound: count => { if (!stale()) external.found(count); } });
         const rendered = previewView(shownAs);
         if (stale()) {
             rendered.stop();
@@ -643,8 +548,7 @@ export function preview(dir, files, index, download, opts = {}) {
         });
         frame?.stop();
         frame = null;
-        externalGroup.hidden = externalResources.hidden = true;
-        showExternalMenu(false);
+        external.hide();
         if (editing.cursorLocation) saveStatus.before(editing.cursorLocation);
         if (editing.syntaxToggle) widen.before(editing.syntaxToggle);
         if (editing.formatButton) store.before(editing.formatButton);
@@ -809,7 +713,7 @@ export function preview(dir, files, index, download, opts = {}) {
     }
     // A click elsewhere closes the menu.
     dialog.addEventListener("click", (e) => {
-        if (!externalMenu.hidden && !externalGroup.contains(e.target)) showExternalMenu(false);
+        if (external.open && !external.group.contains(e.target)) external.close();
         if (!downloads.hidden && !saveGroup.contains(e.target)) {
             showDownloads(false);
         }
@@ -821,19 +725,6 @@ export function preview(dir, files, index, download, opts = {}) {
             dialog.close();
         }
     };
-    close.addEventListener("click", closeAsking);
-    dialog.addEventListener("cancel", (e) => {
-        if (e.target !== dialog) return;
-        // A video in the player (video-player.js): Esc's its, to close it.
-        if (dialog.querySelector("#video_player")) {
-            e.preventDefault();
-            return;
-        }
-        if (editing) {
-            e.preventDefault();
-            closeAsking();
-        }
-    });
     dialog.addEventListener("keydown", (e) => {
         // Toolbar controls are outside the editor; saving works from either.
         // A nested confirmation dialog owns its own keys.
@@ -874,21 +765,26 @@ export function preview(dir, files, index, download, opts = {}) {
             closeAsking();
         }
     });
-    dialog.addEventListener("close", (e) => {
-        if (e.target !== dialog) return;
-        shown++;
-        editObserver.disconnect();
-        editing?.stop();
-        editing = null;
-        stop();
-        dialog.remove();
-        requestAnimationFrame(() => {
+    showModal(dialog, { closeButton: close,
+        request: (closeNow, how) => {
+            if (how === "escape") {
+                // A video in the player (video-player.js): Esc's its, to close it.
+                if (dialog.querySelector("#video_player")) return;
+                if (!editing) return closeNow();
+            }
+            closeAsking();
+        },
+        closed: () => {
+            shown++;
+            editObserver.disconnect();
+            editing?.stop();
+            editing = null;
+            stop();
+        },
+        restoreFocus: () => requestAnimationFrame(() => {
             if (opts.restoreFocus) opts.restoreFocus();
             else if (opener?.isConnected) opener.focus({ preventScroll: true });
-        });
-    });
-    document.body.append(dialog);
-    dialog.showModal();
+        }) });
     close.focus();
     show(index);
 }

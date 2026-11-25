@@ -12,12 +12,11 @@
 // is asked for. As in browsers, none on an insecure page.
 (() => {
     if (!isSecureContext || "wakeLock" in navigator) return;
-    const isTop = (() => { try { return window.top === window; } catch { return false; } })();
     const tell = (detail) => {
-        try { document.dispatchEvent(new CustomEvent("__tabtop_wakelock", { detail: JSON.stringify(detail) })); } catch { /* told nothing */ }
+        try { tabtopTell(document, "__tabtop_wakelock", detail); } catch { /* told nothing */ }
     };
     const held = new Map();  // id -> sentinel
-    const waiting = new Map();  // id -> {resolve, reject, timer}
+    const key = {};  // what its classes' constructors take: theirs alone
     const state = new WeakMap();  // sentinel -> {id, released}
     const handlers = new WeakMap();  // sentinel -> its onrelease
     function letGo(s) {
@@ -29,8 +28,8 @@
         return true;
     }
     class WakeLockSentinel extends EventTarget {
-        constructor(key, id) {
-            if (key !== waiting) throw new TypeError("Illegal constructor");
+        constructor(k, id) {
+            if (k !== key) throw new TypeError("Illegal constructor");
             super();
             state.set(this, { id, released: false });
         }
@@ -53,47 +52,29 @@
         }
         get [Symbol.toStringTag]() { return "WakeLockSentinel"; }
     }
-    let listening = false;
-    const listen = () => {
-        if (listening) return;
-        listening = true;
-        // The server's answer ({id, ok}), or its lock lost ({lost: true}).
-        document.addEventListener("__tabtop_wakelock_answer", (e) => {
-            let d;
-            try { d = JSON.parse(e.detail); } catch { return; }
-            if (d?.lost) {
-                for (const s of [...held.values()]) letGo(s);
-                return;
-            }
-            const w = d && waiting.get(d.id);
-            if (!w) return;
-            waiting.delete(d.id);
-            clearTimeout(w.timer);
-            if (!d.ok) return w.reject(new DOMException("Wake Lock permission request denied", "NotAllowedError"));
-            const s = new WakeLockSentinel(waiting, d.id);
-            held.set(d.id, s);
-            w.resolve(s);
-        });
-    };
+    const denied = () => new DOMException("Wake Lock permission request denied", "NotAllowedError");
+    // The server's answer ({id, ok}), or its lock lost ({lost: true}).
+    const ask = tabtopAsker("__tabtop_wakelock_answer", (d, resolve, reject) => {
+        if (!d.ok) return reject(denied());
+        const s = new WakeLockSentinel(key, d.id);
+        held.set(d.id, s);
+        resolve(s);
+    }, (d) => {
+        if (d?.lost) for (const s of [...held.values()]) letGo(s);
+    });
     class WakeLock {
-        constructor(key) {
-            if (key !== waiting) throw new TypeError("Illegal constructor");
+        constructor(k) {
+            if (k !== key) throw new TypeError("Illegal constructor");
         }
         request(type = "screen") {
             if (type !== "screen") return Promise.reject(new TypeError(`Failed to execute 'request' on 'WakeLock': The provided value '${String(type)}' is not a valid enum value of type WakeLockType.`));
-            if (!isTop) return Promise.reject(new DOMException("Access to Screen Wake Lock features is disallowed by permissions policy", "NotAllowedError"));
+            if (!tabtopIsTop) return Promise.reject(new DOMException("Access to Screen Wake Lock features is disallowed by permissions policy", "NotAllowedError"));
             if (document.visibilityState !== "visible") return Promise.reject(new DOMException("The requesting page is not visible", "NotAllowedError"));
-            listen();
-            return new Promise((resolve, reject) => {
-                const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
-                const timer = setTimeout(() => { waiting.delete(id); reject(new DOMException("Wake Lock permission request denied", "NotAllowedError")); }, 10_000);
-                waiting.set(id, { resolve, reject, timer });
-                tell({ on: true, id });
-            });
+            return ask((id) => tell({ on: true, id }), 10_000, (resolve, reject) => reject(denied()));
         }
         get [Symbol.toStringTag]() { return "WakeLock"; }
     }
-    const lock = new WakeLock(waiting);
+    const lock = new WakeLock(key);
     Object.defineProperty(Navigator.prototype, "wakeLock", { configurable: true, enumerable: true, get() { return lock; } });
     for (const [name, C] of [["WakeLock", WakeLock], ["WakeLockSentinel", WakeLockSentinel]]) {
         Object.defineProperty(globalThis, name, { value: C, writable: true, configurable: true, enumerable: false });

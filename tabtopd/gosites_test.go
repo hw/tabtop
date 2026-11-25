@@ -295,3 +295,43 @@ func TestGoPrivateDefault(t *testing.T) {
 		t.Errorf("not normal again: %v", err)
 	}
 }
+
+// TestGoPerSite: each site's settings kept by its site, pop-ups as the
+// others (a subdomain's is its site's), one read from a file that kept a
+// host's taken as its site's.
+func TestGoPerSite(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sites.json")
+	os.WriteFile(file, []byte(`{"popups":{"m.example.com":"block"},"theme":{"news.example":"system"}}`), 0o600)
+	s := newGoSiteSettings(file)
+	if got := s.popup("example.com"); got != "block" {
+		t.Errorf("a host's pop-ups read back as its site's: %q", got)
+	}
+	if err := s.set("https://www.shop.example/x", "popups-allow"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.popup("shop.example"); got != "allow" {
+		t.Errorf("a subdomain's pop-up setting, for its site: %q", got)
+	}
+	if err := s.set("shop.example", "popups-sideways"); err == nil {
+		t.Error("a value it can't have was taken")
+	}
+	ver := s.notificationsVer()
+	s.set("shop.example", "notifications-allow")
+	s.set("shop.example", "forget")
+	if s.notificationsVer() != ver+2 || s.popup("shop.example") != s.popupDefault {
+		t.Errorf("forgotten: version %d (from %d), pop-ups %q", s.notificationsVer(), ver, s.popup("shop.example"))
+	}
+	if r := s.report(); r["popups"] == nil || r["notifications"] == nil || r["theme"] == nil {
+		t.Errorf("report: %v", r)
+	}
+}
+
+// TestGoSiteOf: a host's site, an IPv6 address's without its brackets
+// (as the settings keep it), so all a site's keys meet.
+func TestGoSiteOf(t *testing.T) {
+	for host, want := range map[string]string{"m.youtube.com": "youtube.com", "WWW.Example.COM.": "example.com", "[::1]": "::1", "::1": "::1", "192.0.2.1": "192.0.2.1", "localhost": "localhost"} {
+		if got := goSite(host); got != want {
+			t.Errorf("goSite(%q) = %q, want %q", host, got, want)
+		}
+	}
+}

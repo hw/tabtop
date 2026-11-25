@@ -45,22 +45,16 @@ func TestFileRootsConfiguration(t *testing.T) {
 }
 func newRootsServer(t *testing.T, docsMode string) (*server, *httptest.Server) {
 	t.Helper()
-	base, _ := newE2EServer(t)
 	home, data, downloads := rootFixture(t)
-	c := base.serverConfig
-	c.downloadsDir = downloads
-	c.fsHome = home
-	c.fsRoots = "Downloads:rw,Documents:" + docsMode + ",data=" + data + ":rw"
-	c.shareOn = true
-	c.fetchOn = true
-	c.sharesFile = filepath.Join(t.TempDir(), "shares.json")
-	c.activityFile = filepath.Join(t.TempDir(), "activity.jsonl")
-	g, err := newServer(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(g.handler())
-	t.Cleanup(srv.Close)
+	g, srv := newE2EServerWith(t, func(c *serverConfig) {
+		c.downloadsDir = downloads
+		c.fsHome = home
+		c.fsRoots = "Downloads:rw,Documents:" + docsMode + ",data=" + data + ":rw"
+		c.shareOn = true
+		c.fetchOn = true
+		c.sharesFile = filepath.Join(t.TempDir(), "shares.json")
+		c.activityFile = filepath.Join(t.TempDir(), "activity.jsonl")
+	})
 	for _, r := range g.roots {
 		os.WriteFile(filepath.Join(r.Path, "same.txt"), []byte(r.ID), 0644)
 	}
@@ -324,7 +318,7 @@ func TestRootResumeAndFetchStateStayInTheirRoot(t *testing.T) {
 	defer remote.Close()
 	service.root.fetches.client = http.DefaultClient
 	address, _ := url.Parse(remote.URL)
-	job, err := service.root.fetches.start(address, ".", "owner", "127.0.0.1", "test")
+	job, err := service.root.fetches.start(address, ".", fetchOrigin{by: "owner", ip: "127.0.0.1", who: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}

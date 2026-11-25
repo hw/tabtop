@@ -24,6 +24,7 @@
 # GO_FROM=text the steps from the first that has it to the end (a check
 # resumed where one failed); logging in is run whichever.
 set -euo pipefail
+source "$(dirname "$0")/lib.sh"
 
 go_image=${GO_IMAGE:-}
 base_path=${WEB_BASE_PATH:-/}
@@ -60,15 +61,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-free_port() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
-# up URL WHAT SECONDS waits for URL to answer, or says WHAT didn't (and
-# fails): not going on to fail later, at a connection refused.
-up() {
-    local until=$((SECONDS + $3))
-    while ((SECONDS < until)); do curl -fs -m 2 "$1" >/dev/null && return; sleep 0.1; done
-    echo "FAIL $2 didn't answer in $3 s"
-    return 1
-}
 
 if [[ -z "$go_image" ]]; then
     echo "building tabtopd"
@@ -91,11 +83,11 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work/site/key.pem" -out "$wo
 chmod 644 "$work/site/key.pem"
 docker run -d --name "$site" -v "$work/site:/srv:ro" node:24-slim node /srv/serve.js >/dev/null
 site_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$site")
-for _ in $(seq 50); do curl -fs "http://$site_ip/index.html" >/dev/null && break; sleep 0.1; done
+up "http://$site_ip/index.html" "the test site" 30 || exit 1
 # The same site at another address: another site's, for a page's ads.
 docker run -d --name "$ads" -v "$work/site:/srv:ro" node:24-slim node /srv/serve.js >/dev/null
 ads_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ads")
-for _ in $(seq 50); do curl -fs -m 1 "http://$ads_ip/index.html" >/dev/null && break; sleep 0.1; done
+up "http://$ads_ip/index.html" "the ads site" 30 || exit 1
 
 port=$(free_port)
 if [[ -n "$go_image" ]]; then

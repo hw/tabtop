@@ -214,7 +214,7 @@ func (s *mseStage) stageWrite(store *downloadStore, name string, flags int, data
 	}
 	defer f.Close()
 	if s.m != nil {
-		if free, _, ok := s.m.files.uploadRoom(f); ok && free < int64(len(data))+fetchSpare {
+		if _, enough := s.m.files.room(f, int64(len(data))+fetchSpare, true); !enough {
 			return errors.New("insufficient disk space for the buffered stream")
 		}
 	}
@@ -502,7 +502,8 @@ func (m *fetchManager) takeMSEStage(stage *mseStage) (mseSaveInput, func(), erro
 }
 
 // startMSE starts a fetch that remuxes staged (or in-memory) MSE tracks into Downloads.
-func (m *fetchManager) startMSE(dir, by, ip, who string, from *goFrom, userAgent string) (job *fetchJob, input chan<- mseSaveInput, err error) {
+func (m *fetchManager) startMSE(dir string, o fetchOrigin) (job *fetchJob, input chan<- mseSaveInput, err error) {
+	by, ip, who, from, userAgent := o.by, o.ip, o.who, o.from, o.userAgent
 	// (The input's files are its caller's to give back: takeMSEStage's
 	// release, once the job's done.)
 	var releaseTab func()
@@ -665,7 +666,7 @@ func (m *fetchManager) runMSE(ctx context.Context, j *fetchJob, in mseSaveInput)
 			j.set(func(j *fetchJob) { j.name, j.parts = name, 1 })
 			err = writeWebM(ctx, webm, up, func(n int64) error {
 				j.set(func(j *fetchJob) { j.total = n })
-				if free, _, ok := m.files.uploadRoom(up.f); ok && free < n+fetchSpare {
+				if _, enough := m.files.room(up.f, n+fetchSpare, true); !enough {
 					return errors.New("insufficient disk space for stream")
 				}
 				return nil
@@ -810,7 +811,7 @@ func (m *fetchManager) saveProgressiveMSE(ctx context.Context, j *fetchJob, stor
 		j.total = st.Size()
 		j.parts = 1
 	})
-	if free, _, ok := m.files.uploadRoom(up.f); ok && free < st.Size()+fetchSpare {
+	if _, enough := m.files.room(up.f, st.Size()+fetchSpare, true); !enough {
 		return "", errors.New("insufficient disk space for stream")
 	}
 	// Copied a piece at a time, so a cancel's taken between pieces.
@@ -864,7 +865,8 @@ func goMediaFileName(head []byte) string {
 // serveMSEStage accepts spilled frames until finalize or cancel. It waits
 // for the next frame as long as the stage is kept (mseStageKept since the
 // last: a paused video sends none), not a transfer's stall.
-func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) {
+func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, o fetchOrigin) {
+	from := o.from
 	store, err := m.files.openStore()
 	if err != nil {
 		r.fail("the exposed folder is unavailable")
@@ -924,7 +926,7 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 				stage.name = n
 				stage.mu.Unlock()
 			}
-			if m.finishMSEStage(t, stage, r, by, ip, who, from, userAgent) {
+			if m.finishMSEStage(t, stage, r, o) {
 				return
 			}
 			// Refused (every fetch going): the stage goes on, to be saved again.
@@ -953,7 +955,7 @@ func (m *fetchManager) serveMSEStage(t *tunnel, stage *mseStage, r *tunnelRespon
 // the save till it ends. False if the save couldn't start (every fetch
 // going, say): the page's told ({"refused"}), and the stage, with all it
 // holds, goes on being spilled to, to be saved again.
-func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, by, ip, who string, from *goFrom, userAgent string) bool {
+func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelResponder, o fetchOrigin) bool {
 	// Nothing to save yet (no track with a part): refused too, the stage
 	// kept (a Save pressed as a track's init's come but not its first part).
 	stage.mu.Lock()
@@ -962,7 +964,7 @@ func (m *fetchManager) finishMSEStage(t *tunnel, stage *mseStage, r *tunnelRespo
 	var j *fetchJob
 	var input chan<- mseSaveInput
 	if err == nil {
-		j, input, err = m.startMSE(stage.folder, by, ip, who, from, userAgent)
+		j, input, err = m.startMSE(stage.folder, o)
 	}
 	if err != nil {
 		if writeJSON(t, map[string]any{"refused": err.Error()}) != nil {

@@ -94,8 +94,8 @@ func TestGoPasteAsk(t *testing.T) {
 	}
 	token := asks[0]["ask"].(string)
 	b.paste(goClientMsg{Text: token, Accept: true, Value: "for the page"})
-	if len(b.pasteAsks) != 0 || b.acts.waiting() != 1 {
-		t.Errorf("answered: %d asks kept, %d calls queued", len(b.pasteAsks), b.acts.waiting())
+	if len(b.pasteAsks.m) != 0 || b.acts.waiting() != 1 {
+		t.Errorf("answered: %d asks kept, %d calls queued", len(b.pasteAsks.m), b.acts.waiting())
 	}
 	// An answer to an ask that isn't there: nothing.
 	b.paste(goClientMsg{Text: token, Accept: true, Value: "again"})

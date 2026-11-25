@@ -153,7 +153,12 @@ var (
 
 // renderMarkdownChild is main for the child: Markdown on stdin, HTML, or
 // on failure why, on stdout.
-func renderMarkdownChild() int {
+func renderMarkdownChild(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprint(os.Stdout, "not a question the child answers")
+		return 1
+	}
+	startPreviewChild(previewChildMemory, previewChildCPU) // (read even if the sandbox couldn't be set up: see startPreviewChild)
 	html, err := renderMarkdown(os.Stdin)
 	if err != nil {
 		fmt.Fprint(os.Stdout, err)

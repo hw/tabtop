@@ -289,6 +289,10 @@ func (g *server) routeRemoteInfo(c *tunnelCall)    { g.remoteRequest(c, nil) }
 func (g *server) routeRemoteApprove(c *tunnelCall) { yes := true; g.remoteRequest(c, &yes) }
 func (g *server) routeRemoteDeny(c *tunnelCall)    { no := false; g.remoteRequest(c, &no) }
 
+// approveCSP is the approval page's: its script and the tunnel, nothing
+// else; no site may frame it.
+const approveCSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 func (g *server) approvePage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/auth/approve" {
 		http.NotFound(w, r)
@@ -301,10 +305,7 @@ func (g *server) approvePage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store, no-transform")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+	setPageHeaders(w.Header(), approveCSP)
 	if r.Method == http.MethodHead {
 		return
 	}

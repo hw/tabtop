@@ -20,8 +20,12 @@ func TestInpaintAssets(t *testing.T) {
 		return w
 	}
 	w := get(g, "image-inpaint-worker.js")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"./`+g.inpaintPath()+`/migan.onnx"`) || !strings.Contains(w.Body.String(), `"./background-missing/ort.wasm.min.js"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"./`+g.inpaintPath()+`/migan.onnx"`) || !strings.Contains(w.Body.String(), `importScripts("./ort-worker.js")`) {
 		t.Fatalf("worker paths: %d %s", w.Code, w.Body.String())
+	}
+	// (The runtime's set up by ort-worker.js, served with background removal's path.)
+	if ort := get(g, "ort-worker.js").Body.String(); !strings.Contains(ort, `"./background-missing/ort.wasm.min.js"`) {
+		t.Fatalf("runtime path: %s", ort)
 	}
 	if w.Header().Get("Content-Security-Policy") != backgroundWorkerCSP || strings.Contains(filesCSP, "wasm") {
 		t.Fatal("WASM must stay confined to the worker")

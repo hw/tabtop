@@ -753,7 +753,8 @@ func (g *fileService) reachesTrash(req tunnelRequest) bool {
 	return false
 }
 
-func (g *fileService) tunnelTrash(req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelTrash(call *tunnelCall) {
+	req, r := call.req, call.r
 	reply, err := g.trashRequest(req)
 	if err != nil {
 		r.fail("Trash: " + err.Error())

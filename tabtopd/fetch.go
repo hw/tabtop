@@ -308,29 +308,35 @@ func newFetchClientDialing(dial func(ctx context.Context, network, addr string) 
 
 var errFetchBusy = fmt.Errorf("%d fetches are going already (into all the folders together); wait for one to finish", maxFetches)
 
-// start starts fetching u into dir, for the session by.
-func (m *fetchManager) start(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
-	return m.startWith(m.client, u, dir, by, ip, who)
+// fetchOrigin is who a fetch is for and where it's asked from: the
+// session (by, its handle; who, its name in the activity log), its
+// address, and, for the remote browser's, its tab (from: its cookies,
+// headers and certificate exceptions) and what that says it is
+// (userAgent).
+type fetchOrigin struct {
+	by, ip, who string
+	from        *goFrom
+	userAgent   string
+}
+
+// start starts fetching u into dir, for o.
+func (m *fetchManager) start(u *url.URL, dir string, o fetchOrigin) (*fetchJob, error) {
+	return m.startFetch(m.client, u, dir, o, false)
 }
 
 // startGo starts fetching u, a file the remote browser led to, with
 // goClient.
-func (m *fetchManager) startGo(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
-	return m.startGoWithContext(u, dir, by, ip, who, nil, "")
-}
-
-func (m *fetchManager) startGoWithContext(u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string) (*fetchJob, error) {
+func (m *fetchManager) startGo(u *url.URL, dir string, o fetchOrigin) (*fetchJob, error) {
 	if m.goClient == nil {
 		return nil, errors.New("the remote browser is off, so its files can't be saved")
 	}
-	return m.startWithContext(m.goClient, u, dir, by, ip, who, from, userAgent, false)
+	return m.startFetch(m.goClient, u, dir, o, false)
 }
 
-func (m *fetchManager) startWith(client *http.Client, u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
-	return m.startWithContext(client, u, dir, by, ip, who, nil, "", false)
-}
-
-func (m *fetchManager) startWithContext(client *http.Client, u *url.URL, dir, by, ip, who string, from *goFrom, userAgent string, stream bool) (job *fetchJob, err error) {
+// startFetch starts fetching u into dir with client, for o; with stream, a
+// stream (its playlist or manifest, saved as one file: gosavestream.go).
+func (m *fetchManager) startFetch(client *http.Client, u *url.URL, dir string, o fetchOrigin, stream bool) (job *fetchJob, err error) {
+	by, ip, who, from, userAgent := o.by, o.ip, o.who, o.from, o.userAgent
 	client = from.client(client) // (the tab's certificate exceptions: gocert.go)
 	var releaseTab func()
 	if from != nil && from.holdDownload != nil {
@@ -640,7 +646,7 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 					j.set(func(j *fetchJob) { j.name = name })
 				}
 				if total > 0 {
-					if free, ok := m.files.reclaimPartials(up.f, total); ok && total > free {
+					if free, enough := m.files.room(up.f, total, true); !enough {
 						return 0, false, fmt.Errorf("there isn't room for it: it's %s, and %s is free", humanSize(total), humanSize(free))
 					}
 				} else if free, ok := m.files.reclaimPartials(up.f, 0); ok {
@@ -845,12 +851,8 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 			r.fail("Save stream from the browser tab that plays it.")
 			return
 		}
-		dir := strings.Trim(req.Path, "/")
-		if dir == "" {
-			dir = "."
-		}
-		dir = path.Clean(dir)
-		by, who := sessionHandle(session), g.sessionName(session)
+		dir := req.dir()
+		o := fetchOrigin{by: sessionHandle(session), ip: ip, who: g.sessionName(session), from: from, userAgent: userAgent}
 		if req.MseStage {
 			stage, err := g.root.fetches.openMSEStage(req.GoTab, dir)
 			if err != nil {
@@ -861,7 +863,7 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 				g.root.fetches.forgetMSEStage(stage.id)
 				return
 			}
-			g.root.fetches.serveMSEStage(t, stage, r, by, ip, who, from, userAgent)
+			g.root.fetches.serveMSEStage(t, stage, r, o)
 			return
 		}
 		r.fail("buffered stream must be spilled (mse_stage)")
@@ -872,10 +874,8 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 			r.fail("Give an http:// or https:// address.")
 			return
 		}
-		dir := strings.Trim(req.Path, "/")
-		if dir == "" {
-			dir = "."
-		}
+		dir := req.dir()
+		o := fetchOrigin{by: sessionHandle(session), ip: ip, who: g.sessionName(session)}
 		start := g.root.fetches.start
 		if req.SaveStream {
 			if !req.FromGo || g.root.fetches.goClient == nil {
@@ -887,19 +887,17 @@ func (g *fileService) tunnelFetch(t *tunnel, req tunnelRequest, session, ip stri
 				r.fail("Save stream from the browser tab that plays it.")
 				return
 			}
-			start = func(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
-				return g.root.fetches.startWithContext(g.root.fetches.goClient, u, dir, by, ip, who, from, userAgent, true)
+			o.from, o.userAgent = from, userAgent
+			start = func(u *url.URL, dir string, o fetchOrigin) (*fetchJob, error) {
+				return g.root.fetches.startFetch(g.root.fetches.goClient, u, dir, o, true)
 			}
 		} else if req.FromGo {
 			if from != nil {
-				start = func(u *url.URL, dir, by, ip, who string) (*fetchJob, error) {
-					return g.root.fetches.startGoWithContext(u, dir, by, ip, who, from, userAgent)
-				}
-			} else {
-				start = g.root.fetches.startGo
+				o.from, o.userAgent = from, userAgent
 			}
+			start = g.root.fetches.startGo
 		}
-		if j, err = start(u, path.Clean(dir), sessionHandle(session), ip, g.sessionName(session)); err != nil {
+		if j, err = start(u, path.Clean(dir), o); err != nil {
 			r.fail(err.Error())
 			return
 		}

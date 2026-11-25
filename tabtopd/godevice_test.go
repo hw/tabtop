@@ -104,7 +104,7 @@ func TestGoDeviceOriginAndGesture(t *testing.T) {
 	if b.device == nil {
 		t.Fatal("one-shot location did not ask permission")
 	}
-	b.releaseDevices()
+	b.connLost()
 	if b.device != nil {
 		t.Fatal("detached viewer retained its pending request")
 	}
@@ -193,7 +193,7 @@ func TestGoLocationWatch(t *testing.T) {
 	// Followed again, then the page left: ended, the page told.
 	b.devices(1, []goDeviceAsk{{ID: "w2", Kind: "location-watch"}})
 	b.deviceAnswer(goClientMsg{Gen: 1, Text: b.device.token, Accept: true, Value: pos})
-	b.releaseDevices()
+	b.connLost()
 	if b.locWatch != nil {
 		t.Error("followed after its page was left")
 	}

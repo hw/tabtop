@@ -42,7 +42,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -162,10 +161,7 @@ type shareStore struct {
 
 	mu     sync.Mutex
 	links  map[string]*shareLink // by ID
-	misses map[string][]time.Time
-	// When misses was last cleared of addresses that haven't missed
-	// lately (see pruneMissesLocked).
-	missesPruned time.Time
+	misses windowCounter         // requests for links that don't exist, by address (limitKey)
 
 	// Uploads through links in pieces, under way (see share_chunks.go).
 	partials linkPartials
@@ -178,14 +174,12 @@ type shareStore struct {
 	logged    map[string]time.Time
 
 	// Downloads through links going, by address (see startDownload).
-	downloads    map[string]int
-	downloadsAll int
+	downloads keyedSlots // downloads going on, by address
 	// Uploads through links going, all told (see reserve).
 	uploadsAll int
 	// Multipart requests are admitted before parsing fields, including ignored
 	// fields and files rejected before reserve can take a transfer slot.
-	formsAll int
-	forms    map[string]int
+	forms keyedSlots // upload forms being read, by link
 }
 
 // errTooManyShares is a link refused as there are maxShares already.
@@ -255,7 +249,7 @@ func (s *shareStore) logUse(l *shareLink, ip string) bool {
 }
 
 func newShareStore(file string, clock lifecycleClock) *shareStore {
-	s := &shareStore{file: file, clock: clock, links: map[string]*shareLink{}, misses: map[string][]time.Time{}, key: newShareKey()}
+	s := &shareStore{file: file, clock: clock, links: map[string]*shareLink{}, key: newShareKey()}
 	if file == "" {
 		return s
 	}
@@ -326,54 +320,6 @@ func (s *shareStore) saveLocked() {
 // syncFile puts f on disk; tests make it fail.
 var syncFile = (*os.File).Sync
 
-// writeFileAtomic replaces file with data, readable only by its owner, in a
-// folder only it can open.
-func writeFileAtomic(file string, data []byte) error {
-	dir := filepath.Dir(file)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(dir, ".shares-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name()) // gone once renamed
-	// Only a file written whole, on disk, and closed replaces the old one.
-	_, err = f.Write(data)
-	if err == nil {
-		err = syncFile(f)
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), file); err != nil {
-		return err
-	}
-	// And the folder, so the rename is on disk too: without it, a power
-	// cut can bring back the old file, or none. A file system that can't
-	// sync a folder goes as far as the file being synced.
-	return syncFolder(dir)
-}
-
-// syncFolder puts what's changed in the folder dir on disk.
-func syncFolder(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = syncFile(d)
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	if syncUnsupported(err) {
-		return nil
-	}
-	return err
-}
-
 // pruneLocked drops the links that have expired. One downloaded as many
 // times as it allows stays until then, so the downloads can carry on if
 // cut off, and the security page shows it. s.mu must be held.
@@ -401,9 +347,48 @@ type shareSpec struct {
 	Once                         bool
 }
 
+// A link's limits, as a page may ask for them: what's refused is said by
+// errShareLimits or errShareLabel, whichever way it's asked (made,
+// changed, or changed with others).
+const maxShareCount = 1000 // downloads, or files sent, a link may be limited to
+
+var (
+	errShareLimits = errShareChange("That's not a lifetime or limit a link can have.")
+	errShareLabel  = errShareChange(fmt.Sprintf("A label is one line of at most %d characters.", maxLabel))
+)
+
+// validShareLife is whether a link may last life: a minute to
+// maxShareLife; or, with keep (a link changed), 0, its end kept.
+func validShareLife(life time.Duration, keep bool) bool {
+	return keep && life == 0 || life >= time.Minute && life <= maxShareLife
+}
+
+// validShareMax is whether a link may be limited to max downloads, or
+// files sent (0 for none).
+func validShareMax(max int) bool { return max >= 0 && max <= maxShareCount }
+
+// check checks what spec asks of a new link: its lifetime, its limits
+// (an upload link's on what it takes, which a download link has none of)
+// and its label, which it makes as kept.
+func (spec *shareSpec) check() error {
+	if !validShareLife(spec.Life, false) || !validShareMax(spec.Max) ||
+		spec.Upload && (spec.MaxBytes <= 0 || spec.MaxBytes > maxUploadLinkBytes) || !spec.Upload && spec.MaxBytes != 0 {
+		return errShareLimits
+	}
+	label, ok := shareLabel(spec.Label)
+	if !ok {
+		return errShareLabel
+	}
+	spec.Label = label
+	return nil
+}
+
 // create makes a link to what's at p in ~/Downloads, st, as spec says, for
 // the session by from ip, and returns its token.
 func (s *shareStore) create(p string, st fs.FileInfo, spec shareSpec, by, ip string) (string, *shareLink, error) {
+	if err := spec.check(); err != nil {
+		return "", nil, err
+	}
 	if !rootID.MatchString(spec.Root) || len(spec.RootBinding) != 64 {
 		return "", nil, errors.New("A share must be bound to a configured filesystem root.")
 	}
@@ -444,49 +429,16 @@ func (s *shareStore) lookup(token, ip string) (l *shareLink, limited bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock.Now()
-	if now.Sub(s.missesPruned) >= shareMissWindow/2 {
-		s.pruneMissesLocked(now)
-	}
-	recent := slices.DeleteFunc(s.misses[key], func(t time.Time) bool { return now.Sub(t) >= shareMissWindow })
-	if len(recent) >= maxShareMisses {
-		s.misses[key] = recent
+	s.misses.sweep(now, shareMissWindow, shareMissWindow/2)
+	if len(s.misses.recent(key, now, shareMissWindow)) >= maxShareMisses {
 		return nil, true
 	}
 	l = s.links[hex.EncodeToString(sum[:])]
 	if l == nil || !now.Before(l.Expires) {
-		recent = append(recent, now)
+		s.misses.add(key, now, shareMissWindow, maxMissAddresses)
 		l = nil
 	}
-	if len(recent) == 0 {
-		delete(s.misses, key)
-		return l, false
-	}
-	if _, known := s.misses[key]; !known && len(s.misses) >= maxMissAddresses {
-		s.pruneMissesLocked(now)
-		if len(s.misses) >= maxMissAddresses {
-			oldest := ""
-			for k, ts := range s.misses {
-				if oldest == "" || ts[len(ts)-1].Before(s.misses[oldest][len(s.misses[oldest])-1]) {
-					oldest = k
-				}
-			}
-			delete(s.misses, oldest)
-		}
-	}
-	s.misses[key] = recent
 	return l, false
-}
-
-// pruneMissesLocked forgets the addresses that haven't missed within
-// shareMissWindow, which lookup otherwise only does when they come back.
-// s.mu must be held.
-func (s *shareStore) pruneMissesLocked(now time.Time) {
-	for k, ts := range s.misses {
-		if len(ts) == 0 || now.Sub(ts[len(ts)-1]) >= shareMissWindow {
-			delete(s.misses, k)
-		}
-	}
-	s.missesPruned = now
 }
 
 var errShareUsedUp = errors.New("this link has been downloaded as many times as it allows")
@@ -583,6 +535,13 @@ func (e errShareChange) Error() string { return string(e) }
 // for an upload link, maxBytes in all. A link used up can be given more,
 // and one that has ended can't be brought back.
 func (s *shareStore) change(handle string, life time.Duration, max int, maxBytes int64, label string) (*shareLink, error) {
+	if !validShareLife(life, true) || !validShareMax(max) {
+		return nil, errShareLimits
+	}
+	label, ok := shareLabel(label)
+	if !ok {
+		return nil, errShareLabel
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock.Now()
@@ -631,7 +590,14 @@ func (s *shareStore) change(handle string, life time.Duration, max int, maxBytes
 // changeMany makes the links with handles end life from now (0 keeps when
 // each ends), and with relabel, labels them label, and returns what they
 // were to, for the activity log. Their limits stay as they are.
-func (s *shareStore) changeMany(handles []string, life time.Duration, label string, relabel bool) []string {
+func (s *shareStore) changeMany(handles []string, life time.Duration, label string, relabel bool) ([]string, error) {
+	if !validShareLife(life, true) {
+		return nil, errShareLimits
+	}
+	label, ok := shareLabel(label)
+	if !ok {
+		return nil, errShareLabel
+	}
 	want := map[string]bool{}
 	for _, h := range handles {
 		want[h] = true
@@ -656,7 +622,7 @@ func (s *shareStore) changeMany(handles []string, life time.Duration, label stri
 	if len(changed) > 0 {
 		s.saveLocked()
 	}
-	return changed
+	return changed, nil
 }
 
 // revoke ends the links that match, ending their downloads going on, and
@@ -1013,21 +979,13 @@ func (s *shareStore) startDownload(ip string) (done func(), ok bool) {
 	key := limitKey(ip)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.downloads == nil {
-		s.downloads = map[string]int{}
-	}
-	if s.downloads[key] >= maxShareDownloadsPerAddress || s.downloadsAll >= maxShareDownloads {
+	if !s.downloads.take(key, maxShareDownloads, maxShareDownloadsPerAddress) {
 		return nil, false
 	}
-	s.downloads[key]++
-	s.downloadsAll++
 	return func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.downloads[key]--; s.downloads[key] <= 0 {
-			delete(s.downloads, key)
-		}
-		s.downloadsAll--
+		s.downloads.give(key)
 	}, true
 }
 

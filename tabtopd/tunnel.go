@@ -196,21 +196,15 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 	// The attempt is reserved now, so parallel tunnels can't buy extra
 	// guesses. It only counts as a failure once the browser has committed
 	// to its tags.
-	if !g.beginLogin(ip) {
+	attempt := g.beginAttempt(ip, browser)
+	if attempt == nil {
 		log.Printf("login from %s refused: too many failed logins", ip)
 		c.Close(closeLoginRefused, "Too many failed attempts. Try again in a few minutes.")
 		return
 	}
-	// settle records the result before the tunnel is closed, since the
-	// close waits for the browser's reply.
-	settled := false
-	settle := func(failed bool) {
-		if !settled {
-			settled = true
-			g.endLogin(ip, browser, failed)
-		}
-	}
-	defer settle(false)
+	// (Settled before the tunnel is closed, since the close waits for the
+	// browser's reply.)
+	defer attempt.end()
 
 	// The CPace work takes one of the slots for checking logins, twice:
 	// now, and once the tags arrive, but not while waiting for them.
@@ -266,7 +260,7 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 		return // abandoned before guessing: not a failure
 	}
 	if typ != websocket.MessageBinary || len(tags) != 32*len(cands) {
-		settle(true)
+		attempt.badMessage()
 		c.Close(websocket.StatusPolicyViolation, "bad message")
 		return
 	}
@@ -284,7 +278,10 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 		}
 	}
 	// liboath checks the matched code against the shared record of used
-	// codes, as for every other login, and records it.
+	// codes, as for every other login, and records it. (A login liboath
+	// can't check is failed, and counted: the browser's tags matched a
+	// code, but it isn't known to be unused. checkCode, confirming an
+	// action, doesn't count that: see there.)
 	if match >= 0 {
 		prs := cands[match].prs
 		err = oathAuthenticate(g.usersFile, e.user, prs[:len(prs)-e.digits], prs[len(prs)-e.digits:])
@@ -294,13 +291,12 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 	}
 	endLoginWork()
 	if match < 0 || err != nil {
-		settle(true)
+		attempt.failed()
 		log.Printf("login from %s failed", ip)
-		g.activity.failedLogin(ip, browser)
 		c.Close(closeLoginFailed, "Those credentials are wrong, expired or already used.")
 		return
 	}
-	settle(false)
+	attempt.end()
 	log.Printf("login from %s succeeded", ip)
 	g.activity.add("login", ip, "logged in%s", withBrowser(browser))
 	id, secret, history := g.newSession(ip, browser)

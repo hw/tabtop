@@ -464,7 +464,7 @@ func TestFetchSlotsShared(t *testing.T) {
 	g, _ := newE2EServer(t)
 	m := &fetchManager{files: g.defaultFiles(), slots: slots}
 	u, _ := url.Parse("https://example.com/file")
-	if _, err := m.start(u, ".", "", "", ""); err != errFetchBusy {
+	if _, err := m.start(u, ".", fetchOrigin{}); err != errFetchBusy {
 		t.Fatalf("started with every slot taken: %v", err)
 	}
 }
@@ -528,7 +528,7 @@ func TestFetchFromGoSaysThePage(t *testing.T) {
 		referer: func(*url.URL) string { return "https://videos.example/watch?v=1" },
 	}
 	u, _ := url.Parse(remote.URL + "/watch/clip.mp4")
-	j, err := fetches.startGoWithContext(u, ".", "by", "127.0.0.1", "who", from, "Mozilla/5.0 (the tab's)")
+	j, err := fetches.startGo(u, ".", fetchOrigin{by: "by", ip: "127.0.0.1", who: "who", from: from, userAgent: "Mozilla/5.0 (the tab's)"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +565,7 @@ func TestFetchFromGoNoTab(t *testing.T) {
 	fetches := g.defaultRoot().fetches
 	fetches.goClient = newFetchClient(func(netip.Addr) bool { return true })
 	u, _ := url.Parse(remote.URL + "/plain.mp4")
-	j, err := fetches.startGo(u, ".", "by", "127.0.0.1", "who")
+	j, err := fetches.startGo(u, ".", fetchOrigin{by: "by", ip: "127.0.0.1", who: "who"})
 	if err != nil {
 		t.Fatal(err)
 	}

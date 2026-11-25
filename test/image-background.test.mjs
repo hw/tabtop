@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext } from "node:vm";
 import { BackgroundRemover, adjustAlpha, mapImagePoint } from "../tabtopd/image-background.js";
 
 const source = readFileSync(new URL("../tabtopd/image-background-worker.js", import.meta.url), "utf8");
@@ -35,9 +35,12 @@ test("grow and shrink move mask boundaries in both axes without changing flat fi
     assert.ok(adjustAlpha(new Uint8ClampedArray(25).fill(255), 5, 5, { grow: -20 }).every((v) => v === 255));
     assert.ok(adjustAlpha(new Uint8ClampedArray(25), 5, 5, { grow: 20 }).every((v) => v === 0));
 });
+// (The worker loads ort-worker.js first, by importScripts: run here.)
+const ortWorker = readFileSync(new URL("../tabtopd/ort-worker.js", import.meta.url), "utf8");
 const evaluate = (extra = {}) => {
-    const context = { self: {}, ...extra };
-    runInNewContext(source + "\nself.normalize = normalize; self.alphaMask = alphaMask;", context);
+    const context = createContext({ self: {}, ...extra });
+    context.importScripts = (url) => { if (/ort-worker\.js$/.test(url)) runInContext(ortWorker, context); };
+    runInContext(source + "\nself.normalize = normalize; self.alphaMask = alphaMask;", context);
     return context.self;
 };
 

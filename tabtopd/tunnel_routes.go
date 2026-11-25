@@ -134,48 +134,44 @@ var tunnelRoutes = map[string]tunnelRoute{
 
 	// Files.
 	"roots":         files(func(g *server, c *tunnelCall) { c.r.finish(map[string]any{"roots": g.rootReport()}) }),
-	"trash-list":    readFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
-	"trash-restore": writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
-	"trash-delete":  writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
-	"trash-empty":   writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelTrash(c.req, c.r) }),
-	"list":          readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFiles(c.t, c.req, c.r) }),
-	"file":          readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFiles(c.t, c.req, c.r) }),
-	"upload":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelUpload(c.t, c.req, c.r) }),
-	"mkdir":         writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelMkdir(c.t, c.req, c.r) }),
-	"create":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelCreate(c.t, c.req, c.r) }),
-	"zip":           readFiles(func(g *fileService, c *tunnelCall) { g.tunnelZip(c.t, c.req, c.ip, c.r) }),
-	"rename":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelRename(c.t, c.req, c.ip, c.r) }),
-	"move":          writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelMove(c.t, c.req, c.ip, c.r) }),
+	"trash-list":    readFiles((*fileService).tunnelTrash),
+	"trash-restore": writeFiles((*fileService).tunnelTrash),
+	"trash-delete":  writeFiles((*fileService).tunnelTrash),
+	"trash-empty":   writeFiles((*fileService).tunnelTrash),
+	"list":          readFiles((*fileService).tunnelFiles),
+	"file":          readFiles((*fileService).tunnelFiles),
+	"upload":        writeFiles((*fileService).tunnelUpload),
+	"mkdir":         writeFiles((*fileService).tunnelMkdir),
+	"create":        writeFiles((*fileService).tunnelCreate),
+	"zip":           readFiles((*fileService).tunnelZip),
+	"rename":        writeFiles((*fileService).tunnelRename),
+	"move":          writeFiles((*fileService).tunnelMove),
 	// Copying, or moving, to another root: a copy only reads its own.
-	"transfer": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelTransfer(c.t, c.req, c.session, c.ip, c.r) }).
+	"transfer": readFiles((*fileService).tunnelTransfer).
 		writesWhen(func(req tunnelRequest) bool { return !req.Copy }).acrossRoots(),
-	"trash-all":    files((*server).routeTrashAll),
-	"delete":       writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelDelete(c.t, c.req, c.ip, c.r) }),
-	"watch":        readFiles(func(g *fileService, c *tunnelCall) { g.tunnelWatch(c.t, c.r) }),
-	"changes":      readFiles(func(g *fileService, c *tunnelCall) { g.tunnelChanges(c.t, c.req, c.r) }),
-	"cleanup":      files((*server).routeCleanup),
-	"zip-preview":  readFiles(func(g *fileService, c *tunnelCall) { g.tunnelZipPreview(c.t, c.req, c.r) }),
-	"zip-extract":  writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelZipExtract(c.req, c.session, c.ip, c.r) }),
-	"zip-download": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelZipDownload(c.t, c.req, c.session, c.ip, c.r) }),
-	"file-patch":   writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelFilePatch(c.req, c.session, c.ip, c.r) }),
-	"file-search":  readFiles(func(g *fileService, c *tunnelCall) { g.tunnelFileSearch(c.req, c.r) }),
-	"search":       readFiles(func(g *fileService, c *tunnelCall) { g.tunnelSearch(c.t, c.req, c.r) }),
-	"versions":     readFiles(func(g *fileService, c *tunnelCall) { g.tunnelVersions(c.req, c.r) }),
-	"version-file": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelVersionFile(c.t, c.req, c.r) }),
-	"version-restore": writeFiles(func(g *fileService, c *tunnelCall) {
-		g.tunnelVersionRestore(c.req, c.session, c.ip, c.r)
-	}),
-	"version-delete": writeFiles(func(g *fileService, c *tunnelCall) {
-		g.tunnelVersionDelete(c.req, c.session, c.ip, c.r)
-	}),
+	"trash-all":       files((*server).routeTrashAll),
+	"delete":          writeFiles((*fileService).tunnelDelete),
+	"watch":           readFiles((*fileService).tunnelWatch),
+	"changes":         readFiles((*fileService).tunnelChanges),
+	"cleanup":         files((*server).routeCleanup),
+	"zip-preview":     readFiles((*fileService).tunnelZipPreview),
+	"zip-extract":     writeFiles((*fileService).tunnelZipExtract),
+	"zip-download":    readFiles((*fileService).tunnelZipDownload),
+	"file-patch":      writeFiles((*fileService).tunnelFilePatch),
+	"file-search":     readFiles((*fileService).tunnelFileSearch),
+	"search":          readFiles((*fileService).tunnelSearch),
+	"versions":        readFiles((*fileService).tunnelVersions),
+	"version-file":    readFiles((*fileService).tunnelVersionFile),
+	"version-restore": writeFiles((*fileService).tunnelVersionRestore),
+	"version-delete":  writeFiles((*fileService).tunnelVersionDelete),
 
 	// Previews.
-	"markdown":         readFiles(func(g *fileService, c *tunnelCall) { g.tunnelMarkdown(c.t, c.req, c.r) }),
-	"epub":             readFiles(func(g *fileService, c *tunnelCall) { g.tunnelEpub(c.t, c.req, c.r) }),
-	"epub-edit":        writeFiles(func(g *fileService, c *tunnelCall) { g.tunnelEpubEdit(c.t, c.req, c.r) }),
-	"sqlite":           readFiles(func(g *fileService, c *tunnelCall) { g.tunnelSQLite(c.req, c.r) }),
-	"preview-resource": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelPreviewResource(c.t, c.req, c.r) }),
-	"image-decode":     readFiles(func(g *fileService, c *tunnelCall) { g.tunnelImageDecode(c.t, c.req, c.r) }),
+	"markdown":         readFiles((*fileService).tunnelMarkdown),
+	"epub":             readFiles((*fileService).tunnelEpub),
+	"epub-edit":        writeFiles((*fileService).tunnelEpubEdit),
+	"sqlite":           readFiles((*fileService).tunnelSQLite),
+	"preview-resource": readFiles((*fileService).tunnelPreviewResource),
+	"image-decode":     readFiles((*fileService).tunnelImageDecode),
 
 	// Fetching into Downloads, and share links to it.
 	// A fetch with a name only reports on one; without, it starts one.
@@ -204,7 +200,7 @@ var tunnelRoutes = map[string]tunnelRoute{
 	}}.
 		writesWhen(func(req tunnelRequest) bool { return req.Name == "" }),
 	"fetches": readFiles((*fileService).routeFetches),
-	"share": readFiles(func(g *fileService, c *tunnelCall) { g.tunnelShare(c.req, c.session, c.ip, c.r) }).
+	"share": readFiles((*fileService).tunnelShare).
 		writesWhen(func(req tunnelRequest) bool { return req.Upload }),
 	"share-again":  files((*server).routeShareAgain),
 	"reshare":      files((*server).routeReshare),
@@ -463,21 +459,16 @@ func (g *server) routeShareAgain(c *tunnelCall) {
 // req.Label.
 func (g *server) routeReshare(c *tunnelCall) {
 	req := c.req
-	life := time.Duration(req.Expires) * time.Second
-	if g.shares == nil || req.Expires != 0 && (life < time.Minute || life > maxShareLife) || req.Max < 0 || req.Max > 1000 {
-		c.r.fail("That's not a lifetime or limit a link can have.")
+	if g.shares == nil {
+		c.r.fail("Share links are turned off (WEB_SHARE=0).")
 		return
 	}
-	label, ok := shareLabel(req.Label)
-	if !ok {
-		c.r.fail(fmt.Sprintf("A label is one line of at most %d characters.", maxLabel))
-		return
-	}
-	l, err := g.shares.change(req.Name, life, req.Max, req.MaxBytes, label)
+	l, err := g.shares.change(req.Name, time.Duration(req.Expires)*time.Second, req.Max, req.MaxBytes, req.Label)
 	if err != nil {
 		c.r.fail(err.Error())
 		return
 	}
+	label, _ := shareLabel(req.Label) // (as kept)
 	n := g.shares.now(l)
 	log.Printf("share link to %q changed from %s: until %s, %s", l.Path, c.ip, n.Expires.Format(time.RFC3339), maxText(n.Max))
 	// (What it was changed to, as sent and as now() read it under the
@@ -492,13 +483,17 @@ func (g *server) routeReshare(c *tunnelCall) {
 // and with req.Relabel, labelled req.Label.
 func (g *server) routeReshareMany(c *tunnelCall) {
 	req := c.req
-	life := time.Duration(req.Expires) * time.Second
-	label, ok := shareLabel(req.Label)
-	if g.shares == nil || req.Expires != 0 && (life < time.Minute || life > maxShareLife) || !ok {
-		c.r.fail("That's not a lifetime or label a link can have.")
+	if g.shares == nil {
+		c.r.fail("Share links are turned off (WEB_SHARE=0).")
 		return
 	}
-	changed := g.shares.changeMany(req.Names, life, label, req.Relabel)
+	life := time.Duration(req.Expires) * time.Second
+	changed, err := g.shares.changeMany(req.Names, life, req.Label, req.Relabel)
+	if err != nil {
+		c.r.fail(err.Error())
+		return
+	}
+	label, _ := shareLabel(req.Label) // (as kept)
 	if len(changed) == 0 {
 		c.r.fail("Those links have ended already.")
 		return

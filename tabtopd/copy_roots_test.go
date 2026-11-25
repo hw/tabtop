@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,18 +16,12 @@ import (
 // newTransferServer serves Downloads, data (writable) and docs (read-only).
 func newTransferServer(t *testing.T) (g *server, url string, s testSession, downloads, data, docs string) {
 	t.Helper()
-	base, _ := newE2EServer(t)
 	home, data, downloads := rootFixture(t)
 	docs = filepath.Join(home, "Documents")
-	c := base.serverConfig
-	c.downloadsDir, c.fsHome = downloads, home
-	c.fsRoots = "Downloads,data=" + data + ",Documents:ro"
-	g, err := newServer(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(g.handler())
-	t.Cleanup(srv.Close)
+	g, srv := newE2EServerWith(t, func(c *serverConfig) {
+		c.downloadsDir, c.fsHome = downloads, home
+		c.fsRoots = "Downloads,data=" + data + ",Documents:ro"
+	})
 	return g, srv.URL, login(t, testCtx(t), srv.URL, code(0)), downloads, data, docs
 }
 

@@ -95,7 +95,7 @@ func TestSessionIdle(t *testing.T) {
 	}
 	tty.write(ctx, msgData, []byte("bye\n"))
 	closedWith(t, tty)
-	eventually(t, "terminal to detach", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sessions[s.id].open) == 0 })
+	waitUntil(t, "terminal to detach", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sessions[s.id].open) == 0 })
 	clock.Advance(400 * time.Millisecond)
 	if _, ok := g.sessionSecret(s.id); ok {
 		t.Error("session still live after its terminal closed and it sat idle")
@@ -337,7 +337,7 @@ func TestTTYStalledClient(t *testing.T) {
 	start := time.Now()
 	for {
 		g.mu.Lock()
-		n := len(g.ttys)
+		n := len(g.ttys.by)
 		g.mu.Unlock()
 		if n == 0 {
 			break

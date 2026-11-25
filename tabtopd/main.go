@@ -1,8 +1,10 @@
 // Command tabtopd is the container's only public web endpoint.
 //
-// It serves the noVNC client, the files page for the desktop user's
-// ~/Downloads at /fs/, and a browser terminal at /tty/ (tty.go),
-// and streams the desktop's audio (audio.go). Everything private goes
+// It serves the noVNC client, the files page for the folders it's given
+// (WEB_FS_ROOTS; the desktop user's ~/Downloads by default) at /fs/, share
+// links to them, a browser terminal at /tty/ (tty.go) and, when it's on,
+// the remote browser at /go (gobrowser.go), and streams the desktop's
+// audio (audio.go). Everything private goes
 // through one encrypted tunnel between the page's JavaScript and tabtopd
 // (tunnel.go, tunnel_request.go), so a proxy that terminates TLS on the way sees
 // neither logins nor content. With -base-path, all of it is served under
@@ -11,8 +13,9 @@
 //
 // Credentials are a TOTP code, or a password followed immediately by the
 // code when a pam_oath PIN is set, checked against a pam_oath users file
-// with liboath (see oath.go), which records used codes. One login buys a
-// 12-hour session for the desktop, the terminal and the files.
+// with liboath (see oath.go), which records used codes; or a passkey once
+// one's added (passkey_login.go). One login buys a session (12 hours by
+// default: WEB_SESSION_MAX) for the desktop, the terminal and the files.
 //
 // Failed logins are limited per client IP. Xvnc asks for no login of its
 // own: it listens only on a socket that only the desktop user (and so the
@@ -23,11 +26,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -92,7 +96,7 @@ type server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session // session id -> session
-	ttys     map[string]int      // session token -> open terminals
+	ttys     keyedSlots          // open terminals, by session token
 	authentication
 	clock lifecycleClock
 	seen  time.Time // when security warnings were last marked as seen
@@ -131,22 +135,17 @@ type server struct {
 }
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == markdownChildArg {
-		os.Exit(renderMarkdownChild())
-	}
-	if len(os.Args) >= 2 && os.Args[1] == epubChildArg {
-		os.Exit(renderEpubChild(os.Args[2:]))
-	}
-	if len(os.Args) >= 2 && os.Args[1] == sqliteChildArg {
-		os.Exit(readSQLiteChild(os.Args[2:]))
-	}
-	if len(os.Args) >= 2 && os.Args[1] == heifChildArg {
-		os.Exit(readHEIFChild(os.Args[2:]))
-	}
-	if len(os.Args) >= 2 && os.Args[1] == goBridgeArg {
-		os.Exit(runGoBridge(os.Args[2:]))
+	runChild()
+	// -check-config: a flag that can't be read is said (as its setting),
+	// not answered with the usage.
+	checking := slices.Contains(os.Args[1:], "-check-config") || slices.Contains(os.Args[1:], "--check-config")
+	if checking {
+		flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
+		flag.CommandLine.SetOutput(io.Discard)
+		log.SetOutput(settingsWriter{os.Stderr})
 	}
 	c := defaultServerConfig()
+	flag.Bool("check-config", false, "only check the settings given (said as the container's WEB_ and VNC_ variables), with stand-ins for the paths the container sets up later, and exit")
 	flag.BoolVar(&c.vncOff, "disable-vnc", false, "disable the desktop page and VNC tunnel")
 	flag.BoolVar(&c.fsOff, "disable-fs", false, "disable file browsing, transfers, previews, share links and URL fetching")
 	listen := flag.String("listen", ":6080", "address to serve on")
@@ -217,9 +216,15 @@ func main() {
 	flag.StringVar(&c.nobleDir, "noble-dir", c.nobleDir, "noble library files (ciphers/, curves/, hashes/) the tunnel's JavaScript needs")
 	checkAddr := flag.String("check-vnc-addr", "", "only check an address as -vnc-addr takes it, and exit")
 	flag.IntVar(&c.audioBitrate, "audio-bitrate", c.audioBitrate, fmt.Sprintf("audio bitrate in kbit/s (%d-%d)", minAudioBitrate, maxAudioBitrate))
-	flag.Parse()
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		log.SetFlags(0)
+		log.Fatal(err) // (only when checking: otherwise Parse exits itself)
+	}
 	log.SetFlags(0)
 	log.SetPrefix("tabtopd: ")
+	if checking {
+		log.SetPrefix("")
+	}
 	if *checkAddr != "" {
 		if err := checkVNCAddr(*checkAddr); err != nil {
 			log.Fatal(err)
@@ -230,7 +235,7 @@ func main() {
 	var err error
 	c.base = *basePath
 	if c.hosts, err = parseHosts(*hosts); err != nil {
-		log.Fatalf("-hosts: %v", err)
+		log.Fatal(err) // (it says WEB_HOSTS)
 	}
 	if c.trustedProxies, err = parsePrefixes(*trusted); err != nil {
 		log.Fatalf("-trusted-proxies: %v", err)
@@ -243,6 +248,10 @@ func main() {
 	}
 	if _, err = disasmDisabled(c.disasmOff); err != nil {
 		log.Fatalf("-disasm-disable: %v", err)
+	}
+	if checking {
+		checkConfig(c)
+		return
 	}
 	g, err := newServer(c)
 	if err != nil {
@@ -318,25 +327,8 @@ func main() {
 	if tag, _ := g.noble.load(g.nobleAssets()); tag == "" {
 		log.Printf("warning: can't read the noble files in %s; see /doctor", c.nobleDir)
 	}
-	if g.previewDir != "" {
-		// Only checked: they're 7 MB, read when a Markdown preview first
-		// asks for them.
-		for _, name := range previewFiles {
-			if _, err := os.Stat(filepath.Join(c.previewDir, name)); err != nil {
-				log.Printf("warning: can't read KaTeX and Mermaid in %s; Markdown previews show math and diagrams as their source", c.previewDir)
-				break
-			}
-		}
-	}
-	if g.highlightDir != "" {
-		if tag, _ := g.highlight.load(g.highlightAssets()); tag == "" {
-			log.Printf("warning: can't read the highlight.js files in %s; text previews have no colours", c.highlightDir)
-		}
-	}
-	if g.threeDir != "" {
-		if tag, _ := g.three.load(g.threeAssets()); tag == "" {
-			log.Printf("warning: can't read three.js in %s; 3D previews say they aren't available", c.threeDir)
-		}
+	for _, said := range g.bundlesMissing() { // (bundles.go)
+		log.Printf("warning: %s", said)
 	}
 	if g.termDir != "" {
 		if tag, _ := g.ttyFiles.load(g.termAssets()); tag == "" {

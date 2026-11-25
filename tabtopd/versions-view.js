@@ -1,7 +1,7 @@
 // The versions of a file kept as saves replaced it (see versions.go):
 // listed, compared with the file as it is, and put back.
 import { call, SERVER_DECODED } from "./requests.js";
-import { el } from "./preview-dom.js";
+import { el, showModal } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 import { askYes } from "./ui.js";
 import { humanBytes } from "./file-format.js";
@@ -50,19 +50,8 @@ export function openVersions({ path, name, text, restored, closed }) {
             status.textContent = `No earlier versions of ${name}.`;
         }
     });
-    let over = false;
-    const done = () => {
-        if (dialog.open) dialog.close();
-        dialog.remove();
-        focus?.focus?.();
-        // Once: closing it is heard here too.
-        if (!over) closed?.();
-        over = true;
-    };
-    close.addEventListener("click", done);
-    dialog.addEventListener("close", done);
-    document.body.append(dialog);
-    dialog.showModal();
+    // (Closing it is heard by its opener too: closed, once.)
+    const done = showModal(dialog, { closeButton: close, focus, closed: () => closed?.() });
 
     (async () => {
         let reply;

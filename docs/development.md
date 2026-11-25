@@ -156,7 +156,11 @@ and retry eligibility without DOM dependencies. Download presentation shares
 one file/ZIP path; upload and download wire protocols remain separate.
 
 `entrypoint.sh` orchestrates startup and supervises child processes. Its
-sourced `startup/config.sh` validates the environment; `startup/user.sh`
+sourced `startup/config.sh` validates the environment: what the shell itself
+uses (switches, the port, the account, the time zone), then the settings
+tabtopd reads, by tabtopd's own rules (`tabtopd -check-config`, given the
+same flags the gateway is started with, `GATEWAY_SETTINGS`), so a wrong one
+stops the start before anything's set up, named by its variable. `startup/user.sh`
 provisions the account, credentials and runtime; `startup/desktop.sh` starts
 the desktop and configures audio. These functions run in the supervising
 shell so child PIDs and runtime outputs remain available for shutdown.
@@ -164,7 +168,10 @@ Run `test/startup-check.sh <image>` to check external-VNC startup, a custom
 account, credential ownership, secret removal and restart with an existing home.
 Run `bash test/features-check.sh <image>` to check
 files-only, terminal-only and desktop-only startup, disabled routes and
-navigation, health checks and invalid service switches.
+navigation, health checks and invalid service switches. CI runs both with
+the `images` part of the browser check. The check scripts share
+`test/lib.sh` (`up`, `wait_healthy`, `free_port`) and, in Node,
+`test/browser/harness.mjs` (Chrome, `totp`, `siteFetch`).
 The `services` browser group checks that a terminal with `WEB_FS=0` installs
 no file-drop or screenshot-upload handlers. It runs separately from the normal
 browser journey because it needs a terminal-only container.
@@ -234,6 +241,10 @@ no failures and its pages load. It needs Docker and Python 3.
 headless Chrome, against a test site in a container: pages, stylesheets,
 fonts and pictures through the server, links, history, forms, typing,
 dialogs, files, and that nothing on the page reaches anything but TabTop.
+Its steps are in `test/browser/go/` (a module for each area, run in turn
+by `test/go-check.mjs` with the browser and its helpers), the test site in
+`test/browser/go-site.mjs`; `GO_ONLY=<text>` runs only the steps whose
+names have it, and `GO_FROM=<text>` those from the first that does.
 `MOLI=<moli binary> test/go-check.sh` runs it with tabtopd built from this
 tree; `GO_IMAGE=<image> test/go-check.sh` with an image's own tabtopd, Moli
 and bubblewrap, in a container run with the seccomp profile `/go` needs.
@@ -246,6 +257,8 @@ reverse proxy.
 real sites too (with screenshots in `GO_SHOTS`), and `GO_SOAK=<n>` loads
 `n` pages one after another in one tab; it reports the most memory the
 engine and tabtopd used. It needs Docker, Node 22 or later and Chrome. Its
+Go tests wait for what they expect with `waitUntil`, for 10 s at most;
+`TABTOP_TEST_WAIT` (a duration such as `30s`) changes that on a slow machine.
 Go tests with the real engine run when `TABTOP_TEST_MOLI` names a Moli
 binary, and the sandbox's when bubblewrap works (on Ubuntu 24.04 and later,
 after `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`).
@@ -260,8 +273,11 @@ desktop (`DESKTOP=none`) into the GHA cache; then, side by side, each check
 in a job of its own loading them from there: `test/browser-check.sh` in
 three parts (`--group journey`, `--group images,models` then `--group
 services`, and the rest of the previews), `test/lite-check.sh`, and
-`test/go-check.sh` on the one without a desktop, sandboxed, with files off,
-and unsandboxed (a pull request: sandboxed only). If all of that passes, it
+`test/startup-check.sh` and `test/features-check.sh` (with the `images`
+part), and `test/go-check.sh` on the one without a desktop, sandboxed, with
+files off, and unsandboxed (a pull request: sandboxed only). Each check job
+loads its image with the `.github/actions/load-image` action. If all of that
+passes, it
 pushes them to `ghcr.io/<owner>/<repo>` and `ghcr.io/<owner>/<repo>-lite`,
 each with these tags:
 

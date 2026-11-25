@@ -1,7 +1,7 @@
 // Searching the text of the files in a folder, and those in it (see
 // search.go): what's found, a line at a time, opens the file at that line.
 import { call } from "./requests.js";
-import { el } from "./preview-dom.js";
+import { el, showModal } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 
 // openSearch shows the search of the folder dir, named label; open(path,
@@ -24,21 +24,6 @@ export function openSearch({ dir, label, open }) {
         el("div", { className: "search-head" }, el("strong", { textContent: `Search in ${label}` }), close), form, status, results);
     dialog.setAttribute("aria-label", `Search in ${label}`);
     let running = null;  // {stop()} while a search runs
-    const done = () => {
-        running?.stop();
-        if (dialog.open) dialog.close();
-        dialog.remove();
-        focus?.focus?.();
-    };
-    close.addEventListener("click", done);
-    dialog.addEventListener("close", done);
-    // Escape stops a search going before it closes.
-    dialog.addEventListener("cancel", (e) => {
-        if (running) {
-            e.preventDefault();
-            running.stop();
-        }
-    });
     form.addEventListener("submit", (e) => {
         e.preventDefault();
         if (running) {
@@ -47,8 +32,9 @@ export function openSearch({ dir, label, open }) {
         }
         if (query.value) search();
     });
-    document.body.append(dialog);
-    dialog.showModal();
+    // Escape stops a search going before it closes.
+    showModal(dialog, { closeButton: close, restoreFocus: () => focus?.focus?.(), closed: () => running?.stop(),
+        request: (done, how) => (how === "escape" && running ? running.stop() : done()) });
     query.focus();
 
     async function search() {

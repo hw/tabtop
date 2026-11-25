@@ -213,16 +213,7 @@
     })();
     // Told on the topmost document of this one's origin it can reach, whose
     // agent reads it (a frame of the page's origin is read by the page's).
-    const reader = () => {
-        let w = window;
-        try {
-            while (w.parent !== w) {
-                void w.parent.document;
-                w = w.parent;
-            }
-        } catch { /* this origin's topmost */ }
-        return w.document;
-    };
+    const reader = () => tabtopTop().document;  // (gopage-prelude.js)
     const limit = 16 << 20;
     const nativeURL = URL.createObjectURL;
     const nativeRevoke = URL.revokeObjectURL;

@@ -284,7 +284,7 @@ func TestRemoteTTYInteractiveAuthenticationSearchAndReattach(t *testing.T) {
 		deadline := time.Now().Add(4 * time.Second)
 		for time.Now().Before(deadline) {
 			g.mu.Lock()
-			n := g.ttys[sess.id]
+			n := g.ttys.by[sess.id]
 			g.mu.Unlock()
 			if n == 0 {
 				return
@@ -326,7 +326,7 @@ func TestRemoteTTYInteractiveAuthenticationSearchAndReattach(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		g.mu.Lock()
-		n := g.ttys[sess.id]
+		n := g.ttys.by[sess.id]
 		g.mu.Unlock()
 		if n == 0 {
 			break
@@ -341,7 +341,7 @@ func TestRemoteTTYInteractiveAuthenticationSearchAndReattach(t *testing.T) {
 		until := time.Now().Add(4 * time.Second)
 		for time.Now().Before(until) {
 			g.mu.Lock()
-			n := g.ttys[sess.id]
+			n := g.ttys.by[sess.id]
 			g.mu.Unlock()
 			if n == 0 {
 				return

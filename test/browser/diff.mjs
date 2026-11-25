@@ -43,7 +43,7 @@ export async function checkTextDiff({ container, inContainer, open, listed, row,
         await click(`${dialog}.querySelector(".diff-maximize")`);
         await waitFor(`${dialog}.classList.contains("wide") && ${dialog}.querySelector(".diff-maximize").getAttribute("aria-pressed")==="true" && Math.abs(${dialog}.getBoundingClientRect().width-innerWidth)<2`, "comparison maximized");
         await click(`${dialog}.querySelector(".diff-maximize")`);
-        await waitFor(`!${dialog}.classList.contains("wide") && ${dialog}.querySelector(".diff-maximize").getAttribute("aria-label")==="Maximize"`, "comparison size restored");
+        await waitFor(`!${dialog}.classList.contains("wide") && ${dialog}.querySelector(".diff-maximize").getAttribute("aria-label")==="Fill the window"`, "comparison size restored");
         await click(`${dialog}.querySelector(".diff-layout")`);
         await waitFor(`${dialog}.querySelector("table").classList.contains("unified") && ${dialog}.querySelectorAll("thead th").length===1 && ${dialog}.querySelectorAll(".diff-removed").length>0 && ${dialog}.querySelectorAll(".diff-added").length>0`, "unified differences");
         await click(`${dialog}.querySelector(".diff-layout")`);

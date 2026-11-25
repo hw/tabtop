@@ -1,4 +1,4 @@
-import { el } from "./preview-dom.js";
+import { el, showModal } from "./preview-dom.js";
 import { previewWebURL } from "./preview-model.js";
 import { copyText } from "./ui.js";
 import { iconSVG } from "./glyphs.js";
@@ -25,12 +25,6 @@ export function previewLink(frame, href) {
             dialog.close();
         }
     });
-    dialog.addEventListener("cancel", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dialog.close();
-    });
-    close.addEventListener("click", () => dialog.close());
     copy.addEventListener("click", async () => {
         try {
             await copyText(url);
@@ -43,9 +37,7 @@ export function previewLink(frame, href) {
         window.open(url, "_blank", "noopener,noreferrer");
         dialog.close();
     });
-    dialog.addEventListener("close", () => dialog.remove());
-    owner.append(dialog);
-    dialog.showModal();
+    showModal(dialog, { closeButton: close, parent: owner });
     copy.focus();
 }
 

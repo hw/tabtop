@@ -16,21 +16,7 @@ import (
 // tabtopd is; and the remote browser's bridge (gobridge.go) and a stand-in
 // for its engine (goengine_test.go).
 func TestMain(m *testing.M) {
-	if len(os.Args) == 2 && os.Args[1] == markdownChildArg {
-		os.Exit(renderMarkdownChild())
-	}
-	if len(os.Args) >= 2 && os.Args[1] == epubChildArg {
-		os.Exit(renderEpubChild(os.Args[2:]))
-	}
-	if len(os.Args) >= 2 && os.Args[1] == sqliteChildArg {
-		os.Exit(readSQLiteChild(os.Args[2:]))
-	}
-	if len(os.Args) >= 2 && os.Args[1] == heifChildArg {
-		os.Exit(readHEIFChild(os.Args[2:]))
-	}
-	if len(os.Args) >= 2 && os.Args[1] == goBridgeArg {
-		os.Exit(runGoBridge(os.Args[2:]))
-	}
+	runChild()
 	if len(os.Args) >= 2 && os.Args[1] == goFakeEngineArg {
 		os.Exit(runGoFakeEngine(os.Args[2:]))
 	}

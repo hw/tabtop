@@ -12,16 +12,12 @@ import { runTransfer } from "./transfer.js";
 import { statusRow } from "./ui.js";
 import { streamWorker } from "./stream-worker.js";
 import { humanBytes } from "./file-format.js";
+import { el } from "./preview-dom.js";
 // Compatibility for pages loaded before worker registration was extracted.
 export { streamWorker, mediaWorker } from "./stream-worker.js";
 // And before humanBytes moved to file-format.js.
 export { humanBytes };
 
-function el(tag, props = {}, ...children) {
-    const e = Object.assign(document.createElement(tag), props);
-    e.append(...children);
-    return e;
-}
 
 // File and ZIP downloads share lifecycle handling; their wire metadata and
 // progress presentation remain different (ZIP sizes are unknown).

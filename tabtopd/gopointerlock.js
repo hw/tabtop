@@ -13,40 +13,27 @@
 // An embedded page's is refused (pointerlockerror).
 (() => {
     if (!("requestPointerLock" in Element.prototype)) return;
-    const isTop = (() => { try { return window.top === window; } catch { return false; } })();
     let current = null;
-    const waiting = new Map();  // id -> {el, resolve, reject, timer}
     const fire = (type, at = document) => setTimeout(() => at.dispatchEvent(new Event(type, { bubbles: true, composed: true })), 0);
     const refused = (why) => {
         fire("pointerlockerror");
         return Promise.reject(new DOMException(why, "NotAllowedError"));
     };
-    let listening = false;
-    const listen = () => {
-        if (listening) return;
-        listening = true;
-        document.addEventListener("__tabtop_pointerlock_answer", (e) => {
-            let d;
-            try { d = JSON.parse(e.detail); } catch { return; }
-            if (d?.exit) {
-                if (!current) return;
-                current = null;
-                fire("pointerlockchange");
-                return;
-            }
-            const w = d && waiting.get(d.id);
-            if (!w) return;
-            waiting.delete(d.id);
-            clearTimeout(w.timer);
-            if (!d.ok || !w.el.isConnected) {
-                fire("pointerlockerror");
-                return w.reject(new DOMException("The user has exited the lock before this request was completed.", "NotAllowedError"));
-            }
-            current = w.el;
-            fire("pointerlockchange");
-            w.resolve();
-        });
-    };
+    // The server's answer to a request ({id, ok}: the element asked for
+    // kept with it), or the lock left ({exit: true}).
+    const ask = tabtopAsker("__tabtop_pointerlock_answer", (d, resolve, reject, el) => {
+        if (!d.ok || !el.isConnected) {
+            fire("pointerlockerror");
+            return reject(new DOMException("The user has exited the lock before this request was completed.", "NotAllowedError"));
+        }
+        current = el;
+        fire("pointerlockchange");
+        resolve();
+    }, (d) => {
+        if (!d?.exit || !current) return;
+        current = null;
+        fire("pointerlockchange");
+    });
     // The element leaving the document leaves the lock, as a browser's.
     const gone = new MutationObserver(() => {
         if (current && !current.isConnected) document.exitPointerLock();
@@ -57,24 +44,20 @@
         value: { requestPointerLock(options) {
             const el = this;
             if (!(el instanceof Element) || !el.isConnected) return refused("The element is not connected.");
-            if (!isTop) return refused("Pointer lock isn't available in an embedded page here.");
-            listen();
+            if (!tabtopIsTop) return refused("Pointer lock isn't available in an embedded page here.");
             if (watching !== document) {
                 watching = document;
                 gone.observe(document, { childList: true, subtree: true });
             }
             if (current === el) return Promise.resolve();
-            return new Promise((resolve, reject) => {
-                const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
-                const timer = setTimeout(() => {
-                    waiting.delete(id);
-                    fire("pointerlockerror");
-                    reject(new DOMException("Pointer lock requires transient user activation.", "NotAllowedError"));
-                }, 10_000);
-                waiting.set(id, { el, resolve, reject, timer });
+            return ask((id) => {
                 try {
                     el.dispatchEvent(new CustomEvent("__tabtop_pointerlock", { bubbles: true, composed: true, detail: JSON.stringify({ on: true, id, raw: !!options?.unadjustedMovement }) }));
                 } catch { /* asked nothing */ }
+                return el;
+            }, 10_000, (resolve, reject) => {
+                fire("pointerlockerror");
+                reject(new DOMException("Pointer lock requires transient user activation.", "NotAllowedError"));
             });
         } }.requestPointerLock,
     });

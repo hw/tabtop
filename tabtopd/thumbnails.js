@@ -8,7 +8,7 @@ import { call, collect, serverDecoded, SERVER_DECODED } from "./requests.js";
 import { typeOf } from "./preview-model.js";
 import { rootStorageScope } from "./fs-context.js";
 import { THUMBNAIL_CACHE } from "./session-state.js";
-import { MODEL_THUMBNAIL, modelThumbnail } from "./model-thumbnails.js";
+import { modelThumbnailed, modelThumbnail } from "./model-thumbnails.js";
 
 export const THUMB_SIZE = 192;      // the longer side, in pixels
 const MAX_SOURCE = 40e6;            // larger pictures aren't read for one
@@ -29,7 +29,7 @@ export function thumbnailable(e) {
     const t = !e.dir && typeOf(e.name);
     if (!t || !((e.bytes ?? 0) > 0)) return false;
     // (A 3D file of any size: only the parts that have its picture are read.)
-    if (MODEL_THUMBNAIL.test(e.name)) return true;
+    if (modelThumbnailed(e.name)) return true;
     return t.kind === "image" && e.bytes <= MAX_SOURCE;
 }
 
@@ -107,7 +107,7 @@ function turn(signal) {
 // browsers can't decode, is decoded by the server: its own thumbnail, if
 // it has one.
 async function make(path, e, signal) {
-    if (MODEL_THUMBNAIL.test(e.name)) {
+    if (modelThumbnailed(e.name)) {
         const found = await modelThumbnail(e.name, e.bytes, (offset, length) => readRange(path, offset, length, signal)).catch((err) => { signal.throwIfAborted(); return null; });
         return found ? draw(new Blob([found.bytes], { type: found.type }), signal) : null;
     }

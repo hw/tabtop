@@ -7,6 +7,7 @@
 #
 # Usage: test/lite-check.sh <lite image> <full image>
 set -euo pipefail
+source "$(dirname "$0")/lib.sh"
 
 lite=${1:?usage: $0 <lite image> <full image>}
 full=${2:?usage: $0 <lite image> <full image>}
@@ -41,11 +42,7 @@ docker run -d --name "$name" --network "$net" -p 127.0.0.1::6080 \
     -e VNC_ADDR="$name-rfb:5902" -e WEB_DOCTOR_ENDPOINT=1 \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$lite" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"
-for ((i = 0; ; i++)); do
-    docker exec "$name" /usr/local/bin/healthcheck 2>/dev/null && break
-    ((i < 60)) || { echo "not ok - the container didn't become healthy" >&2; exit 1; }
-    sleep 1
-done
+wait_healthy "$name" 60
 echo "ok - healthy with the RFB server at $name-rfb:5902"
 
 # Every part the doctor report checks works; it names the RFB server

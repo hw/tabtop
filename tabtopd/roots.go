@@ -53,9 +53,10 @@ type fileRoot struct {
 	// and what's kept, listed or pruned there, under versionsMu.
 	versions   trashIndex
 	versionsMu sync.Mutex
-	// writes are the folders being written into by what isn't tracked
-	// otherwise: uploads through links, and ZIPs extracted (see
-	// writingInto and holdWrites).
+	// writes are the folders being written into (beginWrites: uploads,
+	// through the files page or a link, fetches, ZIPs extracted, books
+	// edited, versions and trash restored), so a folder isn't deleted or
+	// moved from under them (see writingInto and holdWrites).
 	writes   folderWrites
 	placedMu sync.Mutex
 	placedAt map[string]time.Time

@@ -1,0 +1,22 @@
+name: Load image
+description: >-
+  Builds one of the images from the GHA cache the build job filled (each
+  layer already there), and loads it into Docker under the tag given, for
+  the checks to run. Needs docker/setup-buildx-action first.
+inputs:
+  image:
+    description: tabtop, or tabtop-lite (built with DESKTOP=none)
+    required: true
+  tag:
+    description: the tag to load it as
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@v7
+      with:
+        context: .
+        load: true
+        build-args: ${{ inputs.image == 'tabtop-lite' && 'DESKTOP=none' || '' }}
+        tags: ${{ inputs.tag }}
+        cache-from: type=gha,scope=${{ inputs.image }}

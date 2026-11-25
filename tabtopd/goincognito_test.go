@@ -61,13 +61,7 @@ func TestGoPrivateJar(t *testing.T) {
 	} else {
 		release5()
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for g.goPrivates.has("s1") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if g.goPrivates.has("s1") {
-		t.Fatal("a restart kept the private jar for good")
-	}
+	waitUntil(t, "the private jar let go after a restart", func() bool { return !g.goPrivates.has("s1") })
 }
 
 // A private tab's engine isn't given the shared HTTP cache.
@@ -187,10 +181,10 @@ func TestGoRoutePrivate(t *testing.T) {
 		t.Fatalf("a private tab taken back: %v", r)
 	}
 	sendGo(t, ctx, tc, map[string]any{"op": "close"})
-	waitFor(t, "the private jar let go with the last private tab", func() bool { return !g.goPrivates.has(priv.session) })
+	waitUntil(t, "the private jar let go with the last private tab", func() bool { return !g.goPrivates.has(priv.session) })
 	tc = openSession(t, ctx, url, s)
 	// (Taken back if it's still kept, else a new one: closed either way.)
 	tc.request(t, ctx, map[string]any{"type": "go", "resume": plainToken})
 	sendGo(t, ctx, tc, map[string]any{"op": "close"})
-	waitFor(t, "every tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
+	waitUntil(t, "every tab closed", func() bool { return len(goEngineRunDirs(t)) == 0 })
 }

@@ -14,18 +14,9 @@
 (() => {
     const MAX = 1 << 20;  // characters copied (gobrowser.go's goCopyMax)
     const IMAGE_MAX = 8 << 20;  // a PNG's bytes (goclipboard.go's goCopyImageMax)
-    const reader = () => {
-        let w = window;
-        try {
-            while (w.parent !== w) {
-                void w.parent.document;  // (another origin's: throws)
-                w = w.parent;
-            }
-        } catch { /* this origin's topmost */ }
-        return w.document;
-    };
+    const reader = () => tabtopTop().document;  // (gopage-prelude.js)
     const tell = (type, detail) => {
-        try { reader().dispatchEvent(new CustomEvent(type, { detail: JSON.stringify(detail) })); } catch { /* told nothing */ }
+        try { tabtopTell(reader(), type, detail); } catch { /* told nothing */ }
     };
     const copied = (text, image) => tell("__tabtop_copy", image ? { text: text === undefined ? undefined : String(text).slice(0, MAX), image } : { text: String(text ?? "").slice(0, MAX) });
     const denied = () => new DOMException("Read permission denied.", "NotAllowedError");
@@ -62,7 +53,7 @@
             });
         }
         return new Promise((resolve, reject) => {
-            const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+            const id = tabtopID();
             // (Not answered: the person didn't say, or the page went.)
             const timer = setTimeout(() => { waiting.delete(id); reject(denied()); }, 120_000);
             waiting.set(id, { resolve, reject, timer });

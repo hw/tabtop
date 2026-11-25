@@ -158,22 +158,22 @@ func fillLoginWork(t *testing.T) {
 // TestFailuresSwept checks that IPs whose failures have expired are
 // forgotten without being looked up again.
 func TestFailuresSwept(t *testing.T) {
-	g := &server{serverConfig: defaultServerConfig(), authentication: authentication{failures: map[string][]time.Time{}}}
+	g := &server{serverConfig: defaultServerConfig(), authentication: authentication{failures: windowCounter{events: map[string][]time.Time{}}}}
 	old := time.Now().Add(-failureWindow)
 	for i := range 100 {
-		g.failures[fmt.Sprint("2001:db8::", i)] = []time.Time{old}
+		g.failures.events[fmt.Sprint("2001:db8::", i)] = []time.Time{old}
 	}
-	g.failures["192.0.2.1"] = []time.Time{time.Now()}
+	g.failures.events["192.0.2.1"] = []time.Time{time.Now()}
 	g.beginLogin("192.0.2.2")
 	g.endLogin("192.0.2.2", "", true)
-	if len(g.failures) != 2 {
-		t.Fatalf("%d IPs tracked after a sweep, want 2", len(g.failures))
+	if len(g.failures.events) != 2 {
+		t.Fatalf("%d IPs tracked after a sweep, want 2", len(g.failures.events))
 	}
-	g.failures["2001:db8::1"] = []time.Time{old}
+	g.failures.events["2001:db8::1"] = []time.Time{old}
 	g.beginLogin("192.0.2.2")
 	g.endLogin("192.0.2.2", "", true)
-	if len(g.failures) != 3 {
-		t.Fatalf("swept again within the window: %d IPs tracked", len(g.failures))
+	if len(g.failures.events) != 3 {
+		t.Fatalf("swept again within the window: %d IPs tracked", len(g.failures.events))
 	}
 }
 

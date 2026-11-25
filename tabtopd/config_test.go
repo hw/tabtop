@@ -26,7 +26,7 @@ func TestNewServerInitializesRuntime(t *testing.T) {
 	if g.base != "/nested/site/" || g.sessionMax != defaultSessionMax || g.sessionIdle != defaultSessionIdle {
 		t.Fatal("defaults or base normalization lost")
 	}
-	if g.sessions == nil || g.ttys == nil || g.failures == nil || g.pending == nil {
+	if g.sessions == nil || g.pending == nil {
 		t.Fatal("runtime maps not initialized")
 	}
 	c.trustedProxies[0] = netip.MustParsePrefix("192.0.2.0/24")

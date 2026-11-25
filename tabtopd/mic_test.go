@@ -162,14 +162,14 @@ func TestTunnelMic(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	eventually(t, "the packets decoded into the microphone", func() bool { return f.held() == 5*960 })
+	waitUntil(t, "the packets decoded into the microphone", func() bool { return f.held() == 5*960 })
 
 	// The desktop going ends the microphone, after the grace period.
 	desktop.c.Close(websocket.StatusNormalClosure, "")
 	if _, _, err := mic.read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
 		t.Errorf("mic after the desktop closed: %v", err)
 	}
-	eventually(t, "playback stopped", func() bool { return f.count() == 0 })
+	waitUntil(t, "playback stopped", func() bool { return f.count() == 0 })
 
 	// A packet too big for any Opus frame ends it.
 	desktop = openSession(t, ctx, srv.URL, s)

@@ -951,7 +951,7 @@ func (m *fetchManager) writeStreamFragments(ctx context.Context, j *fetchJob, tr
 			if err != nil {
 				return err
 			}
-			if free, _, ok := m.files.uploadRoom(up.f); ok && free < int64(len(data))+fetchSpare {
+			if _, enough := m.files.room(up.f, int64(len(data))+fetchSpare, true); !enough {
 				return errors.New("insufficient disk space for stream")
 			}
 			if _, err := up.Write(data); err != nil {

@@ -34,7 +34,7 @@ const pdfFrameCSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; w
 // pdfFrameHTML is the frame's page.
 var pdfFrameHTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n" +
 	"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>PDF</title>\n<style>" +
-	pdfFrameCSS + "</style>\n<div id=\"bar\"></div><main id=\"pages\"></main>\n<script src=\"pdf-frame.js\"></script>\n"
+	pdfFrameCSS + "</style>\n<div id=\"bar\"></div><main id=\"pages\"></main>\n<script src=\"frame-bridge.js\"></script><script src=\"pdf-frame.js\"></script>\n"
 
 // The parts of pdf.js the frame uses, by folder in -pdfjs-dir; each
 // folder's files are all served.

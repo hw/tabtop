@@ -45,7 +45,7 @@
 | [WEB_GO_UNSANDBOXED](#web_go) | `0` | `1` runs the remote browser's engine even where it can't be sandboxed. |
 | [WEB_GO_PRIVATE](#web_go) | `0` | `1` lets the remote browser reach private networks too, not only the internet. |
 | [WEB_GO_CACHE](#web_go) | `1` | `1` lets the remote browser's engines share a cache on disk, so sites' scripts and stylesheets are kept between tabs. `0` turns it off. |
-| TABTOP_GO_DEBUG | unset | `1` logs what each remote browser tab does (its loads, reads, input and dialogs) to the container's log, for finding out why a page misbehaves. Pages' addresses appear in it. |
+| TABTOP_GO_DEBUG | unset | `1` logs what each remote browser tab does (its loads, reads, input and dialogs) to the container's log, for finding out why a page misbehaves. Pages' addresses appear in it. Any other value logs nothing. |
 | [WEB_DISASM_DISABLE](#web_disasm_disable) | `none` | Turns off disassembly in binary previews: `all` of it, or a comma-separated list of `x86`, `arm64`, `capstone` (ARM32 and Thumb), `riscv` and `mips`. |
 | [WEB_DOCTOR_ENDPOINT](#web_doctor_endpoint) | `0` | `1` serves a troubleshooting report at `/doctor`, without a login. See [Health checks](health-checks.md). |
 | [CHROMIUM_NO_SANDBOX](#chromium_no_sandbox) | `1` | `1` runs Chromium with `--no-sandbox`. `0` keeps the sandbox on. |
@@ -53,14 +53,15 @@
 
 All environment variables are optional - defaults will be used if a value is not set.
 
-The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
+The container won't start if `VNC_USER`, `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `VNC_RESIZE`, `VNC_ADDR`, `WEB_PORT`,
 `VNC_X509` (or what it needs; see [VNC_X509](#vnc_x509)),
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`, `WEB_HOSTS`,
 `WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
 `WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_GO_FETCH`, `WEB_GO_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_GO` (or `WEB_GO_ENGINE`, when `WEB_GO=1` and it isn't an executable file), `WEB_GO_UNSANDBOXED`, `WEB_GO_PRIVATE`, `WEB_GO_CACHE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
-`VNC_UPSTREAM_PASSWORD` has an invalid value. The error is printed to the log. 
+`VNC_UPSTREAM_PASSWORD` has an invalid value, or if `WEB_VNC`, `WEB_TTY`,
+`WEB_FS` and `WEB_GO` are all `0`. The error is printed to the log. 
 
 Each variable is described in detail below.
 
@@ -167,7 +168,8 @@ the same syntax and `-fs-home` supplies the home directory for relative paths;
 
 These independent switches accept `0` or `1` and default to `1`. Disabled
 features disappear from navigation and their backend requests are refused,
-including requests from previously loaded pages. Keep at least one enabled.
+including requests from previously loaded pages. Keep at least one of them, or
+[`WEB_GO`](#web_go), enabled.
 
 - `WEB_VNC=0`: no desktop page or VNC tunnel. The container does not start
   Xvnc, XFCE, PipeWire or desktop audio/microphone services. No `VNC_ADDR`

@@ -26,7 +26,7 @@
     const DENIED = new Set(["camera", "microphone", "display-capture", "keyboard-lock", "midi", "local-fonts", "window-management",
         "idle-detection", "accelerometer", "gyroscope", "magnetometer", "ambient-light-sensor", "bluetooth", "nfc", "speaker-selection",
         "captured-surface-control", "system-wake-lock"]);
-    const isTop = (() => { try { return window.top === window; } catch { return false; } })();
+    const isTop = tabtopIsTop;  // (gopage-prelude.js)
     const viewer = () => (isTop && window[Symbol.for("tabtop.viewer")]) || {};
     function stateOf(d) {
         const name = d.name, secure = isSecureContext;

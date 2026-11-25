@@ -6,8 +6,11 @@
 // its G-code). Only what's needed is read (readRange): a 3MF's directory,
 // at its end, and the one picture; G-code's start. Of several, the
 // largest PNG or JPEG is taken (QOI, which browsers don't show, isn't).
+import { fileType } from "./preview-model.js";
 
-export const MODEL_THUMBNAIL = /\.(?:3mf|gcode|gco|bgcode)$/i;
+// modelThumbnailed reports whether a file named name may have a picture
+// of itself (thumbnail in file-types.json: 3MF, G-code, binary G-code).
+export const modelThumbnailed = (name) => fileType(name)?.thumbnail === true;
 const HEAD = 2 << 20;            // the start of a G-code file, where its pictures are looked for
 const MAX_IMAGE = 8 << 20;       // a picture bigger than this isn't taken
 const MAX_DIRECTORY = 4 << 20;   // a 3MF's directory, at most

@@ -188,6 +188,9 @@ func newCheck(detail string, err error) check {
 	return check{OK: true, Detail: detail}
 }
 
+// doctorCSP is the report's, as a page: its own styles, nothing else.
+const doctorCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 // doctor reports what tabtopd sees: each part's state, the server's clock
 // (TOTP codes depend on it) and how this request arrived through any
 // proxies. It needs no login, so a broken login can be diagnosed with it,
@@ -212,7 +215,7 @@ func (g *server) doctor(w http.ResponseWriter, r *http.Request) {
 	wantHTML := strings.Contains(r.Header.Get("Accept"), "text/html")
 	if wantHTML {
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+		setPageHeaders(h, doctorCSP)
 		if r.Method == http.MethodHead {
 			return
 		}
@@ -440,7 +443,7 @@ func (g *server) doctorSnapshot() (doctorState, time.Time) {
 			state.WebSessions++
 		}
 	}
-	for _, n := range g.ttys {
+	for _, n := range g.ttys.by {
 		state.OpenTerminals += n
 	}
 	g.mu.Unlock()

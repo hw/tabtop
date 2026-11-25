@@ -39,6 +39,7 @@ case "$group" in
         done ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
+source "$(dirname "$0")/lib.sh"
 chrome=${CHROME:-$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)}
 [[ -n "$chrome" ]] || { echo "Chrome isn't installed; set CHROME to it" >&2; exit 1; }
 work=$(mktemp -d)
@@ -77,11 +78,7 @@ fi
 docker run -d --name "$name" -p 127.0.0.1::6080 -e VNC_USER=user -e WEB_GO_FETCH_PRIVATE=1 -e WEB_PREVIEW_FETCH_PRIVATE=1 "${service_args[@]}" \
     -e VNC_TOTP_SECRET=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ "$image" >/dev/null
 site="http://$(docker port "$name" 6080/tcp | head -n 1)/"
-for ((i = 0; ; i++)); do
-    docker exec "$name" /usr/local/bin/healthcheck 2>/dev/null && break
-    ((i < 120)) || { echo "the container didn't become healthy" >&2; exit 1; }
-    sleep 1
-done
+wait_healthy "$name" 120 || exit 1
 echo "site: $site"
 
 in_container() { docker exec -u user "$name" sh -c "$1"; }

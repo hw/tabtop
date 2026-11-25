@@ -98,10 +98,10 @@ import (
 )
 
 // heifPrepare readies the child to decode: libheif's plugins loaded (from
-// files: while it can), then the sandbox (see heif_sandbox.go), or why not.
+// files: while it can), then the sandbox (see child_sandbox.go), or why not.
 func heifPrepare() error {
 	C.heif_init(nil)
-	return heifSandbox()
+	return childSandbox()
 }
 
 // decodeHEIF is the picture in data (the file's own thumbnail, if one is

@@ -4,6 +4,7 @@
 // then quick. What's selected becomes a fill mark (rows of pixels) at that
 // size, scaled to the picture, so the overlay, undo and PDF batches treat it
 // as any other mark.
+import { OneAtATime } from "./worker-client.js";
 
 export const SAM_SIDE = 1024;
 const TIMEOUT = 180000;
@@ -100,33 +101,16 @@ export function objectBounds(mask, width, height, pictureWidth, pictureHeight) {
 // One worker per editor: it keeps the picture's analysis between clicks,
 // until it's closed or given another picture.
 export class Segmenter {
-    worker = null;
-    pending = null;
     size = null;
+    #worker = new OneAtATime(() => new Worker(new URL("./image-segment-worker.js", import.meta.url)), TIMEOUT, {
+        busy: "Magic select is busy.", tooLong: "Magic select took too long. Try again.", failed: "Magic select failed",
+        couldntLoad: "Magic select couldn't load. Try again.", unreadable: "Magic select returned an unreadable result.", cancelled: "Magic select cancelled.",
+    }, () => { this.size = null; });
 
     #ask(message, transfer, check) {
-        if (this.pending) return Promise.reject(new Error("Magic select is busy."));
-        return new Promise((resolve, reject) => {
-            this.pending = { resolve, reject, timer: setTimeout(() => this.cancel("Magic select took too long. Try again."), TIMEOUT) };
-            try {
-                this.worker ??= new Worker(new URL("./image-segment-worker.js", import.meta.url));
-                this.worker.onmessage = ({ data }) => {
-                    if (data.error) { this.cancel(`Magic select failed: ${data.error}`); return; }
-                    const problem = check(data);
-                    if (problem) { this.cancel(problem); return; }
-                    const pending = this.pending;
-                    this.pending = null;
-                    clearTimeout(pending.timer);
-                    pending.resolve(data);
-                };
-                this.worker.onerror = (event) => { event.preventDefault(); this.cancel("Magic select couldn't load. Try again."); };
-                this.worker.onmessageerror = () => this.cancel("Magic select returned an unreadable result.");
-                this.worker.postMessage(message, transfer);
-            } catch (err) { this.cancel(err.message); }
-        });
+        return this.#worker.ask(message, transfer, check);
     }
 
-    // analyse has the worker analyse source (a canvas or image).
     async analyse(source) {
         const size = samSize(source.width, source.height);
         const sample = Object.assign(document.createElement("canvas"), { width: size.width, height: size.height });
@@ -160,14 +144,7 @@ export class Segmenter {
         return { mask: data.mask, count: data.count };
     }
 
-    cancel(message = "Magic select cancelled.") {
-        this.worker?.terminate();
-        this.worker = null;
-        this.size = null;
-        if (this.pending) {
-            clearTimeout(this.pending.timer);
-            this.pending.reject(new Error(message));
-            this.pending = null;
-        }
+    cancel(message) {
+        this.#worker.cancel(message);
     }
 }

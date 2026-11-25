@@ -74,13 +74,7 @@ func remoteCount(g *server) int {
 }
 func waitRemoteGone(t *testing.T, g *server) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for remoteCount(g) > 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if remoteCount(g) != 0 {
-		t.Fatal("pending request leaked")
-	}
+	waitUntil(t, "the pending request let go", func() bool { return remoteCount(g) == 0 })
 }
 
 func TestRemoteApprovalEndToEnd(t *testing.T) {

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log"
 	"path"
-	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -48,7 +47,8 @@ func (g *fileService) wasPlaced(name string) bool {
 // tunnelWatch answers a watch request: it sends {"saved":name,"bytes":n}
 // for each file saved into ~/Downloads (see monitorDownloads) while the page
 // keeps the tunnel open. The page sends nothing.
-func (g *fileService) tunnelWatch(t *tunnel, r *tunnelResponder) {
+func (g *fileService) tunnelWatch(call *tunnelCall) {
+	t, r := call.t, call.r
 	store, err := g.openStore()
 	if err != nil {
 		r.fail("The folder is missing.")
@@ -96,17 +96,15 @@ var errDirGone = errors.New("the folder was deleted or moved")
 // after anything in the folder at req.Path changes (see monitorChanges),
 // while the page keeps the tunnel open. The page sends nothing. If the
 // folder is deleted or moved, it closes the tunnel, saying so.
-func (g *fileService) tunnelChanges(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelChanges(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail("The exposed folder is unavailable.")
 		return
 	}
 	defer root.Close()
-	name := strings.Trim(req.Path, "/")
-	if name == "" {
-		name = "."
-	}
+	name := req.dir()
 	f, _, err := root.open(name) // confined to ~/Downloads, as for a list request
 	if err != nil {
 		r.fail("Not found.")

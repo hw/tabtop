@@ -47,7 +47,7 @@ func newDoctorServer(t *testing.T, doctorOn bool) (*server, *httptest.Server) {
 	os.WriteFile(filepath.Join(novnc, "vnc.html"), []byte("noVNC"), 0o644)
 	g.base, g.novncDir, g.downloadsDir, g.nobleDir, g.doctorOn = "/", novnc, t.TempDir(), fakeNoble(t), doctorOn
 	g.vncAddr = fakeXvnc(t)
-	g.sessions, g.failures, g.pending, g.ttys = map[string]*session{}, map[string][]time.Time{}, map[string]int{}, map[string]int{}
+	g.sessions, g.failures, g.pending, g.ttys = map[string]*session{}, windowCounter{}, map[string]int{}, keyedSlots{}
 	srv := httptest.NewServer(g.handler())
 	t.Cleanup(srv.Close)
 	return g, srv

@@ -203,6 +203,10 @@ type tunnelRequest struct {
 	Relabel bool `json:"relabel,omitempty"`
 }
 
+// dir is the request's path, as a folder's (or a file's) in its root:
+// without slashes at either end, cleaned, "." for the root itself.
+func (req tunnelRequest) dir() string { return path.Clean(strings.Trim(req.Path, "/")) }
+
 type fileEntry struct {
 	Name     string `json:"name"`
 	Dir      bool   `json:"dir,omitempty"`
@@ -391,7 +395,8 @@ func receiveData(t *tunnel, size int64, why string) ([]byte, bool) {
 
 // tunnelMarkdown answers a markdown request: the file at req.Path, as
 // HTML for the preview's frame (see markdown.go), in {"html": ...}.
-func (g *fileService) tunnelMarkdown(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelMarkdown(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	if req.Path == "" {
 		// Text being edited (see the editor in preview.js), req.Size bytes
 		// of it, sent after the request as data, as an upload's is: too
@@ -449,7 +454,8 @@ func (g *server) revokeShares(match func(*shareLink) bool) int {
 // the gateway doesn't keep: the page makes the URL from it, with its own
 // address, rather than one the gateway would have to guess from behind a
 // proxy.
-func (g *fileService) tunnelShare(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelShare(call *tunnelCall) {
+	req, session, ip, r := call.req, call.session, call.ip, call.r
 	if g.shares == nil {
 		r.fail("Share links are turned off (WEB_SHARE=0).")
 		return
@@ -458,10 +464,10 @@ func (g *fileService) tunnelShare(req tunnelRequest, session, ip string, r *tunn
 		r.fail("A direct download is of a file, once.")
 		return
 	}
-	life := time.Duration(req.Expires) * time.Second
-	if life < time.Minute || life > maxShareLife || req.Max < 0 || req.Max > 1000 ||
-		req.Upload && (req.MaxBytes <= 0 || req.MaxBytes > maxUploadLinkBytes) || !req.Upload && req.MaxBytes != 0 {
-		r.fail("That's not a lifetime or limit a link can have.")
+	spec := shareSpec{RootBinding: g.root.Binding, Root: g.root.ID, RootLabel: g.root.Label, Label: req.Label, Life: time.Duration(req.Expires) * time.Second,
+		Max: req.Max, Upload: req.Upload, MaxBytes: req.MaxBytes, Once: req.Direct}
+	if err := spec.check(); err != nil { // (before what it's to is looked for)
+		r.fail(err.Error())
 		return
 	}
 	store, err := g.openStore()
@@ -471,10 +477,7 @@ func (g *fileService) tunnelShare(req tunnelRequest, session, ip string, r *tunn
 	}
 	defer store.Close()
 	// Cleaned first, so "./" or "a/.." are Downloads itself too.
-	name := path.Clean(strings.Trim(req.Path, "/"))
-	if name == "" {
-		name = "."
-	}
+	name := req.dir()
 	if name == "." && !req.Upload {
 		r.fail(fmt.Sprintf("Share a file or folder in %s, not %s itself.", g.root.Label, g.root.Label))
 		return
@@ -489,13 +492,8 @@ func (g *fileService) tunnelShare(req tunnelRequest, session, ip string, r *tunn
 		r.fail("Files can only be uploaded into a folder.")
 		return
 	}
-	label, ok := shareLabel(req.Label)
-	if !ok {
-		r.fail(fmt.Sprintf("A label is one line of at most %d characters.", maxLabel))
-		return
-	}
-	token, l, err := g.shares.create(path.Clean(name), st, shareSpec{Root: g.root.ID, RootBinding: g.root.Binding, RootLabel: g.root.Label, Label: label, Life: life, Max: req.Max, Upload: req.Upload, MaxBytes: req.MaxBytes, Once: req.Direct},
-		sessionHandle(session), ip)
+	token, l, err := g.shares.create(path.Clean(name), st, spec, sessionHandle(session), ip)
+	life, label := spec.Life, spec.Label // (the label as kept, by check)
 	if errors.Is(err, errTooManyShares) {
 		r.fail(err.Error())
 		return
@@ -624,7 +622,8 @@ func (g *server) bridgeDesktop(t *tunnel, session, ip string) {
 // tunnelFiles answers a list request with the directory's entries, and a
 // file request with the file's name and size, then its contents in data
 // messages.
-func (g *fileService) tunnelFiles(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelFiles(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	opened, err := g.openItem(req.Path)
 	if err != nil {
 		r.fail(err.Error())

@@ -37,7 +37,7 @@ func (b *goBrowser) fullscreenAsks(gen, world int, asks []goFullscreenAsk, recen
 			}
 			continue
 		}
-		if !goPasteID.MatchString(a.ID) {
+		if !goAskID.MatchString(a.ID) {
 			continue
 		}
 		ok := recent && world != 0

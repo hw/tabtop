@@ -10,15 +10,14 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
+import { hex, line, runWorker } from "./worker-harness.mjs";
 import { gzipSync } from "node:zlib";
 
 const [scriptFile, workerFile, referenceDirectory] = process.argv.slice(2);
 if (!scriptFile || !workerFile || !referenceDirectory) throw new Error("usage: node check-mips.mjs <mips-asm.js> <disasm-worker.js> <reference Capstone directory>");
 const script = readFileSync(scriptFile, "utf8");
-let result, imports = 0;
-const self = { postMessage: (message) => { result = JSON.parse(JSON.stringify(message)); } };
-runInNewContext(readFileSync(workerFile, "utf8"), {
-    self, Uint8Array, BigInt,
+let imports = 0;
+const { post, self } = runWorker(workerFile, (self) => ({
     importScripts(path) {
         // (What it has the same as RISC-V's, beside it, first.)
         if (path === "./asm-common.js") return runInNewContext(readFileSync(resolve(dirname(scriptFile), "asm-common.js"), "utf8"), { self });
@@ -27,21 +26,13 @@ runInNewContext(readFileSync(workerFile, "utf8"), {
         runInNewContext(script, { self });
     },
     fetch: async (path) => { throw new Error(`MIPS fetched ${path}`); },
-});
-let next = 0;
-const hex = (bytes) => Buffer.from(bytes).toString("hex");
+}));
 const ask = async (mode, bytes, address = 0x1000, max = 512) => {
-    await self.onmessage({ data: { id: ++next, mode, bytes: Uint8Array.from(bytes), address, max } });
-    assert.equal(result.id, next);
-    assert.equal(result.error, undefined, `${mode}: ${result.error}`);
-    return result.lines;
+    const reply = await post({ mode, bytes: Uint8Array.from(bytes), address, max });
+    assert.equal(reply.error, undefined, `${mode}: ${reply.error}`);
+    return reply.lines;
 };
-const assemble = async (mode, text, address = 0x1000, was = []) => {
-    await self.onmessage({ data: { id: ++next, mode, assemble: text, address, was: [...was] } });
-    assert.equal(result.id, next);
-    return result;
-};
-const line = (offset, length, text, targets = []) => ({ offset, length, text, targets });
+const assemble = (mode, text, address = 0x1000, was = []) => post({ mode, assemble: text, address, was: [...was] });
 const MODES = ["mips32-le", "mips32-be", "mips64-le", "mips64-be"];
 const xlenOf = (mode) => (mode.startsWith("mips64") ? 64 : 32), little = (mode) => mode.endsWith("-le");
 // A word's bytes in a mode's order.
@@ -184,8 +175,7 @@ for (const [mode, text] of [["mips32-be", ""], ["mips32-be", "foo $a0"], ["mips3
     ["mips32-be", "ext $v0, $a0, 3, 0"], ["mips32-be", "li $v0, 1"], ["mips32-be", "bbit0 $a0, 3, 0x1010"], ["mips64-be", "copy_s.b $v0, $w1[16]"], ["mips32-be", "x".repeat(300)]])
     assert.equal(typeof (await assemble(mode, text)).error, "string", `${mode}: ${text}`);
 // Another instruction set's line isn't assembled as MIPS's.
-await self.onmessage({ data: { id: ++next, mode: "arm32", assemble: "nop", address: 0 } });
-assert.match(result.error, /only available for x86, ARM64, RISC-V and MIPS/);
+assert.match((await post({ mode: "arm32", assemble: "nop", address: 0 })).error, /only available for x86, ARM64, RISC-V and MIPS/);
 // More than one way to encode it: what's there is kept; else, the usual one.
 assert.equal(hex((await assemble("mips32-be", "move $a0, $s0", 0x1000, [0x02, 0x00, 0x20, 0x21])).bytes), "02002021");
 assert.equal(hex((await assemble("mips32-be", "move $a0, $s0", 0x1000, [0, 0, 0, 0])).bytes), "02002025");

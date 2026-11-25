@@ -149,7 +149,7 @@ func TestGoStorageWithMoli(t *testing.T) {
 						b.storageShown(p.Frame.URL)
 					}
 				default:
-					b.event(ev, nil, nil)
+					b.event(ev)
 				}
 			default:
 				return
@@ -262,13 +262,13 @@ func TestGoStorageWithMoli(t *testing.T) {
 	embedded := open()
 	navigate(embedded, "/embed")
 	var partition string
-	for deadline := time.Now().Add(3 * time.Second); partition == "" && time.Now().Before(deadline); {
+	waitUntil(t, "the embedded page's partition", func() bool {
 		eval(embedded, "document.readyState")
 		for key := range embedded.storageTab.embedded {
 			partition = key
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return partition != ""
+	})
 	if !strings.HasSuffix(partition, ";top-level-site=http://localhost") || store.items(site.URL) != nil {
 		t.Fatalf("wrong embedded partition: %q, top-level stored = %v", partition, store.items(site.URL) != nil)
 	}

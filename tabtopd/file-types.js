@@ -2,7 +2,8 @@
 export const FILE_TYPES = Object.freeze({
   "3mf": {
     "kind": "model",
-    "mime": "model/3mf"
+    "mime": "model/3mf",
+    "thumbnail": true
   },
   "aac": {
     "kind": "audio",
@@ -19,7 +20,9 @@ export const FILE_TYPES = Object.freeze({
   },
   "bgcode": {
     "kind": "model",
-    "mime": "application/octet-stream"
+    "mime": "application/octet-stream",
+    "thumbnail": true,
+    "toolpath": true
   },
   "bmp": {
     "epubPicture": true,
@@ -28,7 +31,8 @@ export const FILE_TYPES = Object.freeze({
   },
   "dae": {
     "kind": "model",
-    "mime": "model/vnd.collada+xml"
+    "mime": "model/vnd.collada+xml",
+    "textModel": true
   },
   "db3": {
     "kind": "sqlite",
@@ -48,11 +52,17 @@ export const FILE_TYPES = Object.freeze({
   },
   "gco": {
     "kind": "model",
-    "mime": "text/x-gcode"
+    "mime": "text/x-gcode",
+    "textModel": true,
+    "thumbnail": true,
+    "toolpath": true
   },
   "gcode": {
     "kind": "model",
-    "mime": "text/x-gcode"
+    "mime": "text/x-gcode",
+    "textModel": true,
+    "thumbnail": true,
+    "toolpath": true
   },
   "gif": {
     "epubPicture": true,
@@ -65,7 +75,8 @@ export const FILE_TYPES = Object.freeze({
   },
   "gltf": {
     "kind": "model",
-    "mime": "model/gltf+json"
+    "mime": "model/gltf+json",
+    "textModel": true
   },
   "heic": {
     "kind": "image",
@@ -123,7 +134,8 @@ export const FILE_TYPES = Object.freeze({
   },
   "obj": {
     "kind": "model",
-    "mime": "model/obj"
+    "mime": "model/obj",
+    "textModel": true
   },
   "oga": {
     "kind": "audio",
@@ -173,7 +185,8 @@ export const FILE_TYPES = Object.freeze({
   },
   "vrml": {
     "kind": "model",
-    "mime": "model/vrml"
+    "mime": "model/vrml",
+    "textModel": true
   },
   "wav": {
     "kind": "audio",
@@ -190,7 +203,8 @@ export const FILE_TYPES = Object.freeze({
   },
   "wrl": {
     "kind": "model",
-    "mime": "model/vrml"
+    "mime": "model/vrml",
+    "textModel": true
   },
   "wrz": {
     "kind": "model",

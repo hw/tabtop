@@ -9,16 +9,7 @@
 // pattern of more than 99 entries cut to 99, each at most 10 s.
 (() => {
     const MAX_ENTRIES = 99, MAX_MS = 10_000;
-    const reader = () => {
-        let w = window;
-        try {
-            while (w.parent !== w) {
-                void w.parent.document;
-                w = w.parent;
-            }
-        } catch { /* this origin's topmost */ }
-        return w;
-    };
+    const reader = tabtopTop;  // (gopage-prelude.js)
     // An unsigned long, as WebIDL converts one (NaN and the infinities 0).
     const ulong = (v) => {
         const n = Number(v);
@@ -47,7 +38,7 @@
         if (top.parent !== top) return false;
         if (document.visibilityState === "hidden") return false;
         try {
-            top.document.dispatchEvent(new CustomEvent("__tabtop_vibrate", { detail: JSON.stringify(list) }));
+            tabtopTell(top.document, "__tabtop_vibrate", list);
         } catch {
             return false;
         }

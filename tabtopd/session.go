@@ -280,9 +280,8 @@ func closeTunnels(s *session, reason string, asking *tunnel) {
 // client IP. It has its own lock, so a flood of them doesn't hold up the
 // sessions.
 type handshakes struct {
-	mu    sync.Mutex
-	total int
-	byIP  map[string]int
+	mu sync.Mutex
+	keyedSlots
 }
 
 // start counts a tunnel from ip until it's logged in or tied to a session,
@@ -296,23 +295,15 @@ func (h *handshakes) start(ip string) (func(), bool) {
 func (h *handshakes) startUpTo(ip string, most, perIP int) (func(), bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.total >= most || h.byIP[ip] >= perIP {
+	if !h.take(ip, most, perIP) {
 		return nil, false
 	}
-	if h.byIP == nil {
-		h.byIP = map[string]int{}
-	}
-	h.total++
-	h.byIP[ip]++
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			h.total--
-			if h.byIP[ip]--; h.byIP[ip] <= 0 {
-				delete(h.byIP, ip)
-			}
+			h.give(ip)
 		})
 	}, true
 }

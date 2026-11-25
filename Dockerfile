@@ -289,7 +289,7 @@ COPY --from=capstone /capstone-out /disasm
 COPY --from=arm64asm /arm64-out /disasm
 COPY --from=demangle /demangle-out /disasm
 COPY --from=capstone /capstone-check /capstone-check
-COPY scripts/disasm/check-capstone.mjs scripts/disasm/check-arm64.mjs scripts/disasm/check-riscv.mjs scripts/disasm/check-mips.mjs scripts/disasm/check-demangle.mjs /
+COPY scripts/disasm/worker-harness.mjs scripts/disasm/check-capstone.mjs scripts/disasm/check-arm64.mjs scripts/disasm/check-riscv.mjs scripts/disasm/check-mips.mjs scripts/disasm/check-demangle.mjs /
 COPY tabtopd/disasm-worker.js /disasm-worker.js
 RUN mkdir -p /src && tar -xzf /iced.tgz -C /src --no-same-owner \
  && node /build.mjs /src/package /disasm /x86-asm.js \
@@ -366,7 +366,7 @@ RUN mkdir /src \
  && tar -xzf /three.tgz -C /src --no-same-owner \
  && sh vendor.sh /src/package /three LICENSE.apache
 COPY scripts/three/check.mjs ./
-COPY tabtopd/model-worker.js tabtopd/model-decode.js tabtopd/model-decode-worker.js tabtopd/model-export.js tabtopd/model-limits.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js tabtopd/bgcode.js tabtopd/model-resources.js tabtopd/preview-model.js tabtopd/file-types.js ./tabtopd/
+COPY tabtopd/model-worker.js tabtopd/model-decode.js tabtopd/worker-client.js tabtopd/model-decode-worker.js tabtopd/model-export.js tabtopd/model-limits.js tabtopd/model-info.js tabtopd/model-3mf.js tabtopd/gcode.js tabtopd/bgcode.js tabtopd/model-resources.js tabtopd/preview-model.js tabtopd/file-types.js ./tabtopd/
 COPY test/model-worker.test.mjs test/model-fbx.test.mjs test/model-decode.test.mjs test/model-export.test.mjs ./test/
 COPY test/data/3d/prism.stl test/data/3d/cura.gcode test/data/3d/prusa.3mf test/data/3d/turned-ascii.fbx test/data/3d/prism.bgcode \
      test/data/3d/box-draco.gltf test/data/3d/box-draco.bin test/data/3d/box-meshopt.glb test/data/3d/lamp-occlusion.ktx2 test/data/3d/board.wrl ./test/data/3d/
@@ -567,7 +567,8 @@ FROM desktop-${DESKTOP}
 # (scroll). Viewers can change it in noVNC's settings; their choice sticks.
 # VNC_ADDR: an RFB server to show instead of the container's own desktop,
 # host:port or unix:/path; empty (default) starts Xvnc, XFCE and the sound
-# here. The gateway's connection to it isn't encrypted: keep it private.
+# here. The gateway's connection to it is encrypted only with VNC_X509=1
+# (VeNCrypt, its certificate verified): otherwise keep it private.
 # WEB_BASE_PATH: URL path the site is served under, for a reverse proxy that
 # puts it in a subdirectory, e.g. /tabtop/ (default /). The proxy passes the
 # path through unchanged.

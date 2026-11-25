@@ -113,27 +113,18 @@ export async function markdownFrame(path, dir, opts = {}) {
             resources = frameResources(dir, opts.externalMode ?? "none");
             media = frameMedia(frame, dir, opts.externalMode ?? "none");
         } else if (m.type === "resource" && m.render === render && resources) {
-            const loader = resources;
-            let got = await loader.read({ src: m.src, base: m.base ?? "", kind: m.kind });
-            if (loader !== resources) got = { error: "Preview replaced." };
-            const bytes = got.bytes?.slice(0);
-            frame.contentWindow?.postMessage({ id: m.id, ...got, ...(bytes ? { bytes } : {}) }, "*", bytes ? [bytes] : []);
+            await replyFrom(frame, m.id, resources, () => resources, (l) => l.read({ src: m.src, base: m.base ?? "", kind: m.kind }));
         } else if (m.type === "media" && m.render === render && media) {
-            const owner = media;
-            const got = await owner.open({ ...m, id: m.mediaId });
-            if (owner === media) frame.contentWindow?.postMessage({ id: m.id, ...got }, "*");
+            // (Answered if the preview's replaced meanwhile too: the frame's
+            // ask would wait for good.)
+            await replyFrom(frame, m.id, media, () => media, (l) => l.open({ ...m, id: m.mediaId }));
         } else if (m.type === "media-positions" && m.render === render && Array.isArray(m.positions)) {
             for (const at of m.positions.slice(0, 8)) media?.place(at.id, at.rect);
         } else if (m.type === "media-direct" && m.render === render) {
             const at = resourceAddress(m.src, "", dir);
             frame.contentWindow?.postMessage({ id: m.id, ...(opts.externalMode === "direct" && at?.remote ? { url: at.url } : { error: "External media is blocked." }) }, "*");
         } else if (m.type === "image" && typeof m.src === "string") {
-            const loader = pictures;
-            let got = loader && m.render === render ? await loader.read(m.src) : { error: "Preview replaced." };
-            if (loader !== pictures) got = { error: "Preview replaced." };
-            // Keep the cached source, but transfer the reply copy to the frame.
-            const bytes = got.bytes?.slice(0);
-            frame.contentWindow?.postMessage({ id: m.id, ...got, ...(bytes ? { bytes } : {}) }, "*", bytes ? [bytes] : []);
+            await replyFrom(frame, m.id, m.render === render ? pictures : null, () => pictures, (l) => l.read(m.src));
         } else if (m.type === "open" && typeof m.href === "string") {
             opts.open?.(m.href, m.location);
 
@@ -179,13 +170,8 @@ export function epubFrame(path, file, opts = {}) {
         // or splitting them a second time.
         resolve: src => webAddress(src) ?? src,
         load: (src, reserve, signal) => webAddress(src) ? frameExternalPicture(src, opts.externalMode, reserve, signal) : ask(src, signal, async t => {
-            if (typeOf(src.split("/").pop() ?? "")?.kind !== "image" ||
-                !t.reply.mime?.startsWith("image/") || !Number.isSafeInteger(t.reply.size) || t.reply.size < 0 ||
-                t.reply.size > 20 * 1024 * 1024) throw new Error("not a supported picture");
-            if (!reserve(t.reply.size)) return { error: "Pictures exceed the 64 MiB preview budget." };
-            const blob = await collect(t, t.reply.size, () => {}, t.reply.mime);
-            signal.throwIfAborted();
-            return { bytes: await blob.arrayBuffer(), mime: t.reply.mime };
+            if (typeOf(src.split("/").pop() ?? "")?.kind !== "image" || !t.reply.mime?.startsWith("image/")) throw new Error("not a supported picture");
+            return pictureFrom(t, t.reply.mime, reserve, signal);
         }),
     });
     const reply = (m) => frame.contentWindow?.postMessage(m, "*", m.bytes ? [m.bytes] : []);
@@ -210,11 +196,7 @@ export function epubFrame(path, file, opts = {}) {
                 reply({ id: m.id, error: "not a picture" });
                 return;
             }
-            const loader = pictures;
-            let got = loader && m.render === render ? await loader.read(m.src) : { error: "Chapter replaced." };
-            if (loader !== pictures) got = { error: "Chapter replaced." };
-            const bytes = got.bytes?.slice(0);
-            reply({ id: m.id, ...got, ...(bytes ? { bytes } : {}) });
+            await replyFrom(frame, m.id, m.render === render ? pictures : null, () => pictures, (l) => l.read(m.src), "Chapter replaced.");
         } else if (m.type === "at" && typeof m.item === "string" && m.item.length < 1000 && Number.isFinite(m.fraction)) {
             frame.previewLocation = { item: m.item, fraction: m.fraction, size: Number.isInteger(m.size) ? m.size : undefined };
             setBookPlace(path, file.size, { item: m.item, fraction: m.fraction, size: Number.isInteger(m.size) ? m.size : undefined });
@@ -227,8 +209,36 @@ export function epubFrame(path, file, opts = {}) {
     return frame;
 }
 
-// Per-source cap, in addition to pictureLoader's count and cumulative budgets.
-const FRAME_PICTURE_BYTES = 20e6;
+// Per-source cap, in addition to pictureLoader's count and cumulative
+// budgets: a Markdown or HTML document's, or a book's.
+const FRAME_PICTURE_BYTES = 20 * 1024 * 1024;
+
+// pictureFrom reads the picture t (a tunnel) is sending, as mime, for a
+// frame: none past FRAME_PICTURE_BYTES, or the preview's budget (reserve).
+async function pictureFrom(t, mime, reserve, signal) {
+    const size = t.reply.size;
+    if (!Number.isSafeInteger(size) || size < 0 || size > FRAME_PICTURE_BYTES) return { error: "too big to show" };
+    if (!reserve(size)) return { error: "Pictures exceed the 64 MiB preview budget." };
+    const blob = await collect(t, size, () => {}, mime);
+    signal.throwIfAborted();
+    return { bytes: await blob.arrayBuffer(), mime };
+}
+
+// replyTo answers a frame's ask (id) with got: its bytes, if any, as a
+// copy, transferred (the loader keeps its own, cached).
+function replyTo(frame, id, got) {
+    const bytes = got.bytes?.slice(0);
+    frame.contentWindow?.postMessage({ id, ...got, ...(bytes ? { bytes } : {}) }, "*", bytes ? [bytes] : []);
+}
+
+// replyFrom answers a frame's ask (id) with what read gets of loader, or,
+// if there's none, or it's been replaced by the time it has (a new render:
+// current() isn't it), says so: the frame's ask is answered either way.
+async function replyFrom(frame, id, loader, current, read, replaced = "Preview replaced.") {
+    let got = loader ? await read(loader) : { error: replaced };
+    if (loader !== current()) got = { error: replaced };
+    replyTo(frame, id, got);
+}
 
 // Read a confined, canonical picture path after reserving its cache space.
 async function framePicture(path, reserve, signal) {
@@ -243,14 +253,7 @@ async function framePicture(path, reserve, signal) {
         signal.throwIfAborted();
         tt = await call({ type: "file", path });
         signal.throwIfAborted();
-        const { size } = tt.reply;
-        if (size > FRAME_PICTURE_BYTES) {
-            return { error: "too big to show" };
-        }
-        if (!reserve(size)) return { error: "Pictures exceed the 64 MiB preview budget." };
-        const blob = await collect(tt, size, () => {}, t.type);
-        signal.throwIfAborted();
-        return { bytes: await blob.arrayBuffer(), mime: t.type };
+        return await pictureFrom(tt, t.type, reserve, signal);
     } catch (err) {
         return { error: /^not found\.?$/i.test(err.message) ? `Local image not found: ${path}` : err.message };
     } finally {

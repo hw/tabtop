@@ -1,6 +1,6 @@
 // A local working copy of PDF pages. The PDF stays in its opaque sandbox;
 // only requested raster pages cross the bridge. Nothing writes to the source.
-import { el } from "./preview-dom.js";
+import { el, maximizeButton, showModal } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { saveBlob } from "./requests.js";
 import { askYes } from "./ui.js";
@@ -71,6 +71,74 @@ async function localPDF(file, host, signal) {
 // pictures, each a card of its own: the same tools, the same operations
 // list applied to those selected, and saved (save(blob, name, replace,
 // signal)) beside the originals as copies, over them, or downloaded.
+// pageCards are the page editor's cards, in list: each a page's (or a
+// picture's) thumbnail, its box (in selected()), its name (label), and
+// whether it's edited, opened by a press (openPage) and dragged to another
+// place (move(from, to, after), while movable()). thumbnail(n) is the
+// picture to show, drawn as it's scrolled to, one at a time; changed(),
+// after a box is ticked; stopped(), the editor closed. It returns the cards
+// (by page), build(pages), clear(), queue(n) (its thumbnail drawn again)
+// and refresh() (all of them).
+function pageCards({ list, label, button, selected, edited, thumbnail, openPage, movable, move, changed, stopped }) {
+    const cards = new Map();
+    // Thumbnails are requested only when visible, one at a time. Edited
+    // thumbnails use their stored PNG; unedited pages stay in the PDF frame.
+    const thumbs=[],observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){observer.unobserve(entry.target);queueThumb(Number(entry.target.dataset.page));}},{root:list,rootMargin:"120px"});
+    let drawingThumb=false;
+    function queueThumb(n){const card=cards.get(n);if(!card)return;card.version++;thumbs.push([n,card.version]);drawThumbs();}
+    async function drawThumbs(){
+        if(drawingThumb||stopped())return;drawingThumb=true;
+        try{while(thumbs.length&&!stopped()){
+            const[n,version]=thumbs.shift(),card=cards.get(n);if(!card||card.version!==version)continue;
+            try{
+                const blob=await thumbnail(n);
+                if(stopped()||cards.get(n)!==card||card.version!==version)continue;
+                if(card.url)URL.revokeObjectURL(card.url);card.url=URL.createObjectURL(blob);card.img.src=card.url;
+            }catch(err){if(!stopped()){card.status.textContent=`Preview: ${err.message}`;}}
+        }}finally{drawingThumb=false;}
+    }
+    function bindPageDrag(card,n) {
+        const dropAfter=event=>event.clientY>card.getBoundingClientRect().top+card.offsetHeight/2;
+        card.addEventListener("dragstart",event=>{
+            if(!movable()){event.preventDefault();return;}
+            event.dataTransfer.setData(PDF_PAGE_DRAG,String(n));event.dataTransfer.effectAllowed="move";
+        });
+        card.addEventListener("dragover",event=>{
+            if(![...event.dataTransfer.types].includes(PDF_PAGE_DRAG)||!movable())return;
+            event.preventDefault();event.dataTransfer.dropEffect="move";
+            card.classList.toggle("drop-after",dropAfter(event));
+            card.classList.add("drop-target");
+        });
+        card.addEventListener("dragleave",()=>card.classList.remove("drop-target","drop-after"));
+        card.addEventListener("drop",event=>{
+            event.preventDefault();
+            const from=Number(event.dataTransfer.getData(PDF_PAGE_DRAG));
+            const after=dropAfter(event);
+            card.classList.remove("drop-target","drop-after");
+            move(from,n,after);
+        });
+        card.addEventListener("dragend",()=>list.querySelectorAll(".drop-target").forEach(c=>c.classList.remove("drop-target","drop-after")));
+    }
+    function clear() {
+        observer.disconnect();
+        for(const card of cards.values())if(card.url)URL.revokeObjectURL(card.url);
+        cards.clear();list.replaceChildren();
+    }
+    function build(pages){
+        clear();
+        for(const n of pages){
+            const check=el("input",{type:"checkbox",checked:selected().has(n),ariaLabel:`Select ${label(n)}`});
+            check.addEventListener("change",()=>{check.checked?selected().add(n):selected().delete(n);changed();});
+            const img=el("img",{alt:`${label(n)} preview`,draggable:false}),status=el("small",{className:"hint",textContent:edited(n)?"Edited":"Original"});
+            const open=button("","pdf-batch-open-page",()=>openPage(n));open.append(img,el("span",{textContent:label(n)}),status);
+            const card=el("div",{className:"pdf-batch-card",draggable:true},check,open);card.dataset.page=String(n);
+            bindPageDrag(card,n);
+            cards.set(n,{element:card,check,open,img,status,url:null,version:0});list.append(card);observer.observe(card);
+        }
+    }
+    return { cards, build, clear, queue: queueThumb, refresh() { for (const n of cards.keys()) queueThumb(n); changed(); } };
+}
+
 export function pdfImageEditor({ name, count, current = 1, renderPage, closed, images = null, save = null }) {
     const pictures = !!images;
     if (pictures) count = 0;
@@ -82,7 +150,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
     // recorded is how many of the open page's steps are in it already.
     let operations = [], recorded = 0, undoDone = null;
     const lifetime = new AbortController(), processor = batchProcessor();
-    const edits = new Map(), info = new Map(), failures = new Map(), cards = new Map();
+    const edits = new Map(), info = new Map(), failures = new Map();
     let working = count <= MAX_BATCH_PAGES ? Array.from({length:count},(_,i)=>i+1) : [current];
     let selected = new Set(working);
     let order = Array.from({length:count},(_,i)=>i+1), nextPage = count + 1, pageUndo = null;
@@ -108,7 +176,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
     const range=el("input",{className:"pdf-batch-range",value:count<=MAX_BATCH_PAGES?`1-${count}`:String(current),ariaLabel:"Page numbers or ranges",placeholder:"1-3, 5"});
     const choose=button(pictures?"Select":"Select pages","pdf-batch-choose",()=>{
         if(editor?.pending())throw new Error("Apply or cancel the current tool before changing pages.");
-        const numbers=pageRange(range.value,order.length).map(n=>order[n-1]);working=order.filter(n=>numbers.includes(n));selected=new Set(numbers);buildCards();update();
+        const numbers=pageRange(range.value,order.length).map(n=>order[n-1]);working=order.filter(n=>numbers.includes(n));selected=new Set(numbers);pages.build(working);update();
         say(`${numbers.length} pages selected. Masks use relative page coordinates; review pages with different layouts.`);
     });
     const dpi=el("select",{className:"pdf-batch-dpi",ariaLabel:"Render resolution"},...[72,96,144,200,300].map(value=>el("option",{value:String(value),textContent:`${value} DPI`,selected:value===144})));
@@ -155,7 +223,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
         const previous=undo;undo=null;edits.clear();for(const [n,blob]of previous)edits.set(n,blob);
         // Which pages had which operations, as before it too.
         for(const[op,had]of undoDone??[])op.done=had;undoDone=null;
-        failures.clear();refreshCards();await openPage(active,true);say("Last batch undone.");
+        failures.clear();pages.refresh();await openPage(active,true);say("Last batch undone.");
     });
     const cancel=button("Cancel processing","pdf-batch-cancel",()=>{operation?.abort();processor.cancel();});
     cancel.hidden=true;
@@ -164,14 +232,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
         if((pageUndo||order.some((n,i)=>n!==i+1)||(!pictures&&added.size)||edits.size||editor?.dirty()||editor?.pending())&&!await askYes("Leave the page editor? Exported copies are kept; changes in this session will be discarded.","Leave"))return;
         stop();
     });
-    const widen=button(glyphs.expand,"pdf-batch-widen glyph",()=>{
-        const wide=dialog.classList.toggle("wide");
-        widen.textContent=wide?glyphs.contract:glyphs.expand;
-        widen.title=wide?"Back to a box":"Fill the window";
-        widen.setAttribute("aria-label",widen.title);
-        widen.setAttribute("aria-pressed",String(wide));
-    });
-    widen.title="Fill the window";widen.setAttribute("aria-label",widen.title);widen.setAttribute("aria-pressed","false");
+    const widen=maximizeButton(()=>dialog,"pdf-batch-widen");
     // (The close button every dialog has: back to the PDF, for its pages.)
     close.innerHTML=iconSVG("close-circle");
     close.title=pictures?"Close (Esc)":"Back to the PDF (Esc)";close.setAttribute("aria-label",pictures?"Close":"Back to the PDF");
@@ -211,6 +272,10 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
     const settings=el("div",{className:"pdf-batch-settings"},el("label",{},pictures?"Pictures ":"Pages ",range),choose,merge,addImage,undoPages,pdfInput,imageInput,el("label",{hidden:pictures},"Resolution ",dpi),el("span",{className:"hint",textContent:pictures?"Up to 16 megapixels per picture.":`Up to ${MAX_BATCH_PAGES} pages and 16 megapixels per page.`}));
     if(pictures)settings.hidden=true;
     const list=el("div",{className:"pdf-batch-pages",ariaLabel:"PDF pages"});
+    const pages=pageCards({list,label,button,selected:()=>selected,edited:n=>edits.has(n),
+        thumbnail:async n=>{const blob=edits.get(n)??added.get(n)?.blob;return blob?(await rasterImage(blob,144)).blob:(await renderPDFPage(n,36,lifetime.signal,true)).blob;},
+        openPage:n=>openPage(n),movable:()=>!busy&&!loading&&!editor?.pending(),move:(from,n,after)=>{if(order.includes(from))movePage(from,n,after).catch(error);},
+        changed:()=>update(),stopped:()=>stopped});
     const sidebar=el("aside",{className:"pdf-batch-sidebar"},el("div",{className:"pdf-batch-selection"},all,none,...(pictures?[undoPages]:[])),el("small",{className:"pdf-batch-order-hint hint",textContent:pictures?"Drag to reorder (the order of a ZIP or PDF).":"Drag pages to reorder."}),list);
     const host=el("div",{className:"pdf-batch-image"});
     // Pictures: Format, Quality and Remove metadata folded behind Save
@@ -232,12 +297,12 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
     const exportHint=el("small",{className:"pdf-batch-export-hint hint",textContent:"PDF exports contain image pages; selectable text and links are not retained. Transparent areas are white in JPEG and PDF."});
     if(pictures)exportHint.textContent="Copies are named …-edited; replacing writes over each original. A picture saved in another format is saved beside it under the new extension. Metadata goes only with pictures saved in their own format.";
     const dialog=el("dialog",{className:"pdf-image-editor",ariaLabel:pictures?"Edit pictures together":"Edit PDF pages as images"},heading,settings,workspace,note,exportHint);
-    document.body.append(dialog);dialog.showModal();
-    dialog.addEventListener("cancel",event=>{event.preventDefault();if(busy){operation?.abort();processor.cancel();}else close.click();});
+    // Escape: processing going, cancelled; else as ✕ (asked first, with changes).
+    const closeDialog=showModal(dialog,{request:()=>{if(busy){operation?.abort();processor.cancel();}else close.click();},closed:teardown});
 
     function rebuildPages() {
         range.value=working.map(position).join(", ");
-        buildCards();update();
+        pages.build(working);update();
     }
     function rememberPages(){pageUndo={order:[...order],working:[...working],selected:new Set(selected)};}
     async function movePage(n,target,after){
@@ -246,7 +311,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
         rememberPages();order=order.filter(id=>id!==n);order.splice(order.indexOf(target)+(after?1:0),0,n);
         working=order.filter(id=>working.includes(id));
         rebuildPages();say(`Page moved to position ${position(n)}. Exports follow the sidebar order.`);
-        cards.get(n)?.open.focus();
+        pages.cards.get(n)?.open.focus();
     }
     async function importFiles(files){
         if(stopped||busy||loading)return;
@@ -307,7 +372,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
         close.disabled=busy;
         cancel.hidden=!busy;
         host.inert=blocked;
-        for(const[n,card]of cards){
+        for(const[n,card]of pages.cards){
             card.element.draggable=!blocked&&!pending;
             card.check.checked=selected.has(n);
             card.check.disabled=card.open.disabled=blocked;
@@ -354,7 +419,7 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
     function putEdit(n,blob){
         const total=[...edits].reduce((sum,[page,data])=>sum+(page===n?0:data.size),blob.size);
         if(total>MAX_BATCH_BYTES)throw new Error("Edited pages exceed 256 MiB. Export this batch and start another.");
-        edits.set(n,blob);failures.delete(n);queueThumb(n);update();
+        edits.set(n,blob);failures.delete(n);pages.queue(n);update();
     }
     function renderPDFPage(n, resolution, signal, thumbnail = false) {
         const extra=added.get(n);
@@ -534,79 +599,22 @@ export function pdfImageEditor({ name, count, current = 1, renderPage, closed, i
         loading=false;if(stopped)return;
         range.value=working.map(position).join(", ");
         if(!order.length){update();say(`None of them could be opened: ${left.join("; ")}`,true);return;}
-        active=order[0];buildCards();await openPage(active,true);
+        active=order[0];pages.build(working);await openPage(active,true);
         say(left.length?`Left out: ${left.join("; ")}`:`${order.length} ${order.length===1?"picture":"pictures"}. Edit one, then Apply its steps to those selected.`,left.length>0);
     }
 
-    // Thumbnails are requested only when visible, one at a time. Edited
-    // thumbnails use their stored PNG; unedited pages stay in the PDF frame.
-    const thumbs=[],observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){observer.unobserve(entry.target);queueThumb(Number(entry.target.dataset.page));}},{root:list,rootMargin:"120px"});
-    let drawingThumb=false;
-    function queueThumb(n){const card=cards.get(n);if(!card)return;card.version++;thumbs.push([n,card.version]);drawThumbs();}
-    async function drawThumbs(){
-        if(drawingThumb||stopped)return;drawingThumb=true;
-        try{while(thumbs.length&&!stopped){
-            const[n,version]=thumbs.shift(),card=cards.get(n);if(!card||card.version!==version)continue;
-            try{
-                let blob=edits.get(n)??added.get(n)?.blob;
-                if(blob)blob=(await rasterImage(blob,144)).blob;
-                else blob=(await renderPDFPage(n,36,lifetime.signal,true)).blob;
-                if(stopped||cards.get(n)!==card||card.version!==version)continue;
-                if(card.url)URL.revokeObjectURL(card.url);card.url=URL.createObjectURL(blob);card.img.src=card.url;
-            }catch(err){if(!stopped){card.status.textContent=`Preview: ${err.message}`;}}
-        }}finally{drawingThumb=false;}
-    }
-    function bindPageDrag(card,n) {
-        const dropAfter=event=>event.clientY>card.getBoundingClientRect().top+card.offsetHeight/2;
-        card.addEventListener("dragstart",event=>{
-            if(busy||loading||editor?.pending()){event.preventDefault();return;}
-            event.dataTransfer.setData(PDF_PAGE_DRAG,String(n));event.dataTransfer.effectAllowed="move";
-        });
-        card.addEventListener("dragover",event=>{
-            if(![...event.dataTransfer.types].includes(PDF_PAGE_DRAG)||busy||loading||editor?.pending())return;
-            event.preventDefault();event.dataTransfer.dropEffect="move";
-            card.classList.toggle("drop-after",dropAfter(event));
-            card.classList.add("drop-target");
-        });
-        card.addEventListener("dragleave",()=>card.classList.remove("drop-target","drop-after"));
-        card.addEventListener("drop",event=>{
-            event.preventDefault();
-            const from=Number(event.dataTransfer.getData(PDF_PAGE_DRAG));
-            const after=dropAfter(event);
-            card.classList.remove("drop-target","drop-after");
-            if(order.includes(from))movePage(from,n,after).catch(error);
-        });
-        card.addEventListener("dragend",()=>list.querySelectorAll(".drop-target").forEach(c=>c.classList.remove("drop-target","drop-after")));
-    }
-    function clearCards() {
-        observer.disconnect();
-        for(const card of cards.values())if(card.url)URL.revokeObjectURL(card.url);
-        cards.clear();list.replaceChildren();
-    }
-    function buildCards(){
-        clearCards();
-        for(const n of working){
-            const check=el("input",{type:"checkbox",checked:selected.has(n),ariaLabel:`Select ${label(n)}`});
-            check.addEventListener("change",()=>{check.checked?selected.add(n):selected.delete(n);update();});
-            const img=el("img",{alt:`${label(n)} preview`,draggable:false}),status=el("small",{className:"hint",textContent:edits.has(n)?"Edited":"Original"});
-            const open=button("","pdf-batch-open-page",()=>openPage(n));open.append(img,el("span",{textContent:label(n)}),status);
-            const card=el("div",{className:"pdf-batch-card",draggable:true},check,open);card.dataset.page=String(n);
-            bindPageDrag(card,n);
-            cards.set(n,{element:card,check,open,img,status,url:null,version:0});list.append(card);observer.observe(card);
-        }
-    }
-    function refreshCards(){for(const n of cards.keys())queueThumb(n);update();}
-    function stop(){
+    function stop(){closeDialog();}
+    function teardown(){
         if(stopped)return;
         stopped=true;
         lifetime.abort();pageAbort?.abort();operation?.abort();processor.cancel();
-        clearCards();disposeImage();
+        pages.clear();disposeImage();
         for(const imported of importedDocuments)imported.stop();
         importedDocuments.clear();added.clear();edits.clear();undo=null;pageUndo=null;
-        dialog.close();dialog.remove();closed?.();
+        closed?.();
     }
     if(pictures)loadPictures().catch(error);
-    else{buildCards();openPage(active,true).catch(error);}
+    else{pages.build(working);openPage(active,true).catch(error);}
     update();
     return{stop,focus:()=>dialog.focus()};
 }

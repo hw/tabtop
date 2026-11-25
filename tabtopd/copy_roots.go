@@ -287,7 +287,8 @@ func (c *copier) copyFile(from string, want fs.FileInfo, to string) error {
 // {"done"} as it goes, and ends with {"path", "root", "skipped", and any
 // "warning"}: where it went, and how many links and special files a copy
 // left out. A text message cancels it, as the page going does.
-func (g *fileService) tunnelTransfer(t *tunnel, req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelTransfer(call *tunnelCall) {
+	t, req, session, ip, r := call.t, call.req, call.session, call.ip, call.r
 	verb, did := "move", "moved"
 	if req.Copy {
 		verb, did = "copy", "copied"
@@ -452,9 +453,9 @@ func (g *fileService) tunnelTransfer(t *tunnel, req tunnelRequest, session, ip s
 	}
 
 	if d, err := openRootDirectory(dst.root, real); err == nil {
-		free, _, _, ok := fileDiskSpace(d)
+		free, enough := g.room(d, sc.bytes, false)
 		d.Close()
-		if ok && free < sc.bytes {
+		if !enough {
 			let(false)
 			r.fail(fmt.Sprintf("There isn't room for it in %s: it's %s, and %s is free.", dest.Label, humanSize(sc.bytes), humanSize(free)))
 			return

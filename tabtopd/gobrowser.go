@@ -155,6 +155,12 @@ var goPermsJS string
 //go:embed govibrate.js
 var goVibrateJS string
 
+// goPagePreludeJS is what the page-world stand-ins share (see
+// goPageSource).
+//
+//go:embed gopage-prelude.js
+var goPagePreludeJS string
+
 // goPageScripts is what's run in the page's own world in each document,
 // in this order, before the page's own scripts: its fetch patched for
 // data: URLs, its IntersectionObserver stand-in, its players relayed, and
@@ -164,13 +170,33 @@ func goPageScripts() []string {
 		goClipboardJS, goFullscreenJS, goVibrateJS, goWakeLockJS, goOrientationJS, goPointerLockJS, goDropJS, goPermsJS}
 }
 
+// goPageSource is goPageScripts as one script: in one function, with what
+// they share (goPagePreludeJS) first, so no name of theirs is the page's;
+// each guarded on its own, so one that throws as it's set up (a property
+// the engine won't let it define) doesn't take those after it with it.
+func goPageSource() string { return goPageSourceOf(goPageScripts()) }
+
+// goPageSourceOf is scripts as goPageSource puts them together.
+func goPageSourceOf(scripts []string) string {
+	var b strings.Builder
+	b.WriteString("(() => {\n")
+	b.WriteString(goPagePreludeJS)
+	for _, js := range scripts {
+		b.WriteString("\ntry {\n")
+		b.WriteString(js)
+		b.WriteString("\n} catch { /* this one missing, not the rest */ }\n")
+	}
+	b.WriteString("})();\n")
+	return b.String()
+}
+
 //go:embed godevice.js
 var goDeviceJS string
 
 // goDebug (TABTOP_GO_DEBUG=1) logs what each tab does, for finding out why
 // a page misbehaves: the person's requests by kind, navigations,
 // snapshots and changes, by size. Never addresses typed or values.
-var goDebug = os.Getenv("TABTOP_GO_DEBUG") != ""
+var goDebug = os.Getenv("TABTOP_GO_DEBUG") == "1"
 
 func goDebugf(format string, args ...any) {
 	if goDebug {
@@ -202,6 +228,61 @@ const (
 	goActsWaiting = 64
 )
 
+// goPageAsks is what the page shown has asked of the person, or their
+// browser, waiting or held: let go as the page's left, or the person's
+// browser goes (leftPage, connLost), and asked again as one takes the tab
+// back (connBack).
+type goPageAsks struct {
+	popupAsk  int
+	popupAsks goAsks[int, goPopupAsk]
+	// Reads of the clipboard the page asked for, waiting for the person,
+	// by token (goclipboard.go).
+	pasteAsks goAsks[string, *goPasteAsk]
+	// The page's fullscreen, allowed (gofullscreen.go).
+	fullscreen *goFullscreen
+	// Its notifications (gonotify.go).
+	notifying goNotifyTab
+	// Its device asks waiting for the person's browser, and its
+	// Picture-in-Picture (godevice.go).
+	device, pip *goDevicePending
+	vibratedAt  time.Time       // when the page's vibration was last passed on (govibrate.go)
+	wakeHeld    map[string]bool // the page's wake lock sentinels held, by id (gowakelock.go)
+	// The page's orientation locks asked of the person's browser, and
+	// whether it's locked (goorientation.go).
+	orientAsks   goAsks[string, struct{}]
+	orientLocked bool
+	pointerLock  *goPointerLock // the page's pointer lock, asked for or held (gopointerlock.go)
+	imagePaste   *goImagePaste
+	// A position followed (watchPosition: godevice.go), and when it was
+	// last passed on.
+	locWatch       *goDevicePending
+	locWatchAt     time.Time
+	imagePasteBusy bool
+}
+
+// goCertState is the tab's certificate exceptions and warnings (gocert.go,
+// gorevoke.go).
+type goCertState struct {
+	// certs are the tab's certificate exceptions; certWarned, the host and
+	// address last warned of, the only ones Continue takes.
+	certs                    *goCertExceptions
+	certWarned, certWarnedAt string
+	certWarnedRevoked        bool      // (the warning's for a revocation: gorevoke.go)
+	docRequest               [2]string // the page's own document's request, and its address
+	certErrText              string    // its certificate error, the engine's words
+	certRetried              string    // a document the proxy refused (the engine ignoring errors), loaded again
+	docPosted                bool      // its request isn't a GET (a form posted)
+	// What the engine's been told of certificate errors (certIgnore's
+	// alone, under certMu: the jobs and a paused document's request): 0 to
+	// heed them, 1 to ignore them, -1 not known (a call that failed may
+	// have been heeded).
+	certMu   sync.Mutex
+	certTold int8
+	// certUnsupported: the engine can't ignore certificate errors (it
+	// hasn't the method): no exception's continued to (cert-continue).
+	certUnsupported atomic.Bool
+}
+
 type goBrowser struct {
 	t msgConn
 	e *goEngine
@@ -224,42 +305,20 @@ type goBrowser struct {
 	hider   *goAdHider
 	cookies goCookieTab
 	// The site settings (gosites.go), and the pop-ups the person's asked about.
-	sites     *goSiteSettings
-	popupAsk  int
-	popupAsks map[int]goPopupAsk
-	// Reads of the clipboard the page asked for, waiting for the person,
-	// by token (goclipboard.go).
-	pasteAsks map[string]*goPasteAsk
-	// The page's fullscreen, allowed (gofullscreen.go).
-	fullscreen *goFullscreen
-	// Its notifications (gonotify.go).
-	notifying                     goNotifyTab
+	sites *goSiteSettings
+	// What the page's asked of the person, or their browser (goPageAsks).
+	goPageAsks
 	devicePolicy, devicePolicyURL string
 	viewerCaps                    goViewerCaps
-	device                        *goDevicePending
 	fs                            goFileSystem
-	pip                           *goDevicePending
 	// recycled: the viewer's been advised to move the tab to a fresh engine
 	// (its memory past the soft limit: goRecycleAt), and is again as it
 	// connects again.
-	recycled   bool
-	vibratedAt time.Time       // when the page's vibration was last passed on (govibrate.go)
-	wakeHeld   map[string]bool // the page's wake lock sentinels held, by id (gowakelock.go)
-	// The page's orientation locks asked of the person's browser, and
-	// whether it's locked (goorientation.go).
-	orientAsks   map[string]goOrientLock
-	orientLocked bool
-	pointerLock  *goPointerLock // the page's pointer lock, asked for or held (gopointerlock.go)
-	overSince    time.Time      // since when its engine's been past the soft limit; zero: it isn't
-	imagePaste   *goImagePaste
+	recycled  bool
+	overSince time.Time // since when its engine's been past the soft limit; zero: it isn't
 	// The script telling pages what the person's browser can do (godevice.go:
 	// the jobs' worker's alone).
 	deviceScript string
-	// A position followed (watchPosition: godevice.go), and when it was
-	// last passed on.
-	locWatch       *goDevicePending
-	locWatchAt     time.Time
-	imagePasteBusy bool
 	// Streams by the document that sent them first, and the frames that
 	// have streamed lately, asked often (goframestreams.go).
 	streamOwners  goStreamOwners
@@ -321,15 +380,8 @@ type goBrowser struct {
 	// The generation whose document is the proxy's refusal, and why.
 	refused    int
 	refusedWhy string
-	// certs are the tab's certificate exceptions (gocert.go); certWarned,
-	// the host and address last warned of, the only ones Continue takes.
-	certs                    *goCertExceptions
-	certWarned, certWarnedAt string
-	certWarnedRevoked        bool      // (the warning's for a revocation: gorevoke.go)
-	docRequest               [2]string // the page's own document's request, and its address
-	certErrText              string    // its certificate error, the engine's words
-	certRetried              string    // a document the proxy refused (the engine ignoring errors), loaded again
-	docPosted                bool      // its request isn't a GET (a form posted)
+	// Its certificate exceptions and warnings (goCertState).
+	goCertState
 	// The closed shadow roots from its HTML, given to the agents
 	// (goclosedroots.go).
 	closed goClosedRoots
@@ -342,15 +394,6 @@ type goBrowser struct {
 	// The world it was in: the page's agent's, or an embedded page's of
 	// another origin (whose own input alone it may act on).
 	inputWorld int
-	// What the engine's been told of certificate errors (certIgnore's
-	// alone, under certMu: the jobs and a paused document's request): 0 to
-	// heed them, 1 to ignore them, -1 not known (a call that failed may
-	// have been heeded).
-	certMu   sync.Mutex
-	certTold int8
-	// certUnsupported: the engine can't ignore certificate errors (it
-	// hasn't the method): no exception's continued to (cert-continue).
-	certUnsupported atomic.Bool
 	// The page's last events, by method and parameters (see ours).
 	seenEvents [32]string
 	seenAt     int
@@ -415,6 +458,9 @@ type goBrowser struct {
 	// it's lost: goresume.go), as t; connections lent it come by attach.
 	conn   *goConn
 	attach chan *goLink
+	// The load under way's timeout, and the dialog waiting's (the tab's
+	// loop alone reads and sets them).
+	loadTimeout, dialogTimeout <-chan time.Time
 }
 
 // goQueue runs functions one at a time, in order, on a goroutine of its
@@ -705,7 +751,7 @@ func newGoBrowser(e *goEngine, cdp *cdpConn, page, target string) *goBrowser {
 	resCtx, resCancel := context.WithCancel(ctx)
 	return &goBrowser{resCtx: resCtx, resCancel: resCancel, t: conn, conn: conn, attach: make(chan *goLink), e: e, cdp: cdp, page: page, target: target, popups: map[string]bool{},
 		input: &goInput{pressed: map[int]goPress{}}, res: newGoResCache(), ctx: ctx, cancel: cancel,
-		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{}), certs: &goCertExceptions{}}
+		jobs: newGoQueue(), acts: newGoQueue(), results: make(chan func(), 16), stop: make(chan struct{}), goCertState: goCertState{certs: &goCertExceptions{}}}
 }
 
 // goNetBusy is how many of a page's requests may be going and it still be
@@ -829,16 +875,16 @@ func (b *goBrowser) run() {
 	taken := false // taken by a connection yet (the first, or one back)
 	go b.jobs.run(stop)
 	go b.acts.run(stop)
-	// The page's own world's scripts (goPageScripts), in every document
+	// The page's own world's scripts (goPageSource), in every document
 	// from now on, before its own scripts: queued before any navigation.
 	b.job(func() any {
 		ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
 		defer cancel()
 		scripts := goPageScripts()
 		if b.e != nil && b.e.adapter.noDialogs {
-			scripts = append(scripts, goDialogsJS)
+			scripts = append(scripts, goDialogsJS) // (with the rest: tabtopTell keeps an alert till the agent's there)
 		}
-		source := strings.Join(scripts, "\n")
+		source := goPageSourceOf(scripts)
 		return b.cdp.call(ctx, b.page, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": source}, nil)
 	}, func(r any) { goDebugf("page scripts: %v", r) })
 	b.notifyRegister() // (the sites' notification answers: gonotify.go)
@@ -854,7 +900,6 @@ func (b *goBrowser) run() {
 	cookieSync := time.NewTicker(goCookiesEvery)
 	defer cookieSync.Stop()
 
-	var loadTimeout, dialogTimeout <-chan time.Time
 	for {
 		select {
 		case l := <-b.attach:
@@ -887,7 +932,7 @@ func (b *goBrowser) run() {
 			downloadsDone = nil
 			read(l)
 			if taken {
-				b.releaseDevices()
+				b.connLost()
 				b.resume()
 			}
 			taken = true
@@ -897,7 +942,7 @@ func (b *goBrowser) run() {
 				continue
 			}
 			b.conn.swap(nil)
-			b.releaseDevices()
+			b.connLost()
 			l.release()
 			b.conn.detachedAt(time.Now())
 			detached = time.After(goDetachedFor)
@@ -941,141 +986,16 @@ func (b *goBrowser) run() {
 					}
 				}
 			}
-			switch m.Op {
-			case "close":
+			if m.Op == "close" {
 				// Closed by the person (its tab): not kept.
 				b.t.Close(websocket.StatusNormalClosure, "This tab was closed.")
 				return
-			case "popup-answer":
-				b.popupAnswer(m.ID, m.Accept, m.Remember)
-			case "navigate":
-				if m.View != nil {
-					b.setView(*m.View) // before the page loads, at its size
-				}
-				u, err := goURL(m.URL)
-				if err != nil {
-					b.gen++
-					b.loading, loadTimeout = 0, nil
-					b.fail(b.gen, err.Error())
-					continue
-				}
-				loadTimeout = b.navigate(u, "you")
-			case "cert-continue":
-				// Continue on a certificate warning (gocert.go): the host
-				// warned of, at the address warned of, an exception for the
-				// tab from now, and loaded again.
-				// (Refused, said: the page shows it's loading.)
-				u, err := goURL(m.URL)
-				if err != nil || b.certWarned == "" || u != b.certWarnedAt {
-					b.fail(b.gen, "That warning is out of date: load the page again.")
-					continue
-				}
-				if b.certUnsupported.Load() && !b.certWarnedRevoked {
-					b.fail(b.gen, "This browser's engine can't continue past a certificate warning.")
-					continue
-				}
-				if !b.certs.add(b.certWarned, b.certWarnedRevoked) {
-					b.fail(b.gen, "This tab has too many certificate exceptions: open the site in a new tab.")
-					continue
-				}
-				b.certWarned, b.certWarnedAt, b.certWarnedRevoked = "", "", false
-				loadTimeout = b.navigate(u, "you")
-			case "stop":
-				b.gen++
-				b.loading, loadTimeout = 0, nil
-				shown := b.docURL
-				b.job(func() any {
-					ctx, cancel := context.WithTimeout(context.Background(), goCallTimeout)
-					defer cancel()
-					err := b.cdp.call(ctx, b.page, "Page.stopLoading", nil, nil)
-					b.certIgnore(ctx, shown) // (as the page shown is: the load stopped may not have come)
-					return err
-				}, func(any) {})
-			case "event":
-				if m.Gen != b.shown || m.Gen != b.gen {
-					continue // for a document that's gone
-				}
-				b.act(m)
-			case "files":
-				b.chooseFiles(m) // a chooser answered (gouploads.go)
-			case "paste":
-				b.paste(m) // a read of the clipboard answered (goclipboard.go)
-			case "paste-part":
-				b.pastePart(m) // and the picture given it, in parts
-			case "notify-permission":
-				b.notifyAnswer(m) // notifications allowed, or not (gonotify.go)
-			case "notify-event":
-				b.notifyEvent(m) // one shown, clicked or closed
-			case "device-answer":
-				b.deviceAnswer(m)
-			case "go-fs-cancel":
-				if m.Gen == b.gen {
-					b.abortFSRead(m.Text)
-				}
-			case "paste-image":
-				b.pasteImage(m)
-			case "pointerlock":
-				if m.Gen == b.gen {
-					b.pointerLockState(m.Value) // the person's browser locked, couldn't, or left it (gopointerlock.go)
-				}
-			case "orientation-answer":
-				if m.Gen == b.gen {
-					b.orientationAnswered(m) // the person's browser locked, or couldn't (goorientation.go)
-				}
-			case "wakelock-lost":
-				b.wakeLockLost() // the person's browser couldn't keep it (gowakelock.go)
-			case "fullscreen-exit":
-				b.fullscreenExit() // the person left it (gofullscreen.go)
-			case "drop-files":
-				b.dropStart(m) // files dropped on the page, to be sent
-			case "dropped":
-				b.dropFiles(m) // and sent: dropped there
-			case "resync":
-				if m.Gen == b.shown && b.loading == 0 {
-					b.readAgain(b.gen)
-				}
-			case "viewport":
-				if m.View != nil {
-					b.setView(*m.View)
-				}
-			case "theme":
-				// Dark mode changed (Site controls): the page told again, and
-				// read again whole, for its copy's styles to go by it too
-				// (goSchemeOf, go-frame.js).
-				b.job(func() any { b.schemeAt(""); return nil }, func(any) {
-					if b.shown == b.gen && b.gen != 0 {
-						b.readAgain(b.gen)
-					}
-				})
-			case "res":
-				// A resource for the page shown, from any generation: a
-				// page being left may still ask, and it's kept.
-				b.serveRes(m)
-			case "io":
-				// Not the person's doing as such: a page can make what it
-				// observes come and go by itself, and mustn't keep the
-				// watchdog from seeing it busy.
-				if m.Gen == b.shown && m.Gen == b.gen {
-					b.giveIO(m.Entries)
-				}
-			case "dialog":
-				if m.Quiet && !b.dialog {
-					b.quiet = b.gen // shown what it asked: no more of it
-				}
-				if b.dialog {
-					if m.Quiet {
-						b.quiet = b.gen
-					}
-					b.answer(m.Accept, m.Text)
-					dialogTimeout = nil
-				}
-			default:
-				b.fail(b.gen, "Unknown request.")
 			}
+			b.takeOp(m) // (goops.go)
 		case f := <-b.results:
 			f()
 		case ev := <-b.cdp.Events:
-			loadTimeout, dialogTimeout = b.event(ev, loadTimeout, dialogTimeout)
+			b.event(ev)
 		case <-b.readSoon:
 			b.readSoon = nil
 			b.readChanges()
@@ -1098,13 +1018,13 @@ func (b *goBrowser) run() {
 			b.frameStreamsSoon() // and those streaming, as often as the page
 			b.notifySoon()       // notification answers changed (gonotify.go)
 			b.recycleSoon()      // its engine's memory past the soft limit: advised once
-		case <-loadTimeout:
+		case <-b.loadTimeout:
 			// Show what has loaded, slow as the rest is.
 			gen := b.loading
-			b.loading, loadTimeout = 0, nil
+			b.loading, b.loadTimeout = 0, nil
 			b.snapshot(gen, false)
-		case <-dialogTimeout:
-			dialogTimeout = nil
+		case <-b.dialogTimeout:
+			b.dialogTimeout = nil
 			if b.dialog {
 				b.answer(false, "") // OK for an alert; Cancel for a question
 				b.send(map[string]any{"type": "go-dialog-closed", "gen": b.gen})
@@ -1145,11 +1065,21 @@ func (b *goBrowser) resume() {
 		// loads its address again, as without a tab to take back.
 		b.send(map[string]any{"type": "go-reload", "gen": b.gen})
 	}
+	b.connBack()
+}
+
+// connBack: a connection took the tab back (resume): what the page holds
+// of the person's browser is taken again there, and what it was asking of
+// the person asked again (see connLost).
+func (b *goBrowser) connBack() {
 	b.askAgain()
-	for id, a := range b.popupAsks {
-		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": id, "url": a.url, "site": a.site})
+	b.popupAsks.due(b.gen, goPopupAskWait)
+	for id, a := range b.popupAsks.m {
+		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": id, "url": a.v.url, "site": a.v.site})
 	}
-	b.resendStreams() // Save stream offered again (gostreams.go)
+	b.notifyAskAgain() // (gonotify.go)
+	b.pasteAsksAgain() // (goclipboard.go)
+	b.resendStreams()  // Save stream offered again (gostreams.go)
 	b.recycleAgain()
 	b.wakeLockAgain() // (gowakelock.go)
 }
@@ -1206,12 +1136,30 @@ func (b *goBrowser) askAgain() {
 	}
 }
 
+// newGen starts a generation (a load, or a page of the page's own going),
+// with left, the page that was shown left: what it asked of the person's
+// browser let go, and its own asks with it (leftPage). A stop, or an
+// address that isn't one, starts one with the page shown kept as it is.
+func (b *goBrowser) newGen(left bool) {
+	if left {
+		b.leftPage()
+	}
+	b.gen++
+}
+
+// sayLoading tells the person's browser the generation's load of u has
+// begun (by "you" or "page"), and asks it again what's being asked (a
+// dialog: askAgain), as it now shows the load.
+func (b *goBrowser) sayLoading(u, by string) {
+	b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": by})
+	b.askAgain()
+}
+
 // navigate starts a generation that loads u, by "you" (the person) or "page"
 // (the page itself, as when it opens a window); it returns the generation's
 // load timeout.
 func (b *goBrowser) navigate(u, by string) <-chan time.Time {
-	b.leftPage()
-	b.gen++
+	b.newGen(true)
 	gen := b.gen
 	if goBlockedHost(goURLHost(u)) {
 		// Not asked for: the proxy would refuse it, as anything of it.
@@ -1224,9 +1172,7 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 	b.loadingURL = u
 	b.pageAt(u) // going there, even to an ad's site, loads it (goadblock.go)
 	b.newAdPage()
-	b.popupAsks = nil // asked about by the page left: gone with it
-	b.send(map[string]any{"type": "go-loading", "gen": gen, "url": u, "by": by})
-	b.askAgain()
+	b.sayLoading(u, by)
 	// A load another one replaces is given up: its Page.navigate (which an
 	// engine may leave unanswered, sent while a dialog held the page) mustn't
 	// hold up the jobs behind it, the next load and its snapshot among them.
@@ -1274,9 +1220,9 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 				// (the document's last request): TabTop's warning, to go
 				// back or on (to there).
 				at := ""
-				if strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goCertHostOf(u)) {
+				if strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goPageHost(u)) {
 					at = u
-				} else if d := b.docRequest[1]; d != "" && d != u && strings.HasPrefix(d, "https:") && b.certs.tookRevoked(goCertHostOf(d)) {
+				} else if d := b.docRequest[1]; d != "" && d != u && strings.HasPrefix(d, "https:") && b.certs.tookRevoked(goPageHost(d)) {
 					// (As Continue's address will be taken: goURL.)
 					at = d
 					if g, err := goURL(d); err == nil {
@@ -1402,7 +1348,7 @@ func (b *goBrowser) setView(v goView) {
 }
 
 // event handles one of the engine's events.
-func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Time) (<-chan time.Time, <-chan time.Time) {
+func (b *goBrowser) event(ev cdpEvent) {
 	switch ev.Method {
 	case "Fetch.requestPaused":
 		b.storagePaused(ev)
@@ -1423,7 +1369,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		json.Unmarshal(ev.Params, &p)
 		info := p.TargetInfo
 		if info.Type != "page" || info.TargetID == b.target || info.TargetID == "" || b.popups[info.TargetID] {
-			return loadTimeout, dialogTimeout
+			return
 		}
 		if u, err := goURL(info.URL); err == nil {
 			b.popups[info.TargetID] = true
@@ -1434,10 +1380,10 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			}()
 			b.popup(u) // opened, refused or asked about, as its site's set (gosites.go)
 		}
-		return loadTimeout, dialogTimeout
+		return
 	}
 	if !b.ours(ev) {
-		return loadTimeout, dialogTimeout
+		return
 	}
 	switch ev.Method {
 	case "Page.fileChooserOpened":
@@ -1456,7 +1402,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		b.dialog = true
 		if p.Type == "beforeunload" {
 			b.answer(true, "") // leaving goes ahead
-			return loadTimeout, dialogTimeout
+			return
 		}
 		// A page that asks again and again (in a loop, on every key) would
 		// keep the person answering: once they've said it may ask no
@@ -1468,7 +1414,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		b.asked++
 		if b.quiet == b.gen {
 			b.answer(false, "")
-			return loadTimeout, dialogTimeout
+			return
 		}
 		if len(p.Message) > 2000 {
 			p.Message = p.Message[:2000] + "…"
@@ -1483,7 +1429,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		goDebugf("dialog %s (%d of gen %d) opened", p.Type, b.asked, b.gen)
 		b.dialogMsg = map[string]any{"type": "go-dialog", "gen": b.gen, "kind": p.Type, "message": p.Message, "default": p.Default, "url": from, "again": b.asked > 1}
 		b.send(b.dialogMsg)
-		dialogTimeout = time.After(goDialogWait)
+		b.dialogTimeout = time.After(goDialogWait)
 	case "Page.frameNavigated":
 		var p struct {
 			Frame struct {
@@ -1539,14 +1485,11 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		} else if u, err := goURL(p.Frame.URL); err == nil {
 			// The page went somewhere by itself: a link, a form, a
 			// redirect by script.
-			b.leftPage()
-			b.gen++
+			b.newGen(true)
 			b.loading, b.navigated = b.gen, true
 			b.loadingURL = u
-			b.popupAsks = nil // asked about by the page left: gone with it
-			b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": "page"})
-			loadTimeout = time.After(goLoadTimeout)
-			b.askAgain()
+			b.loadTimeout = time.After(goLoadTimeout)
+			b.sayLoading(u, "page")
 		}
 	case "Network.responseReceived":
 		var p struct {
@@ -1593,12 +1536,12 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		case "Network.loadingFailed":
 			b.streamFailed(ev)
 			if u := b.docFailedCert(ev); u != "" {
-				loadTimeout = b.certFailed(u, loadTimeout)
-			} else if u := b.docRequest[1]; b.docFailed(ev) && b.loading == 0 && strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goCertHostOf(u)) {
+				b.loadTimeout = b.certFailed(u)
+			} else if u := b.docRequest[1]; b.docFailed(ev) && b.loading == 0 && strings.HasPrefix(u, "https:") && b.certs.tookRevoked(goPageHost(u)) {
 				// A page it went to whose certificate's revoked (the tunnel
 				// refused it: gorevoke.go): warned of, as a load of its own.
 				b.certErrText = "net::ERR_CERT_REVOKED"
-				loadTimeout = b.certFailed(u, loadTimeout)
+				b.loadTimeout = b.certFailed(u)
 			} else if b.docFailed(ev) && b.loading == 0 {
 				// The page's own load failed, not come: certificate errors as
 				// the page still shown is (they were set for the one going).
@@ -1624,7 +1567,7 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 		// as changes, as anything later does.
 		if b.loading != 0 && b.navigated {
 			gen := b.loading
-			b.loading, loadTimeout = 0, nil
+			b.loading, b.loadTimeout = 0, nil
 			b.snapshot(gen, false)
 		} else if ev.Method == "Page.loadEventFired" {
 			b.changed(0) // what it did as it finished loading
@@ -1644,7 +1587,6 @@ func (b *goBrowser) event(ev cdpEvent, loadTimeout, dialogTimeout <-chan time.Ti
 			b.streamsLeft()
 		}
 	}
-	return loadTimeout, dialogTimeout
 }
 
 // ours is whether ev is an event of the page's to act on: on the session
@@ -1857,7 +1799,7 @@ func (b *goBrowser) snapshot(gen int, again bool) {
 			}
 			p, err := json.Marshal(map[string]any{"type": "go-snapshot", "gen": gen, "url": s.URL, "base": s.Base, "title": goTitleOf(s.Title), "doc": s.Doc, "again": again, "io": goCleanIO(s.IO), "at": goScrollAt(s.At),
 				"mediaPolicy": b.sites.mediaFor(goURLHost(s.URL)), "videoHosts": b.sites.videoHostList(), "hide": b.startHiding(s.URL, s.Doc),
-				"scheme": b.goSchemeOf(s.URL), "certException": strings.HasPrefix(s.URL, "https://") && b.certs.allows(goCertHostOf(s.URL))})
+				"scheme": b.goSchemeOf(s.URL), "certException": strings.HasPrefix(s.URL, "https://") && b.certs.allows(goPageHost(s.URL))})
 			if err != nil || len(p) > goSnapshotLimit {
 				b.fail(gen, "The page is too large to show.")
 				return
@@ -2480,7 +2422,7 @@ func (b *goBrowser) docFailedCert(ev cdpEvent) string {
 	// Refused by the proxy as the engine ignored certificate errors (its
 	// page an exception's), another host's: loaded again, heeding them, once.
 	// (Not a form posted: loaded again, it'd be got, its data lost.)
-	if b.certs.tookRefused(goCertHostOf(u)) && b.certRetried != u && !b.docPosted {
+	if b.certs.tookRefused(goPageHost(u)) && b.certRetried != u && !b.docPosted {
 		b.certRetried = u
 		b.certErrText = ""
 		return u
@@ -2498,30 +2440,20 @@ func (b *goBrowser) docFailedCert(ev cdpEvent) string {
 // of. One the proxy refused as the engine ignored errors is loaded again,
 // heeding them (navigate: certIgnore). (One the person asked for is warned
 // of by navigate.)
-func (b *goBrowser) certFailed(u string, loadTimeout <-chan time.Time) <-chan time.Time {
+func (b *goBrowser) certFailed(u string) <-chan time.Time {
 	if b.failed == b.gen && b.failedURL == u || b.loading == b.gen && b.loadingURL == u && !b.navigated {
 		// A load asked for (navigate's): warned of there, as its
 		// Page.navigate answers (this event can come first).
-		return loadTimeout
+		return b.loadTimeout
 	}
-	if b.certErrText == "" || b.certs.allows(goCertHostOf(u)) && !b.certs.ignoring.Load() {
+	if b.certErrText == "" || b.certs.allows(goPageHost(u)) && !b.certs.ignoring.Load() {
 		// (Refused as the engine ignored errors: then heeding them.)
 		return b.navigate(u, "page")
 	}
-	b.leftPage()
-	b.gen++
+	b.newGen(true)
 	b.loading, b.navigated = 0, false
 	b.failed, b.failedURL = b.gen, u
 	b.send(map[string]any{"type": "go-loading", "gen": b.gen, "url": u, "by": "page"})
 	b.certWarning(b.gen, u, b.certErrText)
 	return nil
-}
-
-// goCertHostOf is raw's host name (no port).
-func goCertHostOf(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return u.Hostname()
 }
