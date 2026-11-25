@@ -12,6 +12,7 @@
 // in the file is only ever shown as text.
 
 import { glyphs, iconSVG } from "./glyphs.js";
+import { el } from "./preview-dom.js";
 
 // The deepest a value may be nested: deeper, and it's shown as text, saying
 // so, rather than overflowing the stack.
@@ -311,13 +312,6 @@ export function searchJSON(root, query) {
     return found;
 }
 
-function el(tag, props = {}, ...kids) {
-    const e = Object.assign(document.createElement(tag), props);
-    for (const k of kids) {
-        e.append(k);
-    }
-    return e;
-}
 
 // jsonView shows text, JSON (or JSON Lines, with lines), as a tree; or, if
 // it isn't, says why, and resolves to null, for it to be shown as text.

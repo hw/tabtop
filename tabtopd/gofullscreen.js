@@ -16,18 +16,9 @@
     const STYLE = `[${ATTR}] { position: fixed !important; inset: 0 !important; margin: 0 !important; box-sizing: border-box !important; min-width: 0 !important; max-width: none !important; min-height: 0 !important; max-height: none !important; width: 100% !important; height: 100% !important; transform: none !important; z-index: 2147483647 !important; }
 video[${ATTR}], img[${ATTR}], canvas[${ATTR}] { object-fit: contain !important; background: #000 !important; }
 iframe[${ATTR}] { border: 0 !important; }`;
-    const reader = () => {
-        let w = window;
-        try {
-            while (w.parent !== w) {
-                void w.parent.document;
-                w = w.parent;
-            }
-        } catch { /* this origin's topmost */ }
-        return w.document;
-    };
+    const reader = () => tabtopTop().document;  // (gopage-prelude.js)
     const tell = (detail) => {
-        try { reader().dispatchEvent(new CustomEvent("__tabtop_fullscreen", { detail: JSON.stringify(detail) })); } catch { /* told nothing */ }
+        try { tabtopTell(reader(), "__tabtop_fullscreen", detail); } catch { /* told nothing */ }
     };
     let current = null, style = null, hosts = [];
     // The style, put in doc (this one's, or a same-origin parent's).
@@ -122,7 +113,7 @@ iframe[${ATTR}] { border: 0 !important; }`;
         if (!(el instanceof Element) || !el.isConnected) return Promise.reject(new TypeError("Element is not connected"));
         if (current === el) return Promise.resolve();
         return new Promise((resolve, reject) => {
-            const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+            const id = tabtopID();
             const timer = setTimeout(() => { waiting.delete(id); reject(new TypeError("Permissions check failed")); }, 10_000);
             waiting.set(id, { el, resolve, reject, timer });
             tell({ on: true, id });

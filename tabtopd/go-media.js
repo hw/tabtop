@@ -28,10 +28,11 @@ const MAX_PLAYERS = 8;
 const AHEAD = 3;
 const AHEAD_KEEP = 30_000;  // a part asked for ahead and not taken, kept so long
 
-export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave, downloaded, private: privateTab = false } = {}) {
-    // The player's parts, over the tab's tunnel (range), as tunnels for
-    // ranged-file.js: what a go-resource request's tunnel would say, and
-    // its bytes. Without range (the tab's tunnel isn't open), one of its own.
+// mediaParts: the player's parts, over the tab's tunnel (range), as
+// tunnels for ranged-file.js (tabCall); arrived, by url, told of each
+// part's bytes while its player loads; clear, to let go of the parts
+// asked for ahead. privateTab: the tab's private.
+function mediaParts(range, privateTab) {
     const ahead = new Map();  // url + " " + offset -> {at, got: Promise}
     const arrived = new Map();  // url -> told of each part's bytes, while its player loads
     function part(url, offset, length, size, mtime) {
@@ -71,6 +72,57 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         if (length > 0) arrived.get(url)?.(bytes?.byteLength ?? bytes?.length ?? 0);
         return { reply, bytes, close() {} };
     }
+    return { tabCall, arrived, clear: () => ahead.clear() };
+}
+
+// shortAddress is an address as its site and file name, what's
+// between elided: "cdn.example.com/…/clip.mp4".
+function shortAddress(src) {
+    try {
+        const u = new URL(src);
+        const parts = u.pathname.split("/").filter(Boolean);
+        const name = parts.at(-1) ?? "";
+        const path = parts.length > 1 ? `/…/${name}` : `/${name}`;
+        return u.host.replace(/^www\./, "") + (path === "/" ? "" : path) + (u.search ? "?…" : "");
+    } catch {
+        return src;
+    }
+}
+
+// How near to playing a player is: its stages, then what it has ahead
+// of where it plays, of the few seconds a browser wants to start.
+const READY_AHEAD = 3;
+function loadingUntilReady(media, loading, wantsPlay, signal) {
+    const ahead = () => {
+        const t = media.currentTime || 0;
+        for (let i = 0; i < media.buffered.length; i++) {
+            if (media.buffered.start(i) <= t + 0.5 && media.buffered.end(i) > t) return media.buffered.end(i) - t;
+        }
+        return 0;
+    };
+    const update = (e) => {
+        // Ready: enough to play on; or, not to be played, its first picture
+        // there (or as much as the browser loads before it's played).
+        if (media.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return ready();
+        // (The browser loading no more till it's played: all there'll be.)
+        if (e?.type === "suspend" && media.paused && media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return ready();
+        if (!wantsPlay() && (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || e?.type === "suspend" && media.readyState >= HTMLMediaElement.HAVE_METADATA)) return ready();
+        if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
+            const want = Math.min(READY_AHEAD, Number.isFinite(media.duration) && media.duration > 0 ? media.duration : READY_AHEAD);
+            loading.stage(0.4 + 0.6 * Math.min(1, ahead() / want), "Buffering…");
+        }
+    };
+    const events = ["loadedmetadata", "progress", "suspend", "loadeddata", "canplay", "canplaythrough", "playing", "error", "emptied"];
+    const ready = () => {
+        for (const type of events) media.removeEventListener(type, update);
+        loading.done();
+    };
+    for (const type of events) media.addEventListener(type, type === "error" ? ready : update, { signal });
+    update();
+}
+
+export function goMedia(frame, { picture, sized, played, range, failed, passOn, changed, marked, emeReply, download, saveMSE, spillMSE, abortMSE, streamsToSave, downloaded, private: privateTab = false } = {}) {
+    const { tabCall, arrived, clear: clearAhead } = mediaParts(range, privateTab);
     const mediaStream = createMediaSource({ call: tabCall, collect, getWorker: mediaWorker, onError: (media, error) => {
         for (const [key, entry] of players) {
             if (entry.element !== media) continue;
@@ -134,7 +186,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         }
     };
     // reoffer: a player's stream became saveable since the menu's list or
-    // the player (Watch, go-player.js) last asked (an encrypted stream's,
+    // the player (Watch, video-player.js) last asked (an encrypted stream's,
     // as its keys came): both asked again, so Save's offered there now.
     function reoffer(player) {
         told();
@@ -766,52 +818,6 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
         };
     }
 
-    // shortAddress is an address as its site and file name, what's
-    // between elided: "cdn.example.com/…/clip.mp4".
-    function shortAddress(src) {
-        try {
-            const u = new URL(src);
-            const parts = u.pathname.split("/").filter(Boolean);
-            const name = parts.at(-1) ?? "";
-            const path = parts.length > 1 ? `/…/${name}` : `/${name}`;
-            return u.host.replace(/^www\./, "") + (path === "/" ? "" : path) + (u.search ? "?…" : "");
-        } catch {
-            return src;
-        }
-    }
-
-    // How near to playing a player is: its stages, then what it has ahead
-    // of where it plays, of the few seconds a browser wants to start.
-    const READY_AHEAD = 3;
-    function loadingUntilReady(media, loading, wantsPlay, signal) {
-        const ahead = () => {
-            const t = media.currentTime || 0;
-            for (let i = 0; i < media.buffered.length; i++) {
-                if (media.buffered.start(i) <= t + 0.5 && media.buffered.end(i) > t) return media.buffered.end(i) - t;
-            }
-            return 0;
-        };
-        const update = (e) => {
-            // Ready: enough to play on; or, not to be played, its first picture
-            // there (or as much as the browser loads before it's played).
-            if (media.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return ready();
-            // (The browser loading no more till it's played: all there'll be.)
-            if (e?.type === "suspend" && media.paused && media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return ready();
-            if (!wantsPlay() && (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || e?.type === "suspend" && media.readyState >= HTMLMediaElement.HAVE_METADATA)) return ready();
-            if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
-                const want = Math.min(READY_AHEAD, Number.isFinite(media.duration) && media.duration > 0 ? media.duration : READY_AHEAD);
-                loading.stage(0.4 + 0.6 * Math.min(1, ahead() / want), "Buffering…");
-            }
-        };
-        const events = ["loadedmetadata", "progress", "suspend", "loadeddata", "canplay", "canplaythrough", "playing", "error", "emptied"];
-        const ready = () => {
-            for (const type of events) media.removeEventListener(type, update);
-            loading.done();
-        };
-        for (const type of events) media.addEventListener(type, type === "error" ? ready : update, { signal });
-        update();
-    }
-
     // start plays media, muted if this browser won't play it with sound
     // unasked (its autoplay rules: the person can unmute it).
     // Autoplay paused (the menu's): the page's starting a player isn't
@@ -1122,7 +1128,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 media.play().catch(() => {});
             } else media.pause();
         },
-        // watch takes a video into the player (go-player.js), full screen,
+        // watch takes a video into the player (video-player.js), full screen,
         // and gives it back to its box as that's closed.
         watch(key) {
             const player = players.get(key);
@@ -1199,7 +1205,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             abort.abort();
             clearTimeout(replaceTimer);
             for (const key of players.keys()) closePlayer(key);
-            ahead.clear();
+            clearAhead();
             for (const stream of streams.values()) releaseStream(stream);
             streams.clear();
             underlay?.remove();

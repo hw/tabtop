@@ -116,7 +116,8 @@ func listZipPreview(r io.ReaderAt, size int64) ([]zipPreviewEntry, error) {
 	return entries, nil
 }
 
-func (g *fileService) tunnelZipPreview(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelZipPreview(call *tunnelCall) {
+	req, r := call.req, call.r
 	release, ok := zipPreviewSlots.acquire()
 	if !ok {
 		r.fail("Other ZIP files are being listed; try again in a moment.")

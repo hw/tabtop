@@ -262,13 +262,7 @@ func TestSQLiteGivenUp(t *testing.T) {
 	if err := tc.write(ctx, msgText, b); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for len(sqliteSlots.slots) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the count never began")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the count to begin", func() bool { return len(sqliteSlots.slots) != 0 })
 	start := time.Now()
 	tc.c.CloseNow()
 	for len(sqliteSlots.slots) != 0 {

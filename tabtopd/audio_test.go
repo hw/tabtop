@@ -41,17 +41,6 @@ func newTestHub() (*audioHub, *fakeRecorder) {
 	return h, f
 }
 
-func eventually(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	for range 100 {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
 func TestAudioHubNeedsDesktopLogin(t *testing.T) {
 	h, f := newTestHub()
 	h.link("linked", "ip1")
@@ -92,7 +81,7 @@ func TestAudioHubLifecycle(t *testing.T) {
 	// The desktop going away stops the listener, then the recording.
 	h.unlink("a", "ip1")
 	clock.Advance(h.grace)
-	eventually(t, "listener to stop", func() bool {
+	waitUntil(t, "listener to stop", func() bool {
 		select {
 		case <-l.gone:
 			return true
@@ -102,7 +91,7 @@ func TestAudioHubLifecycle(t *testing.T) {
 	})
 	clock.Advance(h.idle)
 	h.leave(l) // the handler leaves after seeing gone; must be harmless
-	eventually(t, "recording to stop", func() bool { return !f.isRunning() })
+	waitUntil(t, "recording to stop", func() bool { return !f.isRunning() })
 	if _, err := h.join("a", "ip1"); !errors.Is(err, errAudioDenied) {
 		t.Errorf("join after logout: err = %v, want errAudioDenied", err)
 	}
@@ -158,7 +147,7 @@ func TestAudioHubIdleStop(t *testing.T) {
 	}
 	h.leave(l)
 	clock.Advance(h.idle)
-	eventually(t, "recording to stop", func() bool { return !f.isRunning() })
+	waitUntil(t, "recording to stop", func() bool { return !f.isRunning() })
 }
 
 func TestAudioHubDropsWhenQueueFull(t *testing.T) {

@@ -212,7 +212,8 @@ func (s *downloadStore) searchTextFile(ctx context.Context, p string, info fs.Fi
 // finds them, and ends with {"files" read, "matches", and "stopped"
 // saying why it stopped short, if it did}. A text message cancels it, as
 // the page going does.
-func (g *fileService) tunnelSearch(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelSearch(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	re, err := searchQuery(req)
 	if err != nil {
 		r.fail(err.Error())
@@ -224,7 +225,7 @@ func (g *fileService) tunnelSearch(t *tunnel, req tunnelRequest, r *tunnelRespon
 		return
 	}
 	defer store.Close()
-	asked := path.Clean(strings.Trim(req.Path, "/"))
+	asked := req.dir()
 	dir, err := store.canonical(asked)
 	if err != nil {
 		r.fail(errNoFolder.Error())

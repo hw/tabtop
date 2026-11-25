@@ -97,11 +97,7 @@ func novncCSP(dir string) string {
 // older browsers, and none is taken for another type than it's served as.
 func novncHeaders(csp string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hd := w.Header()
-		hd.Set("Content-Security-Policy", csp)
-		hd.Set("X-Frame-Options", "DENY")
-		hd.Set("X-Content-Type-Options", "nosniff")
-		hd.Set("Referrer-Policy", "no-referrer")
+		setPageHeaders(w.Header(), csp)
 		h.ServeHTTP(w, r)
 	})
 }

@@ -274,7 +274,7 @@ function updateTabsButton() {
 function showScreenMode(mode) {
     if (pageFullScreen && mode !== "full") {
         pageFullScreen = false;
-        ws?.send(JSON.stringify({ op: "fullscreen-exit" }));
+        ws?.send(JSON.stringify({ op: "fullscreen-exit", gen }));
     }
     screenMode = mode;
     showBack();
@@ -1528,7 +1528,7 @@ const wake = (() => {
             asking = false;
             if (!wanted) return;
             wanted = false;
-            try { ws?.send(JSON.stringify({ op: "wakelock-lost" })); } catch { /* gone */ }
+            try { ws?.send(JSON.stringify({ op: "wakelock-lost", gen })); } catch { /* gone */ }
         }
     }
     document.addEventListener("visibilitychange", () => { void hold(); });
@@ -1612,7 +1612,7 @@ function open() {
                     resumeToken.set("");
                     s.close();
                     ws = null;
-                    devices.reset();
+                    connGone();
                     connecting ??= connect().then((ok) => ok || reconnect("Can't reach the server.", connect)).finally(() => (connecting = null));
                 }, 10_000);
             } else if (at >= 0) {
@@ -1666,17 +1666,37 @@ function receiver(s) {
             return;
         }
         if (ws !== s || !Number.isSafeInteger(m.gen) || m.gen < gen) return;  // an older page's
-        if (gen !== m.gen) {
-            devices.reset();
-            unvibrate();
-            wake.set(false);
-            frame.contentWindow?.postMessage({ type: "pointerlock", on: false }, "*");
-            if (chooser) picker.closeFor(chooser);  // (the page that asked is gone)
-        }
+        if (gen !== m.gen) pageGone();
         gen = m.gen;
         message(m);
     };
 }
+// What the page shown has of this browser is let go here, each as its
+// server's part is (goprefetch.go's leftPage, godevice.go's connLost):
+// pageGone as the page's left (a new generation, or a fresh tab's taking
+// over), connGone as its connection goes. The wake lock's kept through a
+// lost connection: the server holds it, and asks for it again as one's
+// back (connBack).
+function pageGone() {
+    devices.reset();
+    unvibrate();
+    wake.set(false);
+    frame.contentWindow?.postMessage({ type: "pointerlock", on: false }, "*");
+    if (chooser) picker.closeFor(chooser);  // (the page that asked is gone)
+}
+function connGone() {
+    devices.reset();
+    unvibrate();
+    frame.contentWindow?.postMessage({ type: "pointerlock", on: false }, "*");
+    // (The page's fullscreen: the server's let it go, the page told.)
+    if (pageFullScreen) {
+        pageFullScreen = false;
+        if (screenMode === "full") leaveFullScreen();
+    }
+    loading = rendering = false;
+    closeDialog();
+}
+
 // socketClosed is a connection closing: the page's, said so and connected
 // again as it should be; another (replaced, or never opened to be it):
 // nothing of the page's touched.
@@ -1691,9 +1711,7 @@ function socketClosed(s, e, resolve) {
         return;
     }
     ws = null;
-    devices.reset();
-    loading = rendering = false;
-    closeDialog();
+    connGone();
     update();
     if (e.login) {
         forgetSession(s.session);
@@ -1784,16 +1802,13 @@ function swapTo(w) {
     clearTimeout(w.timer);
     warm = null;
     recycleAdvised = false;
-    unvibrate();  // (the old page's)
-    wake.set(false);
+    pageGone();  // (the old page's, its tab's gone)
     const old = ws;
     ws = w.s;
     gen = shown = 0;
     sentView = view();
     resumeToken.set(typeof w.s.reply?.resume === "string" && w.s.reply.resume.length <= 64 ? w.s.reply.resume : "");
-    devices.reset();
-    closeDialog();
-    loading = rendering = false;
+    connGone();
     if (old) {
         resLost(old);
         try { old.send(JSON.stringify({ op: "close" })); } catch { /* gone */ }
@@ -1855,6 +1870,39 @@ function streamName(url, about) {
     const known = [about.height > 0 ? `${about.height}p` : "", length].filter(Boolean);
     return [...(known.length ? known : [u.pathname.split("/").pop() || u.host]), site].join(" · ");
 }
+// eventFor is the copy's event (m) as it's sent to the page (goinput.go):
+// what the copy names (its element, its value, a key, the modifiers) as
+// it is, the server's to check; the mouse, the keys and an edit as input,
+// each field named once here with how it's cleaned (a number, a flag, a
+// word, or a list of them), so a field the copy sends and the engine takes
+// is passed on by being listed. ("phase" is sent as "type": the
+// message's own "type" is the frame's.)
+const eventFor = (() => {
+    const num = (v) => (Number.isFinite(v) ? v : 0);
+    const flag = (v) => !!v;
+    const word = (max) => (v) => (typeof v === "string" ? v.slice(0, max) : "");
+    const list = (max, each) => (v) => (Array.isArray(v) ? v.slice(0, max) : []).map(each);
+    const AS_SENT = ["kind", "id", "value", "checked", "key", "code", "shift", "ctrl", "alt", "meta", "submitter"];
+    const INPUT = {
+        fx: num, fy: num, button: num, buttons: num, count: num, dx: num, dy: num, keyCode: num, location: num, repeat: flag,
+        sx: num, sy: num, tap: flag, frame: num, fdoc: num, route: list(3, num), docs: list(3, num),
+        points: list(10, (p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
+        items: list(3, (i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })),
+        // Rich text: the copy's selection, a key that edits, an edit's kind.
+        sel: (v) => (Array.isArray(v) && v.length === 4 ? v.map(num) : undefined), edit: flag,
+        inputType: word(40), html: (v) => (typeof v === "string" ? v : ""),
+    };
+    return (m) => {
+        const out = { op: "event", gen: m.gen, type: typeof m.phase === "string" ? m.phase : "" };
+        for (const k of AS_SENT) out[k] = m[k];
+        for (const [k, clean] of Object.entries(INPUT)) out[k] = clean(m[k]);
+        return out;
+    };
+})();
+
+// message handles what the server sent (onmessage has made its
+// generation the tab's own, gen: an older page's is dropped there), so
+// none here is of another; whether its page is shown is checked as needed.
 function message(m) {
     switch (m.type) {
         case "go-manifest": {
@@ -2035,17 +2083,15 @@ function message(m) {
             note(m.why === "blocked" ? "A pop-up to a blocked site wasn't opened." : `A pop-up from ${m.site || "this site"} was blocked (Site controls: the button at the address’s start).`);
             break;
         case "go-file-chooser":
-            if (typeof m.chooser === "string" && m.gen === gen) askFiles(m);
+            if (typeof m.chooser === "string") askFiles(m);
             break;
         case "go-pointerlock":
             // The page's pointer lock: the copy's frame locks it (or lets go).
-            if (m.gen !== gen) break;
             frame.contentWindow?.postMessage({ type: "pointerlock", on: m.on === true }, "*");
             break;
         case "go-orientation":
             // The page's screen orientation lock (goorientation.go): this
             // screen locked so, in its fullscreen; its answer the page's.
-            if (m.gen !== gen) break;
             if (m.unlock) {
                 try { screen.orientation?.unlock?.(); } catch { /* not locked */ }
                 break;
@@ -2057,12 +2103,12 @@ function message(m) {
             }
             break;
         case "go-wakelock":
-            if (m.gen === gen) wake.set(m.on === true);
+            wake.set(m.on === true);
             break;
         case "go-vibrate": {
             // The page's vibration (govibrate.go), felt here while this tab's
             // shown; a cancel, at once.
-            if (m.gen !== gen || !Array.isArray(m.pattern)) break;
+            if (!Array.isArray(m.pattern)) break;
             const pattern = m.pattern.slice(0, 99).map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0)));
             if (!pattern.length) unvibrate();
             else if (document.visibilityState === "visible" && !tabHidden()) {
@@ -2073,7 +2119,6 @@ function message(m) {
         case "go-fullscreen":
             // The page's element fullscreen (laid over the engine's window):
             // the page alone over this screen, as the menu's Full screen.
-            if (m.gen !== gen) break;
             if (m.on) {
                 if (screenMode !== "full") {
                     toggleScreenMode("full");
@@ -2097,16 +2142,16 @@ function message(m) {
         case "go-copy":
             // What the page copied (a Copy button's), after the person's
             // press there (goclipboard.go): on their clipboard.
-            if ((typeof m.text === "string" || typeof m.image === "string") && m.gen === gen) copyOut(typeof m.text === "string" ? m.text : "", m.image);
+            if ((typeof m.text === "string" || typeof m.image === "string")) copyOut(typeof m.text === "string" ? m.text : "", m.image);
             break;
         case "go-paste-ask":
-            if (typeof m.ask === "string" && m.gen === gen) askPaste(m);
+            if (typeof m.ask === "string") askPaste(m);
             break;
         case "go-notify-ask":
-            if (typeof m.ask === "string" && m.gen === gen) askNotify(m);
+            if (typeof m.ask === "string") askNotify(m);
             break;
         case "go-notify":
-            if (typeof m.ask === "string" && m.gen === gen) showNotify(m);
+            if (typeof m.ask === "string") showNotify(m);
             break;
         case "go-notify-close":
             if (typeof m.ask === "string") closeNotify(m.ask);
@@ -2127,7 +2172,7 @@ function message(m) {
             engineRestarting = true;
             break;
         case "go-drop-ready":
-            if (typeof m.token === "string" && m.gen === gen) sendDropped(m.token);
+            if (typeof m.token === "string") sendDropped(m.token);
             break;
         case "go-file-chooser-refused":
             if (typeof m.why === "string") warn(m.why, { error: false });
@@ -2341,20 +2386,7 @@ window.addEventListener("message", (e) => {
             }
             // Done in the engine, for the document shown only.
             if (ws && m.gen === shown && Number.isSafeInteger(m.id)) {
-                const { kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter } = m;
-                // The mouse and keys, as input (see goinput.go): numbers
-                // and words only ("phase" here, as "type" is the message's).
-                const num = (v) => (Number.isFinite(v) ? v : 0);
-                const input = { type: typeof m.phase === "string" ? m.phase : "", fx: num(m.fx), fy: num(m.fy), button: num(m.button),
-                    buttons: num(m.buttons), count: num(m.count), dx: num(m.dx), dy: num(m.dy), keyCode: num(m.keyCode),
-                    location: num(m.location), repeat: !!m.repeat, sx: num(m.sx), sy: num(m.sy), tap: !!m.tap, frame: num(m.frame), fdoc: num(m.fdoc),
-                    route: (Array.isArray(m.route) ? m.route.slice(0, 3) : []).map(num), docs: (Array.isArray(m.docs) ? m.docs.slice(0, 3) : []).map(num),
-                    points: (Array.isArray(m.points) ? m.points.slice(0, 10) : []).map((p) => ({ id: num(p?.id), fx: num(p?.fx), fy: num(p?.fy), t: num(p?.t) })),
-                    items: (Array.isArray(m.items) ? m.items.slice(0, 3) : []).map((i) => ({ type: String(i?.type ?? ""), data: String(i?.data ?? "") })),
-                    // Rich text: the copy's selection, a key that edits, an edit's kind.
-                    sel: Array.isArray(m.sel) && m.sel.length === 4 ? m.sel.map(num) : undefined, edit: !!m.edit,
-                    inputType: typeof m.inputType === "string" ? m.inputType.slice(0, 40) : "", html: typeof m.html === "string" ? m.html : "" };
-                ws.send(JSON.stringify({ op: "event", gen: m.gen, kind, id, value, checked, key, code, shift, ctrl, alt, meta, submitter, ...input }));
+                ws.send(JSON.stringify(eventFor(m)));
             }
             break;
         case "resync":

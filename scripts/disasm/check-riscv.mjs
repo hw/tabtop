@@ -10,15 +10,14 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
+import { hex, line, runWorker } from "./worker-harness.mjs";
 import { gzipSync } from "node:zlib";
 
 const [scriptFile, workerFile, referenceDirectory] = process.argv.slice(2);
 if (!scriptFile || !workerFile || !referenceDirectory) throw new Error("usage: node check-riscv.mjs <riscv-asm.js> <disasm-worker.js> <reference Capstone directory>");
 const script = readFileSync(scriptFile, "utf8");
-let result, imports = 0;
-const self = { postMessage: (message) => { result = JSON.parse(JSON.stringify(message)); } };
-const worker = {
-    self, Uint8Array, BigInt,
+let imports = 0;
+const { post, self } = runWorker(workerFile, (self) => ({
     importScripts(path) {
         // (What it has the same as MIPS's, beside it, first.)
         if (path === "./asm-common.js") return runInNewContext(readFileSync(resolve(dirname(scriptFile), "asm-common.js"), "utf8"), { self });
@@ -27,22 +26,13 @@ const worker = {
         runInNewContext(script, { self });
     },
     fetch: async (path) => { throw new Error(`RISC-V fetched ${path}`); },
-};
-runInNewContext(readFileSync(workerFile, "utf8"), worker);
-let next = 0;
-const hex = (bytes) => Buffer.from(bytes).toString("hex");
+}));
 const ask = async (mode, bytes, address = 0x1000, max = 512) => {
-    await self.onmessage({ data: { id: ++next, mode, bytes: Uint8Array.from(bytes), address, max } });
-    assert.equal(result.id, next);
-    assert.equal(result.error, undefined, `${mode}: ${result.error}`);
-    return result.lines;
+    const reply = await post({ mode, bytes: Uint8Array.from(bytes), address, max });
+    assert.equal(reply.error, undefined, `${mode}: ${reply.error}`);
+    return reply.lines;
 };
-const assemble = async (mode, text, address = 0x1000, was = []) => {
-    await self.onmessage({ data: { id: ++next, mode, assemble: text, address, was: [...was] } });
-    assert.equal(result.id, next);
-    return result;
-};
-const line = (offset, length, text, targets = []) => ({ offset, length, text, targets });
+const assemble = (mode, text, address = 0x1000, was = []) => post({ mode, assemble: text, address, was: [...was] });
 const MODES = [["riscv32", 32], ["riscv64", 64]];
 
 // What's shown: a branch's operand is where it goes, a link; through a
@@ -198,8 +188,7 @@ for (const [mode, text] of [["riscv64", ""], ["riscv64", "foo a0"], ["riscv64", 
     ["riscv64", "c.lui a0, 0x20"], ["riscv64", "x".repeat(300)]])
     assert.equal(typeof (await assemble(mode, text)).error, "string", `${mode}: ${text}`);
 // Another instruction set's line isn't assembled as RISC-V's.
-await self.onmessage({ data: { id: ++next, mode: "arm32", assemble: "nop", address: 0 } });
-assert.match(result.error, /only available for x86, ARM64, RISC-V and MIPS/);
+assert.match((await post({ mode: "arm32", assemble: "nop", address: 0 })).error, /only available for x86, ARM64, RISC-V and MIPS/);
 // More than one way to encode it (a c.nop that hints): what's there is kept.
 assert.equal(hex((await assemble("riscv64", "c.nop", 0x1000, [0x05, 0x00])).bytes), "0500");
 assert.equal(hex((await assemble("riscv64", "c.nop", 0x1000, [0x13, 0, 0, 0])).bytes), "0100");

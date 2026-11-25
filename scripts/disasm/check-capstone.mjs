@@ -4,35 +4,27 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { runInNewContext } from "node:vm";
 import { gzipSync } from "node:zlib";
+import { line, runWorker } from "./worker-harness.mjs";
 
 const [directory, workerFile] = process.argv.slice(2);
 if (!directory || !workerFile) throw new Error("usage: node check-capstone.mjs <asset directory> <disasm-worker.js>");
 const wasm = readFileSync(resolve(directory, "capstone.wasm"));
 const factory = createRequire(import.meta.url)(resolve(directory, "capstone.js"));
-let fetches = 0, loads = 0, result;
-const self = {
-    MCapstone: async (options) => { loads++; return factory(options); },
-    postMessage: (message) => { result = JSON.parse(JSON.stringify(message)); },
-};
-runInNewContext(readFileSync(workerFile, "utf8"), {
-    self, Uint8Array,
+let fetches = 0, loads = 0;
+const { post } = runWorker(workerFile, () => ({
     importScripts() { throw new Error("the ARM32 path loaded other scripts"); },
     fetch: async (path) => {
         assert.equal(path, "./disasm/capstone.wasm");
         fetches++;
         return { ok: true, arrayBuffer: async () => wasm };
     },
-});
-let next = 0;
+}), { MCapstone: async (options) => { loads++; return factory(options); } });
 const ask = async (mode, bytes, address = 0x1000, max = 512) => {
-    await self.onmessage({ data: { id: ++next, mode, bytes: Uint8Array.from(bytes), address, max } });
-    assert.equal(result.id, next);
-    assert.equal(result.error, undefined, `${mode}: ${result.error}`);
-    return result.lines;
+    const reply = await post({ mode, bytes: Uint8Array.from(bytes), address, max });
+    assert.equal(reply.error, undefined, `${mode}: ${reply.error}`);
+    return reply.lines;
 };
-const line = (offset, length, text, targets = []) => ({ offset, length, text, targets });
 assert.deepEqual(await ask("arm32", [0x00, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1]), [
     line(0x1000, 4, "mov r0, #0"), line(0x1004, 4, "bx lr"),
 ]);

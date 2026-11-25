@@ -213,18 +213,6 @@ func ebmlPutSize(w *bytes.Buffer, size int64, width int) {
 	}
 }
 
-func ebmlIDLen(id uint32) int {
-	switch {
-	case id >= 1<<24:
-		return 4
-	case id >= 1<<16:
-		return 3
-	case id >= 1<<8:
-		return 2
-	}
-	return 1
-}
-
 func ebmlElement(id uint32, payload []byte) []byte {
 	var w bytes.Buffer
 	ebmlPutID(&w, id)

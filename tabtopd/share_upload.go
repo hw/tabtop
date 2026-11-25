@@ -166,35 +166,14 @@ func (g *fileService) receive(l *shareLink, store *downloadStore, ip, name strin
 	if err != nil {
 		return "", &uploadLinkError{http.StatusInternalServerError, uploadError(err)}
 	}
-	if free, ok := g.reclaimPartials(u.f, max(length, 0)); ok && length > free {
+	if _, enough := g.room(u.f, max(length, 0), true); !enough {
 		u.abort()
 		return "", &uploadLinkError{http.StatusInsufficientStorage, "There isn't room for it on the disk."}
 	}
-	buf := make([]byte, 256<<10)
-	for {
-		n, rerr := body.Read(buf)
-		if n > 0 {
-			if l.revoked.Load() {
-				u.abort()
-				return "", &uploadLinkError{http.StatusNotFound, "This link has ended."}
-			}
-			if err := g.shares.grow(l, int64(n)); err != nil {
-				u.abort()
-				return "", err
-			}
-			written += int64(n)
-			if _, err := u.Write(buf[:n]); err != nil {
-				u.abort()
-				return "", &uploadLinkError{http.StatusInsufficientStorage, uploadError(err)}
-			}
-		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			u.abort()
-			return "", &uploadLinkError{http.StatusBadRequest, "The upload was cut off."}
-		}
+	written, err = writeLinkBytes(u, l, body, func(n int64) error { return g.shares.grow(l, n) }, "The upload was cut off.")
+	if err != nil {
+		u.abort()
+		return "", err
 	}
 	if length >= 0 && written != length {
 		u.abort()
@@ -403,22 +382,14 @@ func (s *shareStore) startForm(l *shareLink) (int64, func(), error) {
 	if s.links[l.ID] != l || !s.clock.Now().Before(l.Expires) {
 		return 0, nil, &uploadLinkError{http.StatusNotFound, "This link has ended."}
 	}
-	if s.formsAll >= maxUploadForms || s.forms[l.ID] >= maxUploadFormsPerLink {
+	if !s.forms.take(l.ID, maxUploadForms, maxUploadFormsPerLink) {
 		return 0, nil, &uploadLinkError{http.StatusServiceUnavailable, "Too many upload forms are going; try again later."}
 	}
-	if s.forms == nil {
-		s.forms = map[string]int{}
-	}
-	s.formsAll++
-	s.forms[l.ID]++
 	limit := max(0, l.MaxBytes-l.Bytes-l.pendingBytes) + maxFormOverhead
 	return limit, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.formsAll--
-		if s.forms[l.ID]--; s.forms[l.ID] == 0 {
-			delete(s.forms, l.ID)
-		}
+		s.forms.give(l.ID)
 	}, nil
 }
 

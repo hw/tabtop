@@ -28,7 +28,7 @@ func TestDirectoryEventsClose(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				eventually(t, "full event queue", func() bool { return len(source.events) == cap(source.events) })
+				waitUntil(t, "full event queue", func() bool { return len(source.events) == cap(source.events) })
 			}
 			done := make(chan struct{})
 			go func() { source.Close(); source.Close(); close(done) }()

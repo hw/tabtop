@@ -23,6 +23,7 @@ import { call, folderInfo, loadRoots, makeFolder, setLoginTitle, uploadFile, upl
 import { fetchFile } from "./download.js";
 import { humanBytes } from "./file-format.js";
 import { warnExpiry } from "./expiry.js";
+import { copiedNote } from "./copied-note.js";
 
 window.tabtopChannel = () => new TunnelSocket({ type: "vnc" }, { title: "Desktop" });
 
@@ -179,19 +180,7 @@ async function shareClipboard() {
 
 // copied says, for a few seconds, that the desktop copied text to this
 // computer's clipboard, showing how it starts.
-const copiedNote = Object.assign(document.createElement("div"), { id: "tabtop_copied", hidden: true });
-copiedNote.setAttribute("role", "status");
-document.body.append(copiedNote);
-let copiedTimer = 0;
-function copied(text) {
-    const line = text.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
-    const start = line.length > 80 ? `${line.slice(0, 80)}…` : line;
-    copiedNote.textContent = `The desktop copied ${text.length} character${text.length === 1 ? "" : "s"} to your clipboard`
-        + (start ? `: “${start}”` : ".");
-    copiedNote.hidden = false;
-    clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copiedNote.hidden = true), 5000);
-}
+const copied = copiedNote("tabtop_copied", "The desktop");
 
 // readable resolves to whether the page may read the clipboard without
 // asking ("granted"), may ask ("prompt"), or neither.

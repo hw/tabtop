@@ -155,17 +155,15 @@ func validNewName(name string) bool {
 
 // tunnelMkdir answers a mkdir request, for a folder req.Name in req.Path,
 // with {"name":...}, the name it got.
-func (g *fileService) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelMkdir(call *tunnelCall) {
+	req, r := call.req, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail(uploadError(fs.ErrNotExist))
 		return
 	}
 	defer root.Close()
-	dir := strings.Trim(req.Path, "/")
-	if dir == "" {
-		dir = "."
-	}
+	dir := req.dir()
 	name, err := root.makeFolder(dir, req.Name)
 	if err != nil {
 		log.Printf("folder %q: %v", path.Join(dir, req.Name), err)
@@ -178,17 +176,15 @@ func (g *fileService) tunnelMkdir(t *tunnel, req tunnelRequest, r *tunnelRespond
 
 // tunnelCreate answers a create request, for an empty file req.Name in
 // req.Path, with {"name":...}, the name it got.
-func (g *fileService) tunnelCreate(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelCreate(call *tunnelCall) {
+	req, r := call.req, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail(uploadError(fs.ErrNotExist))
 		return
 	}
 	defer root.Close()
-	dir := strings.Trim(req.Path, "/")
-	if dir == "" {
-		dir = "."
-	}
+	dir := req.dir()
 	name, err := root.createFile(dir, req.Name)
 	if err != nil {
 		log.Printf("file %q: %v", path.Join(dir, req.Name), err)
@@ -229,7 +225,8 @@ var uploadSavedHook = func() {}
 // part way, as when the connection is lost, what came is kept, and a
 // request with req.Resume set to the id carries on from it (see
 // keepPartial); offset is 0 if it's gone.
-func (g *fileService) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelUpload(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	if !validNewName(req.Name) || req.Size < 0 {
 		r.fail(errUploadName.Error())
 		return
@@ -298,7 +295,7 @@ func (g *fileService) tunnelUpload(t *tunnel, req tunnelRequest, r *tunnelRespon
 	}
 	// Check the file actually opened, so nested mounts and directory races
 	// cannot make the space check refer to a different filesystem.
-	if free, ok := g.reclaimPartials(u.f, req.Size-offset); ok && req.Size-offset > free {
+	if free, enough := g.room(u.f, req.Size-offset, true); !enough {
 		if resuming {
 			g.root.transfers.keepPartial(u, req.Size)
 		} else {

@@ -36,17 +36,26 @@ const (
 // (only TabTop's user may read it): in the user's cache directory, or ""
 // if there's none to use.
 func goCacheDir() string {
-	base, err := os.UserCacheDir()
-	if err != nil {
+	dir := goCachePath()
+	if dir == "" {
 		return ""
 	}
-	dir := filepath.Join(base, "tabtop", "go-http-cache")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		log.Printf("remote browser: no shared cache: %v", err)
 		return ""
 	}
 	os.Chmod(dir, 0o700)
 	return dir
+}
+
+// goCachePath is where the engines' shared cache is kept (goCacheDir makes
+// it), or "" if there's no cache directory to use.
+func goCachePath() string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(base, "tabtop", "go-http-cache")
 }
 
 var goCachePruned struct {

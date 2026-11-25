@@ -20,7 +20,7 @@ type uploadManager struct {
 	// Uploads saved lately, by id, so a page that lost the answer, and asks
 	// to carry on, is told it's saved rather than starting it again (see
 	// recordDone).
-	done map[string]uploadDone
+	done recent[uploadDone]
 }
 
 // uploadDone is an upload saved: into dir, size bytes, and what the page
@@ -29,7 +29,6 @@ type uploadDone struct {
 	dir   string
 	size  int64
 	reply map[string]any
-	at    time.Time
 }
 
 const (
@@ -47,25 +46,7 @@ const (
 func (m *uploadManager) recordDone(id, dir string, size int64, reply map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.clock.Now()
-	if m.done == nil {
-		m.done = map[string]uploadDone{}
-	}
-	for k, d := range m.done {
-		if now.Sub(d.at) >= uploadDoneKeep {
-			delete(m.done, k)
-		}
-	}
-	for len(m.done) >= maxUploadDone {
-		oldest := ""
-		for k, d := range m.done {
-			if oldest == "" || d.at.Before(m.done[oldest].at) {
-				oldest = k
-			}
-		}
-		delete(m.done, oldest)
-	}
-	m.done[id] = uploadDone{dir, size, reply, now}
+	m.done.add(id, uploadDone{dir, size, reply}, m.clock.Now(), uploadDoneKeep, maxUploadDone)
 }
 
 // wasDone reports whether the upload id was saved lately, into whatever
@@ -74,8 +55,8 @@ func (m *uploadManager) recordDone(id, dir string, size int64, reply map[string]
 func (m *uploadManager) wasDone(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	d, ok := m.done[id]
-	return ok && m.clock.Now().Sub(d.at) < uploadDoneKeep
+	_, ok := m.done.get(id, m.clock.Now(), uploadDoneKeep)
+	return ok
 }
 
 // doneUpload is what the upload id, into dir, size bytes, was answered when
@@ -83,8 +64,8 @@ func (m *uploadManager) wasDone(id string) bool {
 func (m *uploadManager) doneUpload(id, dir string, size int64) map[string]any {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	d, ok := m.done[id]
-	if !ok || d.dir != dir || d.size != size || m.clock.Now().Sub(d.at) >= uploadDoneKeep {
+	d, ok := m.done.get(id, m.clock.Now(), uploadDoneKeep)
+	if !ok || d.dir != dir || d.size != size {
 		return nil
 	}
 	return d.reply
@@ -232,6 +213,23 @@ func (g *fileService) reclaimPartials(destination *os.File, need int64) (free in
 	return free, ok
 }
 
+// room reports whether need bytes fit on f's filesystem, and how much is
+// free there. With reclaim, resumable uploads are cleared first, the
+// oldest first and only as many as need takes (reclaimPartials): what a
+// save the person asked for takes before a page that may never come back
+// to resume. Without, only what's free now counts: the room resumable
+// uploads hold isn't free unless they're cleared. A filesystem whose space
+// can't be read is room enough (the write itself then says).
+func (g *fileService) room(f *os.File, need int64, reclaim bool) (free int64, enough bool) {
+	var ok bool
+	if reclaim {
+		free, ok = g.reclaimPartials(f, need)
+	} else {
+		free, _, _, ok = fileDiskSpace(f)
+	}
+	return free, !ok || need <= free
+}
+
 // uploadRoom is uploadManager.uploadRoom, counting every root's resumable
 // uploads on the destination's filesystem (see reclaimPartials).
 func (g *fileService) uploadRoom(destination *os.File) (free, total int64, ok bool) {
@@ -244,6 +242,41 @@ func (g *fileService) uploadRoom(destination *os.File) (free, total int64, ok bo
 		}
 	}
 	return min(free, total), total, ok
+}
+
+// hold holds p while its folder may be deleted or moved (see holdUnder):
+// counted, as two can hold it at once (a delete and a move of folders one
+// in the other). Nothing carries it on while it's held.
+func (p *partialUpload) hold() { p.holding++ }
+
+// let lets go of one hold of p, and says whether it's now to be given up:
+// with drop (its folder gone), or, its time up while it was held, once
+// the last lets it go.
+func (p *partialUpload) let(drop bool) bool {
+	p.holding--
+	return drop || p.expired && p.holding == 0
+}
+
+// inFolderOf is whether a folder, as recorded, is folder or in it, as
+// resolve has them (links followed: see fileService.resolved), if it's
+// given; dirs, those to be asked about, resolved now: before the lock
+// they're kept under is taken again, as resolving can take a while on a
+// slow disk.
+func inFolderOf(folder string, dirs []string, resolve func(string) string) func(dir string) bool {
+	real := map[string]string{} // by the folder as recorded
+	if resolve != nil {
+		for _, d := range dirs {
+			if _, ok := real[d]; !ok {
+				real[d] = resolve(d)
+			}
+		}
+	}
+	return func(dir string) bool {
+		if r, ok := real[dir]; ok {
+			dir = r
+		}
+		return inFolder(dir, folder)
+	}
 }
 
 // dropPartialLocked detaches an upload for removal outside m.mu.
@@ -353,10 +386,9 @@ func identitySys(info fs.FileInfo) (*syscall.Stat_t, bool) {
 // before m.mu is taken, as resolving can take a while on a slow disk.
 // (Nothing new starts in folder meanwhile: its writes are held first.)
 func (m *uploadManager) holdUnder(folder string, resolve func(string) string) (held []string, busy bool) {
-	real := map[string]string{} // by the folder as recorded
+	var dirs []string
 	if resolve != nil {
 		m.mu.Lock()
-		var dirs []string
 		for _, a := range m.active {
 			dirs = append(dirs, a.dir)
 		}
@@ -364,18 +396,8 @@ func (m *uploadManager) holdUnder(folder string, resolve func(string) string) (h
 			dirs = append(dirs, p.dir)
 		}
 		m.mu.Unlock()
-		for _, d := range dirs {
-			if _, ok := real[d]; !ok {
-				real[d] = resolve(d)
-			}
-		}
 	}
-	in := func(dir string) bool {
-		if r, ok := real[dir]; ok {
-			dir = r
-		}
-		return inFolder(dir, folder)
-	}
+	in := inFolderOf(folder, dirs, resolve)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, a := range m.active {
@@ -385,7 +407,7 @@ func (m *uploadManager) holdUnder(folder string, resolve func(string) string) (h
 	}
 	for id, p := range m.partials {
 		if in(p.dir) {
-			p.holding++
+			p.hold()
 			held = append(held, id)
 		}
 	}
@@ -402,10 +424,9 @@ func (m *uploadManager) release(held []string, drop bool, moved func(string) str
 		if p == nil || p.holding == 0 {
 			continue // gone meanwhile
 		}
-		p.holding--
 		// Dropped by any that holds it whose folder's gone; or, its time
 		// up, once the last lets it go.
-		if drop || p.expired && p.holding == 0 {
+		if p.let(drop) {
 			p := m.dropPartialLocked(id)
 			if moved != nil {
 				p.tmp = moved(p.tmp)

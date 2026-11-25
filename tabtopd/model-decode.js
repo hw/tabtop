@@ -1,3 +1,4 @@
+import { ByID } from "./worker-client.js";
 // A compressed glTF's decoders, for three.js's GLTFLoader (see
 // model-view.js): Draco's, meshopt's, and KTX2's, standing in for
 // three.js's DRACOLoader, MeshoptDecoder and KTX2Loader, which run their
@@ -9,35 +10,12 @@
 // again for the next), and what it was doing fails.
 const TIMEOUT = 60_000;
 
-let worker = null, next = 0;
-const waiting = new Map();
-const stop = (why) => {
-    worker?.terminate();
-    worker = null;
-    for (const { reject, timer } of waiting.values()) { clearTimeout(timer); reject(new Error(why)); }
-    waiting.clear();
-};
+const decoder = new ByID(() => new Worker(new URL("./model-decode-worker.js", import.meta.url)), {
+    timeout: TIMEOUT, answered: (data) => data.result,
+    timedOut: () => new Error("decoding it took too long"), loadFailed: () => new Error("its decoder failed"),
+});
 // ask is the worker's answer to message, its transfer handed over.
-function ask(message, transfer = []) {
-    if (!worker) {
-        worker = new Worker(new URL("./model-decode-worker.js", import.meta.url));
-        worker.onmessage = ({ data }) => {
-            const wait = waiting.get(data.id);
-            if (!wait) return;
-            waiting.delete(data.id);
-            clearTimeout(wait.timer);
-            if (data.error) wait.reject(new Error(data.error));
-            else wait.resolve(data.result);
-        };
-        worker.onerror = (e) => { e.preventDefault(); stop("its decoder failed"); };
-    }
-    const id = ++next;
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => stop("decoding it took too long"), TIMEOUT);
-        waiting.set(id, { resolve, reject, timer });
-        worker.postMessage({ ...message, id }, transfer);
-    });
-}
+const ask = (message, transfer = []) => decoder.ask(message, transfer);
 
 // gltfDecoders is what GLTFLoader is given (setDRACOLoader,
 // setMeshoptDecoder, setKTX2Loader) to read a glTF's compressed parts:

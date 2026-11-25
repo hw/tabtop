@@ -37,7 +37,7 @@
         return answer === "allow" ? "granted" : answer === "block" ? "denied" : "default";
     }
     let state = !isSecureContext || !reader() ? "denied" : kept();
-    // Told when the agent asks (__tabtop_read_notify, each time it reads
+    // Told when the agent asks (__tabtop_read, each time it reads
     // the page): one asked for, or shown, as the page loads, before the
     // agent's there to hear it, isn't lost.
     let outbox = [];
@@ -55,7 +55,7 @@
         const doc = reader();
         if (!doc || listening === doc) return;
         listening = doc;
-        doc.addEventListener("__tabtop_read_notify", () => {
+        doc.addEventListener("__tabtop_read", () => {
             const now = outbox;
             outbox = [];
             for (const [type, detail] of now) {

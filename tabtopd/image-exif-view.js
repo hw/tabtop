@@ -3,7 +3,7 @@
 // the image can be saved, each changed where it is, with the control that
 // suits it. What's read, asked and checked is image-exif-form.js's; what's
 // saved, image-exif.js's, which leaves the compressed image as it was.
-import { el, maximizeButton } from "./preview-dom.js";
+import { el, maximizeButton, showModal } from "./preview-dom.js";
 import { iconSVG } from "./glyphs.js";
 import { exifOf, replaceExif, metadataOf } from "./image-meta.js";
 import { readExif, editExif, exifCatalog, exifTypeNames, exifEditValue } from "./image-exif.js";
@@ -47,15 +47,8 @@ export function openExif({ name, blob, save }) {
         status.classList.toggle("error", error);
         status.textContent = text;
     };
-    const finish = (force = false) => {
-        if (stopped || saving && !force) return;
-        stopped = true;
-        controller.abort();
-        if (dialog.open) dialog.close();
-        dialog.remove();
-        bytes = model = null;
-        if (focus?.isConnected) focus.focus({ preventScroll: true });
-    };
+    // (Closed: see showModal below.)
+    let finish = () => {};
 
     // A field as it stands: the row it was read as (null: a new one), what's
     // pending for it, and so its group, tag, type and name.
@@ -335,7 +328,6 @@ export function openExif({ name, blob, save }) {
         showActions();
         keep.focus();
     };
-    close.addEventListener("click", tryClose);
     keep.addEventListener("click", () => { asking = false; showActions(); });
     discard.addEventListener("click", () => {
         if (asking) { finish(); return; }
@@ -343,8 +335,6 @@ export function openExif({ name, blob, save }) {
         render();
         say(model.rows.length ? `${model.rows.length} EXIF fields.` : "No EXIF information.");
     });
-    dialog.addEventListener("cancel", (event) => { event.preventDefault(); tryClose(); });
-    dialog.addEventListener("close", () => finish(true));
     dialog.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
             event.preventDefault();
@@ -412,8 +402,11 @@ export function openExif({ name, blob, save }) {
         }
     });
 
-    document.body.append(dialog);
-    dialog.showModal();
+    finish = showModal(dialog, { closeButton: close, focus, request: tryClose, closed: () => {
+        stopped = true;
+        controller.abort();
+        bytes = model = null;
+    } });
     void (async () => {
         try {
             const loaded = new Uint8Array(await blob.arrayBuffer());
@@ -439,5 +432,5 @@ export function openExif({ name, blob, save }) {
             if (!stopped) say(`EXIF couldn't be read: ${err.message}`, true);
         }
     })();
-    return { close: () => finish(true) };
+    return { close: () => finish() };
 }

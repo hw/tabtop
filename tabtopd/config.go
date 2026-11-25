@@ -74,20 +74,24 @@ func defaultServerConfig() serverConfig {
 	return serverConfig{base: "/", novncDir: "/opt/novnc", vncAddr: "127.0.0.1:5901", sessionMax: defaultSessionMax, sessionIdle: defaultSessionIdle, timeZone: "UTC", audioBitrate: 64}
 }
 
-func newServer(c serverConfig) (*server, error) {
-	if err := validateRemoteTTY(&c); err != nil {
-		return nil, err
+// check checks c, as newServer takes it, without touching anything: what
+// each setting says, and that they agree. It settles what follows from
+// them too (a base path made canonical, sharing and fetching off without
+// files, sound off without a desktop, -mic-create's sink). Run alone by
+// -check-config, before the container sets anything up.
+func (c *serverConfig) check() error {
+	if err := validateRemoteTTY(c); err != nil {
+		return err
 	}
 	if c.remoteApprovalURL != "" && !validApprovalURL(c.remoteApprovalURL) {
-		return nil, fmt.Errorf("-remote-approval-url must be an HTTPS URL without credentials, query or fragment (HTTP is allowed only on localhost)")
+		return fmt.Errorf("-remote-approval-url must be an HTTPS URL without credentials, query or fragment (HTTP is allowed only on localhost)")
 	}
 	if c.usersFile == "" || !c.fsOff && c.downloadsDir == "" && c.fsRoots == "" || c.nobleDir == "" {
-		return nil, fmt.Errorf("-users-file and -noble-dir are required, and -downloads-dir or -fs-roots (WEB_FS_ROOTS) unless files are off")
+		return fmt.Errorf("-users-file and -noble-dir are required, and -downloads-dir or -fs-roots (WEB_FS_ROOTS) unless files are off")
 	}
 	if c.vncOff && c.fsOff && c.termDir == "" && !c.goOn {
-		return nil, fmt.Errorf("enable at least one of VNC, terminal, files or the remote browser")
+		return fmt.Errorf("enable at least one of VNC, terminal, files or the remote browser")
 	}
-	fetchOn := c.fetchOn // before files being off turns it off
 	if c.fsOff {
 		c.shareOn, c.fetchOn = false, false
 	}
@@ -96,38 +100,47 @@ func newServer(c serverConfig) (*server, error) {
 	}
 	base, err := parseBasePath(c.base)
 	if err != nil {
-		return nil, fmt.Errorf("-base-path: %w", err)
+		return fmt.Errorf("-base-path: %w", err)
 	}
 	c.base = base
 	if err := checkVNCAddr(c.vncAddr); !c.vncOff && err != nil {
-		return nil, fmt.Errorf("-vnc-addr: %w", err)
+		return fmt.Errorf("-vnc-addr: %w", err)
 	}
 	if !c.vncOff && c.vncUsername != "" && !c.vncX509 {
-		return nil, fmt.Errorf("-vnc-username requires -vnc-x509")
+		return fmt.Errorf("-vnc-username requires -vnc-x509")
 	}
 	if c.trustNProxies < 0 || c.trustNProxies > maxTrustNProxies {
-		return nil, fmt.Errorf("-trust-nproxies must be 0 to %d", maxTrustNProxies)
+		return fmt.Errorf("-trust-nproxies must be 0 to %d", maxTrustNProxies)
 	}
 	if c.sessionMax <= 0 || c.sessionMax%time.Minute != 0 {
-		return nil, fmt.Errorf("-session-max: %w", errBadLimit)
+		return fmt.Errorf("-session-max: %w", errBadLimit)
 	}
 	if c.sessionIdle < 0 || c.sessionIdle%time.Minute != 0 {
-		return nil, fmt.Errorf("-session-idle: %w", errBadLimit)
+		return fmt.Errorf("-session-idle: %w", errBadLimit)
 	}
 	if c.micCreate {
 		if c.micSink != "" {
-			return nil, fmt.Errorf("-mic-create makes its own sink, so takes no -mic-sink")
+			return fmt.Errorf("-mic-create makes its own sink, so takes no -mic-sink")
 		}
 		c.micSink = micSinkName
 	}
 	if c.micSink != "" && c.audioSink == "" {
-		return nil, fmt.Errorf("-mic-sink and -mic-create require -audio-sink")
+		return fmt.Errorf("-mic-sink and -mic-create require -audio-sink")
 	}
 	if c.audioSink != "" && (c.audioBitrate < minAudioBitrate || c.audioBitrate > maxAudioBitrate) {
-		return nil, fmt.Errorf("-audio-bitrate must be %d to %d", minAudioBitrate, maxAudioBitrate)
+		return fmt.Errorf("-audio-bitrate must be %d to %d", minAudioBitrate, maxAudioBitrate)
 	}
+	return nil
+}
+
+func newServer(c serverConfig) (*server, error) {
+	fetchOn := c.fetchOn // before files being off turns it off
+	if err := c.check(); err != nil {
+		return nil, err
+	}
+	var err error
 	c.trustedProxies = slices.Clone(c.trustedProxies)
-	g := &server{serverConfig: c, authentication: authentication{failures: map[string][]time.Time{}, pending: map[string]int{}}, sessions: map[string]*session{}, ttys: map[string]int{}}
+	g := &server{serverConfig: c, authentication: authentication{pending: map[string]int{}}, sessions: map[string]*session{}}
 	g.activity = newActivityLog(c.activityFile, g.clock)
 	if !c.fsOff {
 		g.roots, g.rootProblems, err = parseFileRootsAll(c.fsRoots, c.fsHome, c.downloadsDir)
@@ -138,7 +151,7 @@ func newServer(c serverConfig) (*server, error) {
 		// passkeys, the share links' key...): through it they'd be read,
 		// by whoever a folder above them is shared with, and written, by
 		// whoever has a session, which would then be a login for good.
-		state := []string{c.usersFile, c.vncPasswordFile, c.sharesFile, c.shareKeyFile, c.activityFile, c.passkeysFile, c.goCookiesFile, c.goCookiesKeyFile, c.goStorageFile, c.goSitesFile, c.goAdBlockFile}
+		state := c.stateFiles()
 		g.roots = slices.DeleteFunc(g.roots, func(root *fileRoot) bool {
 			dir := root.Path
 			if dir == "" {

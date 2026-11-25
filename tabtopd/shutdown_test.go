@@ -29,18 +29,7 @@ func TestShutdownClosesTunnels(t *testing.T) {
 		}()
 	}
 	// Both handlers are running once the handshake one is counted too.
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		g.drain.mu.Lock()
-		n := len(g.drain.open)
-		g.drain.mu.Unlock()
-		if n == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d tunnels open, want 2", n)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "2 tunnels open", func() bool { return drainOpen(g) == 2 })
 
 	stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -70,18 +59,7 @@ func TestShutdownDeadline(t *testing.T) {
 	g, srv := newE2EServer(t)
 	ctx := testCtx(t)
 	dialWS(t, ctx, wsURL(srv.URL)) // never read, so never answers the close
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		g.drain.mu.Lock()
-		n := len(g.drain.open)
-		g.drain.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("tunnel not counted")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the tunnel counted", func() bool { return drainOpen(g) == 1 })
 	stopCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -129,4 +107,11 @@ func countFiles(t *testing.T, dir string) int {
 		return nil
 	})
 	return n
+}
+
+// drainOpen is how many tunnels g counts as open, for a stop to wait for.
+func drainOpen(g *server) int {
+	g.drain.mu.Lock()
+	defer g.drain.mu.Unlock()
+	return len(g.drain.open)
 }

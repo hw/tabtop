@@ -120,7 +120,7 @@ func (b *goBrowser) notify(gen, world int, out goNotifyOut, recent bool) {
 		state = b.notifyState(site)
 	}
 	for _, id := range out.Asks[:min(len(out.Asks), 4)] {
-		if !goPasteID.MatchString(id) {
+		if !goAskID.MatchString(id) {
 			continue
 		}
 		if state != "default" || !recent {
@@ -140,7 +140,7 @@ func (b *goBrowser) notify(gen, world int, out goNotifyOut, recent bool) {
 		b.send(map[string]any{"type": "go-notify-ask", "gen": gen, "ask": n.ask.token, "site": site})
 	}
 	for _, s := range out.Shows[:min(len(out.Shows), 8)] {
-		if !goPasteID.MatchString(s.ID) {
+		if !goAskID.MatchString(s.ID) {
 			continue
 		}
 		now := time.Now()
@@ -366,6 +366,14 @@ func (b *goBrowser) notifyEvent(m goClientMsg) {
 	b.notifyTell(s.world, map[string]any{"id": s.id, "type": m.Kind})
 	if m.Kind == "click" {
 		b.afterInput(b.gen) // (as the page's input: it may focus, or open)
+	}
+}
+
+// notifyAskAgain asks the person again for the page's permission it's
+// waiting for, on a connection that took the tab back (connBack).
+func (b *goBrowser) notifyAskAgain() {
+	if a := b.notifying.ask; a != nil && a.gen == b.gen && time.Since(a.at) < goNotifyAskWait {
+		b.send(map[string]any{"type": "go-notify-ask", "gen": a.gen, "ask": a.token, "site": a.site})
 	}
 }
 

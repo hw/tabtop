@@ -86,22 +86,20 @@ func (g *server) confirmed(c *tunnelCall, what string) error {
 	if challenge == nil {
 		return errors.New("That took too long: try again.")
 	}
-	if !g.beginLogin(c.ip) {
+	attempt := g.beginAttempt(c.ip, browser+", with a passkey, "+what)
+	if attempt == nil {
 		return errTooManyLogins
 	}
-	failed := true
-	defer func() { g.endLogin(c.ip, browser+", with a passkey, "+what, failed) }()
+	defer attempt.end()
 	if !g.loginTurn() {
-		failed = false // not checked
-		return errLoginsBusy
+		return errLoginsBusy // not checked
 	}
 	name, err := g.passkeys.verifyLogin(*c.req.Assertion, challenge, now)
 	if err != nil {
 		log.Printf("passkey from %s, %s, refused: %v", c.ip, what, err)
-		g.activity.failedLogin(c.ip, browser+", with a passkey, "+what)
+		attempt.failed()
 		return errors.New("That passkey wasn't accepted here.")
 	}
-	failed = false
 	log.Printf("%s confirmed from %s with the passkey %q", what, c.ip, name)
 	return nil
 }

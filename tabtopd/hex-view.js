@@ -3,6 +3,8 @@ import { binaryChunkSize } from "./preview-model.js";
 import { iconSVG } from "./glyphs.js";
 import { store, stored, storeJSON, storedJSON } from "./stored.js";
 import { programMap, readExecutable } from "./exe-info.js";
+import { ByID } from "./worker-client.js";
+import { disasmPanel, short, symbolText } from "./hex-disasm.js";
 
 const PAGE_BYTES = 4096;
 const pageStart = offset => Math.floor(offset / binaryChunkSize) * binaryChunkSize + Math.floor(offset % binaryChunkSize / PAGE_BYTES) * PAGE_BYTES;
@@ -301,12 +303,6 @@ export function patchRuns(changed) {
     return runs;
 }
 
-// The disassembly in the inspector: of the selection, up to so many bytes
-// and instructions, or, with a byte selected, the bytes from it.
-const DISASM_BYTES = 4096, DISASM_WINDOW = 64, DISASM_LINES = 512;
-// The bytes after those, given too, so that an instruction that starts in
-// them and ends after is read whole (x86's longest is 15 bytes).
-const DISASM_AHEAD = 15;
 const DISASM_KEY = "tabtop.hex-disasm";
 const DISASM_MODES = [
     ["x86-64", "x86-64"], ["x86-32", "x86 (32-bit)"], ["x86-16", "x86 (16-bit)"],
@@ -321,15 +317,6 @@ const DISASM_MODES = [
 // theirs).
 const DISASM_OFF = [];
 const disassemblerOf = (mode) => (mode.startsWith("x86-") ? "x86" : mode === "arm64" ? "arm64" : mode.startsWith("riscv") ? "riscv" : mode.startsWith("mips") ? "mips" : "capstone");
-const x86Bitness = (mode) => ({ "x86-16": 16, "x86-32": 32, "x86-64": 64 }[mode]);
-// What a line of mode's code is assembled as, to change it in place: x86's
-// bitness, or the mode itself (ARM64, RISC-V, MIPS); null for an
-// instruction set that's only shown (ARM32, Thumb).
-const assembledAs = (mode) => x86Bitness(mode) ?? (mode === "arm64" || /^(riscv|mips)/.test(mode) ? mode : null);
-// What fills the room an instruction leaves: its instruction set's nop
-// (RISC-V's of two bytes, c.nop: its instructions are of two or four;
-// MIPS's is four zeros).
-const nopOf = (as) => (as === "arm64" ? [0x1f, 0x20, 0x03, 0xd5] : typeof as !== "string" ? [0x90] : as.startsWith("mips") ? [0, 0, 0, 0] : [0x01, 0x00]);
 // The tab and instruction set to begin with: those remembered; of modes,
 // the instruction sets on offer here (the first of them, if the one
 // remembered isn't; with none, there's no Disassembly tab to begin on).
@@ -344,37 +331,12 @@ const rememberDisasm = (tab, mode) => storeJSON(DISASM_KEY, { tab, mode });
 // every hex view on the page: message resolves to its answer, or rejects
 // with what it says (err.said) or that it couldn't be loaded.
 function workerClient() {
-    let worker = null, next = 0;
-    const waiting = new Map();
-    const failed = (message) => {
-        for (const w of waiting.values()) w.reject(new Error(message));
-        waiting.clear();
-        worker?.terminate();
-        worker = null;
-    };
-    return (message, transfer = []) => new Promise((resolve, reject) => {
-        if (typeof Worker !== "function") {
-            reject(new Error("This browser can't disassemble here."));
-            return;
-        }
-        if (!worker) {
-            worker = new Worker(new URL("./disasm-worker.js", import.meta.url));
-            worker.onmessage = ({ data }) => {
-                const w = waiting.get(data.id);
-                if (!w) return;
-                waiting.delete(data.id);
-                if (data.error) w.reject(Object.assign(new Error(data.error), { said: true }));
-                else w.resolve(data);
-            };
-            worker.onerror = (event) => {
-                event.preventDefault?.();
-                failed("The disassembler couldn't be loaded.");
-            };
-        }
-        const id = ++next;
-        waiting.set(id, { resolve, reject });
-        worker.postMessage({ ...message, id }, transfer);
+    const disasm = new ByID(() => new Worker(new URL("./disasm-worker.js", import.meta.url)), {
+        failed: (data) => Object.assign(new Error(data.error), { said: true }),
+        loadFailed: () => new Error("The disassembler couldn't be loaded."),
     });
+    return (message, transfer = []) => typeof Worker !== "function"
+        ? Promise.reject(new Error("This browser can't disassemble here.")) : disasm.ask(message, transfer);
 }
 const workerCall = workerClient();
 // (names) resolves to each as it was written, a C++ or Rust symbol's name
@@ -388,7 +350,7 @@ const sharedDisassembler = (bytes, address, mode, max) => workerCall({ bytes, ad
     (data) => data.lines,
     (err) => { throw err.said ? new Error(`It couldn't be disassembled: ${err.message}.`) : err; });
 // (text, address, as, was) resolves to {bytes, text}: the line's bytes, as
-// x86 of that bitness or as "arm64" or RISC-V's or MIPS's mode (see assembledAs),
+// x86 of that bitness or as "arm64" or RISC-V's or MIPS's mode (see assembledAs in hex-disasm.js),
 // at address, and how it's shown (see x86-asm.js); was, the bytes there.
 const sharedAssembler = (text, address, as, was) => workerCall({ assemble: text, address, ...(typeof as === "number" ? { bitness: as } : { mode: as }), was: Array.from(was ?? []) }).then(
     (data) => ({ bytes: Uint8Array.from(data.bytes), text: data.text }),
@@ -685,13 +647,6 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // there's no Disassembly tab.)
     const modes = DISASM_MODES.filter(([mode]) => !disassemblersOff.includes(disassemblerOf(mode)));
     const disasmPrefs = disasmWanted(modes);
-    const disasmBitness = el("select", { className: "hex-disasm-bitness", ariaLabel: "Instruction set", hidden: !modes.length },
-        ...modes.map(([value, label]) => el("option", { value: String(value), textContent: label })));
-    disasmBitness.value = disasmPrefs.mode;
-    const disasmLines = el("ol", { className: "hex-disasm-lines" });
-    const disasmNote = el("p", { className: "hint hex-disasm-note" });
-    const disasm = el("div", { className: "hex-disasm" }, disasmLines, disasmNote);
-    let disasmTimer = null, disasmAsked = 0, disasmKey = null;
     // A program (an ELF or a PE; see exe-info.js), once what it says of
     // itself is read: {info, map}. Its code is disassembled at the address
     // it's loaded at, not its offset in the file, so that what it shows and
@@ -700,267 +655,24 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
     // and how far its addresses are from its offsets, or null: bytes that
     // aren't loaded, or no program, are disassembled at their offsets.
     let program = null, readProgram = () => {};
-    const placeOf = (offset) => {
-        const address = program?.map.addressOf(offset);
-        if (address == null) return null;
-        const section = program.map.sectionAt(offset);
-        return { section, shift: address - offset, end: section.offset + section.size };
-    };
-    // A symbol and how far in: main, main+0x10. short: no more of a long
-    // name (a C++ or Rust one can be hundreds of letters) than fits a line.
-    const symbolText = (at) => (at ? at.name + (at.delta ? `+0x${at.delta.toString(16)}` : "") : "");
-    const short = (name) => (name.length > 80 ? `${name.slice(0, 60)}…${name.slice(-16)}` : name);
-    // An instruction's text, the addresses in it that it goes to or names
-    // (targets), and are in the file, links to them: 0x18c, as every
-    // instruction set's are shown (or 018Ch). In a program's loaded code (mapped), they're its
-    // addresses: a link goes to where in the file that is, if it's there
-    // (.bss's isn't), and the symbol there is named after it.
-    const withTargets = (text, targets = [], mapped = false) => {
-        const out = [];
-        let last = 0;
-        for (const m of text.matchAll(/\b(?:[0-9][0-9a-f]*h|0x[0-9a-f]+)\b/gi)) {
-            const v = Number(BigInt("0x" + m[0].replace(/^0x|h$/gi, "")));
-            if (!targets.includes(v)) continue;
-            const offset = mapped ? program.map.offsetOf(v) : v, name = mapped ? symbolText(program.map.symbolAt(v)) : "";
-            const there = offset != null && offset < size;
-            if (!there && !name) continue;
-            out.push(text.slice(last, m.index), there ? el("button", { type: "button", className: "hex-disasm-target", textContent: m[0],
-                title: `Go to 0x${offset.toString(16)}`, value: String(offset) }) : m[0]);
-            if (name) out.push(el("span", { className: "hex-disasm-symbol", textContent: ` <${short(name)}>`, title: name }));
-            last = m.index + m[0].length;
-        }
-        out.push(text.slice(last));
-        return out.filter((p) => p !== "");
-    };
-    // The code at offset begin as instructions: in a program's section
-    // (place), read at its address there; each line's offset is still where
-    // it is in the file, which is what's shown, selected and written, with
-    // its address beside it (and its targets are addresses).
-    const disassembleAt = (code, begin, mode, max, place) => (!place ? disassemble(code, begin, mode, max)
-        : disassemble(code, begin + place.shift, mode, max).then((lines) => lines.map((line) => ({ ...line, offset: line.offset - place.shift, address: line.offset }))));
-    const runDisasm = async () => {
-        if (!selected || !lastRange) {
-            disasmKey = null;
-            disasmLines.replaceChildren();
-            disasmNote.textContent = "Select bytes to disassemble them.";
-            return;
-        }
-        const n = selected.end - selected.begin, begin = selected.begin;
-        const loaded = lastRange.begin + lastRange.bytes.length;
-        if (begin < lastRange.begin || begin >= loaded) {
-            disasmKey = null;
-            disasmLines.replaceChildren();
-            disasmNote.textContent = "Those bytes aren't loaded here.";
-            return;
-        }
-        // In a program's loaded section: no further than its end, as what's
-        // after is loaded elsewhere.
-        const place = placeOf(begin), within = Math.min(loaded, size, place?.end ?? Infinity);
-        const end = Math.min(n > 1 ? selected.end : begin + DISASM_WINDOW, begin + DISASM_BYTES, within);
-        const mode = disasmBitness.value, bitness = x86Bitness(mode);
-        const as = assembledAs(mode), canAssemble = !!editor && as != null;
-        const key = `${begin}-${end}-${mode}#${changes}${editor ? "e" : ""}${place ? `@${place.shift}` : ""}`;
-        if (key === disasmKey) {
-            disasm.classList.toggle("editable", canAssemble);
-            return;
-        }
-        const mine = ++disasmAsked;
-        const code = bytesFrom(lastRange, begin, Math.min(end + DISASM_AHEAD, within));
-        const hexOfRun = (offset, length) => hexBytes(code.subarray(offset - begin, offset - begin + length), " ");
-        try {
-            // Those that start in the bytes asked for; the last may end after.
-            const lines = (await disassembleAt(code.slice(), begin, mode, DISASM_LINES, place)).filter((l) => l.offset < end);
-            if (mine !== disasmAsked) return;
-            disasmKey = key;
-            asmEdit = null;
-            const items = [];
-            // (An address can be longer than an offset's 8 digits: the column as wide as the longest.)
-            const digits = Math.max(8, ...lines.map((line) => (line.address ?? line.offset).toString(16).length));
-            disasmLines.style?.setProperty?.("--hex-disasm-at", `${digits}ch`);
-            const rows = lines.map((line) => {
-                const { offset, length, text } = line;
-                // In a program, by its address (where in the file, on hovering);
-                // and under the name of what begins there.
-                const at = line.address ?? offset, label = place ? program.map.symbolAt(at) : null;
-                if (label?.delta === 0) items.push(el("li", { className: "hex-disasm-label", textContent: `${short(label.name)}:`, title: label.name }));
-                const parts = [el("span", { className: "hex-disasm-at", textContent: at.toString(16).padStart(digits, "0"), title: place ? `0x${offset.toString(16)} in the file` : "" }),
-                    el("span", { className: "hex-disasm-bytes", textContent: hexOfRun(offset, length), title: hexOfRun(offset, length) }),
-                    el("span", { className: "hex-disasm-text", title: text }, ...withTargets(text, line.targets, !!place))];
-                const li = el("li", { className: text === "(bad)" ? "hex-disasm-line bad" : "hex-disasm-line", title: canAssemble ? "Click to change this instruction" : "" }, ...parts);
-                items.push(li);
-                return { li, line, parts };
-            });
-            disasmShown = { rows, lines, mode, as, place };
-            disasm.classList.toggle("editable", canAssemble);
-            disasmLines.replaceChildren(...items);
-            disasmNote.textContent = [lines.length >= DISASM_LINES ? `The first ${DISASM_LINES} instructions.`
-                : n <= 1 ? `The ${end - begin} bytes from 0x${begin.toString(16)}; select bytes to disassemble just those.`
-                : end < selected.end ? `The first ${(end - begin).toLocaleString()} bytes of the selection.` : "",
-                canAssemble && lines.length ? "Click an instruction to change it." : "",
-                place ? (program.info.relocatable ? "Addresses are file offsets: this isn't linked yet, so what it calls isn't filled in."
-                    : `Addresses are where ${place.section.name || "this"} is loaded${as == null ? "; instruction editing is available for x86, ARM64, RISC-V and MIPS" : ""}.`)
-                : !bitness || program ? `Addresses are file offsets${program ? " (these bytes aren't in a section that's loaded)" : ""}${as == null ? "; instruction editing is available for x86, ARM64, RISC-V and MIPS" : ""}.` : "",
-                ["arm64", "arm32", "thumb", "riscv32", "riscv64"].includes(mode) ? "Little-endian instructions." : "",
-                !bitness && begin % (mode === "thumb" || mode.startsWith("riscv") ? 2 : 4) ? "The selection starts at an unaligned address." : ""].filter(Boolean).join(" ");
-        } catch (err) {
-            if (mine !== disasmAsked) return;
-            disasmKey = null;
-            disasmShown = null;
-            disasm.classList.remove("editable");
-            disasmLines.replaceChildren();
-            disasmNote.textContent = err.message;
-        }
-    };
-    // Editing, an instruction clicked: a box with it, to type another over
-    // it. Enter assembles it (see sharedAssembler) and writes its bytes
-    // there, as one change, to undo at once: one shorter is followed by
-    // nops to the next; one longer goes over the next (listed or not), the
-    // last of those that it ends inside filled out with nops, so what's
-    // after still reads as it did. Escape (or leaving it) puts it back.
-    let disasmShown = null; // {rows: [{li, line, parts}], lines, mode, as}, as listed
-    let asmEdit = null; // {row, line, input, busy}
-    const closeAsm = () => {
-        if (!asmEdit) return;
-        const { row } = asmEdit;
-        asmEdit = null;
-        row.li.replaceChildren(...row.parts);
-        row.li.classList.remove("changing");
-    };
-    const openAsm = (li) => {
-        const row = disasmShown?.rows.find((r) => r.li === li);
-        if (!editor || !row || !disasm.classList.contains("editable") || disasmShown.as == null || disasmShown.mode !== disasmBitness.value || asmEdit?.row === row) return;
-        closeAsm();
-        const { line } = row;
-        const input = el("input", { type: "text", className: "hex-disasm-input", value: line.text === "(bad)" ? "" : line.text,
-            spellcheck: false, autocomplete: "off", ariaLabel: `Instruction at 0x${line.offset.toString(16)}` });
-        asmEdit = { row, line, input, busy: false };
-        // The box takes the bytes' room too: on a phone, there's little.
-        li.replaceChildren(row.parts[0], input);
-        li.classList.add("changing");
-        input.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                submitAsm();
-            } else if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                closeAsm();
-                // Back to the bytes (Ctrl+S, Ctrl+Z), as after Enter.
-                content.focus?.({ preventScroll: true });
-            }
-        });
-        input.addEventListener("input", () => input.setCustomValidity?.(""));
-        input.addEventListener("blur", () => { if (asmEdit?.input === input && !asmEdit.busy) closeAsm(); });
-        input.focus?.();
-        input.select?.();
-    };
-    const submitAsm = async () => {
-        const edit = asmEdit;
-        if (!edit || edit.busy || !editor || disasmShown?.as == null || disasmShown.mode !== disasmBitness.value) return;
-        const { line, input } = edit;
-        const text = input.value.trim();
-        if (!text || text === line.text) {
-            closeAsm();
-            return;
-        }
-        const { lines, as, mode, place } = disasmShown;
-        // at: where in the file it's written; it's assembled for its
-        // address, which a branch's target is from.
-        const at = line.offset, was = changes;
-        edit.busy = true;
-        let result, following = lines;
-        try {
-            // ARM64's are four bytes, each over one: not over the odd bytes
-            // at the end of what's there.
-            if (as === "arm64" && line.length !== 4) throw new Error("There aren't the four bytes of an ARM64 instruction here.");
-            if (typeof as === "string" && as.startsWith("mips") && line.length !== 4) throw new Error("There aren't the four bytes of a MIPS instruction here.");
-            result = await assemble(text, line.address ?? at, as, bytesFrom(lastRange, at, at + line.length));
-            // Longer than what's listed after it: the instructions it goes
-            // over, past the list, found too, so the last is filled out
-            // with nops like the rest.
-            const listedEnd = Math.max(...lines.map((l) => l.offset + l.length));
-            if (at + result.bytes.length > listedEnd) {
-                const loaded = Math.min(lastRange.begin + lastRange.bytes.length, size);
-                if (at + result.bytes.length > loaded) throw new Error("The bytes after it aren't loaded here, so it can't go over them.");
-                if (place && at + result.bytes.length > place.end) throw new Error(`That would go past the end of ${place.section.name || "its section"}.`);
-                const more = await disassembleAt(bytesFrom(lastRange, listedEnd, Math.min(listedEnd + 64, loaded, place?.end ?? Infinity)), listedEnd, mode, 16, place);
-                following = [...lines, ...more];
-            }
-        } catch (err) {
-            if (asmEdit !== edit) return;
-            edit.busy = false;
-            input.setCustomValidity?.(err.message);
-            input.reportValidity?.();
-            sayEdit(err.message, true);
-            input.focus?.();
-            return;
-        }
-        // Gone: nothing to do. The bytes changed meanwhile: not written.
-        if (asmEdit !== edit || !editor) return;
-        edit.busy = false;
-        if (changes !== was) {
-            // Left meanwhile (its blur ignored, as it was busy): closed.
-            if (globalThis.document && globalThis.document.activeElement !== input) {
-                closeAsm();
-                sayEdit("The bytes changed while that was being assembled, so it wasn't written.", true);
-                return;
-            }
-            const why = "The bytes changed while that was being assembled: press Enter to try again.";
-            input.setCustomValidity?.(why);
-            input.reportValidity?.();
-            sayEdit(why, true);
-            return;
-        }
-        const n = result.bytes.length;
-        let end = at + Math.max(n, line.length);
-        const over = following.filter((l) => l.offset > at && l.offset < at + n);
-        for (const l of over) end = Math.max(end, l.offset + l.length);
-        const nop = nopOf(as);
-        // Room that its nops don't fill evenly (an odd byte, in RISC-V)
-        // would be left as part of one.
-        if ((end - at - n) % nop.length) {
-            const why = "There's an odd byte after it here that a nop can't fill.";
-            input.setCustomValidity?.(why);
-            input.reportValidity?.();
-            sayEdit(why, true);
-            return;
-        }
-        const run = Uint8Array.from({ length: end - at }, (_, i) => nop[Math.max(0, i - n) % nop.length]);
-        run.set(result.bytes);
-        const nops = Math.ceil((run.length - n) / nop.length), plural = (k, word) => `${k} ${word}${k === 1 ? "" : "s"}`;
-        const said = `0x${at.toString(16)} to ${result.text}` + (over.length ? `, over the ${plural(over.length, "instruction")} after it` : "")
-            + (nops ? `, with ${plural(nops, "nop")} after it` : "");
-        if (!writeRun(at, run, said)) {
-            input.setCustomValidity?.(editStatus.textContent);
-            input.reportValidity?.();
-            return;
-        }
-        // Back to the bytes, for Ctrl+Z (the box goes as the list is redrawn).
-        content.focus?.({ preventScroll: true });
-        // The selection taken on to the end of what was written.
-        if (selected && selected.end - selected.begin > 1 && end > selected.end) selectThrough(selected.begin, end - 1, selected.from);
-    };
-    disasmLines.addEventListener("click", (event) => {
-        // An address in it: there, its code shown (Back returns here).
-        const target = event.target?.closest?.(".hex-disasm-target");
-        if (target) {
-            closeAsm();
-            followJump(Number(target.value));
-            return;
-        }
-        const li = event.target?.closest?.(".hex-disasm-line");
-        if (li && !event.target.closest?.(".hex-disasm-input")) openAsm(li);
-    });
-    // After the selection settles, if it's to be seen; the lines there stay
-    // till new ones come.
-    const updateDisasm = () => {
-        clearTimeout(disasmTimer);
-        disasmAsked++;
-        closeAsm();
-        disasm.classList.remove("editable");
-        if (inspector.hidden || inspector.dataset.tab !== "disasm") return;
-        disasmTimer = setTimeout(runDisasm, 150);
-    };
+    // The panel reads these as it uses them: most change, and some of the
+    // functions are made further on.
+    const { element: disasm, bitness: disasmBitness, update: updateDisasm, closeAsm, forget: forgetDisasm, stop: stopDisasm } = disasmPanel({
+        size, disassemble, assemble,
+        get selected() { return selected; },
+        get lastRange() { return lastRange; },
+        get editor() { return editor; },
+        get changes() { return changes; },
+        get program() { return program; },
+        get content() { return content; },
+        get inspector() { return inspector; },
+        get editStatus() { return editStatus; },
+        bytesFrom: (...a) => bytesFrom(...a),
+        followJump: (...a) => followJump(...a),
+        sayEdit: (...a) => sayEdit(...a),
+        writeRun: (...a) => writeRun(...a),
+        selectThrough: (...a) => selectThrough(...a),
+    }, modes, disasmPrefs.mode);
     // The instruction set chosen is remembered; a program's own, which it's
     // set to when the program is read, isn't (it's the program's, not a choice).
     let modeChosen = disasmPrefs.mode;
@@ -1717,7 +1429,7 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
             tabButtons[TABS.findIndex(([tab]) => tab === "program")].hidden = programAt.hidden = false;
             if (modes.some(([mode]) => mode === info.mode) && disasmBitness.value === modeGiven && modeChosen === opened) disasmBitness.value = modeGiven = info.mode;
             showProgram();
-            disasmKey = null;
+            forgetDisasm();
             updateInspector();
             // Its C++ and Rust names as they were written, once they're read
             // back (in the worker): shown from then on. What the compiler
@@ -1733,13 +1445,13 @@ export function hexView(bytes, { size = bytes.length, readRange = null, search =
                 });
                 symbolKeys = null;
                 showProgram();
-                disasmKey = null;
+                forgetDisasm();
                 updateInspector();
             }, () => {});
         });
     };
     if (executable) readProgram();
-    view.stop =() => { stopped = true; stopResize(); revision++; controller?.abort(); finding?.abort(); programReads.abort(); clearTimeout(disasmTimer); disasmAsked++; formatDialog.close?.(); formatDialog.remove?.(); };
+    view.stop =() => { stopped = true; stopResize(); revision++; controller?.abort(); finding?.abort(); programReads.abort(); stopDisasm(); formatDialog.close?.(); formatDialog.remove?.(); };
     show(0);
     return view;
 }

@@ -4,7 +4,8 @@
 // the page that holds it, whose only way in is the messages below. Its CSP
 // lets it load scripts only from the site, and pictures only as blob: and
 // data: URLs, so a document can't fetch anything from elsewhere, nor tell
-// anyone it was opened.
+// anyone it was opened, unless the person chose Direct for its external
+// resources (directFrameCSP in page_assets.go: then from the web too).
 //
 // The page sends {type: "render", html, fragment}: the file as HTML, made
 // and cleaned by tabtopd (see markdown.go), and a heading to scroll to, if
@@ -17,7 +18,9 @@
 // through the tunnel and answers {id, bytes, mime} or {id, error}; others
 // are left out. {type: "theme", theme} shows it light or dark ("" for as
 // the system is). A link to another file, by a relative path, is passed to
-// the page, {type: "open", href}, which shows that file instead. Once it's
+// the page, {type: "open", href}, which shows that file instead. Its asks
+// and the page's answers go by frame-bridge.js.
+//
 // With format: "html", raw HTML is rebuilt from a formatting allowlist;
 // scripts, forms, active embeds and event handlers are discarded. Stylesheets,
 // fonts and ordinary media use the selected resource mode and bounded brokers.
@@ -42,25 +45,9 @@
         clearTimeout(positionTimer);
         positionTimer = setTimeout(() => page.postMessage({ type: "position", location: position() }, "*"), 50);
     });
-    const waiting = new Map();
-    let lastId = 0;
-    function ask(message) {
-        return new Promise((resolve) => {
-            const id = ++lastId;
-            waiting.set(id, resolve);
-            page.postMessage({ ...message, id }, "*");
-        });
-    }
-
-    window.addEventListener("message", (e) => {
-        if (e.source !== page || !e.data || typeof e.data !== "object") {
-            return;
-        }
-        const m = e.data;
-        if (m.id && waiting.has(m.id)) {
-            waiting.get(m.id)(m);
-            waiting.delete(m.id);
-        } else if (m.type === "render" && typeof m.html === "string") {
+    // The page's answers to ask, and what else it sends (frame-bridge.js).
+    const ask = TabTopFrameBridge(page, (m) => {
+        if (m.type === "render" && typeof m.html === "string") {
             externalMode = ["proxy", "direct"].includes(m.externalMode) ? m.externalMode : "none";
             requestedPosition = m.location ?? requestedPosition;
             render(m.html, typeof m.fragment === "string" ? m.fragment : "", m.format === "html");

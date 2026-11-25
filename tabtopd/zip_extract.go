@@ -219,14 +219,15 @@ func extractZipFilesWithSync(ctx context.Context, opened *downloadItem, ids []in
 	return path.Join(dir, got), syncDirectory(opened.store.root, dir)
 }
 
-func (g *fileService) tunnelZipExtract(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelZipExtract(call *tunnelCall) {
+	req, session, ip, r := call.req, call.session, call.ip, call.r
 	release, ok := zipExtractSlots.acquire()
 	if !ok {
 		r.fail("Other files are being extracted; try again in a moment.")
 		return
 	}
 	defer release()
-	writing, err := g.beginWrites(path.Dir(strings.Trim(req.Path, "/")))
+	writing, err := g.beginWrites(path.Dir(req.dir()))
 	if err != nil {
 		r.fail(err.Error())
 		return

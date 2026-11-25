@@ -27,13 +27,6 @@ var goOrientTypes = []string{"any", "natural", "landscape", "portrait", "portrai
 // goOrientWait is how long a lock waits for the person's browser's answer.
 const goOrientWait = 10 * time.Second
 
-// goOrientLock is a lock asked of the person's browser: whose, for the
-// answer.
-type goOrientLock struct {
-	gen, world int
-	at         time.Time
-}
-
 // orientationAsks passes on the page's locks and unlocks.
 func (b *goBrowser) orientationAsks(gen, world int, asks []goOrientAsk) {
 	for _, a := range asks {
@@ -44,7 +37,7 @@ func (b *goBrowser) orientationAsks(gen, world int, asks []goOrientAsk) {
 			}
 			continue
 		}
-		if !goPasteID.MatchString(a.ID) || !slices.Contains(goOrientTypes, a.Lock) {
+		if !goAskID.MatchString(a.ID) || !slices.Contains(goOrientTypes, a.Lock) {
 			continue
 		}
 		f := b.fullscreen
@@ -55,19 +48,10 @@ func (b *goBrowser) orientationAsks(gen, world int, asks []goOrientAsk) {
 		case !b.viewerCaps.Orientation:
 			b.orientAnswer(world, a.ID, false, "NotSupportedError")
 		default:
-			for id, l := range b.orientAsks {
-				if time.Since(l.at) > goOrientWait || l.gen != b.gen {
-					delete(b.orientAsks, id)
-				}
-			}
-			if len(b.orientAsks) >= 4 {
+			if !b.orientAsks.add(a.ID, gen, world, struct{}{}, 4, goOrientWait) {
 				b.orientAnswer(world, a.ID, false, "AbortError")
 				continue
 			}
-			if b.orientAsks == nil {
-				b.orientAsks = map[string]goOrientLock{}
-			}
-			b.orientAsks[a.ID] = goOrientLock{gen: gen, world: world, at: time.Now()}
 			b.send(map[string]any{"type": "go-orientation", "gen": gen, "lock": a.Lock, "id": a.ID})
 		}
 	}
@@ -82,12 +66,8 @@ func (b *goBrowser) orientAnswer(world int, id string, ok bool, why string) {
 // orientationAnswered: the person's browser locked (or couldn't) for the
 // lock m.Text names, m.Value its error's name.
 func (b *goBrowser) orientationAnswered(m goClientMsg) {
-	l, ok := b.orientAsks[m.Text]
+	l, ok := b.orientAsks.take(m.Text, b.gen, goOrientWait)
 	if !ok {
-		return
-	}
-	delete(b.orientAsks, m.Text)
-	if l.gen != b.gen {
 		return
 	}
 	locked := m.Value == ""
@@ -100,7 +80,7 @@ func (b *goBrowser) orientationAnswered(m goClientMsg) {
 // orientationGone: the page's fullscreen left, or the page gone: its lock
 // let go there.
 func (b *goBrowser) orientationGone() {
-	b.orientAsks = nil
+	b.orientAsks.clear()
 	if b.orientLocked {
 		b.orientLocked = false
 		b.send(map[string]any{"type": "go-orientation", "gen": b.gen, "unlock": true})

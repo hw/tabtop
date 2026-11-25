@@ -9,6 +9,7 @@
 
 import { glyphs, iconSVG } from "./glyphs.js";
 import { storeJSON, storedJSON } from "./stored.js";
+import { el } from "./preview-dom.js";
 
 // How many rows are shown at once, then more (fewer, with many columns),
 // and the most columns shown.
@@ -499,13 +500,6 @@ export function filterRows(rows, order, query, column = -1) {
     return order.filter((i) => (column < 0 ? rows[i] : [rows[i][column] ?? ""]).some((c) => c.toLowerCase().includes(q)));
 }
 
-function el(tag, props = {}, ...kids) {
-    const e = Object.assign(document.createElement(tag), props);
-    for (const k of kids) {
-        e.append(k);
-    }
-    return e;
-}
 
 // The delimiters that can be chosen, by name.
 const NAMED = [[",", "Comma"], [";", "Semicolon"], ["\t", "Tab"], ["|", "Pipe"], [" ", "Space"]];

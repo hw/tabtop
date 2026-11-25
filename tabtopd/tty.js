@@ -17,6 +17,7 @@
 
 import { glyphs, iconSVG } from "../tabtop/glyphs.js";
 import { Osc } from "../tabtop/osc.js";
+import { copiedNote } from "../tabtop/copied-note.js";
 import { store, stored } from "../tabtop/stored.js";
 import { init, Terminal, FitAddon } from "./ghostty-web.js";
 import { forgetSession, storedSession, TunnelSocket } from "../tabtop/tunnel.js";
@@ -218,19 +219,7 @@ async function setFont(name) {
 
 // copied says, for a few seconds, that a program in the terminal copied
 // text to the clipboard (see Osc), showing how it starts.
-const copiedNote = Object.assign(document.createElement("div"), { id: "tty_copied", hidden: true });
-copiedNote.setAttribute("role", "status");
-document.body.append(copiedNote);
-let copiedTimer = 0;
-function copied(text) {
-    const line = text.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
-    const start = line.length > 80 ? `${line.slice(0, 80)}…` : line;
-    copiedNote.textContent = `The terminal copied ${text.length} character${text.length === 1 ? "" : "s"} to your clipboard`
-        + (start ? `: “${start}”` : ".");
-    copiedNote.hidden = false;
-    clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copiedNote.hidden = true), 5000);
-}
+const copied = copiedNote("tty_copied", "The terminal");
 
 // Before ghostty-web sees the keys, and the browser zooms.
 document.addEventListener("keydown", (e) => {

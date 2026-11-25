@@ -45,7 +45,7 @@ func (b *goBrowser) pointerLockAsks(gen, world int, asks []goPointerAsk, recent 
 			}
 			continue
 		}
-		if !goPasteID.MatchString(a.ID) {
+		if !goAskID.MatchString(a.ID) {
 			continue
 		}
 		// One asked of the person's browser and not answered (long ago):

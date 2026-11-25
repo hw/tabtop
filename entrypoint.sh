@@ -49,12 +49,12 @@ if [ "$WEB_VNC" = 1 ] && [ "$VNC_X509" = 1 ]; then
     fi
 fi
 # TABTOP_GO_DEBUG=1 logs what each remote browser tab does (for finding
-# out why a page misbehaves): passed on, as as_user starts with nothing.
-as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
+# out why a page misbehaves): passed on only as 1, as as_user starts with
+# nothing (0, or anything else, logs nothing).
+as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG="$TABTOP_GO_DEBUG"} /usr/local/bin/tabtopd \
     -disable-vnc="$((1 - WEB_VNC))" \
     -disable-fs="$((1 - WEB_FS))" \
     -listen ":${WEB_PORT}" \
-    -base-path "$WEB_BASE_PATH" \
     -novnc-dir /opt/novnc \
     -vnc-addr "$VNC_ADDR" \
     -vnc-x509="$X509" \
@@ -71,7 +71,6 @@ as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
     -segment-dir /opt/segment \
     -three-dir /opt/three \
     -disasm-dir /opt/disasm \
-    -disasm-disable "$WEB_DISASM_DISABLE" \
     -users-file "$TOTP_USERS_FILE" \
     -vnc-password-file "$VNC_UPSTREAM_FILE" \
     -downloads-dir "$USER_HOME/Downloads" \
@@ -87,7 +86,6 @@ as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
     -go-storage-file "$USER_HOME/.config/tabtop/go-storage.sealed" \
     -go-sites-file "$USER_HOME/.config/tabtop/go-sites.json" \
     -go-adblock-file "$USER_HOME/.config/tabtop/go-adblock.json" \
-    -remote-approval-url "${WEB_REMOTE_APPROVAL_URL:-}" \
     -offline-client="$WEB_OFFLINE_CLIENT" \
     -fetch="$WEB_GO_FETCH" \
     -fetch-private="$WEB_GO_FETCH_PRIVATE" \
@@ -97,20 +95,12 @@ as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
     -go-unsandboxed="$WEB_GO_UNSANDBOXED" \
     -go-private="$WEB_GO_PRIVATE" \
     -go-cache="$WEB_GO_CACHE" \
-    -trusted-proxies "$WEB_TRUSTED_PROXIES" \
-    -hosts "$WEB_HOSTS" \
-    -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
-    -session-max "$WEB_SESSION_MAX" \
-    -session-idle "$WEB_SESSION_IDLE" \
     -audio-sink "$AUDIO_SINK" \
     -mic-sink "$MIC_SINK" \
     -mic-create="$MIC_CREATE" \
-    -audio-bitrate "$WEB_AUDIO_BITRATE" \
     -term-dir "$TERM_DIR" \
-    -tty-command "$WEB_TTY_COMMAND" \
-    -tty-tmux-host "${WEB_TTY_TMUX_HOST:-}" \
-    -tty-tmux-session "${WEB_TTY_TMUX_SESSION:-}" \
     -doctor="$DOCTOR" \
+    "${GATEWAY_SETTINGS[@]}" \
     &
 TABTOPD_PID=$!
 

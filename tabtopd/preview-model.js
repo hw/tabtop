@@ -52,11 +52,19 @@ export function typeOf(name) {
     return !ext || textExtensions.has(ext) ? { kind: "text", type: "text/plain" } : null;
 }
 
+// fileType is what file-types.json says of a file named name's extension,
+// or undefined.
+export function fileType(name) {
+    const dot = name.lastIndexOf(".");
+    const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+    return Object.hasOwn(FILE_TYPES, ext) ? FILE_TYPES[ext] : undefined;
+}
+
 // textModel reports whether a file named name is a 3D model that's text
-// worth reading as such too (G-code, OBJ, glTF's JSON, Collada's XML, VRML): its preview offers
-// that.
+// worth reading as such too (G-code, OBJ, glTF's JSON, Collada's XML,
+// VRML: textModel in file-types.json): its preview offers that.
 export function textModel(name) {
-    return /\.(?:gcode|gco|obj|gltf|dae|wrl|vrml)$/i.test(name);
+    return fileType(name)?.textModel === true;
 }
 
 // binaryNamed reports whether name is a binary's (.bin, .dll, .exe, .so,
@@ -160,3 +168,35 @@ export function resolvePath(dir, p) {
     return parts.join("/");
 }
 
+// modelAlternative is how a 3D model (by shown's name) is shown other than
+// drawn: as text (G-code, OBJ; an FBX that's text) or its bytes; null if
+// it isn't one.
+export function modelAlternative(shown) {
+    return shown && typeOf(shown.name)?.kind === "model" ? (textModel(shown.name) || shown.textFBX ? "text" : "hex") : null;
+}
+
+// toggleView is what the preview's view toggle offers for what's shown
+// (its kind, name, and what's known of it): hidden where there's no other
+// view (a known type, or bytes that aren't text), else the view it goes to
+// (to: a kind, or null for the file's own), its icon, its title and
+// whether it's pressed. A database goes between its tables and its bytes;
+// a model between its drawing and its text or bytes (not back to a
+// drawing it can't be: too big, or a .obj that's a compiler's); anything
+// else of no known type between its text and its bytes.
+export function toggleView(shown) {
+    const { kind, name, sqlite } = shown;
+    const alternative = modelAlternative(shown);
+    const model = !!alternative && (kind === "model" || kind === alternative && !shown.modelUnavailable);
+    const binary = kind === "hex";
+    if (sqlite) {
+        return { hidden: false, to: kind === "sqlite" ? "hex" : "sqlite", icon: binary ? "preview" : "binary",
+            title: binary ? "Show tables" : "Show binary view", pressed: binary };
+    }
+    if (model) {
+        const drawn = kind === "model";
+        return { hidden: false, to: drawn ? alternative : null, icon: drawn ? (alternative === "text" ? "syntax" : "binary") : "preview",
+            title: drawn ? (alternative === "text" ? "Show text view" : "Show binary view") : "Show 3D view", pressed: !drawn };
+    }
+    return { hidden: !!typeOf(name) || (binary && shown.textAvailable === false), to: binary ? "text" : "hex",
+        icon: binary ? "preview" : "binary", title: binary ? "Show text view" : "Show binary view", pressed: binary };
+}

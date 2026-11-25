@@ -31,8 +31,9 @@ const (
 	cleanupIdle = fileStall
 )
 
-// atomicTempName matches what writeFileAtomic leaves if it's stopped.
-var atomicTempName = regexp.MustCompile(`^\.shares-[0-9]+$`)
+// atomicTempName matches what writeFileAtomic leaves if it's stopped: a
+// .tabtop- file, or a .shares- one, as it named them before.
+var atomicTempName = regexp.MustCompile(`^\.(tabtop|shares)-[0-9]+$`)
 
 // cleanupReport is what cleaning up deletes, or would.
 type cleanupReport struct {
@@ -94,7 +95,8 @@ func (g *fileService) cleanup(dry bool) cleanupReport {
 			busy[p.part.tmp] = true
 			// Between pieces isn't left: one that had a piece lately is
 			// still going, its next on the way.
-			if !p.busy && now.Sub(p.last) >= cleanupIdle {
+			// (One held is its folder's move's to let go, as above.)
+			if !p.writing && p.part.holding == 0 && now.Sub(p.last) >= cleanupIdle {
 				rep.Kept++
 				rep.Bytes += p.part.held
 				idle[k] = p
@@ -145,7 +147,7 @@ func (g *fileService) cleanup(dry bool) cleanupReport {
 func (g *server) cleanGatewayTemps(dry bool) (n int, bytes int64) {
 	before := time.Now().Add(-cleanupAge)
 	dirs := map[string]bool{}
-	for _, f := range []string{g.sharesFile, g.activityFile, g.shareKeyFile, g.passkeysFile} {
+	for _, f := range g.stateFiles() {
 		if f != "" {
 			dirs[filepath.Dir(f)] = true
 		}

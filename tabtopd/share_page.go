@@ -223,8 +223,7 @@ type sentLine struct {
 func renderSharePage(w http.ResponseWriter, code int, p sharePage) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Content-Security-Policy", sharePageCSP)
-	h.Set("X-Frame-Options", "DENY")
+	setPageHeaders(h, sharePageCSP)
 	h.Del("Content-Disposition")
 	if p.Title == "" {
 		p.Title = p.Heading

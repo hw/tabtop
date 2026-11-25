@@ -1,11 +1,12 @@
 // Read-only comparisons. File bytes use the normal authenticated tunnel;
 // diff computation is isolated in a disposable worker, with bounded input.
 import { call, collect } from "./requests.js";
-import { el, maximizeButton } from "./preview-dom.js";
+import { el, maximizeButton, showModal } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { binaryNamed, languageOf, probablyDatabase, textModel, typeOf } from "./preview-model.js";
 import { colour } from "./preview-content.js";
 import { MAX_DIFF_BYTES, lineText } from "./text-diff.js";
+import { oneShot } from "./worker-client.js";
 
 const PAGE_ROWS = 500;
 // textNamed reports whether name may well be a text file's: one shown as
@@ -42,21 +43,9 @@ export async function loadDiffText(path, signal, request = { type: "file", path,
 }
 
 function compute(left, right, signal) {
-    return new Promise((resolve, reject) => {
-        signal.throwIfAborted();
-        const worker = new Worker(new URL("./text-diff-worker.js", import.meta.url), { type: "module" });
-        const finish = (error, result) => {
-            clearTimeout(timer);
-            signal.removeEventListener("abort", cancel);
-            worker.terminate();
-            if (error) reject(error); else resolve(result);
-        };
-        const cancel = () => finish(signal.reason);
-        const timer = setTimeout(() => finish(new Error("Comparison took too long. Try smaller text files.")), 5000);
-        signal.addEventListener("abort", cancel, { once: true });
-        worker.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data.result);
-        worker.onerror = (event) => { event.preventDefault(); finish(new Error("Couldn't start the comparison worker. Close and try again.")); };
-        worker.postMessage({ left, right });
+    return oneShot(() => new Worker(new URL("./text-diff-worker.js", import.meta.url), { type: "module" }), { left, right }, [], signal, {
+        timeout: 5000, tooLong: "Comparison took too long. Try smaller text files.",
+        couldntStart: "Couldn't start the comparison worker. Close and try again.",
     });
 }
 
@@ -136,20 +125,10 @@ export function openTextDiff({ left, right, restoreFocus = null }) {
         el("div", { className: "diff-pages" }, earlier, range, later));
     let model, highlights, page = 0, active = -1, stopped = false;
     closeButton.before(maximizeButton(dialog, "diff-maximize"));
-    const stop = () => {
-        if (stopped) return;
+    const stop = showModal(dialog, { closeButton, focus, restoreFocus, closed: () => {
         stopped = true;
         controller.abort();
-        if (dialog.open) dialog.close();
-        dialog.remove();
-        if (focus?.isConnected) focus.focus({ preventScroll: true });
-        else restoreFocus?.();
-    };
-    closeButton.addEventListener("click", stop);
-    dialog.addEventListener("close", stop);
-    dialog.addEventListener("cancel", (e) => { e.preventDefault(); stop(); });
-    document.body.append(dialog);
-    dialog.showModal();
+    } });
 
     const draw = () => {
         const body = el("tbody");

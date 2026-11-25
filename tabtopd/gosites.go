@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"maps"
@@ -24,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxGoSiteSettings = 2000 // blocked sites and pop-up answers, each
@@ -31,17 +33,17 @@ const maxGoSiteSettings = 2000 // blocked sites and pop-up answers, each
 type goSiteSettings struct {
 	mu           sync.Mutex
 	file         string
-	blocked      []string          // hosts: example.com blocks it and its subdomains
-	popups       map[string]string // site -> "allow" or "block"
-	noReferer    bool              // what's fetched for a page doesn't say the page (Referer)
-	media        map[string]string
-	ads          map[string]string // site -> "allow" or "block": its ads, whatever ad blocking's default
-	videoHosts   []string          // hosts whose videos aren't played, on any page (a Skip held: go.js)
+	blocked      []string  // hosts: example.com blocks it and its subdomains
+	popups       goPerSite // site -> "allow", "block" or "ask"
+	noReferer    bool      // what's fetched for a page doesn't say the page (Referer)
+	media        goPerSite // site -> "allow", "block" or "no-autoplay"
+	ads          goPerSite // site -> "allow" or "block": its ads, whatever ad blocking's default
+	videoHosts   []string  // hosts whose videos aren't played, on any page (a Skip held: go.js)
 	popupDefault string
 	mediaDefault string
 	// Dark mode: site -> "auto" (as the person's device), "light", or "dark"
 	// (what pages are told the person prefers).
-	theme        map[string]string
+	theme        goPerSite
 	themeDefault string
 	// Search engine for words typed in the address bar (go.js; chosen in
 	// Settings). An id from goSearchEngines, or "custom" (searchURL: an
@@ -65,9 +67,74 @@ type goSiteSettings struct {
 	// Notifications: site -> "allow" or "block" (a page's
 	// Notification.requestPermission answered; unsaid: asked), and how
 	// many times they've changed (gonotify.go: a tab's pages told anew).
-	notifications map[string]string
+	notifications goPerSite
 	notifyVer     int
 }
+
+// goPerSite is a setting each site may have: its pop-ups, media, ads,
+// Dark mode or notifications. set's "<set>-<value>" sets a site's, and
+// "<set>-default" lets it go (to the browser-wide default, or none); kept
+// by site (goSite: m.youtube.com's is youtube.com's), as name in the
+// settings file and their report.
+type goPerSite struct {
+	name, set string
+	what      string              // said when too many sites have it: "pop-up settings"
+	valid     func(string) bool   // a value it can have
+	stored    func(string) string // a value as kept, from one read (an older name for it), or nil
+	counted   bool                // its changes counted (notifyVer: a tab's pages told anew)
+	m         map[string]string   // site -> value
+}
+
+// perSite are the settings each site may have.
+func (s *goSiteSettings) perSite() []*goPerSite {
+	return []*goPerSite{&s.popups, &s.media, &s.ads, &s.theme, &s.notifications}
+}
+
+// perSiteFor is the setting set's setting (a site's) is of, or nil.
+func (s *goSiteSettings) perSiteFor(setting string) *goPerSite {
+	if strings.HasPrefix(setting, "videos-host-") {
+		return nil // (a video host's, not a site's)
+	}
+	for _, p := range s.perSite() {
+		if v, ok := strings.CutPrefix(setting, p.set+"-"); ok && (v == "default" || p.valid(v)) {
+			return p
+		}
+	}
+	return nil
+}
+
+// change sets site's value (or lets it go: "default").
+func (p *goPerSite) change(site, value string) error {
+	if value == "default" {
+		delete(p.m, site)
+		return nil
+	}
+	if _, ok := p.m[site]; !ok && len(p.m) >= maxGoSiteSettings {
+		return fmt.Errorf("Too many sites have %s.", p.what)
+	}
+	p.m[site] = value
+	return nil
+}
+
+// load takes what the settings file kept, by site, as many as may be.
+func (p *goPerSite) load(from map[string]string) {
+	for host, v := range from {
+		if p.stored != nil {
+			v = p.stored(v)
+		}
+		site := goSettingHost(host)
+		if site == "" || !p.valid(v) {
+			continue
+		}
+		site = goSite(site)
+		if _, ok := p.m[site]; ok || len(p.m) < maxGoSiteSettings {
+			p.m[site] = v
+		}
+	}
+}
+
+// allowOrBlock is whether v is "allow" or "block".
+func allowOrBlock(v string) bool { return v == "allow" || v == "block" }
 
 type goSiteSettingsFile struct {
 	Blocked []string          `json:"blocked"`
@@ -111,8 +178,13 @@ var goKeptSite = func(string) bool { return false }
 var goBlockedHost = func(string) bool { return false }
 
 func newGoSiteSettings(file string) *goSiteSettings {
-	s := &goSiteSettings{file: file, popups: map[string]string{}, media: map[string]string{}, ads: map[string]string{}, popupDefault: "ask", mediaDefault: "allow",
-		theme: map[string]string{}, themeDefault: "auto", searchEngine: "duckduckgo", notifications: map[string]string{}}
+	s := &goSiteSettings{file: file, popupDefault: "ask", mediaDefault: "allow", themeDefault: "auto", searchEngine: "duckduckgo",
+		popups:        goPerSite{name: "popups", set: "popups", what: "pop-up settings", valid: popupPolicy, m: map[string]string{}},
+		media:         goPerSite{name: "media", set: "videos", what: "media settings", valid: mediaPolicy, m: map[string]string{}},
+		ads:           goPerSite{name: "ads", set: "ads", what: "ad settings", valid: allowOrBlock, m: map[string]string{}},
+		theme:         goPerSite{name: "theme", set: "theme", what: "Dark mode settings", valid: themePolicy, stored: themeStored, m: map[string]string{}},
+		notifications: goPerSite{name: "notifications", set: "notifications", what: "notification settings", valid: allowOrBlock, m: map[string]string{}, counted: true},
+	}
 	if file == "" {
 		return s
 	}
@@ -145,45 +217,21 @@ func newGoSiteSettings(file string) *goSiteSettings {
 	if mediaPolicy(f.MediaDefault) {
 		s.mediaDefault = f.MediaDefault
 	}
-	for _, h := range f.NoVideos {
-		if h = goSettingHost(h); h != "" && len(s.media) < maxGoSiteSettings {
-			s.media[goSite(h)] = "block"
+	for _, h := range f.NoVideos { // (as the settings once kept it)
+		if h = goSettingHost(h); h != "" && len(s.media.m) < maxGoSiteSettings {
+			s.media.m[goSite(h)] = "block"
 		}
 	}
-	for site, v := range f.Media {
-		if site = goSettingHost(site); site != "" && mediaPolicy(v) {
-			if _, exists := s.media[site]; exists || len(s.media) < maxGoSiteSettings {
-				s.media[site] = v
-			}
-		}
+	for p, from := range map[*goPerSite]map[string]string{&s.media: f.Media, &s.ads: f.Ads, &s.popups: f.Popups, &s.theme: f.Theme, &s.notifications: f.Notifications} {
+		p.load(from)
 	}
 	for _, h := range f.VideoHosts {
 		if h = goSettingHost(h); h != "" && !slices.Contains(s.videoHosts, h) && len(s.videoHosts) < maxGoSiteSettings {
 			s.videoHosts = append(s.videoHosts, h)
 		}
 	}
-	for site, v := range f.Ads {
-		if site = goSettingHost(site); site != "" && (v == "allow" || v == "block") && len(s.ads) < maxGoSiteSettings {
-			s.ads[goSite(site)] = v
-		}
-	}
-	for site, v := range f.Popups {
-		if site = goSettingHost(site); site != "" && popupPolicy(v) && len(s.popups) < maxGoSiteSettings {
-			s.popups[site] = v
-		}
-	}
 	if t := themeStored(f.ThemeDefault); themePolicy(t) {
 		s.themeDefault = t
-	}
-	for site, v := range f.Notifications {
-		if site = goSettingHost(site); site != "" && (v == "allow" || v == "block") && len(s.notifications) < maxGoSiteSettings {
-			s.notifications[goSite(site)] = v
-		}
-	}
-	for site, v := range f.Theme {
-		if site = goSettingHost(site); site != "" && themePolicy(themeStored(v)) && len(s.theme) < maxGoSiteSettings {
-			s.theme[goSite(site)] = themeStored(v)
-		}
 	}
 	if goSearchEngines[f.SearchEngine] {
 		s.searchEngine = f.SearchEngine
@@ -341,9 +389,9 @@ func (s *goSiteSettings) save() {
 	if s.file == "" {
 		return
 	}
-	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups, Media: s.media, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads, VideoHosts: s.videoHosts,
-		Theme: s.theme, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, PrivateDefault: s.privateDefault, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep,
-		Notifications: s.notifications}
+	f := goSiteSettingsFile{Blocked: s.blocked, Popups: s.popups.m, Media: s.media.m, PopupDefault: s.popupDefault, MediaDefault: s.mediaDefault, Ads: s.ads.m, VideoHosts: s.videoHosts,
+		Theme: s.theme.m, ThemeDefault: s.themeDefault, SearchEngine: s.searchEngine, SearchURL: s.searchURL, PrivateDefault: s.privateDefault, DoH: s.doh, DoHURL: s.dohURL, Hosts: s.hosts, Keep: s.keep,
+		Notifications: s.notifications.m}
 	if s.noReferer {
 		no := false
 		f.Referer = &no
@@ -421,7 +469,7 @@ func themeStored(value string) string {
 func (s *goSiteSettings) notificationsAll() (map[string]string, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return maps.Clone(s.notifications), s.notifyVer
+	return maps.Clone(s.notifications.m), s.notifyVer
 }
 
 // notificationsVer is how many times the notification settings have changed.
@@ -436,7 +484,7 @@ func (s *goSiteSettings) notificationsVer() int {
 func (s *goSiteSettings) notificationsFor(host string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.notifications[goSite(strings.Trim(host, "[]"))]
+	return s.notifications.m[goSite(host)]
 }
 
 // themeFor is Dark mode for a page of host: its site's, or the default.
@@ -446,7 +494,7 @@ func (s *goSiteSettings) themeFor(host string) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t := s.theme[goSite(strings.Trim(host, "[]"))]; t != "" {
+	if t := s.theme.m[goSite(host)]; t != "" {
 		return t
 	}
 	return s.themeDefault
@@ -458,7 +506,7 @@ func (s *goSiteSettings) mediaFor(host string) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if policy := s.media[goSite(strings.Trim(host, "[]"))]; policy != "" {
+	if policy := s.media.m[goSite(host)]; policy != "" {
 		return policy
 	}
 	return s.mediaDefault
@@ -473,10 +521,10 @@ func (s *goSiteSettings) adsFor(host string) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.ads) == 0 {
+	if len(s.ads.m) == 0 {
 		return ""
 	}
-	return s.ads[goSite(strings.Trim(host, "[]"))]
+	return s.ads.m[goSite(host)]
 }
 
 // videoHostBlocked is whether videos from host aren't played (its own
@@ -508,7 +556,7 @@ func (s *goSiteSettings) adsBlocked() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, v := range s.ads {
+	for _, v := range s.ads.m {
 		if v == "block" {
 			return true
 		}
@@ -519,7 +567,7 @@ func (s *goSiteSettings) adsBlocked() bool {
 func (s *goSiteSettings) popup(site string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if policy := s.popups[site]; policy != "" {
+	if policy := s.popups.m[goSite(site)]; policy != "" {
 		return policy
 	}
 	return s.popupDefault
@@ -556,8 +604,19 @@ func (s *goSiteSettings) set(site, setting string) error {
 	}
 	// The whole site's (m.youtube.com: youtube.com); a video host's, its
 	// own host (cdn.example.com, as its videos' addresses name it).
-	if (strings.HasPrefix(setting, "videos-") || strings.HasPrefix(setting, "ads-") || strings.HasPrefix(setting, "theme-") || strings.HasPrefix(setting, "notifications-") || setting == "keep" || setting == "keep-off") && !strings.HasPrefix(setting, "videos-host-") {
+	per := s.perSiteFor(setting)
+	if per != nil || setting == "keep" || setting == "keep-off" {
 		h = goSite(h)
+	}
+	if per != nil {
+		if err := per.change(h, strings.TrimPrefix(setting, per.set+"-")); err != nil {
+			return err
+		}
+		if per.counted {
+			s.notifyVer++
+		}
+		s.save()
+		return nil
 	}
 	switch setting {
 	case "block":
@@ -570,27 +629,6 @@ func (s *goSiteSettings) set(site, setting string) error {
 		}
 	case "unblock":
 		s.blocked = slices.DeleteFunc(s.blocked, func(b string) bool { return b == h })
-	case "popups-allow", "popups-block", "popups-ask":
-		if _, ok := s.popups[h]; !ok && len(s.popups) >= maxGoSiteSettings {
-			return errors.New("Too many sites have pop-up settings.")
-		}
-		s.popups[h] = strings.TrimPrefix(setting, "popups-")
-	case "popups-default":
-		delete(s.popups, h)
-	case "videos-allow", "videos-block", "videos-no-autoplay":
-		if _, ok := s.media[h]; !ok && len(s.media) >= maxGoSiteSettings {
-			return errors.New("Too many sites have media settings.")
-		}
-		s.media[h] = strings.TrimPrefix(setting, "videos-")
-	case "videos-default":
-		delete(s.media, h)
-	case "ads-allow", "ads-block":
-		if _, ok := s.ads[h]; !ok && len(s.ads) >= maxGoSiteSettings {
-			return errors.New("Too many sites have ad settings.")
-		}
-		s.ads[h] = strings.TrimPrefix(setting, "ads-")
-	case "ads-default":
-		delete(s.ads, h)
 	case "videos-host-block":
 		// The host a video comes from (not the page's site): its videos
 		// played nowhere.
@@ -603,22 +641,6 @@ func (s *goSiteSettings) set(site, setting string) error {
 		}
 	case "videos-host-allow":
 		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
-	case "theme-auto", "theme-light", "theme-dark":
-		if _, ok := s.theme[h]; !ok && len(s.theme) >= maxGoSiteSettings {
-			return errors.New("Too many sites have Dark mode settings.")
-		}
-		s.theme[h] = strings.TrimPrefix(setting, "theme-")
-	case "theme-default":
-		delete(s.theme, h)
-	case "notifications-allow", "notifications-block":
-		if _, ok := s.notifications[h]; !ok && len(s.notifications) >= maxGoSiteSettings {
-			return errors.New("Too many sites have notification settings.")
-		}
-		s.notifications[h] = strings.TrimPrefix(setting, "notifications-")
-		s.notifyVer++
-	case "notifications-default":
-		delete(s.notifications, h)
-		s.notifyVer++
 	case "keep":
 		if !slices.Contains(s.keep, h) {
 			if len(s.keep) >= maxGoSiteSettings {
@@ -634,13 +656,13 @@ func (s *goSiteSettings) set(site, setting string) error {
 		// ads, its videos blocked by host, its Keep. (A block of a domain over
 		// it, kept under that domain's name, stays.)
 		s.blocked = slices.DeleteFunc(s.blocked, func(b string) bool { return b == h })
-		delete(s.popups, h)
-		delete(s.media, h)
-		delete(s.ads, h)
-		delete(s.theme, h)
-		if _, ok := s.notifications[h]; ok {
-			delete(s.notifications, h)
-			s.notifyVer++
+		for _, p := range s.perSite() {
+			if _, ok := p.m[h]; ok {
+				delete(p.m, h)
+				if p.counted {
+					s.notifyVer++
+				}
+			}
 		}
 		s.videoHosts = slices.DeleteFunc(s.videoHosts, func(v string) bool { return v == h })
 		s.keep = slices.DeleteFunc(s.keep, func(k string) bool { return k == h })
@@ -655,18 +677,21 @@ func (s *goSiteSettings) report() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var noVideos []string
-	for site, policy := range s.media {
+	for site, policy := range s.media.m {
 		if policy == "block" {
 			noVideos = append(noVideos, site)
 		}
 	}
 	slices.Sort(noVideos)
-	return map[string]any{"blocked": slices.Clone(s.blocked), "popups": maps.Clone(s.popups), "referer": !s.noReferer,
-		"noVideos": noVideos, "media": maps.Clone(s.media), "popupDefault": s.popupDefault,
-		"mediaDefault": s.mediaDefault, "ads": maps.Clone(s.ads), "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
-		"theme": maps.Clone(s.theme), "themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL, "privateDefault": s.privateDefault,
-		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...), "keep": slices.Clone(s.keep),
-		"notifications": maps.Clone(s.notifications)}
+	report := map[string]any{"blocked": slices.Clone(s.blocked), "referer": !s.noReferer,
+		"noVideos": noVideos, "popupDefault": s.popupDefault,
+		"mediaDefault": s.mediaDefault, "videoHosts": slices.Clone(s.videoHosts), "kept": s.file != "",
+		"themeDefault": s.themeDefault, "searchEngine": s.searchEngine, "searchURL": s.searchURL, "privateDefault": s.privateDefault,
+		"doh": cmp.Or(s.doh, "off"), "dohURL": s.dohURL, "hosts": append([]goHostRecord{}, s.hosts...), "keep": slices.Clone(s.keep)}
+	for _, p := range s.perSite() {
+		report[p.name] = maps.Clone(p.m)
+	}
+	return report
 }
 
 // routeGoSettings answers the settings page: what's set.
@@ -815,6 +840,10 @@ type goPopupAsk struct {
 	url, site string
 }
 
+// goPopupAskWait is how long a pop-up's ask waits for the person: one not
+// answered by then is let go (the page has long moved on).
+const goPopupAskWait = 10 * time.Minute
+
 // popup decides a window the page opened (u): opened, as the opener's site
 // says, or refused, or the person asked.
 func (b *goBrowser) popup(u string) {
@@ -822,7 +851,7 @@ func (b *goBrowser) popup(u string) {
 	if host == "" {
 		host = goURLHost(b.url)
 	}
-	site := goSite(strings.Trim(host, "[]"))
+	site := goSite(host)
 	if goBlockedHost(goURLHost(u)) {
 		b.send(map[string]any{"type": "go-popup-blocked", "gen": b.gen, "site": site, "why": "blocked"})
 		return
@@ -838,14 +867,10 @@ func (b *goBrowser) popup(u string) {
 		goDebugf("popup: refused, as the site's setting says")
 		b.send(map[string]any{"type": "go-popup-blocked", "gen": b.gen, "site": site})
 	default:
-		if b.popupAsks == nil {
-			b.popupAsks = map[int]goPopupAsk{}
-		}
-		if len(b.popupAsks) >= 8 {
+		b.popupAsk++
+		if !b.popupAsks.add(b.popupAsk, b.gen, b.world, goPopupAsk{url: u, site: site}, 8, goPopupAskWait) {
 			return // a page opening windows in a loop: not asked about each
 		}
-		b.popupAsk++
-		b.popupAsks[b.popupAsk] = goPopupAsk{url: u, site: site}
 		b.send(map[string]any{"type": "go-popup-ask", "gen": b.gen, "id": b.popupAsk, "url": u, "site": site})
 	}
 }
@@ -853,11 +878,11 @@ func (b *goBrowser) popup(u string) {
 // popupAnswer is the person's answer about a pop-up (id): opened if allowed,
 // and, if they said to, the answer kept for its site.
 func (b *goBrowser) popupAnswer(id int, allow, remember bool) {
-	ask, ok := b.popupAsks[id]
+	p, ok := b.popupAsks.take(id, b.gen, goPopupAskWait)
 	if !ok {
-		return
+		return // (or asked by a page gone)
 	}
-	delete(b.popupAsks, id)
+	ask := p.v
 	// (Not from a private tab, which keeps nothing of where it went.)
 	if remember && !b.private && b.sites != nil && ask.site != "" {
 		setting := "popups-block"

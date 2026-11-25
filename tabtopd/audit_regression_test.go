@@ -20,7 +20,7 @@ func TestWrongSessionSecretDoesNotTouchSession(t *testing.T) {
 	g, srv := newE2EServer(t)
 	ctx := testCtx(t)
 	s := login(t, ctx, srv.URL, code(0))
-	eventually(t, "login handshake ended", func() bool { g.handshakes.mu.Lock(); defer g.handshakes.mu.Unlock(); return g.handshakes.total == 0 })
+	waitUntil(t, "login handshake ended", func() bool { g.handshakes.mu.Lock(); defer g.handshakes.mu.Unlock(); return g.handshakes.total == 0 })
 	g.mu.Lock()
 	idle, since, used := g.sessions[s.id].idle, g.sessions[s.id].idleSince, g.sessions[s.id].uses[0].Last
 	g.mu.Unlock()
@@ -29,7 +29,7 @@ func TestWrongSessionSecretDoesNotTouchSession(t *testing.T) {
 	if _, _, err := tc.read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
 		t.Fatalf("wrong secret: %v", err)
 	}
-	eventually(t, "failed handshake ended", func() bool { g.handshakes.mu.Lock(); defer g.handshakes.mu.Unlock(); return g.handshakes.total == 0 })
+	waitUntil(t, "failed handshake ended", func() bool { g.handshakes.mu.Lock(); defer g.handshakes.mu.Unlock(); return g.handshakes.total == 0 })
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state := g.sessions[s.id]
@@ -99,7 +99,7 @@ func TestUploadFormRejectsWithoutDraining(t *testing.T) {
 			if w.Code < 400 || reader.n >= body.Len()/2 || w.Header().Get("Connection") != "close" {
 				t.Fatalf("rejected form consumed %d of %d bytes; status %d, headers %v", reader.n, body.Len(), w.Code, w.Header())
 			}
-			if g.shares.formsAll != 0 || g.shares.uploadsAll != 0 {
+			if g.shares.forms.total != 0 || g.shares.uploadsAll != 0 {
 				t.Fatal("rejection leaked admission slots")
 			}
 		})

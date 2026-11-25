@@ -351,9 +351,9 @@ writeFileSync(join(stage, "tabtop", "files.js"), readFileSync(join(tabtopd, "fil
 	const head = (title, css) => '<!doctype html><html lang="en"><meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
 		`<title>${title}</title>\n<style>` + css.map((f) => readFileSync(join(tabtopd, f), "utf8")).join("") + "</style>\n";
 	const frames = {
-		"md-frame.html": head("Markdown", ["md-frame.css", "highlight.css"]) + '<main id="doc"></main>\n<script src="third-party/css-tree.js"></script><script src="preview-css.js"></script><script src="preview-html-links.js"></script><script src="preview-html-resources.js"></script><script src="md-frame.js"></script>\n',
-		"epub-frame.html": head("Book", ["epub-frame.css"]) + '<div id="bar"></div><nav id="contents" hidden aria-label="Contents"></nav><main id="doc"></main><nav id="ends" aria-label="Chapters"></nav>\n<script src="epub-frame.js"></script>\n',
-		"pdf-frame.html": head("PDF", ["pdf-frame.css"]) + '<div id="bar"></div><main id="pages"></main>\n<script src="pdf-frame.js"></script>\n',
+		"md-frame.html": head("Markdown", ["md-frame.css", "highlight.css"]) + '<main id="doc"></main>\n<script src="third-party/css-tree.js"></script><script src="preview-css.js"></script><script src="preview-html-links.js"></script><script src="preview-html-resources.js"></script><script src="frame-bridge.js"></script><script src="md-frame.js"></script>\n',
+		"epub-frame.html": head("Book", ["epub-frame.css"]) + '<div id="bar"></div><nav id="contents" hidden aria-label="Contents"></nav><main id="doc"></main><nav id="ends" aria-label="Chapters"></nav>\n<script src="frame-bridge.js"></script><script src="epub-frame.js"></script>\n',
+		"pdf-frame.html": head("PDF", ["pdf-frame.css"]) + '<div id="bar"></div><main id="pages"></main>\n<script src="frame-bridge.js"></script><script src="pdf-frame.js"></script>\n',
 		// The remote browser's frame, where it shows a page (gopage.go's
 		// goFrameHTML).
 		"go-frame.html": '<!doctype html><html lang="en"><meta charset="utf-8"><title>Page</title>\n<script src="third-party/css-tree.js"></script><script src="gogl-surface.js"></script><script src="go-frame-gl.js"></script><script src="go-frame.js"></script>\n',

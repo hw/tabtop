@@ -178,7 +178,7 @@ func (b *goBrowser) serveRes(m goClientMsg) {
 		}
 		f := b.resource(ctx, m.Kind, m.URL)
 		if f.err != nil {
-			goDebugf("res %s %s: %v", m.Kind, goHost(m.URL), f.err)
+			goDebugf("res %s %s: %v", m.Kind, goHostPort(m.URL), f.err)
 			b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": f.err.Error()})
 			return
 		}
@@ -213,6 +213,7 @@ func (b *goBrowser) nextRes() {
 // next. The next page's aren't held up behind them.
 func (b *goBrowser) leftPage() {
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
+	b.popupAsks.clear() // (asked about by the page left: gone with it)
 	b.resetFileSystem()
 	b.fullscreenGone()  // (gofullscreen.go)
 	b.wakeLockGone()    // (gowakelock.go)
@@ -283,7 +284,9 @@ func (b *goBrowser) serveMedia(m goClientMsg) {
 	}
 }
 
-func goHost(raw string) string {
+// goHostPort is an address's host with its port, if it says one
+// ("example.com:8443"), or "".
+func goHostPort(raw string) string {
 	if u, err := url.Parse(raw); err == nil {
 		return u.Host
 	}

@@ -16,7 +16,7 @@
         window[kind] = function (message, value) {
             try {
                 const text = message === undefined ? "" : String(message);
-                document.dispatchEvent(new CustomEvent(SEND, { detail: JSON.stringify({ kind, message: text.slice(0, 2000) }) }));
+                tabtopTell(document, SEND, { kind, message: text.slice(0, 2000) });  // (gopage-prelude.js: an alert as the page loads, before the agent's there, too)
             } catch { /* told nothing */ }
             return own.apply(this, arguments);
         };

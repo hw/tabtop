@@ -49,25 +49,9 @@
     let restoreAt = null;
     let restoredY = 0;
     let printButton = null, printBusy = false;
-    const waiting = new Map();
-    let lastId = 0;
-    function ask(message) {
-        return new Promise((resolve) => {
-            const id = ++lastId;
-            waiting.set(id, resolve);
-            page.postMessage({ ...message, id }, "*");
-        });
-    }
-
-    window.addEventListener("message", (e) => {
-        if (e.source !== page || !e.data || typeof e.data !== "object") {
-            return;
-        }
-        const m = e.data;
-        if (m.id && waiting.has(m.id)) {
-            waiting.get(m.id)(m);
-            waiting.delete(m.id);
-        } else if (m.type === "open" && Number.isSafeInteger(m.size) && m.initial instanceof ArrayBuffer) {
+    // The page's answers to ask, and what else it sends (frame-bridge.js).
+    const ask = TabTopFrameBridge(page, (m) => {
+        if (m.type === "open" && Number.isSafeInteger(m.size) && m.initial instanceof ArrayBuffer) {
             restoreAt = m.location ?? restoreAt;
             open(m.size, new Uint8Array(m.initial)).catch(fail);
         } else if (m.type === "restore" && m.location) {

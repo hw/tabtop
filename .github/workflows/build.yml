@@ -97,6 +97,9 @@ jobs:
             lite: true
           - part: images
             groups: images,models services
+            # The image's startup: its settings checked, and a desktop
+            # elsewhere (VNC_ADDR) shown.
+            startup: true
           - part: previews
             groups: zip,media,binary,text,html,markdown,pdf,epub,tables,sqlite
             # Its media checks make MP3/MKV/MP4 fixtures with FFmpeg.
@@ -110,25 +113,22 @@ jobs:
       # Chrome.
       - uses: jdx/mise-action@v5
       - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: ./.github/actions/load-image
         with:
-          context: .
-          load: true
-          tags: tabtop:check
-          cache-from: type=gha,scope=tabtop
+          image: tabtop
+          tag: tabtop:check
       - if: matrix.ffmpeg
         uses: ./.github/actions/ffmpeg
       - run: for g in ${{ matrix.groups }}; do test/browser-check.sh tabtop:check --group "$g"; done
       - if: matrix.lite
-        uses: docker/build-push-action@v7
+        uses: ./.github/actions/load-image
         with:
-          context: .
-          load: true
-          build-args: DESKTOP=none
-          tags: tabtop-lite:check
-          cache-from: type=gha,scope=tabtop-lite
+          image: tabtop-lite
+          tag: tabtop-lite:check
       - if: matrix.lite
         run: test/lite-check.sh tabtop-lite:check tabtop:check
+      - if: matrix.startup
+        run: test/startup-check.sh tabtop:check && test/features-check.sh tabtop:check
 
   # The remote browser (/go), as it ships in the lite image: its Moli,
   # sandboxed by bubblewrap, end to end in headless Chrome; then with files
@@ -147,13 +147,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
       - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: ./.github/actions/load-image
         with:
-          context: .
-          load: true
-          build-args: DESKTOP=none
-          tags: tabtop-lite:check
-          cache-from: type=gha,scope=tabtop-lite
+          image: tabtop-lite
+          tag: tabtop-lite:check
       # The test site's videos are made with FFmpeg.
       - uses: ./.github/actions/ffmpeg
       # Ubuntu's runners only let AppArmor-profiled programs make user
@@ -173,6 +170,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - image: tabtop
+          - image: tabtop-lite
+            build-args: DESKTOP=none
+    name: push (${{ matrix.image }})
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -182,22 +186,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # main → :main and :latest; tag v1.2.3 → :1.2.3 and :1.2; every push
-      # also gets :sha-<short sha>. Both images get the same tags.
+      # also gets :sha-<short sha>. Both images get the same tags, tabtop's
+      # at ghcr.io/<owner>/<repo>, tabtop-lite's at …/<repo>-lite.
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-      - id: meta-lite
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}-lite
+          images: ghcr.io/${{ github.repository }}${{ matrix.image == 'tabtop-lite' && '-lite' || '' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -208,15 +202,8 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
+          build-args: ${{ matrix.build-args }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=tabtop
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          build-args: DESKTOP=none
-          push: true
-          tags: ${{ steps.meta-lite.outputs.tags }}
-          labels: ${{ steps.meta-lite.outputs.labels }}
-          cache-from: type=gha,scope=tabtop-lite
+          cache-from: type=gha,scope=${{ matrix.image }}

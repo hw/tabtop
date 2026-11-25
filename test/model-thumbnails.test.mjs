@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { deflateRawSync } from "node:zlib";
-import { modelThumbnail, MODEL_THUMBNAIL } from "../tabtopd/model-thumbnails.js";
+import { modelThumbnail, modelThumbnailed } from "../tabtopd/model-thumbnails.js";
 
 // Small real pictures: PNGs (1×1 and 2×2, by their headers, as the files
 // say) and a JPEG's first bytes.
@@ -21,8 +21,8 @@ const base64Lines = (b) => b.toString("base64").match(/.{1,78}/g).map((l) => `; 
 const gcodeBlock = (tag, w, h, b) => `;\n; ${tag} begin ${w}x${h} ${b.toString("base64").length}\n${base64Lines(b)}\n; ${tag} end\n;\n`;
 
 test("which files have pictures of themselves", () => {
-    for (const n of ["a.3mf", "B.GCODE", "c.gco", "d.bgcode"]) assert.ok(MODEL_THUMBNAIL.test(n), n);
-    for (const n of ["e.stl", "f.gcode.txt", "g.obj"]) assert.ok(!MODEL_THUMBNAIL.test(n), n);
+    for (const n of ["a.3mf", "B.GCODE", "c.gco", "d.bgcode"]) assert.ok(modelThumbnailed(n), n);
+    for (const n of ["e.stl", "f.gcode.txt", "g.obj"]) assert.ok(!modelThumbnailed(n), n);
 });
 
 test("G-code: the largest PNG or JPEG in its comments (not QOI); only its start read", async () => {

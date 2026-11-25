@@ -30,18 +30,64 @@ export async function copyText(text) {
     }
 }
 
-// Toggle a dialog between its normal bounds and the whole viewport.
-export function maximizeButton(dialog, className) {
+// showModal shows dialog, put in the page, modally, until it's closed
+// (its closeButton, Esc, or its own closing, which it's given back):
+// then, once, closed() (the dialog's own stopping), the dialog closed and
+// taken away, and the focus given back (to focus, if it's still there,
+// else restoreFocus()). request(close, how), if given, is asked instead
+// when ✕ ("button") or Escape ("escape") would close it: it closes it, or
+// asks first, or does something else (stops a search). parent: where it's
+// put (the page, or a dialog it's of, for that one's keys). It returns
+// close.
+export function showModal(dialog, { closeButton, focus, restoreFocus, closed = () => {}, request = null, parent = document.body }) {
+    let done = false;
+    const close = () => {
+        if (done) return;
+        done = true;
+        closed();
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        if (focus?.isConnected) focus.focus({ preventScroll: true });
+        else restoreFocus?.();
+    };
+    // Asked to close (by ✕, or Escape): request, if given, decides.
+    const ask = (how) => (request ? request(close, how) : close());
+    closeButton?.addEventListener("click", () => ask("button"));
+    dialog.addEventListener("close", close);
+    dialog.addEventListener("cancel", (e) => { e.preventDefault(); ask("escape"); });
+    parent.append(dialog);
+    dialog.showModal();
+    return close;
+}
+
+// maximizeButton toggles a dialog between the box it starts as and the
+// whole window. dialog may be given as a function (a button made before
+// its dialog); kept, {get, set}, keeps the choice (the preview's, as last
+// chosen): its update() shows it again.
+export function maximizeButton(dialog, className, kept = null) {
     const button = el("button", { type: "button", className: `${className} glyph` });
-    const update = () => {
-        const wide = dialog.classList.contains("wide");
+    // (A dialog given as a function may not be made yet: none, till it is.)
+    const box = () => {
+        try {
+            return typeof dialog === "function" ? dialog() : dialog;
+        } catch {
+            return null;
+        }
+    };
+    const show = (wide) => {
+        box()?.classList.toggle("wide", wide);
         button.textContent = wide ? glyphs.contract : glyphs.expand;
-        button.title = wide ? "Restore size" : "Maximize";
+        button.title = wide ? "Back to a box" : "Fill the window";
         button.setAttribute("aria-label", button.title);
         button.setAttribute("aria-pressed", String(wide));
     };
-    button.addEventListener("click", () => { dialog.classList.toggle("wide"); update(); });
-    update();
+    button.update = () => show(kept ? kept.get() : !!box()?.classList.contains("wide"));
+    button.addEventListener("click", () => {
+        const wide = !box()?.classList.contains("wide");
+        kept?.set(wide);
+        show(wide);
+    });
+    button.update();
     return button;
 }
 

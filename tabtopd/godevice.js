@@ -38,7 +38,7 @@
             queued = { target, detail: JSON.stringify({ id, kind, ...fields }) };
         });
     }
-    document.addEventListener("__tabtop_read_device", () => {
+    document.addEventListener("__tabtop_read", () => {
         if (!queued) return;
         const { target, detail } = queued;
         queued = null;
@@ -159,7 +159,7 @@
         fsWrites.set(id, { resolve, reject, timer });
         fsWriteQueue.push({ id, detail: JSON.stringify({ id, kind: "fs-write", ...fields }) });
     });
-    document.addEventListener("__tabtop_read_device", () => {
+    document.addEventListener("__tabtop_read", () => {
         while (fsWriteQueue.length) {
             const event = new CustomEvent("__tabtop_device", { detail: fsWriteQueue[0].detail, bubbles: true, composed: true, cancelable: true });
             if (document.dispatchEvent(event)) break;  // (not taken: the agent's had its fill)

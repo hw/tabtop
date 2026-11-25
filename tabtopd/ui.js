@@ -5,16 +5,11 @@
 // and download.js.
 
 import { glyphs } from "./glyphs.js";
-import { copyText } from "./preview-dom.js";
+import { el, copyText, showModal } from "./preview-dom.js";
 import { storeJSON, storedJSON } from "./stored.js";
 
 export { copyText };
 
-function el(tag, props = {}, ...children) {
-    const e = Object.assign(document.createElement(tag), props);
-    e.append(...children);
-    return e;
-}
 
 // The transfers panel: a list of rows, each a change and how it's going,
 // under a heading that says how many are still going, with a bar for how
@@ -232,12 +227,8 @@ function choose(message, choices, ...fields) {
         const form = el("form", { method: "dialog" }, el("p", { textContent: message }), ...fields,
             el("div", { className: "buttons" }, ...buttons));
         const dialog = el("dialog", {}, form);
-        dialog.addEventListener("close", () => {
-            dialog.remove();
-            resolve(dialog.returnValue);
-        });
-        document.body.append(dialog);
-        dialog.showModal();
+        // (Escape: "", as no button was chosen.)
+        showModal(dialog, { closed: () => resolve(dialog.returnValue) });
         (fields.find((f) => f.tagName === "INPUT") ?? buttons.at(-1)).focus();
     });
 }

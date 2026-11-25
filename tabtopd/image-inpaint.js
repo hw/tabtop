@@ -1,6 +1,7 @@
 // Masked MI-GAN inpainting. Marks are vectors in current image coordinates;
 // only the bounded repair area is rasterized and sent to a dedicated worker.
 import { el } from "./preview-dom.js";
+import { OneAtATime } from "./worker-client.js";
 import { maskBounds, drawMaskMarks, newMaskMark, extendMaskMark, enclosedFill, maskSVGShape, glyphCaption, brushControls, imageMaskPoint } from "./image-mask.js";
 import { iconSVG } from "./glyphs.js";
 import { Segmenter, grow, selectionMark } from "./image-segment.js";
@@ -33,32 +34,15 @@ export function mergeRepair(original, filled, mask) {
 }
 
 export class Inpainter {
-    worker = null;
-    pending = null;
+    #worker = new OneAtATime(() => new Worker(new URL("./image-inpaint-worker.js", import.meta.url)), 120000, {
+        busy: "Inpainting is already running", tooLong: "Inpainting took too long. Try a smaller area.", failed: "Inpainting failed",
+        couldntLoad: "Inpainting couldn't load. Try again.", unreadable: "Unreadable inpainting result", cancelled: "Inpainting cancelled.",
+    });
     run(rgba, mask, width, height) {
-        if (this.pending) return Promise.reject(new Error("Inpainting is already running"));
-        return new Promise((resolve, reject) => {
-            this.pending = { resolve, reject, timer: setTimeout(() => this.cancel("Inpainting took too long. Try a smaller area."), 120000) };
-            try {
-                this.worker ??= new Worker(new URL("./image-inpaint-worker.js", import.meta.url));
-                this.worker.onmessage = ({ data }) => {
-                    if (data.error) { this.cancel(`Inpainting failed: ${data.error}`); return; }
-                    if (!(data.rgba instanceof Uint8ClampedArray) || data.rgba.length !== width * height * 4) { this.cancel("Invalid inpainting result"); return; }
-                    const pending = this.pending; this.pending = null;
-                    clearTimeout(pending.timer); pending.resolve(data.rgba);
-                };
-                this.worker.onerror = (event) => { event.preventDefault(); this.cancel("Inpainting couldn't load. Try again."); };
-                this.worker.onmessageerror = () => this.cancel("Unreadable inpainting result");
-                this.worker.postMessage({ rgba, mask, width, height }, [rgba.buffer, mask.buffer]);
-            } catch (err) { this.cancel(err.message); }
-        });
+        return this.#worker.ask({ rgba, mask, width, height }, [rgba.buffer, mask.buffer],
+            (data) => data.rgba instanceof Uint8ClampedArray && data.rgba.length === width * height * 4 ? "" : "Invalid inpainting result").then((data) => data.rgba);
     }
-    cancel(message = "Inpainting cancelled.") {
-        this.worker?.terminate(); this.worker = null;
-        if (this.pending) {
-            clearTimeout(this.pending.timer); this.pending.reject(new Error(message)); this.pending = null;
-        }
-    }
+    cancel(message) { this.#worker.cancel(message); }
 }
 
 // The same bounded repair pipeline serves individual images and PDF batches.

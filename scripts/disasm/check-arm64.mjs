@@ -10,37 +10,27 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { runInNewContext } from "node:vm";
+import { hex, line, runWorker } from "./worker-harness.mjs";
 import { gzipSync } from "node:zlib";
 
 const [directory, workerFile, referenceDirectory] = process.argv.slice(2);
 if (!directory || !workerFile || !referenceDirectory) throw new Error("usage: node check-arm64.mjs <asset directory> <disasm-worker.js> <reference Capstone directory>");
 const wasm = readFileSync(resolve(directory, "arm64-asm.wasm"));
-let result, fetches = 0;
-const self = { postMessage: (message) => { result = JSON.parse(JSON.stringify(message)); } };
-const worker = {
-    self, Uint8Array, BigInt, WebAssembly, TextEncoder, TextDecoder,
+let fetches = 0;
+const { post, scope: worker } = runWorker(workerFile, () => ({
     importScripts() { throw new Error("the ARM64 path loaded another's scripts"); },
     fetch: async (path) => {
         assert.equal(path, "./disasm/arm64-asm.wasm");
         fetches++;
         return { ok: true, arrayBuffer: async () => wasm };
     },
-};
-runInNewContext(readFileSync(workerFile, "utf8"), worker);
-let next = 0;
-const hex = (bytes) => Buffer.from(bytes).toString("hex");
+}));
 const ask = async (bytes, address = 0x1000, max = 512) => {
-    await self.onmessage({ data: { id: ++next, mode: "arm64", bytes: Uint8Array.from(bytes), address, max } });
-    assert.equal(result.id, next);
-    assert.equal(result.error, undefined, result.error);
-    return result.lines;
+    const reply = await post({ mode: "arm64", bytes: Uint8Array.from(bytes), address, max });
+    assert.equal(reply.error, undefined, reply.error);
+    return reply.lines;
 };
-const assemble = async (text, address = 0x1000, was = []) => {
-    await self.onmessage({ data: { id: ++next, mode: "arm64", assemble: text, address, was: [...was] } });
-    assert.equal(result.id, next);
-    return result;
-};
+const assemble = (text, address = 0x1000, was = []) => post({ mode: "arm64", assemble: text, address, was: [...was] });
 const disassemble = async (bytes, address = 0x1000) => (await ask(bytes, address, 1))[0];
 // The other reader: Capstone's text for a word, or "" where it has none
 // that can be gone by.
@@ -59,7 +49,6 @@ const referenceText = (bytes, address = 0x1000) => {
 const sameText = (a, b) => worker.sameLine(worker.lineTokens(a), worker.lineTokens(b));
 
 // What's shown. Addresses are in hex, and links; a number under ten is as it is.
-const line = (offset, length, text, targets = []) => ({ offset, length, text, targets });
 assert.deepEqual(await ask([0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6]), [line(0x1000, 4, "nop"), line(0x1004, 4, "ret")]);
 assert.deepEqual(await ask([0x04, 0, 0, 0x14]), [line(0x1000, 4, "b 0x1010", [0x1010])]);
 assert.deepEqual(await ask([0xff, 0xff, 0xff, 0x17]), [line(0x1000, 4, "b 0xffc", [0xffc])]);
@@ -135,8 +124,7 @@ for (const text of ["", "foo x0", "add x0, x99, x2", "add x0, x1", "mov x0, w1",
     "ld1 {v0.16b}, [x0]", "x".repeat(300)])
     assert.equal(typeof (await assemble(text)).error, "string", text);
 // Another instruction set's line isn't assembled as ARM64's.
-await self.onmessage({ data: { id: ++next, mode: "arm32", assemble: "nop", address: 0 } });
-assert.match(result.error, /only available for x86, ARM64, RISC-V and MIPS/);
+assert.match((await post({ mode: "arm32", assemble: "nop", address: 0 })).error, /only available for x86, ARM64, RISC-V and MIPS/);
 // More than one way to encode it: the one that's there is kept.
 const twice = [];
 let seed = 0x9e3779b9;

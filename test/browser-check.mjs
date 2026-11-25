@@ -28,12 +28,12 @@
 // name, and the empty folder empty.
 
 import { execFileSync } from "node:child_process";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 
-import { createBrowserHarness, sleep } from "./browser/harness.mjs";
+import { createBrowserHarness, sleep, totp } from "./browser/harness.mjs";
 import { checkBinary } from "./browser/binary.mjs";
 import { checkZIP } from "./browser/zip.mjs";
 import { checkAudio, checkVideo, checkMKV } from "./browser/media.mjs";
@@ -59,22 +59,6 @@ const inContainer = (...args) => execFileSync("docker", ["exec", "-u", "user", c
 const browser = await createBrowserHarness({ port, base });
 const { cdp, ev, waitFor, click, press, type, open, newTab, listed, row, answer, waitForFile, status, setFiles, inFrame, inMarkdownFrame, checkPreviewLink, exceptions } = browser;
 const rendered = `JSON.parse(document.querySelector("dialog.preview iframe.markdown")?.dataset.rendered ?? "null")`;
-
-// totp is the current code, waiting first if the current one is about to
-// expire, so it's still good when it arrives, or if it was used already,
-// since a code logs in only once.
-let lastStep = -1;
-async function totp() {
-    while (30 - (Date.now() / 1000) % 30 < 3 || Math.floor(Date.now() / 30000) === lastStep) {
-        await sleep(500);
-    }
-    lastStep = Math.floor(Date.now() / 30000);
-    const c = Buffer.alloc(8);
-    c.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
-    const h = createHmac("sha1", "12345678901234567890").update(c).digest();
-    const o = h[19] & 15;
-    return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, "0");
-}
 
 // Each page's WebSockets are kept in window.sockets, so a step can close
 // them as a lost connection would; while window.offline is set, new ones

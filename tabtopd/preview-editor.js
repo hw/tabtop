@@ -7,7 +7,7 @@ import { rootLabel } from "./fs-context.js";
 import { askBookDetails, askYes, askLine, statusRow } from "./ui.js";
 import { checkJSON, formatJSON, FormatTooBig, parseJSON } from "./json-view.js";
 import { tableView } from "./table-view.js";
-import { el, join } from "./preview-dom.js";
+import { el, join, showModal } from "./preview-dom.js";
 import { limits, typeOf, formatOf, jsonLines, languageOf } from "./preview-model.js";
 import { openTextDiff } from "./text-diff-view.js";
 import { colour } from "./preview-content.js";
@@ -585,18 +585,11 @@ function pictureChooser(heading, fetch, select) {
         }
         choose.disabled = true;
     };
-    cancel.addEventListener("click", () => dialog.close());
     choose.addEventListener("click", () => {
         if (shown) {
             chosen = select(shown.entry, shown.file);
             dialog.close();
         }
-    });
-    dialog.addEventListener("close", () => {
-        asked++;
-        forget();
-        dialog.remove();
-        resolve(chosen);
     });
     // Clicked: fetched and shown, for Select; another clicked meanwhile,
     // that one's shown instead.
@@ -661,10 +654,12 @@ function pictureChooser(heading, fetch, select) {
         });
         return li;
     };
-    const show = () => {
-        document.body.append(dialog);
-        dialog.showModal();
-    };
+    // Closed (Cancel, Escape, or a picture selected): answered.
+    const show = () => showModal(dialog, { closeButton: cancel, closed: () => {
+        asked++;
+        forget();
+        resolve(chosen);
+    } });
     // A new list: nothing previewed from the last.
     const listed = (items) => {
         asked++;

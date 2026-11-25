@@ -111,7 +111,7 @@ func TestMSEFinalizeGivesBackStage(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, "by", "127.0.0.1", "who", nil, "")
+		m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, fetchOrigin{by: "by", ip: "127.0.0.1", who: "who"})
 	}()
 	mseSend(t, cli, 0, mseKindInit, []byte("not really an init"))
 	mseSend(t, cli, 0, mseKindPart, []byte("not really a part"))
@@ -206,7 +206,7 @@ func TestMSEStageKeptWhileUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, cli := mseTunnelPair(t)
-	go m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, "by", "127.0.0.1", "who", nil, "")
+	go m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, fetchOrigin{by: "by", ip: "127.0.0.1", who: "who"})
 	mseSend(t, cli, 0, mseKindInit, []byte("init"))
 	// Spilled to, every 200 ms, for well past mseStageKept from its opening.
 	for i := 0; i < 5; i++ {
@@ -256,7 +256,7 @@ func TestMSESaveWhenBusyKeepsStage(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, "by", "127.0.0.1", "who", nil, "")
+		m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, fetchOrigin{by: "by", ip: "127.0.0.1", who: "who"})
 	}()
 	mseSend(t, cli, 0, mseKindInit, []byte("init"))
 	mseSend(t, cli, 0, mseKindPart, []byte("part"))
@@ -310,7 +310,7 @@ func TestMSESaveTooSoonKeepsStage(t *testing.T) {
 	}
 	defer m.forgetMSEStage(stage.id)
 	srv, cli := mseTunnelPair(t)
-	go m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, "by", "127.0.0.1", "who", nil, "")
+	go m.serveMSEStage(srv, stage, &tunnelResponder{t: srv}, fetchOrigin{by: "by", ip: "127.0.0.1", who: "who"})
 	mseSend(t, cli, 1, mseKindInit, []byte("audio init"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -328,14 +328,12 @@ func TestMSESaveTooSoonKeepsStage(t *testing.T) {
 	mseSend(t, cli, 0, mseKindPart, []byte("video part"))
 	// (Staged by serveMSEStage as it reads them: waited for, a while.)
 	var in mseSaveInput
-	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waitUntil(t, "the part saved", func() bool {
 		stage.mu.Lock()
 		in, err = stage.inputLocked()
 		stage.mu.Unlock()
-		if err == nil && len(in.tracks) == 1 && len(in.tracks[0].parts) == 1 || time.Now().After(deadline) {
-			break
-		}
-	}
+		return err == nil && len(in.tracks) == 1 && len(in.tracks[0].parts) == 1
+	})
 	if err != nil || len(in.tracks) != 1 || len(in.tracks[0].parts) != 1 {
 		t.Fatalf("what's saved: %+v, %v", in, err)
 	}

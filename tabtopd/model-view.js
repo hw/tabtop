@@ -21,6 +21,7 @@
 // tabtopd points this module's "./three/" imports at it. Without it, the
 // preview says it isn't available.
 import { el } from "./preview-dom.js";
+import { FILE_TYPES } from "./file-types.js";
 import { iconSVG } from "./glyphs.js";
 import { meshFacts, combine, describeMesh, missingText, sizeText, zipTooBig, meshCheck, meshCheckText, combineChecks, MAX_ZIP_ENTRIES } from "./model-info.js";
 import { gcodeContent } from "./model-gcode.js";
@@ -259,7 +260,7 @@ export async function modelView({ file, blob, signal = null, read = null, saveFi
     if (looks) tools.push(...looks.tools);
     // Save as STL: its meshes as shown (not G-code's lines, nor a sliced 3MF's).
     const said = el("span", { className: "hint model-saved", role: "status" });
-    if (saveFile && content.meshes.length && !["gcode", "gco", "bgcode"].includes(format) && !content.label) {
+    if (saveFile && content.meshes.length && !FILE_TYPES[format]?.toolpath && !content.label) {
         const name = file.name.replace(/\.[^.]*$/, "") + ".stl";
         const save = button("", `Save as STL: ${name}, as shown (its up as Z${unitOf(format) === "m" ? ", in millimetres" : ""})`, async () => {
             save.disabled = true;

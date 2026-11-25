@@ -7,7 +7,7 @@ package main
 // image-heif.js); only what's shown is made here.
 //
 // libheif runs in a child of tabtopd's own (see isolated_child.go), on the
-// file as it was opened, given as its input, in a sandbox (heif_sandbox.go:
+// file as it was opened, given as its input, in a sandbox (child_sandbox.go:
 // no files opened, no network, no programs run), with limits on its memory
 // and processor time: a picture that's malformed, or made to be, can end
 // that child, and one that took over its decoder could do little else.
@@ -23,13 +23,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-	"net"
 	"os"
-	"syscall"
 	"time"
-	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -69,7 +64,7 @@ type heifPicture struct {
 
 // readHEIFChild is the child: the HEIF file on its input, the picture on its
 // output, as a JPEG or a PNG; or why not, and exit 1. It decodes in a
-// sandbox (see heif_sandbox.go), with limits on its memory (all of it, C's
+// sandbox (see children.go), with limits on its memory (all of it, C's
 // too, not only Go's) and processor time. With the argument
 // "sandbox-check", it says what the sandbox lets it do (for its test).
 func readHEIFChild(args []string) int {
@@ -77,37 +72,10 @@ func readHEIFChild(args []string) int {
 		os.Stdout.WriteString(err.Error())
 		return 1
 	}
-	syscall.Setrlimit(syscall.RLIMIT_DATA, &syscall.Rlimit{Cur: heifChildMemory, Max: heifChildMemory})
-	syscall.Setrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{Cur: heifChildCPU, Max: heifChildCPU})
+	childLimits(heifChildMemory, heifChildCPU)
 	sandboxed := heifPrepare()
 	if len(args) == 1 && args[0] == "sandbox-check" {
-		_, open := os.Open("/etc/hostname")
-		_, dial := net.Dial("tcp", "127.0.0.1:9")
-		parent := os.Getppid()
-		var limit syscall.Rlimit
-		_, _, prlimit := syscall.RawSyscall6(syscall.SYS_PRLIMIT64, uintptr(parent), syscall.RLIMIT_NOFILE, 0, uintptr(unsafe.Pointer(&limit)), 0, 0)
-		_, _, signal := syscall.RawSyscall(syscall.SYS_TGKILL, uintptr(parent), uintptr(parent), 0)
-		_, _, fork := syscall.RawSyscall6(syscall.SYS_CLONE, uintptr(syscall.SIGCHLD), 0, 0, 0, 0, 0)
-		if fork == 0 {
-			os.Exit(0) // (a process made after all: it goes)
-		}
-		// Its own: as before.
-		_, _, own := syscall.RawSyscall6(syscall.SYS_PRLIMIT64, 0, syscall.RLIMIT_NOFILE, 0, uintptr(unsafe.Pointer(&limit)), 0, 0)
-		// Having a descriptor signal the parent, shared memory, a group of
-		// its own, no parent-death signal: refused; a call newer than the
-		// sandbox knows (heifNewest's): "not implemented"; its output's flags: read.
-		_, _, owner := syscall.RawSyscall(syscall.SYS_FCNTL, 1, syscall.F_SETOWN, uintptr(parent))
-		_, _, shared := syscall.RawSyscall(unix.SYS_SHMGET, 0 /* IPC_PRIVATE */, 4096, 0o1600 /* IPC_CREAT | 0600 */)
-		_, _, group := syscall.RawSyscall(syscall.SYS_SETPGID, 0, 0, 0)
-		_, _, orphan := syscall.RawSyscall(syscall.SYS_PRCTL, unix.PR_SET_PDEATHSIG, 0, 0)
-		_, _, newer := syscall.RawSyscall(463, 0, 0, 0)
-		_, _, flags := syscall.RawSyscall(syscall.SYS_FCNTL, 1, syscall.F_GETFL, 0)
-		threads := make(chan int)
-		go func() { threads <- 1 }()
-		<-threads
-		fmt.Printf("sandbox: %v; open: %v; dial: %v; parent's limits: %v; signal parent: %v; fork: %v; signal owner: %v; shared memory: %v; "+
-			"own group: %v; parent-death signal: %v; newer call: %v; own limits: %v; its flags: %v", sandboxed, open, dial,
-			prlimit, signal, fork, owner, shared, group, orphan, newer, own, flags)
+		fmt.Print(sandboxReport(sandboxed))
 		return 0
 	}
 	// Not sandboxed (a kernel, or container, that doesn't allow it): not decoded.
@@ -178,7 +146,8 @@ func decodeHEIFIsolated(ctx context.Context, f *os.File, thumbnail bool) ([]byte
 // tunnelImageDecode answers an "image-decode" request: the HEIF picture at
 // req.Path (of the version req.IfMtime says, if it says), as a JPEG or a
 // PNG; sent as "file" sends a file's bytes, with its type.
-func (g *fileService) tunnelImageDecode(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelImageDecode(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())

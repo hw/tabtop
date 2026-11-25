@@ -25,7 +25,7 @@ func TestSegmentAssets(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"./`+g.segmentPath()+`/" + name`) {
 		t.Fatalf("worker paths: %d %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"./background-missing/ort.wasm.min.js"`) {
+	if !strings.Contains(w.Body.String(), `importScripts("./ort-worker.js")`) || !strings.Contains(get(g, "ort-worker.js").Body.String(), `"./background-missing/ort.wasm.min.js"`) {
 		t.Fatal("the runtime isn't background removal's")
 	}
 	if w.Header().Get("Content-Security-Policy") != backgroundWorkerCSP {

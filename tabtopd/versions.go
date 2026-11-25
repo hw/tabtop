@@ -471,7 +471,8 @@ func (g *fileService) dropVersionsUnder(name string) {
 // tunnelVersionDelete answers a version-delete request: the version
 // req.Name of the file at req.Path removed, or with no Name, all of them;
 // {"deleted": how many}.
-func (g *fileService) tunnelVersionDelete(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelVersionDelete(call *tunnelCall) {
+	req, session, ip, r := call.req, call.session, call.ip, call.r
 	p := g.realItem(req.Path) // versions are kept by where it really is
 	if req.Name != "" && !validTrashID(req.Name) {
 		r.fail(errNoVersion.Error())
@@ -518,7 +519,8 @@ func (g *fileService) openVersion(p, id string) (*os.File, trashEntry, error) {
 // tunnelVersions answers a versions request: {"versions"} of the file at
 // req.Path, newest first, each {id, deleted (when it was kept), bytes,
 // modified (when it was last changed then)}.
-func (g *fileService) tunnelVersions(req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelVersions(call *tunnelCall) {
+	req, r := call.req, call.r
 	p := g.realItem(req.Path) // versions are kept by where it really is
 	versions, err := g.versionsOf(p)
 	if err != nil {
@@ -538,7 +540,8 @@ func (g *fileService) tunnelVersions(req tunnelRequest, r *tunnelResponder) {
 
 // tunnelVersionFile answers a version-file request: the version req.Name of
 // the file at req.Path, as a file request is answered.
-func (g *fileService) tunnelVersionFile(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelVersionFile(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	p := g.realItem(req.Path) // versions are kept by where it really is
 	f, _, err := g.openVersion(p, req.Name)
 	if err != nil {
@@ -570,7 +573,8 @@ func (g *fileService) tunnelVersionFile(t *tunnel, req tunnelRequest, r *tunnelR
 // what it is now is kept as a version in turn, if it's still as it was
 // when the versions were listed (req.IfMtime, req.IfSize: see
 // tunnelVersions); {"mtime", "size"} after.
-func (g *fileService) tunnelVersionRestore(req tunnelRequest, session, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelVersionRestore(call *tunnelCall) {
+	req, session, ip, r := call.req, call.session, call.ip, call.r
 	p := g.realItem(req.Path) // versions are kept by where it really is
 	if p == "." || !validTrashPath(p) {
 		r.fail(errNoVersion.Error())
@@ -607,6 +611,14 @@ func (g *fileService) tunnelVersionRestore(req tunnelRequest, session, ip string
 	if err != nil {
 		r.fail("The folder it was in is gone.")
 		return
+	}
+	// Room for it, as it stands now (a kept upload isn't cleared for it).
+	if st, err := f.Stat(); err == nil {
+		if free, enough := g.room(u.f, st.Size(), false); !enough {
+			u.abort()
+			r.fail(fmt.Sprintf("There isn't room to restore it: it's %s, and %s is free.", humanSize(st.Size()), humanSize(free)))
+			return
+		}
 	}
 	if _, err := io.Copy(u.f, f); err != nil {
 		u.abort()

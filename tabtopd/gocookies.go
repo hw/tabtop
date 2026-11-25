@@ -91,9 +91,9 @@ func (c *goCookie) host() string { return strings.TrimPrefix(c.Domain, ".") }
 // goSite is the site a host is of: its registrable domain (example.co.uk
 // for www.example.co.uk), or the host itself (an address, localhost).
 func goSite(host string) string {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if net.ParseIP(strings.Trim(host, "[]")) != nil {
-		return host
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if net.ParseIP(host) != nil {
+		return host // (an address, without an IPv6 one's brackets)
 	}
 	if site, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
 		return site

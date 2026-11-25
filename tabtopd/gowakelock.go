@@ -26,7 +26,7 @@ const goWakeHeld = 32 // sentinels held at once, at most
 func (b *goBrowser) wakeLockAsks(gen, world int, asks []goWakeAsk, recent bool) {
 	was := len(b.wakeHeld)
 	for _, a := range asks {
-		if !goPasteID.MatchString(a.ID) {
+		if !goAskID.MatchString(a.ID) {
 			continue
 		}
 		if !a.On {

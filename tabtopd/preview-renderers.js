@@ -3,7 +3,7 @@
 import { kaitaiView } from "./kaitai-view.js";
 import { call, collect, serverDecoded, SERVER_DECODED, uploadFile, saveBlob } from "./requests.js";
 import { createRangedFileReader } from "./ranged-file.js";
-import { binaryChunkSize, offlineUnavailable } from "./preview-model.js";
+import { binaryChunkSize, offlineUnavailable, limits } from "./preview-model.js";
 const readBinaryRange = createRangedFileReader({ call, collect });
 import { fetchZipEntries } from "./download.js";
 import { el } from "./preview-dom.js";
@@ -143,6 +143,9 @@ const renderers = {
         } });
     },
 };
+// Each kind a file can be (preview-model.js's limits) has its renderer:
+// one missing would leave its files unpreviewed, quietly.
+for (const kind of Object.keys(limits)) if (!renderers[kind]) throw new Error(`No renderer for ${kind} previews.`);
 export function renderPreview(options) {
     if (!Object.hasOwn(renderers, options.kind)) throw new Error("this file can't be rendered");
     // (Its viewer would come from the server: see preview-model.js.)

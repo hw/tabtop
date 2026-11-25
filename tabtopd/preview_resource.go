@@ -85,7 +85,8 @@ func previewContentRange(value string, begin, end int64) (int64, error) {
 }
 
 // Remote resources are never saved and never receive browser credentials.
-func (g *fileService) tunnelPreviewResource(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelPreviewResource(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	if g.resourceClient == nil {
 		r.fail("External resource proxying is turned off (WEB_GO_FETCH=0).")
 		return

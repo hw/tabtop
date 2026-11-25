@@ -46,7 +46,7 @@ export async function checkImageDiff({ container, inContainer, open, listed, row
         await click(`${dialog}.querySelector(".image-diff-maximize")`);
         await waitFor(`${dialog}.classList.contains("wide") && ${dialog}.querySelector(".image-diff-maximize").getAttribute("aria-pressed")==="true" && Math.abs(${dialog}.getBoundingClientRect().width-innerWidth)<2`, "comparison maximized");
         await click(`${dialog}.querySelector(".image-diff-maximize")`);
-        await waitFor(`!${dialog}.classList.contains("wide") && ${dialog}.querySelector(".image-diff-maximize").getAttribute("aria-label")==="Maximize"`, "comparison size restored");
+        await waitFor(`!${dialog}.classList.contains("wide") && ${dialog}.querySelector(".image-diff-maximize").getAttribute("aria-label")==="Fill the window"`, "comparison size restored");
         await click(`${dialog}.querySelector('[data-mode="slider"]')`);
         await waitFor(`${dialog}.querySelector('[data-side="slider"]').hidden===false`, "slider view");
         const divider = `${dialog}.querySelector('.image-diff-divider')`;

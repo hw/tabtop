@@ -36,7 +36,8 @@ func renameError(err error) string {
 
 // tunnelRename answers a rename request, of the file or folder at
 // req.Path to req.Name.
-func (g *fileService) tunnelRename(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelRename(call *tunnelCall) {
+	req, ip, r := call.req, call.ip, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail(renameError(err))
@@ -67,7 +68,8 @@ func (g *fileService) tunnelRename(t *tunnel, req tunnelRequest, ip string, r *t
 
 // tunnelMove answers a move request, of the file or folder at req.Path into
 // the folder req.To.
-func (g *fileService) tunnelMove(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelMove(call *tunnelCall) {
+	req, ip, r := call.req, call.ip, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail(renameError(err))

@@ -160,7 +160,7 @@ func TestGoCertClientHandshakeTimeout(t *testing.T) {
 // all the same) leaves the proxy refusing others: from before ignoring is
 // asked for, till not ignoring certainly is.
 func TestGoCertIgnoreFails(t *testing.T) {
-	b := &goBrowser{ctx: context.Background(), cdp: &cdpConn{err: errCDPClosed}, certs: &goCertExceptions{}}
+	b := &goBrowser{ctx: context.Background(), cdp: &cdpConn{err: errCDPClosed}, goCertState: goCertState{certs: &goCertExceptions{}}}
 	b.certs.add("lan.test", false)
 	b.certIgnore(context.Background(), "https://lan.test/")
 	if !b.certs.ignoring.Load() || !b.certs.refuses("other.test") {
@@ -225,7 +225,7 @@ func fakeCDPCode(t *testing.T, code int, fail func(method string, n int) bool) (
 // after, is asked for too (the engine may have heeded the failed call).
 func TestGoCertIgnoreRetried(t *testing.T) {
 	cdp, calls := fakeCDP(t, func(method string, n int) bool { return n == 1 })
-	b := &goBrowser{ctx: context.Background(), cdp: cdp, certs: &goCertExceptions{}}
+	b := &goBrowser{ctx: context.Background(), cdp: cdp, goCertState: goCertState{certs: &goCertExceptions{}}}
 	b.certs.add("lan.test", false)
 	b.certIgnore(context.Background(), "https://lan.test/") // fails
 	b.certIgnore(context.Background(), "https://lan.test/") // asked again
@@ -243,7 +243,7 @@ func TestGoCertIgnoreRetried(t *testing.T) {
 // tab's loop) don't share what they change (go test -race).
 func TestGoCertIgnoreRace(t *testing.T) {
 	cdp, _ := fakeCDP(t, func(string, int) bool { return false })
-	b := &goBrowser{ctx: context.Background(), cdp: cdp, certs: &goCertExceptions{}}
+	b := &goBrowser{ctx: context.Background(), cdp: cdp, goCertState: goCertState{certs: &goCertExceptions{}}}
 	b.certs.add("lan.test", false)
 	b.docRequest = [2]string{"1", "https://other.test/"}
 	done := make(chan struct{})
@@ -285,7 +285,7 @@ func TestGoCertClientCopy(t *testing.T) {
 // every other host for good), and Continue's refused.
 func TestGoCertIgnoreUnsupported(t *testing.T) {
 	cdp, _ := fakeCDPCode(t, -32601, func(method string, n int) bool { return method == "Security.setIgnoreCertificateErrors" })
-	b := &goBrowser{ctx: context.Background(), cdp: cdp, certs: &goCertExceptions{}}
+	b := &goBrowser{ctx: context.Background(), cdp: cdp, goCertState: goCertState{certs: &goCertExceptions{}}}
 	b.certs.add("lan.test", false)
 	b.certIgnore(context.Background(), "https://lan.test/")
 	if b.certs.ignoring.Load() || b.certs.refuses("other.test") {
@@ -355,7 +355,7 @@ func TestGoCertRevokedExceptionStillChecks(t *testing.T) {
 // checks); a revocation's alone isn't one the engine's asked about.
 func TestGoCertIgnoreUnsupportedDrops(t *testing.T) {
 	cdp, _ := fakeCDPCode(t, -32601, func(string, int) bool { return true })
-	b := &goBrowser{ctx: context.Background(), cdp: cdp, certs: &goCertExceptions{}}
+	b := &goBrowser{ctx: context.Background(), cdp: cdp, goCertState: goCertState{certs: &goCertExceptions{}}}
 	b.certs.add("lan.test", false)
 	b.certs.add("revoked.test", true)
 	b.certIgnore(context.Background(), "https://lan.test/")

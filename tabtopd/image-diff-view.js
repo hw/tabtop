@@ -1,9 +1,10 @@
 import { call, collect, SERVER_DECODED } from "./requests.js";
-import { el, maximizeButton } from "./preview-dom.js";
+import { el, maximizeButton, showModal } from "./preview-dom.js";
 import { glyphs, iconSVG } from "./glyphs.js";
 import { choiceMenu } from "./image-mask.js";
 import { typeOf } from "./preview-model.js";
 import { MAX_IMAGE_DIFF_BYTES, imageDiffGeometry } from "./image-diff.js";
+import { oneShot } from "./worker-client.js";
 
 export function comparableImages(entries) {
     return entries.length === 2 && entries.every(entry => !entry.dir && typeOf(entry.name)?.kind === "image" && !SERVER_DECODED.has(typeOf(entry.name).type) && (entry.bytes ?? 0) <= MAX_IMAGE_DIFF_BYTES);
@@ -65,25 +66,13 @@ async function decodeImage(blob, signal) {
     finally { if (img) img.src = ""; if (url) URL.revokeObjectURL(url); }
 }
 function compute(a, b, signal) {
-    return new Promise((resolve, reject) => {
-        signal.throwIfAborted();
-        const worker = new Worker(new URL("./image-diff-worker.js", import.meta.url), { type: "module" });
-        let settled = false;
-        const finish = (err, result) => {
-            // A result arriving after a timeout or abort has settled this
-            // has nowhere to go: its bitmaps are closed, not left to the
-            // garbage collector.
-            if (settled) { result?.bitmaps?.forEach(bitmap => bitmap.close()); return; }
-            settled = true;
-            clearTimeout(timer); signal.removeEventListener("abort", cancel); worker.terminate();
-            if (err) { result?.bitmaps?.forEach(bitmap => bitmap.close()); reject(err); } else resolve(result);
-        };
-        const cancel = () => finish(signal.reason);
-        const timer = setTimeout(() => finish(new Error("Image comparison took too long. Try smaller images.")), 15000);
-        signal.addEventListener("abort", cancel, { once: true });
-        worker.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data.result);
-        worker.onerror = event => { event.preventDefault(); finish(new Error("Couldn't run the image comparison worker in this browser.")); };
-        try { worker.postMessage({ a, b }, [a, b]); } catch (err) { finish(err); }
+    // (A result arriving after a timeout or abort has settled this has
+    // nowhere to go: its bitmaps are closed, not left to the garbage
+    // collector.)
+    return oneShot(() => new Worker(new URL("./image-diff-worker.js", import.meta.url), { type: "module" }), { a, b }, [a, b], signal, {
+        timeout: 15000, tooLong: "Image comparison took too long. Try smaller images.",
+        couldntStart: "Couldn't run the image comparison worker in this browser.",
+        discard: (result) => result?.bitmaps?.forEach((bitmap) => bitmap.close()),
     });
 }
 
@@ -349,8 +338,7 @@ export function openImageDiff({ a, b, initialMode = "side", restoreFocus = null 
     }
     const resize = new ResizeObserver(() => { if (fitting) fit(); else if (ready) syncScroll(); });
     resize.observe(panes);
-    const stop = () => {
-        if (stopped) return;
+    const closed = () => {
         stopped = true; controller.abort(); resize.disconnect(); sources.forEach(bitmap => bitmap?.close());
         for (const canvas of [...canvases, sliderB, overlay]) { canvas.width = 0; canvas.height = 0; }
         paneMenu.stop();
@@ -358,12 +346,7 @@ export function openImageDiff({ a, b, initialMode = "side", restoreFocus = null 
         window.removeEventListener("resize", positionOpacity);
         window.removeEventListener("resize", positionGain);
         opacityPanel.remove(); gainPanel.remove();
-        if (dialog.open) dialog.close(); dialog.remove();
-        if (focus?.isConnected) focus.focus({ preventScroll: true });
-        else restoreFocus?.();
     };
-    closeButton.addEventListener("click", stop); dialog.addEventListener("close", stop);
-    dialog.addEventListener("cancel", event => { event.preventDefault(); stop(); });
     dialog.addEventListener("keydown", event => {
         if (!ready || event.ctrlKey || event.metaKey || event.altKey || event.target.matches("input")) return;
         const key = event.key.toLowerCase();
@@ -376,7 +359,7 @@ export function openImageDiff({ a, b, initialMode = "side", restoreFocus = null 
         event.preventDefault();
     });
     updateReveal(reveal); setMode(mode);
-    document.body.append(dialog); dialog.showModal();
+    const stop = showModal(dialog, { closeButton, focus, restoreFocus, closed });
     void (async () => {
         try {
             await Promise.all([a, b].map(async (side, i) => {

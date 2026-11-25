@@ -3,8 +3,9 @@
 // origin of its own: nothing in it can read the site's session, or reach
 // the page that holds it, whose only way in is the messages below. Its CSP
 // lets it load scripts only from the site, and pictures only as blob: and
-// data: URLs,
-// so a book can't fetch anything, nor tell anyone it was opened.
+// data: URLs, so a book can't fetch anything, nor tell anyone it was
+// opened, unless the person chose Direct for its external resources
+// (directFrameCSP in page_assets.go: then from the web too).
 //
 // The page sends {type: "open", book, start}: the book as tabtopd reads it
 // (see epubBook in epub.go), and where it was left, if it was, {item,
@@ -31,25 +32,9 @@
     const MAX_PICTURES = 100;  // in a chapter
     const SIZES = [80, 90, 100, 115, 130, 150, 175];  // text sizes, in %
 
-    const waiting = new Map();
-    let lastId = 0;
-    function ask(message) {
-        return new Promise((resolve) => {
-            const id = ++lastId;
-            waiting.set(id, resolve);
-            page.postMessage({ ...message, id }, "*");
-        });
-    }
-
-    window.addEventListener("message", (e) => {
-        if (e.source !== page || !e.data || typeof e.data !== "object") {
-            return;
-        }
-        const m = e.data;
-        if (m.id && waiting.has(m.id)) {
-            waiting.get(m.id)(m);
-            waiting.delete(m.id);
-        } else if (m.type === "open" && m.book && Array.isArray(m.book.spine) && m.book.spine.length && !book) {
+    // The page's answers to ask, and what else it sends (frame-bridge.js).
+    const ask = TabTopFrameBridge(page, (m) => {
+        if (m.type === "open" && m.book && Array.isArray(m.book.spine) && m.book.spine.length && !book) {
             externalMode = ["proxy", "direct"].includes(m.externalMode) ? m.externalMode : "none";
             open(m.book, m.start && typeof m.start === "object" ? m.start : {});
         } else if (m.type === "restore" && book && m.location) {

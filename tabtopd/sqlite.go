@@ -934,11 +934,19 @@ func readSQLiteChild(args []string) int {
 	if len(args) != 1 || json.Unmarshal([]byte(args[0]), &q) != nil {
 		return fail(errors.New("not a question the child answers"))
 	}
+	childLimits(previewChildMemory, previewChildCPU)
 	d, err := openSQLite("file:/dev/fd/0?immutable=1", false)
 	if err != nil {
 		return fail(err)
 	}
 	defer d.close()
+	// Then the sandbox (see startPreviewChild), the database open: sorts
+	// and the like kept in memory (in SQLite's heap, maxSQLiteHeap), as no
+	// file can be opened for them now.
+	if err := d.exec("PRAGMA temp_store = MEMORY;"); err != nil {
+		return fail(err)
+	}
+	childSandbox()
 	var res any
 	switch q.Op {
 	case "", "schema":
@@ -1006,7 +1014,8 @@ func readSQLiteIsolated(ctx context.Context, f *os.File, q sqliteQuery) (json.Ra
 // tunnelSQLite answers a "sqlite" request: req.SQLite asked of the database
 // at req.Path, as the page read it; with the schema, its size and version,
 // and whether a -wal file beside it holds changes not shown.
-func (g *fileService) tunnelSQLite(req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelSQLite(call *tunnelCall) {
+	req, r := call.req, call.r
 	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())

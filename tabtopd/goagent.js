@@ -98,14 +98,42 @@
         // frame's world's when asked (copied: its frames are read less
         // often than they're asked of).
         const frameWorld = w.__tabtopFrameWorld === true;
-        let copiedText = null, copiedImage = null, pasteAsks = [], pasteReads = [];
+        // What the page's hooks asked of the person's browser, kept for the
+        // next batch (clipboardOut takes it all at once, by its keys in the
+        // batch): each a list of at most so many, or the latest said.
+        const outbox = new Map();  // key -> take(): its value for the batch, or undefined
+        const kept = (key, max) => {
+            let items = [];
+            outbox.set(key, () => {
+                const now = items;
+                items = [];
+                return now.length ? now : undefined;
+            });
+            return { push: (v) => { if (items.length < max) items.push(v); }, get length() { return items.length; } };
+        };
+        const latest = (key) => {
+            let v;
+            outbox.set(key, () => {
+                const now = v;
+                v = undefined;
+                return now;
+            });
+            return { set: (x) => { v = x; } };
+        };
+        const copied = latest("copy"), copiedImage = latest("copyImage");
+        const pasteAsks = kept("pasteAsks", 4), pasteReads = kept("pasteReads", 4);
         document.addEventListener("__tabtop_copy", (e) => {
             const d = parsed(e.detail);
             if (!d) return;
             // (A picture: a PNG's base64, 8 MiB at most; its text, if any, with it.)
-            const image = typeof d.image === "string" && d.image.length <= 4 * Math.ceil((8 << 20) / 3) && /^[A-Za-z0-9+/]+=*$/.test(d.image) ? d.image : null;
-            if (image) [copiedText, copiedImage] = [typeof d.text === "string" ? d.text.slice(0, 1 << 20) : null, image];
-            else if (typeof d.text === "string") [copiedText, copiedImage] = [d.text.slice(0, 1 << 20), null];
+            const image = typeof d.image === "string" && d.image.length <= 4 * Math.ceil((8 << 20) / 3) && /^[A-Za-z0-9+/]+=*$/.test(d.image) ? d.image : undefined;
+            if (image) {
+                copied.set(typeof d.text === "string" ? d.text.slice(0, 1 << 20) : undefined);
+                copiedImage.set(image);
+            } else if (typeof d.text === "string") {
+                copied.set(d.text.slice(0, 1 << 20));
+                copiedImage.set(undefined);
+            }
         });
         document.addEventListener("__tabtop_paste_ask", (e) => {
             const d = parsed(e.detail);
@@ -114,6 +142,15 @@
         // Notifications (gonotify.js): permission asked for, those shown,
         // and closed by the page.
         let notifyAsks = [], notifyShows = [], notifyCloses = [], notifyPicBytes = 0;
+        outbox.set("notify", () => {
+            notifyPicBytes = 0;
+            if (!notifyAsks.length && !notifyShows.length && !notifyCloses.length) return undefined;
+            const now = { asks: notifyAsks, shows: notifyShows, closes: notifyCloses };
+            notifyAsks = [];
+            notifyShows = [];
+            notifyCloses = [];
+            return now;
+        });
         document.addEventListener("__tabtop_notify_ask", (e) => {
             const d = parsed(e.detail);
             if (notifyAsks.length < 4 && isID(d?.id)) notifyAsks.push(d.id);
@@ -140,21 +177,22 @@
             if (notifyCloses.length < 32 && isID(d?.id)) notifyCloses.push(d.id);
         });
         // Fullscreen asked for and left by the page (gofullscreen.js).
-        let fullAsks = [];
+        const fullAsks = kept("fullscreen", 4);
         document.addEventListener("__tabtop_fullscreen", (e) => {
             const d = parsed(e.detail);
-            if (fullAsks.length < 4 && d && (d.on === false || isID(d.id))) fullAsks.push(d.on === false ? { on: false } : { on: true, id: d.id });
+            if (d && (d.on === false || isID(d.id))) fullAsks.push(d.on === false ? { on: false } : { on: true, id: d.id });
         });
         // The page's screen wake lock asked for and let go (gowakelock.js).
-        let wakeAsks = [];
+        const wakeAsks = kept("wakeLock", 16);
         document.addEventListener("__tabtop_wakelock", (e) => {
             const d = parsed(e.detail);
-            if (wakeAsks.length < 16 && d && isID(d.id)) wakeAsks.push({ on: d.on === true, id: d.id });
+            if (d && isID(d.id)) wakeAsks.push({ on: d.on === true, id: d.id });
         });
         // The page's pointer lock asked for and left (gopointerlock.js): the
         // element asked for kept, by its ask's id, till it's answered; the
         // one locked, for the pointer's events while it is.
-        let lockAsks = [], lockFor = new Map(), lockEl = null;
+        const lockAsks = kept("pointerLock", 4);
+        let lockFor = new Map(), lockEl = null;
         document.addEventListener("__tabtop_pointerlock", (e) => {
             const d = parsed(e.detail);
             if (!d || lockAsks.length >= 4) return;
@@ -170,23 +208,23 @@
             lockAsks.push({ on: true, id: d.id });
         }, true);
         // The page's screen orientation locked or unlocked (goorientation.js).
-        let orientAsks = [];
+        const orientAsks = kept("orientation", 4);
         const ORIENT = ["any", "natural", "landscape", "portrait", "portrait-primary", "portrait-secondary", "landscape-primary", "landscape-secondary"];
         document.addEventListener("__tabtop_orientation", (e) => {
             const d = parsed(e.detail);
-            if (orientAsks.length >= 4 || !d) return;
+            if (!d) return;
             if (d.unlock === true) orientAsks.push({ unlock: true });
             else if (ORIENT.includes(d.lock) && isID(d.id)) orientAsks.push({ lock: d.lock, id: d.id });
         });
         // The page's vibration (govibrate.js): its latest pattern, each
         // read. (A frame of another origin's says none: the server's
         // passed only the page's own.)
-        let vibrateAsk = null;
+        const vibrateAsk = latest("vibrate");
         document.addEventListener("__tabtop_vibrate", (e) => {
             if (typeof e.detail !== "string" || e.detail.length > 2048) return;
             const d = parsed(e.detail);
             if (!Array.isArray(d) || d.length > 99) return;
-            vibrateAsk = d.map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0)));
+            vibrateAsk.set(d.map((v) => Math.min(10000, Math.max(0, Math.trunc(Number(v)) || 0))));
         });
         // (A saved file's pieces, fs-write, are many at once: so many each
         // read, apart from the other asks' 4. One taken is cancelled, so the
@@ -252,28 +290,10 @@
         }
         const clipboardOut = () => {
             const out = {};
-            if (copiedText !== null) out.copy = copiedText;
-            if (copiedImage !== null) out.copyImage = copiedImage;
-            if (pasteAsks.length) out.pasteAsks = pasteAsks;
-            if (pasteReads.length) out.pasteReads = pasteReads;
-            if (fullAsks.length) out.fullscreen = fullAsks;
-            if (vibrateAsk) out.vibrate = vibrateAsk;
-            if (wakeAsks.length) out.wakeLock = wakeAsks;
-            if (orientAsks.length) out.orientation = orientAsks;
-            if (lockAsks.length) out.pointerLock = lockAsks;
-            if (notifyAsks.length || notifyShows.length || notifyCloses.length) out.notify = { asks: notifyAsks, shows: notifyShows, closes: notifyCloses };
-            copiedText = copiedImage = null;
-            pasteAsks = [];
-            pasteReads = [];
-            fullAsks = [];
-            vibrateAsk = null;
-            wakeAsks = [];
-            orientAsks = [];
-            lockAsks = [];
-            notifyAsks = [];
-            notifyShows = [];
-            notifyPicBytes = 0;
-            notifyCloses = [];
+            for (const [key, take] of outbox) {
+                const v = take();
+                if (v !== undefined) out[key] = v;
+            }
             return out;
         };
         // (clipboardOut says only what there is.)
@@ -281,6 +301,7 @@
         // copied is what the page copied and asked to read since it was
         // last asked, as JSON, or "" (a frame's world's: goframes.go).
         const clipCopied = () => {
+            document.dispatchEvent(new Event("__tabtop_read"));  // (what's kept to tell, told now)
             const out = clipboardOut();
             return clipEmpty(out) ? "" : JSON.stringify(out);
         };
@@ -1731,6 +1752,55 @@
             // their parent's children.
             const before = next;
             const old = (n) => known(n) && ids.get(n) < before;
+            frameOps(ops);
+            shadowOps(ops, old);
+            sheetOps(ops, old);
+            const changedMedia = new Set();
+            childOps(ops, old, changedMedia);
+            attrOps(ops, old, changedMedia);
+            mediaOps(ops, old, changedMedia);
+            textOps(ops, old);
+            // (A frame's world's said apart: frameStreams.)
+            if (!frameWorld) ops.push(...playsOut());
+            valueOps(ops);
+            canvasOps(ops);
+            parents = new Set(); attrs = new Map(); texts = new Set();
+            const moved = here() !== lastURL;
+            lastURL = here();
+            ioNew();
+            const ioNow = ioOut;
+            ioOut = [];
+            // What the page's scripts kept to tell (gopage-prelude.js's
+            // tabtopTell, gonotify.js, godevice.js), told now.
+            document.dispatchEvent(new Event("__tabtop_read"));
+            const askedNow = asked;
+            asked = [];
+            const clip = frameWorld ? {} : clipboardOut();
+            const deviceBatch = devices;
+            devices = [];
+            deviceWrites = 0;
+            const scrollsNow = [];
+            for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
+            scrollsOut = new Map();
+            const streams = frameWorld ? [] : readStreams();
+            const eme = frameWorld ? [] : readEME();
+            if (!deviceBatch.length && !eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length && clipEmpty(clip)) return "";
+            const sel = ops.length ? caret() : null;
+            seq++;
+            const glGone = [];
+            for (const [el, i] of glSent) {
+                if (el.isConnected) continue;
+                glSent.delete(el);
+                glGone.push(i);
+                if (glAway.size >= 64) glAway.delete(glAway.values().next().value);
+                glAway.add(el);
+            }
+            const css = cssTaken();
+            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, devices: deviceBatch, ...clip, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
+        }
+
+        // frameOps sends the frames of this origin read again: their documents changed, or first had.
+        function frameOps(ops) {
             // (A frame's in the page's document, or in a frame's of it that's
             // still there: a same-origin frame's own frames are read too.)
             // (Asked as each is come to: a frame read again in this loop has
@@ -1767,6 +1837,10 @@
                     if (child) ops.push({ o: "c", i: id(el), c });
                 }
             }
+        }
+
+        // shadowOps sends shadow roots attached since their host was sent.
+        function shadowOps(ops, old) {
             // Shadow roots attached since their host was sent (goshadow.js
             // says which): sent whole.
             for (const host of shadowsNew) {
@@ -1776,6 +1850,10 @@
                 }
             }
             shadowsNew.clear();
+        }
+
+        // sheetOps sends adopted stylesheets changed.
+        function sheetOps(ops, old) {
             // Adopted stylesheets changed (no mutation says so): their
             // <style>'s text again, or, first had, the root's children with
             // it. The page's world says which changed, asked; else each is
@@ -1820,7 +1898,10 @@
                     if (parent && old(parent)) parents.add(parent);  // (said with its children, below)
                 }
             }
-            const changedMedia = new Set();
+        }
+
+        // childOps sends the children of the elements whose children changed (a player's, noted in changedMedia instead).
+        function childOps(ops, old, changedMedia) {
             for (const p of parents) {
                 if (isMedia(p)) { changedMedia.add(p); continue; }
                 if (p.localName === "iframe") continue; // its rendered children come from its document
@@ -1843,6 +1924,10 @@
                 }
                 ops.push({ o: "c", i: ids.get(p), c });
             }
+        }
+
+        // attrOps sends attributes changed (a player's source, noted in changedMedia instead).
+        function attrOps(ops, old, changedMedia) {
             for (const [n, names] of attrs) {
                 if (n.localName === "source" && names.has("src") && isMedia(n.parentElement)) changedMedia.add(n.parentElement);
                 // A player's children (its sources, tracks) aren't drawn: the
@@ -1856,6 +1941,10 @@
                     ops.push({ o: "a", i: ids.get(n), n: name, v: n.getAttribute(name) });
                 }
             }
+        }
+
+        // mediaOps sends the players whose address changed.
+        function mediaOps(ops, old, changedMedia) {
             if (blobsSaid) {
                 blobsSaid = false;
                 for (const ref of mediaSeen) {
@@ -1871,6 +1960,10 @@
                 mediaURLs.set(el, url);
                 ops.push({ o: "a", i: id(el), n: "src", v: url });
             }
+        }
+
+        // textOps sends text changed, and the rules a <style>'s script put in or took out.
+        function textOps(ops, old) {
             for (const n of texts) {
                 if (n.isConnected && old(n)) ops.push({ o: "t", i: ids.get(n), v: n.data });
             }
@@ -1898,8 +1991,10 @@
                 sheetsAsked = performance.now();
                 window.postMessage({ __tabtop: "sheets" }, "*");  // posted: see the io-sync below
             }
-            // (A frame's world's said apart: frameStreams.)
-            if (!frameWorld) ops.push(...playsOut());
+        }
+
+        // valueOps sends the values of fields acted on that changed.
+        function valueOps(ops) {
             for (const [n, last] of watched) {
                 if (!n.isConnected) { watched.delete(n); continue; }
                 const v = n.type === "checkbox" || n.type === "radio" ? String(n.checked) : n.value;
@@ -1908,6 +2003,10 @@
                     ops.push({ o: "v", i: ids.get(n), v });
                 }
             }
+        }
+
+        // canvasOps sends canvases drawn: a few a batch.
+        function canvasOps(ops) {
             let canvasFrames = 0;
             // Put back: whole (its stream's gone), drawn again or not.
             for (const el of glAway) {
@@ -1931,38 +2030,6 @@
                 else ops.push({ o: "p", i: ids.get(el), v: pixels.p ?? "", pe: pixels.e ?? "", ...where });
                 canvasFrames++;
             }
-            parents = new Set(); attrs = new Map(); texts = new Set();
-            const moved = here() !== lastURL;
-            lastURL = here();
-            ioNew();
-            const ioNow = ioOut;
-            ioOut = [];
-            const askedNow = asked;
-            asked = [];
-            if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_notify"));  // (gonotify.js's, told now)
-            const clip = frameWorld ? {} : clipboardOut();
-            if (!frameWorld) document.dispatchEvent(new Event("__tabtop_read_device"));
-            const deviceBatch = devices;
-            devices = [];
-            deviceWrites = 0;
-            const scrollsNow = [];
-            for (const [el, what] of scrollsOut) if (el.isConnected && known(el)) scrollsNow.push({ i: ids.get(el), ...what });
-            scrollsOut = new Map();
-            const streams = frameWorld ? [] : readStreams();
-            const eme = frameWorld ? [] : readEME();
-            if (!deviceBatch.length && !eme.length && !ops.length && !streams.length && !moved && !ioNow.length && !askedNow.length && !scrollsNow.length && clipEmpty(clip)) return "";
-            const sel = ops.length ? caret() : null;
-            seq++;
-            const glGone = [];
-            for (const [el, i] of glSent) {
-                if (el.isConnected) continue;
-                glSent.delete(el);
-                glGone.push(i);
-                if (glAway.size >= 64) glAway.delete(glAway.values().next().value);
-                glAway.add(el);
-            }
-            const css = cssTaken();
-            return JSON.stringify({ seq, url: here(), title: document.title, ops, io: ioNow, asked: askedNow, scrolls: scrollsNow, streams, eme, devices: deviceBatch, ...clip, ...(glGone.length ? { glGone } : {}), ...(sel ? { sel } : {}), ...(css ? { css } : {}) });
         }
 
         function watch(el) {
@@ -2079,111 +2146,123 @@
                 case "focus":
                     el.focus?.();
                     return "ok";
-                case "edit": {
-                    // An edit in rich text that wasn't a key (a phone's
-                    // keyboard, an IME's word, a paste), by script: an
-                    // embedded page's (goinput.go gives the top page's as
-                    // input). A paste is offered to the page as one first:
-                    // "insert" if it's to be put in as typed (it wasn't taken).
-                    if (!editable(el)) return "not editable";
-                    el.focus?.();
-                    select(a.sel);
-                    const type = String(a.inputType || ""), data = String(a.value ?? "");
-                    if (type === "insertFromPaste") {
-                        // Its HTML (a: its text styled) too: the page's to take,
-                        // or put in, styled, as a browser would (rich text, not
-                        // plaintext-only, whose paste is its text alone).
-                        const html = typeof a.html === "string" ? a.html : "";
-                        let dt = null;
-                        try {
-                            dt = new DataTransfer();
-                            dt.setData("text/plain", data);
-                            if (html) dt.setData("text/html", html);
-                        } catch { dt = null; }
-                        const taken = dt && !el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
-                        if (taken) return "ok";
-                        if (html && !plainText(el)) {
-                            const s = selectionOf(el), r = rangeOf(s);
-                            if (r && el.contains(r.startContainer) && el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertFromPaste", dataTransfer: dt }))) {
-                                r.deleteContents();
-                                const frag = pasted(el, html), last = frag.lastChild;
-                                r.insertNode(frag);
-                                if (last) {
-                                    const after = el.ownerDocument.createRange();
-                                    after.setStartAfter(last);
-                                    s.setBaseAndExtent(after.startContainer, after.startOffset, after.startContainer, after.startOffset);
-                                }
-                                el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
-                            }
-                            return "ok";
-                        }
-                        if (a.edit) return "insert";  // (the top page's: put in as input)
-                        const lines = data.split(/\r\n|\r|\n/);
-                        lines.forEach((line, i) => {
-                            if (i) editScripted(el, "insertLineBreak", "");
-                            if (line) editScripted(el, "insertText", line);
-                        });
-                        return "ok";
-                    }
-                    if (!/^(insert|delete)/.test(type)) return "not an edit";
-                    editScripted(el, type, data);
-                    return "ok";
-                }
-                case "media-meta": {
-                    // What the person's player found of this element's file
-                    // (its size, its length), for the page to be told
-                    // (gomedia.js, in its world): numbers only.
-                    // (By its name: one in a frame of this origin is of that
-                    // frame's realm, not an instance of this one's.)
-                    if (el?.nodeType !== 1 || (el.localName !== "video" && el.localName !== "audio")) return "not media";
-                    let d;
-                    try { d = JSON.parse(a.value); } catch { return "bad"; }
-                    const num = (v) => (Number.isFinite(v) ? v : 0);
-                    const what = d?.play && typeof d.play === "object"
-                        ? { play: { t: num(d.play.t), playing: !!d.play.playing, ended: !!d.play.ended } }  // how it plays
-                        : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration), readyState: num(d?.readyState) };
-                    if (what.play && Number.isSafeInteger(d.play.stream)) {
-                        const ranges = (list) => Array.isArray(list) ? list.slice(0, 16).map((r) => [num(r?.[0]), num(r?.[1])]) : [];
-                        Object.assign(what.play, { stream: d.play.stream, buffered: ranges(d.play.buffered),
-                            buffers: Array.isArray(d.play.buffers) ? d.play.buffers.slice(0, 8).map(ranges) : [] });
-                        if (Number.isSafeInteger(d.play.ack)) what.play.ack = d.play.ack;
-                    }
-                    tellingPlay = !!what.play;
-                    try {
-                        el.dispatchEvent(new CustomEvent("__tabtop_media", { composed: true, detail: JSON.stringify(what) }));
-                    } finally {
-                        tellingPlay = false;
-                    }
-                    return "ok";
-                }
-                case "scroll": {
-                    // Where the person scrolled it to (the page's own
-                    // smooth scrolling not used: it's there already). The
-                    // engine doesn't say it scrolled (it fires scroll events
-                    // as it renders, which it doesn't): said here, as a
-                    // browser does, if it moved.
-                    const x = Number(a.x) || 0, y = Number(a.y) || 0;
-                    if (el === document.documentElement || el === document.body) {
-                        const was = [scrollX, scrollY];
-                        window.scrollTo({ left: x, top: y, behavior: "instant" });
-                        if (scrollX !== was[0] || scrollY !== was[1]) document.dispatchEvent(new Event("scroll", { bubbles: true }));
-                    } else if (el.nodeType === 1) {
-                        // Set, not scrolled to: an engine's scrolling goes by
-                        // its own layout (Moli's can have a box 20 pixels
-                        // high that's 6000 here, and keeps it from moving),
-                        // and the page reads where it is from this. Said
-                        // each time: it's where the person scrolled it.
-                        ownScroll(() => {
-                            el.scrollLeft = x;
-                            el.scrollTop = y;
-                        });
-                        el.dispatchEvent(new CustomEvent("__tabtop_scrolled", { composed: true, detail: JSON.stringify({ x, y }) }));  // goobserve.js
-                        el.dispatchEvent(new Event("scroll"));
-                    }
-                    return "ok";
-                }
+                case "edit":
+                    return actEdit(el, a);
+                case "media-meta":
+                    return actMediaMeta(el, a);
+                case "scroll":
+                    return actScroll(el, a);
             }
             return "unknown";
+        }
+
+        // actEdit: an edit in rich text that wasn't a key, done by script (act's "edit").
+        function actEdit(el, a) {
+            // An edit in rich text that wasn't a key (a phone's
+            // keyboard, an IME's word, a paste), by script: an
+            // embedded page's (goinput.go gives the top page's as
+            // input). A paste is offered to the page as one first:
+            // "insert" if it's to be put in as typed (it wasn't taken).
+            if (!editable(el)) return "not editable";
+            el.focus?.();
+            select(a.sel);
+            const type = String(a.inputType || ""), data = String(a.value ?? "");
+            if (type === "insertFromPaste") {
+                // Its HTML (a: its text styled) too: the page's to take,
+                // or put in, styled, as a browser would (rich text, not
+                // plaintext-only, whose paste is its text alone).
+                const html = typeof a.html === "string" ? a.html : "";
+                let dt = null;
+                try {
+                    dt = new DataTransfer();
+                    dt.setData("text/plain", data);
+                    if (html) dt.setData("text/html", html);
+                } catch { dt = null; }
+                const taken = dt && !el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+                if (taken) return "ok";
+                if (html && !plainText(el)) {
+                    const s = selectionOf(el), r = rangeOf(s);
+                    if (r && el.contains(r.startContainer) && el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertFromPaste", dataTransfer: dt }))) {
+                        r.deleteContents();
+                        const frag = pasted(el, html), last = frag.lastChild;
+                        r.insertNode(frag);
+                        if (last) {
+                            const after = el.ownerDocument.createRange();
+                            after.setStartAfter(last);
+                            s.setBaseAndExtent(after.startContainer, after.startOffset, after.startContainer, after.startOffset);
+                        }
+                        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
+                    }
+                    return "ok";
+                }
+                if (a.edit) return "insert";  // (the top page's: put in as input)
+                const lines = data.split(/\r\n|\r|\n/);
+                lines.forEach((line, i) => {
+                    if (i) editScripted(el, "insertLineBreak", "");
+                    if (line) editScripted(el, "insertText", line);
+                });
+                return "ok";
+            }
+            if (!/^(insert|delete)/.test(type)) return "not an edit";
+            editScripted(el, type, data);
+            return "ok";
+        }
+
+        // actMediaMeta: what the person's player found of a player's file, told to the page (act's "media-meta").
+        function actMediaMeta(el, a) {
+            // What the person's player found of this element's file
+            // (its size, its length), for the page to be told
+            // (gomedia.js, in its world): numbers only.
+            // (By its name: one in a frame of this origin is of that
+            // frame's realm, not an instance of this one's.)
+            if (el?.nodeType !== 1 || (el.localName !== "video" && el.localName !== "audio")) return "not media";
+            let d;
+            try { d = JSON.parse(a.value); } catch { return "bad"; }
+            const num = (v) => (Number.isFinite(v) ? v : 0);
+            const what = d?.play && typeof d.play === "object"
+                ? { play: { t: num(d.play.t), playing: !!d.play.playing, ended: !!d.play.ended } }  // how it plays
+                : { w: num(d?.w), h: num(d?.h), duration: num(d?.duration), readyState: num(d?.readyState) };
+            if (what.play && Number.isSafeInteger(d.play.stream)) {
+                const ranges = (list) => Array.isArray(list) ? list.slice(0, 16).map((r) => [num(r?.[0]), num(r?.[1])]) : [];
+                Object.assign(what.play, { stream: d.play.stream, buffered: ranges(d.play.buffered),
+                    buffers: Array.isArray(d.play.buffers) ? d.play.buffers.slice(0, 8).map(ranges) : [] });
+                if (Number.isSafeInteger(d.play.ack)) what.play.ack = d.play.ack;
+            }
+            tellingPlay = !!what.play;
+            try {
+                el.dispatchEvent(new CustomEvent("__tabtop_media", { composed: true, detail: JSON.stringify(what) }));
+            } finally {
+                tellingPlay = false;
+            }
+            return "ok";
+        }
+
+        // actScroll: where the person scrolled an element to (act's "scroll").
+        function actScroll(el, a) {
+            // Where the person scrolled it to (the page's own
+            // smooth scrolling not used: it's there already). The
+            // engine doesn't say it scrolled (it fires scroll events
+            // as it renders, which it doesn't): said here, as a
+            // browser does, if it moved.
+            const x = Number(a.x) || 0, y = Number(a.y) || 0;
+            if (el === document.documentElement || el === document.body) {
+                const was = [scrollX, scrollY];
+                window.scrollTo({ left: x, top: y, behavior: "instant" });
+                if (scrollX !== was[0] || scrollY !== was[1]) document.dispatchEvent(new Event("scroll", { bubbles: true }));
+            } else if (el.nodeType === 1) {
+                // Set, not scrolled to: an engine's scrolling goes by
+                // its own layout (Moli's can have a box 20 pixels
+                // high that's 6000 here, and keeps it from moving),
+                // and the page reads where it is from this. Said
+                // each time: it's where the person scrolled it.
+                ownScroll(() => {
+                    el.scrollLeft = x;
+                    el.scrollTop = y;
+                });
+                el.dispatchEvent(new CustomEvent("__tabtop_scrolled", { composed: true, detail: JSON.stringify({ x, y }) }));  // goobserve.js
+                el.dispatchEvent(new Event("scroll"));
+            }
+            return "ok";
         }
 
         w.__tabtop = { deviceReply, fsReadError, pasteImage, snapshot, changes, act, io, into, point, keyTo, frameOwner, scripted, closedRoot, copied: clipCopied, pasted: clipPasted, notified, fullscreen: fullAnswer, fullscreenHost: fullHost, wakeLock: wakeAnswer, orientation: orientAnswer, pointerLock: lockAnswer, dropIn, frameStreams };

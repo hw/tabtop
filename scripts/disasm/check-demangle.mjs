@@ -5,29 +5,22 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runInNewContext } from "node:vm";
 import { gzipSync } from "node:zlib";
+import { runWorker } from "./worker-harness.mjs";
 
 const [directory, workerFile] = process.argv.slice(2);
 if (!directory || !workerFile) throw new Error("usage: node check-demangle.mjs <asset directory> <disasm-worker.js>");
 const wasm = readFileSync(resolve(directory, "demangle.wasm"));
-let result, fetches = 0;
-const self = { postMessage: (message) => { result = JSON.parse(JSON.stringify(message)); } };
-runInNewContext(readFileSync(workerFile, "utf8"), {
-    self, Uint8Array, BigInt, WebAssembly, TextEncoder, TextDecoder,
+let fetches = 0;
+const { post } = runWorker(workerFile, () => ({
     importScripts() { throw new Error("the demangler loaded a disassembler's scripts"); },
     fetch: async (path) => {
         assert.equal(path, "./demangle/demangle.wasm");
         fetches++;
         return { ok: true, arrayBuffer: async () => wasm };
     },
-});
-let next = 0;
-const ask = async (names) => {
-    await self.onmessage({ data: { id: ++next, demangle: names } });
-    assert.equal(result.id, next);
-    return result;
-};
+}));
+const ask = (names) => post({ demangle: names });
 const pairs = [
     // C++, as GCC and Clang write it; with what a compiler adds to a copy's name.
     ["_Z3foov", "foo()"], ["_ZN3Foo3barEi", "Foo::bar(int)"], ["_ZNK3Foo5valueEv", "Foo::value() const"], ["_ZN3FooC1Ev", "Foo::Foo()"],

@@ -823,8 +823,9 @@ func epubEditChild(z *epubZip, args []string) ([]byte, error) {
 // author req.Creator, and, if req.Size, a new cover, its bytes sent after
 // the request; with req.RegenerateTOC, its contents list is rebuilt from
 // the chapters' headings.
-func (g *fileService) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResponder) {
-	p := path.Clean(strings.Trim(req.Path, "/"))
+func (g *fileService) tunnelEpubEdit(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
+	p := req.dir()
 	if req.IfMtime == "" || len(req.Title) > 4*maxEpubDetail || len(req.Creator) > 4*maxEpubDetail {
 		r.fail("That's not a change that can be made.")
 		return
@@ -853,9 +854,9 @@ func (g *fileService) tunnelEpubEdit(t *tunnel, req tunnelRequest, r *tunnelResp
 	}
 	dir := path.Dir(p)
 	if d, _, err := store.open(dir); err == nil {
-		free, _, ok := g.uploadRoom(d)
+		_, enough := g.room(d, st.Size()+req.Size+1<<20, true)
 		d.Close()
-		if ok && free < st.Size()+req.Size+1<<20 {
+		if !enough {
 			r.fail("There isn't room on the disk for the changed book.")
 			return
 		}

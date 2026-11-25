@@ -57,7 +57,8 @@ func trashRefused(err error) bool {
 
 // tunnelDelete answers a delete request for the file or folder at
 // req.Path: it moves it to Trash, or with req.Permanent removes it.
-func (g *fileService) tunnelDelete(t *tunnel, req tunnelRequest, ip string, r *tunnelResponder) {
+func (g *fileService) tunnelDelete(call *tunnelCall) {
+	req, ip, r := call.req, call.ip, call.r
 	root, err := g.openStore()
 	if err != nil {
 		r.fail(deleteError(err))

@@ -47,14 +47,20 @@ WEB_SESSION_IDLE="${WEB_SESSION_IDLE:-1h}"
 WEB_E2E="${WEB_E2E:-}"
 DISPLAY_NUM=1
 
-for VAR in WEB_VNC WEB_TTY WEB_FS; do
+# The switches: each 0 or 1, checked before any is turned off for another
+# (WEB_AUDIO and WEB_MIC, without a desktop), so a wrong value is said
+# whatever else is set.
+for VAR in WEB_VNC WEB_TTY WEB_FS WEB_GO WEB_AUDIO WEB_MIC WEB_SHARE WEB_OFFLINE_CLIENT \
+        WEB_GO_FETCH WEB_GO_FETCH_PRIVATE WEB_PREVIEW_FETCH_PRIVATE WEB_GO_UNSANDBOXED \
+        WEB_GO_PRIVATE WEB_GO_CACHE VNC_X509 WEB_DOCTOR_ENDPOINT; do
     case "${!VAR}" in
         0|1) ;;
         *) echo "${VAR} must be 0 or 1 (got '${!VAR}')." >&2; exit 1 ;;
     esac
 done
-if [ "$WEB_VNC$WEB_TTY$WEB_FS" = 000 ]; then
-    echo "Enable at least one of WEB_VNC, WEB_TTY or WEB_FS." >&2
+# (The remote browser alone is enough, as for tabtopd.)
+if [ "$WEB_VNC$WEB_TTY$WEB_FS$WEB_GO" = 0000 ]; then
+    echo "Enable at least one of WEB_VNC, WEB_TTY, WEB_FS or WEB_GO." >&2
     exit 1
 fi
 if [ "$WEB_VNC" = 0 ]; then
@@ -99,12 +105,6 @@ if ! [[ "$WEB_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$WEB_PORT" -gt 65535 ]; then
     echo "WEB_PORT must be a port number, 1 to 65535 (got '${WEB_PORT}')." >&2
     exit 1
 fi
-# An RFB server elsewhere, as host:port, [IPv6]:port or unix:/path,
-# instead of the container's own desktop; checked as the gateway will.
-if [ "$WEB_VNC" = 1 ] && [ -n "$VNC_ADDR" ] && ! VNC_ADDR_ERROR=$(/usr/local/bin/tabtopd -check-vnc-addr "$VNC_ADDR" 2>&1); then
-    echo "VNC_ADDR isn't usable: ${VNC_ADDR_ERROR#tabtopd: }" >&2
-    exit 1
-fi
 # An image built without its own desktop (DESKTOP=none) has no Xvnc.
 if [ "$WEB_VNC" = 1 ] && [ -z "$VNC_ADDR" ] && ! command -v Xvnc >/dev/null; then
     echo "This image has no desktop of its own (built with DESKTOP=none): set VNC_ADDR to an RFB server's address." >&2
@@ -114,10 +114,6 @@ fi
 # with a verified certificate, logging in with VNC_UPSTREAM_PASSWORD, and
 # VNC_UPSTREAM_USERNAME for X509Plain (see docs/lite.md). What it needs is
 # checked here, rather than when someone connects.
-case "$VNC_X509" in
-    0|1) ;;
-    *) echo "VNC_X509 must be 0 or 1 (got '${VNC_X509}')." >&2; exit 1 ;;
-esac
 for VAR in VNC_UPSTREAM_USERNAME VNC_CA_FILE VNC_SERVER_NAME; do
     if [[ "${!VAR}" == *[[:cntrl:][:space:]]* ]]; then
         echo "${VAR} must not contain spaces or control characters." >&2
@@ -147,71 +143,8 @@ elif [ -n "$VNC_UPSTREAM_USERNAME" ] || [ -n "$VNC_CA_FILE" ] || [ -n "$VNC_SERV
     echo "VNC_UPSTREAM_USERNAME, VNC_CA_FILE and VNC_SERVER_NAME only apply with VNC_X509=1." >&2
     exit 1
 fi
-case "$WEB_AUDIO" in
-    0|1) ;;
-    *) echo "WEB_AUDIO must be 0 or 1 (got '${WEB_AUDIO}')." >&2; exit 1 ;;
-esac
-case "$WEB_MIC" in
-    0|1) ;;
-    *) echo "WEB_MIC must be 0 or 1 (got '${WEB_MIC}')." >&2; exit 1 ;;
-esac
-case "$WEB_SHARE" in
-    0|1) ;;
-    *) echo "WEB_SHARE must be 0 or 1 (got '${WEB_SHARE}')." >&2; exit 1 ;;
-esac
-# Names only: tabtopd -hosts refuses a scheme, port or path too, but this
-# says so before anything starts.
-for host in ${WEB_HOSTS//,/ }; do
-    case "$host" in
-        *://*|*:*|*/*|*@*|*\[*|*\]*)
-            echo "WEB_HOSTS takes names only, separated by commas, without a scheme, port or path (got '${host}')." >&2
-            exit 1 ;;
-    esac
-done
-case "$WEB_OFFLINE_CLIENT" in
-    0|1) ;;
-    *) echo "WEB_OFFLINE_CLIENT must be 0 or 1 (got '${WEB_OFFLINE_CLIENT}')." >&2; exit 1 ;;
-esac
-case "$WEB_GO_FETCH" in
-    0|1) ;;
-    *) echo "WEB_GO_FETCH must be 0 or 1 (got '${WEB_GO_FETCH}')." >&2; exit 1 ;;
-esac
-case "$WEB_GO_FETCH_PRIVATE" in
-    0|1) ;;
-    *) echo "WEB_GO_FETCH_PRIVATE must be 0 or 1 (got '${WEB_GO_FETCH_PRIVATE}')." >&2; exit 1 ;;
-esac
-case "$WEB_PREVIEW_FETCH_PRIVATE" in
-    0|1) ;;
-    *) echo "WEB_PREVIEW_FETCH_PRIVATE must be 0 or 1 (got '${WEB_PREVIEW_FETCH_PRIVATE}')." >&2; exit 1 ;;
-esac
-case "$WEB_GO" in
-    0|1) ;;
-    *) echo "WEB_GO must be 0 or 1 (got '${WEB_GO}')." >&2; exit 1 ;;
-esac
-case "$WEB_GO_UNSANDBOXED" in
-    0|1) ;;
-    *) echo "WEB_GO_UNSANDBOXED must be 0 or 1 (got '${WEB_GO_UNSANDBOXED}')." >&2; exit 1 ;;
-esac
-case "$WEB_GO_PRIVATE" in
-    0|1) ;;
-    *) echo "WEB_GO_PRIVATE must be 0 or 1 (got '${WEB_GO_PRIVATE}')." >&2; exit 1 ;;
-esac
-case "$WEB_GO_CACHE" in
-    0|1) ;;
-    *) echo "WEB_GO_CACHE must be 0 or 1 (got '${WEB_GO_CACHE}')." >&2; exit 1 ;;
-esac
 if [ "$WEB_GO" = 1 ] && [ ! -x "$WEB_GO_ENGINE" ]; then
     echo "WEB_GO=1 needs bundled Moli (moli), an executable engine path, or an Obscura binary at /opt/obscura/obscura (got '${WEB_GO_ENGINE}', which isn't executable)." >&2; exit 1
-fi
-# none, all, or some of x86, arm64, capstone, riscv and mips, with commas between.
-if ! [[ "$WEB_DISASM_DISABLE" =~ ^(none|all|(x86|arm64|capstone|riscv|mips)(,(x86|arm64|capstone|riscv|mips))*)$ ]]; then
-    echo "WEB_DISASM_DISABLE must be none, all, or a comma-separated list of x86, arm64, capstone, riscv and mips (got '${WEB_DISASM_DISABLE}')." >&2
-    exit 1
-fi
-if ! [[ "$WEB_AUDIO_BITRATE" =~ ^[0-9]{1,3}$ ]] || [ "$WEB_AUDIO_BITRATE" -lt 32 ] \
-        || [ "$WEB_AUDIO_BITRATE" -gt 256 ]; then
-    echo "WEB_AUDIO_BITRATE must be 32 to 256 kbit/s (got '${WEB_AUDIO_BITRATE}')." >&2
-    exit 1
 fi
 # A PulseAudio (or pipewire-pulse) socket mounted from the host, whose sound
 # is streamed instead of the container's own: "unix:" is optional. A missing
@@ -225,10 +158,6 @@ if [ -n "$WEB_AUDIO_SINK" ] && ! [[ "$WEB_AUDIO_SINK" =~ ^[A-Za-z0-9@_.:-]+$ ]];
     echo "WEB_AUDIO_SINK must be a sink name (got '${WEB_AUDIO_SINK}')." >&2
     exit 1
 fi
-case "$WEB_TTY" in
-    0|1) ;;
-    *) echo "WEB_TTY must be 0 or 1 (got '${WEB_TTY}')." >&2; exit 1 ;;
-esac
 # A shell command each terminal tab runs instead of tmux, such as ssh to
 # another machine; on one line.
 if [[ "$WEB_TTY_COMMAND" == *[[:cntrl:]]* ]]; then
@@ -239,20 +168,6 @@ if ! [[ "$WEB_TRUST_NPROXIES" =~ ^[0-9]{1,2}$ ]] || [ "$WEB_TRUST_NPROXIES" -gt 
     echo "WEB_TRUST_NPROXIES must be 0 to 10 (got '${WEB_TRUST_NPROXIES}')." >&2
     exit 1
 fi
-# Hours and minutes, as tabtopd takes them: 12h, 90m, 1h30m.
-DURATION='^([0-9]{1,4}h)?([0-9]{1,6}m)?$'
-if ! [[ "$WEB_SESSION_MAX" =~ $DURATION ]] || ! [[ "$WEB_SESSION_MAX" =~ [1-9] ]]; then
-    echo "WEB_SESSION_MAX must be hours and minutes, such as 12h or 90m (got '${WEB_SESSION_MAX}')." >&2
-    exit 1
-fi
-if [ "$WEB_SESSION_IDLE" != 0 ] && { ! [[ "$WEB_SESSION_IDLE" =~ $DURATION ]] || ! [[ "$WEB_SESSION_IDLE" =~ [1-9] ]]; }; then
-    echo "WEB_SESSION_IDLE must be hours and minutes, such as 1h or 30m, or 0 for no limit (got '${WEB_SESSION_IDLE}')." >&2
-    exit 1
-fi
-case "$WEB_DOCTOR_ENDPOINT" in
-    0|1) ;;
-    *) echo "WEB_DOCTOR_ENDPOINT must be 0 or 1 (got '${WEB_DOCTOR_ENDPOINT}')." >&2; exit 1 ;;
-esac
 # TZ: a time zone name, such as Europe/Berlin, for the desktop's clock and
 # everything else in the container, and the files page's times; UTC when
 # it's unset or empty. It becomes /etc/localtime too, for processes that
@@ -273,12 +188,26 @@ case "$WEB_E2E" in
     ''|1) ;;
     *) echo "WEB_E2E=${WEB_E2E} is no longer supported: everything always goes through the encrypted tunnel. Unset WEB_E2E." >&2; exit 1 ;;
 esac
-# Same rule as tabtopd's: segments of unreserved URL characters, spelled out
-# because ranges like a-z can match other letters, depending on the locale.
-SEG='[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-]+'
-if ! [[ "$WEB_BASE_PATH" =~ ^/*(${SEG}(/${SEG})*)?/*$ ]] \
-        || [[ "/$WEB_BASE_PATH/" =~ /\.{1,2}/ ]]; then
-    echo "WEB_BASE_PATH must be a URL path like /tabtop/ (got '${WEB_BASE_PATH}')." >&2
+
+# The settings tabtopd reads, checked by its own rules (tabtopd
+# -check-config) before anything's set up: a wrong one stops the start here,
+# said by its name. entrypoint.sh passes them as they are.
+GATEWAY_SETTINGS=(
+    -base-path "$WEB_BASE_PATH"
+    -trusted-proxies "$WEB_TRUSTED_PROXIES"
+    -hosts "$WEB_HOSTS"
+    -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))"
+    -session-max "$WEB_SESSION_MAX"
+    -session-idle "$WEB_SESSION_IDLE"
+    -remote-approval-url "${WEB_REMOTE_APPROVAL_URL:-}"
+    -audio-bitrate "$WEB_AUDIO_BITRATE"
+    -disasm-disable "$WEB_DISASM_DISABLE"
+    -tty-command "$WEB_TTY_COMMAND"
+    -tty-tmux-host "${WEB_TTY_TMUX_HOST:-}"
+    -tty-tmux-session "${WEB_TTY_TMUX_SESSION:-}"
+)
+if ! CONFIG_ERROR=$(/usr/local/bin/tabtopd -check-config -disable-vnc="$((1 - WEB_VNC))" -disable-fs="$((1 - WEB_FS))" \
+        -vnc-addr "$VNC_ADDR" "${GATEWAY_SETTINGS[@]}" 2>&1); then
+    echo "$CONFIG_ERROR" >&2
     exit 1
 fi
-

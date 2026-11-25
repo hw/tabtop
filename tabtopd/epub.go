@@ -853,6 +853,7 @@ func epubPictureType(name string) string {
 // stdout: the book or {html} as JSON, or the picture's bytes; or, failing,
 // why, with status 1.
 func renderEpubChild(args []string) int {
+	startPreviewChild(previewChildMemory, previewChildCPU) // (read even if the sandbox couldn't be set up: see startPreviewChild)
 	out, err := epubChildAnswer(os.Stdin, args)
 	if err != nil {
 		fmt.Fprint(os.Stdout, err)
@@ -916,7 +917,7 @@ func epubChildAnswer(f *os.File, args []string) ([]byte, error) {
 var epubFrameHTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\n" +
 	"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Book</title>\n<style>" +
 	epubFrameCSS + "</style>\n<div id=\"bar\"></div><nav id=\"contents\" hidden aria-label=\"Contents\"></nav>" +
-	"<main id=\"doc\"></main><nav id=\"ends\" aria-label=\"Chapters\"></nav>\n<script src=\"epub-frame.js\"></script>\n"
+	"<main id=\"doc\"></main><nav id=\"ends\" aria-label=\"Chapters\"></nav>\n<script src=\"frame-bridge.js\"></script><script src=\"epub-frame.js\"></script>\n"
 
 var epubSlots = newPreviewWork(previewReadConcurrency)
 
@@ -951,7 +952,8 @@ func runEpubChild(f *os.File, timeout time.Duration, extra []*os.File, args ...s
 
 // tunnelEpub answers an "epub" request: the book at req.Path, or with
 // req.Item, a chapter or picture of it (see the top of this file).
-func (g *fileService) tunnelEpub(t *tunnel, req tunnelRequest, r *tunnelResponder) {
+func (g *fileService) tunnelEpub(call *tunnelCall) {
+	t, req, r := call.t, call.req, call.r
 	opened, err := g.openFile(req.Path)
 	if err != nil {
 		r.fail(err.Error())

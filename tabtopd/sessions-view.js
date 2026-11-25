@@ -7,6 +7,7 @@ import { humanBytes } from "./file-format.js";
 import { store, stored } from "./stored.js";
 import { iconSVG } from "./glyphs.js";
 import { exportSecurityBackup, importSecurityBackup } from "./security-backup.js";
+import { el } from "./preview-dom.js";
 
 const SECURITY_TITLE = "Sessions and Activity";
 
@@ -31,11 +32,6 @@ function linkName(l) {
     return l.path === "." ? root : `${root}/${l.path}`;
 }
 
-function el(tag, props = {}, ...children) {
-    const e = Object.assign(document.createElement(tag), props);
-    e.append(...children);
-    return e;
-}
 function button(className, textContent, onClick) {
     const b = el("button", { type: "button", className, textContent });
     b.addEventListener("click", onClick);
