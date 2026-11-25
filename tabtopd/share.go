@@ -171,7 +171,10 @@ type shareStore struct {
 	// A save to come (see saveSoonLocked), and when each link's downloads
 	// by each address were last logged (see logUse).
 	saveTimer lifecycleTimer
-	logged    map[string]time.Time
+	// A revocation not saved yet (its save failed): saved again, soon,
+	// till it is, so a restart can't bring its links back (see revoke).
+	revocationUnsaved bool
+	logged            map[string]time.Time
 
 	// Downloads through links going, by address (see startDownload).
 	downloads keyedSlots // downloads going on, by address
@@ -203,7 +206,9 @@ func (s *shareStore) saveSoonLocked() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.saveTimer = nil
-		s.saveLocked()
+		if err := s.saveLocked(); err != nil && s.revocationUnsaved {
+			s.saveSoonLocked()
+		}
 	})
 }
 
@@ -299,9 +304,9 @@ func newShareStore(file string, clock lifecycleClock) *shareStore {
 }
 
 // saveLocked writes the links to s.file, all or nothing. s.mu must be held.
-func (s *shareStore) saveLocked() {
+func (s *shareStore) saveLocked() error {
 	if s.file == "" {
-		return
+		return nil
 	}
 	links := make([]*shareLink, 0, len(s.links))
 	for _, l := range s.links {
@@ -314,7 +319,10 @@ func (s *shareStore) saveLocked() {
 	}
 	if err != nil {
 		log.Printf("share links: saving: %v", err)
+		return err
 	}
+	s.revocationUnsaved = false
+	return nil
 }
 
 // syncFile puts f on disk; tests make it fail.
@@ -626,8 +634,11 @@ func (s *shareStore) changeMany(handles []string, life time.Duration, label stri
 }
 
 // revoke ends the links that match, ending their downloads going on, and
-// reports how many there were.
-func (s *shareStore) revoke(match func(*shareLink) bool) int {
+// reports how many there were, and the error saving that, if any: the
+// links are ended all the same (here, till a restart), and the save tried
+// again (saveSoonLocked) till it's done, but until it is, a restart would
+// read them back from the copy on disk, so whoever revoked them is told.
+func (s *shareStore) revoke(match func(*shareLink) bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -638,10 +649,17 @@ func (s *shareStore) revoke(match func(*shareLink) bool) int {
 			n++
 		}
 	}
-	if n > 0 {
-		s.saveLocked()
+	if n == 0 {
+		// Nothing of this one's to save (an earlier revocation not saved
+		// yet is tried again by itself: not this one's failure to report).
+		return 0, nil
 	}
-	return n
+	err := s.saveLocked()
+	if err != nil {
+		s.revocationUnsaved = true
+		s.saveSoonLocked()
+	}
+	return n, err
 }
 
 // shareInfo is a link, as the security page lists it.
@@ -832,7 +850,8 @@ func (g *fileService) serveRootShare(w http.ResponseWriter, r *http.Request, l *
 	if !l.Dir {
 		http.ServeContent(w, r, name, st.ModTime(), revocableFile{f, l})
 		if l.Once && cw.whole() {
-			// Done with: not left listed till it ends.
+			// Done with: not left listed till it ends. (Not saved, it's
+			// saved again till it is: see revoke. Nobody to tell here.)
 			g.revokeShares(func(o *shareLink) bool { return o == l })
 		}
 		return

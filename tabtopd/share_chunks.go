@@ -22,7 +22,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -399,15 +398,9 @@ func (g *fileService) receiveChunk(w http.ResponseWriter, r *http.Request, l *sh
 			}
 			g.shares.settle(l, size, saved, ip)
 		}()
-		if st, err := store.stat(l.Path); err != nil || !l.matches(st) {
-			u.abort()
-			fail(&uploadLinkError{http.StatusNotFound, "The folder this link uploads to has gone."})
-			return
-		}
-		got, err := u.finish(name, false)
+		got, err := g.finishLinkUpload(l, store, u, name)
 		if err != nil {
-			log.Printf("upload link to %q: saving %q: %v", l.Path, name, err)
-			fail(&uploadLinkError{http.StatusInternalServerError, uploadError(err)})
+			fail(err)
 			return
 		}
 		saved = got
@@ -443,7 +436,7 @@ func writeLinkBytes(u *upload, l *shareLink, body io.Reader, grow func(int64) er
 		n, rerr := body.Read(buf)
 		if n > 0 {
 			if l.revoked.Load() {
-				return written, &uploadLinkError{http.StatusNotFound, "This link has ended."}
+				return written, errLinkEnded
 			}
 			if grow != nil {
 				if err := grow(int64(n)); err != nil {
