@@ -64,6 +64,7 @@ const (
 
 type server struct {
 	serverConfig
+	hostsRefused    hostRefusals // names a tunnel was refused by, logged once (hosts.go)
 	roots           []*fileRoot
 	doctorProbes    doctorProbeCache
 	vncBackoff      vncBackoff
@@ -164,6 +165,8 @@ func main() {
 	flag.StringVar(&c.downloadsDir, "downloads-dir", c.downloadsDir, "directory served at "+filesPrefix)
 	flag.IntVar(&c.trustNProxies, "trust-nproxies", c.trustNProxies,
 		"how many proxies in front are trusted whatever their address, counting the one that connects")
+	hosts := flag.String("hosts", "", "comma-separated names a browser may open the tunnel by over plain HTTP, besides addresses, localhost, "+
+		"single-label names and .local, .home.arpa, .internal and .lan ones (over HTTPS, any name)")
 	trusted := flag.String("trusted-proxies", "",
 		"comma-separated IPs or CIDR ranges of reverse proxies whose X-Forwarded-For is believed; cloudflare stands for Cloudflare's published ranges")
 	sessionMax := flag.String("session-max", c.sessionMax.String(), "how long a login lasts at most, in whole minutes, e.g. 12h")
@@ -226,6 +229,9 @@ func main() {
 	c.timeZone = pageTimeZone(os.Getenv("TZ"))
 	var err error
 	c.base = *basePath
+	if c.hosts, err = parseHosts(*hosts); err != nil {
+		log.Fatalf("-hosts: %v", err)
+	}
 	if c.trustedProxies, err = parsePrefixes(*trusted); err != nil {
 		log.Fatalf("-trusted-proxies: %v", err)
 	}

@@ -98,6 +98,7 @@ as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG=1} /usr/local/bin/tabtopd \
     -go-private="$WEB_GO_PRIVATE" \
     -go-cache="$WEB_GO_CACHE" \
     -trusted-proxies "$WEB_TRUSTED_PROXIES" \
+    -hosts "$WEB_HOSTS" \
     -trust-nproxies "$((10#$WEB_TRUST_NPROXIES))" \
     -session-max "$WEB_SESSION_MAX" \
     -session-idle "$WEB_SESSION_IDLE" \

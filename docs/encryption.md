@@ -324,6 +324,12 @@ out and starts that list empty; the activity log stays.
   the page's scripts and take everything.
   HTTPS stops that for everyone on the way except the proxies that decrypt
   it.
+- **DNS rebinding:** over plain HTTP, the tunnel opens only when the
+  browser reached the gateway by an address, `localhost`, or a name no
+  website can point at it, unless the name is listed in
+  [`WEB_HOSTS`](environment.md#web_hosts). Otherwise any website you visit
+  could resolve its own name to your gateway's address and try logins from
+  your browser.
 - **Login limit:** failed logins are limited per visitor address, as
   described under `WEB_TRUSTED_PROXIES`: an IPv4 address, or an IPv6
   address's /64, since one subscriber usually has a whole /64. Guesses
