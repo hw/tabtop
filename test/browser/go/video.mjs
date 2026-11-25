@@ -69,10 +69,11 @@ export async function video(ctx) {
         await goTo(site + "video.html", "Video");
         await frameWait(`document.querySelector("#clip[data-go-video]")?.classList.contains("go-media-live")`, "the clip's box, its player made");
         // A plain Blob that isn't media (relayed, gomedia.js): its player says
-        // it can't play it; an element with no file, that it has none.
+        // it can't play it. A video with no source has an empty box.
         await frameWait(`!/^Loading|^$/.test(document.getElementById("streamed")?.textContent ?? "")`, "the Blob's box said what came of it", 15000).catch(() => {});
-        const notes = await frame(`[document.getElementById("streamed").textContent, document.getElementById("silent").textContent]`);
-        if (!/DEMUXER|decode|open|play/i.test(notes[0]) || /own player/.test(notes[0]) || !/nothing to play/.test(notes[1])) throw new Error(`the other boxes say ${JSON.stringify(notes)}`);
+        const note = await frame(`document.getElementById("streamed").textContent`);
+        if (!/DEMUXER|decode|open|play/i.test(note) || /own player/.test(note)) throw new Error(`the Blob's box says ${JSON.stringify(note)}`);
+        await frameWait(`document.querySelector("#silent.go-media-empty")?.textContent === ""`, "the video with no source has no label");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.readyState >= 1 && Math.abs(v.duration - 5) < 0.5)`, "the player's clip, 5 s", 30000);
         await ev(`document.querySelector("video").play()`);
         await waitFor(`document.querySelector("video").currentTime > 0.5`, "the clip playing", 30000);
@@ -353,6 +354,57 @@ export async function video(ctx) {
         await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     });
 
+    // (Files on only: a download saves into Downloads.)
+    if (process.env.GO_NO_FS !== "1") await step("a video's download shows in the player and the menu alike, wherever it was started: the player's, in the menu opened after; the menu's, in the player opened after; neither left saying it's saving once it's saved", async () => {
+        // (Its file a second and a half late: its download seen going on.)
+        await goTo(site + "slow.html", "Slow video");
+        const openMenu = () => ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
+        const menuSave = `document.querySelector("#go_menu_media li [data-act=save]")`, menuNote = `document.querySelector("#go_menu_media li .note")`;
+        const playerSave = `document.querySelector('#video_player button[aria-label^="Download"], #video_player button[aria-label^="Cancel"]')`, playerNote = `document.querySelector("#video_player .note")`;
+        const watch = async () => {
+            await openMenu();
+            await waitFor(`!!document.querySelector("#go_menu_media li [data-act=watch]:not(:disabled)")`, "Watch offered", 30000);
+            await press("#go_menu_media li [data-act=watch]");
+            await waitFor(`!!document.querySelector("#video_player video")`, "the player", 10000);
+        };
+        const close = () => ev(`document.querySelector("#video_player button[aria-label^='Close the player']").click()`);
+        const shows = (save, note, what) => waitFor(`${save}?.classList.contains("saving") || /^Saved .* into Downloads\.$/.test(${note}?.textContent ?? "")`, what, 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`JSON.stringify([${save}?.className, ${note}?.textContent])`)}`); });
+        const saved = (note, what) => waitFor(`/^Saved .* into Downloads\.$/.test(${note}?.textContent ?? "")`, what, 30000);
+        // Started in the player, which is closed: the menu opened shows it.
+        await watch();
+        await press('#video_player button[aria-label^="Download"]');
+        await waitFor(`${playerSave}?.classList.contains("saving")`, "the player's download going on");
+        await close();
+        await openMenu();
+        await shows(menuSave, menuNote, "the player's download shown in the menu");
+        await saved(menuNote, "said saved in the menu");
+        if (await ev(`${menuSave}.classList.contains("saving")`)) throw new Error("the menu's Save still saving, saved");
+        // (The page said it as the player closed: its status let go once
+        // the menu showed it, not left saying it's saving.)
+        const status = await ev(`document.getElementById("go_status").textContent`);
+        if (/^Saving/.test(status)) throw new Error(`the page's status left saying: ${status}`);
+        // Started in the menu: the player opened after shows it.
+        await press("#go_menu_media li [data-act=save]");
+        await waitFor(`${menuSave}?.classList.contains("saving")`, "the menu's download going on");
+        await press("#go_menu_media li [data-act=watch]");
+        await waitFor(`!!document.querySelector("#video_player video")`, "the player", 10000);
+        await shows(playerSave, playerNote, "the menu's download shown in the player");
+        await saved(playerNote, "said saved in the player");
+        await close();
+        // Started in the menu, closed as it saves: the page says how it
+        // ends; the menu opened again isn't left saying it's saving.
+        await openMenu();
+        await press("#go_menu_media li [data-act=save]");
+        await waitFor(`${menuSave}?.classList.contains("saving")`, "the menu's download going on again");
+        await ev(`document.getElementById("go_menu").click()`);
+        await waitFor(`!document.getElementById("go_notice").hidden && /^Saved .* into Downloads\./.test(document.querySelector("#go_notice p")?.textContent ?? "")`, "the page saying it's saved", 30000);
+        await openMenu();
+        await waitFor(`!${menuSave}.classList.contains("saving") && !/^Saving/.test(${menuNote}?.textContent ?? "")`, "the menu's Save not left saying it's saving")
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`JSON.stringify([${menuSave}.className, ${menuNote}?.textContent])`)}`); });
+        await ev(`document.getElementById("go_menu").click()`);
+    });
+
     await step("Skip held blocks videos from the video's own host, not the page's site: stopped, kept in Site controls, and Undo has them again", async () => {
         const settings = async () => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings" }); t.close(); return { hosts: t.reply.videoHosts ?? [], sites: t.reply.noVideos ?? [] }; })`);
         const host = new URL(site).hostname;
@@ -402,6 +454,19 @@ export async function video(ctx) {
         if ((await settings()).hosts.includes(videoHost)) throw new Error("still blocked after Undo");
         await goTo(page, "Autoplay");
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused; })()`, "its video playing again", 30000);
+    });
+
+    await step("the page can enable and disable looping on an open video", async () => {
+        await goTo(site + "video-loop.html", "Video loop");
+        const player = 'document.querySelector("video")';
+        await waitFor(`${player}?.currentTime > 0.3 && !${player}.paused && !${player}.loop`, "the video playing once", 30000);
+        await frameClick("#loop");
+        await waitFor(`${player}.loop`, "the open player looping");
+        await waitFor(`${player}.currentTime > 3`, "the video near its end");
+        await waitFor(`${player}.currentTime < 2 && !${player}.paused && !${player}.ended`, "the video playing again from the start");
+        await frameClick("#once");
+        await waitFor(`!${player}.loop`, "looping disabled without reopening the player");
+        await waitFor(`${player}.ended`, "the video ending once looping is disabled");
     });
 
     await step("a video skipped is, to the page, played to its end, whether playing or still loading: from the menu, or Shift+N", async () => {
@@ -613,9 +678,9 @@ export async function video(ctx) {
         await goTo(site + "feed.html", "Feed");
         // Empty <source src=""> (a placeholder) is nothing to play, not a
         // stuck empty URL that hides a later real src.
-        await frameWait(`/nothing to play/.test(document.getElementById("b").textContent)`, "the second box, empty source");
+        await frameWait(`document.querySelector("#b.go-media-empty")?.textContent === ""`, "the second box, empty source");
         await frameClick("#nextclip");
-        await frameWait(`document.querySelector("#b[data-go-video]")?.textContent === ""`, "its player made for the file it was given");
+        await frameWait(`!!document.querySelector("#b.go-media-live")`, "its player made for the file it was given");
         await waitFor(`[...document.querySelectorAll("video")].some((v) => v.currentTime > 0.5)`, "it playing, as the page played it", 30000);
         // Scrolled by the person (a swipe, say: no wheel), and the page
         // sees itself scrolled. (Headless Chrome doesn't scroll the frame by
@@ -667,15 +732,15 @@ export async function video(ctx) {
 
     await step("a video's file picked as a browser picks it: an empty <source> passed over; an element's own empty src, nothing", async () => {
         await goTo(site + "sources.html", "Sources");
-        await frameWait(`document.querySelector("#a[data-go-video]")?.textContent === ""`, "the first video's player, for its second <source>");
-        await frameWait(`/nothing to play/.test(document.getElementById("b")?.textContent || "")`, "the second, its own src empty, nothing to play");
+        await frameWait(`!!document.querySelector("#a.go-media-live")`, "the first video's player, for its second <source>");
+        await frameWait(`document.querySelector("#b.go-media-empty")?.textContent === ""`, "the second, its own src empty");
     });
 
     await step("a video with nothing to play shows nothing and is pressed through: what's under it is pressed", async () => {
         await goTo(site + "emptyvideo.html", "Empty video");
         // Still nothing once the page has changed its class (a site's
         // player's is), with a rule of its own that would show it.
-        await frameWait(`document.getElementById("v")?.classList.contains("shown")`, "the empty video's box, its class changed");
+        await frameWait(`document.querySelector("#v.shown.go-media-empty")?.textContent === ""`, "the empty video has no label after its class changes");
         const look = await frame(`(() => { const s = getComputedStyle(document.getElementById("v")); return [s.pointerEvents, s.backgroundColor, s.color].join(" "); })()`);
         if (look !== "none rgba(0, 0, 0, 0) rgba(0, 0, 0, 0)") throw new Error(`the empty box: ${look}`);
         // A video playing, its class changed too: still clear over its player.
@@ -686,6 +751,18 @@ export async function video(ctx) {
         await frameClick("#under");
         await frameWait(`document.getElementById("r")?.textContent === "button"`, "the button under it pressed", 15000)
             .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("r").textContent`)}`); });
+        const wrap = 'getComputedStyle(document.getElementById("late-wrap"))';
+        const overlapping = await frame(`[${wrap}.visibility, ${wrap}.opacity, ${wrap}.backgroundColor].join(" ")`);
+        if (overlapping !== "visible 1 rgba(0, 0, 0, 0)") throw new Error(`the overlapping player's wrapper should stay visible with a clear background: ${overlapping}`);
+        await frameClick("#load-video");
+        await frameWait(`(() => {
+            const box = document.getElementById("late");
+            return box?.classList.contains("go-media-live") && !box.classList.contains("go-media-empty") &&
+                getComputedStyle(box).visibility === "visible" && Number(getComputedStyle(box).opacity) === 1;
+        })()`, "the late video's box visible and clear over its player", 30000);
+        await waitFor(`[...document.querySelectorAll("video")].some(v => !v.paused && v.currentTime > 0.3 && getComputedStyle(v).display !== "none")`, "the late video playing in the underlay", 30000);
+        await frameClick("#remove-video");
+        await frameWait(`!document.getElementById("p") && ${wrap}.backgroundColor === "rgba(0, 0, 0, 0)"`, "the late video's wrapper stays clear after removing the first video");
     });
 
     await step("a player choosing its MediaSource as dash.js does gets one that works", async () => {
@@ -756,8 +833,8 @@ export async function video(ctx) {
         await frameWait(`document.getElementById("start-load")?.disabled === false`, "init segment append completed");
         const before = await frame(`(() => {
             const shell = document.querySelector(".player-html5"), video = document.querySelector(".videoElement");
-            return /nothing to play/.test(shell.textContent) && !shell.hasAttribute("data-ready") &&
-                !/nothing to play|own player/.test(video.textContent) && !video.hasAttribute("data-ready");
+            return shell.classList.contains("go-media-empty") && shell.textContent === "" && !shell.hasAttribute("data-ready") &&
+                !video.classList.contains("go-media-empty") && !/own player/.test(video.textContent) && !video.hasAttribute("data-ready");
         })()`);
         if (!before) throw new Error("only the shell should be empty, and neither video should report canplay before media data arrives");
         await frameClick("#start-load");
@@ -776,7 +853,7 @@ export async function video(ctx) {
         for (const kind of ["same", "other"]) {
             await goTo(site + "mse-frame.html" + (kind === "same" ? "?same" : ""), "MSE frame");
             const box = `document.getElementById("x")?.shadowRoot?.querySelector("[data-go-video]")`;
-            await frameWait(`(() => { const b = ${box}; return !!b && !/nothing to play|own player/.test(b.textContent || ""); })()`, `the ${kind} origin's frame's stream known to its box`, 30000);
+            await frameWait(`(() => { const b = ${box}; return !!b && !b.classList.contains("go-media-empty") && !/own player/.test(b.textContent); })()`, `the ${kind} origin's frame's stream known to its box`, 30000);
             await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);
             const play = `[...document.querySelectorAll("#go_menu_media li .acts button")].find((b) => /^Play /.test(b.getAttribute("aria-label") || "") && !b.disabled)`;
             // Started by its page's own play() (passed on: goframestreams.go's
@@ -799,7 +876,7 @@ export async function video(ctx) {
         for (const kind of ["page", "frame"]) {
             await goTo(site + "blob-video.html" + (kind === "frame" ? "?frame" : ""), "Blob video");
             const box = kind === "frame" ? `document.getElementById("x")?.shadowRoot?.querySelector("[data-go-video]")` : `document.querySelector("[data-go-video]")`;
-            await frameWait(`(() => { const b = ${box}; return !!b && !/nothing to play|own player/.test(b.textContent || ""); })()`, `the ${kind}'s Blob video known to its box`, 30000).catch(async (err) => {
+            await frameWait(`(() => { const b = ${box}; return !!b && !b.classList.contains("go-media-empty") && !/own player/.test(b.textContent); })()`, `the ${kind}'s Blob video known to its box`, 30000).catch(async (err) => {
                 throw new Error(`${err.message}: its box says ${JSON.stringify(await frame(`${box}?.textContent ?? "none"`))}`);
             });
             await ev(`document.getElementById("go_menu_panel").hidden && document.getElementById("go_menu").click()`);

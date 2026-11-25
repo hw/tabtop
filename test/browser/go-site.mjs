@@ -158,14 +158,33 @@ $("read").onclick = () => navigator.clipboard.readText().then((t) => { $("got").
         // (Its players' classes changed once they're shown, as a site's
         // player's are: one rule, !important, would show the empty one.)
         "emptyvideo.html": `<!doctype html><title>Empty video</title><style>body { margin: 0 } #under { position: absolute; left: 20px; top: 20px; width: 200px; height: 80px } #v { position: absolute; left: 0; top: 0; width: 320px; height: 180px }
-#p { position: absolute; left: 400px; top: 0; width: 320px; height: 180px } video.shown { background: #222 !important; color: #fff !important; pointer-events: auto !important }</style>
-<button id="under">under</button><video id="v"></video><video id="p" src="clip.mp4?emptyvideo" muted loop autoplay></video><p id="r" style="position: absolute; top: 200px">none</p>
+#p, #late-wrap { position: absolute; left: 400px; top: 0; width: 320px; height: 180px }
+#p { z-index: 1 } #late-wrap { background: #333 } #late { width: 100%; height: 100% }
+video.shown { background: #222 !important; color: #fff !important; pointer-events: auto !important }</style>
+<button id="under">under</button><video id="v"></video><video id="p" src="clip.mp4?emptyvideo" muted loop autoplay></video>
+<div id="late-wrap"><video id="late" muted loop></video></div>
+<div style="position: absolute; top: 200px"><p id="r">none</p><button id="load-video">Load video</button><button id="remove-video">Remove earlier video</button></div>
 <script>
 const r = document.getElementById("r");
 document.getElementById("under").onclick = () => { r.textContent = "button"; };
 document.getElementById("v").onclick = () => { r.textContent = "video"; };
 setTimeout(() => { document.getElementById("v").className = "shown"; }, 300);
 document.getElementById("p").addEventListener("playing", () => { document.getElementById("p").className = "shown"; }, { once: true });
+document.getElementById("load-video").onclick = () => {
+    document.getElementById("p").pause();
+    const video = document.getElementById("late");
+    video.src = "clip.mp4?late-video";
+    video.play().catch(() => {});
+};
+document.getElementById("remove-video").onclick = () => document.getElementById("p").remove();
+</script>`,
+        "video-loop.html": `<!doctype html><title>Video loop</title>
+<video id="v" src="clip.mp4?loop-change" width="320" height="180" autoplay muted></video>
+<button id="loop">Loop</button><button id="once">Play once</button>
+<script>
+const video = document.getElementById("v");
+document.getElementById("loop").onclick = () => { video.loop = true; };
+document.getElementById("once").onclick = () => { video.loop = false; };
 </script>`,
         // A page's pointer lock (gopointerlock.js): a pad that locks it,
         // adds up its moves, counts its presses; a right press leaves it.

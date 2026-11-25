@@ -601,11 +601,15 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
     screen.orientation?.addEventListener?.("change", replaceAll, { signal: abort.signal });
     window.visualViewport?.addEventListener("resize", replaceAll, { signal: abort.signal });
 
-    function place({ key, rect, clip, shown, fit, position }) {
+    function place({ key, rect, clip, shown, fit, position, loop }) {
         const player = players.get(key);
         if (!player) return;
         player.placement = { key, rect, clip, shown, fit, position };
         const media = player.element, loading = player.loading?.box;
+        if (typeof loop === "boolean" && player.loop !== loop) {
+            player.loop = loop;
+            if (media) media.loop = loop;
+        }
         if (media && "player" in media.dataset) return;  // in the watch player, not its box
         syncBackdrop();
         if (player.hidden) {
@@ -872,7 +876,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
             if (players.size >= MAX_PLAYERS || abort.signal.aborted) return { error: "Too many players on this page." };
             const controller = new AbortController();
             const { signal } = controller;
-            const entry = { controller, node, play: !!play, placement: { key, rect, clip, shown: shown !== false, fit, position } };
+            const entry = { controller, node, play: !!play, loop: !!loop, placement: { key, rect, clip, shown: shown !== false, fit, position } };
             players.set(key, entry);
             // Loading, over its box, till it can play.
             const loading = entry.loading = loader(kind, src, !!streamId);
@@ -961,7 +965,7 @@ export function goMedia(frame, { picture, sized, played, range, failed, passOn, 
                 for (const type of ["playing", "pause", "ended", "seeked"]) media.addEventListener(type, () => report(), { signal });
                 media.addEventListener("timeupdate", () => { if (performance.now() - toldAt >= 1000) report(); }, { signal });
                 media.muted = !!muted;
-                media.loop = !!loop;
+                media.loop = entry.loop;
                 if (kind === "video" && typeof poster === "string" && /^https?:\/\//i.test(poster) && picture) {
                     picture(poster).then((blob) => {
                         if (!signal.aborted) media.poster = entry.poster = URL.createObjectURL(blob);

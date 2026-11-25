@@ -486,7 +486,10 @@ new MutationObserver(() => {
 function openMenu(open) {
     menuPanel.hidden = !open;
     if (open) mediaMenu();
-    else media?.mark(null);
+    else {
+        media?.mark(null);
+        menuUnhear();
+    }
     menu.setAttribute("aria-expanded", String(open));
     if (open) {
         const first = [...menuPanel.querySelectorAll("button:not(:disabled), input:not(:disabled), a[href]")]
@@ -637,30 +640,49 @@ function newMedia() {
 // go-media.js saver), as Watch's player has its Download: pressed, a ring
 // that fills as it saves, a press then cancelling; how it goes said in note,
 // under its address. Its state is kept by the player's key (menuSaves), so
-// the menu drawn again shows it; it doesn't take over the telling of a save
-// started elsewhere (the player's, the page's notice). Null if there's
-// nothing to save.
+// the menu drawn again shows it. While the menu's open, it shows a save of
+// it going on wherever it started (the player's Download: menuHear), as the
+// player shows the menu's; closed, the menu lets go (menuUnhear), and what
+// it isn't shown elsewhere the page says (its status, then its notice).
+// Null if there's nothing to save.
 function saveGlyph(p, which, note, saver = media?.saver(p.key)) {
     if (!saver) return null;
     const title = saver.stream ? `Save the stream of ${which} into Downloads${saver.label ? ` (${saver.label})` : ""}` : `Download ${which} into Downloads`;
-    const b = glyph("download", title, () => {
-        const going = menuSaves.get(p.key);
-        if (going?.cancel) return going.cancel();
-        if (going && going.fraction !== undefined) return;  // (cancelling)
-        const state = { text: "", fraction: undefined, cancel: null, view: { b, note, title } };
-        menuSaves.set(p.key, state);
-        saver.save((text, fraction, cancel) => {
+    let state = menuSaves.get(p.key);
+    if (!state) {
+        state = { text: "", fraction: undefined, cancel: null, view: null, save: null };
+        state.say = (text, fraction, cancel) => {
             Object.assign(state, { text: String(text || ""), fraction, cancel: fraction !== undefined && cancel ? cancel : null });
-            paintSave(state);
-        });
+            if (state.view) paintSave(state);
+        };
+        menuSaves.set(p.key, state);
+    }
+    const b = glyph("download", title, () => {
+        if (state.cancel) return state.cancel();
+        if (state.fraction !== undefined) return;  // (cancelling)
+        saver.save(state.say);
     });
     b.dataset.icon = "download";
-    const going = menuSaves.get(p.key);
-    if (going) {
-        going.view = { b, note, title };
-        paintSave(going);
-    }
+    state.view = { b, note, title };
+    state.save = saver.save;
+    paintSave(state);
+    if (!menuPanel.hidden) menuHear(state);
     return b;
+}
+// menuHear has a menu Save shown (state) say how a save of it goes, if one
+// is (the player's, or its own, the menu closed meanwhile); none, what it
+// last said of one is let go, not left saying it's saving (how it ended,
+// it wasn't told: the page said that).
+function menuHear(state) {
+    Promise.resolve(state.save?.(state.say, { attach: true })).then((going) => {
+        if (going || state.fraction === undefined) return;
+        Object.assign(state, { text: "", fraction: undefined, cancel: null });
+        if (state.view) paintSave(state);
+    }, () => {});
+}
+// menuUnhear: the menu closed, its Saves say nothing more.
+function menuUnhear() {
+    for (const state of menuSaves.values()) state.save?.(state.say, { detach: true });
 }
 function paintSave({ text, fraction, cancel, view: { b, note, title } }) {
     const active = fraction !== undefined;
@@ -2919,6 +2941,34 @@ async function followDownload(id) {
         await new Promise(resolve => setTimeout(resolve, delay));
     }
 }
+// A download says how it goes to each that shows it (a player, the menu
+// open: listen, hear), all of them, not the last to ask; with none, to the
+// page (its status, then its notice). job.say is that: null with none.
+function listen(job, say) {
+    const hearing = new Set(say ? [say] : []);
+    // (Neither kept with the job: rememberDownloads.)
+    Object.defineProperty(job, "hearing", { configurable: true, value: hearing });
+    Object.defineProperty(job, "say", { configurable: true, get: () => (hearing.size ? (...args) => { for (const f of [...hearing]) f(...args); } : null) });
+}
+// hear has running (if there is one) say how it goes to say too, at once;
+// whether it was there. Shown by the page till then (none showing it), the
+// page's status lets it go: say has the rest of it, its end too.
+function hear(running, say) {
+    if (!running) return false;
+    if (say) {
+        if (!running.hearing.size) show("");
+        running.hearing.add(say);
+        running.tell?.();
+    }
+    return true;
+}
+// unhear: say shows no download any more (its player closed, the menu).
+function unhear(say) {
+    for (const running of downloads) {
+        if (running.hearing.delete(say)) running.tell?.();
+    }
+    return false;
+}
 // runningDownload is the download of url (a file, or a stream) going on,
 // if there is one: a player opened again shows it, not a second one.
 function runningDownload(url, stream) {
@@ -2931,32 +2981,19 @@ function runningDownload(url, stream) {
 // only a running one's said, to a player opened again; and one of the same
 // is never started twice: the player asking is told of the one going on.
 async function saveFile(url, say = null, stream = false, job = { id: "", label: hostOf(url), cancelling: false }, { attach = false, detach = false } = {}) {
-    // A player closed: what it was shown goes to the page instead (its
-    // status, then its notice), not to the player gone.
-    if (detach) {
-        for (const running of downloads) {
-            if (running.say !== say) continue;
-            running.say = null;
-            running.tell?.();
-        }
-        return;
-    }
+    // A player closed (or the menu): what it was shown goes to the others
+    // still showing it, or to the page (its status, then its notice).
+    if (detach) return unhear(say);
     // (Taken back after the page's reload: its address and kind, kept.)
     if (!url && job.url) {
         url = job.url;
         stream = !!job.stream;
     }
     const running = job.id ? null : runningDownload(url, stream);
-    if (running || attach) {
-        if (running && say) {
-            running.say = say;
-            running.tell?.();
-        }
-        return;
-    }
+    if (running || attach) return hear(running, say);
     job.url = url;
     job.stream = stream;
-    job.say = say;
+    listen(job, say);
     let t;
     const button = document.createElement("button");
     button.className = "item";
@@ -3186,22 +3223,9 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
     let id = mseSaveKeys.get(stream);
     if (!id) mseSaveKeys.set(stream, id = String(++mseSaveCount));
     const url = `mse:${id}`;
-    if (detach) {
-        for (const running of downloads) {
-            if (running.say !== say) continue;
-            running.say = null;
-            running.tell?.();
-        }
-        return;
-    }
+    if (detach) return unhear(say);
     const running = runningDownload(url, true);
-    if (running || attach) {
-        if (running && say) {
-            running.say = say;
-            running.tell?.();
-        }
-        return;
-    }
+    if (running || attach) return hear(running, say);
     if (stream?.element?.mediaKeys && !stream?.capture?.armed && !stream?.capture?.keysKnown) {
         // Encrypted Media whose keys a CDM keeps: its stage let go, its
         // stream not saved.
@@ -3229,7 +3253,8 @@ async function saveMSECapture(stream, say = null, { attach = false, detach = fal
         return;
     }
     // (A file's: its download's name, or the server's for it, once said.)
-    const job = { id: "", label: stream?.saveName ?? (stream?.file ? "file" : "stream.mp4"), url, stream: true, cancelling: false, say };
+    const job = { id: "", label: stream?.saveName ?? (stream?.file ? "file" : "stream.mp4"), url, stream: true, cancelling: false };
+    listen(job, say);
     let stage;
     const button = document.createElement("button");
     button.className = "item";

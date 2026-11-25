@@ -885,7 +885,7 @@
         const ancestors = [], roots = [];
         const up = (el) => el.parentElement ?? (el.parentNode instanceof ShadowRoot ? (roots.push(el.parentNode), el.parentNode.host) : null);
         for (let el = up(box); el; el = up(el)) {
-            if (mediaBackgroundBlocks(el) || el === document.body || el === document.documentElement) {
+            if (mediaHoleAncestors.has(el) || mediaBackgroundBlocks(el) || el === document.body || el === document.documentElement) {
                 punchMediaAncestor(el);
                 ancestors.push(el);
             }
@@ -894,10 +894,11 @@
         const covers = [];
         const hole = box.getBoundingClientRect();
         const scanned = [...roots, document.body].filter(Boolean);
+        const playerBox = "[data-go-video], [data-go-audio]";
         if (hole.width >= 8 && hole.height >= 8 && document.body) {
             for (const el of scanned.flatMap((root) => [...root.querySelectorAll("img, picture, canvas, svg, video")])) {
                 if (el === box || box.contains(el) || el.contains(box)) continue;
-                if (el.closest("[data-go-video], [data-go-audio]")) continue;
+                if (el.closest(playerBox)) continue;
                 const rect = el.getBoundingClientRect();
                 if (rect.width < 48 || rect.height < 48) continue;
                 if (rect.width * rect.height < hole.width * hole.height * 0.4) continue;
@@ -909,16 +910,25 @@
                 covers.push(el);
                 if (covers.length >= 12) break;
             }
+            let remaining = 12 - covers.length;
             for (const el of scanned.flatMap((root) => [...root.querySelectorAll("div, span")])) {
-                if (covers.length >= 12) break;
+                if (!remaining) break;
                 if (el === box || box.contains(el) || el.contains(box)) continue;
-                if (el.querySelector("img, video, canvas, svg, button, a, input")) continue;
+                if (el.closest(playerBox) || el.querySelector("img, video, canvas, svg, button, a, input")) continue;
                 const rect = el.getBoundingClientRect();
                 if (rect.width * rect.height < hole.width * hole.height * 0.5) continue;
                 if (mediaRectOverlap(hole, rect) < 0.7) continue;
-                if (!mediaBackgroundBlocks(el)) continue;
-                punchMediaCover(el);
-                covers.push(el);
+                if (!mediaHoleAncestors.has(el) && !mediaBackgroundBlocks(el)) continue;
+                // Player boxes are divs in the copy. Clear an overlapping
+                // wrapper's background so its player can stay visible.
+                if (el.querySelector(playerBox)) {
+                    punchMediaAncestor(el);
+                    ancestors.push(el);
+                } else {
+                    punchMediaCover(el);
+                    covers.push(el);
+                }
+                remaining--;
             }
         }
         mediaHoleFor.set(box, { ancestors, covers });
@@ -1117,7 +1127,7 @@
             box.classList.remove("go-media-mark");
             box.classList.add("go-media-empty");
             mediaState(box);
-            box.textContent = `A ${what} with nothing to play.`;  // (said, not shown)
+            box.textContent = "";
             mediaLater();
             return;
         }
@@ -1206,9 +1216,18 @@
             case "poster":
                 info.poster = v ?? "";
                 return true;
-            case "muted": case "loop":
-                info[name] = v !== null;
+            case "muted":
+                info.muted = v !== null;
                 return true;
+            case "loop": {
+                info.loop = v !== null;
+                const m = media.get(info.key);
+                if (m) {
+                    m.loop = info.loop;
+                    mediaLater();
+                }
+                return true;
+            }
             case "autoplay":
                 info.play = v !== null;
                 return true;
@@ -1251,6 +1270,7 @@
                 }
                 const r = m.box.getBoundingClientRect();
                 const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+                const state = { key, rect, loop: m.loop };
                 const geometry = `${innerWidth}:${innerHeight}:${r.width}:${r.height}`;
                 if (geometry !== m.geometry) {
                     m.geometry = geometry;
@@ -1265,8 +1285,8 @@
                 // window turns, or a keyboard comes up).
                 if (!m.intersection) {
                     const clip = m.asked && m.shown ? windowClip(rect) : null;
-                    if (clip) positions.push({ key, rect, clip, shown: true, fit: m.fit, position: m.position });
-                    else if (m.asked) positions.push({ key, rect, shown: false });
+                    if (clip) positions.push({ ...state, clip, shown: true, fit: m.fit, position: m.position });
+                    else if (m.asked) positions.push({ ...state, shown: false });
                     continue;
                 }
                 const clip = mediaClip(r, m.intersection);
@@ -1296,10 +1316,10 @@
                     m.holeGeometry = geometryHole;
                     punchMediaHole(m.box);
                 }
-                const at = { key, rect, clip, shown, fit, position };
+                const at = { ...state, clip, shown, fit, position };
                 if (!m.asked && (inView || m.play || relayed)) {
                     m.asked = true;
-                    opening.push({ ...at, type: "media", gen: doc.gen, node: m.node, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, loop: m.loop, play: m.play });
+                    opening.push({ ...at, type: "media", gen: doc.gen, node: m.node, kind: m.kind, src: m.src, poster: m.poster, muted: m.muted, play: m.play });
                 }
                 if (m.asked) positions.push(at);
                 Object.assign(m, { shown: m.asked && shown, fit, position });
