@@ -891,7 +891,7 @@ func (d *sqliteDB) rows(q sqliteQuery) (map[string]any, error) {
 }
 
 // count is how many rows the table or view has (as q's filters and search
-// leave it), or -1 if counting them takes too long.
+// leave it), or -1 if counting them takes too long or more memory than it may use.
 func (d *sqliteDB) count(q sqliteQuery) (int64, error) {
 	src, err := d.source(q)
 	if err != nil {
@@ -910,8 +910,10 @@ func (d *sqliteDB) count(q sqliteQuery) (int64, error) {
 		n = st.int(0)
 		return nil
 	})
+	// Too long, or (its sorts kept in memory, see readSQLiteChild) too
+	// big: not counted, as a count's only a nicety.
 	var se *sqliteError
-	if errors.As(err, &se) && se.code&0xff == C.SQLITE_INTERRUPT {
+	if errors.As(err, &se) && (se.code&0xff == C.SQLITE_INTERRUPT || se.code&0xff == C.SQLITE_NOMEM) {
 		return -1, nil
 	}
 	return n, err
