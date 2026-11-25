@@ -67,7 +67,7 @@ function open({ id = next++, url = "", show = true, private: priv = false } = {}
     frame.title = title;
     frame.allow = "autoplay; fullscreen; clipboard-write; clipboard-read; geolocation; web-share; picture-in-picture";
     frame.hidden = true;
-    const t = { id, title, loading: false, at: -1, private: priv, frame };
+    const t = { id, title, loading: false, at: -1, private: priv, frame, badge: 0 };
     frame.addEventListener("load", () => {
         tell(t, { type: "count", count: tabs.length, compact: compact.matches });
         if (url) tell(t, { type: "open", url });
@@ -88,6 +88,7 @@ function close(t) {
     const i = tabs.indexOf(t);
     if (i < 0) return;
     tabs.splice(i, 1);
+    if (t.badge) appBadge();  // (its badge gone with it)
     // Its engine closed at once, not kept for a connection to come back
     // (goresume.go): told first, then its frame (and tunnel) goes.
     tell(t, { type: "close" });
@@ -124,7 +125,22 @@ function showTab(t) {
 
 // docTitle is this page's title for the tab shown: a private tab's page
 // isn't named, as the device's history keeps the title.
-const docTitle = (t) => t.private ? "Private – Browser" : `${t.title} – Browser`;
+const docTitle = (t) => badged(t, t.private ? "Private – Browser" : `${t.title} – Browser`);
+
+// A tab's page's app badge (go.js, gobadge.go): its count (or a mark, -1)
+// before its title, here and in its tab; this app's own badge (where it's
+// one: installed) all the tabs' together, their counts added up, or a mark
+// if none has a count but one has a mark.
+const badgeText = (n) => (n === -1 ? "•" : n > 0 ? `(${n > 99 ? "99+" : n})` : "");
+const badged = (t, title) => (t.badge ? `${badgeText(t.badge)} ${title}` : title);
+function appBadge() {
+    const sum = tabs.reduce((n, t) => n + Math.max(t.badge, 0), 0);
+    const mark = tabs.some((t) => t.badge === -1);
+    try {
+        const p = sum ? navigator.setAppBadge?.(sum) : mark ? navigator.setAppBadge?.() : navigator.clearAppBadge?.();
+        p?.catch?.(() => {});
+    } catch { /* none here */ }
+}
 
 // The mark of a private tab: a hat and glasses, incognito (drawn, not a
 // character; go.js's the same).
@@ -165,7 +181,7 @@ function drawTab(t) {
 }
 
 function titled(t) {
-    t.titleEl.textContent = t.title;
+    t.titleEl.textContent = badged(t, t.title);
     t.el.title = t.private ? `${t.title} (private)` : t.title;
     t.el.classList.toggle("loading", t.loading);
     t.frame.title = t.title;
@@ -265,6 +281,11 @@ window.addEventListener("message", (e) => {
             t.title = typeof m.title === "string" && m.title.trim() ? m.title.slice(0, 200) : "New tab";
             t.loading = !!m.loading;
             titled(t);
+            break;
+        case "badge":
+            t.badge = Number.isSafeInteger(m.badge) && m.badge >= -1 ? m.badge : 0;
+            titled(t);
+            appBadge();
             break;
         case "history":
             if (!Number.isSafeInteger(m.at)) break;

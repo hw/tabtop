@@ -1022,24 +1022,96 @@ function warn(message, { retry = null, error = true, label = "Try again", edit =
 notice.querySelector(".dismiss").addEventListener("click", () => { notice.hidden = true; });
 notice.querySelector(".edit").addEventListener("click", () => { notice.hidden = true; address.focus(); address.select(); });
 
+// --- The page's app badge (gobadge.go) ------------------------------------
+//
+// Its count (or a mark, -1) before the tab's title, as a site's own tab
+// shows one, and on the tabs' strip (go-tabs.js); where this is an app
+// (installed), its badge too (the tabs' page's, for all its tabs).
+let badge = 0;
+const badgeText = (n) => (n === -1 ? "•" : n > 0 ? `(${n > 99 ? "99+" : n})` : "");
+const badged = (title) => (badge ? `${badgeText(badge)} ${title}` : title);
+function setBadge(n) {
+    badge = Number.isSafeInteger(n) && n >= -1 ? n : 0;
+    update();
+    if (inTabs) toTabs({ type: "badge", badge });
+    else appBadge(badge);
+}
+// appBadge is this app's own badge (the Badging API): n, a mark (-1), or
+// none (0); nothing where it's no app (the API missing, or refusing).
+function appBadge(n) {
+    try {
+        const p = n === 0 ? navigator.clearAppBadge?.() : n === -1 ? navigator.setAppBadge?.() : navigator.setAppBadge?.(n);
+        p?.catch?.(() => {});
+    } catch { /* none here */ }
+}
+
+// --- The page's media session (gomediasession.go) -------------------------
+//
+// What the page says it's playing (its artwork fetched by the server), its
+// state and position, as this browser's own session: shown where this
+// browser shows one (a phone's lock screen, its notification). Its controls
+// that the page answers call the page's handlers (media-action); those it
+// doesn't are this browser's own, on the players under the copy.
+// A press of one is the person's: the page's players theirs to play.
+const MEDIA_ACTIONS = ["play", "pause", "seekbackward", "seekforward", "previoustrack", "nexttrack", "skipad", "stop", "seekto",
+    "togglemicrophone", "togglecamera", "togglescreenshare", "hangup", "previousslide", "nextslide", "enterpictureinpicture", "voiceactivity"];
+let mediaHandled = new Set();
+function mediaSession(m) {
+    const session = navigator.mediaSession;
+    if (!session) return;
+    try {
+        const md = m.metadata && typeof m.metadata === "object" ? m.metadata : null;
+        const str = (v) => (typeof v === "string" ? v : "");
+        const artwork = (Array.isArray(md?.artwork) ? md.artwork : []).filter((i) => typeof i?.src === "string" && i.src.startsWith("data:image/"))
+            .map((i) => ({ src: i.src, sizes: str(i.sizes), type: str(i.type) }));
+        session.metadata = md && typeof MediaMetadata === "function" ? new MediaMetadata({ title: str(md.title), artist: str(md.artist), album: str(md.album), artwork }) : null;
+    } catch { /* not shown here */ }
+    try { session.playbackState = ["none", "paused", "playing"].includes(m.state) ? m.state : "none"; } catch { /* as it was */ }
+    const p = m.position;
+    try {
+        if (p && Number.isFinite(p.rate) && Number.isFinite(p.position)) session.setPositionState({ duration: p.duration === -1 ? Infinity : p.duration, playbackRate: p.rate, position: p.position });
+        else session.setPositionState?.();
+    } catch { /* not one here */ }
+    const actions = new Set(Array.isArray(m.actions) ? m.actions.filter((a) => MEDIA_ACTIONS.includes(a)) : []);
+    for (const action of MEDIA_ACTIONS) {
+        if (actions.has(action) === mediaHandled.has(action)) continue;
+        try {
+            session.setActionHandler(action, actions.has(action) ? (details) => mediaPressed(details) : null);
+        } catch { /* not one this browser has */ }
+    }
+    mediaHandled = actions;
+}
+function mediaPressed(details) {
+    const action = details?.action;
+    if (!mediaHandled.has(action)) return;
+    media?.chosenAll();
+    const time = action === "seekto" ? details.seekTime : action === "seekbackward" || action === "seekforward" ? details.seekOffset : undefined;
+    try {
+        ws?.send(JSON.stringify({ op: "media-action", gen, kind: action, dx: Number.isFinite(time) && time >= 0 ? time : -1, checked: details.fastSeek === true }));
+    } catch { /* gone */ }
+}
+
 // --- The page's clipboard (goclipboard.go) -------------------------------
 //
 // What it copies is put on this browser's clipboard, at once if the
 // person's press still counts here (it's this page's too: an embedded
 // page's activation is its parents'), else from a notice. What it asks to
 // read is asked of the person, each time, never remembered.
-// A picture (a PNG, base64) is put there with its text, if it had any.
-async function copyOut(text, image) {
+// A picture (a PNG, base64), or HTML (rich text), is put there with its
+// text, if it had any.
+async function copyOut(text, image, html) {
     const put = () => {
-        if (typeof image !== "string") return navigator.clipboard.writeText(text);
-        const items = { "image/png": new Blob([Uint8Array.from(atob(image), (c) => c.charCodeAt(0))], { type: "image/png" }) };
+        if (typeof image !== "string" && typeof html !== "string") return navigator.clipboard.writeText(text);
+        const items = {};
+        if (typeof image === "string") items["image/png"] = new Blob([Uint8Array.from(atob(image), (c) => c.charCodeAt(0))], { type: "image/png" });
+        if (typeof html === "string") items["text/html"] = new Blob([html], { type: "text/html" });
         if (typeof text === "string" && text) items["text/plain"] = new Blob([text], { type: "text/plain" });
         return navigator.clipboard.write([new ClipboardItem(items)]);
     };
     try {
         await put();
     } catch {
-        warn(typeof image === "string" ? "The page copied a picture." : "The page copied text.", {
+        warn(typeof image === "string" ? "The page copied a picture." : typeof html === "string" ? "The page copied rich text." : "The page copied text.", {
             error: false, label: "Copy",
             retry: () => put().then(() => note("Copied."), (err) => warn(`It wasn’t copied: ${err.message}`)),
         });
@@ -1067,9 +1139,11 @@ function showPasteAsk() {
     pasteBox.querySelector(".allow").focus();
 }
 // A read of its items (m.images) is given its picture too (a PNG, 8 MiB at
-// most), sent in parts before the answer.
+// most), sent in parts before the answer, and its HTML, in the answer, if
+// that's within the message's bounds (the text still given if it isn't).
+const PASTE_MESSAGE = 60000;  // characters of an answer (goroute.go's goClientMessage is 64 KiB)
 async function answerPaste(m, allow) {
-    let value = "", image = null;
+    let value = "", image = null, html = "";
     if (allow) {
         try {
             if (m.images) {
@@ -1078,6 +1152,8 @@ async function answerPaste(m, allow) {
                 if (item?.types.includes("image/png")) image = new Uint8Array(await (await item.getType("image/png")).arrayBuffer());
                 const text = items.find((i) => i.types.includes("text/plain"));
                 if (text) value = await (await text.getType("text/plain")).text();
+                const rich = items.find((i) => i.types.includes("text/html"));
+                if (rich) html = await (await rich.getType("text/html")).text();
             } else {
                 value = await navigator.clipboard.readText();
             }
@@ -1098,7 +1174,9 @@ async function answerPaste(m, allow) {
             socket?.send(JSON.stringify({ op: "paste-part", text: m.ask, value: btoa(String.fromCharCode(...image.subarray(at, at + part))) }));
         }
     }
-    socket?.send(JSON.stringify({ op: "paste", text: m.ask, accept: allow, value, count: image?.length ?? 0 }));
+    const answer = { op: "paste", text: m.ask, accept: allow, value, count: image?.length ?? 0 };
+    if (html && JSON.stringify({ ...answer, html }).length <= PASTE_MESSAGE) answer.html = html;
+    socket?.send(JSON.stringify(answer));
 }
 function pasteAnswered(allow) {
     const m = pasteAsks.shift();
@@ -1247,7 +1325,7 @@ function update() {
     addressButtons();
     frame.title = entry ? entry.title || hostOf(entry.url) : "Page";
     // (A private tab's page isn't named: the device's history keeps it.)
-    document.title = privateTab ? "Private – Browser" : entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser";
+    document.title = badged(privateTab ? "Private – Browser" : entry ? `${entry.title || hostOf(entry.url)} – Browser` : "Browser");
     if (entry) {
         // Kept in this tab only, so that reloading it carries on (see the
         // start, below): not in the tab's own address (/go/#…), which the
@@ -2105,6 +2183,12 @@ function message(m) {
         case "go-wakelock":
             wake.set(m.on === true);
             break;
+        case "go-badge":
+            setBadge(m.count);
+            break;
+        case "go-media-session":
+            mediaSession(m);
+            break;
         case "go-vibrate": {
             // The page's vibration (govibrate.go), felt here while this tab's
             // shown; a cancel, at once.
@@ -2142,7 +2226,7 @@ function message(m) {
         case "go-copy":
             // What the page copied (a Copy button's), after the person's
             // press there (goclipboard.go): on their clipboard.
-            if ((typeof m.text === "string" || typeof m.image === "string")) copyOut(typeof m.text === "string" ? m.text : "", m.image);
+            if ((typeof m.text === "string" || typeof m.image === "string")) copyOut(typeof m.text === "string" ? m.text : "", m.image, typeof m.html === "string" && m.html ? m.html : undefined);
             break;
         case "go-paste-ask":
             if (typeof m.ask === "string") askPaste(m);

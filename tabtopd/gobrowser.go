@@ -155,6 +155,18 @@ var goPermsJS string
 //go:embed govibrate.js
 var goVibrateJS string
 
+// goBadgeJS gives the page navigator.setAppBadge and clearAppBadge, shown
+// by the person's browser (gobadge.go).
+//
+//go:embed gobadge.js
+var goBadgeJS string
+
+// goMediaSessionJS gives the page navigator.mediaSession, the person's
+// browser's media session (gomediasession.go).
+//
+//go:embed gomediasession.js
+var goMediaSessionJS string
+
 // goPagePreludeJS is what the page-world stand-ins share (see
 // goPageSource).
 //
@@ -167,7 +179,7 @@ var goPagePreludeJS string
 // the stand-ins for what the engine lacks (each its own file's).
 func goPageScripts() []string {
 	return []string{goFetchJS, goObserveJS, goMediaJS, goCanvasJS, goGLPageJS, goEMEJS, goSheetsJS, goShadowJS,
-		goClipboardJS, goFullscreenJS, goVibrateJS, goWakeLockJS, goOrientationJS, goPointerLockJS, goDropJS, goPermsJS}
+		goClipboardJS, goFullscreenJS, goVibrateJS, goBadgeJS, goMediaSessionJS, goWakeLockJS, goOrientationJS, goPointerLockJS, goDropJS, goPermsJS}
 }
 
 // goPageSource is goPageScripts as one script: in one function, with what
@@ -245,8 +257,10 @@ type goPageAsks struct {
 	// Its device asks waiting for the person's browser, and its
 	// Picture-in-Picture (godevice.go).
 	device, pip *goDevicePending
-	vibratedAt  time.Time       // when the page's vibration was last passed on (govibrate.go)
-	wakeHeld    map[string]bool // the page's wake lock sentinels held, by id (gowakelock.go)
+	vibratedAt  time.Time         // when the page's vibration was last passed on (govibrate.go)
+	badgeShown  int               // the page's app badge, as shown: a count, goBadgeMark, or 0 (gobadge.go)
+	mediaSess   goMediaSessionTab // the page's media session, as shown (gomediasession.go)
+	wakeHeld    map[string]bool   // the page's wake lock sentinels held, by id (gowakelock.go)
 	// The page's orientation locks asked of the person's browser, and
 	// whether it's locked (goorientation.go).
 	orientAsks   goAsks[string, struct{}]
@@ -1081,7 +1095,9 @@ func (b *goBrowser) connBack() {
 	b.pasteAsksAgain() // (goclipboard.go)
 	b.resendStreams()  // Save stream offered again (gostreams.go)
 	b.recycleAgain()
-	b.wakeLockAgain() // (gowakelock.go)
+	b.wakeLockAgain()     // (gowakelock.go)
+	b.badgeAgain()        // (gobadge.go)
+	b.mediaSessionAgain() // (gomediasession.go)
 }
 
 // recycleAgain advises a viewer connecting again, if the tab's been: this

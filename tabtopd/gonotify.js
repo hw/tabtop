@@ -107,6 +107,22 @@
         } catch { return ""; }
     };
 
+    // A vibration pattern (VibratePattern, as navigator.vibrate reads one):
+    // so many entries, each so long at most (govibrate.js's), frozen.
+    const ulong = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        const t = Math.trunc(n) % 2 ** 32;
+        return t < 0 ? t + 2 ** 32 : t;
+    };
+    const pattern = (v) => {
+        if (v === undefined) return Object.freeze([]);
+        if (typeof v === "symbol") throw new TypeError("Failed to construct 'Notification': a vibration pattern can't be a Symbol.");
+        const list = v !== null && typeof v === "object" && typeof v[Symbol.iterator] === "function" ? [...v] : [v];
+        if (list.some((e) => typeof e === "symbol")) throw new TypeError("Failed to construct 'Notification': a vibration pattern entry can't be a Symbol.");
+        return Object.freeze(list.slice(0, 99).map((e) => Math.min(ulong(e), 10_000)));
+    };
+
     class Notification extends EventTarget {
         constructor(title, options = {}) {
             if (!arguments.length) throw new TypeError("Failed to construct 'Notification': 1 argument required, but only 0 present.");
@@ -115,6 +131,11 @@
             if (Array.isArray(options.actions) && options.actions.length) {
                 throw new TypeError("Failed to construct 'Notification': Actions are only supported for persistent notifications shown using ServiceWorkerRegistration.showNotification().");
             }
+            // (A silent one that would be felt: refused, as the spec says.)
+            if (options.silent === true && options.vibrate !== undefined) {
+                throw new TypeError("Failed to construct 'Notification': Silent notifications must not specify vibration patterns.");
+            }
+            const vibrate = pattern(options.vibrate);
             const id = newID();
             const f = {
                 id, title: str(title, 1000), body: str(options.body, 4000), tag: str(options.tag, 256),
@@ -123,7 +144,7 @@
                 silent: options.silent === undefined || options.silent === null ? null : !!options.silent,
                 requireInteraction: !!options.requireInteraction, renotify: !!options.renotify,
                 data: options.data ?? null, timestamp: Number.isFinite(options.timestamp) ? options.timestamp : Date.now(),
-                vibrate: [], actions: [],
+                vibrate, actions: [],
             };
             fields.set(this, f);
             if (state !== "granted") {
@@ -137,7 +158,7 @@
             // (Its pictures by address: the server fetches them, as the
             // page's are; the person's browser fetches nothing of the page's.)
             tell("__tabtop_notify", { id, title: f.title, body: f.body, tag: f.tag, silent: !!f.silent, requireInteraction: f.requireInteraction, renotify: f.renotify, dir: f.dir, lang: f.lang,
-                icon: f.icon, image: f.image, badge: f.badge });
+                icon: f.icon, image: f.image, badge: f.badge, vibrate: [...vibrate] });
         }
         close() {
             const f = fields.get(this);

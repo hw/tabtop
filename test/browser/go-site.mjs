@@ -155,12 +155,17 @@ $("read").onclick = () => navigator.clipboard.readText().then((t) => { $("got").
         // by it or by the person; one asked for long after its press; one
         // in another origin's frame.
         // An empty video (nothing to play) laid over a button.
-        "emptyvideo.html": `<!doctype html><title>Empty video</title><style>body { margin: 0 } #under { position: absolute; left: 20px; top: 20px; width: 200px; height: 80px } #v { position: absolute; left: 0; top: 0; width: 320px; height: 180px }</style>
-<button id="under">under</button><video id="v"></video><p id="r" style="position: absolute; top: 200px">none</p>
+        // (Its players' classes changed once they're shown, as a site's
+        // player's are: one rule, !important, would show the empty one.)
+        "emptyvideo.html": `<!doctype html><title>Empty video</title><style>body { margin: 0 } #under { position: absolute; left: 20px; top: 20px; width: 200px; height: 80px } #v { position: absolute; left: 0; top: 0; width: 320px; height: 180px }
+#p { position: absolute; left: 400px; top: 0; width: 320px; height: 180px } video.shown { background: #222 !important; color: #fff !important; pointer-events: auto !important }</style>
+<button id="under">under</button><video id="v"></video><video id="p" src="clip.mp4?emptyvideo" muted loop autoplay></video><p id="r" style="position: absolute; top: 200px">none</p>
 <script>
 const r = document.getElementById("r");
 document.getElementById("under").onclick = () => { r.textContent = "button"; };
 document.getElementById("v").onclick = () => { r.textContent = "video"; };
+setTimeout(() => { document.getElementById("v").className = "shown"; }, 300);
+document.getElementById("p").addEventListener("playing", () => { document.getElementById("p").className = "shown"; }, { once: true });
 </script>`,
         // A page's pointer lock (gopointerlock.js): a pad that locks it,
         // adds up its moves, counts its presses; a right press leaves it.
@@ -242,7 +247,8 @@ document.addEventListener("fullscreenchange", () => { document.getElementById("s
         // Blob by toBlob (which the engine lacks), with its text; and what's
         // read, its picture's size and its text.
         "clipimage.html": `<!doctype html><title>Clip image</title>
-<canvas id="c" width="8" height="6"></canvas> <button id="copyimg">Copy picture</button> <button id="readimg">Read</button> <button id="copybig">Copy a big one</button> <button id="copyhuge">Copy one too big</button> <p id="got">nothing</p>
+<canvas id="c" width="8" height="6"></canvas> <button id="copyimg">Copy picture</button> <button id="readimg">Read</button> <button id="copybig">Copy a big one</button> <button id="copyhuge">Copy one too big</button> <button id="copyhtml">Copy rich text</button> <button id="copysel">Copy what's selected</button> <button id="readhtml">Read rich text</button>
+<p id="rich"><i>slanted</i> text</p> <p id="got">nothing</p>
 <script>
 const $ = (id) => document.getElementById(id);
 const got = (t) => { $("got").textContent = t; };
@@ -260,6 +266,15 @@ const copyNoise = (w, h) => noise(w, h).toBlob((b) => { got("made " + b.size); n
 $("copybig").onclick = () => copyNoise(1200, 900);
 $("copyhuge").onclick = () => copyNoise(2000, 1500);
 const size = (blob) => new Promise((resolve) => { const r = new FileReader(); r.onload = () => { const i = new Image(); i.onload = () => resolve(i.naturalWidth + "x" + i.naturalHeight); i.onerror = () => resolve("undecoded"); i.src = r.result; }; r.readAsDataURL(blob); });
+// Rich text: written as HTML with its text, copied as what's selected (its
+// HTML too), read back.
+$("copyhtml").onclick = () => navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob(["<b>bold</b> words"], { type: "text/html" }), "text/plain": new Blob(["bold words"], { type: "text/plain" }) })])
+    .then(() => got("written html"), (e) => got("write refused " + e.name));
+$("copysel").onclick = () => { getSelection().selectAllChildren($("rich")); got("copied " + document.execCommand("copy")); };
+$("readhtml").onclick = () => navigator.clipboard.read().then(async (items) => {
+    const it = items[0], html = it?.types.includes("text/html") ? await (await it.getType("text/html")).text() : "";
+    got("read " + (it ? it.types.join(",") : "none") + " " + (html.includes("<u>under</u>") ? "with its html" : "html: " + html));
+}, (e) => got("refused " + e.name));
 $("readimg").onclick = () => navigator.clipboard.read().then(async (items) => {
     const it = items[0], out = [it ? it.types.join(",") : "none"];
     if (it?.types.includes("image/png")) out.push(await size(await it.getType("image/png")));
@@ -270,8 +285,41 @@ $("readimg").onclick = () => navigator.clipboard.read().then(async (items) => {
         // The page's notifications (gonotify.js): its permission as it
         // loads (its first script's), asked for, one shown (its icon on
         // another site, never fetched), clicked and closed.
+        // The page's media session (gomediasession.js): what it's playing
+        // (its artwork the site's picture), its state, its handlers (each
+        // call logged, with its details); what isn't one refused.
+        "mediasession.html": `<!doctype html><title>Media session</title><video id="v" src="clip.mp4?session" width="320" height="180" muted loop></video>
+<p id="log"></p><button id="go">Go</button> <button id="drop">Drop next</button>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (t) => { $("log").textContent += t + ";"; };
+const refused = (f) => { try { f(); return "made"; } catch (e) { return e.name; } };
+log("refused " + [refused(() => new MediaMetadata({ artwork: [{}] })), refused(() => navigator.mediaSession.setActionHandler("bogus", null)),
+    refused(() => navigator.mediaSession.setPositionState({ duration: 5, position: 6 }))].join(","));
+$("go").onclick = () => {
+    $("v").play().catch(() => {});
+    navigator.mediaSession.metadata = new MediaMetadata({ title: "Song", artist: "Band", album: "Record", artwork: [{ src: "pic.png", sizes: "8x8", type: "image/png" }] });
+    navigator.mediaSession.playbackState = "playing";
+    navigator.mediaSession.setPositionState({ duration: 10, playbackRate: 1, position: 3 });
+    for (const a of ["play", "pause", "nexttrack", "seekto"]) navigator.mediaSession.setActionHandler(a, (d) => log(d.action + (d.seekTime !== undefined ? " " + d.seekTime : "")));
+    log("set " + navigator.mediaSession.metadata.artwork[0].src.endsWith("/pic.png"));
+};
+$("drop").onclick = () => { navigator.mediaSession.setActionHandler("nexttrack", null); navigator.mediaSession.metadata.title = "Song 2"; log("dropped"); };
+</script>`,
+        // The page's app badge (gobadge.js): a count, a mark, cleared; a
+        // count that isn't one refused.
+        "badge.html": `<!doctype html><title>Badge</title><p id="log"></p><button id="three">Three</button> <button id="mark">Mark</button> <button id="clear">Clear</button> <button id="bad">Bad</button>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (t) => { $("log").textContent += t + ";"; };
+$("three").onclick = () => navigator.setAppBadge(3).then(() => log("three"));
+$("mark").onclick = () => navigator.setAppBadge().then(() => log("mark"));
+$("clear").onclick = () => navigator.clearAppBadge().then(() => log("clear"));
+$("bad").onclick = () => navigator.setAppBadge(-1).then(() => log("bad set"), (e) => log("bad " + e.name));
+log("api " + typeof navigator.setAppBadge + " " + typeof navigator.clearAppBadge);
+</script>`,
         "notify.html": `<!doctype html><title>Notify</title><script>const atLoad = Notification.permission;</script>
-<p id="perm"></p><p id="log"></p><p id="early"></p><button id="ask">Ask</button> <button id="show">Show</button> <button id="close">Close</button> <button id="late">Later</button> <button id="svg">SVG</button> <button id="big">Big</button>
+<p id="perm"></p><p id="log"></p><p id="early"></p><button id="ask">Ask</button> <button id="show">Show</button> <button id="close">Close</button> <button id="late">Later</button> <button id="svg">SVG</button> <button id="big">Big</button> <button id="vib">Felt</button>
 <script>
 // As it loads, before the agent's there: asked, and (allowed) one shown.
 Notification.requestPermission().then((s) => { document.getElementById("early").textContent += "load-ask " + s + ";"; });
@@ -294,6 +342,13 @@ $("big").onclick = () => {
 $("svg").onclick = () => { new Notification("Drawn", { icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=" }); };
 $("show").onclick = () => { n = new Notification("Hello", { body: "from the page", tag: "t1", icon: "pic.png" }); n.onshow = () => log("show"); n.onclick = () => log("click"); n.onclose = () => log("close"); n.onerror = () => log("error"); };
 $("close").onclick = () => n.close();
+// One to be felt (its pattern as the page reads it back), and a silent one
+// that would be: refused.
+$("vib").onclick = () => {
+    const v = new Notification("Felt", { vibrate: [200, 100, 200, 100] });
+    log("vib " + v.vibrate.join(",") + " " + Object.isFrozen(v.vibrate));
+    try { new Notification("Quiet", { silent: true, vibrate: [100] }); log("quiet made"); } catch (e) { log("quiet " + e.name); }
+};
 $("late").onclick = () => setTimeout(() => Notification.requestPermission().then((s) => log("late " + s)), 6500);
 </script>`,
         // Encrypted media (goeme.js, go-eme.js): a Clear Key player, its

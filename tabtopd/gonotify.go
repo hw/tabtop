@@ -57,6 +57,8 @@ type goNotifyShow struct {
 	Icon  string `json:"icon"`
 	Image string `json:"image"`
 	Badge string `json:"badge"`
+	// Its vibration pattern, felt as it's shown (notifyShown).
+	Vibrate []float64 `json:"vibrate"`
 }
 
 // goNotifyAsk is the permission the page asked for, waiting for the person:
@@ -172,7 +174,7 @@ func (b *goBrowser) notify(gen, world int, out goNotifyOut, recent bool) {
 			"title": goCut(s.Title, goNotifyTitle), "body": goCut(s.Body, goNotifyBody), "tag": goCut(s.Tag, 128),
 			"silent": s.Silent, "requireInteraction": s.RequireInteraction, "renotify": s.Renotify, "dir": dir, "lang": goCut(s.Lang, 35)}
 		if s.Icon == "" && s.Image == "" && s.Badge == "" {
-			b.send(m)
+			b.notifyShown(m, s)
 			continue
 		}
 		// Its pictures fetched first (as a browser fetches them before it
@@ -239,8 +241,29 @@ func (b *goBrowser) notifyPictures(token string, m map[string]any, s goNotifySho
 			m[k] = v
 		}
 		goDebugf("notifications: %d of its pictures fetched", len(pictures))
-		b.send(m)
+		b.notifyShown(m, s)
 	})
+}
+
+// notifyShown shows a notification (m, for the person's browser), and has
+// its vibration (s's) felt with it, unless it's silent: as the page's own
+// vibration is (govibrate.go), not more often than goVibrateEvery, but
+// without the person's input first, as a notification shows without it
+// (and only as many as goNotifyPerMin are shown at all).
+func (b *goBrowser) notifyShown(m map[string]any, s goNotifyShow) {
+	b.send(m)
+	if s.Silent {
+		return
+	}
+	pattern := goVibratePattern(s.Vibrate)
+	switch {
+	case pattern == nil:
+	case time.Since(b.vibratedAt) < goVibrateEvery:
+		goDebugf("notifications: its vibration again within %v: not felt", goVibrateEvery)
+	default:
+		b.vibratedAt = time.Now()
+		b.send(map[string]any{"type": "go-vibrate", "gen": m["gen"], "pattern": pattern})
+	}
 }
 
 // notifyPicture is the picture at raw (http(s), or a data: one) as a data:

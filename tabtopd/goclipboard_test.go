@@ -125,6 +125,37 @@ func TestGoPasteAsk(t *testing.T) {
 	}
 }
 
+// TestGoClipboardHTML: HTML the page copied is passed on with its text,
+// or alone (its text then empty), cut to goCopyMax; none, not at all.
+func TestGoClipboardHTML(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		text, html *string
+		want       map[string]any
+	}{
+		{"with its text", ptr("bold words"), ptr("<b>bold</b> words"), map[string]any{"text": "bold words", "html": "<b>bold</b> words"}},
+		{"alone", nil, ptr("<b>bold</b>"), map[string]any{"text": "", "html": "<b>bold</b>"}},
+		{"empty, text only", ptr("plain"), ptr(""), map[string]any{"text": "plain"}},
+		{"too long", nil, ptr(strings.Repeat("x", goCopyMax+10)), map[string]any{"text": "", "html": strings.Repeat("x", goCopyMax)}},
+	} {
+		b, w := goClipTab()
+		b.inputAt, b.inputGen, b.inputWorld = time.Now(), 1, 1
+		b.clipboard(1, 1, goClipboardOut{Copy: c.text, CopyHTML: c.html})
+		got := goSentOf(w, "go-copy")
+		if len(got) != 1 {
+			t.Errorf("%s: passed on %d times", c.name, len(got))
+			continue
+		}
+		delete(got[0], "type")
+		delete(got[0], "gen")
+		if len(got[0]) != len(c.want) || got[0]["text"] != c.want["text"] || got[0]["html"] != c.want["html"] {
+			t.Errorf("%s: passed on %.80v", c.name, got[0])
+		}
+	}
+}
+
+func ptr(s string) *string { return &s }
+
 // TestGoFullscreenAsks: allowed after the person's input, an embedded
 // page's laying its iframe over the page's window; refused otherwise; let
 // go by the page, the person's browser told; gone with the page.

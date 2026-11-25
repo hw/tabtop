@@ -215,10 +215,12 @@ func (b *goBrowser) leftPage() {
 	b.device, b.pip, b.imagePaste, b.locWatch = nil, nil, nil, nil
 	b.popupAsks.clear() // (asked about by the page left: gone with it)
 	b.resetFileSystem()
-	b.fullscreenGone()  // (gofullscreen.go)
-	b.wakeLockGone()    // (gowakelock.go)
-	b.pointerLockGone() // (gopointerlock.go)
-	b.notifyGone()      // (gonotify.go)
+	b.fullscreenGone()   // (gofullscreen.go)
+	b.wakeLockGone()     // (gowakelock.go)
+	b.pointerLockGone()  // (gopointerlock.go)
+	b.notifyGone()       // (gonotify.go)
+	b.badgeGone()        // (gobadge.go)
+	b.mediaSessionGone() // (gomediasession.go)
 	for _, m := range b.resQueue {
 		b.send(map[string]any{"type": "go-res", "rid": m.RID, "error": "The page was left."})
 	}

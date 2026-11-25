@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -139,6 +140,43 @@ func TestGoNotifyShow(t *testing.T) {
 	b.notifyGone()
 	if len(goSentOf(w, "go-notify-gone")) != 1 || len(b.notifying.shown) != 0 {
 		t.Errorf("not let go with the page")
+	}
+}
+
+// TestGoNotifyVibrate: a notification's vibration is felt as it's shown
+// (without the person's input), not if it's silent, nor again within
+// goVibrateEvery; one not shown isn't felt.
+func TestGoNotifyVibrate(t *testing.T) {
+	b, w := goNotifyTestTab(t, "")
+	b.docURL = "https://www.example.com/"
+	b.inputAt = time.Time{} // (no input)
+	show := func(id string, silent bool, pattern ...float64) {
+		b.clipboard(1, 1, goClipboardOut{Notify: &goNotifyOut{Shows: []goNotifyShow{{ID: id, Title: "t", Silent: silent, Vibrate: pattern}}}})
+	}
+	show("n0", false, 200, 100, 200)
+	if len(goSentOf(w, "go-vibrate")) != 0 {
+		t.Fatalf("felt, not allowed (not shown)")
+	}
+	b.sites.set("example.com", "notifications-allow")
+	show("n1", false, 200, 100, 200, 100)
+	felt := goSentOf(w, "go-vibrate")
+	if len(felt) != 1 || fmt.Sprint(felt[0]["pattern"]) != "[200 100 200]" || felt[0]["gen"] != float64(1) {
+		t.Fatalf("felt %v", felt)
+	}
+	show("n2", false, 300)
+	b.vibratedAt = time.Time{}
+	show("n3", true, 300)
+	show("n4", false)
+	show("n5", false, 0)
+	if n := len(goSentOf(w, "go-vibrate")); n != 1 {
+		t.Errorf("felt %d times: again at once, silent, or with nothing to feel", n)
+	}
+	show("n6", false, 50)
+	if felt := goSentOf(w, "go-vibrate"); len(felt) != 2 || fmt.Sprint(felt[1]["pattern"]) != "[50]" {
+		t.Errorf("felt %v", felt)
+	}
+	if n := len(goSentOf(w, "go-notify")); n != 6 {
+		t.Errorf("%d shown", n)
 	}
 }
 

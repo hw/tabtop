@@ -18,7 +18,13 @@
     const tell = (type, detail) => {
         try { tabtopTell(reader(), type, detail); } catch { /* told nothing */ }
     };
-    const copied = (text, image) => tell("__tabtop_copy", image ? { text: text === undefined ? undefined : String(text).slice(0, MAX), image } : { text: String(text ?? "").slice(0, MAX) });
+    // What's copied: its text, and its picture or its HTML (rich text, as
+    // a copy of what's selected in a page is), each if it has one.
+    const copied = (text, image, html) => {
+        const out = image ? { text: text === undefined ? undefined : String(text).slice(0, MAX), image } : { text: String(text ?? "").slice(0, MAX) };
+        if (typeof html === "string" && html) out.html = html.slice(0, MAX);
+        tell("__tabtop_copy", out);
+    };
     const denied = () => new DOMException("Read permission denied.", "NotAllowedError");
     // A PNG's bytes as base64 (for the agent: text only between worlds).
     const base64 = (blob) => new Promise((resolve, reject) => {
@@ -48,7 +54,7 @@
                 if (!w) return;
                 waiting.delete(d.id);
                 clearTimeout(w.timer);
-                if (typeof d.text === "string" || typeof d.image === "string") w.resolve({ text: typeof d.text === "string" ? d.text : null, image: typeof d.image === "string" ? d.image : null });
+                if (typeof d.text === "string" || typeof d.image === "string") w.resolve({ text: typeof d.text === "string" ? d.text : null, image: typeof d.image === "string" ? d.image : null, html: typeof d.html === "string" && d.html ? d.html : null });
                 else w.reject(denied());
             });
         }
@@ -69,8 +75,9 @@
             copied(text);
             return Promise.resolve();
         });
-        // An item's text and its picture (a PNG, as browsers write), put
-        // on the clipboard together; any other type refused, as browsers do.
+        // An item's text, its picture (a PNG, as browsers write) and its
+        // HTML, put on the clipboard together; any other type refused, as
+        // browsers do.
         define(C, "write", async function write(items) {
             const item = [...(items ?? [])][0];
             if (!item?.types) return;
@@ -79,10 +86,14 @@
                     throw new DOMException(`Type ${type} not supported on write.`, "NotAllowedError");
                 }
             }
-            let text, image;
+            let text, image, html;
             if (item.types.includes("text/plain")) {
                 const blob = await item.getType("text/plain");
                 text = typeof blob === "string" ? blob : await blob.text();
+            }
+            if (item.types.includes("text/html")) {
+                const blob = await item.getType("text/html");
+                html = typeof blob === "string" ? blob : await blob.text();
             }
             if (item.types.includes("image/png")) {
                 const blob = await item.getType("image/png");
@@ -92,15 +103,17 @@
                 if (![137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => head[i] === b)) throw new DOMException("Failed to decode the image.", "DataError");
                 image = await base64(blob);
             }
-            if (image) copied(text, image);
-            else if (text !== undefined) copied(text);
+            if (image) copied(text, image, html);
+            else if (text !== undefined || html) copied(text, undefined, html);
         });
         define(C, "readText", function readText() { return ask().then((got) => got.text ?? ""); });
-        // What's on the clipboard, as items: its picture (PNG) and its text.
+        // What's on the clipboard, as items: its picture (PNG), its HTML
+        // and its text.
         define(C, "read", function read() {
             return ask(true).then((got) => {
                 const types = {};
                 if (got.image) types["image/png"] = fromBase64(got.image, "image/png");
+                if (got.html) types["text/html"] = new Blob([got.html], { type: "text/html" });
                 if (got.text) types["text/plain"] = new Blob([got.text], { type: "text/plain" });
                 return Object.keys(types).length ? [new ClipboardItem(types)] : [];
             });
@@ -113,6 +126,16 @@
     const exec = Document.prototype.execCommand;
     const fields = /^(?:text|search|url|tel|email|password|number)$/;
     const field = (el) => el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && fields.test(el.type));
+    // selectedHTML is what's selected in the document, as HTML (not a
+    // field's: that's text alone).
+    function selectedHTML(el) {
+        if (field(el)) return "";
+        const sel = document.getSelection();
+        if (!sel?.rangeCount || sel.isCollapsed) return "";
+        const box = document.createElement("div");
+        for (let i = 0; i < sel.rangeCount; i++) box.append(sel.getRangeAt(i).cloneContents());
+        return box.innerHTML;
+    }
     function selected(el) {
         const of = (f) => { try { return f.value.slice(f.selectionStart ?? 0, f.selectionEnd ?? 0); } catch { return ""; } };
         if (field(el)) return of(el);
@@ -140,12 +163,13 @@
         }
         const take = at.dispatchEvent(ev);
         if (!take) {
-            const got = (ev.clipboardData ?? data)?.getData("text/plain") ?? "";
-            if (got) copied(got);
+            const given = ev.clipboardData ?? data;
+            const got = given?.getData("text/plain") ?? "", html = given?.getData("text/html") ?? "";
+            if (got || html) copied(got, undefined, html);
             return true;
         }
         const text = selected(el);
-        if (text) copied(text);
+        if (text) copied(text, undefined, selectedHTML(el));
         // A cut takes the selection out, where it can be edited.
         if (what === "cut" && text) {
             if (field(el) && !el.readOnly && !el.disabled) {

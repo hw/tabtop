@@ -68,7 +68,7 @@ export async function webApis(ctx) {
         await goTo(site + "index.html", "Fixture");
     });
 
-    await step("the page's clipboard pictures (written with its text, read when allowed), and its notifications (asked after a press, allowed and kept, shown, clicked, closed; as a notice where this browser shows none)", async () => {
+    await step("the page's clipboard pictures (written with its text, read when allowed), its rich text (HTML written, a selection copied, read when allowed), and its notifications (asked after a press, allowed and kept, shown, felt, clicked, closed; as a notice where this browser shows none)", async () => {
         // (As the step before: this browser's clipboard allowed, the page
         // focused as a person's is; so it runs alone too, GO_ONLY.)
         await cdp("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
@@ -116,6 +116,26 @@ export async function webApis(ctx) {
         if (!/text and pictures/.test(await ev(`document.getElementById("go_paste_text").textContent`))) throw new Error("the question doesn't say pictures are asked for");
         await ev(`document.querySelector("#go_paste .allow").click()`);
         await frameWait(`document.getElementById("got")?.textContent === "read image/png,text/plain 5x7 with text"`, "the picture and its text given to the page", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("got").textContent`)}`); });
+        // Rich text: HTML written with its text, and a copy of what's
+        // selected (as HTML too), on this browser's clipboard; read, allowed,
+        // the page given the clipboard's HTML.
+        const richOnClip = `navigator.clipboard.read().then(async (items) => { const it = items[0]; if (!it) return "nothing";
+            const get = async (t) => (it.types.includes(t) ? (await it.getType(t)).text() : "");
+            return JSON.stringify({ types: it.types, html: await get("text/html"), text: await get("text/plain") }); })`;
+        const richIs = async (html, text, what) => waitFor(`${richOnClip}.then((s) => { const c = JSON.parse(s); return c.html.includes(${JSON.stringify(html)}) && c.text === ${JSON.stringify(text)}; })`, what, 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(richOnClip)}; the page: ${await frame(`document.getElementById("got").textContent`)}`); });
+        await ev(`navigator.clipboard.writeText("before")`);
+        await frameClick("#copyhtml");
+        await richIs("<b>bold</b> words", "bold words", "the page's HTML on the clipboard, with its text");
+        await ev(`navigator.clipboard.writeText("before")`);
+        await frameClick("#copysel");
+        await richIs("<i>slanted</i> text", "slanted text", "what's selected on the clipboard as HTML, with its text");
+        await ev(`navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob(["<u>under</u> lined"], { type: "text/html" }), "text/plain": new Blob(["under lined"], { type: "text/plain" }) })])`);
+        await frameClick("#readhtml");
+        await waitFor(`!document.getElementById("go_paste").hidden`, "the person asked for the rich text", 15000);
+        await ev(`document.querySelector("#go_paste .allow").click()`);
+        await frameWait(`document.getElementById("got")?.textContent === "read text/html,text/plain with its html"`, "the clipboard's HTML given to the page", 15000)
             .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("got").textContent`)}`); });
 
         // Notifications: this browser's stood in for (recorded, its click
@@ -182,6 +202,15 @@ export async function webApis(ctx) {
         const bigImage = await ev(`(__notes.find((n) => n.title === "Big").o.image ?? "").length`);
         if (bigImage < 1_100_000) throw new Error(`the large picture given as ${bigImage} characters`);
         await frameWait(`document.getElementById("log").textContent.includes("big;")`, "the page's change with it", 15000);
+        // One with a vibration pattern: felt here as it's shown (its pause
+        // at the end left off); a silent one with one, refused in the page.
+        await ev(`window.__felt = []; Object.defineProperty(navigator, "vibrate", { configurable: true, value: (p) => { window.__felt.push(JSON.stringify(p)); return true; } })`);
+        await frameClick("#vib");
+        await waitFor(`window.__notes.some((n) => n.title === "Felt") && window.__felt.includes("[200,100,200]")`, "the one to be felt shown, and felt", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: felt ${await ev(`JSON.stringify(window.__felt)`)}`); });
+        if (await ev(`window.__notes.some((n) => n.title === "Quiet")`)) throw new Error("a silent one with a vibration shown");
+        const vibLog = await frame(`document.getElementById("log").textContent`);
+        if (!vibLog.includes("vib 200,100,200,100 true;quiet TypeError;")) throw new Error(`the page: ${vibLog}`);
         // This browser showing none: a notice here, Open its click.
         await ev(`Notification.permission = "denied"`);
         await frameClick("#show");
@@ -604,6 +633,60 @@ export async function webApis(ctx) {
         await waitFor(`window.__orient.includes("unlock")`, "unlocked as its fullscreen was left", 15000);
         await ev(`delete document.fullscreenElement`);
         await goTo(site + "index.html", "Fixture");
+    });
+
+    await step("the page's app badge: its count, or a mark, before the tab's title and on this app's badge; cleared, and as its page goes; a count that isn't one refused", async () => {
+        // This browser's app badge stood in for (recorded).
+        await ev(`window.__badges = []; navigator.setAppBadge = (n) => { window.__badges.push(n === undefined ? "mark" : String(n)); return Promise.resolve(); };
+            navigator.clearAppBadge = () => { window.__badges.push("clear"); return Promise.resolve(); };`);
+        // (A secure page's only, as in browsers: over HTTPS, its warning passed.)
+        await goTo(site + "index.html", "Fixture");
+        await submitUrl(site.replace(/^http:/, "https:") + "badge.html");
+        await waitFor(`document.title.startsWith("Badge") || !document.getElementById("go_cert").hidden`, "the secure page, or its warning", 30000);
+        if (!(await ev(`document.getElementById("go_cert").hidden`))) await ev(`document.querySelector("#go_cert .go").click()`);
+        await frameWait(`document.getElementById("log")?.textContent.includes("api function function")`, "the page's badge API", 30000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("log")?.textContent`)}`); });
+        const badge = (title, last, what) => waitFor(`document.title === ${JSON.stringify(title)} && window.__badges.at(-1) === ${JSON.stringify(last)}`, what, 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`JSON.stringify([document.title, window.__badges])`)}`); });
+        await frameClick("#three");
+        await badge("(3) Badge – Browser", "3", "its count before the title, and on the app's badge");
+        await frameClick("#mark");
+        await badge("• Badge – Browser", "mark", "its mark");
+        await frameClick("#clear");
+        await badge("Badge – Browser", "clear", "cleared");
+        await frameClick("#bad");
+        await frameWait(`document.getElementById("log").textContent.includes("bad TypeError")`, "a count that isn't one refused");
+        await frameClick("#three");
+        await badge("(3) Badge – Browser", "3", "its count again");
+        await goTo(site + "index.html", "Fixture");
+        await waitFor(`document.title === "Fixture – Browser" && window.__badges.at(-1) === "clear"`, "cleared as its page went", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(`JSON.stringify([document.title, window.__badges])`)}`); });
+    });
+
+    await step("the page's media session: what it's playing (its artwork fetched by the server), its state, and its controls, this browser's; pressed, the page's handlers called; one it drops gone; cleared as its page goes", async () => {
+        // This browser's handlers recorded (as its media keys would call them).
+        await ev(`window.__handlers = {}; { const s = navigator.mediaSession, own = s.setActionHandler.bind(s);
+            s.setActionHandler = (a, h) => { if (h) window.__handlers[a] = h; else delete window.__handlers[a]; try { own(a, h); } catch { /* not this browser's */ } }; }`);
+        await goTo(site + "mediasession.html", "Media session");
+        await frameWait(`document.getElementById("log")?.textContent.includes("refused TypeError,TypeError,TypeError;")`, "what isn't one refused in the page")
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("log")?.textContent`)}`); });
+        await frameClick("#go");
+        const session = `JSON.stringify({ title: navigator.mediaSession.metadata?.title, artist: navigator.mediaSession.metadata?.artist, album: navigator.mediaSession.metadata?.album,
+            art: (navigator.mediaSession.metadata?.artwork ?? []).map((i) => i.src.slice(0, 22) + " " + i.sizes), state: navigator.mediaSession.playbackState, handlers: Object.keys(window.__handlers).sort() })`;
+        const shows = (want, what) => waitFor(`${session} === ${JSON.stringify(JSON.stringify(want))}`, what, 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(session)}; the page: ${await frame(`document.getElementById("log").textContent`)}`); });
+        await shows({ title: "Song", artist: "Band", album: "Record", art: ["data:image/png;base64, 8x8"], state: "playing", handlers: ["nexttrack", "pause", "play", "seekto"] },
+            "this browser's session: the page's, its artwork fetched");
+        await ev(`window.__handlers.nexttrack({ action: "nexttrack" })`);
+        await ev(`window.__handlers.seekto({ action: "seekto", seekTime: 2.5 })`);
+        await frameWait(`document.getElementById("log").textContent.includes("nexttrack;seekto 2.5;")`, "the page's handlers called, with their details")
+            .catch(async (err) => { throw new Error(`${err.message}: ${await frame(`document.getElementById("log").textContent`)}`); });
+        await frameClick("#drop");
+        await shows({ title: "Song 2", artist: "Band", album: "Record", art: ["data:image/png;base64, 8x8"], state: "playing", handlers: ["pause", "play", "seekto"] },
+            "the handler it dropped gone, its title changed");
+        await goTo(site + "index.html", "Fixture");
+        await waitFor(`!navigator.mediaSession.metadata && navigator.mediaSession.playbackState === "none" && Object.keys(window.__handlers).length === 0`, "cleared as its page went", 15000)
+            .catch(async (err) => { throw new Error(`${err.message}: ${await ev(session)}`); });
     });
 
     await step("the page's vibration: felt here after a press (its pattern within reason), cancelled, and as its page goes; not long after a press; not another origin's frame's", async () => {

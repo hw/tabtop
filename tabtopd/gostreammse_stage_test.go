@@ -186,9 +186,9 @@ func TestMSEFinalizeAfterForgotDoesntPanic(t *testing.T) {
 		}
 		m.forgetMSEStage(s.id)
 	}
-	if held := mseHeld(m); held != 0 {
-		t.Errorf("%d bytes held after the races", held)
-	}
+	// (The last forget, on a goroutine of its own, may still be giving its
+	// stage back: given time, all is.)
+	waitUntil(t, "the races' bytes given back", func() bool { return mseHeld(m) == 0 })
 }
 
 // TestMSEStageKeptWhileUsed: a stage is kept while it's being spilled to,
