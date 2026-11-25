@@ -23,9 +23,8 @@ import (
 	"github.com/coder/websocket"
 )
 
-// goDetachedFor is how long a tab runs on without a connection (a
-// variable for tests).
-var goDetachedFor = 5 * time.Minute
+// goDetachedFor is the default time a tab runs on without a connection.
+const goDetachedFor = 5 * time.Minute
 
 // goLink is a connection lent to a tab, till done is closed: when the tab
 // lets it go (it went, another took the tab, or the tab ended).

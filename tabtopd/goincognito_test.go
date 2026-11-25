@@ -128,8 +128,7 @@ func TestGoTabsBrowsers(t *testing.T) {
 func TestGoRoutePrivate(t *testing.T) {
 	g, url, s := newGoServer(t, "")
 	g.goCookies = newGoCookieJar("", "")
-	goDetachedFor = 5 * time.Second
-	defer func() { goDetachedFor = goTestDetachedFor }()
+	g.goDetachAfter = 5 * time.Second
 	ctx := testCtx(t)
 	tabOf := func(token any) *goTab {
 		ts := g.goTabList()
