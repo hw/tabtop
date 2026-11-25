@@ -255,7 +255,11 @@ func (g *server) runGoTab(t *goTab, tabs *goTabs, ip string) {
 	cancel()
 	defer b.endCookies()
 	defer b.endStorage()
-	b.run()
+	detachAfter := g.goDetachAfter
+	if detachAfter == 0 {
+		detachAfter = goDetachedFor
+	}
+	b.run(detachAfter)
 	log.Printf("go: remote browser tab from %s closed", ip)
 }
 

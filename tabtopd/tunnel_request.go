@@ -440,11 +440,11 @@ func (g *fileService) tunnelMarkdown(call *tunnelCall) {
 }
 
 // revokeShares revokes the share links that match, if links are on.
-func (g *server) revokeShares(match func(*shareLink) bool) int {
+func (g *server) revokeShares(match func(*shareLink) bool) (int, error) {
 	// Then the uploads in pieces through those links go, as they've ended.
 	defer g.dropEndedLinkPartials()
 	if g.shares == nil {
-		return 0
+		return 0, nil
 	}
 	return g.shares.revoke(match)
 }

@@ -248,7 +248,8 @@ func newServer(c serverConfig) (*server, error) {
 	}
 	if g.shares != nil {
 		// Links to a root only missing for now (an unmounted drive) are
-		// kept: they work again once it's back and TabTop restarts.
+		// kept: they work again once it's back and TabTop restarts. (Not
+		// saved, they're dropped again at the next start.)
 		g.shares.revoke(func(l *shareLink) bool {
 			if slices.ContainsFunc(g.rootProblems, func(p rootProblem) bool { return p.ID == l.Root }) {
 				return false

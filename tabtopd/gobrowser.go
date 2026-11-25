@@ -846,7 +846,7 @@ func (b *goBrowser) post(f func()) {
 	}
 }
 
-func (b *goBrowser) run() {
+func (b *goBrowser) run(detachAfter time.Duration) {
 	msgs := make(chan goClientMsg)
 	lost := make(chan *goLink)
 	stop := b.stop
@@ -883,7 +883,7 @@ func (b *goBrowser) run() {
 			}
 		}()
 	}
-	// No connection: the tab runs on so long (goDetachedFor), then ends.
+	// No connection: the tab runs on until its detach deadline.
 	var detached <-chan time.Time
 	var downloadsDone <-chan struct{}
 	taken := false // taken by a connection yet (the first, or one back)
@@ -959,8 +959,8 @@ func (b *goBrowser) run() {
 			b.connLost()
 			l.release()
 			b.conn.detachedAt(time.Now())
-			detached = time.After(goDetachedFor)
-			goDebugf("tab detached: kept %v", goDetachedFor)
+			detached = time.After(detachAfter)
+			goDebugf("tab detached: kept %v", detachAfter)
 		case <-detached:
 			detached = nil
 			var retire bool

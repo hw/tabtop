@@ -2,6 +2,7 @@ import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pngSquare, videoFixture } from "./fixtures.mjs";
+import { afterPaint } from "./harness.mjs";
 
 export async function checkStylesAndMedia(checks) {
     const { work, container, inContainer, step, ev, waitFor, click, open, listed, inFrame, sleep, cdp } = checks;
@@ -66,20 +67,41 @@ export async function checkStylesAndMedia(checks) {
             }
             let ready = false;
             for (let i = 0; i < 60; i++) {
-                ready = await inFrame("md-frame.html", `getComputedStyle(document.querySelector(".copy")).color === "rgb(11, 22, 33)" && [...document.fonts].some(font => font.family === "ProxyTest" && font.status === "loaded")`);
+                ready = await inFrame("md-frame.html", `getComputedStyle(document.querySelector(".copy")).color === "rgb(11, 22, 33)" &&
+                    [...document.fonts].some(font => font.family === "ProxyTest" && font.status === "loaded") &&
+                    document.querySelector("#image-link img").naturalWidth === 20`);
                 if (ready) break;
                 await sleep(100);
             }
-            if (!ready || !hits.some(h => h.path === "/font.ttf") || !hits.some(h => h.path === "/image.png") || hits.some(h => h.direct)) throw new Error(`CSS or fonts did not stay within proxy mode: ${JSON.stringify(hits)}`);
+            if (!ready || !hits.some(h => h.path === "/font.ttf") || !hits.some(h => h.path === "/image.png") || hits.some(h => h.direct)) throw new Error(`CSS, fonts or the inline image did not load through the proxy: ${JSON.stringify(hits)}`);
+            const frameSelector = 'dialog.preview[open] iframe.html';
+            const linkDialog = 'document.querySelector("dialog.preview-link")';
             for (const id of ["external-link", "image-link"]) {
-                const at = await inFrame("md-frame.html", `(() => { const a = document.getElementById(${JSON.stringify(id)}); const r = a.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; })()`);
-                const frame = await ev('(() => { const r = document.querySelector("iframe.html").getBoundingClientRect(); return {x:r.x,y:r.y}; })()');
-                for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: frame.x + at.x, y: frame.y + at.y, button: "left", clickCount: 1 });
-                await waitFor('!!document.querySelector("dialog.preview-link[open]")', "real pointer click on " + id);
+                await inFrame("md-frame.html", `document.getElementById(${JSON.stringify(id)}).scrollIntoView({ block: "nearest" })`);
+                await afterPaint(ev);
+                const at = await inFrame("md-frame.html", `(() => {
+                    const a = document.getElementById(${JSON.stringify(id)});
+                    const r = (a.querySelector("img") ?? a).getBoundingClientRect();
+                    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+                    return { x, y, onLink: a.contains(document.elementFromPoint(x, y)) };
+                })()`);
+                const pointer = await ev(`(() => {
+                    const frame = document.querySelector(${JSON.stringify(frameSelector)});
+                    const r = frame.getBoundingClientRect();
+                    const x = r.x + frame.clientLeft + ${at.x}, y = r.y + frame.clientTop + ${at.y};
+                    const hit = document.elementFromPoint(x, y);
+                    return { x, y, onFrame: hit === frame, hit: hit?.className };
+                })()`);
+                if (!at.onLink || !pointer.onFrame) {
+                    throw new Error(`pointer missed ${id}: ${JSON.stringify({ at, pointer })}`);
+                }
+                for (const type of ["mousePressed", "mouseReleased"]) {
+                    await cdp("Input.dispatchMouseEvent", { type, x: pointer.x, y: pointer.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+                }
+                await waitFor(`${linkDialog}?.open && ${linkDialog}.querySelector(".link-url")?.textContent === ${JSON.stringify(root + "/target")}`, "real pointer click on " + id);
                 await ev('document.querySelector("dialog.preview-link button.close").click()');
-                await waitFor('!document.querySelector("dialog.preview-link")', "link dialog closes");
+                await waitFor(`!${linkDialog}`, "link dialog closes");
             }
-            if (!await inFrame("md-frame.html", 'document.querySelector("#image-link img").naturalWidth === 20')) throw new Error("external inline image is not displayed");
             const audioElement = 'document.querySelector("dialog.preview .preview-media-layer audio")';
             const videoElement = 'document.querySelector("dialog.preview .preview-media-layer video")';
             if (!await ev(`${audioElement}.dataset.streamed === "true" && ${videoElement}.dataset.streamed === "true"`)) throw new Error("embedded media was buffered rather than streamed");

@@ -105,10 +105,19 @@ as_user ${TABTOP_GO_DEBUG:+env TABTOP_GO_DEBUG="$TABTOP_GO_DEBUG"} /usr/local/bi
 TABTOPD_PID=$!
 
 shutdown() { kill "$TABTOPD_PID" $XVNC_PID "${AUDIO_PIDS[@]}" 2>/dev/null || true; }
-trap shutdown TERM INT
+STOPPING=0
+trap 'STOPPING=1; shutdown' TERM INT
 
 # Exit (and let the container stop/restart) if Xvnc, the gateway or one of
-# the audio services dies.
-wait -n $XVNC_PID "$TABTOPD_PID" "${AUDIO_PIDS[@]}" || true
+# the audio services dies: with the status of the first to end, kept
+# through the others' shutdown, so a crash is a failure an on-failure
+# restart policy sees. Stopped (docker stop: TERM), the container exits 0,
+# as it did.
+STATUS=0
+wait -n $XVNC_PID "$TABTOPD_PID" "${AUDIO_PIDS[@]}" || STATUS=$?
 shutdown
-wait
+wait || true
+if [ "$STOPPING" = 1 ]; then
+    exit 0
+fi
+exit "$STATUS"

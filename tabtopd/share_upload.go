@@ -38,6 +38,8 @@ type uploadLinkError struct {
 
 func (e *uploadLinkError) Error() string { return e.msg }
 
+var errLinkEnded = &uploadLinkError{http.StatusNotFound, "This link has ended."}
+
 var errLinkFull = &uploadLinkError{http.StatusForbidden, "This link has taken as many files as it allows."}
 
 // reserve makes room for an upload of length bytes (-1 if not known) with
@@ -179,19 +181,37 @@ func (g *fileService) receive(l *shareLink, store *downloadStore, ip, name strin
 		u.abort()
 		return "", &uploadLinkError{http.StatusBadRequest, "The upload was cut off."}
 	}
-	// The folder may have gone, or been swapped, while it came.
-	if st, err := store.stat(l.Path); err != nil || !l.matches(st) {
-		u.abort()
-		return "", &uploadLinkError{http.StatusNotFound, "The folder this link uploads to has gone."}
-	}
-	got, err := u.finish(name, false)
+	got, err := g.finishLinkUpload(l, store, u, name)
 	if err != nil {
-		log.Printf("upload link to %q: saving %q: %v", l.Path, name, err)
-		return "", &uploadLinkError{http.StatusInternalServerError, uploadError(err)}
+		return "", err
 	}
 	saved = got
 	g.logUpload(l, ip, got, written, "")
 	return got, nil
+}
+
+// finishLinkUpload orders publication against revocation under the share
+// store lock. The file and directory syncs run outside that lock.
+func (g *fileService) finishLinkUpload(l *shareLink, store *downloadStore, u *upload, name string) (string, error) {
+	got, err := u.finishWith(name, false, nil, func(publish func() (string, error)) (string, error) {
+		g.shares.mu.Lock()
+		defer g.shares.mu.Unlock()
+		if g.shares.links[l.ID] != l || !g.shares.clock.Now().Before(l.Expires) {
+			return "", errLinkEnded
+		}
+		if st, err := store.stat(l.Path); err != nil || !l.matches(st) {
+			return "", &uploadLinkError{http.StatusNotFound, "The folder this link uploads to has gone."}
+		}
+		return publish()
+	})
+	if err == nil {
+		return got, nil
+	}
+	if _, ok := errors.AsType[*uploadLinkError](err); ok {
+		return "", err
+	}
+	log.Printf("upload link to %q: saving %q: %v", l.Path, name, err)
+	return "", &uploadLinkError{http.StatusInternalServerError, uploadError(err)}
 }
 
 // refuseUpload answers an upload refused with err, and closes the

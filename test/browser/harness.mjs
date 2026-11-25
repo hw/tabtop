@@ -3,6 +3,10 @@ import { createHmac } from "node:crypto";
 import { existsSync } from "node:fs";
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The compositor's iframe hit-test data can lag behind DOM changes,
+// especially after closing a modal. Let the browser draw before clicking.
+export const afterPaint = (ev) => ev(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50))))`);
+
 // totp is the current code for the checks' TOTP secret, waiting first if
 // the current one is about to expire, so it's still good when it arrives,
 // or if it was used already, since a code logs in only once.

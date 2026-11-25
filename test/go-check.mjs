@@ -9,7 +9,7 @@
 // is recorded: none may go anywhere but the TabTop server.
 import { writeFileSync } from "node:fs";
 import { writeSite } from "./browser/go-site.mjs";
-import { createBrowserHarness, sleep, totp } from "./browser/harness.mjs";
+import { afterPaint, createBrowserHarness, sleep, totp } from "./browser/harness.mjs";
 import { step } from "./browser/go/step.mjs";
 import { pages } from "./browser/go/pages.mjs";
 import { sites } from "./browser/go/sites.mjs";
@@ -39,7 +39,7 @@ async function check(base, port, site, adSite) {
     // of its own, found by hit-test data that's updated a frame later): the
     // frame never gets it. Seen in CI, 2 of 5 runs, never by a person. So
     // every click waits for the next frames to be drawn.
-    const dialogGone = () => ev(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))`);
+    const dialogGone = () => afterPaint(ev);
     async function frameClick(sel) {
         await pageShown();
         await dialogGone();
@@ -144,16 +144,47 @@ async function check(base, port, site, adSite) {
     await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 
     await step("log in on /go", async () => {
-        // A tab on its own (go/tab), as the tabs' page has each (see the
-        // tabs' step, below).
-        await open("go/tab", `!!document.querySelector("#tabtop_login input")`, "the login form").catch(async (err) => {
-            // (What the page shows instead, to say why.)
-            const shows = await ev(`JSON.stringify({ at: location.href, title: document.title, ready: document.readyState, text: (document.body?.innerText ?? "").replace(/\\s+/g, " ").slice(0, 300) })`).catch((e) => e.message);
-            throw new Error(`${err.message} (the page shows ${shows})`);
-        });
-        const code = await totp();
-        await ev(`(() => { const i = document.querySelector("#tabtop_login input"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
-        await waitFor(`!document.querySelector("#tabtop_login") && !!document.getElementById("go_url")`, "the browser page");
+        const observer = new AbortController();
+        const options = { signal: observer.signal };
+        const startupRequests = new Map();
+        const failures = [];
+        browser.events.addEventListener("Network.requestWillBeSent", ({ detail }) => {
+            startupRequests.set(detail.requestId, detail.request.url);
+        }, options);
+        browser.events.addEventListener("Network.loadingFailed", ({ detail }) => {
+            if (!detail.canceled) failures.push(`${startupRequests.get(detail.requestId) ?? detail.type}: ${detail.errorText}`);
+        }, options);
+        browser.events.addEventListener("Network.responseReceived", ({ detail }) => {
+            if (detail.response.status >= 400) failures.push(`${detail.response.url}: HTTP ${detail.response.status}`);
+        }, options);
+        browser.events.addEventListener("Log.entryAdded", ({ detail: { entry } }) => {
+            if (entry.level === "error") failures.push(entry.text);
+        }, options);
+        try {
+            await cdp("Network.enable");
+            // The standalone tab uses the same startup as a tab inside /go.
+            await open("go/tab", '!!document.getElementById("tabtop_login_code")', "the login form");
+            const code = await totp();
+            await ev(`(() => { const i = document.getElementById("tabtop_login_code"); i.value = ${JSON.stringify(code)}; i.form.requestSubmit(); })()`);
+            const loginError = 'document.querySelector("#tabtop_login h1 + p")?.textContent';
+            // The address field is in the HTML. The resume token arrives
+            // only after tabtopd accepts the authenticated browser tunnel.
+            await waitFor(`(!document.getElementById("tabtop_login") && !!sessionStorage.getItem("tabtop-go-resume")) || !!(${loginError})`, "the authenticated /go tunnel");
+            const error = await ev(loginError);
+            if (error) throw new Error(`sign-in rejected: ${error}`);
+        } catch (err) {
+            const page = await ev(`({
+                at: location.href, ready: document.readyState,
+                storedSession: Object.keys(localStorage).includes("tabtop_session:" + new URL("../", location.href).pathname),
+                form: !!document.getElementById("tabtop_login"),
+                status: document.getElementById("go_status")?.textContent,
+                notice: document.getElementById("go_notice")?.innerText,
+            })`).catch((e) => e.message);
+            const diagnostics = [...new Set([...exceptions, ...failures])].slice(-12);
+            throw new Error(`${err.message}; page ${JSON.stringify(page)}${diagnostics.length ? `; browser errors: ${diagnostics.join(" | ")}` : ""}`);
+        } finally {
+            observer.abort();
+        }
     });
 
     // at is where on the screen the element in the frame that sel finds is,
@@ -168,6 +199,25 @@ async function check(base, port, site, adSite) {
         const buttons = { left: 1, right: 2, middle: 4 }[button];
         await mouse("mousePressed", p, { button, buttons, clickCount: count });
         await mouse("mouseReleased", p, { button, buttons: 0, clickCount: count });
+    }
+    // press is a real click (the person's: full screen needs one) on what
+    // sel finds in the page around the frame (a menu's, a player's), held
+    // hold ms, once it's drawn where it's pressed: a click just after it's
+    // shown over the frame can be routed to the frame, as after a dialog
+    // (see dialogGone; seen in CI, a menu's Watch pressed as it opened).
+    // unseen: where it is, though it isn't what's there (a control hidden,
+    // whose place is pressed).
+    async function press(sel, { hold = 0, unseen = false } = {}) {
+        await dialogGone();
+        const where = `(() => { const e = document.querySelector(${JSON.stringify(sel)}), r = e?.getBoundingClientRect(); if (!r?.width) return null;
+            const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2); return ${unseen} || e.contains(document.elementFromPoint(x, y)) ? { x, y } : null; })()`;
+        let p = null;
+        for (const end = Date.now() + 10000; !(p = await ev(where)); await sleep(100)) {
+            if (Date.now() > end) throw new Error(`timed out waiting for ${sel} shown where it's pressed`);
+        }
+        await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
+        if (hold) await sleep(hold);
+        await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...p, button: "left", buttons: 0, clickCount: 1 });
     }
     const pageLog = () => frame(`document.getElementById("log").textContent`);
     // WebGL drawn in the engine is replayed in the copy (gogl.js, gocanvasgl.go,
@@ -215,7 +265,7 @@ async function check(base, port, site, adSite) {
     // the browser, the site and the helpers above (choosersOpened read as
     // it is then, as it counts on).
     const ctx = { adSite, at, base, browser, cdp, clickAt, closeSettings, ev, exceptions, forgetKept, frame, frameClick, frameDrop,
-        frameWait, glAt, goTo, inFrame, leave, mouse, origin, pageLog, pageShown, requests, site, stillNot, submitUrl, viewOrigin, waitFor, get choosersOpened() { return choosersOpened; } };
+        frameWait, glAt, goTo, inFrame, leave, mouse, origin, pageLog, pageShown, press, requests, site, stillNot, submitUrl, viewOrigin, waitFor, get choosersOpened() { return choosersOpened; } };
     await pages(ctx);
     await sites(ctx);
     await input(ctx);

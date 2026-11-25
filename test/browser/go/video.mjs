@@ -9,7 +9,7 @@ import { step } from "./step.mjs";
 
 // video runs them, with ctx: the check's browser, the site it browses, and its helpers (see check).
 export async function video(ctx) {
-    const { cdp, ev, goTo, site, waitFor, frameWait, frame, frameClick, adSite, exceptions, submitUrl, viewOrigin, pageShown, frameDrop, at, stillNot } = ctx;
+    const { cdp, ev, goTo, site, waitFor, frameWait, frame, frameClick, adSite, exceptions, submitUrl, viewOrigin, pageShown, frameDrop, at, stillNot, press } = ctx;
     await step("the page's view is white where a page draws nothing, and a dark page keeps its colour around a video played under it", async () => {
         // A screenshot's pixel, in the view's right half, clear of its notes.
         const viewPixel = async () => {
@@ -272,12 +272,6 @@ export async function video(ctx) {
     });
 
     await step("the menu's autoplay switch pauses every video and holds pages back; its player: full screen, speed, back, given back as closed", async () => {
-        // A real click (the person's: full screen needs one), where sel is.
-        const press = async (sel) => {
-            const p = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
-            await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
-            await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...p, button: "left", buttons: 0, clickCount: 1 });
-        };
         await goTo(site + "auto.html", "Autoplay");
         await waitFor(`(() => { const v = document.querySelector("video"); return !!v && !v.paused && v.currentTime > 0.3; })()`, "the page's video playing", 30000);
         // (Opened, not toggled: a step before may have left it open.)
@@ -319,7 +313,7 @@ export async function video(ctx) {
         // button is (unseen) shows them, and doesn't pause it.
         await ev(`document.querySelector("#video_player video").play()`);
         await waitFor(`!document.getElementById("video_player").classList.contains("awake") && !document.querySelector("#video_player video").paused`, "its controls hidden, playing", 8000);
-        await press('#video_player .glyph.big');
+        await press('#video_player .glyph.big', { unseen: true });
         await waitFor(`document.getElementById("video_player").classList.contains("awake")`, "its controls shown by the tap");
         if (await ev(`document.querySelector("#video_player video").paused`)) throw new Error("a tap on its hidden controls paused it");
         await ev(`(() => { const s = document.querySelector("#video_player .speed"); s.value = "2"; s.dispatchEvent(new Event("change")); })()`);
@@ -360,12 +354,6 @@ export async function video(ctx) {
     });
 
     await step("Skip held blocks videos from the video's own host, not the page's site: stopped, kept in Site controls, and Undo has them again", async () => {
-        const press = async (sel, hold = 0) => {
-            const p = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
-            await cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...p, button: "left", buttons: 1, clickCount: 1 });
-            if (hold) await sleep(hold);
-            await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...p, button: "left", buttons: 0, clickCount: 1 });
-        };
         const settings = async () => ev(`import("../tabtop/requests.js").then(async (m) => { const t = await m.call({ type: "go-settings" }); t.close(); return { hosts: t.reply.videoHosts ?? [], sites: t.reply.noVideos ?? [] }; })`);
         const host = new URL(site).hostname;
         // The page this site's, its video another's (as test.com's page with a video from
@@ -578,8 +566,19 @@ export async function video(ctx) {
             // it moves (as a browser scrolls it): it stays over the same
             // button, what's under it not moving. Fast and slow.
             const view = await ev(`(() => { const b = document.getElementById("go_view").getBoundingClientRect(); return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height * 0.7) }; })()`);
+            // Each from a page that's still: the viewer's own Chrome scrolls
+            // the copy by touch too (a step's more than the test's), and in
+            // CI flung it on after a quick swipe, a thousand pixels on, the
+            // next swipe begun as it went (swipe 3 at b18, b19, not b9).
+            const still = async () => {
+                for (let last = NaN, end = Date.now() + 5000; ; await sleep(150)) {
+                    const y = await frame(`Math.round(scrollY)`);
+                    if (y === last || Date.now() > end) return y;
+                    last = y;
+                }
+            };
             for (const [i, steps] of [[1, 10], [2, 4], [3, 2]]) {
-                const y0 = await frame(`scrollY`);
+                const y0 = await still();
                 await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [view] });
                 for (let k = 1; k <= steps; k++) {
                     const dy = Math.round(300 * k / steps);
@@ -590,7 +589,7 @@ export async function video(ctx) {
                 await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
                 await sleep(800);
                 const out = await frame(`document.getElementById("out").textContent`);
-                if (out !== "clicks 0") throw new Error(`swipe ${i} clicked: ${out}`);
+                if (out !== "clicks 0") throw new Error(`swipe ${i} clicked: ${out} (from ${y0} to ${await frame(`Math.round(scrollY)`)})`);
             }
             // A tap still a click, once.
             await frame(`scrollTo(0, 0)`);

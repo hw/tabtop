@@ -179,6 +179,11 @@ func (u *upload) finish(name string, replace bool) (string, error) {
 // target pins the destination used by the replacement's lock and version
 // check. Temporary-file cleanup still uses the upload's original store.
 func (u *upload) finishAt(name string, replace bool, target *downloadStore) (string, error) {
+	return u.finishWith(name, replace, target, nil)
+}
+
+// guard can authorize publication of a new name after the file is synced.
+func (u *upload) finishWith(name string, replace bool, target *downloadStore, guard func(func() (string, error)) (string, error)) (string, error) {
 	root, dir := u.root, u.dir
 	if target != nil {
 		root, dir = target.root, "."
@@ -237,7 +242,13 @@ func (u *upload) finishAt(name string, replace bool, target *downloadStore) (str
 		return name, nil
 	}
 	// Unlike a rename, a link fails rather than replace a file.
-	got, err := freeName(name, false, func(got string) error { return u.publish(got, false) })
+	publish := func() (string, error) {
+		return freeName(name, false, func(got string) error { return u.publish(got, false) })
+	}
+	if guard == nil {
+		guard = func(publish func() (string, error)) (string, error) { return publish() }
+	}
+	got, err := guard(publish)
 	if err != nil {
 		return "", err
 	}

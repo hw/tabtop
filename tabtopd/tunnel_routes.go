@@ -294,6 +294,8 @@ func (g *server) routeLogout(c *tunnelCall) {
 	c.r.finish(nil)
 }
 
+const shareRevocationSaveError = "Share links are disabled for this run, but the server couldn't save the revocation. They may return after a restart."
+
 // routeEndSession ends another of the sessions listed, by its handle (see
 // sessionsReport), and the links it made, so it keeps no access through
 // them.
@@ -305,7 +307,12 @@ func (g *server) routeEndSession(c *tunnelCall) {
 	}
 	g.act(session, "end-session", ip, "ended another session")
 	g.cancelFetches(func(j *fetchJob) bool { return j.by == name })
-	if n := g.revokeShares(func(l *shareLink) bool { return l.By == name }); n > 0 {
+	n, err := g.revokeShares(func(l *shareLink) bool { return l.By == name })
+	if err != nil {
+		c.r.fail("The session was ended. " + shareRevocationSaveError)
+		return
+	}
+	if n > 0 {
 		log.Printf("%d share links revoked with the session ended from %s", n, ip)
 		g.act(session, "share", ip, "revoked %d link%s the ended session made", n, plural(n))
 	}
@@ -317,7 +324,12 @@ func (g *server) routeLogoutAll(c *tunnelCall) {
 	g.act(c.session, "logout-all", c.ip, "logged out everywhere")
 	g.endAllSessions("Logged out everywhere.", c.t)
 	g.cancelFetches(func(*fetchJob) bool { return true })
-	if n := g.revokeShares(func(*shareLink) bool { return true }); n > 0 {
+	n, err := g.revokeShares(func(*shareLink) bool { return true })
+	if err != nil {
+		c.r.fail("All sessions were logged out. " + shareRevocationSaveError)
+		return
+	}
+	if n > 0 {
 		log.Printf("%d share links revoked with every session", n)
 		g.act(c.session, "share", c.ip, "revoked every link (%d) with logging out everywhere", n)
 	}
@@ -518,13 +530,17 @@ func (g *server) routeUnshare(c *tunnelCall) {
 		handles[h] = true
 	}
 	var revoked []string
-	n := g.revokeShares(func(l *shareLink) bool {
+	n, err := g.revokeShares(func(l *shareLink) bool {
 		if handles[l.handle()] {
 			revoked = append(revoked, linkTarget(l)+labelText(l))
 			return true
 		}
 		return false
 	})
+	if err != nil {
+		c.r.fail(shareRevocationSaveError)
+		return
+	}
 	if n == 0 {
 		c.r.fail("That link has ended already.")
 		return

@@ -23,10 +23,8 @@ func newGoServer(t *testing.T, engine string) (*server, string, testSession) {
 	t.Helper()
 	g, srv := newE2EServer(t)
 	g.goOn, g.goMode = true, goUnsandboxed
-	// A tab whose connection goes ends soon after, in tests, as it once did
-	// at once (not set back as a test ends: a tab let go then would be kept
-	// the five minutes): tests that take one back keep it longer meanwhile.
-	goDetachedFor = goTestDetachedFor
+	// Tabs left over at the end of a test detach and end promptly.
+	g.goDetachAfter = goTestDetachedFor
 	g.goConfig = fakeEngineConfig(t, goUnsandboxed, "ok")
 	if engine != "" {
 		bwrap, _ := exec.LookPath("bwrap")
@@ -76,8 +74,7 @@ func TestGoRouteOffAndUnavailable(t *testing.T) {
 
 func TestGoRouteBrowses(t *testing.T) {
 	g, url, s := newGoServer(t, "")
-	goDetachedFor = time.Minute // to take it back
-	defer func() { goDetachedFor = goTestDetachedFor }()
+	g.goDetachAfter = time.Minute // to take it back
 	ctx := testCtx(t)
 	tc := openSession(t, ctx, url, s)
 	r := tc.request(t, ctx, map[string]any{"type": "go"})
@@ -87,6 +84,10 @@ func TestGoRouteBrowses(t *testing.T) {
 	token, _ := r["resume"].(string)
 	if len(token) < 20 {
 		t.Fatalf("no token to take it back by: %v", r)
+	}
+	tab := g.goTabList().find(token, s.id)
+	if tab == nil {
+		t.Fatal("the open tab was not registered")
 	}
 	expect := func(typ string, gen int) map[string]any {
 		t.Helper()
@@ -135,40 +136,42 @@ func TestGoRouteBrowses(t *testing.T) {
 		t.Errorf("unreachable: %v", m)
 	}
 
-	if dirs := goEngineRunDirs(t); len(dirs) != 1 {
-		t.Errorf("%d engines running, want 1", len(dirs))
-	}
 	// The connection lost: the tab's kept (goresume.go), and taken back by
 	// its token, as it is, from the same session; not from another.
 	tc.c.CloseNow()
-	time.Sleep(300 * time.Millisecond)
-	if dirs := goEngineRunDirs(t); len(dirs) != 1 {
-		t.Fatalf("%d engines running once the connection went, want the tab's kept", len(dirs))
+	waitUntil(t, "the original tab to detach", func() bool {
+		_, detached := tab.b.conn.detached()
+		return detached
+	})
+	if _, err := os.Stat(tab.b.e.run); err != nil {
+		t.Fatalf("the detached tab's engine directory: %v", err)
 	}
-	other := openSession(t, ctx, url, login(t, ctx, url, code(1)))
+	id, secret, _ := g.newSession("127.0.0.1", "another browser")
+	other := openSession(t, ctx, url, testSession{id: id, secret: secret})
+	defer other.c.CloseNow()
 	if r := other.request(t, ctx, map[string]any{"type": "go", "resume": token}); r["ok"] != true || r["resumed"] == true || r["resume"] == token {
 		t.Errorf("another session's connection with the token: %v", r)
 	}
 	sendGo(t, ctx, other, map[string]any{"op": "close"}) // (a new tab of its own: closed)
 	tc = openSession(t, ctx, url, s)
+	defer tc.c.CloseNow()
 	if r := tc.request(t, ctx, map[string]any{"type": "go", "resume": token}); r["ok"] != true || r["resumed"] != true || r["resume"] != token {
 		t.Fatalf("taking it back: %v", r)
 	}
 	expect("go-reload", 5) // its last page failed: nothing shown, loaded again by the page
 	// Closed by the person: its engine killed at once.
 	sendGo(t, ctx, tc, map[string]any{"op": "close"})
-	waitUntil(t, "the engine to be uncounted", func() bool {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		return len(g.goEngines) == 0
-	})
+	select {
+	case <-tab.ended:
+	case <-ctx.Done():
+		t.Fatal("the original tab did not end after close")
+	}
 }
 
 // A tab no one takes back in time ends.
 func TestGoRouteDetachedEnds(t *testing.T) {
 	g, url, s := newGoServer(t, "")
-	goDetachedFor = 300 * time.Millisecond
-	defer func() { goDetachedFor = goTestDetachedFor }()
+	g.goDetachAfter = 300 * time.Millisecond
 	ctx := testCtx(t)
 	tc := openSession(t, ctx, url, s)
 	r := tc.request(t, ctx, map[string]any{"type": "go"})
@@ -288,9 +291,8 @@ func TestGoRouteDownloadKeepsDetachedTab(t *testing.T) {
 // A connection taking the tab from one still open (the same tab opened in
 // another window): the other's told, and closed; the tab's the new one's.
 func TestGoRouteTakenElsewhere(t *testing.T) {
-	_, url, s := newGoServer(t, "")
-	goDetachedFor = time.Minute
-	defer func() { goDetachedFor = goTestDetachedFor }()
+	g, url, s := newGoServer(t, "")
+	g.goDetachAfter = time.Minute
 	ctx := testCtx(t)
 	first := openSession(t, ctx, url, s)
 	r := first.request(t, ctx, map[string]any{"type": "go"})
