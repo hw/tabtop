@@ -220,7 +220,8 @@ type fileEntry struct {
 // inside, with what the page holds), so that page gets no more than any
 // program could; the check is kept by default as any website can make a
 // "null" origin (a sandboxed frame), and so try logins against a gateway
-// on its visitors' own network.
+// on its visitors' own network. Either way, tunnelHostAllowed refuses a
+// browser's tunnel by a name a website could point here (DNS rebinding).
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	ip := g.clientIP(r)
 	handshaken, ok := g.handshakes.start(limitKey(ip))
@@ -235,6 +236,13 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := websocket.Accept(w, r, accept)
 	if err != nil {
+		return
+	}
+	// By a name a website could point here (DNS rebinding: hosts.go):
+	// refused before anything's read, the page told why.
+	if !g.tunnelHostAllowed(r) {
+		g.refuseHost(r)
+		c.Close(websocket.StatusPolicyViolation, hostRefusedReason(hostName(r.Host)))
 		return
 	}
 	untrack, ok := g.drain.add(c)

@@ -19,7 +19,10 @@ so the gateway reads `X-Forwarded-For`. See also [Behind Cloudflare](environment
   for idle limits of a minute or more (nginx's default `proxy_read_timeout`
   is 60 s).
 - Send `X-Forwarded-For` and `X-Forwarded-Proto`. The gateway only believes
-  them from a trusted proxy.
+  them from a trusted proxy. Over HTTPS, the browser's tunnel works by any
+  name. Over plain HTTP, only by an address or a name no website can point
+  at the gateway, unless the name is listed in
+  [`WEB_HOSTS`](environment.md#web_hosts).
 - Leave responses unchanged. The gateway sends `Cache-Control: no-transform`
   with every page and script. Turn off any proxy or CDN feature that
   rewrites scripts for this site (such as Cloudflare's Rocket Loader): a

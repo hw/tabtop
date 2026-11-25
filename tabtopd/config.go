@@ -18,7 +18,10 @@ type serverConfig struct {
 	vncOff, fsOff     bool
 	// offlineClient lets the offline client (bootstrap's tabtop.html, opened
 	// as a file, its origin "null") open the tunnel; see tunnelWS.
-	offlineClient                         bool
+	offlineClient bool
+	// hosts are names a browser's tunnel may come by over plain HTTP,
+	// besides those no website can point here (WEB_HOSTS; hosts.go).
+	hosts                                 []string
 	base                                  string
 	novncDir                              string
 	vncAddr                               string

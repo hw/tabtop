@@ -15,6 +15,7 @@ WEB_FS="${WEB_FS:-1}"
 WEB_FS_ROOTS="${WEB_FS_ROOTS:-}"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}"
 WEB_TRUSTED_PROXIES="${WEB_TRUSTED_PROXIES:-}"
+WEB_HOSTS="${WEB_HOSTS:-}"
 WEB_TRUST_NPROXIES="${WEB_TRUST_NPROXIES:-0}"
 WEB_AUDIO="${WEB_AUDIO:-1}"
 WEB_MIC="${WEB_MIC:-1}"
@@ -158,6 +159,15 @@ case "$WEB_SHARE" in
     0|1) ;;
     *) echo "WEB_SHARE must be 0 or 1 (got '${WEB_SHARE}')." >&2; exit 1 ;;
 esac
+# Names only: tabtopd -hosts refuses a scheme, port or path too, but this
+# says so before anything starts.
+for host in ${WEB_HOSTS//,/ }; do
+    case "$host" in
+        *://*|*:*|*/*|*@*|*\[*|*\]*)
+            echo "WEB_HOSTS takes names only, separated by commas, without a scheme, port or path (got '${host}')." >&2
+            exit 1 ;;
+    esac
+done
 case "$WEB_OFFLINE_CLIENT" in
     0|1) ;;
     *) echo "WEB_OFFLINE_CLIENT must be 0 or 1 (got '${WEB_OFFLINE_CLIENT}')." >&2; exit 1 ;;

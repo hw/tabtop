@@ -22,6 +22,7 @@
 | [WEB_BASE_PATH](#web_base_path) | `/` | URL path the site is served under, e.g. `/tabtop/` behind a reverse proxy. |
 | [WEB_TRUSTED_PROXIES](#web_trusted_proxies) | *(empty)* | Comma-separated IPs or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is believed; `cloudflare` stands for [Cloudflare's](#behind-cloudflare) addresses. |
 | [WEB_TRUST_NPROXIES](#web_trust_nproxies) | `0` | How many proxies in front of the container to trust whatever their address, counting the one that connects, `0` to `10`; in addition to `WEB_TRUSTED_PROXIES`. See [WEB_TRUST_NPROXIES](#web_trust_nproxies). |
+| [WEB_HOSTS](#web_hosts) | *(empty)* | Comma-separated names you open TabTop by over plain HTTP, other than addresses, `localhost`, single-label names (`nas`) and `.local`, `.home.arpa`, `.internal` and `.lan` ones. Not needed over HTTPS. |
 | [WEB_AUDIO](#web_audio) | `1` | `1` streams the desktop's sound to the browser. `0` turns it off. |
 | [WEB_MIC](#web_mic) | `1` | `1` gives the desktop page a microphone button, which sends the browser's microphone to the desktop as "TabTop Mic". `0` turns it off. Needs `WEB_AUDIO=1`, and the container's own sound or `WEB_AUDIO_SERVER`. |
 | [WEB_AUDIO_BITRATE](#web_audio_bitrate) | `64` | Sound quality in kbit/s, `32` to `256`. |
@@ -55,7 +56,7 @@ All environment variables are optional - defaults will be used if a value is not
 The container won't start if `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC_DEPTH`,
 `VNC_RESIZE`, `VNC_ADDR`, `WEB_PORT`,
 `VNC_X509` (or what it needs; see [VNC_X509](#vnc_x509)),
-`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`,
+`WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`, `WEB_HOSTS`,
 `WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
 `WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
 `WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_GO_FETCH`, `WEB_GO_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_GO` (or `WEB_GO_ENGINE`, when `WEB_GO=1` and it isn't an executable file), `WEB_GO_UNSANDBOXED`, `WEB_GO_PRIVATE`, `WEB_GO_CACHE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
@@ -621,6 +622,35 @@ the proxy is the only way in.
 `/doctor` (see [Health checks](health-checks.md)) shows each hop, and whether
 it was trusted by address or by count.
 
+## `WEB_HOSTS`
+
+Over plain HTTP, the gateway opens the encrypted tunnel (and so logs you
+in) only when the browser reached it by a name no website can point at it:
+
+- an IP address, `localhost`, or a name under `.localhost`;
+- a single-label name, such as `nas`, which only your own network's DNS
+  answers;
+- a name under `.local` (mDNS), `.home.arpa`, `.internal` or `.lan`. These
+  aren't in the public DNS. `.lan` isn't formally reserved, but home
+  routers commonly use it.
+
+Over HTTPS, any name works, whether TabTop serves it itself or a trusted
+proxy ([`WEB_TRUSTED_PROXIES`](#web_trusted_proxies)) says so in
+`X-Forwarded-Proto`.
+
+This guards against DNS rebinding. Any website you visit can make its own
+name resolve to your TabTop's address, `127.0.0.1` or one on your network,
+and its page then counts as the same site as that name. Without this check,
+the page could try logins against a TabTop that only your browser can
+reach. With the [default TOTP secret](#default-totp-secret) it would succeed.
+
+If you open TabTop over plain HTTP by any other name, list it here,
+separated by commas, without a scheme or port. Examples are a Tailscale
+`*.ts.net` name, `fritz.box`, or your own domain on your network:
+`WEB_HOSTS=nas.example.com,box.tail1234.ts.net`. Otherwise the login page says
+"This server doesn't answer to … over HTTP", and the log names the
+setting. The equivalent gateway flag is `-hosts`.
+
 ## `WEB_AUDIO`
 
 With `1`, the container runs PipeWire and the browser gets a speaker button;
@@ -752,8 +782,11 @@ The tunnel uses no cookies (it authenticates with the password, or the
 session the page holds), so this lets that page do only what any program
 could. It's off by default because any website can make a `null` origin (a
 sandboxed frame) and so try logins against a gateway on its visitors' own
-network; the usual login limits still apply. The equivalent gateway flag is
-`-offline-client`.
+network; the usual login limits still apply. A `null` origin doesn't say
+whether the page used HTTPS. So, by a name other than those
+[`WEB_HOSTS`](#web_hosts) allows without listing, the offline client
+connects only over HTTPS that a trusted proxy reports, or by a name listed
+in `WEB_HOSTS`. The equivalent gateway flag is `-offline-client`.
 
 ## `WEB_SHARE`
 
