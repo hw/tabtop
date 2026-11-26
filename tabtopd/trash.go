@@ -538,12 +538,12 @@ func (s *downloadStore) pruneTrash(now time.Time) (int, error) {
 		// for room it will never give.
 		total -= e.Bytes
 		count--
-		gone := func() {}
+		tried := func(error) {}
 		if s.ending != nil {
-			gone = s.ending(s.root, e)
+			tried = s.ending(s.root, e)
 		}
 		err := s.root.RemoveAll(e.ID)
-		gone()
+		tried(err)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -832,7 +832,7 @@ func (g *fileService) trashRequest(req tunnelRequest) (map[string]any, error) {
 		}
 		tried := g.trashLinks(trash.root, e)
 		err = trash.root.RemoveAll(req.Name)
-		tried()
+		tried(err)
 		if err != nil {
 			return nil, err
 		}
@@ -846,10 +846,11 @@ func (g *fileService) trashRequest(req tunnelRequest) (map[string]any, error) {
 		var errs []error
 		for _, e := range entries {
 			tried := g.trashLinks(trash.root, e)
-			if err := trash.root.RemoveAll(e.ID); err != nil {
+			err := trash.root.RemoveAll(e.ID)
+			if err != nil {
 				errs = append(errs, err)
 			}
-			tried()
+			tried(err)
 		}
 		// Emptying means everything, entries left broken included.
 		err = errors.Join(errors.Join(errs...), trash.pruneOrphans(time.Now(), 0))

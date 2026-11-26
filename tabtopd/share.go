@@ -208,16 +208,18 @@ func linkTargetIn(r *os.Root, at, was string, l *shareLink) bool {
 	return err == nil && l.matches(f, st)
 }
 
-// endGone revokes those of the links ending (linksInto's, for what was at
-// at in r) whose target isn't there any more, once its removal's been
-// tried: before anything removed is put back elsewhere.
-func (g *fileService) endGone(r *os.Root, at, was string, ending map[string]*shareLink) {
+// endGone revokes the links ending (linksInto's, for what was at at in
+// r) once its removal's been tried (failed: an error): all of them if it
+// worked, not looked for again (something made there since, given a
+// freed inode, could pass for one); if it failed, those whose target
+// isn't there any more, looked for before anything left is put back.
+func (g *fileService) endGone(r *os.Root, at, was string, ending map[string]*shareLink, failed error) {
 	if len(ending) == 0 || g.shares == nil {
 		return
 	}
 	gone := map[string]bool{}
 	for id, l := range ending {
-		if !linkTargetIn(r, at, was, l) {
+		if failed == nil || !linkTargetIn(r, at, was, l) {
 			gone[id] = true
 		}
 	}
@@ -233,14 +235,14 @@ func (g *fileService) endGone(r *os.Root, at, was string, ending map[string]*sha
 }
 
 // trashLinks is linksInto for Trash entry e, in the Trash root trash: what
-// to call once its removal's been tried.
-func (g *fileService) trashLinks(trash *os.Root, e trashEntry) (tried func()) {
+// to call once its removal's been tried, with how it went.
+func (g *fileService) trashLinks(trash *os.Root, e trashEntry) (tried func(error)) {
 	if !validTrashID(e.ID) || e.Path == "" {
-		return func() {}
+		return func(error) {}
 	}
 	at := path.Join(e.ID, "data")
 	ending := g.linksInto(trash, at, e.Path)
-	return func() { g.endGone(trash, at, e.Path, ending) }
+	return func(err error) { g.endGone(trash, at, e.Path, ending, err) }
 }
 
 // shareStore holds the links, and writes them to file (if it isn't "")

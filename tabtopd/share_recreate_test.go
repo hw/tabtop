@@ -283,3 +283,30 @@ func TestShareLinksEndWithWhatWentWhenDeleteFails(t *testing.T) {
 		t.Fatal("the link to what went still answers")
 	}
 }
+
+// A removal that worked ends every link found before it, without looking
+// again: something made at the path since (given the inode freed, on a
+// filesystem that doesn't say when a file was made) could pass for what
+// was removed. (Here, the folder itself, still there, stands for it.)
+func TestShareLinksEndAllWhenRemoved(t *testing.T) {
+	g, srv, s, _ := newShareServer(t)
+	os.MkdirAll(filepath.Join(g.downloadsDir, "a"), 0o755)
+	makeShare(t, srv, s, "a", 3600, 0)
+	files := g.fileServices()[0]
+	store, err := files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ending := files.linksInto(store.root, "a", "a")
+	if len(ending) != 1 {
+		t.Fatalf("%d links found, not 1", len(ending))
+	}
+	files.endGone(store.root, "a", "a", ending, nil)
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	if n != 0 {
+		t.Fatal("a link kept, after its removal worked, for what's at its path")
+	}
+}
