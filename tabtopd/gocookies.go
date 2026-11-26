@@ -273,9 +273,12 @@ func (j *goCookieJar) save() {
 	}
 }
 
-// trimLocked keeps the jar within its count and size: the least lately
-// changed go first (a page can set cookies without end), a kept site's
-// after every other's.
+// trimLocked keeps the jar within its count and size (a page can set
+// cookies without end). What goes is the least lately changed cookie of
+// the site holding the most (bytes, over the size; cookies, over the
+// count), again and again: a site filling the jar loses its own first,
+// not another site's sign-in set long ago. A kept site's go after every
+// other's.
 func (j *goCookieJar) trimLocked() {
 	bytes := 0
 	for _, c := range j.cookies {
@@ -284,33 +287,54 @@ func (j *goCookieJar) trimLocked() {
 	if len(j.cookies) <= maxGoCookies && bytes <= maxGoCookieBytes {
 		return
 	}
-	all := make([]*goCookie, 0, len(j.cookies))
+	type siteCookies struct {
+		kept         bool
+		cookies      []*goCookie // the least lately changed first
+		count, bytes int
+	}
+	sites := map[string]*siteCookies{}
 	for _, c := range j.cookies {
-		all = append(all, c)
-	}
-	kept := map[string]bool{}
-	for _, c := range all {
-		site := goSite(c.host())
-		if _, seen := kept[site]; !seen {
-			kept[site] = goKeptSite(site)
+		name := goSite(c.host())
+		s := sites[name]
+		if s == nil {
+			s = &siteCookies{kept: goKeptSite(name)}
+			sites[name] = s
 		}
+		s.cookies = append(s.cookies, c)
+		s.count++
+		s.bytes += len(c.Name) + len(c.Value)
 	}
-	slices.SortFunc(all, func(a, b *goCookie) int {
-		ka, kb := kept[goSite(a.host())], kept[goSite(b.host())]
-		if ka != kb {
-			if ka {
-				return 1
+	for _, s := range sites {
+		slices.SortFunc(s.cookies, func(a, b *goCookie) int { return int(min(max(a.Changed-b.Changed, -1), 1)) })
+	}
+	for len(j.cookies) > maxGoCookies || bytes > maxGoCookieBytes {
+		bySize := bytes > maxGoCookieBytes
+		var most *siteCookies
+		for _, s := range sites {
+			if s.count == 0 {
+				continue
 			}
-			return -1
+			if most == nil || most.kept && !s.kept {
+				most = s
+				continue
+			}
+			if s.kept && !most.kept {
+				continue
+			}
+			if bySize && s.bytes > most.bytes || !bySize && s.count > most.count {
+				most = s
+			}
 		}
-		return int(min(max(a.Changed-b.Changed, -1), 1))
-	})
-	for _, c := range all {
-		if len(j.cookies) <= maxGoCookies && bytes <= maxGoCookieBytes {
-			break
+		if most == nil {
+			return
 		}
+		c := most.cookies[0]
+		most.cookies = most.cookies[1:]
+		n := len(c.Name) + len(c.Value)
+		most.count--
+		most.bytes -= n
 		delete(j.cookies, c.key())
-		bytes -= len(c.Name) + len(c.Value)
+		bytes -= n
 	}
 }
 
