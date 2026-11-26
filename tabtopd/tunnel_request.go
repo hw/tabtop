@@ -487,12 +487,13 @@ func (g *fileService) tunnelShare(call *tunnelCall) {
 		r.fail("Not found.")
 		return
 	}
+	birth := birthTime(f)
 	f.Close()
 	if req.Upload && !st.IsDir() {
 		r.fail("Files can only be uploaded into a folder.")
 		return
 	}
-	token, l, err := g.shares.create(path.Clean(name), st, spec, sessionHandle(session), ip)
+	token, l, err := g.shares.create(path.Clean(name), st, birth, spec, sessionHandle(session), ip)
 	life, label := spec.Life, spec.Label // (the label as kept, by check)
 	if errors.Is(err, errTooManyShares) {
 		r.fail(err.Error())

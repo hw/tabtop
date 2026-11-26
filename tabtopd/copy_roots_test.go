@@ -448,3 +448,33 @@ func TestMoveRefusesMounts(t *testing.T) {
 		t.Fatal("something was moved")
 	}
 }
+
+// A move across filesystems removes the original once it's copied: the
+// links to it end then (see endLinksInto), and only those.
+func TestMoveAcrossFilesystemsEndsLinks(t *testing.T) {
+	home, data, downloads := rootFixture(t)
+	g, srv := newE2EServerWith(t, func(c *serverConfig) {
+		c.downloadsDir, c.fsHome = downloads, home
+		c.fsRoots = "Downloads,data=" + data
+		c.shareOn, c.sharesFile = true, filepath.Join(t.TempDir(), "shares.json")
+	})
+	ctx := testCtx(t)
+	url, s := srv.URL, login(t, ctx, srv.URL, code(0))
+	renameAcrossRoots = func(*downloadStore, string, string, *downloadStore, string, string) error { return syscall.EXDEV }
+	t.Cleanup(func() { renameAcrossRoots = renameBetween })
+	os.Mkdir(filepath.Join(data, "in"), 0755)
+	write(t, filepath.Join(downloads, "moved", "x.txt"), "x")
+	write(t, filepath.Join(downloads, "stays", "y.txt"), "y")
+	makeShare(t, url, s, "moved", 3600, 0)
+	makeShare(t, url, s, "moved/x.txt", 3600, 0)
+	stays := makeShare(t, url, s, "stays", 3600, 0)
+	if _, last := transfer(t, ctx, url, s, tunnelRequest{Root: "downloads", Path: "moved", ToRoot: "data", To: "in"}); last["path"] != "in/moved" {
+		t.Fatalf("move by copying: %v", last)
+	}
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	if res, _ := shareFetch(t, "GET", stays); n != 1 || res.StatusCode != 200 {
+		t.Fatalf("after the move: %d links (not 1), the other folder's answering %d", n, res.StatusCode)
+	}
+}

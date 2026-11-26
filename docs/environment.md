@@ -3,7 +3,7 @@
 | Variable | Default | Description |
 |---|---|---|
 | [VNC_USER](#vnc_user) | `user` | The desktop's Unix account, and the account name in the authenticator app. Logins don't ask for it. |
-| [VNC_PASSWORD](#vnc_password) | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Empty: use `~/.config/tabtop/password` if present, otherwise TOTP-only. Never sent anywhere. |
+| [VNC_PASSWORD](#vnc_password) | *(empty)* | Login password. When set, every login needs this password immediately followed by the current TOTP code. Unset: use `~/.config/tabtop/password` if present, otherwise TOTP-only. Set but empty: TOTP-only, even with that file. Never sent anywhere. |
 | [VNC_TOTP_SECRET](#vnc_totp_secret) | `JBSWY3DPEHPK3PXP` (public; see [Default TOTP secret](#default-totp-secret)) | TOTP secret: Base32 is used as it is; any other string has a secret derived from it, printed at startup. Always set it for a site others can reach: the default is a well-known example secret, used with a warning in the log. |
 | [VNC_TOTP_DIGITS](#vnc_totp_digits) | `6` | Code length: `6`, `7` or `8`. |
 | [VNC_GEOMETRY](#vnc_geometry-and-vnc_resize) | `1600x900` | Desktop size before the first browser connects. |

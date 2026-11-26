@@ -23,6 +23,9 @@ import (
 
 type downloadStore struct {
 	root *os.Root
+	// ending, if set, is told of a Trash entry about to be removed for
+	// good, with the Trash root it's in (see fileService.endTrashLinks).
+	ending func(trash *os.Root, e trashEntry)
 	// checked are paths already found not to lead into Trash, by the
 	// request this store was opened for (see requestScope).
 	checked []string

@@ -47,6 +47,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -85,7 +86,8 @@ type shareLink struct {
 	ID          string    `json:"id"`   // the token's SHA-256, hex
 	Path        string    `json:"path"` // in ~/Downloads, without slashes at either end
 	Dir         bool      `json:"dir,omitempty"`
-	Ino         uint64    `json:"ino"` // what it was made for: see matches
+	Ino         uint64    `json:"ino"`             // what it was made for: see matches
+	Birth       int64     `json:"birth,omitempty"` // when that was made, Unix nanoseconds; 0 if not known
 	Size        int64     `json:"size,omitempty"`
 	ModTime     int64     `json:"mtime,omitempty"` // Unix nanoseconds
 	Created     time.Time `json:"created"`
@@ -141,16 +143,75 @@ func (l *shareLink) name() string {
 // handle names a link in the page, to revoke it by, without its token.
 func (l *shareLink) handle() string { return l.ID[:16] }
 
-// matches reports whether st is what the link was made for. The inode
-// alone, for a folder; a file must also have the same size and
+// matches reports whether st, f's, is what the link was made for. The
+// inode, and when it was made (birthTime) if that was known, for a folder,
+// so one deleted and made again under its name, which can be given the
+// same inode, isn't served; a file must also have the same size and
 // modification time, so one changed in place isn't served either. Not the
 // device: a volume's can change when the container is made again.
-func (l *shareLink) matches(st fs.FileInfo) bool {
+func (l *shareLink) matches(f *os.File, st fs.FileInfo) bool {
 	sys, ok := identitySys(st)
 	if !ok || uint64(sys.Ino) != l.Ino || st.IsDir() != l.Dir {
 		return false
 	}
+	if l.Birth != 0 && birthTime(f) != l.Birth {
+		return false
+	}
 	return l.Dir || st.Mode().IsRegular() && st.Size() == l.Size && st.ModTime().UnixNano() == l.ModTime
+}
+
+// endLinksInto revokes the links to what's about to be removed for good:
+// what's at at in r, which was at was in the root (or still is). Each is
+// matched by what it was made for (see matches), so a link to something
+// made at was since is left alone. Otherwise, on a filesystem that doesn't
+// say when a file was made, the next folder made there could be given the
+// inode freed, and a link to the one removed would serve it.
+func (g *fileService) endLinksInto(r *os.Root, at, was string) {
+	s := g.shares
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	var under []*shareLink
+	for _, l := range s.links {
+		if l.Root == g.root.ID && l.RootBinding == g.root.Binding && (was == "." || l.Path == was || strings.HasPrefix(l.Path, was+"/")) {
+			under = append(under, l)
+		}
+	}
+	s.mu.Unlock()
+	ending := map[string]bool{}
+	for _, l := range under {
+		p := at
+		if was == "." {
+			p = path.Join(at, l.Path)
+		} else if l.Path != was {
+			p = path.Join(at, strings.TrimPrefix(l.Path, was+"/"))
+		}
+		f, err := r.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			continue
+		}
+		if st, err := f.Stat(); err == nil && l.matches(f, st) {
+			ending[l.ID] = true
+		}
+		f.Close()
+	}
+	if len(ending) == 0 {
+		return
+	}
+	n, err := s.revoke(func(l *shareLink) bool { return ending[l.ID] })
+	if err != nil {
+		log.Printf("revoking the links to %q, deleted: %v", was, err)
+	} else if n > 0 {
+		log.Printf("revoked %d share link(s) to %q, deleted for good", n, was)
+	}
+}
+
+// endTrashLinks is endLinksInto for Trash entry e, in the Trash root trash.
+func (g *fileService) endTrashLinks(trash *os.Root, e trashEntry) {
+	if validTrashID(e.ID) && e.Path != "" {
+		g.endLinksInto(trash, path.Join(e.ID, "data"), e.Path)
+	}
 }
 
 // shareStore holds the links, and writes them to file (if it isn't "")
@@ -393,7 +454,7 @@ func (spec *shareSpec) check() error {
 
 // create makes a link to what's at p in ~/Downloads, st, as spec says, for
 // the session by from ip, and returns its token.
-func (s *shareStore) create(p string, st fs.FileInfo, spec shareSpec, by, ip string) (string, *shareLink, error) {
+func (s *shareStore) create(p string, st fs.FileInfo, birth int64, spec shareSpec, by, ip string) (string, *shareLink, error) {
 	if err := spec.check(); err != nil {
 		return "", nil, err
 	}
@@ -409,7 +470,7 @@ func (s *shareStore) create(p string, st fs.FileInfo, spec shareSpec, by, ip str
 	token := base64.RawURLEncoding.EncodeToString(b)
 	sum := sha256.Sum256([]byte(token))
 	now := s.clock.Now()
-	l := &shareLink{Root: spec.Root, RootBinding: spec.RootBinding, RootLabel: spec.RootLabel, ID: hex.EncodeToString(sum[:]), Path: p, Dir: st.IsDir(), Ino: uint64(sys.Ino),
+	l := &shareLink{Root: spec.Root, RootBinding: spec.RootBinding, RootLabel: spec.RootLabel, ID: hex.EncodeToString(sum[:]), Path: p, Dir: st.IsDir(), Ino: uint64(sys.Ino), Birth: birth,
 		Created: now, Expires: now.Add(spec.Life), Max: spec.Max, By: by, ByIP: ip, Upload: spec.Upload, MaxBytes: spec.MaxBytes, Label: spec.Label, Once: spec.Once}
 	if !l.Dir {
 		l.Size, l.ModTime = st.Size(), st.ModTime().UnixNano()
@@ -767,7 +828,7 @@ func (g *fileService) serveRootShare(w http.ResponseWriter, r *http.Request, l *
 		return
 	}
 	defer f.Close()
-	if !l.matches(st) {
+	if !l.matches(f, st) {
 		gone()
 		return
 	}

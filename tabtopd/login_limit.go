@@ -143,6 +143,14 @@ func (g *authentication) loginTurn() bool {
 	return true
 }
 
+// slowed reports whether logins are being slowed down now (see loginTurn),
+// without taking a turn.
+func (g *authentication) slowed() bool {
+	g.authMu.Lock()
+	defer g.authMu.Unlock()
+	return len(g.siteFailures) >= maxSiteFailures && time.Since(g.siteFailures[0]) < failureWindow
+}
+
 func (g *authentication) recordLoginLocked(ip, browser string, ok bool) {
 	g.logins = append(g.logins, loginEvent{time.Now(), ip, browser, ok})
 	if len(g.logins) > maxLoginLog {

@@ -57,7 +57,7 @@ func uploadFormFixture(t *testing.T, quota int64) (*server, *downloadStore, *sha
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, link, err := g.shares.create(".", st, shareSpec{Root: "downloads", RootBinding: g.roots[0].Binding, RootLabel: "Downloads", Life: time.Hour, Upload: true, MaxBytes: quota}, "owner", "127.0.0.1")
+	_, link, err := g.shares.create(".", st, 0, shareSpec{Root: "downloads", RootBinding: g.roots[0].Binding, RootLabel: "Downloads", Life: time.Hour, Upload: true, MaxBytes: quota}, "owner", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}

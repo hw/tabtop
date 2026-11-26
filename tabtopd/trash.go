@@ -318,7 +318,7 @@ func (s *downloadStore) openTrash(create bool) (*downloadStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &downloadStore{root: root, index: s.index}, nil
+	return &downloadStore{root: root, index: s.index, ending: s.ending}, nil
 }
 
 // trashIndex is a root's Trash entries as last read: what's in an entry's
@@ -538,6 +538,9 @@ func (s *downloadStore) pruneTrash(now time.Time) (int, error) {
 		// for room it will never give.
 		total -= e.Bytes
 		count--
+		if s.ending != nil {
+			s.ending(s.root, e)
+		}
 		if err := s.root.RemoveAll(e.ID); err != nil {
 			errs = append(errs, err)
 			continue
@@ -820,10 +823,11 @@ func (g *fileService) trashRequest(req tunnelRequest) (map[string]any, error) {
 		slices.Reverse(entries)
 		return trashReply(entries), nil
 	case "trash-delete":
-		_, err := trash.readTrash(req.Name)
+		e, err := trash.readTrash(req.Name)
 		if err != nil {
 			return nil, err
 		}
+		g.endTrashLinks(trash.root, e)
 		if err := trash.root.RemoveAll(req.Name); err != nil {
 			return nil, err
 		}
@@ -836,6 +840,7 @@ func (g *fileService) trashRequest(req tunnelRequest) (map[string]any, error) {
 		}
 		var errs []error
 		for _, e := range entries {
+			g.endTrashLinks(trash.root, e)
 			if err := trash.root.RemoveAll(e.ID); err != nil {
 				errs = append(errs, err)
 			}

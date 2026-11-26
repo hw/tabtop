@@ -85,6 +85,7 @@ func (g *fileService) tunnelDelete(call *tunnelCall) {
 	}
 	defer done(false, "")
 	if req.Permanent {
+		g.endLinksInto(root.root, name, name)
 		dir, err := root.deleteFile(name)
 		if err != nil {
 			log.Printf("%s couldn't delete %q through the tunnel: %v", ip, name, err)

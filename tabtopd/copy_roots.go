@@ -626,6 +626,7 @@ func (g *fileService) removeOriginal(src *downloadStore, name string, c *copier)
 	if err := holdsMount(src.root, aside); err != nil {
 		return "Copied, but the original couldn't be removed: " + deleteError(err) + " (" + putBack() + ".)"
 	}
+	g.endLinksInto(src.root, item, name)
 	if err := src.root.RemoveAll(aside); err != nil {
 		// What's left of it, put back: not left hidden.
 		return "Copied, but not all of the original could be removed: " + deleteError(err) + " (Of what's left, " + putBack() + ".)"

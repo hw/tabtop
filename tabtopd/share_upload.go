@@ -199,7 +199,13 @@ func (g *fileService) finishLinkUpload(l *shareLink, store *downloadStore, u *up
 		if g.shares.links[l.ID] != l || !g.shares.clock.Now().Before(l.Expires) {
 			return "", errLinkEnded
 		}
-		if st, err := store.stat(l.Path); err != nil || !l.matches(st) {
+		f, st, err := store.open(l.Path)
+		if err != nil {
+			return "", &uploadLinkError{http.StatusNotFound, "The folder this link uploads to has gone."}
+		}
+		same := l.matches(f, st)
+		f.Close()
+		if !same {
 			return "", &uploadLinkError{http.StatusNotFound, "The folder this link uploads to has gone."}
 		}
 		return publish()
