@@ -300,6 +300,17 @@ export async function input(ctx) {
         await submitUrl("https://exa mple.com/x");
         await waitFor(`document.title.startsWith("Result")`, "an address that isn't one, searched for", 30000);
         await frameWait(`document.getElementById("p")?.textContent === "query https://exa mple.com/x"`, "searched for as typed");
+        // An address typed whose name no site has (a typo; .invalid never
+        // is one): searched for as typed, without http:// or https://, in
+        // its place, so Back goes to the page before.
+        for (const [typed, words] of [["nosuchsite.invalid", "nosuchsite.invalid"], ["https://nosuchsite.invalid/x", "nosuchsite.invalid/x"]]) {
+            await goTo(site + "index.html", "Fixture");
+            await submitUrl(typed);
+            await waitFor(`document.title.startsWith("Result")`, `${typed}, no site's name, searched for`, 30000);
+            await frameWait(`document.getElementById("p")?.textContent === ${JSON.stringify("query " + words)}`, "searched for without its scheme");
+            await ev(`document.getElementById("go_back").click()`);
+            await waitFor(`document.title.startsWith("Fixture")`, "Back, to the page before the typo", 30000);
+        }
         // Back to the default.
         await openSettings();
         if ((await ev(`${d}.getElementById("search_engine").value`)) !== "custom") throw new Error("Settings doesn't show the custom engine");

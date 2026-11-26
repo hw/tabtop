@@ -132,7 +132,13 @@ func TestGoRouteBrowses(t *testing.T) {
 
 	sendGo(t, ctx, tc, map[string]any{"op": "navigate", "url": "https://unreachable.test/"})
 	expect("go-loading", 5)
-	if m := expect("go-error", 5); !strings.Contains(m["message"].(string), "can't be reached") {
+	// (A name no site has, said so where the system's DNS answers that:
+	// goNameMissing, TestGoNameMissing; else just not reached.)
+	if m := expect("go-error", 5); m["unresolved"] == "unreachable.test" {
+		if !strings.Contains(m["message"].(string), "no site has the name unreachable.test") {
+			t.Errorf("unresolved: %v", m)
+		}
+	} else if m["unresolved"] != nil || !strings.Contains(m["message"].(string), "can't be reached") {
 		t.Errorf("unreachable: %v", m)
 	}
 

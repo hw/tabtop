@@ -336,3 +336,28 @@ func TestGoDoHStatus(t *testing.T) {
 		t.Fatalf("failed: %v", s)
 	}
 }
+
+// TestGoNameMissing: only a name the DoH server says doesn't exist is
+// missing (a typed one is then searched for: go.js); not one it couldn't
+// answer, one it knows, a local record's, or an address.
+func TestGoNameMissing(t *testing.T) {
+	srv, _ := dohServer(t, map[string]netip.Addr{"site.test": netip.MustParseAddr("192.0.2.7")}, 1)
+	goDoHNow.Store(testDoH(t, srv))
+	t.Cleanup(func() { goDoHNow.Store(nil) })
+	setLocalHosts(t, goHostRecord{"only-local.test", "127.0.0.1"})
+	ctx := context.Background()
+	for host, want := range map[string]bool{
+		"missing.test":    true,
+		"MISSING.test.":   true,
+		"site.test":       false,
+		"fail.test":       false, // SERVFAIL: it may exist
+		"only-local.test": false,
+		"192.0.2.1":       false,
+		"[2001:db8::1]":   false,
+		"":                false,
+	} {
+		if got := goNameMissing(ctx, host); got != want {
+			t.Errorf("goNameMissing(%q) = %v, want %v", host, got, want)
+		}
+	}
+}

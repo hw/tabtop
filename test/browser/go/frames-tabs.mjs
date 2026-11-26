@@ -327,7 +327,7 @@ export async function framesTabs(ctx) {
         await leave(`location.href = ${JSON.stringify(new URL("go/tab", base).href)};`, { what: "a tab on its own again, connected", ready: `!!document.getElementById("go_url") && document.getElementById("go_progress").hidden` });
     });
 
-    await step("starting tab private (Settings' Starting tab): the browser's first tab private; New tab still a normal tab, New private tab (the strip's and the menu's) a private one; a normal tab's window normal", async () => {
+    await step("starting tab private (Settings' Starting tab): the browser's first tab private; a blank tab switched to the other kind in its place; New tab still a normal tab, New private tab (the strip's and the menu's) a private one; a normal tab's window normal", async () => {
         const tabDoc = (n) => `document.querySelectorAll("#frames iframe")[${n}]?.contentDocument`;
         const inTab = (n, expr) => ev(`((document) => document ? (${expr}) : null)(${tabDoc(n)})`);
         const connected = (n, what) => waitFor(`((d) => d?.readyState === "complete" && !!d.getElementById("go_url") && d.getElementById("go_progress")?.hidden)(${tabDoc(n)})`, what, 30000);
@@ -343,10 +343,28 @@ export async function framesTabs(ctx) {
             // Each button its own kind, whatever the browser started in.
             const labels = await ev(`document.getElementById("new").title + " | " + document.getElementById("new_private").getAttribute("aria-label")`);
             if (!/^New tab \| New private tab$/.test(labels)) throw new Error(`the strip's buttons: ${labels}`);
+            // The first tab blank: the other kind asked for switches it, in
+            // its place, rather than opening another; and back.
+            const switched = async (button, want) => {
+                await ev(`document.getElementById(${JSON.stringify(button)}).click()`);
+                await waitFor(`document.querySelectorAll("#frames iframe").length === 1 && document.querySelector(".tab").classList.contains("private") === ${want === "private"}`, `the blank tab switched to ${want}`, 30000);
+                await connected(0, `the ${want} tab, connected`);
+                if ((await kind(0)) !== want) throw new Error(`the blank tab, switched, is ${await kind(0)}`);
+            };
+            await switched("new", "normal");
+            await switched("new_private", "private");
+            // Not blank (a page in it): New tab opens a normal tab.
+            const loaded = async (n, url, title) => {
+                await ev(`document.querySelectorAll(".tab")[${n}].click()`);
+                await inTab(n, `(() => { const i = document.getElementById("go_url"); i.value = ${JSON.stringify(url)}; i.form.requestSubmit(); return true; })()`);
+                await waitFor(`${JSON.stringify(title)} === (document.querySelectorAll(".tab .title")[${n}]?.textContent || "").slice(0, ${title.length})`, `${title} in tab ${n}`, 30000);
+            };
+            await loaded(0, site + "index.html", "Fixture");
             await ev(`document.getElementById("new").click()`);
             await tabs(2, "New tab's tab");
             await connected(1, "New tab's tab, connected");
             if ((await kind(1)) !== "normal") throw new Error(`New tab opened a ${await kind(1)} tab`);
+            await loaded(1, site + "opener.html", "Opener");
             await ev(`document.getElementById("new_private").click()`);
             await tabs(3, "New private tab's tab");
             await connected(2, "New private tab's tab, connected");
