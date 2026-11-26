@@ -228,3 +228,24 @@ func TestShareLinksEndWithWhatsRemoved(t *testing.T) {
 		t.Fatalf("%d links after a permanent delete, not 1", links())
 	}
 }
+
+// A permanent delete that's refused (the exposed folder itself) ends no
+// links: they end only once what they're to is gone.
+func TestShareLinksKeptWhenDeleteRefused(t *testing.T) {
+	g, srv, s, _ := newShareServer(t)
+	dir := filepath.Join(g.downloadsDir, "a")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
+	file := makeShare(t, srv, s, "a/f.txt", 3600, 0)
+	makeShare(t, srv, s, "a", 3600, 0)
+	r := openSession(t, testCtx(t), srv, s).request(t, testCtx(t), tunnelRequest{Type: "delete", Path: "", Permanent: true})
+	if r["ok"] == true {
+		t.Fatalf("the exposed folder deleted: %v", r)
+	}
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	if res, _ := shareFetch(t, "GET", file); n != 2 || res.StatusCode != 200 {
+		t.Fatalf("after a refused delete: %d of 2 links left, the file's answering %d", n, res.StatusCode)
+	}
+}

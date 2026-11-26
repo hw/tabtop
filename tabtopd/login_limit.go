@@ -121,6 +121,13 @@ func (g *authentication) endLogin(ip, browser string, failed bool) {
 // digits, since three codes are accepted at a time) from a matter of hours
 // into weeks, and the owner can still get in, if not at the first try.
 func (g *authentication) loginTurn() bool {
+	ok, _ := g.loginTurnSlowed()
+	return ok
+}
+
+// loginTurnSlowed is loginTurn, and whether logins were being slowed down
+// as it was decided (a turn taken then is one of the slowed ones).
+func (g *authentication) loginTurnSlowed() (ok, slowed bool) {
 	g.authMu.Lock()
 	defer g.authMu.Unlock()
 	now := time.Now()
@@ -129,7 +136,7 @@ func (g *authentication) loginTurn() bool {
 			g.throttling = false
 			log.Printf("failed logins have thinned out: no longer slowing logins down")
 		}
-		return true
+		return true, false
 	}
 	if !g.throttling {
 		g.throttling = true
@@ -137,10 +144,10 @@ func (g *authentication) loginTurn() bool {
 			maxSiteFailures, failureWindow, siteThrottle)
 	}
 	if now.Before(g.nextLogin) {
-		return false
+		return false, true
 	}
 	g.nextLogin = now.Add(siteThrottle)
-	return true
+	return true, true
 }
 
 // slowed reports whether logins are being slowed down now (see loginTurn),

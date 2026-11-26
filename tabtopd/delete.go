@@ -85,7 +85,7 @@ func (g *fileService) tunnelDelete(call *tunnelCall) {
 	}
 	defer done(false, "")
 	if req.Permanent {
-		g.endLinksInto(root.root, name, name)
+		ending := g.linksInto(root.root, name, name)
 		dir, err := root.deleteFile(name)
 		if err != nil {
 			log.Printf("%s couldn't delete %q through the tunnel: %v", ip, name, err)
@@ -93,7 +93,9 @@ func (g *fileService) tunnelDelete(call *tunnelCall) {
 			r.fail(deleteError(err))
 			return
 		}
-		// Gone for good, and what it was before saves too.
+		// Gone for good, and what it was before saves too, and the links to
+		// it.
+		g.endLinks(ending, name)
 		g.dropVersionsUnder(name)
 		if dir {
 			name += "/ and everything in it"

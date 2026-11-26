@@ -538,13 +538,15 @@ func (s *downloadStore) pruneTrash(now time.Time) (int, error) {
 		// for room it will never give.
 		total -= e.Bytes
 		count--
+		gone := func() {}
 		if s.ending != nil {
-			s.ending(s.root, e)
+			gone = s.ending(s.root, e)
 		}
 		if err := s.root.RemoveAll(e.ID); err != nil {
 			errs = append(errs, err)
 			continue
 		}
+		gone()
 		removed++
 	}
 	return removed, errors.Join(errs...)
@@ -827,10 +829,11 @@ func (g *fileService) trashRequest(req tunnelRequest) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		g.endTrashLinks(trash.root, e)
+		removed := g.trashLinks(trash.root, e)
 		if err := trash.root.RemoveAll(req.Name); err != nil {
 			return nil, err
 		}
+		removed()
 		g.tidyVersions(store, time.Now())
 		return nil, nil
 	case "trash-empty":
@@ -840,10 +843,12 @@ func (g *fileService) trashRequest(req tunnelRequest) (map[string]any, error) {
 		}
 		var errs []error
 		for _, e := range entries {
-			g.endTrashLinks(trash.root, e)
+			removed := g.trashLinks(trash.root, e)
 			if err := trash.root.RemoveAll(e.ID); err != nil {
 				errs = append(errs, err)
+				continue
 			}
+			removed()
 		}
 		// Emptying means everything, entries left broken included.
 		err = errors.Join(errors.Join(errs...), trash.pruneOrphans(time.Now(), 0))

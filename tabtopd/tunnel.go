@@ -223,8 +223,8 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 	// A turn taken while logins weren't being slowed doesn't carry over to
 	// the tags, if they've begun to be since: otherwise tunnels opened at
 	// once, before that, would each have their guess checked.
-	slowedAtHello := g.slowed()
-	if !g.loginTurn() {
+	ok, slowedAtHello := g.loginTurnSlowed()
+	if !ok {
 		slowedDown()
 		return
 	}
