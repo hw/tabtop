@@ -39,13 +39,25 @@ With the default `WEB_BASE_PATH=/`, serve TabTop at `https://example.com/`:
 ```sh
 docker run -d --name tabtop -p 127.0.0.1:6080:6080 \
   -e VNC_TOTP_SECRET=... \
-  -e WEB_TRUSTED_PROXIES=172.18.0.5 \
+  -e WEB_TRUSTED_PROXIES=172.17.0.1 \
   ghcr.io/hw/tabtop:latest
 ```
 
-Use the address the proxy uses to reach the container (a fixed Docker
-network IP, or `127.0.0.1` when nginx is on the host). Trust only that
-address, not a whole Docker bridge range; see
+Trust the address the container sees the proxy connect from, which isn't
+always the one the proxy dials:
+
+- **nginx on the host**, as here, reaching a port published only on
+  `127.0.0.1`: the container sees the Docker network's gateway, not
+  `127.0.0.1`. That's `172.17.0.1` on the default bridge; on a network
+  of your own, its gateway (`docker network inspect`). Trusting it is
+  safe only because the port is published on `127.0.0.1` alone: with a
+  plain `-p 6080:6080`, every visitor arrives from that gateway too, and
+  could then pick their own IP.
+- **nginx in a container** on the same Docker network: that container's
+  IP. Give it a fixed one, and trust only that, not the network's range.
+
+`/doctor` (see [Health checks](health-checks.md)) shows the address a
+request came from and whether it was trusted; see
 [WEB_TRUSTED_PROXIES](environment.md#web_trusted_proxies).
 
 ```nginx
@@ -102,7 +114,7 @@ one in the browser.
 docker run -d --name tabtop -p 127.0.0.1:6080:6080 \
   -e VNC_TOTP_SECRET=... \
   -e WEB_BASE_PATH=/tabtop/ \
-  -e WEB_TRUSTED_PROXIES=172.18.0.5 \
+  -e WEB_TRUSTED_PROXIES=172.17.0.1 \
   ghcr.io/hw/tabtop:latest
 ```
 

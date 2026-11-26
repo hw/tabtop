@@ -408,7 +408,7 @@ func TestMissingRootIsLeftOut(t *testing.T) {
 	}
 	// A link to it survives the start's check of links.
 	st, _ := os.Stat(data)
-	if _, _, err := g.shares.create(".", st, shareSpec{Root: "usb", RootBinding: strings.Repeat("0", 64), RootLabel: "usb", Life: time.Hour}, "", "192.0.2.1"); err != nil {
+	if _, _, err := g.shares.create(".", st, 0, shareSpec{Root: "usb", RootBinding: strings.Repeat("0", 64), RootLabel: "usb", Life: time.Hour}, "", "192.0.2.1"); err != nil {
 		t.Fatal(err)
 	}
 	g.shares.flush()

@@ -665,6 +665,11 @@ func (m *fetchManager) run(ctx context.Context, j *fetchJob, u *url.URL) error {
 				k, rerr := res.Body.Read(buf)
 				if k > 0 {
 					timer.Reset(fetchStall)
+					// No more than the size it gave, whatever a resumed
+					// range's answer says (room is kept only when none was).
+					if total >= 0 && got+n+int64(k) > total {
+						return n, false, errors.New("the server sent more than the size it gave")
+					}
 					if room >= 0 && got+n+int64(k) > room {
 						return n, false, fmt.Errorf("it's bigger than the room on the disk (%s, keeping %s free)", humanSize(room), humanSize(fetchSpare))
 					}

@@ -216,9 +216,16 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 		c.Close(websocket.StatusTryAgainLater, loginBusyMsg)
 		return true
 	}
-	if !g.loginTurn() {
+	slowedDown := func() {
 		log.Printf("login from %s refused: logins are being slowed down after many failed ones", ip)
 		c.Close(websocket.StatusTryAgainLater, "Many logins have failed here lately, so they're being slowed down. Try again in a few seconds.")
+	}
+	// A turn taken while logins weren't being slowed doesn't carry over to
+	// the tags, if they've begun to be since: otherwise tunnels opened at
+	// once, before that, would each have their guess checked.
+	slowedAtHello := g.slowed()
+	if !g.loginTurn() {
+		slowedDown()
 		return
 	}
 	if busy() {
@@ -262,6 +269,10 @@ func (g *server) loginTunnel(c *websocket.Conn, ip, browser string, hello []byte
 	if typ != websocket.MessageBinary || len(tags) != 32*len(cands) {
 		attempt.badMessage()
 		c.Close(websocket.StatusPolicyViolation, "bad message")
+		return
+	}
+	if !slowedAtHello && g.slowed() && !g.loginTurn() {
+		slowedDown() // not checked, so not a failure
 		return
 	}
 	if busy() {

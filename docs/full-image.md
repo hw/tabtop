@@ -10,9 +10,11 @@ docker run -d --name tabtop -p 6080:6080 \
   -e VNC_TOTP_SECRET="$(head -c 20 /dev/urandom | base32)" \
   -v tabtop-home:/home/$USER \
   ghcr.io/hw/tabtop:latest
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tabtop | grep VNC_TOTP_SECRET
 ```
 
-The volume is optional. It keeps the home folder, and with it Chromium's
+Add that secret to an authenticator app as a time-based (TOTP) entry; a
+Base32 secret you set isn't printed to the log. The volume is optional. It keeps the home folder, and with it Chromium's
 data, `~/Downloads` and the desktop's settings, when the container is
 replaced.
 

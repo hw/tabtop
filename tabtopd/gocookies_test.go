@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -348,5 +349,35 @@ func TestGoCookiesForgetOlderRequest(t *testing.T) {
 	}
 	if _, ok := j.cookies[goCookieKey{"c", ".keep.com", "/"}]; !ok {
 		t.Error("a cookie of the last hour cleared as older")
+	}
+}
+
+// TestGoCookieJarFloodKeepsOtherSites: pages of a few sites filling the jar
+// (as Moli lets them: 180 cookies of 4 KB a host) lose their own cookies,
+// the least lately changed of the site holding the most first, not another
+// site's sign-in set long before.
+func TestGoCookieJarFloodKeepsOtherSites(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	j := newGoCookieJar("", "")
+	j.now = func() time.Time { return clock }
+	login := goTestCookie("session", "secret", ".bank.example")
+	j.apply(nil, goCookieMap(login))
+	clock = clock.Add(24 * time.Hour)
+	var flood []goCookie
+	for d := range 3 {
+		for i := range 180 {
+			flood = append(flood, goTestCookie(fmt.Sprintf("c%d", i), strings.Repeat("x", maxGoCookieValue-8), fmt.Sprintf(".evil%d.example", d)))
+		}
+	}
+	j.apply(nil, goCookieMap(flood...))
+	if _, ok := j.lookup(login.key()); !ok {
+		t.Fatal("bank.example's sign-in was evicted by other sites' cookies")
+	}
+	bytes := 0
+	for _, c := range j.cookies {
+		bytes += len(c.Name) + len(c.Value)
+	}
+	if len(j.cookies) > maxGoCookies || bytes > maxGoCookieBytes {
+		t.Fatalf("the jar is over its limits: %d cookies, %d bytes", len(j.cookies), bytes)
 	}
 }

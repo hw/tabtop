@@ -303,8 +303,9 @@ a{color:#0969da}@media(prefers-color-scheme:dark){a{color:#58a6ff}}
 		}
 		io.WriteString(w, `</section>`)
 	}
-	if diag, _ := report.Proxy["diagnosis"].(string); diag != "" {
-		fmt.Fprintf(w, `<section class="check"><h2>Proxy</h2><p>%s</p></section>`, html.EscapeString(diag))
+	// (proxyReport's diagnosis: a line for each thing it finds.)
+	if diag, _ := report.Proxy["diagnosis"].([]string); len(diag) > 0 {
+		fmt.Fprintf(w, `<section class="check"><h2>Proxy</h2><p>%s</p></section>`, html.EscapeString(strings.Join(diag, " ")))
 	}
 	fmt.Fprintf(w, `<p class="meta">Clock UTC %s · TOTP step %d · JSON: add <code>Accept: application/json</code> or open with curl. Docs: health-checks.md</p></html>`,
 		html.EscapeString(report.Clock.UTC), report.Clock.TOTPStep)

@@ -568,3 +568,20 @@ func TestIPWarning(t *testing.T) {
 		}
 	}
 }
+
+// TestDoctorHTMLShowsProxyDiagnosis: the HTML report shows the proxy
+// diagnosis the JSON one has (proxyReport's, a line for each finding).
+func TestDoctorHTMLShowsProxyDiagnosis(t *testing.T) {
+	_, srv := newDoctorServer(t, true)
+	req, _ := http.NewRequest("GET", srv.URL+"/doctor", nil)
+	req.Header.Set("Accept", "text/html")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(body), "Direct connection from") {
+		t.Fatalf("the HTML report lacks the proxy diagnosis (%d bytes)", len(body))
+	}
+}

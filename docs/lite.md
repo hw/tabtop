@@ -118,10 +118,12 @@ docker run -d --name tabtop -p 6080:6080 --restart unless-stopped \
   -e WEB_TTY_COMMAND="ssh -t $USER@host.docker.internal" \
   -v tabtop-home:/home/$USER \
   ghcr.io/hw/tabtop-lite:latest
-docker logs tabtop    # the TOTP secret's QR code, for an authenticator app
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tabtop | grep VNC_TOTP_SECRET
 ```
 
-Log in with the login password followed by the code, at port 6080. `-p 6080:6080`
+Add that secret to an authenticator app as a time-based (TOTP) entry; a
+Base32 secret you set isn't printed to the log. Log in with the login password
+followed by the code, at port 6080. `-p 6080:6080`
 opens it on every address of the host: put it behind HTTPS, or use
 `-p 127.0.0.1:6080:6080` behind a reverse proxy on the host, before others
 can reach it. Each part is optional, and described below.

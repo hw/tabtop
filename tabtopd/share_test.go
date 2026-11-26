@@ -1142,7 +1142,7 @@ func TestShareLimitOfLinks(t *testing.T) {
 	os.WriteFile(filepath.Join(g.downloadsDir, "f"), []byte("x"), 0o644)
 	st, _ := os.Stat(filepath.Join(g.downloadsDir, "f"))
 	for range maxShares {
-		if _, _, err := g.shares.create("f", st, shareSpec{Root: "downloads", RootBinding: g.roots[0].Binding, RootLabel: "Downloads", Life: time.Hour}, "", "192.0.2.1"); err != nil {
+		if _, _, err := g.shares.create("f", st, 0, shareSpec{Root: "downloads", RootBinding: g.roots[0].Binding, RootLabel: "Downloads", Life: time.Hour}, "", "192.0.2.1"); err != nil {
 			t.Fatal(err)
 		}
 	}
