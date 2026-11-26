@@ -14,7 +14,9 @@
 //
 // The first tab, as this page opens with none kept, is normal or private
 // as Settings says (Starting tab: privateDefault, from the server: gosites.go).
-// New tab always opens a normal tab, New private tab a private one.
+// New tab opens a normal tab, New private tab a private one; but with the
+// tab shown blank (no site opened in it) and of the other kind, that tab
+// is switched instead, in its place (newTab).
 //
 // A window a page opens comes here (go.js's "popup") and opens in a tab of
 // its own (private, if the page's was), or, with as many tabs as may be, in
@@ -35,7 +37,7 @@ const $ = (id) => document.getElementById(id);
 const strip = $("tabs"), frames = $("frames"), overview = $("overview");
 const compact = matchMedia("(pointer: coarse), (max-width: 600px)");
 
-let tabs = [];    // {id, title, loading, at, private, frame, el}
+let tabs = [];    // {id, title, loading, blank, at, private, frame, el}
 let shown = null; // the tab shown
 let next = 1;
 
@@ -53,7 +55,7 @@ function keep() {
 // open makes a tab: a frame of go/tab with its number, told what to load
 // (a window a page opened) once it's there; private, told so before it
 // starts.
-function open({ id = next++, url = "", show = true, private: priv = false } = {}) {
+function open({ id = next++, url = "", show = true, private: priv = false, restored = false } = {}) {
     if (tabs.length >= MAX_TABS) return null;
     next = Math.max(next, id + 1);
     try {
@@ -67,7 +69,9 @@ function open({ id = next++, url = "", show = true, private: priv = false } = {}
     frame.title = title;
     frame.allow = "autoplay; fullscreen; clipboard-write; clipboard-read; geolocation; web-share; picture-in-picture";
     frame.hidden = true;
-    const t = { id, title, loading: false, at: -1, private: priv, frame, badge: 0 };
+    // (Blank till it says otherwise, unless it's to load something, or is
+    // one kept from before this page was reloaded.)
+    const t = { id, title, loading: false, blank: !url && !restored, at: -1, private: priv, frame, badge: 0 };
     frame.addEventListener("load", () => {
         tell(t, { type: "count", count: tabs.length, compact: compact.matches });
         if (url) tell(t, { type: "open", url });
@@ -84,10 +88,39 @@ function open({ id = next++, url = "", show = true, private: priv = false } = {}
     return t;
 }
 
+// newTab opens a tab, private or not, as asked from the tab from (the one
+// shown, for this page's buttons). If from is blank and of the other kind,
+// it's switched instead: a new tab in its place, it gone.
+function newTab(priv, from = shown) {
+    if (!from || !from.blank || from.private === priv || !tabs.includes(from)) return open({ private: priv });
+    const i = tabs.indexOf(from), after = from.el.nextSibling;
+    retire(from);  // (first: its place, under the most tabs there may be, is the new one's)
+    const t = open({ private: priv }) ?? open({ private: from.private });  // (private not possible here: as it was)
+    if (!t) return null;
+    tabs.splice(tabs.indexOf(t), 1);
+    tabs.splice(i, 0, t);
+    strip.insertBefore(t.el, after);
+    counted();
+    drawOverview();
+    keep();
+    return t;
+}
+
 function close(t) {
     const i = tabs.indexOf(t);
     if (i < 0) return;
-    tabs.splice(i, 1);
+    retire(t);
+    if (!tabs.length) open();
+    else if (shown === t) showTab(tabs[Math.min(i, tabs.length - 1)]);
+    counted();
+    drawOverview();
+    keep();
+}
+
+// retire ends tab t: its engine, its frame, its place in the strip, and
+// what this browser tab keeps of it.
+function retire(t) {
+    tabs.splice(tabs.indexOf(t), 1);
     if (t.badge) appBadge();  // (its badge gone with it)
     // Its engine closed at once, not kept for a connection to come back
     // (goresume.go): told first, then its frame (and tunnel) goes.
@@ -102,11 +135,6 @@ function close(t) {
         sessionStorage.removeItem(`tabtop-go-desktop:${t.id}`);
         sessionStorage.removeItem(`tabtop-go-private:${t.id}`);
     } catch { /* none */ }
-    if (!tabs.length) open();
-    else if (shown === t) showTab(tabs[Math.min(i, tabs.length - 1)]);
-    counted();
-    drawOverview();
-    keep();
 }
 
 function showTab(t) {
@@ -247,16 +275,16 @@ overview.querySelector(".done").addEventListener("click", () => {
 });
 overview.querySelector(".new").addEventListener("click", () => {
     overview.hidden = true;
-    open();
+    newTab(false);
 });
 overview.querySelector(".new-private").addEventListener("click", () => {
     overview.hidden = true;
-    open({ private: true });
+    newTab(true);
 });
 $("new_private").innerHTML = PRIVATE_ICON;
-$("new_private").addEventListener("click", () => open({ private: true }));
+$("new_private").addEventListener("click", () => newTab(true));
 overview.addEventListener("keydown", (e) => { if (e.key === "Escape") overview.querySelector(".done").click(); });
-$("new").addEventListener("click", () => open());
+$("new").addEventListener("click", () => newTab(false));
 
 // --- The history ---------------------------------------------------------------
 //
@@ -280,6 +308,7 @@ window.addEventListener("message", (e) => {
         case "state":
             t.title = typeof m.title === "string" && m.title.trim() ? m.title.slice(0, 200) : "New tab";
             t.loading = !!m.loading;
+            t.blank = m.blank === true;
             titled(t);
             break;
         case "badge":
@@ -311,7 +340,7 @@ window.addEventListener("message", (e) => {
             break;
         case "new-tab":
             // From the tab's menu: a tab, private or not, shown.
-            open({ private: m.private === true });
+            newTab(m.private === true, t);
             break;
         case "show":
             if (m.fullscreen) tell(t, { type: "window-list", tabs: tabs.map((x) => ({ id: x.id, title: x.title, current: x === shown })) });
@@ -349,7 +378,7 @@ try { kept = JSON.parse(sessionStorage.getItem(KEPT) || "null"); } catch { /* no
 const ids = Array.isArray(kept?.ids) ? kept.ids.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, MAX_TABS) : [];
 next = Number.isSafeInteger(kept?.next) ? kept.next : 1;
 const privateIds = new Set(Array.isArray(kept?.private) ? kept.private : []);
-for (const id of ids) open({ id, show: false, private: privateIds.has(id) });
+for (const id of ids) open({ id, show: false, private: privateIds.has(id), restored: true });
 // (The first tab's kind, as Settings says: read before it's made.)
 if (!tabs.length) open({ private: await privateDefault() });
 showTab(tabOf(kept?.shown) ?? tabs[0]);

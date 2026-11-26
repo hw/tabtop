@@ -70,6 +70,37 @@ var errGoDNS = errors.New("the site's name couldn't be found by the DNS over HTT
 // not found, but not the server's answer (Settings' status leaves it out).
 var errGoDNSName = fmt.Errorf("%w: not a name that can be asked", errGoDNS)
 
+// goNameMissing reports whether nothing says host exists: it isn't an
+// address, has no local record or /etc/hosts line, and the DoH server (or
+// the system's DNS) answers that there's no such name. A lookup that
+// couldn't get an answer isn't that: the name may exist. (A mistyped
+// address the person typed is then searched for: go.js.)
+func goNameMissing(ctx context.Context, host string) bool {
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return false
+	}
+	if _, ok := goHostsLookup(host); ok {
+		return false
+	}
+	if _, ok := goEtcHostsLookup(host); ok {
+		return false
+	}
+	if doh := goDoHNow.Load(); doh != nil {
+		_, err := doh.lookup(ctx, host)
+		return err == errGoDNS || err == errGoDNSName // (not one wrapping a failure)
+	}
+	_, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	dnsErr, ok := errors.AsType[*net.DNSError](err)
+	return ok && dnsErr.IsNotFound
+}
+
+// goNameCheckTimeout bounds goNameMissing's lookup, after a load failed.
+const goNameCheckTimeout = 4 * time.Second
+
 // goDoHNow is the DoH in use; nil: the system's DNS.
 var goDoHNow atomic.Pointer[goDoH]
 

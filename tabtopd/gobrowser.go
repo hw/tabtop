@@ -1210,11 +1210,20 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 		if err == nil && r.ErrorText != "" {
 			err = errors.New(r.ErrorText)
 		}
+		missing := false
 		if err != nil {
 			// Not loaded: certificate errors as the page still shown is.
 			cctx, ccancel := context.WithTimeout(context.Background(), goCallTimeout)
 			b.certIgnore(cctx, shown)
 			ccancel()
+			// The engine reaches sites through the proxy, which says only
+			// that it couldn't: whether that's for a name no site has is
+			// asked here (the page then searches for what was typed).
+			if !goCertError(err.Error()) {
+				mctx, mcancel := context.WithTimeout(context.Background(), goNameCheckTimeout)
+				missing = goNameMissing(mctx, goPageHost(u))
+				mcancel()
+			}
 		}
 		return func() {
 			if r.FrameID != "" {
@@ -1248,6 +1257,10 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 				if at != "" {
 					b.failedURL = at
 					b.certWarning(gen, at, "net::ERR_CERT_REVOKED")
+				} else if missing {
+					host := goPageHost(u)
+					b.send(map[string]any{"type": "go-error", "gen": gen, "unresolved": host,
+						"message": "The page couldn't be loaded: no site has the name " + host + "."})
 				} else {
 					b.fail(gen, goNavError(err))
 				}

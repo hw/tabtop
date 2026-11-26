@@ -1359,7 +1359,9 @@ function update() {
         } catch { /* not kept */ }
     }
     // Its title and whether it's loading, for its tab.
-    toTabs({ type: "state", title: entry ? entry.title || hostOf(entry.url) : "New tab", loading: loading || rendering });
+    // blank: no site opened in it yet, nor one loading (go-tabs.js: a new
+    // tab of the other kind switches this one instead).
+    toTabs({ type: "state", title: entry ? entry.title || hostOf(entry.url) : "New tab", loading: loading || rendering, blank: !entry && !loading && !rendering });
 }
 
 // The address bar, but while it's edited, shows the site only (the words
@@ -1480,10 +1482,12 @@ function hostOf(url) {
 
 // load has the engine load url: as a new entry after the one shown, or
 // (push false) as the one shown again.
-function load(url, { push = true } = {}) {
+// typed: an address typed in the address bar (not words searched for), to
+// be searched for instead if no site has its name (see go-error).
+function load(url, { push = true, typed = false } = {}) {
     if (push) {
         entries = entries.slice(0, at + 1);
-        entries.push({ url, title: "" });
+        entries.push(typed ? { url, title: "", typed } : { url, title: "" });
         at = entries.length - 1;
         remember();
     }
@@ -2296,12 +2300,27 @@ function message(m) {
             certWarning(m);
             update();
             break;
-        case "go-error":
+        case "go-error": {
+            // An address typed whose name no site has (a typo): searched
+            // for, as typed (without http:// or https://), in its place.
+            // (Only for the host typed; a name and password in it never sent.)
+            const e = at >= 0 ? entries[at] : null;
+            let host = "";
+            try { host = new URL(e?.url).hostname; } catch { /* none */ }
+            if (typeof m.unresolved === "string" && m.unresolved && e?.typed && host === m.unresolved.toLowerCase()) {
+                const words = e.url.replace(/^https?:\/\//i, "").replace(/^[^/?#]*@/, "");
+                const url = searchFor(words);
+                entries[at] = { url, title: "" };
+                load(url, { push: false });
+                note(`No site has the name ${m.unresolved}: searched for it instead.`);
+                break;
+            }
             loading = rendering = false;
             show("");
             warn(m.message || "The page couldn’t be loaded.", { retry: at >= 0 ? () => load(entries[at].url, { push: false }) : null, label: "Retry", edit: true });
             update();
             break;
+        }
     }
 }
 
@@ -3429,7 +3448,7 @@ $("go_address").addEventListener("submit", (e) => {
     const url = target(address.value);
     if (url) {
         address.blur();
-        load(url);
+        load(url, { typed: !isSearch(url) });
     }
 });
 back.addEventListener("click", () => held || (at > 0 ? goBy(-1) : showHistory(back, -1)));
