@@ -310,3 +310,38 @@ func TestShareLinksEndAllWhenRemoved(t *testing.T) {
 		t.Fatal("a link kept, after its removal worked, for what's at its path")
 	}
 }
+
+// Emptying Trash that fails part way, its entry's record (info.json) gone
+// with what could be removed: the rest is an orphan, removed later with
+// nothing to say what it was, so the links into it end now.
+func TestShareLinksEndWhenTrashEntryOrphaned(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes from a read-only folder")
+	}
+	g, srv, s, _ := newShareServer(t)
+	dir := filepath.Join(g.downloadsDir, "a", "keep")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "k.txt"), []byte("k"), 0o644)
+	makeShare(t, srv, s, "a/keep", 3600, 0)
+	req := func(r tunnelRequest) map[string]any {
+		return openSession(t, testCtx(t), srv, s).request(t, testCtx(t), r)
+	}
+	r := req(tunnelRequest{Type: "delete", Path: "a"})
+	id, _ := r["id"].(string)
+	if id == "" {
+		t.Fatalf("delete: %v", r)
+	}
+	keep := filepath.Join(g.downloadsDir, trashDir, id, "data", "keep")
+	os.Chmod(keep, 0o555) // (k.txt can't be removed)
+	t.Cleanup(func() { os.Chmod(keep, 0o755) })
+	req(tunnelRequest{Type: "trash-empty"})
+	if _, err := os.Stat(filepath.Join(g.downloadsDir, trashDir, id, "info.json")); err == nil {
+		t.Skip("the entry's record wasn't removed: not an orphan")
+	}
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d link(s) into an orphaned Trash entry kept", n)
+	}
+}

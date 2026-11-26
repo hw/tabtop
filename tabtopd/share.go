@@ -242,7 +242,18 @@ func (g *fileService) trashLinks(trash *os.Root, e trashEntry) (tried func(error
 	}
 	at := path.Join(e.ID, "data")
 	ending := g.linksInto(trash, at, e.Path)
-	return func(err error) { g.endGone(trash, at, e.Path, ending, err) }
+	return func(err error) {
+		// Failed part way, but its record (info.json) gone with what went:
+		// what's left is an orphan, removed later (pruneOrphans) with
+		// nothing to say what it was, nor restorable. As good as gone: its
+		// links all end now.
+		if err != nil {
+			if _, serr := trash.Lstat(path.Join(e.ID, "info.json")); errors.Is(serr, fs.ErrNotExist) {
+				err = nil
+			}
+		}
+		g.endGone(trash, at, e.Path, ending, err)
+	}
 }
 
 // shareStore holds the links, and writes them to file (if it isn't "")
