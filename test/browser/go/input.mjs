@@ -302,7 +302,8 @@ export async function input(ctx) {
         await frameWait(`document.getElementById("p")?.textContent === "query https://exa mple.com/x"`, "searched for as typed");
         // An address typed whose name no site has (a typo; .invalid never
         // is one): searched for as typed, without http:// or https://, in
-        // its place, so Back goes to the page before.
+        // its place, so Back goes to the page before. (One with a name and
+        // password is refused by the server before it's loaded.)
         for (const [typed, words] of [["nosuchsite.invalid", "nosuchsite.invalid"], ["https://nosuchsite.invalid/x", "nosuchsite.invalid/x"]]) {
             await goTo(site + "index.html", "Fixture");
             await submitUrl(typed);

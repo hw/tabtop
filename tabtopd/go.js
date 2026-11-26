@@ -2303,9 +2303,12 @@ function message(m) {
         case "go-error": {
             // An address typed whose name no site has (a typo): searched
             // for, as typed (without http:// or https://), in its place.
+            // (Only for the host typed; a name and password in it never sent.)
             const e = at >= 0 ? entries[at] : null;
-            if (typeof m.unresolved === "string" && m.unresolved && e?.typed) {
-                const words = e.url.replace(/^https?:\/\//i, "");
+            let host = "";
+            try { host = new URL(e?.url).hostname; } catch { /* none */ }
+            if (typeof m.unresolved === "string" && m.unresolved && e?.typed && host === m.unresolved.toLowerCase()) {
+                const words = e.url.replace(/^https?:\/\//i, "").replace(/^[^/?#]*@/, "");
                 const url = searchFor(words);
                 entries[at] = { url, title: "" };
                 load(url, { push: false });
