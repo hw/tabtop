@@ -163,12 +163,12 @@ func (l *shareLink) matches(f *os.File, st fs.FileInfo) bool {
 // linksInto is the links to what's about to be removed for good: what's
 // at at in r, which was at was in the root (or still is). Each is matched
 // by what it was made for (see matches), so a link to something made at
-// was since is left out. They're revoked (endLinks) once it's gone, not
-// before: a removal refused or failing ends none. Otherwise, on a
-// filesystem that doesn't say when a file was made, the next folder made
-// there could be given the inode freed, and a link to the one removed
-// would serve it.
-func (g *fileService) linksInto(r *os.Root, at, was string) map[string]bool {
+// was since is left out. Those whose target is gone once the removal's
+// been tried are revoked (endGone): all, if it worked; none, if it was
+// refused; what went, if it failed part way. Otherwise, on a filesystem
+// that doesn't say when a file was made, the next folder made there could
+// be given the inode freed, and a link to the one removed would serve it.
+func (g *fileService) linksInto(r *os.Root, at, was string) map[string]*shareLink {
 	s := g.shares
 	if s == nil {
 		return nil
@@ -181,33 +181,50 @@ func (g *fileService) linksInto(r *os.Root, at, was string) map[string]bool {
 		}
 	}
 	s.mu.Unlock()
-	ending := map[string]bool{}
+	ending := map[string]*shareLink{}
 	for _, l := range under {
-		p := at
-		if was == "." {
-			p = path.Join(at, l.Path)
-		} else if l.Path != was {
-			p = path.Join(at, strings.TrimPrefix(l.Path, was+"/"))
+		if linkTargetIn(r, at, was, l) {
+			ending[l.ID] = l
 		}
-		f, err := r.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-		if err != nil {
-			continue
-		}
-		if st, err := f.Stat(); err == nil && l.matches(f, st) {
-			ending[l.ID] = true
-		}
-		f.Close()
 	}
 	return ending
 }
 
-// endLinks revokes the links ending (linksInto's), what they were to, at
-// was, gone for good.
-func (g *fileService) endLinks(ending map[string]bool, was string) {
+// linkTargetIn reports whether what l was made for is at its place under
+// at in r (at being where was, a path in the root, is now).
+func linkTargetIn(r *os.Root, at, was string, l *shareLink) bool {
+	p := at
+	if was == "." {
+		p = path.Join(at, l.Path)
+	} else if l.Path != was {
+		p = path.Join(at, strings.TrimPrefix(l.Path, was+"/"))
+	}
+	f, err := r.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	return err == nil && l.matches(f, st)
+}
+
+// endGone revokes those of the links ending (linksInto's, for what was at
+// at in r) whose target isn't there any more, once its removal's been
+// tried: before anything removed is put back elsewhere.
+func (g *fileService) endGone(r *os.Root, at, was string, ending map[string]*shareLink) {
 	if len(ending) == 0 || g.shares == nil {
 		return
 	}
-	n, err := g.shares.revoke(func(l *shareLink) bool { return ending[l.ID] })
+	gone := map[string]bool{}
+	for id, l := range ending {
+		if !linkTargetIn(r, at, was, l) {
+			gone[id] = true
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	n, err := g.shares.revoke(func(l *shareLink) bool { return gone[l.ID] })
 	if err != nil {
 		log.Printf("revoking the links to %q, deleted: %v", was, err)
 	} else if n > 0 {
@@ -216,13 +233,14 @@ func (g *fileService) endLinks(ending map[string]bool, was string) {
 }
 
 // trashLinks is linksInto for Trash entry e, in the Trash root trash: what
-// to call once it's removed.
-func (g *fileService) trashLinks(trash *os.Root, e trashEntry) (removed func()) {
+// to call once its removal's been tried.
+func (g *fileService) trashLinks(trash *os.Root, e trashEntry) (tried func()) {
 	if !validTrashID(e.ID) || e.Path == "" {
 		return func() {}
 	}
-	ending := g.linksInto(trash, path.Join(e.ID, "data"), e.Path)
-	return func() { g.endLinks(ending, e.Path) }
+	at := path.Join(e.ID, "data")
+	ending := g.linksInto(trash, at, e.Path)
+	return func() { g.endGone(trash, at, e.Path, ending) }
 }
 
 // shareStore holds the links, and writes them to file (if it isn't "")
