@@ -19,7 +19,7 @@
 //     or the files page (fs/index.html), where the pages link to each other
 //     (see nav.js's tabtopOffline), each in a tab of its own;
 //   - gives the page a Content-Security-Policy that lets it reach the
-//     server only by the tunnel's WebSocket: nothing is loaded from the
+//     server only by the encrypted tunnel: nothing is loaded from the
 //     server;
 //   - builds the previews' sandboxed frames (Markdown and HTML, EPUB, PDF)
 //     itself, from the tree (frameHTML);
@@ -38,11 +38,12 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OfflineConnection } from "./offline-connection.mjs";
 
 // launcher is the page's script, run in the browser with the tree
 // ({text, bin}: files by path, as text or base64). Written here as a
 // function, and given to the page as its source.
-function launcher(tree) {
+function launcher(tree, OfflineConnection) {
     "use strict";
     const { text, bin } = tree;
     const $ = (id) => document.getElementById(id);
@@ -481,15 +482,16 @@ return Object.freeze({ base,
     };
     // csp is the page's policy: its scripts, styles and the rest only from
     // the tree (blob: URLs) or itself, and the network only the server's
-    // WebSocket, the tunnel.
+    // WebSocket and its polling fallback.
     const cspFor = (server) => {
         const ws = (server.protocol === "https:" ? "wss://" : "ws://") + server.host;
+        const poll = new URL("session/poll", server).href.replace(/;/g, "%3B").replace(/,/g, "%2C");
         return [
             "default-src 'none'",
             "script-src blob: data: 'unsafe-inline' 'wasm-unsafe-eval'",
             "style-src blob: 'unsafe-inline'",
             "img-src blob: data:", "media-src blob: data:", "font-src blob: data:",
-            `connect-src blob: data: ${ws}`,
+            `connect-src blob: data: ${ws} ${poll} ${poll}/`,
             "worker-src blob: data:", "frame-src blob:", "child-src blob:",
             "object-src 'none'", "base-uri 'none'", "form-action 'none'",
         ].join("; ");
@@ -529,6 +531,15 @@ return Object.freeze({ base,
             // too, not only by the policy.)
             const entry = PAGES[page];
             const real = window.fetch.bind(window), here = location.href.replace(/[?#].*$/, "").replace(/[^/]*$/, "");
+            const pollURL = new URL("session/poll", base);
+            const fetchPoll = (input, init) => {
+                const url = new URL(input);
+                if (url.origin !== pollURL.origin || (url.pathname !== pollURL.pathname &&
+                    !url.pathname.startsWith(pollURL.pathname + "/"))) {
+                    return Promise.reject(new TypeError("Invalid offline transport URL"));
+                }
+                return real(url, { ...init, credentials: "omit", cache: "no-store", redirect: "error" });
+            };
             window.fetch = (input, init) => {
                 const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input?.url;
                 if (typeof raw === "string") {
@@ -566,8 +577,16 @@ return Object.freeze({ base,
                     this.postMessage({ tabtopFiles: true }, [port2]);
                 }
             };
+            let upgradeLost = false;
             window.tabtopOffline = Object.freeze({
                 page, off: OFF, importFrom, components, frameHTML, frameFile,
+                connect: (url) => {
+                    const preferPolling = upgradeLost;
+                    upgradeLost = false;
+                    return new OfflineConnection(url, {
+                        fetch: fetchPoll, preferPolling, onUpgradeLost: () => { upgradeLost = true; },
+                    });
+                },
                 has: (id) => Object.hasOwn(PAGES, id) && has(PAGES[id]),
                 href: (id) => `${thisFile}?page=${encodeURIComponent(id)}${id === "desktop" ? "&autoconnect=1" : ""}`,
             });
@@ -612,13 +631,21 @@ export function buildFileLauncherHTML(files) {
     }
     if (!text["vnc.html"]) throw new Error("client tree is missing vnc.html");
     for (const page of ["tty/index.html", "fs/index.html"]) if (Object.hasOwn(files, page) && typeof text[page] !== "string") throw new Error(`${page} isn't text`);
+    // Substitute the connection factory only in the sealed HTML's copy.
+    // The gateway and the unpacked client tree keep the native constructor.
+    const protocol = "tabtop/tunnel-protocol.js";
+    if (text[protocol]) {
+        const constructor = /new WebSocket\(([\w$]+)\)/g;
+        if ([...text[protocol].matchAll(constructor)].length !== 1) throw new Error("offline tunnel factory site changed");
+        text[protocol] = text[protocol].replace(constructor, "(globalThis.tabtopOffline?.connect($1) ?? $&)");
+    }
     // The tree, as a script's JSON: "<" escaped, as the files have "</script>"
     // in them, which would end the script they're in; and the launcher's own
     // "</script>"s written "<\/script>" (the same string, not the end).
     const tree = JSON.stringify({ text, bin }).replace(/</g, "\\u003c");
     // (And its own "<script"s, in its strings and patterns, written
     // "\x3Cscript", the same in them: so the page has the one script.)
-    const script = `(${launcher.toString().replace(/<script/g, "\\x3Cscript")})(${tree});`.replace(/<\/script/gi, "<\\/script");
+    const script = `(${launcher.toString().replace(/<script/g, "\\x3Cscript")})(${tree}, ${OfflineConnection});`.replace(/<\/script/gi, "<\\/script");
     return `<!DOCTYPE html>
 <html lang="en">
 <head>

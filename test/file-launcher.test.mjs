@@ -84,6 +84,13 @@ test("the launcher: pages chosen by ?page=, linked to each other, the server rea
     const html = buildFileLauncherHTML({ "vnc.html": "<html><head></head><body></body></html>", "tty/index.html": "<!doctype html><meta charset=utf-8><body>", "fs/index.html": "<!doctype html><body>" });
     for (const page of ["vnc.html", "tty/index.html", "fs/index.html"]) assert.ok(html.includes(JSON.stringify(page)), page);
     assert.match(html, /default-src 'none'/);
-    assert.match(html, /connect-src blob: data: \$\{ws\}/);
+    assert.match(html, /connect-src blob: data: \$\{ws\} \$\{poll\} \$\{poll\}\//);
     assert.match(html, /tabtopOffline/);
+});
+
+test("the sealed HTML alone selects the offline connection factory", () => {
+    const { files } = JSON.parse(readFileSync(new URL("../tabtopd/bootstrap.client.json", import.meta.url), "utf8"));
+    assert.match(files["tabtop.html"], /globalThis\.tabtopOffline\?\.connect\(/);
+    assert.match(files["tabtop.html"], /class OfflineConnection/);
+    assert.doesNotMatch(files["tabtop/tunnel-protocol.js"], /tabtopOffline/);
 });

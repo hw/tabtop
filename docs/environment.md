@@ -36,6 +36,7 @@
 | [WEB_TTY_TMUX_SESSION](#web_tty_tmux_host-and-web_tty_tmux_session) | `tabtop` remotely | Remote tmux session to attach/create; requires `WEB_TTY_TMUX_HOST`. |
 | [WEB_TTY_COMMAND](#web_tty_command) | *(empty)* | Without a tmux host, a command each terminal tab runs instead of local tmux, such as `ssh -t me@host.docker.internal`. See [WEB_TTY_COMMAND](#web_tty_command). |
 | [WEB_OFFLINE_CLIENT](#web_offline_client) | `0` | `1` lets the offline client (`tabtop.html`, unlocked from the bootstrap pack and opened as a file) connect. |
+| [WEB_OFFLINE_POLL_ROTATE](#web_offline_client) | `45s` | How often the offline client rotates its HTTP polling connection ID while using the fallback transport. |
 | [WEB_SHARE](#web_share) | `1` | `1` lets the files page make [share links](downloads.md#share-links) and [upload links](downloads.md#upload-links): plain URLs for downloading files and folders, or uploading into a folder, for `wget`, `curl` or someone without a login, outside the encrypted tunnel. `0` turns them off. |
 | [WEB_GO_FETCH](#web_go_fetch-and-web_go_fetch_private) | `1` | `1` lets the files page have the server [fetch a URL](downloads.md#fetching-from-a-url) into `~/Downloads`. `0` turns it off. |
 | [WEB_GO_FETCH_PRIVATE](#web_go_fetch-and-web_go_fetch_private) | `0` | `1` lets fetches reach private networks (such as a NAS) too, not only the internet. |
@@ -58,7 +59,7 @@ The container won't start if `VNC_USER`, `VNC_TOTP_DIGITS`, `VNC_GEOMETRY`, `VNC
 `VNC_X509` (or what it needs; see [VNC_X509](#vnc_x509)),
 `WEB_BASE_PATH`, `WEB_TRUSTED_PROXIES`, `WEB_TRUST_NPROXIES`, `WEB_HOSTS`,
 `WEB_REMOTE_APPROVAL_URL`, `WEB_SESSION_MAX`, `WEB_SESSION_IDLE`, `WEB_AUDIO`, `WEB_MIC`, `WEB_AUDIO_BITRATE`,
-`WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`,
+`WEB_AUDIO_SERVER`, `WEB_AUDIO_SINK`, `WEB_OFFLINE_POLL_ROTATE`,
 `WEB_VNC`, `WEB_FS`, `WEB_FS_ROOTS`, `WEB_TTY`, `WEB_TTY_COMMAND`, `WEB_TTY_TMUX_HOST`, `WEB_TTY_TMUX_SESSION`, `WEB_SHARE`, `WEB_OFFLINE_CLIENT`, `WEB_GO_FETCH`, `WEB_GO_FETCH_PRIVATE`, `WEB_PREVIEW_FETCH_PRIVATE`, `WEB_GO` (or `WEB_GO_ENGINE`, when `WEB_GO=1` and it isn't an executable file), `WEB_GO_UNSANDBOXED`, `WEB_GO_PRIVATE`, `WEB_GO_CACHE`, `WEB_DISASM_DISABLE`, `WEB_DOCTOR_ENDPOINT`, `TZ`, `VNC_PASSWORD` or
 `VNC_UPSTREAM_PASSWORD` has an invalid value, or if `WEB_VNC`, `WEB_TTY`,
 `WEB_FS` and `WEB_GO` are all `0`. The error is printed to the log. 
@@ -789,6 +790,14 @@ whether the page used HTTPS. So, by a name other than those
 [`WEB_HOSTS`](#web_hosts) allows without listing, the offline client
 connects only over HTTPS that a trusted proxy reports, or by a name listed
 in `WEB_HOSTS`. The equivalent gateway flag is `-offline-client`.
+
+The offline client first opens `/session` as a WebSocket. If the upgrade
+fails, it carries the same encrypted protocol over HTTP long polling at
+`/session/poll` and its subpaths. Both addresses are under `WEB_BASE_PATH`.
+Poll requests can wait up to 20 seconds for a message. During polling,
+`WEB_OFFLINE_POLL_ROTATE` (gateway flag `-offline-poll-rotate`) controls
+how often the client switches to a new connection ID. The switch keeps
+the same upstream WebSocket and tunnel state.
 
 ## `WEB_SHARE`
 
