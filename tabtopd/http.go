@@ -48,6 +48,11 @@ func (g *server) handler() http.Handler {
 	}
 	mux.HandleFunc("/tabtop/", g.scripts)
 	mux.HandleFunc("/session", g.tunnelWS)
+	if g.offlineClient {
+		poll := g.offlinePollHandler()
+		mux.Handle(pollPath, poll)
+		mux.Handle(pollPath+"/", poll)
+	}
 	mux.HandleFunc("/auth/approve", g.approvePage)
 	mux.HandleFunc("/healthz", g.healthz)
 	mux.HandleFunc("/doctor", g.doctor)

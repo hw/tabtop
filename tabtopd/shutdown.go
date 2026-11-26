@@ -83,6 +83,7 @@ func (d *tunnelDrain) stop(ctx context.Context) error {
 // left to the next start (removeStaleUploads).
 func (g *server) shutdown(ctx context.Context) error {
 	g.cancelFetches(func(*fetchJob) bool { return true })
+	g.offlinePoll.stop()
 	err := g.drain.stop(ctx)
 	for _, service := range g.fileServices() {
 		if service.root.fetches != nil {

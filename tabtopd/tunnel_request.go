@@ -227,6 +227,12 @@ type fileEntry struct {
 // on its visitors' own network. Either way, tunnelHostAllowed refuses a
 // browser's tunnel by a name a website could point here (DNS rebinding).
 func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
+	g.tunnelUpgrade(w, r, r)
+}
+
+// The offline bridge upgrades a private socket while applying the public
+// request's host, client IP and authentication metadata to the tunnel.
+func (g *server) tunnelUpgrade(w http.ResponseWriter, upgrade, r *http.Request) {
 	ip := g.clientIP(r)
 	handshaken, ok := g.handshakes.start(limitKey(ip))
 	if !ok {
@@ -235,10 +241,10 @@ func (g *server) tunnelWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer handshaken()
 	var accept *websocket.AcceptOptions
-	if g.offlineClient && r.Header.Get("Origin") == "null" {
+	if g.offlineClient && upgrade.Header.Get("Origin") == "null" {
 		accept = &websocket.AcceptOptions{InsecureSkipVerify: true}
 	}
-	c, err := websocket.Accept(w, r, accept)
+	c, err := websocket.Accept(w, upgrade, accept)
 	if err != nil {
 		return
 	}

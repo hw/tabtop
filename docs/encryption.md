@@ -166,9 +166,11 @@ they do when served: each opens `tabtop.html?page=desktop`, `?page=terminal`,
 server you last entered. The remote browser is one tab (not the tabs' page,
 whose tabs are the server's own pages); its page is shown in a frame the
 client builds from its own files, as the previews' are. Site controls and
-Settings aren't in it: open the browser from the server for them. Each page may reach the server only by the tunnel's WebSocket: its
-Content-Security-Policy refuses any script, style, picture, frame or
-request from anywhere else, so nothing the server sends can run in it.
+Settings are available from the gateway-served remote browser. Each
+offline page can connect to the gateway through the encrypted tunnel. It
+tries a WebSocket first and uses HTTP long polling if the upgrade fails.
+Its Content Security Policy limits network access to those tunnel
+endpoints, and scripts, styles, and frames come from the sealed client.
 
 To keep the file small (about 6.5 MB), its scripts, stylesheets and JSON
 are minified when the pack is built (esbuild's WebAssembly build, its

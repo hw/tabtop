@@ -18,7 +18,8 @@ type serverConfig struct {
 	vncOff, fsOff     bool
 	// offlineClient lets the offline client (bootstrap's tabtop.html, opened
 	// as a file, its origin "null") open the tunnel; see tunnelWS.
-	offlineClient bool
+	offlineClient     bool
+	offlinePollRotate time.Duration
 	// hosts are names a browser's tunnel may come by over plain HTTP,
 	// besides those no website can point here (WEB_HOSTS; hosts.go).
 	hosts                                 []string
@@ -71,7 +72,7 @@ type serverConfig struct {
 }
 
 func defaultServerConfig() serverConfig {
-	return serverConfig{base: "/", novncDir: "/opt/novnc", vncAddr: "127.0.0.1:5901", sessionMax: defaultSessionMax, sessionIdle: defaultSessionIdle, timeZone: "UTC", audioBitrate: 64}
+	return serverConfig{base: "/", novncDir: "/opt/novnc", vncAddr: "127.0.0.1:5901", sessionMax: defaultSessionMax, sessionIdle: defaultSessionIdle, offlinePollRotate: 45 * time.Second, timeZone: "UTC", audioBitrate: 64}
 }
 
 // check checks c, as newServer takes it, without touching anything: what
@@ -117,6 +118,9 @@ func (c *serverConfig) check() error {
 	}
 	if c.sessionIdle < 0 || c.sessionIdle%time.Minute != 0 {
 		return fmt.Errorf("-session-idle: %w", errBadLimit)
+	}
+	if c.offlinePollRotate < time.Millisecond || c.offlinePollRotate.Milliseconds() > 1<<31-1 {
+		return fmt.Errorf("-offline-poll-rotate must be between 1ms and 2147483647ms")
 	}
 	if c.micCreate {
 		if c.micSink != "" {

@@ -89,6 +89,7 @@ type server struct {
 	remoteAuth      remoteAuthStore
 	passkeyWaits    handshakes // passkey logins waiting for the browser's answer
 	drain           tunnelDrain
+	offlinePoll     offlinePoll
 	shares          *shareStore // nil when share links are off
 	passkeys        *passkeyStore
 	activity        *activityLog
@@ -193,6 +194,7 @@ func main() {
 	flag.StringVar(&c.goCookiesKeyFile, "go-cookies-key-file", c.goCookiesKeyFile, "the key the remote browser's cookies are sealed with; needed to keep them in -go-cookies-file")
 	flag.StringVar(&c.remoteApprovalURL, "remote-approval-url", "", "trusted HTTPS approval page URL; empty uses this deployment at /auth/approve")
 	flag.BoolVar(&c.offlineClient, "offline-client", false, "accept the tunnel from the offline client (tabtop.html from the bootstrap pack, opened as a file: origin \"null\")")
+	flag.DurationVar(&c.offlinePollRotate, "offline-poll-rotate", c.offlinePollRotate, "how often offline HTTP polling connections rotate")
 	flag.BoolVar(&c.fetchOn, "fetch", c.fetchOn, "let logged-in pages have the gateway fetch a URL into ~/Downloads")
 	flag.BoolVar(&c.fetchPrivate, "fetch-private", c.fetchPrivate, "let fetches reach private networks too, not only public addresses")
 	flag.BoolVar(&c.previewFetchPrivate, "preview-fetch-private", c.previewFetchPrivate,
