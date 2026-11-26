@@ -228,3 +228,85 @@ func TestShareLinksEndWithWhatsRemoved(t *testing.T) {
 		t.Fatalf("%d links after a permanent delete, not 1", links())
 	}
 }
+
+// A permanent delete that's refused (the exposed folder itself) ends no
+// links: they end only once what they're to is gone.
+func TestShareLinksKeptWhenDeleteRefused(t *testing.T) {
+	g, srv, s, _ := newShareServer(t)
+	dir := filepath.Join(g.downloadsDir, "a")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
+	file := makeShare(t, srv, s, "a/f.txt", 3600, 0)
+	makeShare(t, srv, s, "a", 3600, 0)
+	r := openSession(t, testCtx(t), srv, s).request(t, testCtx(t), tunnelRequest{Type: "delete", Path: "", Permanent: true})
+	if r["ok"] == true {
+		t.Fatalf("the exposed folder deleted: %v", r)
+	}
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	if res, _ := shareFetch(t, "GET", file); n != 2 || res.StatusCode != 200 {
+		t.Fatalf("after a refused delete: %d of 2 links left, the file's answering %d", n, res.StatusCode)
+	}
+}
+
+// A permanent delete that fails part way ends the links to what went, and
+// only those: what's still there keeps its link.
+func TestShareLinksEndWithWhatWentWhenDeleteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes from a read-only folder")
+	}
+	g, srv, s, _ := newShareServer(t)
+	dir := filepath.Join(g.downloadsDir, "a")
+	os.MkdirAll(filepath.Join(dir, "keep"), 0o755)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, "keep", "k.txt"), []byte("k"), 0o644)
+	gone := makeShare(t, srv, s, "a/f.txt", 3600, 0)
+	kept := makeShare(t, srv, s, "a/keep/k.txt", 3600, 0)
+	os.Chmod(filepath.Join(dir, "keep"), 0o555) // (k.txt can't be removed)
+	t.Cleanup(func() { os.Chmod(filepath.Join(dir, "keep"), 0o755) })
+	r := openSession(t, testCtx(t), srv, s).request(t, testCtx(t), tunnelRequest{Type: "delete", Path: "a", Permanent: true})
+	if r["ok"] == true {
+		t.Fatalf("deleted whole: %v", r)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "f.txt")); err == nil {
+		t.Fatal("f.txt wasn't removed: the delete didn't fail part way")
+	}
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	res, _ := shareFetch(t, "GET", kept)
+	if n != 1 || res.StatusCode != 200 {
+		t.Fatalf("%d links left (not 1), what's still there answering %d", n, res.StatusCode)
+	}
+	if res, _ := shareFetch(t, "GET", gone); res.StatusCode == 200 {
+		t.Fatal("the link to what went still answers")
+	}
+}
+
+// A removal that worked ends every link found before it, without looking
+// again: something made at the path since (given the inode freed, on a
+// filesystem that doesn't say when a file was made) could pass for what
+// was removed. (Here, the folder itself, still there, stands for it.)
+func TestShareLinksEndAllWhenRemoved(t *testing.T) {
+	g, srv, s, _ := newShareServer(t)
+	os.MkdirAll(filepath.Join(g.downloadsDir, "a"), 0o755)
+	makeShare(t, srv, s, "a", 3600, 0)
+	files := g.fileServices()[0]
+	store, err := files.openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ending := files.linksInto(store.root, "a", "a")
+	if len(ending) != 1 {
+		t.Fatalf("%d links found, not 1", len(ending))
+	}
+	files.endGone(store.root, "a", "a", ending, nil)
+	g.shares.mu.Lock()
+	n := len(g.shares.links)
+	g.shares.mu.Unlock()
+	if n != 0 {
+		t.Fatal("a link kept, after its removal worked, for what's at its path")
+	}
+}

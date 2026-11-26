@@ -450,7 +450,7 @@ func TestMoveRefusesMounts(t *testing.T) {
 }
 
 // A move across filesystems removes the original once it's copied: the
-// links to it end then (see endLinksInto), and only those.
+// links to it end then (see linksInto), and only those.
 func TestMoveAcrossFilesystemsEndsLinks(t *testing.T) {
 	home, data, downloads := rootFixture(t)
 	g, srv := newE2EServerWith(t, func(c *serverConfig) {

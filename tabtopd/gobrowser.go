@@ -1218,9 +1218,11 @@ func (b *goBrowser) navigate(u, by string) <-chan time.Time {
 			ccancel()
 			// The engine reaches sites through the proxy, which says only
 			// that it couldn't: whether that's for a name no site has is
-			// asked here (the page then searches for what was typed).
-			if !goCertError(err.Error()) {
-				mctx, mcancel := context.WithTimeout(context.Background(), goNameCheckTimeout)
+			// asked here (the page then searches for what was typed). Not
+			// for a load given up (another replaced it, or its time ran
+			// out), and given up with it: the jobs behind it wait.
+			if !goCertError(err.Error()) && ctx.Err() == nil {
+				mctx, mcancel := context.WithTimeout(ctx, goNameCheckTimeout)
 				missing = goNameMissing(mctx, goPageHost(u))
 				mcancel()
 			}

@@ -378,7 +378,7 @@ func (g *fileService) openStore() (*downloadStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &downloadStore{root: root, index: &g.root.trash, ending: g.endTrashLinks}
+	store := &downloadStore{root: root, index: &g.root.trash, ending: g.trashLinks}
 	if g.req != nil {
 		store.checked = g.req.checked
 	}

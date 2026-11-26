@@ -160,16 +160,18 @@ func (l *shareLink) matches(f *os.File, st fs.FileInfo) bool {
 	return l.Dir || st.Mode().IsRegular() && st.Size() == l.Size && st.ModTime().UnixNano() == l.ModTime
 }
 
-// endLinksInto revokes the links to what's about to be removed for good:
-// what's at at in r, which was at was in the root (or still is). Each is
-// matched by what it was made for (see matches), so a link to something
-// made at was since is left alone. Otherwise, on a filesystem that doesn't
-// say when a file was made, the next folder made there could be given the
-// inode freed, and a link to the one removed would serve it.
-func (g *fileService) endLinksInto(r *os.Root, at, was string) {
+// linksInto is the links to what's about to be removed for good: what's
+// at at in r, which was at was in the root (or still is). Each is matched
+// by what it was made for (see matches), so a link to something made at
+// was since is left out. Those whose target is gone once the removal's
+// been tried are revoked (endGone): all, if it worked; none, if it was
+// refused; what went, if it failed part way. Otherwise, on a filesystem
+// that doesn't say when a file was made, the next folder made there could
+// be given the inode freed, and a link to the one removed would serve it.
+func (g *fileService) linksInto(r *os.Root, at, was string) map[string]*shareLink {
 	s := g.shares
 	if s == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	var under []*shareLink
@@ -179,27 +181,52 @@ func (g *fileService) endLinksInto(r *os.Root, at, was string) {
 		}
 	}
 	s.mu.Unlock()
-	ending := map[string]bool{}
+	ending := map[string]*shareLink{}
 	for _, l := range under {
-		p := at
-		if was == "." {
-			p = path.Join(at, l.Path)
-		} else if l.Path != was {
-			p = path.Join(at, strings.TrimPrefix(l.Path, was+"/"))
+		if linkTargetIn(r, at, was, l) {
+			ending[l.ID] = l
 		}
-		f, err := r.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-		if err != nil {
-			continue
-		}
-		if st, err := f.Stat(); err == nil && l.matches(f, st) {
-			ending[l.ID] = true
-		}
-		f.Close()
 	}
-	if len(ending) == 0 {
+	return ending
+}
+
+// linkTargetIn reports whether what l was made for is at its place under
+// at in r (at being where was, a path in the root, is now).
+func linkTargetIn(r *os.Root, at, was string, l *shareLink) bool {
+	p := at
+	if was == "." {
+		p = path.Join(at, l.Path)
+	} else if l.Path != was {
+		p = path.Join(at, strings.TrimPrefix(l.Path, was+"/"))
+	}
+	f, err := r.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	return err == nil && l.matches(f, st)
+}
+
+// endGone revokes the links ending (linksInto's, for what was at at in
+// r) once its removal's been tried (failed: an error): all of them if it
+// worked, not looked for again (something made there since, given a
+// freed inode, could pass for one); if it failed, those whose target
+// isn't there any more, looked for before anything left is put back.
+func (g *fileService) endGone(r *os.Root, at, was string, ending map[string]*shareLink, failed error) {
+	if len(ending) == 0 || g.shares == nil {
 		return
 	}
-	n, err := s.revoke(func(l *shareLink) bool { return ending[l.ID] })
+	gone := map[string]bool{}
+	for id, l := range ending {
+		if failed == nil || !linkTargetIn(r, at, was, l) {
+			gone[id] = true
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	n, err := g.shares.revoke(func(l *shareLink) bool { return gone[l.ID] })
 	if err != nil {
 		log.Printf("revoking the links to %q, deleted: %v", was, err)
 	} else if n > 0 {
@@ -207,11 +234,15 @@ func (g *fileService) endLinksInto(r *os.Root, at, was string) {
 	}
 }
 
-// endTrashLinks is endLinksInto for Trash entry e, in the Trash root trash.
-func (g *fileService) endTrashLinks(trash *os.Root, e trashEntry) {
-	if validTrashID(e.ID) && e.Path != "" {
-		g.endLinksInto(trash, path.Join(e.ID, "data"), e.Path)
+// trashLinks is linksInto for Trash entry e, in the Trash root trash: what
+// to call once its removal's been tried, with how it went.
+func (g *fileService) trashLinks(trash *os.Root, e trashEntry) (tried func(error)) {
+	if !validTrashID(e.ID) || e.Path == "" {
+		return func(error) {}
 	}
+	at := path.Join(e.ID, "data")
+	ending := g.linksInto(trash, at, e.Path)
+	return func(err error) { g.endGone(trash, at, e.Path, ending, err) }
 }
 
 // shareStore holds the links, and writes them to file (if it isn't "")
