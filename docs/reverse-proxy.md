@@ -90,13 +90,17 @@ server {
 }
 ```
 
-`client_max_body_size 0` and `proxy_request_buffering off` are for
-[upload links](downloads.md#upload-links), the one thing that sends big
-request bodies over plain HTTP: the upload page sends 8 MB pieces, and
-`curl -T` a whole file. nginx refuses bodies over 1 MB by default, and
-otherwise holds each body on disk before passing it on, so the
-uploader's progress runs ahead of what's saved. Leave them out if you
-don't use upload links.
+`client_max_body_size 0` lets [upload links](downloads.md#upload-links)
+accept whole files from `curl -T`. The upload page sends 8 MB pieces.
+`proxy_request_buffering off` lets TabTop receive data as it arrives so
+the uploader's progress reflects what has been sent upstream.
+
+The [offline client](environment.md#web_offline_client) also sends
+large HTTP bodies when it falls back to long polling. If you enable that
+fallback and want a fixed nginx body limit, set `client_max_body_size 17m`
+for requests under `/session/poll` (under your `WEB_BASE_PATH`, if set).
+The largest polling request is slightly over 16 MiB with protocol
+framing. nginx defaults to 1 MB.
 
 Open `https://example.com/`. Paths stay as in the README (`/fs/`,
 `/tty/`, `/session` (the encrypted tunnel), `/healthz`, `/auth/approve`, `/auth/bootstrap`, `/auth/pack`).

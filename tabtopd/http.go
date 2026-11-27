@@ -13,7 +13,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
+
+const requestBodyTimeout = 8 * time.Second
 
 func (g *server) handler() http.Handler {
 	mux := http.NewServeMux()
@@ -58,7 +61,16 @@ func (g *server) handler() http.Handler {
 	mux.HandleFunc("/doctor", g.doctor)
 	mux.HandleFunc("/auth/bootstrap", g.bootstrap)
 	mux.HandleFunc("/auth/pack", g.bootstrap)
-	return noTransform(g.stripBase(mux))
+	routes := noTransform(g.stripBase(mux))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The router itself can respond while an HTTP/1 request body is
+		// unread. Give those responses a deadline too. Upload handlers
+		// extend the deadline when they start receiving a body.
+		if r.Body != nil && r.Body != http.NoBody {
+			http.NewResponseController(w).SetReadDeadline(time.Now().Add(requestBodyTimeout))
+		}
+		routes.ServeHTTP(w, r)
+	})
 }
 
 // novncCSPFormat is the desktop page's Content-Security-Policy, with the

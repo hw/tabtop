@@ -6,6 +6,79 @@ function nextEvent(connection, name) {
     return new Promise((resolve) => { connection[name] = resolve; });
 }
 
+test("an oversized streaming poll response is canceled without retrying", { timeout: 5000 }, async (t) => {
+    let polls = 0, chunks = 0, canceled = false;
+    const chunk = new Uint8Array(128 * 1024).fill(32);
+    const connection = new OfflineConnection("wss://example.com/session", {
+        preferPolling: true,
+        fetch: async (address, { method }) => {
+            if (method === "DELETE") return new Response(null, { status: 204 });
+            if (new URL(address).pathname === "/session/poll") {
+                return Response.json({ token: "token", tunnelId: "t", connectionId: "c", rotateAfterMs: 45000, fragments: true }, { status: 201 });
+            }
+            polls++;
+            return new Response(new ReadableStream({
+                pull(controller) {
+                    if (++chunks > 5) controller.close();
+                    else controller.enqueue(chunk);
+                },
+                cancel() { canceled = true; },
+            }));
+        },
+    });
+    t.after(() => connection.close());
+    assert.equal((await nextEvent(connection, "onclose")).code, 1006);
+    assert.equal(polls, 1);
+    assert.ok(canceled);
+});
+
+test("unfinished polling replies have a fragment count limit", { timeout: 5000 }, async (t) => {
+    let polls = 0;
+    const messages = Array(256).fill("eA==");
+    const more = Array(256).fill(true);
+    const connection = new OfflineConnection("wss://example.com/session", {
+        preferPolling: true,
+        fetch: async (address, { method }) => {
+            if (method === "DELETE") return new Response(null, { status: 204 });
+            const url = new URL(address);
+            if (url.pathname === "/session/poll") {
+                return Response.json({ token: "token", tunnelId: "t", connectionId: "c", rotateAfterMs: 45000, fragments: true }, { status: 201 });
+            }
+            const first = polls * messages.length + 1;
+            assert.equal(url.searchParams.get("after"), String(first - 1));
+            if (++polls > 4) return Response.json({ close: { code: 1000 } });
+            return Response.json({ first, messages, more });
+        },
+    });
+    t.after(() => connection.close());
+    connection.onmessage = () => assert.fail("an incomplete message was delivered");
+    assert.equal((await nextEvent(connection, "onclose")).code, 1006);
+    assert.equal(polls, 4);
+});
+
+test("older polling gateways can still deliver a large unfragmented reply", { timeout: 5000 }, async (t) => {
+    const raw = Buffer.alloc(384 * 1024, 5);
+    const connection = new OfflineConnection("wss://example.com/session", {
+        preferPolling: true,
+        fetch: async (address, { method, signal }) => {
+            if (method === "DELETE") return new Response(null, { status: 204 });
+            const url = new URL(address);
+            if (url.pathname === "/session/poll") {
+                return Response.json({ token: "token", tunnelId: "t", connectionId: "c", rotateAfterMs: 45000 }, { status: 201 });
+            }
+            if (url.searchParams.get("after") === "0") {
+                return Response.json({ first: 1, messages: [raw.toString("base64")] });
+            }
+            return new Promise((resolve) => {
+                signal.addEventListener("abort", () => resolve(new Response(null, { status: 204 })), { once: true });
+            });
+        },
+    });
+    t.after(() => connection.close());
+    const event = await Promise.race([nextEvent(connection, "onmessage"), nextEvent(connection, "onclose")]);
+    assert.deepEqual(Buffer.from(event.data), raw);
+});
+
 test("the offline connection uses a healthy WebSocket without making HTTP requests", async (t) => {
     const native = WebSocket;
     t.after(() => { globalThis.WebSocket = native; });
@@ -34,6 +107,104 @@ test("the offline connection uses a healthy WebSocket without making HTTP reques
     const closed = nextEvent(connection, "onclose");
     connection.close();
     assert.equal((await closed).code, 1000);
+});
+
+test("a lost receive can recover after the server finishes its previous poll", { timeout: 5000 }, async (t) => {
+    let reads = 0;
+    const connection = new OfflineConnection("wss://example.com/session", {
+        preferPolling: true,
+        fetch: async (address, { method, signal }) => {
+            if (method === "DELETE") return new Response(null, { status: 204 });
+            if (new URL(address).pathname === "/session/poll") {
+                return Response.json({ token: "token", tunnelId: "t", connectionId: "c", rotateAfterMs: 45000 }, { status: 201 });
+            }
+            switch (++reads) {
+                case 1: throw new TypeError("receive response lost");
+                case 2:
+                case 3: return new Response(null, { status: 429 });
+                case 4: return Response.json({ first: 1, messages: ["eA=="] });
+                default:
+                    return new Promise((resolve) => {
+                        signal.addEventListener("abort", () => resolve(new Response(null, { status: 204 })), { once: true });
+                    });
+            }
+        },
+    });
+    t.after(() => connection.close());
+    const event = await Promise.race([nextEvent(connection, "onmessage"), nextEvent(connection, "onclose")]);
+    assert.deepEqual([...new Uint8Array(event.data)], [120]);
+    assert.equal(connection.readyState, 1);
+});
+
+test("a lost send can be retried while the original request is busy", { timeout: 5000 }, async (t) => {
+    let writes = 0;
+    const accepted = Promise.withResolvers();
+    const connection = new OfflineConnection("wss://example.com/session", {
+        preferPolling: true,
+        fetch: async (address, { method, body, signal }) => {
+            const url = new URL(address);
+            if (method === "DELETE") return new Response(null, { status: 204 });
+            if (url.pathname === "/session/poll") {
+                return Response.json({ token: "token", tunnelId: "t", connectionId: "c", rotateAfterMs: 45000 }, { status: 201 });
+            }
+            if (method === "GET") {
+                return new Promise((resolve) => {
+                    signal.addEventListener("abort", () => resolve(new Response(null, { status: 204 })), { once: true });
+                });
+            }
+            assert.equal(url.searchParams.get("seq"), "1");
+            assert.deepEqual([...body], [0, 0, 0, 1, 9]);
+            if (++writes === 1) throw new TypeError("send response lost");
+            if (writes < 4) return new Response(null, { status: 429 });
+            accepted.resolve(true);
+            return Response.json({ accepted: 1 });
+        },
+    });
+    t.after(() => connection.close());
+    const closed = nextEvent(connection, "onclose");
+    await nextEvent(connection, "onopen");
+    connection.send(new Uint8Array([9]));
+    assert.equal(await Promise.race([accepted.promise, closed]), true);
+    assert.equal(connection.readyState, 1);
+});
+
+test("a committed rotation is recovered after the standby poll expired", { timeout: 5000 }, async (t) => {
+    let promoted = false, confirmations = 0, switches = 0, delivered = false;
+    const connection = new OfflineConnection("wss://example.com/session", {
+        preferPolling: true,
+        fetch: async (address, { method, signal }) => {
+            const url = new URL(address);
+            const path = url.pathname;
+            if (method === "DELETE") return new Response(null, { status: 204 });
+            if (path === "/session/poll") {
+                return Response.json({ token: "token", tunnelId: "t", connectionId: "old", rotateAfterMs: 10 }, { status: 201 });
+            }
+            if (path.endsWith("/connections")) return Response.json({ connectionId: "next" });
+            if (url.searchParams.has("wait")) {
+                confirmations++;
+                return promoted ? Response.json({ active: true }) : new Response(null, { status: 204 });
+            }
+            if (path.endsWith("/switch")) {
+                assert.ok(confirmations, "the standby poll ran before the switch");
+                promoted = true;
+                switches++;
+                throw new TypeError("switch response lost after promotion");
+            }
+            if (path.endsWith("/next") && !delivered) {
+                delivered = true;
+                return Response.json({ first: 1, messages: ["cg=="] });
+            }
+            return new Promise((resolve) => {
+                signal.addEventListener("abort", () => resolve(new Response(null, { status: 204 })), { once: true });
+            });
+        },
+    });
+    t.after(() => connection.close());
+    const event = await Promise.race([nextEvent(connection, "onmessage"), nextEvent(connection, "onclose")]);
+    assert.deepEqual([...new Uint8Array(event.data)], [114]);
+    assert.equal(switches, 3);
+    assert.equal(confirmations, 2);
+    assert.equal(connection.readyState, 1);
 });
 
 test("offline fallback retries lost responses and rotates while sending and receiving", { timeout: 5000 }, async (t) => {

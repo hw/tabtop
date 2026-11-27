@@ -2,6 +2,13 @@
 // dependencies in the constructor or on the class so it can run from disk.
 export class OfflineConnection {
     static UPGRADE_WAIT = 4000;
+    static #BATCH_RESPONSE_LIMIT = 384 * 1024; // 256 KiB of payload plus base64 and JSON
+    static #LEGACY_RESPONSE_LIMIT = 24 * 1024 * 1024;
+    static #LEGACY_FRAME_LIMIT = 16 * 1024 * 1024 + 17;
+    static #FRAGMENT_LIMIT = 64 * 1024;
+    static #MESSAGE_LIMIT = 64 * 1024 * 1024;
+    static #FRAGMENT_COUNT = 1024;
+    static #BATCH_COUNT = 256;
 
     readyState = 0;
     binaryType = "arraybuffer";
@@ -22,6 +29,9 @@ export class OfflineConnection {
     #standby;
     #retired;
     #after = 0;
+    #fragments = [];
+    #fragmentBytes = 0;
+    #fragmentedReplies = false;
     #sent = 0;
     #pending = [];
     #pendingBytes = 0;
@@ -56,7 +66,7 @@ export class OfflineConnection {
                 this.#controller.signal.throwIfAborted();
             }
         }
-        const opened = await this.#request("", {
+        const opened = await this.#request("?fragments=1", {
             method: "POST",
             json: { requestId: crypto.randomUUID() },
             timeout: 4500,
@@ -69,6 +79,7 @@ export class OfflineConnection {
         this.#tunnel = encodeURIComponent(opened.tunnelId);
         this.#active = opened.connectionId;
         this.#rotateInterval = opened.rotateAfterMs;
+        this.#fragmentedReplies = opened.fragments === true;
         if (this.#closing) {
             this.#release(this.#active);
             return;
@@ -119,7 +130,10 @@ export class OfflineConnection {
         return "/" + this.#tunnel + "/connections/" + encodeURIComponent(id) + suffix;
     }
 
-    async #request(path, { method = "GET", json, body, signal = this.#controller.signal, timeout = 6000 } = {}) {
+    async #request(path, {
+        method = "GET", json, body, signal = this.#controller.signal, timeout = 6000,
+        busyTimeout = method === "GET" ? 40000 : 0, responseLimit = 4096,
+    } = {}) {
         const headers = {};
         if (this.#token) headers.Authorization = "Bearer " + this.#token;
         if (json !== undefined) {
@@ -127,24 +141,72 @@ export class OfflineConnection {
             body = JSON.stringify(json);
         }
         const url = this.#bridgeURL.href + path;
-        for (let attempt = 0; ; attempt++) {
+        let failures = 0, busyUntil = 0, busyError;
+        for (;;) {
             signal.throwIfAborted();
+            const remaining = busyUntil ? busyUntil - Date.now() : timeout;
+            if (remaining <= 0) throw busyError;
             try {
                 const response = await this.#fetch(url, {
-                    method, headers, body, signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
+                    method, headers, body, signal: AbortSignal.any([signal, AbortSignal.timeout(Math.min(timeout, remaining))]),
                 });
                 if (response.status === 204) return null;
                 if (!response.ok) {
+                    response.body?.cancel().catch(() => {});
                     const error = new Error("Bridge returned HTTP " + response.status);
                     error.status = response.status;
                     throw error;
                 }
-                return await response.json();
+                return await this.#readJSON(response, responseLimit);
             } catch (error) {
-                if (signal.aborted || attempt >= 2 || (error.status && ![429, 502, 503, 504].includes(error.status))) throw error;
+                if (signal.aborted || error instanceof RangeError) throw error;
+                if (busyTimeout && error.status === 429) {
+                    // The original request may still be active upstream.
+                    busyError = error;
+                    busyUntil ||= Date.now() + busyTimeout;
+                    const delay = Math.min(1000, busyUntil - Date.now());
+                    if (delay <= 0) throw error;
+                    await new Promise((resolve) => setTimeout(resolve, delay));
+                    continue;
+                }
+                if (failures >= 2 || (error.status && ![408, 429, 502, 503, 504].includes(error.status))) throw error;
+                failures++;
             }
-            await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+            await new Promise((resolve) => setTimeout(resolve, 150 * failures));
         }
+    }
+
+    async #readJSON(response, limit) {
+        const tooLarge = () => new RangeError("Polling response is too large");
+        if (Number(response.headers.get("Content-Length")) > limit) {
+            response.body?.cancel().catch(() => {});
+            throw tooLarge();
+        }
+        if (!response.body) throw new Error("Missing polling response body");
+
+        const reader = response.body.getReader();
+        let data = new Uint8Array(0), size = 0;
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const end = size + value.byteLength;
+                if (end > limit) throw tooLarge();
+                if (end > data.length) {
+                    const next = new Uint8Array(Math.min(limit, Math.max(end, 1024, data.length * 2)));
+                    next.set(data.subarray(0, size));
+                    data = next;
+                }
+                data.set(value, size);
+                size = end;
+            }
+        } catch (error) {
+            reader.cancel().catch(() => {});
+            throw error;
+        } finally {
+            reader.releaseLock();
+        }
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, size)));
     }
 
     #startReading() {
@@ -157,25 +219,69 @@ export class OfflineConnection {
     }
 
     async #read(id, signal) {
+        const responseLimit = this.#fragmentedReplies ? OfflineConnection.#BATCH_RESPONSE_LIMIT : OfflineConnection.#LEGACY_RESPONSE_LIMIT;
         while (!signal.aborted && !this.#closing) {
-            const batch = await this.#request(this.#route(id, "?after=" + this.#after), { signal, timeout: 28000 });
+            const batch = await this.#request(this.#route(id, "?after=" + this.#after), { signal, timeout: 28000, responseLimit });
             if (signal.aborted || this.#closing || batch?.switched) return;
             this.#confirmActive(id);
             if (batch?.close) {
+                if (this.#fragments.length && batch.close.code === 1000) {
+                    this.#finish(1006);
+                    return;
+                }
                 this.#finish(batch.close.code, batch.close.reason, batch.close.code !== 1006);
                 return;
             }
             if (!batch?.messages) continue;
             if (batch.first !== this.#after + 1) throw new Error("Unexpected receive sequence");
-            for (const message of batch.messages) {
+            if (!Array.isArray(batch.messages) || !batch.messages.length || batch.messages.length > OfflineConnection.#BATCH_COUNT ||
+                (batch.more !== undefined && (!Array.isArray(batch.more) || batch.more.length !== batch.messages.length ||
+                    batch.more.some((more) => typeof more !== "boolean")))) {
+                throw new Error("Invalid polling message batch");
+            }
+            for (const [index, message] of batch.messages.entries()) {
                 if (this.#closing) return;
-                this.#after++;
+                const more = batch.more?.[index] === true;
+                const frameLimit = this.#fragmentedReplies || more || this.#fragments.length
+                    ? OfflineConnection.#FRAGMENT_LIMIT : OfflineConnection.#LEGACY_FRAME_LIMIT;
+                if (typeof message !== "string" || message.length > 4 * Math.ceil(frameLimit / 3)) {
+                    throw new RangeError("Polling frame is too large");
+                }
                 const decoded = atob(message);
+                if (decoded.length > frameLimit || (more && decoded.length === 0)) throw new RangeError("Invalid polling fragment size");
                 const bytes = new Uint8Array(decoded.length);
                 for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
-                this.onmessage?.({ data: bytes.buffer });
+                this.#after++;
+                this.#deliver(bytes, more);
             }
         }
+    }
+
+    #deliver(bytes, more) {
+        const size = this.#fragmentBytes + bytes.length;
+        const count = this.#fragments.length + 1;
+        if (size > OfflineConnection.#MESSAGE_LIMIT || count > OfflineConnection.#FRAGMENT_COUNT ||
+            (more && count === OfflineConnection.#FRAGMENT_COUNT)) {
+            throw new RangeError("Reassembled polling message is too large");
+        }
+        if (more) {
+            this.#fragments.push(bytes);
+            this.#fragmentBytes = size;
+            return;
+        }
+        if (this.#fragments.length) {
+            const message = new Uint8Array(size);
+            let offset = 0;
+            for (const fragment of this.#fragments) {
+                message.set(fragment, offset);
+                offset += fragment.length;
+            }
+            message.set(bytes, offset);
+            this.#fragments = [];
+            this.#fragmentBytes = 0;
+            bytes = message;
+        }
+        this.onmessage?.({ data: bytes.buffer });
     }
 
     send(data) {
@@ -223,7 +329,11 @@ export class OfflineConnection {
                 offset += frame.length + 4;
             }
             const seq = this.#sent + 1;
-            const sent = await this.#request(this.#route(this.#active, "/send?seq=" + seq), { method: "POST", body, timeout: 10000 });
+            // Allow time for the HTTP body and then the bridge's upstream write.
+            const timeout = 20000 + 1000 * Math.ceil(body.length / (256 * 1024));
+            const sent = await this.#request(this.#route(this.#active, "/send?seq=" + seq), {
+                method: "POST", body, timeout, busyTimeout: Math.max(40000, timeout + 5000),
+            });
             if (sent?.accepted !== this.#sent + count) throw new Error("Unexpected send acknowledgement");
             this.#sent = sent.accepted;
         }).catch((error) => {
@@ -250,8 +360,12 @@ export class OfflineConnection {
         }, this.#rotateInterval);
     }
 
-    async #rotate() {
-        if (this.#retired) return;
+    #rotate() {
+        return this.#enqueue(() => this.#switchConnection());
+    }
+
+    async #switchConnection() {
+        if (this.#closing || this.#retired) return;
         const old = this.#active;
         let prepared;
         try {
@@ -270,32 +384,32 @@ export class OfflineConnection {
         }
         this.#standby = next;
         const pending = new AbortController();
-        const confirm = this.#request(this.#route(next, "?wait=active"), {
+        const confirmActive = () => this.#request(this.#route(next, "?wait=active"), {
             signal: AbortSignal.any([pending.signal, this.#controller.signal]), timeout: 26000,
         }).catch(() => null);
+        const confirm = confirmActive();
         try {
-            await this.#enqueue(async () => {
-                if (this.#closing) return;
-                try {
-                    const switched = await this.#request(this.#route(old, "/switch"), {
-                        method: "POST", json: { connectionId: next },
-                    });
-                    if (switched?.connectionId !== next) throw new Error("Invalid switch response");
-                } catch (error) {
-                    if (error.status === 409) return;
-                    // The HTTP response may have been lost after promotion.
-                    if (!(await confirm)?.active) throw error;
-                }
-                if (this.#closing) return;
-                this.#retired = old;
-                this.#active = next;
-                this.#standby = undefined;
-                this.#startReading();
-                // A successful switch is enough to resume sending. Release
-                // the old ID only after the new receive route confirms it.
-                confirm.then((reply) => {
-                    if (reply?.active) this.#confirmActive(next);
+            let confirmed = false;
+            try {
+                const switched = await this.#request(this.#route(old, "/switch"), {
+                    method: "POST", json: { connectionId: next },
                 });
+                if (switched?.connectionId !== next) throw new Error("Invalid switch response");
+            } catch (error) {
+                if (error.status === 409 || this.#closing) return;
+                // A standby poll can return 204 before promotion. Check the
+                // new route again if the switch response was lost.
+                confirmed = (await confirm)?.active || (await confirmActive())?.active;
+                if (!confirmed) throw error;
+            }
+            if (this.#closing) return;
+            this.#retired = old;
+            this.#active = next;
+            this.#standby = undefined;
+            this.#startReading();
+            if (confirmed) this.#confirmActive(next);
+            confirm.then((reply) => {
+                if (reply?.active) this.#confirmActive(next);
             });
         } finally {
             if (this.#active !== next) {
@@ -340,6 +454,8 @@ export class OfflineConnection {
         clearTimeout(this.#timer);
         this.#pending = [];
         this.#pendingBytes = 0;
+        this.#fragments = [];
+        this.#fragmentBytes = 0;
         this.#release(this.#active);
         this.#release(this.#standby);
         this.#release(this.#retired);

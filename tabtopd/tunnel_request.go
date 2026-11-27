@@ -264,13 +264,17 @@ func (g *server) tunnelUpgrade(w http.ResponseWriter, upgrade, r *http.Request) 
 	defer untrack()
 	defer c.CloseNow()
 	c.SetReadLimit(tunnelHelloLimit)
-	alive, stop := context.WithCancel(context.Background())
-	defer stop()
-	interval := g.pingInterval
-	if interval == 0 {
-		interval = pingInterval
+	// The polling bridge uses a private pipe with its own idle timeout.
+	// Its reader can pause for backpressure, so a ping can block there.
+	if upgrade == r {
+		alive, stop := context.WithCancel(context.Background())
+		defer stop()
+		interval := g.pingInterval
+		if interval == 0 {
+			interval = pingInterval
+		}
+		go keepalive(alive, c, interval)
 	}
-	go keepalive(alive, c, interval)
 
 	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	typ, hello, err := c.Read(ctx)
@@ -321,6 +325,14 @@ func (g *server) serveRequest(t *tunnel, session, ip string, authenticated func(
 		return
 	}
 	defer detach()
+	if t.req != nil {
+		if bridge, ok := t.req.Context().Value(pollTunnelContextKey{}).(*pollTunnel); ok {
+			if !bridge.bindSession(session) {
+				t.Close(websocket.StatusTryAgainLater, "too many pending polling replies")
+				return
+			}
+		}
+	}
 	authenticated()
 	r := &tunnelResponder{t: t}
 	// Gate access before dispatch, including requests from cached pages or

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -39,8 +40,28 @@ func TestOfflinePollInterop(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.downloadsDir, "interop.bin"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The directory fits the ZIP preview's metadata limit, while the JSON
+	// listing exceeds the old polling bridge's whole-message limit.
+	archive, err := os.Create(filepath.Join(cfg.downloadsDir, "interop.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { archive.Close() })
+	zw := zip.NewWriter(archive)
+	name := strings.Repeat("&", 48<<10)
+	for i := range 64 {
+		if _, err := zw.Create(fmt.Sprintf("%02d-%s.txt", i, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, "testdata/offline_poll_interop.mjs", t.TempDir(), code(0))
 	output, err := cmd.StdoutPipe()
@@ -134,7 +155,7 @@ func TestOfflinePollInterop(t *testing.T) {
 		t.Fatalf("offline client: %v\n%s", waitErr, stderr.String())
 	}
 	want := fmt.Sprintf("%x", sha256.Sum256(data))
-	if result.Digest != want || result.Upgrades != 2 || switches.Load() < 2 {
+	if result.Digest != want || result.Upgrades != 3 || switches.Load() < 2 {
 		t.Fatalf("download digest %q (want %q), %d upgrades, %d switches", result.Digest, want, result.Upgrades, switches.Load())
 	}
 }

@@ -94,6 +94,13 @@ try {
         hash.update(Buffer.from(chunk));
         await delay(12);
     }
+    const zip = await Tunnel.open({ type: "zip-preview", path: "interop.zip" }, session, url);
+    assert.equal(zip.reply.entries.length, 64);
+    const suffix = "&".repeat(48 * 1024) + ".txt";
+    for (const [i, entry] of zip.reply.entries.entries()) {
+        assert.equal(entry.name, String(i).padStart(2, "0") + "-" + suffix);
+    }
+    zip.close();
     write({ digest: hash.digest("hex"), upgrades });
 } finally {
     input.close();
