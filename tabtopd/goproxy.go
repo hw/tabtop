@@ -16,6 +16,7 @@ package main
 // URL, which can hold a token.
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
@@ -36,7 +37,10 @@ import (
 var goProxyPorts = map[string]bool{"443": true, "80": true}
 
 // goProxyConns is how many connections one engine may have open through
-// its proxy at once, tunnels and requests alike.
+// its proxy at once, tunnels and requests alike. Tunnels have no idle
+// timeout of their own: a page's WebSocket or long poll may sit quiet for
+// a long time, and the slot stays taken until the engine or the proxy
+// closes it (goProxy.close).
 const goProxyConns = 64
 
 // One engine's requests (and tunnels) are let through at goProxyRate a
@@ -81,10 +85,45 @@ func (b *goProxyBudget) request() bool {
 }
 
 // spend counts n bytes, and says whether they're within the allowance.
-func (b *goProxyBudget) spend(n int) bool { return b.bytes.Add(int64(n)) <= b.limit }
+// A write that would pass the limit is refused without counting those
+// bytes as sent, but the budget is marked spent so later requests see it.
+func (b *goProxyBudget) spend(n int) bool {
+	if n <= 0 {
+		return true
+	}
+	for {
+		cur := b.bytes.Load()
+		if cur > b.limit {
+			return false
+		}
+		next := cur + int64(n)
+		if next > b.limit {
+			// Mark spent (limit+1) without recording the refused write's size.
+			if b.bytes.CompareAndSwap(cur, b.limit+1) {
+				return false
+			}
+			continue
+		}
+		if b.bytes.CompareAndSwap(cur, next) {
+			return true
+		}
+	}
+}
 
 // spent is whether the byte allowance is used up.
 func (b *goProxyBudget) spent() bool { return b.bytes.Load() > b.limit }
+
+// proxyAuthOK is whether got matches the proxy's expected Authorization
+// value. Both sides are hashed so a wrong length doesn't return early the
+// way subtle.ConstantTimeCompare would.
+func proxyAuthOK(got, want string) bool {
+	if want == "" {
+		return true
+	}
+	gh := sha256.Sum256([]byte(got))
+	wh := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gh[:], wh[:]) == 1
+}
 
 // goCountedWriter and goCountedBody count what goes through them against a
 // budget, failing once it's spent.
@@ -221,7 +260,7 @@ func newGoProxy(allow func(netip.Addr) bool, user, password string) *goProxy {
 }
 
 func (p *goProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if p.auth != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Proxy-Authorization")), []byte(p.auth)) != 1 {
+	if !proxyAuthOK(r.Header.Get("Proxy-Authorization"), p.auth) {
 		w.Header().Set("Proxy-Authenticate", `Basic realm="tabtop"`)
 		http.Error(w, "Proxy authentication required.", http.StatusProxyAuthRequired)
 		return
@@ -373,13 +412,12 @@ func (p *goProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	}()
 	copied := make(chan struct{})
 	go func() {
-		// Bytes the engine sent after its CONNECT, already read, first.
+		// buf.Reader holds any bytes already read with the CONNECT
+		// (and the first-byte peek above), then reads the engine's
+		// connection; one Copy so a budget failure on the prefix
+		// doesn't keep splicing the rest.
 		out := goCountedWriter{up, p.budget}
-		if n := buf.Reader.Buffered(); n > 0 {
-			b, _ := buf.Reader.Peek(n)
-			out.Write(b)
-		}
-		if _, err := io.Copy(out, conn); errors.Is(err, errGoProxyBytes) {
+		if _, err := io.Copy(out, buf.Reader); errors.Is(err, errGoProxyBytes) {
 			up.Close() // spent: the other way stops too
 		}
 		closeWrite(up)

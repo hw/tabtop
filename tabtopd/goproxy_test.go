@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // startGoProxy serves p on a loopback port, and returns a client that goes
@@ -532,5 +535,112 @@ func TestGoProxyCertException(t *testing.T) {
 		t.Errorf("TLS, the engine checking: %v", err)
 	} else {
 		res.Body.Close()
+	}
+}
+
+// TestGoProxyWebSocket: a ws:// upgrade through CONNECT reaches the site
+// and carries a message both ways (the splice used for page WebSockets).
+// Dialled as a browser would: CONNECT, then the upgrade on the tunnel
+// (Go's http.Transport would instead send an absolute-URL GET to the
+// proxy for ws://, which is not how engines speak WebSocket).
+func TestGoProxyWebSocket(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		typ, msg, err := c.Read(context.Background())
+		if err != nil {
+			return
+		}
+		if c.Write(context.Background(), typ, msg) != nil {
+			return
+		}
+		c.Close(websocket.StatusNormalClosure, "")
+	}))
+	defer site.Close()
+	host := strings.TrimPrefix(site.URL, "http://")
+	p := newGoProxy(allowAll, "", "")
+	p.ports = map[string]bool{portOf(t, site.URL): true}
+	_, addr := startGoProxy(t, p, "", "")
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host); err != nil {
+				c.Close()
+				return nil, err
+			}
+			res, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				c.Close()
+				return nil, err
+			}
+			res.Body.Close()
+			if res.StatusCode != 200 {
+				c.Close()
+				return nil, fmt.Errorf("CONNECT: %s", res.Status)
+			}
+			return c, nil
+		},
+	}}
+
+	wsURL := "ws://" + host + "/echo"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: client})
+	if err != nil {
+		t.Fatalf("dial through proxy: %v", err)
+	}
+	defer c.CloseNow()
+	if err := c.Write(ctx, websocket.MessageText, []byte("ping")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	typ, msg, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if typ != websocket.MessageText || string(msg) != "ping" {
+		t.Fatalf("echo: typ=%v msg=%q", typ, msg)
+	}
+}
+
+func TestProxyAuthOK(t *testing.T) {
+	want := "Basic " + basicAuth("engine", "s3cret")
+	if !proxyAuthOK(want, want) {
+		t.Fatal("matching credentials refused")
+	}
+	if proxyAuthOK("Basic "+basicAuth("engine", "wrong"), want) {
+		t.Fatal("wrong credentials accepted")
+	}
+	if proxyAuthOK("", want) {
+		t.Fatal("empty credentials accepted")
+	}
+	if proxyAuthOK("x", want) {
+		t.Fatal("short credentials accepted")
+	}
+	if !proxyAuthOK("anything", "") {
+		t.Fatal("no auth required, but refused")
+	}
+}
+
+func TestGoProxyBudgetSpendMarksSpent(t *testing.T) {
+	b := newGoProxyBudget()
+	b.limit = 100
+	if !b.spend(60) {
+		t.Fatal("first spend refused")
+	}
+	if b.spend(50) {
+		t.Fatal("over-limit spend let through")
+	}
+	if !b.spent() {
+		t.Fatal("budget not marked spent after a refused over-limit write")
+	}
+	if b.spend(1) {
+		t.Fatal("spend after marking still let through")
 	}
 }
